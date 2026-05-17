@@ -56,7 +56,7 @@ the sol agent is powered by an AI model, and you choose which. the choice has re
 
 a hardware heads-up: local transcription alone installs a ~2.5 GB model, and a capable local *thinking* model needs meaningfully more memory and compute on top of that. if your machine is constrained, start with a hosted key and revisit local later; you can switch any time in settings → providers.
 
-what actually leaves your machine differs sharply between these paths: with a local model, nothing leaves; with a hosted provider, only that task's prompt plus the relevant journal context goes, directly to that provider under your own key. solstone is never a proxy, and sol pbc is never in that path and never sees it.
+what actually leaves your machine differs sharply between these paths: with a local model, nothing leaves; with a hosted provider, only that task's prompt plus the relevant journal context goes, directly to that provider under your own key. solstone is never a proxy, and sol pbc is never in that path and never sees it. for the full picture of what's sent, to whom, and under whose terms, see [what solstone sends](DATA-FLOW.md).
 
 ## install an observer
 

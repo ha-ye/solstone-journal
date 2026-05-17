@@ -107,6 +107,7 @@ Run `sol help` for the full command reference.
 | Agent runtime | [docs/CORTEX.md](docs/CORTEX.md) |
 | Message bus | [docs/CALLOSUM.md](docs/CALLOSUM.md) |
 | AI provider configuration | [docs/PROVIDERS.md](docs/PROVIDERS.md) |
+| What solstone sends to your AI provider | [DATA-FLOW.md](DATA-FLOW.md) |
 | Troubleshooting | [docs/DOCTOR.md](docs/DOCTOR.md) |
 | Project direction | [docs/ROADMAP.md](docs/ROADMAP.md) |
 
