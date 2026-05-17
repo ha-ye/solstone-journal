@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Welcome-mat client for support.solpbc.org.
+"""Welcome-mat client for support.solstone.app.
 
 Implements the full DPoP + self-signed access token auth flow per the
 welcome-mat spec.
@@ -28,7 +28,12 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PORTAL_URL = "https://support.solpbc.org"
+# Owner-product brand tier. The portal moved from support.solpbc.org to
+# support.solstone.app (2026-05-17). The legacy host still serves the agent
+# API and the portal accepts both audiences, so installs with an older
+# ``support.portal_url`` in journal config keep working until they pick this
+# default up on upgrade.
+DEFAULT_PORTAL_URL = "https://support.solstone.app"
 
 # ---------------------------------------------------------------------------
 # Base64url helpers
