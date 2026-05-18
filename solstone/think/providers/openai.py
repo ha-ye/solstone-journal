@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from solstone.think.models import GPT_5, OPENAI_EFFORT_SUFFIXES
+from solstone.think.providers._image import encode_image_part, is_image_part
 from solstone.think.providers.cli import (
     CLIRunner,
     QuotaExhaustedError,
@@ -304,6 +305,21 @@ def _build_input(
     if isinstance(contents, list):
         if contents and isinstance(contents[0], dict) and "role" in contents[0]:
             return contents, system_instruction
+        if any(is_image_part(c) for c in contents):
+            content = []
+            for c in contents:
+                if is_image_part(c):
+                    media_type, b64 = encode_image_part(c)
+                    content.append(
+                        {
+                            "type": "input_image",
+                            "image_url": f"data:{media_type};base64,{b64}",
+                            "detail": "auto",
+                        }
+                    )
+                else:
+                    content.append({"type": "input_text", "text": str(c)})
+            return [{"role": "user", "content": content}], system_instruction
         return "\n".join(str(c) for c in contents), system_instruction
     return str(contents), system_instruction
 

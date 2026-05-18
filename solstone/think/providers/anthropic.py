@@ -31,6 +31,7 @@ timeout_s : float, optional
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -49,6 +50,7 @@ from anthropic.types import (
 )
 
 from solstone.think.models import CLAUDE_SONNET_4
+from solstone.think.providers._image import encode_image_part, is_image_part
 from solstone.think.utils import now_ms
 
 from .cli import (
@@ -424,6 +426,24 @@ def _derive_tool_name(schema: dict | None) -> str:
     return "response"
 
 
+def _sanitize_schema_for_anthropic(schema: dict) -> dict:
+    """Return a copy with Anthropic-rejected schema metadata stripped."""
+    sanitized = copy.deepcopy(schema)
+
+    def strip_metadata(value: Any) -> None:
+        if isinstance(value, dict):
+            value.pop("$schema", None)
+            value.pop("$comment", None)
+            for child in value.values():
+                strip_metadata(child)
+        elif isinstance(value, list):
+            for child in value:
+                strip_metadata(child)
+
+    strip_metadata(sanitized)
+    return sanitized
+
+
 def _extract_first_tool_use_json(response: Any) -> str:
     """Serialize the first tool_use block input from an Anthropic response."""
     for block in getattr(response, "content", []):
@@ -518,6 +538,24 @@ def _convert_contents_to_messages(contents: Any) -> list[MessageParam]:
         # Check if it's already in messages format
         if contents and isinstance(contents[0], dict) and "role" in contents[0]:
             return contents
+        elif any(is_image_part(c) for c in contents):
+            content = []
+            for c in contents:
+                if is_image_part(c):
+                    media_type, b64 = encode_image_part(c)
+                    content.append(
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": b64,
+                            },
+                        }
+                    )
+                else:
+                    content.append({"type": "text", "text": str(c)})
+            return [{"role": "user", "content": content}]
         else:
             # List of content parts - combine into single user message
             combined = "\n".join(str(c) for c in contents)
@@ -545,6 +583,7 @@ def run_generate(
     """
     client = _get_anthropic_client()
     messages = _convert_contents_to_messages(contents)
+    forced_tool_use = False
 
     # Handle JSON output by adding to system instruction
     system = system_instruction or ""
@@ -579,7 +618,10 @@ def run_generate(
     if json_schema is not None:
         tool_name = _derive_tool_name(json_schema)
         request_kwargs["output_config"] = {
-            "format": {"type": "json_schema", "schema": json_schema}
+            "format": {
+                "type": "json_schema",
+                "schema": _sanitize_schema_for_anthropic(json_schema),
+            }
         }
         try:
             response = _send_message(client, request_kwargs)
@@ -602,15 +644,19 @@ def run_generate(
             retry_kwargs["tool_choice"] = {"type": "tool", "name": tool_name}
             response = _send_message(client, retry_kwargs)
             text = _extract_first_tool_use_json(response)
+            forced_tool_use = True
             _, thinking = _extract_text_and_thinking(response)
     else:
         response = _send_message(client, request_kwargs)
         text, thinking = _extract_text_and_thinking(response)
 
+    finish_reason = (
+        "stop" if forced_tool_use else _normalize_finish_reason(response.stop_reason)
+    )
     return GenerateResult(
         text=text,
         usage=_extract_usage_dict(response),
-        finish_reason=_normalize_finish_reason(response.stop_reason),
+        finish_reason=finish_reason,
         thinking=thinking,
     )
 
@@ -634,6 +680,7 @@ async def run_agenerate(
     """
     client = _get_async_anthropic_client()
     messages = _convert_contents_to_messages(contents)
+    forced_tool_use = False
 
     # Handle JSON output by adding to system instruction
     system = system_instruction or ""
@@ -668,7 +715,10 @@ async def run_agenerate(
     if json_schema is not None:
         tool_name = _derive_tool_name(json_schema)
         request_kwargs["output_config"] = {
-            "format": {"type": "json_schema", "schema": json_schema}
+            "format": {
+                "type": "json_schema",
+                "schema": _sanitize_schema_for_anthropic(json_schema),
+            }
         }
         try:
             response = await _asend_message(client, request_kwargs)
@@ -691,15 +741,19 @@ async def run_agenerate(
             retry_kwargs["tool_choice"] = {"type": "tool", "name": tool_name}
             response = await _asend_message(client, retry_kwargs)
             text = _extract_first_tool_use_json(response)
+            forced_tool_use = True
             _, thinking = _extract_text_and_thinking(response)
     else:
         response = await _asend_message(client, request_kwargs)
         text, thinking = _extract_text_and_thinking(response)
 
+    finish_reason = (
+        "stop" if forced_tool_use else _normalize_finish_reason(response.stop_reason)
+    )
     return GenerateResult(
         text=text,
         usage=_extract_usage_dict(response),
-        finish_reason=_normalize_finish_reason(response.stop_reason),
+        finish_reason=finish_reason,
         thinking=thinking,
     )
 

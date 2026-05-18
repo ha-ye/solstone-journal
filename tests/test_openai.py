@@ -2,10 +2,15 @@
 # Copyright (c) 2026 sol pbc
 
 import asyncio
+import base64
 import functools
 import importlib
+import io
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from PIL import Image
 
 from solstone.think.models import GPT_5
 from solstone.think.providers.cli import ThinkingAggregator
@@ -50,6 +55,30 @@ def _make_test_harness():
     cb = JSONEventCallback(lambda e: events.append(e))
     aggregator = ThinkingAggregator(cb, GPT_5)
     return events, cb, aggregator
+
+
+def _make_openai_response(text="Hello"):
+    response = MagicMock()
+    response.output_text = text
+    response.status = "completed"
+    response.incomplete_details = None
+    response.usage = None
+    response.output = []
+    return response
+
+
+def _png_bytes(size: tuple[int, int] = (4, 3)) -> bytes:
+    image = Image.new("RGB", size, color="red")
+    buf = io.BytesIO()
+    image.save(buf, format="PNG", compress_level=1)
+    return buf.getvalue()
+
+
+def _decode_openai_image_part(part):
+    prefix, b64 = part["image_url"].split(",", 1)
+    assert prefix.startswith("data:")
+    assert prefix.endswith(";base64")
+    return prefix[5:-7], Image.open(io.BytesIO(base64.b64decode(b64)))
 
 
 class TestParseModelEffort:
@@ -713,6 +742,90 @@ class TestRunGenerate:
         assert called_kwargs["input"] == messages
         assert called_kwargs["instructions"] == "Be helpful"
 
+    def test_image_parts_build_structured_input(self):
+        provider = _openai_provider()
+        mock_client = MagicMock()
+        mock_client.responses.create = MagicMock(return_value=_make_openai_response())
+        image = Image.new("RGB", (5, 4), color="blue")
+
+        with patch(
+            "solstone.think.providers.openai._get_openai_client",
+            return_value=mock_client,
+        ):
+            provider.run_generate(["before", image, "after"], model="gpt-5.2")
+
+        called_kwargs = mock_client.responses.create.call_args.kwargs
+        message = called_kwargs["input"][0]
+        assert message["role"] == "user"
+        parts = message["content"]
+        assert [part["type"] for part in parts] == [
+            "input_text",
+            "input_image",
+            "input_text",
+        ]
+        assert parts[0]["text"] == "before"
+        assert parts[2]["text"] == "after"
+        assert parts[1]["detail"] == "auto"
+        media_type, decoded = _decode_openai_image_part(parts[1])
+        assert media_type == "image/png"
+        assert decoded.size == image.size
+        assert decoded.format == "PNG"
+
+    def test_png_bytes_part_builds_data_url(self):
+        provider = _openai_provider()
+        mock_client = MagicMock()
+        mock_client.responses.create = MagicMock(return_value=_make_openai_response())
+        data = _png_bytes((6, 3))
+
+        with patch(
+            "solstone.think.providers.openai._get_openai_client",
+            return_value=mock_client,
+        ):
+            provider.run_generate(["prompt", data], model="gpt-5.2")
+
+        parts = mock_client.responses.create.call_args.kwargs["input"][0]["content"]
+        media_type, decoded = _decode_openai_image_part(parts[1])
+        assert media_type == "image/png"
+        assert decoded.size == (6, 3)
+        assert decoded.format == "PNG"
+
+    def test_bad_bytes_raise_before_create(self):
+        provider = _openai_provider()
+        mock_client = MagicMock()
+        mock_client.responses.create = MagicMock()
+
+        with (
+            patch(
+                "solstone.think.providers.openai._get_openai_client",
+                return_value=mock_client,
+            ),
+            pytest.raises(ValueError) as exc_info,
+        ):
+            provider.run_generate(["prompt", b"not-an-image"], model="gpt-5.2")
+
+        assert "bytes" in str(exc_info.value)
+        assert "not-an-image" in str(exc_info.value)
+        assert mock_client.responses.create.call_count == 0
+
+    def test_cmyk_image_raises_before_create(self):
+        provider = _openai_provider()
+        mock_client = MagicMock()
+        mock_client.responses.create = MagicMock()
+        image = Image.new("CMYK", (2, 2))
+
+        with (
+            patch(
+                "solstone.think.providers.openai._get_openai_client",
+                return_value=mock_client,
+            ),
+            pytest.raises(ValueError) as exc_info,
+        ):
+            provider.run_generate(["prompt", image], model="gpt-5.2")
+
+        assert "Image" in str(exc_info.value)
+        assert "CMYK" in str(exc_info.value)
+        assert mock_client.responses.create.call_count == 0
+
     def test_with_effort_suffix(self):
         provider = _openai_provider()
         mock_client = MagicMock()
@@ -960,6 +1073,40 @@ class TestRunAgenerate:
             result = asyncio.run(provider.run_agenerate("hello", model="gpt-5.2"))
 
         assert result["thinking"] == [{"summary": "Let me think..."}]
+
+    def test_async_multi_image_parts_preserve_order(self):
+        provider = _openai_provider()
+        mock_client = MagicMock()
+        mock_client.responses.create = AsyncMock(return_value=_make_openai_response())
+        first = Image.new("RGB", (3, 2), color="red")
+        second = Image.new("RGB", (4, 5), color="green")
+
+        with patch(
+            "solstone.think.providers.openai._get_async_openai_client",
+            return_value=mock_client,
+        ):
+            asyncio.run(
+                provider.run_agenerate(
+                    ["prompt", first, second],
+                    model="gpt-5.2",
+                )
+            )
+
+        parts = mock_client.responses.create.call_args.kwargs["input"][0]["content"]
+        assert [part["type"] for part in parts] == [
+            "input_text",
+            "input_image",
+            "input_image",
+        ]
+        assert parts[0]["text"] == "prompt"
+        first_media_type, first_decoded = _decode_openai_image_part(parts[1])
+        second_media_type, second_decoded = _decode_openai_image_part(parts[2])
+        assert first_media_type == "image/png"
+        assert second_media_type == "image/png"
+        assert first_decoded.size == first.size
+        assert second_decoded.size == second.size
+        assert first_decoded.format == "PNG"
+        assert second_decoded.format == "PNG"
 
     def test_no_schema_format_unchanged(self):
         provider = _openai_provider()
