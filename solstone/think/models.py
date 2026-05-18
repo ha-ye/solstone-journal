@@ -46,20 +46,24 @@ OPENAI_EFFORT_SUFFIXES = ("-none", "-low", "-medium", "-high", "-xhigh")
 
 # Map model names that genai-prices doesn't recognize yet to a known equivalent.
 MODEL_PRICE_ALIASES: Dict[str, str] = {
+    "gpt-5.5": "gpt-5.2",
     "gpt-5.4": "gpt-5.2",
     "gpt-5.4-mini": "gpt-5-mini",
+    "gpt-5.4-nano": "gpt-5-nano",
+    "claude-sonnet-4-6": "claude-sonnet-4-5",
+    "claude-opus-4-7": "claude-opus-4-5",
 }
 
 GEMINI_PRO = "gemini-3.1-pro-preview"
 GEMINI_FLASH = "gemini-3-flash-preview"
 GEMINI_LITE = "gemini-2.5-flash-lite"
 
-GPT_5 = "gpt-5.4"
-GPT_5_MINI = "gpt-5.4-low"
-GPT_5_NANO = "gpt-5.4-mini"
+GPT_5 = "gpt-5.5"
+GPT_5_MINI = "gpt-5.4-mini"
+GPT_5_NANO = "gpt-5.4-nano"
 
-CLAUDE_OPUS_4 = "claude-opus-4-5"
-CLAUDE_SONNET_4 = "claude-sonnet-4-5"
+CLAUDE_OPUS_4 = "claude-opus-4-7"
+CLAUDE_SONNET_4 = "claude-sonnet-4-6"
 CLAUDE_HAIKU_4 = "claude-haiku-4-5"
 
 OLLAMA_PRO = "ollama-local/qwen3.5:35b-a3b-bf16"

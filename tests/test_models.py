@@ -179,6 +179,9 @@ def test_resolve_provider_anthropic(use_fixtures_journal):
     """Test anthropic provider routing."""
     provider, model = resolve_provider("test.anthropic", "generate")
     assert provider == "anthropic"
+    # Explicit per-context model override in the fixture config wins over
+    # the PROVIDER_DEFAULTS tier constant — this asserts override behavior,
+    # not the default Sonnet pin, so it stays literal by design.
     assert model == "claude-sonnet-4-5"
 
 
