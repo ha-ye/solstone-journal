@@ -107,7 +107,8 @@ Verified against `Makefile`. Grouped by use.
 |--------|-------------|
 | `make format` | Auto-fix formatting and imports with ruff. Safe to run anytime; modifies files. |
 | `make format-check` | Format dry-run. Part of `make ci`; rarely run alone. |
-| `make test` | Unit tests (`tests/`). Format-check runs first; failures block tests. Fast inner loop. |
+| `make test` | Unit tests (`tests/`) without coverage. Format-check runs first; failures block tests. Fast inner loop. |
+| `make test-cov` | Unit tests with full-repo terminal coverage; used by `make ci` / `make verify`. |
 | `make test-apps` | Run all `solstone/apps/*/tests/` suites. |
 | `make test-app APP=<name>` | Run a single app's tests. |
 | `make test-only TEST=<path-or-pattern>` | Run a specific test file or pytest node id (`TEST="-k test_name"` also works). |
@@ -116,7 +117,7 @@ Verified against `Makefile`. Grouped by use.
 | `make test-all` | Everything — core + apps + integration. Pre-ship gate. |
 | `make coverage` | HTML coverage report under `htmlcov/`. Occasional. |
 | `make watch` | pytest-watch — reruns tests on file change. Useful during a test-heavy sprint. |
-| `make ci` | Format-check + ruff + layer-hygiene + tests. **Run before every commit.** |
+| `make ci` | Format-check + ruff + layer-hygiene + coverage tests. **Run before every commit.** |
 | `make verify` | Same steps as `make ci`. Either name is fine. |
 | `make install-checks` | The pre-test half of `make ci` (format-check + ruff + layer-hygiene). Called by `ci` / `verify`. |
 | `make check-layer-hygiene` | Run `scripts/check_layer_hygiene.py` alone. Useful when iterating on an L1–L2 violation flagged by CI. |

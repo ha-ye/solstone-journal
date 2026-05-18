@@ -2,7 +2,7 @@
 
 ## Test Structure
 
-- **Framework**: pytest with coverage reporting
+- **Framework**: pytest; coverage reporting comes from `make test-cov`, `make ci`, or `make coverage`, not bare `make test`
 - **Unit Tests**: `tests/` root directory
   - Fast, no external API calls
   - Use `tests/fixtures/journal/` mock data
@@ -28,6 +28,7 @@ The `tests/fixtures/journal/` directory contains a complete mock journal structu
 ## Running Tests
 
 - `make test` for unit tests
+- `make test-cov` for unit tests with coverage reporting
 - `make test-apps` to run app tests
 - `make test-integration` for integration tests
 - `make test-all` to run all tests (core + apps + integration)
