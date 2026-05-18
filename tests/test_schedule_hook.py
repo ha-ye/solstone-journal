@@ -106,6 +106,39 @@ def test_schedule_post_process_writes_record_and_resolves_entities(
     assert record["edits"][-1]["note"] == "created by schedule"
 
 
+def test_schedule_post_process_accepts_wrapped_events(tmp_path, monkeypatch):
+    from solstone.talent.schedule import post_process
+    from solstone.think.activities import load_activity_records
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_facet(tmp_path, "work")
+
+    payload = {
+        "events": [
+            {
+                "activity": "meeting",
+                "target_date": "2026-04-23",
+                "start": "09:00:00",
+                "end": "09:30:00",
+                "title": "Planning call",
+                "description": "Planning call with the team.",
+                "details": "Google Meet",
+                "participation": [],
+                "participation_confidence": 0.8,
+                "facet": "work",
+                "cancelled": False,
+            }
+        ]
+    }
+
+    post_process(json.dumps(payload), {"day": "20260418"})
+
+    records = load_activity_records("work", "20260423", include_hidden=True)
+    assert len(records) == 1
+    assert records[0]["id"] == "anticipated_meeting_090000_0423"
+    assert records[0]["source"] == "anticipated"
+
+
 def test_schedule_post_process_marks_cancelled_records_hidden(tmp_path, monkeypatch):
     from solstone.talent.schedule import post_process
     from solstone.think.activities import load_activity_records

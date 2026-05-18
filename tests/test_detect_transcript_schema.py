@@ -44,14 +44,16 @@ def test_detect_transcript_json_schema_file_is_valid_draft_2020_12():
 def test_detect_transcript_segment_schema_accepts_and_rejects_expected_values():
     schema = _load_detect_transcript_segment_schema()
     validator = Draft202012Validator(schema)
-    valid = [{"start_at": "12:34:56", "line": 1}]
+    valid = {"segments": [{"start_at": "12:34:56", "line": 1}]}
 
     assert validator.is_valid(valid)
-    assert not validator.is_valid([{"start_at": "12:34:56"}])
-    assert not validator.is_valid([{"start_at": "12:34", "line": 1}])
-    assert not validator.is_valid([{"start_at": "12:34:56", "line": "1"}])
-    assert not validator.is_valid([{"start_at": "12:34:56", "line": 0}])
-    assert not validator.is_valid([{"start_at": "12:34:56", "line": 1, "extra": "x"}])
+    assert not validator.is_valid([{"start_at": "12:34:56", "line": 1}])
+    assert not validator.is_valid({"segments": [{"start_at": "12:34:56"}]})
+    assert not validator.is_valid({"segments": [{"start_at": "12:34", "line": 1}]})
+    assert not validator.is_valid({"segments": [{"start_at": "12:34:56", "line": "1"}]})
+    assert not validator.is_valid(
+        {"segments": [{"start_at": "12:34:56", "line": 1, "extra": "x"}]}
+    )
 
 
 def test_detect_transcript_json_schema_accepts_and_rejects_expected_values():
@@ -107,7 +109,7 @@ def test_detect_transcript_segment_passes_schema_to_generate(monkeypatch):
 
     def fake_generate(**kwargs):
         captured.update(kwargs)
-        return '[{"start_at": "12:00:00", "line": 1}]'
+        return '{"segments": [{"start_at": "12:00:00", "line": 1}]}'
 
     monkeypatch.setattr(models, "generate", fake_generate)
 

@@ -52,6 +52,10 @@ def post_process(result: str, context: dict) -> None:
         logger.error("schedule hook: failed to parse JSON: %s snippet=%r", exc, snippet)
         return None
 
+    # Permanent shape-compat: schema emits {"events": [...]}; tolerate pre-reshape bare-list outputs defensively.
+    if isinstance(events, dict):
+        events = events.get("events", [])
+
     if not isinstance(events, list):
         logger.error("schedule hook: expected top-level array")
         return None

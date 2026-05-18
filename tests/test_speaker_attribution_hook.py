@@ -214,9 +214,17 @@ class TestPostProcess:
         }
         accumulate_mock.assert_not_called()
 
-    def test_wrapper_shape_yields_zero_merges(self, tmp_path):
+    def test_wrapped_attributions_merge_layer4_attributions(self, tmp_path):
         result = json.dumps(
-            {"attributions": [{"sentence_id": 1, "speaker": "Alice", "reasoning": "x"}]}
+            {
+                "attributions": [
+                    {
+                        "sentence_id": 1,
+                        "speaker": "Alice",
+                        "reasoning": "said her name",
+                    }
+                ]
+            }
         )
         context = _post_process_context()
 
@@ -224,15 +232,17 @@ class TestPostProcess:
             patch(
                 "solstone.apps.speakers.attribution.save_speaker_labels"
             ) as save_mock,
-            patch("solstone.apps.speakers.attribution.accumulate_voiceprints"),
+            patch(
+                "solstone.apps.speakers.attribution.accumulate_voiceprints"
+            ) as accumulate_mock,
             patch(
                 "solstone.think.entities.find_matching_entity",
                 side_effect=_match_entity,
-            ) as match_mock,
+            ),
             patch(
                 "solstone.think.entities.journal.load_all_journal_entities",
                 return_value={"alice": {"id": "alice"}},
-            ) as load_mock,
+            ),
             patch("solstone.think.utils.segment_path", return_value=tmp_path),
         ):
             from solstone.talent.speaker_attribution import post_process
@@ -242,9 +252,9 @@ class TestPostProcess:
         saved_labels = save_mock.call_args[0][1]
         assert saved_labels[0] == {
             "sentence_id": 1,
-            "speaker": None,
-            "confidence": None,
-            "method": None,
+            "speaker": "alice",
+            "confidence": "medium",
+            "method": "contextual",
         }
         assert saved_labels[1] == {
             "sentence_id": 2,
@@ -252,8 +262,7 @@ class TestPostProcess:
             "confidence": "high",
             "method": "owner",
         }
-        load_mock.assert_not_called()
-        match_mock.assert_not_called()
+        accumulate_mock.assert_not_called()
 
     def test_non_list_non_dict_yields_zero_merges_and_warns(self, tmp_path, caplog):
         context = _post_process_context()

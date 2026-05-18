@@ -28,15 +28,16 @@ def test_extract_schema_file_is_valid_draft_2020_12():
 def test_extract_schema_accepts_and_rejects_expected_values():
     validator = Draft202012Validator(_SCHEMA)
 
-    assert validator.is_valid([])
-    assert validator.is_valid([1, 15, 42, 89])
-    assert validator.is_valid([1, 0])
-    assert not validator.is_valid(["1"])
-    assert not validator.is_valid([-1])
-    assert not validator.is_valid([1.5])
+    assert validator.is_valid({"frame_ids": []})
+    assert validator.is_valid({"frame_ids": [1, 15, 42, 89]})
+    assert validator.is_valid({"frame_ids": [1, 0]})
+    assert not validator.is_valid([1])
+    assert not validator.is_valid({"frame_ids": ["1"]})
+    assert not validator.is_valid({"frame_ids": [1.5]})
     assert not validator.is_valid(42)
-    assert not validator.is_valid({"ids": [1]})
-    assert not validator.is_valid([[1, 2]])
+    assert not validator.is_valid({})
+    assert not validator.is_valid({"frame_ids": [1], "ids": [1]})
+    assert not validator.is_valid({"frame_ids": [[1, 2]]})
 
 
 def test_ai_select_frames_passes_schema_to_generate(monkeypatch):
@@ -44,7 +45,7 @@ def test_ai_select_frames_passes_schema_to_generate(monkeypatch):
 
     def fake_generate(**kwargs):
         captured.update(kwargs)
-        return "[1]"
+        return '{"frame_ids": [1]}'
 
     monkeypatch.setattr(models, "generate", fake_generate)
 

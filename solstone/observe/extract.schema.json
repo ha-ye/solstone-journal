@@ -1,5 +1,15 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "type": "array",
-  "items": {"type": "integer", "minimum": 0}
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "frame_ids"
+  ],
+  "properties": {
+    "frame_ids": {
+      "type": "array",
+      "items": {
+        "type": "integer"
+      }
+    }
+  }
 }

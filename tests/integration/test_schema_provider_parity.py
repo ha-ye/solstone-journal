@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Raw-SDK strict schema parity tests for req_bfbdbux6 Class-A schemas."""
+"""Raw-SDK strict schema parity tests for req_bfbdbux6 portable schemas."""
 
 from __future__ import annotations
 
@@ -19,11 +19,16 @@ from solstone.think.models import CLAUDE_SONNET_4, GEMINI_FLASH, GPT_5
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FACET_SENTINEL = "__RUNTIME_FACETS__"
 
-CLASS_A = [
+PORTABLE_SCHEMAS = [
     (
         "describe",
         "solstone/observe/describe.schema.json",
         "Categorize a hypothetical code-editor-with-terminal screenshot.",
+    ),
+    (
+        "extract",
+        "solstone/observe/extract.schema.json",
+        "Select frame ids 1 and 3 from hypothetical screen frames. Return frame_ids [1, 3].",
     ),
     (
         "meeting",
@@ -55,6 +60,12 @@ CLASS_A = [
         "topics/setting short.",
     ),
     (
+        "detect_transcript_segment",
+        "solstone/think/detect_transcript_segment.schema.json",
+        "Segment a hypothetical transcript into two boundaries: 12:00:00 line 1 "
+        "and 12:05:00 line 3.",
+    ),
+    (
         "daily_schedule",
         "solstone/talent/daily_schedule.schema.json",
         "primary '09:00', fallback '13:30'.",
@@ -77,6 +88,19 @@ CLASS_A = [
         "solstone/talent/story.schema.json",
         "Short story body 's', topics ['t'], confidence 0.5, no commitments/"
         "closures/decisions.",
+    ),
+    (
+        "speaker_attribution",
+        "solstone/talent/speaker_attribution.schema.json",
+        "One attribution: sentence_id 1, speaker Alice, reasoning Introduced herself.",
+    ),
+    (
+        "schedule",
+        "solstone/talent/schedule.schema.json",
+        "One future meeting event: target_date 2026-05-20, start 09:00:00, "
+        "end 09:30:00, title Planning Call, description Planning call, details "
+        "Google Meet, one attendee Alice from screen confidence 0.9 context "
+        "calendar invite, participation_confidence 0.8, facet work, cancelled false.",
     ),
     (
         "segment_summary",
@@ -214,9 +238,9 @@ PROVIDERS: tuple[tuple[str, str, Callable[[dict[str, Any], str, str], str]], ...
 )
 @pytest.mark.parametrize(
     ("schema_name", "schema_path", "prompt"),
-    [pytest.param(*schema_case, id=schema_case[0]) for schema_case in CLASS_A],
+    [pytest.param(*schema_case, id=schema_case[0]) for schema_case in PORTABLE_SCHEMAS],
 )
-def test_class_a_schema_provider_parity(
+def test_schema_provider_parity(
     provider_name: str,
     api_key_name: str,
     caller: Callable[[dict[str, Any], str, str], str],

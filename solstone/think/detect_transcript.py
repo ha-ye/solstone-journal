@@ -17,6 +17,7 @@ _SEGMENT_SCHEMA = json.loads(
         encoding="utf-8"
     )
 )
+# Output contract for detect_transcript_segment(). Source of truth is think/detect_transcript_segment.md.
 # Source of truth is think/detect_transcript_json.md.
 _JSON_SCHEMA = json.loads(
     (Path(__file__).parent / "detect_transcript_json.schema.json").read_text(
@@ -46,7 +47,7 @@ def parse_segment_boundaries(json_text: str, num_lines: int) -> List[dict]:
     """Validate and return segment boundaries from ``json_text``.
 
     Args:
-        json_text: JSON array of {"start_at": "HH:MM:SS", "line": N} objects
+        json_text: Wrapped or bare JSON array of boundary objects.
         num_lines: Total number of lines in the transcript
 
     Returns:
@@ -57,6 +58,10 @@ def parse_segment_boundaries(json_text: str, num_lines: int) -> List[dict]:
     except json.JSONDecodeError as exc:  # pragma: no cover - network errors
         logging.error("Failed to parse JSON response")
         raise ValueError("invalid JSON") from exc
+
+    # Permanent shape-compat: schema emits {"segments": [...]}; tolerate pre-reshape bare-list outputs defensively.
+    if isinstance(data, dict):
+        data = data.get("segments", [])
 
     if not isinstance(data, list) or not data:
         logging.error("JSON response is not a non-empty list")

@@ -32,23 +32,6 @@ def test_speaker_attribution_talent_loads_schema():
 @pytest.mark.parametrize(
     "payload",
     [
-        [{"sentence_id": 1, "speaker": "Alice", "reasoning": "Introduced herself."}],
-        [
-            {"sentence_id": 1, "speaker": "Alice", "reasoning": "Introduced herself."},
-            {"sentence_id": 2, "speaker": "Bob", "reasoning": "Replied to Alice."},
-        ],
-    ],
-)
-def test_positive_payload_validates(payload):
-    validator = Draft202012Validator(_load_schema())
-
-    assert validator.is_valid(payload)
-
-
-def test_negative_wrapper_object_rejected():
-    validator = Draft202012Validator(_load_schema())
-
-    assert not validator.is_valid(
         {
             "attributions": [
                 {
@@ -57,27 +40,46 @@ def test_negative_wrapper_object_rejected():
                     "reasoning": "Introduced herself.",
                 }
             ]
-        }
+        },
+        {
+            "attributions": [
+                {
+                    "sentence_id": 1,
+                    "speaker": "Alice",
+                    "reasoning": "Introduced herself.",
+                },
+                {"sentence_id": 2, "speaker": "Bob", "reasoning": "Replied to Alice."},
+            ]
+        },
+    ],
+)
+def test_positive_payload_validates(payload):
+    validator = Draft202012Validator(_load_schema())
+
+    assert validator.is_valid(payload)
+
+
+def test_negative_bare_array_rejected():
+    validator = Draft202012Validator(_load_schema())
+
+    assert not validator.is_valid(
+        [{"sentence_id": 1, "speaker": "Alice", "reasoning": "Introduced herself."}]
     )
 
 
 def test_negative_missing_required_field_rejected():
     validator = Draft202012Validator(_load_schema())
 
-    assert not validator.is_valid([{"sentence_id": 1, "speaker": "Alice"}])
-
-
-def test_negative_empty_string_fields_rejected():
-    validator = Draft202012Validator(_load_schema())
-
-    assert not validator.is_valid([{"sentence_id": 1, "speaker": "", "reasoning": "x"}])
+    assert not validator.is_valid(
+        {"attributions": [{"sentence_id": 1, "speaker": "Alice"}]}
+    )
 
 
 def test_negative_non_integer_sentence_id_rejected():
     validator = Draft202012Validator(_load_schema())
 
     assert not validator.is_valid(
-        [{"sentence_id": "1", "speaker": "Alice", "reasoning": "x"}]
+        {"attributions": [{"sentence_id": "1", "speaker": "Alice", "reasoning": "x"}]}
     )
 
 
@@ -85,12 +87,14 @@ def test_negative_additional_properties_rejected():
     validator = Draft202012Validator(_load_schema())
 
     assert not validator.is_valid(
-        [
-            {
-                "sentence_id": 1,
-                "speaker": "Alice",
-                "reasoning": "x",
-                "confidence": "high",
-            }
-        ]
+        {
+            "attributions": [
+                {
+                    "sentence_id": 1,
+                    "speaker": "Alice",
+                    "reasoning": "x",
+                    "confidence": "high",
+                }
+            ]
+        }
     )

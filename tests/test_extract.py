@@ -176,6 +176,21 @@ def test_ai_selection_with_categories():
     mock_generate.assert_called_once()
 
 
+def test_ai_selection_accepts_wrapped_frame_ids():
+    """Test AI selection accepts the strict-portable wrapper shape."""
+    frames = _make_frames(10)
+    categories = {"code": {"description": "Code editors"}}
+
+    with patch("solstone.think.models.generate") as mock_generate:
+        mock_generate.return_value = '{"frame_ids": [1, 3, 5]}'
+        result = select_frames_for_extraction(
+            frames, max_extractions=5, categories=categories
+        )
+
+    assert result == [1, 3, 5]
+    mock_generate.assert_called_once()
+
+
 def test_ai_selection_filters_invalid_ids():
     """Test that AI selection filters out invalid frame IDs."""
     frames = _make_frames(5)  # IDs 1-5

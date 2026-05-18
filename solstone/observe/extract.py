@@ -254,8 +254,12 @@ def _ai_select_frames(
         temperature=0.3,
     )
 
-    # Parse response - expecting JSON array of frame_ids
+    # Parse response - expecting wrapped frame_ids or a bare frame_id list
     selected_ids = json.loads(response)
+    # Permanent shape-compat: schema emits {"frame_ids": [...]}; tolerate pre-reshape bare-list outputs defensively.
+    if isinstance(selected_ids, dict):
+        selected_ids = selected_ids.get("frame_ids", [])
+
     if not isinstance(selected_ids, list):
         raise ValueError(f"Expected list of frame_ids, got {type(selected_ids)}")
 

@@ -149,6 +149,10 @@ def post_process(result: str, context: dict) -> str | None:
     if result:
         try:
             parsed = json.loads(result)
+            # Permanent shape-compat: schema emits {"attributions": [...]}; tolerate pre-reshape bare-list outputs defensively.
+            if isinstance(parsed, dict):
+                parsed = parsed.get("attributions", [])
+
             if not isinstance(parsed, list):
                 raise TypeError(f"expected JSON array, got {type(parsed).__name__}")
             items = parsed

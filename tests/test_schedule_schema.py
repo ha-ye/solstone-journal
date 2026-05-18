@@ -42,15 +42,10 @@ def _load_schedule_schema() -> dict:
     return schema
 
 
-def _strip_portability_annotations(value):
-    if isinstance(value, dict):
-        for key in ("minLength", "minimum", "maximum"):
-            value.pop(key, None)
-        for child in value.values():
-            _strip_portability_annotations(child)
-    elif isinstance(value, list):
-        for child in value:
-            _strip_portability_annotations(child)
+def _schedule_event_schema(schema: dict | None = None) -> dict:
+    if schema is None:
+        schema = _load_schedule_schema()
+    return schema["properties"]["events"]["items"]
 
 
 def _expected_schedule_activity_ids() -> set[str]:
@@ -161,14 +156,14 @@ def test_schedule_talent_loads_schema():
 
 def test_schedule_schema_facet_uses_runtime_sentinel_constant():
     schema = _load_schedule_schema()
-    facet_schema = schema["items"]["properties"]["facet"]
+    facet_schema = _schedule_event_schema(schema)["properties"]["facet"]
 
     assert facet_schema["enum"] == [RUNTIME_FACETS_SENTINEL]
 
 
 def test_schedule_activity_enum_matches_default_activities_drift_detector():
     schema = _load_schedule_schema()
-    item_schema = schema["items"]
+    item_schema = _schedule_event_schema(schema)
 
     assert set(item_schema["properties"]["activity"]["enum"]) == (
         _expected_schedule_activity_ids()
@@ -189,26 +184,27 @@ def test_schedule_participation_entry_diverges_from_shared_fragment():
     ]
 
     raw_inline_items = dict(
-        schedule_schema["items"]["properties"]["participation"]["items"]
+        _schedule_event_schema(schedule_schema)["properties"]["participation"]["items"]
     )
     assert "entity_id" in fragment["properties"]
     assert "entity_id" not in raw_inline_items["properties"]
     assert raw_inline_items != fragment
 
-    inline_items = json.loads(json.dumps(raw_inline_items))
-    _strip_portability_annotations(inline_items)
-
-    assert inline_items == fragment_without_schema
+    assert raw_inline_items == fragment_without_schema
 
 
 def test_schedule_schema_mirrors_hook_requirements():
     schedule_schema = _load_schedule_schema()
-    item_schema = schedule_schema["items"]
+    events_schema = schedule_schema["properties"]["events"]
+    item_schema = events_schema["items"]
     properties = item_schema["properties"]
     participation_items = properties["participation"]["items"]
     fragment = _load_json(PARTICIPATION_ENTRY_SCHEMA_PATH)
 
-    assert schedule_schema["type"] == "array"
+    assert schedule_schema["type"] == "object"
+    assert schedule_schema["additionalProperties"] is False
+    assert schedule_schema["required"] == ["events"]
+    assert events_schema["type"] == "array"
     assert set(item_schema["required"]) == SCHEDULE_REQUIRED_FIELDS
     assert set(properties["activity"]["enum"]) == _expected_schedule_activity_ids()
     assert (
@@ -229,4 +225,5 @@ def test_schedule_hook_fixtures_validate_against_schema(monkeypatch):
     validator = Draft202012Validator(hydrate_runtime_enums(_load_schedule_schema()))
 
     for payload in _sample_schedule_payloads():
-        assert list(validator.iter_errors(payload)) == []
+        assert list(validator.iter_errors({"events": payload})) == []
+        assert list(validator.iter_errors(payload)) != []

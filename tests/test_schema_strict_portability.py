@@ -35,10 +35,6 @@ BANNED_KEYS = frozenset(
 # portabilized; Lode 4 deletes this allowlist mechanism entirely.
 PENDING_PORTABILITY = frozenset(
     {
-        "solstone/observe/extract.schema.json",
-        "solstone/talent/schedule.schema.json",
-        "solstone/talent/speaker_attribution.schema.json",
-        "solstone/think/detect_transcript_segment.schema.json",
         "solstone/talent/chat.schema.json",
         "build_rollup_schema(3)",
     }

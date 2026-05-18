@@ -84,3 +84,19 @@ def test_detect_transcript_segment(monkeypatch):
 
     # Returns list of (start_at, text) tuples
     assert result == [("14:30:00", "a\nb"), ("14:35:00", "c\nd")]
+
+
+def test_detect_transcript_segment_accepts_wrapped_segments(monkeypatch):
+    mod = importlib.import_module("solstone.think.detect_transcript")
+
+    def mock_generate(**kwargs):
+        return (
+            '{"segments": [{"start_at": "14:30:00", "line": 1}, '
+            '{"start_at": "14:35:00", "line": 3}]}'
+        )
+
+    monkeypatch.setattr("solstone.think.models.generate", mock_generate)
+
+    result = mod.detect_transcript_segment("a\nb\nc\nd", "14:30:00")
+
+    assert result == [("14:30:00", "a\nb"), ("14:35:00", "c\nd")]
