@@ -4,6 +4,15 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.3.5] - 2026-05-17
+
+### Added
+- a new data-flow page explains, in plain language, what solstone sends to your chosen AI provider and what never leaves your machine. it covers local-first processing, that each task is scoped (not your whole journal), that the keys and the account are yours, and the things sol pbc is bound never to do with your data. it's linked from setup, the install guide, and the readme so you can read it before you connect a provider.
+- the install guide now has a section on how to power sol: starting with a hosted provider key is recommended, running fully local is a real supported goal but not yet the default daily experience, with a heads-up on the hardware that takes. setup and the api-key settings now also tell you, per provider, to use a developer api key from the provider's console rather than your consumer chat login, with the right console link for each.
+
+### Changed
+- in-app support and feedback now point to support.solstone.app, and that's the default in support settings for new journals. if your settings still point at the old support address, nothing breaks and you can leave it as is. setup, the install guide, and the readme now also lead with following and tagging @solstone.app on Bluesky for feedback, then GitHub issues, then the support site.
+
 ## [0.3.4] - 2026-05-16
 
 ### Added
