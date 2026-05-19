@@ -2,12 +2,14 @@
   "api_keys": {
     "anthropic": false,
     "google": false,
+    "mlx": false,
     "ollama": false,
     "openai": false
   },
   "auth": {
     "anthropic": "platform",
     "google": "platform",
+    "mlx": "platform",
     "ollama": "platform",
     "openai": "platform"
   },
@@ -497,6 +499,14 @@
         "gemini CLI not found on PATH"
       ]
     },
+    "mlx": {
+      "cogitate_cli": "",
+      "cogitate_cli_found": false,
+      "cogitate_ready": false,
+      "configured": false,
+      "generate_ready": false,
+      "issues": []
+    },
     "ollama": {
       "cogitate_cli": "opencode",
       "cogitate_cli_found": false,
@@ -521,6 +531,11 @@
     }
   },
   "providers": [
+    {
+      "env_key": "",
+      "label": "MLX (Local, Apple Silicon)",
+      "name": "mlx"
+    },
     {
       "env_key": "",
       "label": "Ollama (Local)",

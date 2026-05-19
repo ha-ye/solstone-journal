@@ -18,6 +18,7 @@ Available providers:
 - openai: OpenAI GPT models
 - anthropic: Anthropic Claude models
 - ollama: Ollama local models
+- mlx: MLX local Apple Silicon models
 """
 
 import os
@@ -41,6 +42,7 @@ PROVIDER_REGISTRY: Dict[str, str] = {
     "openai": "solstone.think.providers.openai",
     "anthropic": "solstone.think.providers.anthropic",
     "ollama": "solstone.think.providers.ollama",
+    "mlx": "solstone.think.providers.mlx",
 }
 
 # ---------------------------------------------------------------------------
@@ -75,6 +77,10 @@ PROVIDER_METADATA: Dict[str, Dict[str, Any]] = {
         "label": "Ollama (Local)",
         "env_key": "",
         "cogitate_cli": "opencode",
+    },
+    "mlx": {
+        "label": "MLX (Local, Apple Silicon)",
+        "env_key": "",
     },
 }
 

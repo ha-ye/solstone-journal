@@ -70,6 +70,11 @@ OLLAMA_PRO = "ollama-local/qwen3.5:35b-a3b-bf16"
 OLLAMA_FLASH = "ollama-local/qwen3.5:9b"
 OLLAMA_LITE = "ollama-local/qwen3.5:2b"
 
+QWEN_35_9B = "qwen3.5:9b"
+MLX_PRO = QWEN_35_9B
+MLX_FLASH = QWEN_35_9B
+MLX_LITE = QWEN_35_9B
+
 # ---------------------------------------------------------------------------
 # System defaults: provider -> tier -> model
 # ---------------------------------------------------------------------------
@@ -94,6 +99,11 @@ PROVIDER_DEFAULTS: Dict[str, Dict[int, str]] = {
         TIER_PRO: OLLAMA_PRO,
         TIER_FLASH: OLLAMA_FLASH,
         TIER_LITE: OLLAMA_LITE,
+    },
+    "mlx": {
+        TIER_PRO: MLX_PRO,
+        TIER_FLASH: MLX_FLASH,
+        TIER_LITE: MLX_LITE,
     },
 }
 
@@ -658,7 +668,9 @@ def get_model_provider(model: str) -> str:
     """
     model_lower = model.lower()
 
-    if model_lower.startswith("ollama-local/"):
+    if model_lower == QWEN_35_9B.lower():
+        return "mlx"
+    elif model_lower.startswith("ollama-local/"):
         return "ollama"
     elif model_lower.startswith("gpt"):
         return "openai"
@@ -720,8 +732,7 @@ def calc_token_cost(token_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if provider_id == "unknown":
             return None
 
-        # Ollama models are local — no cost
-        if provider_id == "ollama":
+        if provider_id in {"ollama", "mlx"}:
             return {
                 "total_cost": 0.0,
                 "input_cost": 0.0,
@@ -1116,6 +1127,8 @@ def get_backup_provider(agent_type: str) -> Optional[str]:
     type_config = providers_config.get(agent_type, {})
     primary_provider = type_config.get("provider", type_defaults["provider"])
     backup = type_config.get("backup", type_defaults["backup"])
+    if agent_type == "generate" and primary_provider == "mlx":
+        return None
     if backup == primary_provider:
         return None
     return backup
@@ -1508,6 +1521,8 @@ __all__ = [
     "GEMINI_FLASH",
     "GPT_5",
     "CLAUDE_SONNET_4",
+    "QWEN_35_9B",
+    "MLX_FLASH",
     # Unified API
     "generate",
     "generate_with_result",

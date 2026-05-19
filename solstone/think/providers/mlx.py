@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+"""MLX provider for local Apple Silicon generation."""
+
+from __future__ import annotations
+
+import asyncio
+import importlib
+import logging
+import platform
+from typing import Any, Callable
+
+import psutil
+
+from solstone.think.models import QWEN_35_9B
+
+from .shared import GenerateResult
+
+MLX_MODEL_REPO = "mlx-community/Qwen3.5-9B-MLX-8bit"
+MLX_MODEL_REVISION = "84f7c2deea248d8df56240f88102def51c7ed5d6"
+_MIN_RAM_BYTES = 16 * 1024**3
+_DEFAULT_MODEL = QWEN_35_9B
+
+logger = logging.getLogger(__name__)
+
+_module_level_cache: tuple[Any, Any, Any] | None = None
+
+
+class ModelSnapshotMissingError(RuntimeError):
+    """Raised when the pinned MLX model snapshot is not available locally."""
+
+    def __str__(self) -> str:
+        text = super().__str__()
+        if "model snapshot not present" in text:
+            return text
+        return f"model snapshot not present: {text}"
+
+
+def is_mlx_available() -> tuple[bool, str]:
+    if platform.system() != "Darwin":
+        return False, "not running on macOS"
+    if platform.machine() != "arm64":
+        return False, "not running on Apple Silicon"
+
+    total_ram = psutil.virtual_memory().total
+    if total_ram < _MIN_RAM_BYTES:
+        return False, f"insufficient RAM (need 16 GB, have {total_ram // 1024**3} GB)"
+
+    try:
+        importlib.import_module("mlx_vlm")
+    except ImportError:
+        return False, "mlx-vlm package not installed"
+
+    return True, ""
+
+
+def _snapshot_missing_error() -> ModelSnapshotMissingError:
+    return ModelSnapshotMissingError(
+        f"model snapshot not present at {MLX_MODEL_REPO}@{MLX_MODEL_REVISION}"
+    )
+
+
+def _is_snapshot_missing_oserror(exc: OSError) -> bool:
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "not cached",
+            "no cached",
+            "could not find the requested files in the disk cache",
+            "cannot find the requested files in the disk cache",
+        )
+    )
+
+
+def _load_model() -> tuple[Any, Any, Any]:
+    global _module_level_cache
+    if _module_level_cache is not None:
+        return _module_level_cache
+
+    import mlx_vlm
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    try:
+        model, processor = mlx_vlm.load(
+            MLX_MODEL_REPO,
+            revision=MLX_MODEL_REVISION,
+        )
+    except LocalEntryNotFoundError as exc:
+        raise _snapshot_missing_error() from exc
+    except OSError as exc:
+        if _is_snapshot_missing_oserror(exc):
+            raise _snapshot_missing_error() from exc
+        raise
+
+    config = model.config
+    _module_level_cache = (model, processor, config)
+    return _module_level_cache
+
+
+def _split_contents(contents: str | list[Any]) -> tuple[str, list[Any]]:
+    from PIL import Image
+
+    text_parts: list[str] = []
+    images: list[Any] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Image.Image):
+            images.append(value)
+        elif isinstance(value, str):
+            text = value.strip()
+            if text:
+                text_parts.append(text)
+        elif isinstance(value, dict) and "content" in value:
+            visit(value["content"])
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                visit(item)
+        elif value is not None:
+            text = str(value).strip()
+            if text:
+                text_parts.append(text)
+
+    visit(contents)
+    return "\n\n".join(text_parts), images
+
+
+def _build_messages(
+    system_instruction: str | None, text_prompt: str
+) -> list[dict[str, str]]:
+    messages: list[dict[str, str]] = []
+    if system_instruction:
+        messages.append({"role": "system", "content": system_instruction})
+    messages.append({"role": "user", "content": text_prompt})
+    return messages
+
+
+def _get_tokenizer(processor: Any) -> Any:
+    return processor.tokenizer if hasattr(processor, "tokenizer") else processor
+
+
+def _build_logits_processors(processor: Any, json_schema: dict | None) -> list[Any]:
+    if json_schema is None:
+        return []
+    structured = importlib.import_module("mlx_vlm.structured")
+    logits_processor = structured.build_json_schema_logits_processor(
+        _get_tokenizer(processor),
+        json_schema,
+    )
+    return [logits_processor]
+
+
+def _normalize_finish_reason(raw: Any) -> str | None:
+    if raw is None:
+        return None
+    reason = str(raw).lower()
+    if reason in {"stop", "eos", "end", "finished"}:
+        return "stop"
+    if reason in {"max_tokens", "length", "max_length"}:
+        return "max_tokens"
+    return reason
+
+
+def _extract_finish_reason(result: Any, max_output_tokens: int) -> str | None:
+    for attr in ("finish_reason", "stop_reason", "done_reason"):
+        if hasattr(result, attr):
+            normalized = _normalize_finish_reason(getattr(result, attr))
+            if normalized:
+                return normalized
+
+    generation_tokens = getattr(result, "generation_tokens", None)
+    if isinstance(generation_tokens, int) and generation_tokens >= max_output_tokens:
+        return "max_tokens"
+
+    # mlx-vlm GenerationResult does not expose a stop reason when it ends normally.
+    return None
+
+
+def _extract_usage(result: Any) -> dict[str, int] | None:
+    input_tokens = getattr(result, "prompt_tokens", None)
+    output_tokens = getattr(result, "generation_tokens", None)
+    total_tokens = getattr(result, "total_tokens", None)
+    if not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
+        return None
+    if not isinstance(total_tokens, int):
+        total_tokens = input_tokens + output_tokens
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+def run_generate(
+    contents: str | list[Any],
+    model: str = _DEFAULT_MODEL,
+    temperature: float = 0.3,
+    max_output_tokens: int = 8192 * 2,
+    system_instruction: str | None = None,
+    json_output: bool = False,
+    thinking_budget: int | None = None,
+    json_schema: dict | None = None,
+    timeout_s: float | None = None,
+    **kwargs: Any,
+) -> GenerateResult:
+    mlx_model, processor, config = _load_model()
+    text_prompt, images = _split_contents(contents)
+    messages = _build_messages(system_instruction, text_prompt)
+
+    import mlx_vlm
+
+    templated_prompt = mlx_vlm.apply_chat_template(
+        processor,
+        config,
+        prompt=messages,
+        num_images=len(images),
+        enable_thinking=False,
+        add_generation_prompt=True,
+    )
+    logits_processors = _build_logits_processors(processor, json_schema)
+    generate_kwargs: dict[str, Any] = {}
+    if logits_processors:
+        generate_kwargs["logits_processors"] = logits_processors
+
+    result = mlx_vlm.generate(
+        mlx_model,
+        processor,
+        prompt=templated_prompt,
+        image=images if images else None,
+        max_tokens=max_output_tokens,
+        temperature=temperature,
+        **generate_kwargs,
+    )
+
+    return GenerateResult(
+        text=result.text,
+        usage=_extract_usage(result),
+        finish_reason=_extract_finish_reason(result, max_output_tokens),
+        thinking=None,
+    )
+
+
+async def run_agenerate(
+    contents: str | list[Any],
+    model: str = _DEFAULT_MODEL,
+    temperature: float = 0.3,
+    max_output_tokens: int = 8192 * 2,
+    system_instruction: str | None = None,
+    json_output: bool = False,
+    thinking_budget: int | None = None,
+    json_schema: dict | None = None,
+    timeout_s: float | None = None,
+    **kwargs: Any,
+) -> GenerateResult:
+    # mlx-vlm generation is synchronous, so async callers run it in a worker thread.
+    return await asyncio.to_thread(
+        run_generate,
+        contents=contents,
+        model=model,
+        temperature=temperature,
+        max_output_tokens=max_output_tokens,
+        system_instruction=system_instruction,
+        json_output=json_output,
+        thinking_budget=thinking_budget,
+        json_schema=json_schema,
+        timeout_s=timeout_s,
+        **kwargs,
+    )
+
+
+async def run_cogitate(
+    config: dict[str, Any],
+    on_event: Callable[[dict], None] | None = None,
+) -> str:
+    raise RuntimeError(
+        "MLX provider does not support cogitate in v1 — it is vision/generate-only. "
+        "Configure a cloud provider for cogitate agents."
+    )
+
+
+def list_models() -> list[str]:
+    return [QWEN_35_9B]
+
+
+def validate_key(api_key: str) -> dict:
+    return {"valid": True}
+
+
+__all__ = [
+    "MLX_MODEL_REPO",
+    "MLX_MODEL_REVISION",
+    "ModelSnapshotMissingError",
+    "QWEN_35_9B",
+    "is_mlx_available",
+    "list_models",
+    "run_agenerate",
+    "run_cogitate",
+    "run_generate",
+    "validate_key",
+]

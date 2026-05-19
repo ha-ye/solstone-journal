@@ -166,6 +166,30 @@ def test_get_backup_provider_none_when_same_as_primary(monkeypatch):
     assert get_backup_provider("generate") is None
 
 
+@pytest.mark.parametrize(
+    ("primary", "expected_backup"),
+    [
+        ("mlx", None),
+        ("google", "anthropic"),
+        ("openai", "anthropic"),
+        ("anthropic", None),
+        ("ollama", "anthropic"),
+    ],
+)
+def test_get_backup_provider_generate_mlx_disables_backup(
+    monkeypatch, primary, expected_backup
+):
+    monkeypatch.setattr(
+        "solstone.think.models.get_config",
+        lambda: {
+            "providers": {
+                "generate": {"provider": primary, "backup": "anthropic"},
+            }
+        },
+    )
+    assert get_backup_provider("generate") == expected_backup
+
+
 def _mock_base_agent_config() -> dict:
     return {
         "type": "cogitate",
