@@ -506,13 +506,14 @@ def _echo_bundled_result(payload: dict, *, human: bool = False) -> None:
         return
 
     rows = payload.values() if "state" not in payload else [payload]
-    headers = ("provider", "state", "key", "binary", "issues")
+    headers = ("provider", "state", "stuck", "key", "binary", "issues")
     rendered = []
     for row in rows:
         rendered.append(
             (
                 row["name"],
                 row["state"],
+                "yes" if row.get("stuck_enabling") else "no",
                 "yes" if row["key_configured"] else "no",
                 "yes" if row["binary_path"] else "no",
                 "; ".join(row.get("issues", [])),

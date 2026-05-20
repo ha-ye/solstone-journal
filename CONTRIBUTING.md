@@ -139,7 +139,7 @@ solstone runs two distinct AI workloads, and they have different prerequisites:
 - **Generate** — direct text generation (transcription, vision analysis, insights, descriptions). Uses each provider's SDK and works as soon as the API key is set. No extra binaries.
 - **Cogitate** — tool-using agents (entity detection, entity assist, entity describe, and any talent under `solstone/apps/entities/talent/*.md` with `"type": "cogitate"`). solstone shells out to a provider CLI binary as a subprocess. Anthropic and OpenAI are installed into your journal on demand; Google and Ollama still use CLIs you install yourself.
 
-Because cogitate-type talents only run when an entity-related dream completes, missing CLI binaries are invisible during initial install — generate-only paths produce transcripts and summaries, but **entities never appear**. `sol top` Agents Health flags this with messages like `"Google generate passes but Google cogitate fails: gemini CLI not installed"`. Enable the cogitate binary for **each provider whose API key you configured above**. If you only set `GOOGLE_API_KEY`, you only need `gemini`.
+Because cogitate-type talents only run after entity-related thinking completes, missing CLI binaries are invisible during initial install — generate-only paths produce transcripts and summaries, but **entities never appear**. `sol top` Agents Health flags this with messages like `"Google generate passes but Google cogitate fails: gemini CLI not installed"`. Enable the cogitate binary for **each provider whose API key you configured above**. If you only set `GOOGLE_API_KEY`, you only need `gemini`.
 
 | provider  | binary     | install                                                         |
 |-----------|------------|-----------------------------------------------------------------|
@@ -167,7 +167,7 @@ After installing a manually managed CLI binary while solstone is running, restar
 sol service restart
 ```
 
-`sol providers check` reports per-provider readiness, including whether the cogitate CLI is on PATH.
+`sol providers check` reports per-provider readiness, including bundled or manually installed cogitate CLI status.
 
 ## Developing on AI features
 

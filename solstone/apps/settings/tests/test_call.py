@@ -312,7 +312,32 @@ class TestProvidersBundled:
 
         assert result.exit_code == 0
         assert "provider" in result.output
+        assert "stuck" in result.output
         assert "anthropic" in result.output
+
+    def test_status_human_surfaces_stuck_enabling(self, settings_env):
+        tmp_path, config = settings_env()
+        config["providers"]["bundled"] = {
+            "anthropic": {
+                "state": "enabling",
+                "last_transition_at": "2000-01-01T00:00:00+00:00",
+                "sdk_spec": "claude-agent-sdk==0.2.82",
+                "install_error": None,
+            }
+        }
+        (tmp_path / "config" / "journal.json").write_text(
+            json.dumps(config, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(
+            call_app,
+            ["settings", "providers", "status", "anthropic", "--human"],
+        )
+
+        assert result.exit_code == 0
+        assert "stuck" in result.output
+        assert "yes" in result.output
 
     def test_status_json_human_conflict(self, settings_env):
         settings_env()

@@ -400,6 +400,8 @@ def uninstall_provider(name: str) -> ContractState:
         current = get_provider_state(name)
         if current["state"] == "enabling" and not current["stuck_enabling"]:
             raise CogitateProviderInstallInFlight("install in flight")
+        if current["state"] == "not-enabled":
+            return current
 
     try:
         _run_uv_pip_uninstall(PINS[name]["sdk_spec"])
@@ -456,6 +458,17 @@ def validate_key(name: str) -> ContractState:
 
     _require_supported(name)
     with _provider_lock(name):
+        current = get_provider_state(name)
+        if current["state"] == "enabling" and not current["stuck_enabling"]:
+            raise CogitateProviderInstallInFlight("install in flight")
+        if current["state"] == "disabled":
+            raise CogitateProviderDisabled(
+                f"Bundled provider {name} is disabled. Enable it before validating the key."
+            )
+        if current["state"] not in BINARY_STATES:
+            raise CogitateProviderNotInstalled(
+                f"Bundled cogitate provider {name} is not installed. Run `{_install_hint(name)}` before validating the key."
+            )
         config = read_journal_config()
         if not _key_configured(config, name):
             _transition_state(name, "installed-no-key")
@@ -684,7 +697,7 @@ def _categorize_codex_error(output: str) -> str:
         return "codex binary download: sha256 mismatch"
     if any(marker in lower for marker in ("unsupported", "platform", "triple")):
         return "codex binary download: unsupported platform triple"
-    return f"codex binary download: {text}"
+    return f"codex binary download: other: {text}"
 
 
 def _run_codex_install(version: str, filename: str, sha256: str) -> Path:

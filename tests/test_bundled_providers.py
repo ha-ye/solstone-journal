@@ -70,6 +70,37 @@ def test_install_provider_persists_enabling_and_starts_one_thread(
     assert len(started) == 1
 
 
+def test_install_provider_installed_no_key_is_noop(journal_config, monkeypatch):
+    journal_config(bundled_provider_config("anthropic", "installed-no-key"))
+    started = []
+    monkeypatch.setattr(
+        bundled,
+        "_start_thread",
+        lambda target, args: started.append((target, args)),
+    )
+
+    state = bundled.install_provider("anthropic")
+
+    assert state["state"] == "installed-no-key"
+    assert started == []
+
+
+def test_install_provider_retries_install_failed(journal_config, monkeypatch):
+    journal_config(bundled_provider_config("openai", "install-failed"))
+    started = []
+    monkeypatch.setattr(
+        bundled,
+        "_start_thread",
+        lambda target, args: started.append((target, args)),
+    )
+
+    state = bundled.install_provider("openai")
+
+    assert state["state"] == "enabling"
+    assert state["install_error"] is None
+    assert len(started) == 1
+
+
 def test_stuck_enabling_allows_install_retry(journal_config, monkeypatch):
     config = bundled_provider_config("openai", "enabling")
     old = datetime.now(timezone.utc) - timedelta(
@@ -130,6 +161,24 @@ def test_validate_key_thread_persists_result(journal_config, monkeypatch):
     assert "timestamp" in state["key_validation"]
 
 
+def test_validate_key_thread_persists_human_error(journal_config, monkeypatch):
+    config = bundled_provider_config("openai", "key-validating")
+    config["env"]["OPENAI_API_KEY"] = "test-key"
+    journal_config(config)
+
+    def fail(_name):
+        raise RuntimeError("provider rejected key")
+
+    monkeypatch.setattr(bundled, "_validate_provider_key", fail)
+
+    bundled._validate_thread("openai")
+
+    state = bundled.get_provider_state("openai")
+    assert state["state"] == "invalid-key"
+    assert state["key_validation"]["error"] == "provider rejected key"
+    assert "provider rejected key" in state["issues"]
+
+
 def test_validate_key_returns_key_validating_immediately(journal_config, monkeypatch):
     config = bundled_provider_config("anthropic", "installed-no-key")
     config["env"]["ANTHROPIC_API_KEY"] = "test-key"
@@ -147,6 +196,22 @@ def test_validate_key_returns_key_validating_immediately(journal_config, monkeyp
     assert len(started) == 1
 
 
+def test_validate_key_not_enabled_requires_install(journal_config, monkeypatch):
+    journal_config(bundled_provider_config("anthropic", "not-enabled"))
+    started = []
+    monkeypatch.setattr(
+        bundled,
+        "_start_thread",
+        lambda target, args: started.append((target, args)),
+    )
+
+    with pytest.raises(bundled.CogitateProviderNotInstalled) as exc_info:
+        bundled.validate_key("anthropic")
+
+    assert "sol call settings providers install anthropic" in str(exc_info.value)
+    assert started == []
+
+
 def test_uninstall_during_install_raises(journal_config):
     config = bundled_provider_config("anthropic", "enabling")
     config["providers"]["bundled"]["anthropic"]["last_transition_at"] = datetime.now(
@@ -156,6 +221,43 @@ def test_uninstall_during_install_raises(journal_config):
 
     with pytest.raises(bundled.CogitateProviderInstallInFlight):
         bundled.uninstall_provider("anthropic")
+
+
+def test_uninstall_not_enabled_is_noop(journal_config, monkeypatch):
+    config_path = journal_config(bundled_provider_config("anthropic", "not-enabled"))
+    calls = []
+    monkeypatch.setattr(
+        bundled,
+        "_run_uv_pip_uninstall",
+        lambda sdk_spec: calls.append(sdk_spec),
+    )
+
+    state = bundled.uninstall_provider("anthropic")
+
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert state["state"] == "not-enabled"
+    assert calls == []
+    assert persisted["providers"]["bundled"]["anthropic"]["state"] == "not-enabled"
+
+
+def test_uninstall_preserves_keys_auth_and_env(journal_config, monkeypatch):
+    config = bundled_provider_config("anthropic", "valid")
+    config["env"]["ANTHROPIC_API_KEY"] = "test-key"
+    config["providers"]["auth"]["anthropic"] = "api_key"
+    config["providers"]["key_validation"]["anthropic"] = {
+        "valid": True,
+        "timestamp": "2026-05-20T00:00:00+00:00",
+    }
+    config_path = journal_config(config)
+    monkeypatch.setattr(bundled, "_run_uv_pip_uninstall", lambda sdk_spec: None)
+
+    state = bundled.uninstall_provider("anthropic")
+
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert state["state"] == "not-enabled"
+    assert persisted["env"]["ANTHROPIC_API_KEY"] == "test-key"
+    assert persisted["providers"]["auth"]["anthropic"] == "api_key"
+    assert persisted["providers"]["key_validation"]["anthropic"]["valid"] is True
 
 
 def test_resolve_bundled_binary_success(journal_config):
@@ -191,13 +293,25 @@ def test_uv_install_error_categorization(monkeypatch):
     assert str(exc_info.value).startswith("network:")
 
 
-def test_codex_install_unsupported_platform_categorization(monkeypatch):
+@pytest.mark.parametrize(
+    ("stderr", "expected"),
+    [
+        ("network connection failed", "codex binary download: network"),
+        ("sha256 mismatch", "codex binary download: sha256 mismatch"),
+        (
+            "unsupported platform triple",
+            "codex binary download: unsupported platform triple",
+        ),
+        ("archive missing", "codex binary download: other: archive missing"),
+    ],
+)
+def test_codex_install_error_categorization(monkeypatch, stderr, expected):
     def fake_run(*args, **kwargs):
         return subprocess.CompletedProcess(
             args[0],
             1,
             stdout="",
-            stderr="unsupported platform triple",
+            stderr=stderr,
         )
 
     monkeypatch.setattr(bundled.subprocess, "run", fake_run)
@@ -205,7 +319,7 @@ def test_codex_install_unsupported_platform_categorization(monkeypatch):
     with pytest.raises(bundled.CogitateProviderInstallFailed) as exc_info:
         bundled._run_codex_install("rust-v0.131.0", "", "")
 
-    assert str(exc_info.value) == "codex binary download: unsupported platform triple"
+    assert str(exc_info.value) == expected
 
 
 def test_unsupported_provider_raises():

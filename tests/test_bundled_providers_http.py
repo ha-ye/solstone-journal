@@ -43,7 +43,7 @@ def test_cli_status_and_http_bundled_contract_match(settings_client, provider, s
 
     cli_result = runner.invoke(
         call_app,
-        ["settings", "providers", "status", provider],
+        ["settings", "providers", "status", provider, "--json"],
     )
     http_response = client.get("/app/settings/api/providers/bundled")
 
