@@ -75,7 +75,9 @@ def _gemma4_stubs(*, optional_attrs: bool = True):
         processor.image_seq_length = 0
     else:
         delattr(vision_tower, "pooler")
-    config = SimpleNamespace(vision_config=SimpleNamespace(position_embedding_size=10240))
+    config = SimpleNamespace(
+        vision_config=SimpleNamespace(position_embedding_size=10240)
+    )
     model = SimpleNamespace(vision_tower=vision_tower, config=config)
     return model, processor
 
