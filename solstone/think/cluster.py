@@ -412,7 +412,12 @@ def _detect_content_types(seg_path: Path) -> list[str]:
 
 def scan_day(
     day: str,
-) -> tuple[list[tuple[str, str]], list[tuple[str, str]], list[dict[str, Any]]]:
+) -> tuple[
+    list[tuple[str, str]],
+    list[tuple[str, str]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
     """Single-pass scan returning both range aggregation and segment list.
 
     Combines the work of ``cluster_scan()`` and ``cluster_segments()``
@@ -422,26 +427,42 @@ def scan_day(
         day: Day folder in ``YYYYMMDD`` format.
 
     Returns:
-        Tuple of (audio_ranges, screen_ranges, segments) where ranges are
-        ``(start, end)`` pairs in ``HH:MM`` format and segments is a list
-        of dicts with ``key``, ``start``, ``end``, ``types``, and ``stream``.
+        Tuple of (audio_ranges, screen_ranges, segments, errored_segments) where
+        ranges are ``(start, end)`` pairs in ``HH:MM`` format, segments is a list
+        of dicts with ``key``, ``start``, ``end``, ``types``, and ``stream``, and
+        errored_segments is a list of dicts with ``key``, ``stream``, and
+        ``start``.
     """
     from solstone.think.utils import iter_segments, segment_parse
 
     day_dir = day_path(day, create=False)
     if not day_dir.is_dir():
-        return [], [], []
+        return [], [], [], []
 
     date_str = _date_str(str(day_dir))
     day_date = datetime.strptime(date_str, "%Y%m%d").date()
     transcript_slots: set[datetime] = set()
     percept_slots: set[datetime] = set()
     segments: list[dict[str, Any]] = []
+    errored_segments: list[dict[str, Any]] = []
 
     for stream_name, _, seg_path in iter_segments(day_dir):
         start_time, end_time = segment_parse(seg_path.name)
 
         types = _detect_content_types(seg_path) if start_time else []
+
+        if (
+            start_time
+            and (seg_path / "audio.flac").is_file()
+            and not (seg_path / "audio.jsonl").exists()
+        ):
+            errored_segments.append(
+                {
+                    "key": seg_path.name,
+                    "stream": stream_name,
+                    "start": start_time.strftime("%H:%M:%S"),
+                }
+            )
 
         if start_time and types:
             dt = datetime.combine(day_date, start_time)
@@ -467,7 +488,8 @@ def scan_day(
     audio_ranges = _slots_to_ranges(sorted(transcript_slots))
     screen_ranges = _slots_to_ranges(sorted(percept_slots))
     segments.sort(key=lambda s: s["start"])
-    return audio_ranges, screen_ranges, segments
+    errored_segments.sort(key=lambda s: s["start"])
+    return audio_ranges, screen_ranges, segments, errored_segments
 
 
 def cluster_scan(day: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
@@ -481,7 +503,7 @@ def cluster_scan(day: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]
         screen content respectively.
     """
 
-    audio_ranges, screen_ranges, _ = scan_day(day)
+    audio_ranges, screen_ranges, _, _ = scan_day(day)
     return audio_ranges, screen_ranges
 
 
@@ -501,8 +523,14 @@ def cluster_segments(day: str) -> list[dict[str, Any]]:
         - end: end time as HH:MM
         - types: list of content types present ("audio", "screen", or both)
     """
-    _, _, segments = scan_day(day)
+    _, _, segments, _ = scan_day(day)
     return segments
+
+
+def cluster_errored_segments(day: str) -> list[dict[str, Any]]:
+    """Return audio segments that have raw media but no transcript output."""
+    _, _, _, errored = scan_day(day)
+    return errored
 
 
 def _find_segment_dir(day: str, segment: str, stream: str | None) -> Path | None:

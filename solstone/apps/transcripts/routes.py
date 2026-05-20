@@ -160,7 +160,7 @@ def transcript_ranges(day: str) -> Any:
     if not DATE_RE.fullmatch(day):
         return error_response(INVALID_DAY, status=404, detail="Day not found")
 
-    audio_ranges, screen_ranges, segments = scan_day(day)
+    audio_ranges, screen_ranges, segments, _ = scan_day(day)
     return jsonify(
         {
             "audio": _attach_streams_to_ranges(audio_ranges, segments, "audio"),
@@ -188,7 +188,7 @@ def transcript_day_data(day: str) -> Any:
     if not DATE_RE.fullmatch(day):
         return error_response(INVALID_DAY, status=404, detail="Day not found")
 
-    audio_ranges, screen_ranges, segments = scan_day(day)
+    audio_ranges, screen_ranges, segments, _ = scan_day(day)
     return jsonify(
         {
             "audio": _attach_streams_to_ranges(audio_ranges, segments, "audio"),

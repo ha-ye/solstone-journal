@@ -18,6 +18,7 @@ from solstone.think.cluster import (
     cluster_scan,
     cluster_segments,
     cluster_span,
+    scan_day,
 )
 from solstone.think.utils import (
     day_dirs,
@@ -30,6 +31,25 @@ from solstone.think.utils import (
 app = typer.Typer(help="Transcript browsing.")
 
 
+def _errored_slot_range(start: str) -> tuple[str, str]:
+    hour_s, minute_s, _second_s = start.split(":")
+    hour = int(hour_s)
+    minute = int(minute_s)
+    slot_minute = minute - (minute % 15)
+    end_hour = hour
+    end_minute = slot_minute + 15
+    if end_minute >= 60:
+        end_hour = (end_hour + 1) % 24
+        end_minute -= 60
+    return f"{hour:02d}:{slot_minute:02d}", f"{end_hour:02d}:{end_minute:02d}"
+
+
+def _format_errored_scan_note(starts: list[str]) -> str:
+    count = len(starts)
+    noun = "segment" if count == 1 else "segments"
+    return f"{count} {noun} errored at {', '.join(starts)}"
+
+
 @app.command("scan")
 def scan(
     day: str | None = typer.Argument(
@@ -38,12 +58,37 @@ def scan(
 ) -> None:
     """List transcript coverage ranges for a day."""
     day = resolve_sol_day(day)
-    transcript_ranges, screen_ranges = cluster_scan(day)
+    transcript_ranges, screen_ranges, _segments, errored_segments = scan_day(day)
+    errored_by_slot: dict[tuple[str, str], list[str]] = {}
+    for segment in errored_segments:
+        slot = _errored_slot_range(segment["start"])
+        errored_by_slot.setdefault(slot, []).append(segment["start"])
+    for starts in errored_by_slot.values():
+        starts.sort()
+    transcript_slots = set(transcript_ranges)
+    orphan_slots = sorted(
+        slot for slot in errored_by_slot if slot not in transcript_slots
+    )
 
     typer.echo("Transcripts:")
     if transcript_ranges:
         for start, end in transcript_ranges:
-            typer.echo(f"  {start} - {end}")
+            starts = errored_by_slot.get((start, end), [])
+            line = f"  {start} - {end}"
+            if starts:
+                line += f" ({_format_errored_scan_note(starts)})"
+            typer.echo(line)
+        for slot in orphan_slots:
+            starts = errored_by_slot[slot]
+            typer.echo(
+                f"  ({_format_errored_scan_note(starts)}, no transcript in this slot)"
+            )
+    elif orphan_slots:
+        for slot in orphan_slots:
+            starts = errored_by_slot[slot]
+            typer.echo(
+                f"  ({_format_errored_scan_note(starts)}, no transcript in this slot)"
+            )
     else:
         typer.echo("  (none)")
 
