@@ -754,6 +754,52 @@ class TestRunGenerate:
             "total_tokens": 15,
         }
 
+    def test_run_generate_records_resolved_model_version(self):
+        provider = _openai_provider()
+        mock_client = MagicMock()
+        mock_client.responses.create = MagicMock()
+        mock_response = _make_openai_response("Hello world")
+        mock_response.model = "gpt-5-2025-08-07"
+        mock_response.usage = MagicMock()
+        mock_response.usage.input_tokens = 10
+        mock_response.usage.output_tokens = 5
+        mock_response.usage.total_tokens = 15
+        mock_response.usage.input_tokens_details = None
+        mock_response.usage.output_tokens_details = None
+        mock_client.responses.create.return_value = mock_response
+
+        with patch(
+            "solstone.think.providers.openai._get_openai_client",
+            return_value=mock_client,
+        ):
+            result = provider.run_generate("hello", model="gpt-5")
+
+        assert result["model"] == "gpt-5-2025-08-07"
+        assert result["usage"]["model_version"] == "gpt-5-2025-08-07"
+
+    def test_run_generate_model_version_falls_back_to_requested(self):
+        provider = _openai_provider()
+        mock_client = MagicMock()
+        mock_client.responses.create = MagicMock()
+        mock_response = _make_openai_response("Hello world")
+        mock_response.model = MagicMock()
+        mock_response.usage = MagicMock()
+        mock_response.usage.input_tokens = 10
+        mock_response.usage.output_tokens = 5
+        mock_response.usage.total_tokens = 15
+        mock_response.usage.input_tokens_details = None
+        mock_response.usage.output_tokens_details = None
+        mock_client.responses.create.return_value = mock_response
+
+        with patch(
+            "solstone.think.providers.openai._get_openai_client",
+            return_value=mock_client,
+        ):
+            result = provider.run_generate("hello", model="gpt-5")
+
+        assert result["model"] == "gpt-5"
+        assert "model_version" not in result["usage"]
+
     def test_structured_messages_passthrough(self):
         provider = _openai_provider()
         mock_client = MagicMock()

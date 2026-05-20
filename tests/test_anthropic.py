@@ -459,6 +459,106 @@ def test_claude_outfile_error(monkeypatch, tmp_path, capsys):
 
 
 class TestRunGenerateJsonSchema:
+    def test_run_generate_records_resolved_model_version(self, monkeypatch):
+        provider = importlib.reload(
+            importlib.import_module("solstone.think.providers.anthropic")
+        )
+        mock_client = MagicMock()
+        mock_response = SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="ok")],
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+            stop_reason="end_turn",
+            model="claude-haiku-4-5-20251001",
+        )
+        mock_client.messages.create.return_value = mock_response
+        monkeypatch.setattr(provider, "_get_anthropic_client", lambda: mock_client)
+
+        result = provider.run_generate(
+            "hello",
+            model="claude-haiku-4-5",
+            max_output_tokens=100,
+        )
+
+        assert result["model"] == "claude-haiku-4-5-20251001"
+        assert result["usage"]["model_version"] == "claude-haiku-4-5-20251001"
+
+    def test_run_generate_model_version_falls_back_to_requested(self, monkeypatch):
+        provider = importlib.reload(
+            importlib.import_module("solstone.think.providers.anthropic")
+        )
+        mock_client = MagicMock()
+        mock_response = SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="ok")],
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+            stop_reason="end_turn",
+        )
+        mock_client.messages.create.return_value = mock_response
+        monkeypatch.setattr(provider, "_get_anthropic_client", lambda: mock_client)
+
+        result = provider.run_generate(
+            "hello",
+            model="claude-haiku-4-5",
+            max_output_tokens=100,
+        )
+
+        assert result["model"] == "claude-haiku-4-5"
+        assert "model_version" not in result["usage"]
+
+    def test_translate_claude_captures_resolved_model_from_assistant_event(self):
+        provider = importlib.reload(
+            importlib.import_module("solstone.think.providers.anthropic")
+        )
+        result_meta = {}
+
+        provider._translate_claude(
+            {
+                "type": "assistant",
+                "message": {
+                    "model": "claude-haiku-4-5-20251001",
+                    "content": [],
+                },
+            },
+            MagicMock(),
+            MagicMock(),
+            {},
+            result_meta,
+        )
+        provider._translate_claude(
+            {
+                "type": "result",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+                "total_cost_usd": 0.01,
+            },
+            MagicMock(),
+            MagicMock(),
+            {},
+            result_meta,
+        )
+
+        assert result_meta["usage"]["model_version"] == "claude-haiku-4-5-20251001"
+
+        result_meta = {}
+        provider._translate_claude(
+            {"type": "assistant", "message": {"content": []}},
+            MagicMock(),
+            MagicMock(),
+            {},
+            result_meta,
+        )
+        provider._translate_claude(
+            {
+                "type": "result",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+                "total_cost_usd": 0.01,
+            },
+            MagicMock(),
+            MagicMock(),
+            {},
+            result_meta,
+        )
+
+        assert "model_version" not in result_meta["usage"]
+
     def test_structured_messages_passthrough(self, monkeypatch):
         provider = importlib.reload(
             importlib.import_module("solstone.think.providers.anthropic")

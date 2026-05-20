@@ -499,7 +499,9 @@ class CortexService:
                                         )
                                         from solstone.think.talent import key_to_context
 
-                                        model = original_request.get("model", "unknown")
+                                        model = usage_data.get(
+                                            "model_version"
+                                        ) or original_request.get("model", "unknown")
                                         name = original_request.get("name", "unknown")
                                         context = key_to_context(name)
 

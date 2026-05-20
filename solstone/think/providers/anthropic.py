@@ -147,6 +147,9 @@ def _translate_claude(
 
     elif event_type == "assistant":
         message = event.get("message", {})
+        resolved_model = message.get("model")
+        if isinstance(resolved_model, str) and resolved_model:
+            result_meta["resolved_model"] = resolved_model
         content_blocks = message.get("content", [])
 
         # Two-pass: text/thinking first, then tool_use
@@ -223,6 +226,9 @@ def _translate_claude(
             cache_read = usage.get("cache_read_input_tokens")
             if cache_read:
                 usage_dict["cached_tokens"] = cache_read
+            resolved = result_meta.get("resolved_model")
+            if isinstance(resolved, str) and resolved:
+                usage_dict["model_version"] = resolved
             result_meta["usage"] = usage_dict
 
     return None
@@ -339,6 +345,14 @@ async def run_cogitate(
 # ---------------------------------------------------------------------------
 
 
+def _resolved_model(response: Any, requested: str) -> str:
+    """Return resolved response.model when it is a non-empty string, else requested."""
+    resolved = getattr(response, "model", None)
+    if isinstance(resolved, str) and resolved:
+        return resolved
+    return requested
+
+
 def _extract_usage_dict(response: Any) -> dict[str, Any] | None:
     """Extract usage dict from Anthropic response.
 
@@ -362,6 +376,9 @@ def _extract_usage_dict(response: Any) -> dict[str, Any] | None:
     cache_read = getattr(usage, "cache_read_input_tokens", None)
     if cache_read:
         usage_dict["cached_tokens"] = cache_read
+    model_version = getattr(response, "model", None)
+    if isinstance(model_version, str) and model_version:
+        usage_dict["model_version"] = model_version
     return usage_dict
 
 
@@ -591,6 +608,7 @@ def run_generate(
     finish_reason = _normalize_finish_reason(response.stop_reason)
     return GenerateResult(
         text=text,
+        model=_resolved_model(response, model),
         usage=_extract_usage_dict(response),
         finish_reason=finish_reason,
         thinking=thinking,
@@ -663,6 +681,7 @@ async def run_agenerate(
     finish_reason = _normalize_finish_reason(response.stop_reason)
     return GenerateResult(
         text=text,
+        model=_resolved_model(response, model),
         usage=_extract_usage_dict(response),
         finish_reason=finish_reason,
         thinking=thinking,

@@ -146,6 +146,7 @@ def _translate_codex(
             return None
 
     # -- turn.completed: capture usage -------------------------------------
+    # codex CLI does not emit a resolved model name on any event; record alias only.
     if event_type == "turn.completed":
         if usage_holder is not None and event.get("usage"):
             usage_holder[0] = event["usage"]
@@ -378,12 +379,20 @@ def _extract_thinking(response: Any) -> list | None:
     return thinking_blocks if thinking_blocks else None
 
 
+def _resolved_model(response: Any, requested: str) -> str:
+    """Return resolved response.model when it is a non-empty string, else requested."""
+    resolved = getattr(response, "model", None)
+    if isinstance(resolved, str) and resolved:
+        return resolved
+    return requested
+
+
 def _extract_usage(response: Any) -> dict | None:
     """Extract normalized usage dict from OpenAI response."""
     if not response.usage:
         return None
 
-    usage: dict[str, int] = {
+    usage: dict[str, Any] = {
         "input_tokens": response.usage.input_tokens,
         "output_tokens": response.usage.output_tokens,
         "total_tokens": response.usage.total_tokens,
@@ -399,6 +408,9 @@ def _extract_usage(response: Any) -> dict | None:
         reasoning = getattr(output_details, "reasoning_tokens", 0)
         if reasoning:
             usage["reasoning_tokens"] = reasoning
+    model_version = getattr(response, "model", None)
+    if isinstance(model_version, str) and model_version:
+        usage["model_version"] = model_version
     return usage
 
 
@@ -452,6 +464,7 @@ def run_generate(
     response = client.responses.create(**request_kwargs)
     return GenerateResult(
         text=response.output_text or "",
+        model=_resolved_model(response, model),
         usage=_extract_usage(response),
         finish_reason=_normalize_finish_reason(response),
         thinking=_extract_thinking(response),
@@ -508,6 +521,7 @@ async def run_agenerate(
     response = await client.responses.create(**request_kwargs)
     return GenerateResult(
         text=response.output_text or "",
+        model=_resolved_model(response, model),
         usage=_extract_usage(response),
         finish_reason=_normalize_finish_reason(response),
         thinking=_extract_thinking(response),
