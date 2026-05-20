@@ -772,6 +772,24 @@ def get_bundled_providers() -> Any:
         return _settings_operation_failed()
 
 
+@settings_bp.route("/api/providers/ollama/status")
+def get_ollama_provider_status() -> Any:
+    """Return Ollama provider readiness status."""
+
+    try:
+        from solstone.think.providers import build_provider_status, get_provider_list
+
+        providers_list = get_provider_list()
+        ollama_provider = next(
+            provider for provider in providers_list if provider["name"] == "ollama"
+        )
+        provider_status = build_provider_status([ollama_provider], False)
+        return jsonify(provider_status["ollama"])
+    except Exception:
+        logger.exception("error loading Ollama provider status")
+        return _settings_operation_failed()
+
+
 def _bundled_action_response(name: str, action: str) -> Any:
     from solstone.think.providers import bundled
 

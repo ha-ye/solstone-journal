@@ -264,6 +264,63 @@ class TestProvidersShow:
             in status["issues"]
         )
 
+    def test_providers_show_human_mode(self, settings_env):
+        settings_env()
+        provider_status = {
+            "anthropic": {
+                "configured": False,
+                "generate_ready": False,
+                "cogitate_ready": False,
+                "cogitate_cli": "claude",
+                "cogitate_cli_found": False,
+                "issues": ["ANTHROPIC_API_KEY not set"],
+            },
+            "google": {
+                "configured": True,
+                "generate_ready": True,
+                "cogitate_ready": True,
+                "cogitate_cli": "gemini",
+                "cogitate_cli_found": True,
+                "issues": [],
+            },
+            "mlx": {
+                "configured": False,
+                "generate_ready": False,
+                "cogitate_ready": False,
+                "cogitate_cli": "",
+                "cogitate_cli_found": False,
+                "issues": [],
+            },
+            "ollama": {
+                "configured": True,
+                "generate_ready": True,
+                "cogitate_ready": False,
+                "cogitate_cli": "opencode",
+                "cogitate_cli_found": False,
+                "issues": ["opencode CLI not found on PATH"],
+            },
+            "openai": {
+                "configured": True,
+                "generate_ready": True,
+                "cogitate_ready": True,
+                "cogitate_cli": "codex",
+                "cogitate_cli_found": True,
+                "issues": [],
+            },
+        }
+
+        with patch(
+            "solstone.think.providers.build_provider_status",
+            return_value=provider_status,
+        ):
+            result = runner.invoke(
+                call_app, ["settings", "providers", "show", "--human"]
+            )
+
+        assert result.exit_code == 0
+        assert "ollama: opencode CLI not found on PATH" in result.output.splitlines()
+        assert not result.output.lstrip().startswith("{")
+
 
 class TestProvidersBundled:
     def test_status_single_json(self, settings_env):

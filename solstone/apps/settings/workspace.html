@@ -903,6 +903,30 @@ input:checked + .slider:before {
   text-decoration: underline;
 }
 
+#ollamaCogitateStatus {
+  align-items: flex-start;
+}
+
+#ollamaCogitateStatus-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4em;
+}
+
+.ollama-command-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4em;
+  align-items: center;
+}
+
+.ollama-command-row input {
+  min-width: min(100%, 22em);
+  flex: 1;
+  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', 'Roboto Mono', 'Consolas', monospace;
+  font-size: 0.95em;
+}
+
 .bundled-provider-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -2509,6 +2533,10 @@ button:focus:not(:focus-visible) {
         <span>API key not configured for cogitate provider.</span>
         <a href="#" id="cogitateProviderKeyLink">configure in API keys</a>
       </div>
+      <div id="ollamaCogitateStatus" class="provider-key-warning" style="display: none;">
+        <div id="ollamaCogitateStatus-indicator"></div>
+        <div id="ollamaCogitateStatus-detail"></div>
+      </div>
       <small id="providerStatus">loading...</small>
 
       <!-- Detailed Tasks -->
@@ -2528,7 +2556,6 @@ button:focus:not(:focus-visible) {
     <section class="settings-section" id="section-apikeys" role="tabpanel" aria-labelledby="tab-apikeys">
       <h2>API keys</h2>
       <p class="settings-section-desc">configure API keys for AI providers. keys are stored in your journal config.</p>
-      <p class="settings-section-desc" style="margin-top:-0.5em">tool-using agents (entity detection, etc.) also need each provider's CLI binary installed (`gemini`, `claude`, `codex`, `opencode`) — see <a href="https://github.com/solpbc/solstone/blob/main/CONTRIBUTING.md#tool-using-agents-cogitate-cli-binaries" target="_blank">install docs</a>.</p>
 
       <form class="settings-form" onsubmit="return false;">
       <div style="margin-bottom: 1em;">
@@ -4966,6 +4993,8 @@ let providersData = null;
 let mlxBootstrapPollTimer = null;
 let mlxBootstrapPostStarted = false;
 let bundledProviderPollTimer = null;
+let ollamaStatusLoading = false;
+let ollamaStatusError = '';
 
 const MLX_COGITATE_UNSUPPORTED_TITLE = 'MLX provider does not support cogitate in v1 — it is vision/generate-only. Configure a cloud provider for cogitate agents.';
 const MLX_SCOPE_COPY = 'vision and text on your device. tool-calling agents continue to use your configured cogitate provider.';
@@ -4974,6 +5003,8 @@ const MLX_PROVIDER_DEFAULTS = {
   2: 'qwen3.5:9b',
   3: 'qwen3.5:9b',
 };
+const OLLAMA_OPENCODE_INSTALL_COMMAND = 'curl -fsSL https://opencode.ai/install | bash';
+const OLLAMA_OPENCODE_TITLE = 'OpenCode CLI not found on PATH — Ollama cogitate features will not work until OpenCode is installed.';
 
 async function loadProviders() {
   try {
@@ -5019,6 +5050,9 @@ function populateProviders(data) {
           if (disabledReason) {
             opt.disabled = true;
             opt.title = disabledReason;
+          }
+          if (ollamaNeedsOpenCode(p, type)) {
+            opt.title = OLLAMA_OPENCODE_TITLE;
           }
           select.appendChild(opt);
         }
@@ -5067,6 +5101,152 @@ function populateProviders(data) {
 
   // Populate context overrides
   renderContextGroups(data);
+  renderOllamaCogitateStatus();
+}
+
+function getSelectedCogitateProvider() {
+  return document.getElementById('field-cogitate-provider')?.value || providersData?.cogitate?.provider || '';
+}
+
+function setOllamaStatusTone(statusEl, tone) {
+  if (tone === 'ready') {
+    statusEl.style.background = '#e8f5e9';
+    statusEl.style.borderColor = '#a5d6a7';
+    statusEl.style.color = '#1b5e20';
+  } else if (tone === 'checking') {
+    statusEl.style.background = '#f8f9fa';
+    statusEl.style.borderColor = '#d6d8db';
+    statusEl.style.color = '#495057';
+  } else {
+    statusEl.style.background = '';
+    statusEl.style.borderColor = '';
+    statusEl.style.color = '';
+  }
+}
+
+function setOllamaIndicator(indicator, text, color) {
+  indicator.innerHTML = '';
+  indicator.style.display = 'flex';
+  indicator.style.alignItems = 'center';
+  indicator.style.gap = '0.4em';
+  const dot = document.createElement('span');
+  dot.setAttribute('aria-hidden', 'true');
+  dot.style.width = '0.55em';
+  dot.style.height = '0.55em';
+  dot.style.borderRadius = '999px';
+  dot.style.background = color;
+  dot.style.display = 'inline-block';
+  dot.style.flex = '0 0 auto';
+  indicator.append(dot, document.createTextNode(text));
+}
+
+function appendOllamaStatusError(row) {
+  if (!ollamaStatusError) return;
+  const error = document.createElement('span');
+  error.style.fontSize = '0.9em';
+  error.textContent = ollamaStatusError;
+  row.appendChild(error);
+}
+
+function createOllamaRecheckButton(row) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = ollamaStatusLoading ? 'Checking…' : 'Re-check';
+  button.disabled = ollamaStatusLoading;
+  button.addEventListener('click', recheckOllamaStatus);
+  row.appendChild(button);
+  appendOllamaStatusError(row);
+  return button;
+}
+
+async function copyOllamaInstallCommand(input) {
+  try {
+    await navigator.clipboard.writeText(OLLAMA_OPENCODE_INSTALL_COMMAND);
+  } catch (err) {
+    input.focus();
+    input.select();
+  }
+}
+
+function renderOllamaCogitateStatus() {
+  const statusEl = document.getElementById('ollamaCogitateStatus');
+  const indicator = document.getElementById('ollamaCogitateStatus-indicator');
+  const detail = document.getElementById('ollamaCogitateStatus-detail');
+  if (!statusEl || !indicator || !detail) return;
+
+  indicator.innerHTML = '';
+  detail.innerHTML = '';
+  if (getSelectedCogitateProvider() !== 'ollama') {
+    statusEl.style.display = 'none';
+    return;
+  }
+
+  statusEl.style.display = 'flex';
+  const status = providersData?.provider_status?.ollama || {};
+  if (ollamaStatusLoading) {
+    setOllamaStatusTone(statusEl, 'checking');
+    setOllamaIndicator(indicator, 'Checking…', '#6c757d');
+    const row = document.createElement('div');
+    row.className = 'ollama-command-row';
+    createOllamaRecheckButton(row);
+    detail.appendChild(row);
+    return;
+  }
+  if (status.cogitate_ready === true) {
+    setOllamaStatusTone(statusEl, 'ready');
+    setOllamaIndicator(indicator, 'Ready', '#2e7d32');
+    return;
+  }
+
+  setOllamaStatusTone(statusEl, 'warning');
+  if (status.cogitate_cli_found === false) {
+    setOllamaIndicator(indicator, 'OpenCode missing', '#856404');
+    const context = document.createElement('div');
+    context.textContent = 'OpenCode is the agent CLI solstone runs to let Ollama use tools for chat, briefings, and digests.';
+
+    const row = document.createElement('div');
+    row.className = 'ollama-command-row';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.readOnly = true;
+    input.value = OLLAMA_OPENCODE_INSTALL_COMMAND;
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.textContent = 'Copy';
+    copy.addEventListener('click', () => copyOllamaInstallCommand(input));
+    row.append(input, copy);
+    createOllamaRecheckButton(row);
+    detail.append(context, row);
+    return;
+  }
+
+  setOllamaIndicator(indicator, 'Ollama not reachable', '#856404');
+  const row = document.createElement('div');
+  row.className = 'ollama-command-row';
+  createOllamaRecheckButton(row);
+  detail.appendChild(row);
+}
+
+async function recheckOllamaStatus() {
+  ollamaStatusLoading = true;
+  ollamaStatusError = '';
+  renderOllamaCogitateStatus();
+  try {
+    const response = await fetch('api/providers/ollama/status');
+    const payload = await response.json();
+    if (!response.ok || payload.error) {
+      throw new Error(payload.detail || payload.error || 'Ollama status check failed');
+    }
+    providersData = providersData || {};
+    providersData.provider_status = providersData.provider_status || {};
+    providersData.provider_status.ollama = payload;
+  } catch (err) {
+    console.error('Error rechecking Ollama status:', err);
+    ollamaStatusError = 'Re-check failed.';
+  } finally {
+    ollamaStatusLoading = false;
+    renderOllamaCogitateStatus();
+  }
 }
 
 function bundledProviderMeta(state) {
@@ -5292,8 +5472,18 @@ function getProviderOptionDisabledReason(provider, type) {
   return '';
 }
 
+function ollamaNeedsOpenCode(provider, type) {
+  return provider?.name === 'ollama'
+    && type === 'cogitate'
+    && providersData?.provider_status?.ollama?.cogitate_cli_found === false;
+}
+
 function getProviderOptionLabel(provider, type) {
   let label = provider.label;
+  if (ollamaNeedsOpenCode(provider, type)) {
+    label += ' — needs OpenCode';
+    return label;
+  }
   if (provider.name !== 'mlx') return label;
   const availability = getMlxAvailability();
   if (availability && availability.available === false) {
@@ -5768,6 +5958,7 @@ for (const type of ['generate', 'cogitate']) {
                 if (authSelect && result.auth) {
                   authSelect.value = result.auth[value] || 'platform';
                 }
+                renderOllamaCogitateStatus();
               }
             }
             if (type === 'generate' && (field === 'provider' || field === 'tier')) {

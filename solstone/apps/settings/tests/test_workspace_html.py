@@ -145,3 +145,15 @@ def test_workspace_mlx_cogitate_option_disabled_with_runtime_message():
 
     assert MLX_COGITATE_UNSUPPORTED_TITLE in text
     assert "if (type === 'cogitate') return MLX_COGITATE_UNSUPPORTED_TITLE" in text
+
+
+def test_workspace_ollama_cogitate_status_block_and_copy():
+    text = _workspace_text()
+
+    warning_idx = text.index('id="cogitateProviderKeyWarning"')
+    status_idx = text.index('id="ollamaCogitateStatus"')
+    provider_status_idx = text.index('id="providerStatus"')
+    assert warning_idx < status_idx < provider_status_idx
+    assert 'id="ollamaCogitateStatus-indicator"' in text
+    assert "curl -fsSL https://opencode.ai/install | bash" in text
+    assert "tool-using agents" not in text

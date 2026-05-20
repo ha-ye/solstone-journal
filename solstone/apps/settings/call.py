@@ -444,7 +444,9 @@ def keys_validate(
 
 
 @providers_app.command("show")
-def providers_show() -> None:
+def providers_show(
+    human: bool = typer.Option(False, "--human", help="Print one-line statuses."),
+) -> None:
     """Show provider configuration."""
     from solstone.think.models import TYPE_DEFAULTS
     from solstone.think.providers import build_provider_status, get_provider_list
@@ -486,6 +488,20 @@ def providers_show() -> None:
         "auth": auth,
         "key_validation": providers_config.get("key_validation", {}),
     }
+    if human:
+        for name in sorted(provider_status):
+            status = provider_status[name]
+            issues = status.get("issues", [])
+            if issues:
+                status_text = issues[0]
+            elif status.get("cogitate_ready") or (
+                not status.get("cogitate_cli") and status.get("generate_ready")
+            ):
+                status_text = "ready"
+            else:
+                status_text = "not ready"
+            typer.echo(f"{name}: {status_text}")
+        return
     typer.echo(json.dumps(result, indent=2))
 
 
