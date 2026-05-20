@@ -371,7 +371,7 @@ def _extract_usage(response: Any) -> dict | None:
         "total_tokens": getattr(metadata, "total_token_count", 0),
     }
     model_version = getattr(response, "model_version", None)
-    if model_version:
+    if isinstance(model_version, str) and model_version:
         usage["model_version"] = model_version
     # Only include optional fields if non-zero
     cached = getattr(metadata, "cached_content_token_count", 0)
@@ -384,9 +384,11 @@ def _extract_usage(response: Any) -> dict | None:
 
 
 def _resolved_model(response: Any, requested: str) -> str:
-    """Return resolved model_version from the response, falling back to requested."""
+    """Return resolved response.model_version when it is a non-empty string, else requested."""
     resolved = getattr(response, "model_version", None)
-    return resolved or requested
+    if isinstance(resolved, str) and resolved:
+        return resolved
+    return requested
 
 
 def _extract_thinking(response: Any) -> list | None:

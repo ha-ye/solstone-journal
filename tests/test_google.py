@@ -14,7 +14,9 @@ from solstone.think.models import GEMINI_FLASH
 from solstone.think.providers import google as google_provider
 from solstone.think.providers.google import (
     _extract_finish_reason,
+    _extract_usage,
     _format_completion_message,
+    _resolved_model,
 )
 from tests.conftest import setup_google_genai_stub
 
@@ -71,6 +73,44 @@ def test_run_generate_records_resolved_model_version():
 
     assert result["model"] == "gemini-3.5-flash"
     assert result["usage"]["model_version"] == "gemini-3.5-flash"
+
+
+def test_resolved_model_ignores_non_string_model_version():
+    assert _resolved_model(MagicMock(), "gemini-flash-latest") == "gemini-flash-latest"
+
+
+def test_resolved_model_returns_string_model_version():
+    response = MagicMock()
+    response.model_version = "gemini-3.5-flash"
+
+    assert _resolved_model(response, "gemini-flash-latest") == "gemini-3.5-flash"
+
+
+def test_extract_usage_omits_non_string_model_version():
+    response = MagicMock()
+    metadata = MagicMock()
+    metadata.prompt_token_count = 1
+    metadata.candidates_token_count = 2
+    metadata.total_token_count = 3
+    metadata.cached_content_token_count = 0
+    metadata.thoughts_token_count = 0
+    response.usage_metadata = metadata
+
+    assert "model_version" not in _extract_usage(response)
+
+
+def test_extract_usage_records_string_model_version():
+    response = MagicMock()
+    response.model_version = "gemini-3.5-flash"
+    metadata = MagicMock()
+    metadata.prompt_token_count = 1
+    metadata.candidates_token_count = 2
+    metadata.total_token_count = 3
+    metadata.cached_content_token_count = 0
+    metadata.thoughts_token_count = 0
+    response.usage_metadata = metadata
+
+    assert _extract_usage(response)["model_version"] == "gemini-3.5-flash"
 
 
 def test_run_generate_model_version_falls_back_to_requested():
