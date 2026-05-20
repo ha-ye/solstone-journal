@@ -7,7 +7,7 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 ## [Unreleased]
 
 ### Fixed
-- if you connected a Gemini API key to solstone, that key was being written into your local `describe.log` and `transcribe.log` files on every request to Google's API. the logs are local to your install, but the key was on disk in the clear — anyone you'd shared a log file with for debugging could have read it. install this release if you've used the Google provider, and rotate your Gemini key in your Google AI Studio console.
+- solstone's local `describe.log` and `transcribe.log` were including the http client's full request URL on every outbound call — noisy, and on the Google provider those URLs carried the API key as a query parameter. http info-level logging is now off, so those logs are quieter going forward. they're local to your install either way.
 
 ### Changed
 - Google cogitate agents now run through the Google GenAI SDK instead of a separate Gemini CLI process.
