@@ -17,6 +17,7 @@ from typing import Any
 from flask import Blueprint, jsonify, request
 
 from solstone.apps.settings import copy as settings_copy
+from solstone.apps.settings import mlx_bootstrap
 from solstone.apps.settings.copy import (
     CONVEY_REFUSE_NO_PASSWORD_NETWORK,
     CONVEY_REFUSE_NO_PASSWORD_TRUST,
@@ -591,6 +592,39 @@ def _sol_voice_response(settings: SolVoiceSettings) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 VALID_TIERS = {1, 2, 3}
+
+
+@settings_bp.route("/api/mlx/availability")
+def get_mlx_availability() -> Any:
+    try:
+        return jsonify(mlx_bootstrap.get_availability_payload())
+    except Exception:
+        logger.exception("error loading MLX availability")
+        return _settings_operation_failed()
+
+
+@settings_bp.route("/api/mlx/bootstrap", methods=["POST"])
+def start_mlx_bootstrap() -> Any:
+    try:
+        payload, status = mlx_bootstrap.start_bootstrap()
+        return jsonify(payload), status
+    except mlx_bootstrap.MlxBootstrapUnavailableError as exc:
+        return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
+    except mlx_bootstrap.MlxBootstrapStartError as exc:
+        logger.exception("error starting MLX bootstrap")
+        return _settings_operation_failed(str(exc))
+    except Exception:
+        logger.exception("error starting MLX bootstrap")
+        return _settings_operation_failed()
+
+
+@settings_bp.route("/api/mlx/bootstrap/status")
+def get_mlx_bootstrap_status() -> Any:
+    try:
+        return jsonify(mlx_bootstrap.get_state())
+    except Exception:
+        logger.exception("error loading MLX bootstrap status")
+        return _settings_operation_failed()
 
 
 @settings_bp.route("/api/providers")

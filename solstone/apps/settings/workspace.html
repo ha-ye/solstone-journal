@@ -903,6 +903,36 @@ input:checked + .slider:before {
   text-decoration: underline;
 }
 
+.mlx-bootstrap-region {
+  align-items: flex-start;
+  margin-top: -0.25em;
+}
+
+.mlx-progress-shell {
+  border: 1px solid var(--facet-border, #e5e0db);
+  border-radius: 8px;
+  padding: 0.75em;
+  background: #fafafa;
+}
+
+.mlx-progress-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1em;
+  color: #555;
+  font-size: 0.85em;
+  margin-bottom: 0.5em;
+}
+
+#mlxBootstrapProgress {
+  width: 100%;
+  height: 0.7em;
+}
+
+#mlxBootstrapRetry {
+  margin-top: 0.75em;
+}
+
 /* Backend settings fieldsets */
 .backend-settings {
   border: none;
@@ -2250,6 +2280,21 @@ button:focus:not(:focus-visible) {
             <!-- Populated dynamically from registry -->
           </select>
           <small></small>
+        </div>
+      </div>
+      <div id="mlxBootstrapRegion" class="provider-row mlx-bootstrap-region" style="display:none">
+        <div class="settings-field">
+          <label>MLX model</label>
+          <div id="mlxBootstrapProgressShell" class="mlx-progress-shell">
+            <div class="mlx-progress-header">
+              <span id="mlxBootstrapState">idle</span>
+              <span id="mlxBootstrapBytes">0 B / 0 B</span>
+            </div>
+            <progress id="mlxBootstrapProgress" value="0" max="100"></progress>
+            <button type="button" id="mlxBootstrapRetry" style="display:none">retry</button>
+          </div>
+          <small id="mlxModelIdentifier" style="display:none"></small>
+          <small id="mlxScopeCopy" style="display:none">vision and text on your device. tool-calling agents continue to use your configured cogitate provider.</small>
         </div>
       </div>
       <div id="generateProviderKeyWarning" class="provider-key-warning" style="display:none">
@@ -4789,17 +4834,35 @@ function promptReload() {
 
 // ========== PROVIDERS ==========
 let providersData = null;
+let mlxBootstrapPollTimer = null;
+let mlxBootstrapPostStarted = false;
+
+const MLX_COGITATE_UNSUPPORTED_TITLE = 'MLX provider does not support cogitate in v1 — it is vision/generate-only. Configure a cloud provider for cogitate agents.';
+const MLX_SCOPE_COPY = 'vision and text on your device. tool-calling agents continue to use your configured cogitate provider.';
+const MLX_PROVIDER_DEFAULTS = {
+  1: 'qwen3.5:9b',
+  2: 'qwen3.5:9b',
+  3: 'qwen3.5:9b',
+};
 
 async function loadProviders() {
   try {
     const response = await fetch('api/providers');
     providersData = await response.json();
     if (providersData.error) throw new Error(providersData.error);
+    providersData.mlx_availability = await loadMlxAvailability();
     populateProviders(providersData);
   } catch (err) {
     console.error('Error loading providers:', err);
     document.getElementById('providerStatus').textContent = 'error loading providers';
   }
+}
+
+async function loadMlxAvailability() {
+  const response = await fetch('api/mlx/availability');
+  const availability = await response.json();
+  if (!response.ok) throw new Error(availability.detail || availability.error || 'MLX availability failed');
+  return availability;
 }
 
 function populateProviders(data) {
@@ -4818,7 +4881,12 @@ function populateProviders(data) {
         for (const p of data.providers) {
           const opt = document.createElement('option');
           opt.value = p.name;
-          opt.textContent = p.label;
+          opt.textContent = getProviderOptionLabel(p, type);
+          const disabledReason = getProviderOptionDisabledReason(p, type);
+          if (disabledReason) {
+            opt.disabled = true;
+            opt.title = disabledReason;
+          }
           select.appendChild(opt);
         }
       }
@@ -4855,6 +4923,7 @@ function populateProviders(data) {
 
   // Update status text
   document.getElementById('providerStatus').textContent = '';
+  syncMlxProgressRegion();
 
   // Refresh env status displays with latest validation data
   const env = configData?.env || {};
@@ -4865,6 +4934,216 @@ function populateProviders(data) {
 
   // Populate context overrides
   renderContextGroups(data);
+}
+
+function getMlxAvailability() {
+  return providersData?.mlx_availability || null;
+}
+
+function getProviderOptionDisabledReason(provider, type) {
+  if (!provider || provider.name !== 'mlx') return '';
+  if (type === 'cogitate') return MLX_COGITATE_UNSUPPORTED_TITLE;
+  const availability = getMlxAvailability();
+  if (availability && availability.available === false) {
+    return availability.reason || 'MLX unavailable';
+  }
+  return '';
+}
+
+function getProviderOptionLabel(provider, type) {
+  let label = provider.label;
+  if (provider.name !== 'mlx') return label;
+  const availability = getMlxAvailability();
+  if (availability && availability.available === false) {
+    label += ' — unavailable';
+  }
+  return label;
+}
+
+function getSelectedMlxModel() {
+  const tier = document.getElementById('field-generate-tier')?.value || providersData?.generate?.tier || '2';
+  const defaults = MLX_PROVIDER_DEFAULTS;
+  return defaults[tier] || defaults[parseInt(tier)] || 'qwen3.5:9b';
+}
+
+function formatMlxBytes(value) {
+  const bytes = Number(value || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let size = bytes / 1024;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  const digits = size >= 10 ? 1 : 2;
+  return `${size.toFixed(digits)} ${units[unitIndex]}`;
+}
+
+function setMlxProgressVisible(visible) {
+  const shell = document.getElementById('mlxBootstrapProgressShell');
+  if (shell) shell.style.display = visible ? '' : 'none';
+}
+
+function updateMlxModelIdentifier() {
+  const identifier = document.getElementById('mlxModelIdentifier');
+  const scopeCopy = document.getElementById('mlxScopeCopy');
+  const provider = document.getElementById('field-generate-provider')?.value;
+  const modelPresent = !!getMlxAvailability()?.model_present;
+  if (scopeCopy) {
+    scopeCopy.textContent = MLX_SCOPE_COPY;
+    scopeCopy.style.display = provider === 'mlx' ? '' : 'none';
+  }
+  if (!identifier) return;
+  if (provider === 'mlx' && modelPresent) {
+    identifier.textContent = `model: ${getSelectedMlxModel()}`;
+    identifier.style.display = '';
+  } else {
+    identifier.textContent = '';
+    identifier.style.display = 'none';
+  }
+}
+
+function syncMlxProgressRegion() {
+  const provider = document.getElementById('field-generate-provider')?.value;
+  const region = document.getElementById('mlxBootstrapRegion');
+  if (!region) return;
+  if (provider !== 'mlx') {
+    unmountMlxProgress();
+    return;
+  }
+  region.style.display = '';
+  updateMlxModelIdentifier();
+  const availability = getMlxAvailability();
+  if (availability?.model_present) {
+    clearMlxBootstrapPollTimer();
+    setMlxProgressVisible(false);
+    return;
+  }
+  mountMlxProgress();
+}
+
+function clearMlxBootstrapPollTimer() {
+  if (mlxBootstrapPollTimer) {
+    clearInterval(mlxBootstrapPollTimer);
+    mlxBootstrapPollTimer = null;
+  }
+}
+
+function mountMlxProgress() {
+  const region = document.getElementById('mlxBootstrapRegion');
+  if (!region) return;
+  region.style.display = '';
+  setMlxProgressVisible(true);
+  updateMlxModelIdentifier();
+  const retry = document.getElementById('mlxBootstrapRetry');
+  if (retry) retry.style.display = 'none';
+  if (!mlxBootstrapPostStarted) {
+    mlxBootstrapPostStarted = true;
+    startMlxBootstrap();
+  }
+  startMlxBootstrapPolling();
+}
+
+function unmountMlxProgress() {
+  clearMlxBootstrapPollTimer();
+  mlxBootstrapPostStarted = false;
+  const region = document.getElementById('mlxBootstrapRegion');
+  if (region) region.style.display = 'none';
+  updateMlxModelIdentifier();
+}
+
+async function startMlxBootstrap() {
+  try {
+    const response = await fetch('api/mlx/bootstrap', { method: 'POST' });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || payload.error || 'MLX bootstrap failed');
+    handleMlxBootstrapStatus({
+      state: payload.state,
+      received_bytes: 0,
+      total_bytes: 0,
+      message: null,
+    });
+  } catch (err) {
+    handleMlxBootstrapStatus({
+      state: 'failed',
+      received_bytes: 0,
+      total_bytes: 0,
+      message: err.message,
+    });
+  }
+}
+
+function startMlxBootstrapPolling() {
+  if (mlxBootstrapPollTimer) return;
+  pollMlxBootstrap();
+  mlxBootstrapPollTimer = setInterval(pollMlxBootstrap, 1000);
+}
+
+async function pollMlxBootstrap() {
+  try {
+    const response = await fetch('api/mlx/bootstrap/status');
+    const status = await response.json();
+    if (!response.ok) throw new Error(status.detail || status.error || 'MLX bootstrap status failed');
+    handleMlxBootstrapStatus(status);
+  } catch (err) {
+    handleMlxBootstrapStatus({
+      state: 'failed',
+      received_bytes: 0,
+      total_bytes: 0,
+      message: err.message,
+    });
+  }
+}
+
+async function refreshMlxAvailability() {
+  try {
+    const availability = await loadMlxAvailability();
+    providersData = providersData || {};
+    providersData.mlx_availability = availability;
+    updateMlxModelIdentifier();
+  } catch (err) {
+    console.error('Error refreshing MLX availability:', err);
+  }
+}
+
+function handleMlxBootstrapStatus(status) {
+  const state = status?.state || 'idle';
+  const received = Number(status?.received_bytes || 0);
+  const total = Number(status?.total_bytes || 0);
+  const stateEl = document.getElementById('mlxBootstrapState');
+  const bytesEl = document.getElementById('mlxBootstrapBytes');
+  const progressEl = document.getElementById('mlxBootstrapProgress');
+  const retry = document.getElementById('mlxBootstrapRetry');
+  const stateLabels = {
+    idle: 'idle',
+    downloading: 'Downloading...',
+    verifying: 'Verifying...',
+    installed: 'installed',
+    failed: status?.message || 'failed',
+  };
+
+  if (stateEl) stateEl.textContent = stateLabels[state] || state;
+  if (bytesEl) bytesEl.textContent = `${formatMlxBytes(received)} / ${formatMlxBytes(total)}`;
+  if (progressEl) {
+    progressEl.value = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : 0;
+  }
+  if (retry) {
+    retry.style.display = state === 'failed' ? '' : 'none';
+    retry.onclick = () => {
+      mlxBootstrapPostStarted = false;
+      mountMlxProgress();
+    };
+  }
+
+  if (state === 'installed') {
+    clearMlxBootstrapPollTimer();
+    setMlxProgressVisible(false);
+    refreshMlxAvailability();
+  } else if (state === 'failed') {
+    clearMlxBootstrapPollTimer();
+    setMlxProgressVisible(true);
+  }
 }
 
 function updateTypeProviderKeyWarning(type, provider, apiKeys, auth) {
@@ -5137,7 +5416,9 @@ for (const type of ['generate', 'cogitate']) {
             body: JSON.stringify({ [type]: { [field]: value } }),
           }],
           onSuccess: (result) => {
+            const previousMlxAvailability = providersData?.mlx_availability;
             providersData = result;
+            providersData.mlx_availability = previousMlxAvailability;
             if (field === 'provider') {
               updateTypeProviderKeyWarning(type, value, result.api_keys, result.auth);
               if (type === 'cogitate') {
@@ -5146,6 +5427,10 @@ for (const type of ['generate', 'cogitate']) {
                   authSelect.value = result.auth[value] || 'platform';
                 }
               }
+            }
+            if (type === 'generate' && (field === 'provider' || field === 'tier')) {
+              syncMlxProgressRegion();
+              refreshMlxAvailability().then(syncMlxProgressRegion);
             }
             showFieldStatus(el, 'saved');
           },
@@ -5172,7 +5457,9 @@ document.getElementById('field-cogitate-auth')?.addEventListener('change', async
         body: JSON.stringify({ auth: { [provider]: authSelect.value } }),
       }],
       onSuccess: (result) => {
+        const previousMlxAvailability = providersData?.mlx_availability;
         providersData = result;
+        providersData.mlx_availability = previousMlxAvailability;
         updateTypeProviderKeyWarning('cogitate', provider, result.api_keys, result.auth);
         showFieldStatus(authSelect, 'saved');
       },
@@ -5195,7 +5482,9 @@ document.getElementById('field-google-backend')?.addEventListener('change', asyn
         body: JSON.stringify({ google_backend: value }),
       }],
       onSuccess: (result) => {
+        const previousMlxAvailability = providersData?.mlx_availability;
         providersData = result;
+        providersData.mlx_availability = previousMlxAvailability;
         showFieldStatus(this, 'saved');
         const vf = document.getElementById('vertexFields');
         if (vf) vf.style.display = value === 'vertex' ? '' : 'none';

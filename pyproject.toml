@@ -48,6 +48,7 @@ dependencies = [
     "anthropic",
     "mlx-vlm>=0.5.0,<1; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "mlx>=0.31.2,<1; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "huggingface-hub>=0.24",
     "httpx",
     "h2",
     "cryptography>=42",
