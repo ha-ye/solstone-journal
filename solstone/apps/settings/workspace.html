@@ -2437,7 +2437,11 @@ button:focus:not(:focus-visible) {
       </div>
       <div id="mlxBootstrapRegion" class="provider-row mlx-bootstrap-region" style="display:none">
         <div class="settings-field">
-          <label>MLX model</label>
+          <label for="field-mlx-active-model">model</label>
+          <select id="field-mlx-active-model">
+            <!-- Populated dynamically from registry -->
+          </select>
+          <small></small>
           <div id="mlxBootstrapProgressShell" class="mlx-progress-shell">
             <div class="mlx-progress-header">
               <span id="mlxBootstrapState">idle</span>
@@ -4992,16 +4996,16 @@ function promptReload() {
 let providersData = null;
 let mlxBootstrapPollTimer = null;
 let mlxBootstrapPostStarted = false;
+let mlxModels = [];
 let bundledProviderPollTimer = null;
 let ollamaStatusLoading = false;
 let ollamaStatusError = '';
 
 const MLX_COGITATE_UNSUPPORTED_TITLE = 'MLX provider does not support cogitate in v1 — it is vision/generate-only. Configure a cloud provider for cogitate agents.';
 const MLX_SCOPE_COPY = 'vision and text on your device. tool-calling agents continue to use your configured cogitate provider.';
-const MLX_PROVIDER_DEFAULTS = {
-  1: 'qwen3.5:9b',
-  2: 'qwen3.5:9b',
-  3: 'qwen3.5:9b',
+const MLX_MODEL_LABELS = {
+  'qwen3.5:9b': 'qwen 3.5 — 16 GB Mac',
+  'gemma-4-26b-a4b-it-mlx-4bit': 'gemma 4 (26B) — 24 GB Mac',
 };
 const OLLAMA_OPENCODE_INSTALL_COMMAND = 'curl -fsSL https://opencode.ai/install | bash';
 const OLLAMA_OPENCODE_TITLE = 'OpenCode CLI not found on PATH — Ollama cogitate features will not work until OpenCode is installed.';
@@ -5011,6 +5015,8 @@ async function loadProviders() {
     const response = await fetch('api/providers');
     providersData = await response.json();
     if (providersData.error) throw new Error(providersData.error);
+    mlxModels = await loadMlxModels();
+    providersData.mlx_models = mlxModels;
     providersData.mlx_availability = await loadMlxAvailability();
     populateProviders(providersData);
   } catch (err) {
@@ -5019,8 +5025,16 @@ async function loadProviders() {
   }
 }
 
+async function loadMlxModels() {
+  const response = await fetch('api/mlx/models');
+  const models = await response.json();
+  if (!response.ok) throw new Error(models.detail || models.error || 'MLX models failed');
+  return models;
+}
+
 async function loadMlxAvailability() {
-  const response = await fetch('api/mlx/availability');
+  const model = encodeURIComponent(getSelectedMlxModel());
+  const response = await fetch(`api/mlx/availability?model=${model}`);
   const availability = await response.json();
   if (!response.ok) throw new Error(availability.detail || availability.error || 'MLX availability failed');
   return availability;
@@ -5080,6 +5094,7 @@ function populateProviders(data) {
   if (backendSelect) {
     backendSelect.value = data.google_backend || 'auto';
   }
+  populateMlxModelPicker(data);
   // Show/hide vertex fields
   const vertexFields = document.getElementById('vertexFields');
   if (vertexFields) {
@@ -5247,6 +5262,20 @@ async function recheckOllamaStatus() {
     ollamaStatusLoading = false;
     renderOllamaCogitateStatus();
   }
+}
+
+function populateMlxModelPicker(data) {
+  const select = document.getElementById('field-mlx-active-model');
+  if (!select) return;
+  const models = data.mlx_models || mlxModels || [];
+  select.innerHTML = '';
+  for (const model of models) {
+    const opt = document.createElement('option');
+    opt.value = model.name;
+    opt.textContent = MLX_MODEL_LABELS[model.name] || model.label || model.name;
+    select.appendChild(opt);
+  }
+  select.value = data.mlx?.active_model || 'qwen3.5:9b';
 }
 
 function bundledProviderMeta(state) {
@@ -5493,9 +5522,8 @@ function getProviderOptionLabel(provider, type) {
 }
 
 function getSelectedMlxModel() {
-  const tier = document.getElementById('field-generate-tier')?.value || providersData?.generate?.tier || '2';
-  const defaults = MLX_PROVIDER_DEFAULTS;
-  return defaults[tier] || defaults[parseInt(tier)] || 'qwen3.5:9b';
+  const select = document.getElementById('field-mlx-active-model');
+  return select?.value || providersData?.mlx?.active_model || 'qwen3.5:9b';
 }
 
 function formatMlxBytes(value) {
@@ -5552,7 +5580,30 @@ function syncMlxProgressRegion() {
     setMlxProgressVisible(false);
     return;
   }
+  if (isMlxBootstrapBlocked(availability)) {
+    clearMlxBootstrapPollTimer();
+    mlxBootstrapPostStarted = false;
+    setMlxProgressVisible(true);
+    handleMlxBootstrapStatus({
+      state: 'failed',
+      received_bytes: 0,
+      total_bytes: 0,
+      message: availability.reason,
+      bootstrap_disabled: true,
+    });
+    return;
+  }
   mountMlxProgress();
+}
+
+function isMlxBootstrapBlocked(availability) {
+  return !!(
+    availability &&
+    availability.available === false &&
+    !availability.model_present &&
+    availability.reason &&
+    availability.reason !== 'model snapshot not present'
+  );
 }
 
 function clearMlxBootstrapPollTimer() {
@@ -5587,7 +5638,8 @@ function unmountMlxProgress() {
 
 async function startMlxBootstrap() {
   try {
-    const response = await fetch('api/mlx/bootstrap', { method: 'POST' });
+    const model = encodeURIComponent(getSelectedMlxModel());
+    const response = await fetch(`api/mlx/bootstrap?model=${model}`, { method: 'POST' });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || payload.error || 'MLX bootstrap failed');
     handleMlxBootstrapStatus({
@@ -5614,7 +5666,8 @@ function startMlxBootstrapPolling() {
 
 async function pollMlxBootstrap() {
   try {
-    const response = await fetch('api/mlx/bootstrap/status');
+    const model = encodeURIComponent(getSelectedMlxModel());
+    const response = await fetch(`api/mlx/bootstrap/status?model=${model}`);
     const status = await response.json();
     if (!response.ok) throw new Error(status.detail || status.error || 'MLX bootstrap status failed');
     handleMlxBootstrapStatus(status);
@@ -5662,7 +5715,9 @@ function handleMlxBootstrapStatus(status) {
   }
   if (retry) {
     retry.style.display = state === 'failed' ? '' : 'none';
+    retry.disabled = !!status?.bootstrap_disabled;
     retry.onclick = () => {
+      if (retry.disabled) return;
       mlxBootstrapPostStarted = false;
       mountMlxProgress();
     };
@@ -5973,6 +6028,44 @@ for (const type of ['generate', 'cogitate']) {
     });
   }
 }
+
+document.getElementById('field-mlx-active-model')?.addEventListener('change', async function() {
+  const select = this;
+  const model = select.value;
+  const errorHost = prepareFieldErrorHost(select);
+  clearMlxBootstrapPollTimer();
+  mlxBootstrapPostStarted = false;
+  providersData = providersData || {};
+  providersData.mlx = providersData.mlx || {};
+  providersData.mlx.active_model = model;
+  try {
+    providersData.mlx_availability = await loadMlxAvailability();
+    syncMlxProgressRegion();
+    await window.saveControl({
+      el: select,
+      errorHost,
+      fetchArgs: ['api/providers', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mlx: { active_model: model } }),
+      }],
+      onSuccess: (result) => {
+        const previousMlxAvailability = providersData?.mlx_availability;
+        const previousMlxModels = providersData?.mlx_models || mlxModels;
+        providersData = result;
+        providersData.mlx_availability = previousMlxAvailability;
+        providersData.mlx_models = previousMlxModels;
+        if (!providersData.mlx) providersData.mlx = {};
+        providersData.mlx.active_model = model;
+        populateMlxModelPicker(providersData);
+        syncMlxProgressRegion();
+        showFieldStatus(select, 'saved');
+      },
+    });
+  } catch (err) {
+    notifyError('MLX model save failed', err.message);
+  }
+});
 
 // Cogitate auth mode change handler
 document.getElementById('field-cogitate-auth')?.addEventListener('change', async function() {

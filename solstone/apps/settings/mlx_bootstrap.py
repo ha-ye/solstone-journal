@@ -23,9 +23,8 @@ from huggingface_hub import constants
 from huggingface_hub.file_download import repo_folder_name
 
 from solstone.think.providers.mlx import (
-    MLX_MODEL_REPO,
-    MLX_MODEL_REVISION,
-    is_mlx_available,
+    _MLX_MODEL_REGISTRY,
+    is_mlx_available_for_model,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,19 +57,23 @@ class MlxVerificationError(RuntimeError):
     """Raised when a downloaded file fails sha256 verification."""
 
 
-_STATE = MlxBootstrapState()
-_STATE_LOCK = threading.Lock()
+_STATES: dict[str, MlxBootstrapState] = {
+    name: MlxBootstrapState() for name in _MLX_MODEL_REGISTRY
+}
+_STATES_LOCK = threading.Lock()
 
 
-def _snapshot_dir() -> Path:
+def _snapshot_dir(model: str) -> Path:
+    spec = _MLX_MODEL_REGISTRY[model]
     repo_folder = repo_folder_name(
-        repo_id=MLX_MODEL_REPO,
+        repo_id=spec.repo,
         repo_type="model",
     )
-    return Path(constants.HF_HUB_CACHE) / repo_folder / "snapshots" / MLX_MODEL_REVISION
+    return Path(constants.HF_HUB_CACHE) / repo_folder / "snapshots" / spec.revision
 
 
-def _safetensors_paths(snapshot_dir: Path) -> list[str]:
+def _safetensors_paths(model: str) -> list[str]:
+    snapshot_dir = _snapshot_dir(model)
     index_path = snapshot_dir / "model.safetensors.index.json"
     data = json.loads(index_path.read_text(encoding="utf-8"))
     weight_map = data.get("weight_map")
@@ -82,14 +85,14 @@ def _safetensors_paths(snapshot_dir: Path) -> list[str]:
     return paths
 
 
-def check_model_present() -> bool:
+def check_model_present(model: str) -> bool:
     """Return whether the pinned MLX snapshot is structurally present."""
-    snapshot_dir = _snapshot_dir()
+    snapshot_dir = _snapshot_dir(model)
     index_path = snapshot_dir / "model.safetensors.index.json"
     if not snapshot_dir.is_dir() or not index_path.is_file():
         return False
     try:
-        for rel_path in _safetensors_paths(snapshot_dir):
+        for rel_path in _safetensors_paths(model):
             file_path = snapshot_dir / rel_path
             if not file_path.is_file() or file_path.stat().st_size <= 0:
                 return False
@@ -104,10 +107,11 @@ def _is_package_installed(package: str) -> bool:
     return importlib.util.find_spec(package) is not None
 
 
-def get_availability_payload() -> dict[str, bool | float | str]:
+def get_availability_payload(model: str) -> dict[str, bool | float | int | str]:
     """Return the MLX availability payload used by Settings."""
-    ok, reason = is_mlx_available()
-    model_present = check_model_present()
+    spec = _MLX_MODEL_REGISTRY[model]
+    ok, reason = is_mlx_available_for_model(spec)
+    model_present = check_model_present(model)
     available = ok and model_present
     if ok and not model_present:
         reason = "model snapshot not present"
@@ -116,112 +120,126 @@ def get_availability_payload() -> dict[str, bool | float | str]:
 
     total_memory_gb = round(psutil.virtual_memory().total / 1024**3, 1)
     return {
+        "model": model,
         "is_apple_silicon": platform.system() == "Darwin"
         and platform.machine() == "arm64",
         "total_memory_gb": total_memory_gb,
         "mlx_installed": _is_package_installed("mlx_vlm"),
+        "min_ram_gb": spec.min_ram_bytes // 1024**3,
         "model_present": model_present,
         "available": available,
         "reason": reason,
     }
 
 
-def _serialize_state_locked() -> dict[str, int | str | None]:
+def _serialize_state_locked(model: str) -> dict[str, int | str | None]:
+    state = _STATES[model]
     return {
-        "state": _STATE.state,
-        "received_bytes": int(_STATE.received_bytes),
-        "total_bytes": int(_STATE.total_bytes),
-        "message": _STATE.message,
+        "state": state.state,
+        "received_bytes": int(state.received_bytes),
+        "total_bytes": int(state.total_bytes),
+        "message": state.message,
     }
 
 
-def _mark_installed_locked() -> None:
-    _STATE.state = "installed"
-    _STATE.message = None
-    _STATE.thread = None
-    _STATE.last_progress_at = time.monotonic()
+def _mark_installed_locked(model: str) -> None:
+    state = _STATES[model]
+    state.state = "installed"
+    state.message = None
+    state.thread = None
+    state.last_progress_at = time.monotonic()
 
 
-def _mark_downloading_locked(thread: threading.Thread, now: float) -> None:
-    _STATE.state = "downloading"
-    _STATE.received_bytes = 0
-    _STATE.total_bytes = 0
-    _STATE.started_at = now
-    _STATE.last_progress_at = now
-    _STATE.message = None
-    _STATE.thread = thread
+def _mark_downloading_locked(model: str, thread: threading.Thread, now: float) -> None:
+    state = _STATES[model]
+    state.state = "downloading"
+    state.received_bytes = 0
+    state.total_bytes = 0
+    state.started_at = now
+    state.last_progress_at = now
+    state.message = None
+    state.thread = thread
 
 
-def _mark_verifying() -> None:
+def _mark_verifying(model: str) -> None:
     now = time.monotonic()
-    with _STATE_LOCK:
-        if _STATE.state != "downloading":
+    with _STATES_LOCK:
+        state = _STATES[model]
+        if state.state != "downloading":
             return
-        _STATE.state = "verifying"
-        _STATE.received_bytes = 0
-        _STATE.total_bytes = 0
-        _STATE.last_progress_at = now
-        _STATE.message = None
+        state.state = "verifying"
+        state.received_bytes = 0
+        state.total_bytes = 0
+        state.last_progress_at = now
+        state.message = None
 
 
-def _mark_failed_locked(message: str) -> None:
-    _STATE.state = "failed"
-    _STATE.message = message
-    _STATE.last_progress_at = time.monotonic()
+def _mark_failed_locked(model: str, message: str) -> None:
+    state = _STATES[model]
+    state.state = "failed"
+    state.message = message
+    state.last_progress_at = time.monotonic()
 
 
-def _add_progress(received_delta: int, total: int | None = None) -> None:
+def _add_progress(model: str, received_delta: int, total: int | None = None) -> None:
     if received_delta < 0:
         received_delta = 0
     now = time.monotonic()
-    with _STATE_LOCK:
-        _STATE.received_bytes += received_delta
+    with _STATES_LOCK:
+        state = _STATES[model]
+        state.received_bytes += received_delta
         if total is not None:
-            _STATE.total_bytes = max(0, int(total))
-        _STATE.last_progress_at = now
+            state.total_bytes = max(0, int(total))
+        state.last_progress_at = now
 
 
-def _set_progress_total(total: int) -> None:
-    with _STATE_LOCK:
-        _STATE.total_bytes = max(0, int(total))
-        _STATE.last_progress_at = time.monotonic()
+def _set_progress_total(model: str, total: int) -> None:
+    with _STATES_LOCK:
+        state = _STATES[model]
+        state.total_bytes = max(0, int(total))
+        state.last_progress_at = time.monotonic()
 
 
-def _set_verify_progress(received_bytes: int, total_bytes: int) -> None:
-    with _STATE_LOCK:
-        if _STATE.state != "verifying":
+def _set_verify_progress(model: str, received_bytes: int, total_bytes: int) -> None:
+    with _STATES_LOCK:
+        state = _STATES[model]
+        if state.state != "verifying":
             return
-        _STATE.received_bytes = max(0, int(received_bytes))
-        _STATE.total_bytes = max(0, int(total_bytes))
-        _STATE.last_progress_at = time.monotonic()
+        state.received_bytes = max(0, int(received_bytes))
+        state.total_bytes = max(0, int(total_bytes))
+        state.last_progress_at = time.monotonic()
 
 
-def _observe_stall_locked(now: float) -> None:
-    if _STATE.state not in ("downloading", "verifying"):
+def _observe_stall_locked(model: str, now: float) -> None:
+    state = _STATES[model]
+    if state.state not in ("downloading", "verifying"):
         return
-    thread = _STATE.thread
+    thread = state.thread
     if thread is not None and thread.is_alive():
         return
-    last_progress = _STATE.last_progress_at or _STATE.started_at
+    last_progress = state.last_progress_at or state.started_at
     if last_progress is None or now - last_progress <= _STALL_SECONDS:
         return
-    _mark_failed_locked(f"{_STATE.state} stalled with no progress")
+    _mark_failed_locked(model, f"{state.state} stalled with no progress")
 
 
-def get_state() -> dict[str, int | str | None]:
+def get_state(model: str) -> dict[str, int | str | None]:
     """Return the serialized bootstrap state, applying stall detection."""
-    with _STATE_LOCK:
-        _observe_stall_locked(time.monotonic())
-        return _serialize_state_locked()
+    with _STATES_LOCK:
+        _observe_stall_locked(model, time.monotonic())
+        return _serialize_state_locked(model)
 
 
-def _remote_safetensors_metadata(paths: list[str]) -> dict[str, tuple[str, int]]:
+def _remote_safetensors_metadata(
+    model: str, paths: list[str]
+) -> dict[str, tuple[str, int]]:
+    spec = _MLX_MODEL_REGISTRY[model]
     wanted = set(paths)
     found: dict[str, tuple[str, int]] = {}
     api = huggingface_hub.HfApi()
     for entry in api.list_repo_tree(
-        repo_id=MLX_MODEL_REPO,
-        revision=MLX_MODEL_REVISION,
+        repo_id=spec.repo,
+        revision=spec.revision,
         repo_type="model",
         recursive=True,
     ):
@@ -236,13 +254,13 @@ def _remote_safetensors_metadata(paths: list[str]) -> dict[str, tuple[str, int]]
     return found
 
 
-def _verify_safetensors_sha256_hashes() -> None:
-    snapshot_dir = _snapshot_dir()
-    safetensors_paths = _safetensors_paths(snapshot_dir)
-    metadata = _remote_safetensors_metadata(safetensors_paths)
+def _verify_safetensors_sha256_hashes(model: str) -> None:
+    snapshot_dir = _snapshot_dir(model)
+    safetensors_paths = _safetensors_paths(model)
+    metadata = _remote_safetensors_metadata(model, safetensors_paths)
     total_bytes = sum(size for _sha, size in metadata.values())
     hashed_total = 0
-    _set_verify_progress(0, total_bytes)
+    _set_verify_progress(model, 0, total_bytes)
 
     for rel_path in safetensors_paths:
         expected_sha, _expected_size = metadata[rel_path]
@@ -253,23 +271,25 @@ def _verify_safetensors_sha256_hashes() -> None:
             for chunk in iter(lambda: handle.read(_HASH_CHUNK_SIZE), b""):
                 digest.update(chunk)
                 file_received += len(chunk)
-                _set_verify_progress(hashed_total + file_received, total_bytes)
+                _set_verify_progress(model, hashed_total + file_received, total_bytes)
         actual_sha = digest.hexdigest()
         if actual_sha != expected_sha:
             raise MlxVerificationError(f"sha256 mismatch for {rel_path}")
         hashed_total += file_received
-        _set_verify_progress(hashed_total, total_bytes)
+        _set_verify_progress(model, hashed_total, total_bytes)
 
 
 class _BootstrapTqdm:
+    _model = next(iter(_MLX_MODEL_REGISTRY))
+
     def __init__(self, *args, **kwargs):
         self._track_bytes = kwargs.get("unit") == "B"
         self._total = int(kwargs.get("total") or 0)
         if self._track_bytes:
-            _set_progress_total(self._total)
+            _set_progress_total(self._model, self._total)
             initial = int(kwargs.get("initial") or 0)
             if initial:
-                _add_progress(initial)
+                _add_progress(self._model, initial)
 
     @property
     def total(self) -> int:
@@ -279,11 +299,11 @@ class _BootstrapTqdm:
     def total(self, value: int | float | None) -> None:
         self._total = int(value or 0)
         if self._track_bytes:
-            _set_progress_total(self._total)
+            _set_progress_total(self._model, self._total)
 
     def update(self, n: int | float | None = 1) -> None:
         if self._track_bytes:
-            _add_progress(int(n or 0))
+            _add_progress(self._model, int(n or 0))
 
     def refresh(self) -> None:
         return None
@@ -302,70 +322,78 @@ class _BootstrapTqdm:
         return False
 
 
-def start_bootstrap() -> tuple[dict[str, str], int]:
+def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
     """Start the MLX model bootstrap worker if needed."""
-    ok, reason = is_mlx_available()
+    ok, reason = is_mlx_available_for_model(_MLX_MODEL_REGISTRY[model])
     if not ok:
         raise MlxBootstrapUnavailableError(reason)
 
-    present = check_model_present()
-    with _STATE_LOCK:
+    present = check_model_present(model)
+    with _STATES_LOCK:
+        state = _STATES[model]
         if (
-            _STATE.state in ("downloading", "verifying")
-            and _STATE.thread
-            and _STATE.thread.is_alive()
+            state.state in ("downloading", "verifying")
+            and state.thread
+            and state.thread.is_alive()
         ):
-            return {"state": _STATE.state}, 200
-        retry_after_failed = _STATE.state == "failed"
+            return {"state": state.state}, 200
+        retry_after_failed = state.state == "failed"
         if present and not retry_after_failed:
-            _mark_installed_locked()
+            _mark_installed_locked(model)
             return {"state": "installed"}, 200
 
-    with _STATE_LOCK:
+    with _STATES_LOCK:
+        state = _STATES[model]
         if (
-            _STATE.state in ("downloading", "verifying")
-            and _STATE.thread
-            and _STATE.thread.is_alive()
+            state.state in ("downloading", "verifying")
+            and state.thread
+            and state.thread.is_alive()
         ):
-            return {"state": _STATE.state}, 200
-        retry_after_failed = retry_after_failed or _STATE.state == "failed"
-        if not retry_after_failed and check_model_present():
-            _mark_installed_locked()
+            return {"state": state.state}, 200
+        retry_after_failed = retry_after_failed or state.state == "failed"
+        if not retry_after_failed and check_model_present(model):
+            _mark_installed_locked(model)
             return {"state": "installed"}, 200
         try:
             thread = threading.Thread(
                 target=_run_bootstrap_worker,
-                name="mlx-model-bootstrap",
+                args=(model,),
+                name=f"mlx-model-bootstrap-{model}",
                 daemon=True,
             )
         except Exception as exc:
-            _mark_failed_locked(str(exc))
+            _mark_failed_locked(model, str(exc))
             raise MlxBootstrapStartError(str(exc)) from exc
-        _mark_downloading_locked(thread, time.monotonic())
+        _mark_downloading_locked(model, thread, time.monotonic())
 
     try:
         thread.start()
     except Exception as exc:
-        with _STATE_LOCK:
-            _mark_failed_locked(str(exc))
+        with _STATES_LOCK:
+            _mark_failed_locked(model, str(exc))
         raise MlxBootstrapStartError(str(exc)) from exc
     return {"state": "downloading"}, 202
 
 
-def _run_bootstrap_worker() -> None:
+def _run_bootstrap_worker(model: str) -> None:
+    spec = _MLX_MODEL_REGISTRY[model]
+
+    class _ModelBoundTqdm(_BootstrapTqdm):
+        _model = model
+
     try:
         # v1.15.0 resumes via .incomplete files automatically; no resume_download kwarg.
         huggingface_hub.snapshot_download(
-            repo_id=MLX_MODEL_REPO,
-            revision=MLX_MODEL_REVISION,
-            tqdm_class=_BootstrapTqdm,
+            repo_id=spec.repo,
+            revision=spec.revision,
+            tqdm_class=_ModelBoundTqdm,
         )
-        _mark_verifying()
-        _verify_safetensors_sha256_hashes()
-        with _STATE_LOCK:
-            if _STATE.state == "verifying":
-                _mark_installed_locked()
+        _mark_verifying(model)
+        _verify_safetensors_sha256_hashes(model)
+        with _STATES_LOCK:
+            if _STATES[model].state == "verifying":
+                _mark_installed_locked(model)
     except Exception as exc:
         logger.exception("MLX model bootstrap failed")
-        with _STATE_LOCK:
-            _mark_failed_locked(str(exc))
+        with _STATES_LOCK:
+            _mark_failed_locked(model, str(exc))

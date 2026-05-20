@@ -16,8 +16,13 @@ from typing import Any, Callable
 import psutil
 
 from solstone.think.models import QWEN_35_9B
+from solstone.think.utils import get_config
 
 from .shared import GenerateResult
+
+GEMMA4_26B_A4B_4BIT = "gemma-4-26b-a4b-it-mlx-4bit"
+_GEMMA4_SOFT_TOKENS = 1120
+_GEMMA4_MIN_POSITION_EMBEDDING_SIZE = 10240
 
 
 @dataclass(frozen=True)
@@ -29,6 +34,57 @@ class MLXModelSpec:
     post_load: Callable[[Any, Any], None] | None = None
 
 
+def _gemma4_post_load(model: Any, processor: Any) -> None:
+    try:
+        position_embedding_size = model.vision_tower.position_embedding_size
+    except AttributeError as exc:
+        raise RuntimeError(
+            f"{GEMMA4_26B_A4B_4BIT} requires "
+            "model.vision_tower.position_embedding_size >= "
+            f"{_GEMMA4_MIN_POSITION_EMBEDDING_SIZE}; actual missing"
+        ) from exc
+
+    if position_embedding_size < _GEMMA4_MIN_POSITION_EMBEDDING_SIZE:
+        raise RuntimeError(
+            f"{GEMMA4_26B_A4B_4BIT} requires "
+            "model.vision_tower.position_embedding_size >= "
+            f"{_GEMMA4_MIN_POSITION_EMBEDDING_SIZE}; "
+            f"actual {position_embedding_size}"
+        )
+
+    pool_k = model.vision_tower.pooling_kernel_size
+    max_patches = _GEMMA4_SOFT_TOKENS * pool_k * pool_k
+
+    # The resize ratio must match max_soft_tokens=1120; otherwise gemma4 regresses
+    # to the smaller visual budget and loses screenshot faithfulness.
+    processor.image_processor.max_soft_tokens = _GEMMA4_SOFT_TOKENS
+    if hasattr(processor.image_processor, "image_seq_length"):
+        processor.image_processor.image_seq_length = _GEMMA4_SOFT_TOKENS
+    if hasattr(processor, "image_seq_length"):
+        processor.image_seq_length = _GEMMA4_SOFT_TOKENS
+    model.vision_tower.max_patches = max_patches
+    model.vision_tower.default_output_length = _GEMMA4_SOFT_TOKENS
+    pooler = getattr(model.vision_tower, "pooler", None)
+    if pooler is not None and hasattr(pooler, "default_output_length"):
+        pooler.default_output_length = _GEMMA4_SOFT_TOKENS
+
+    if processor.image_processor.max_soft_tokens != _GEMMA4_SOFT_TOKENS:
+        raise RuntimeError(
+            f"{GEMMA4_26B_A4B_4BIT} monkey-patch did not take: "
+            "processor.image_processor.max_soft_tokens"
+        )
+    if model.vision_tower.max_patches != max_patches:
+        raise RuntimeError(
+            f"{GEMMA4_26B_A4B_4BIT} monkey-patch did not take: "
+            "model.vision_tower.max_patches"
+        )
+    if model.vision_tower.default_output_length != _GEMMA4_SOFT_TOKENS:
+        raise RuntimeError(
+            f"{GEMMA4_26B_A4B_4BIT} monkey-patch did not take: "
+            "model.vision_tower.default_output_length"
+        )
+
+
 _MLX_MODEL_REGISTRY: dict[str, MLXModelSpec] = {
     QWEN_35_9B: MLXModelSpec(
         name=QWEN_35_9B,
@@ -36,11 +92,15 @@ _MLX_MODEL_REGISTRY: dict[str, MLXModelSpec] = {
         revision="84f7c2deea248d8df56240f88102def51c7ed5d6",
         min_ram_bytes=16 * 1024**3,
         post_load=None,
-    )
+    ),
+    GEMMA4_26B_A4B_4BIT: MLXModelSpec(
+        name=GEMMA4_26B_A4B_4BIT,
+        repo="mlx-community/gemma-4-26b-a4b-it-4bit",
+        revision="efbeee6e582ebfd06abc9d65e90839c4b5d2116b",
+        min_ram_bytes=24 * 1024**3,
+        post_load=_gemma4_post_load,
+    ),
 }
-MLX_MODEL_REPO = _MLX_MODEL_REGISTRY[QWEN_35_9B].repo
-MLX_MODEL_REVISION = _MLX_MODEL_REGISTRY[QWEN_35_9B].revision
-_DEFAULT_MODEL = QWEN_35_9B
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +160,26 @@ def _snapshot_missing_error(spec: MLXModelSpec) -> ModelSnapshotMissingError:
     return ModelSnapshotMissingError(
         f"model snapshot not present at {spec.repo}@{spec.revision}"
     )
+
+
+def _resolve_default_model() -> str:
+    try:
+        active_model = get_config()["providers"]["mlx"]["active_model"]
+    except (KeyError, TypeError):
+        return QWEN_35_9B
+    except Exception as exc:
+        logger.warning("Failed to resolve MLX active model: %s", exc)
+        return QWEN_35_9B
+
+    if active_model in _MLX_MODEL_REGISTRY:
+        return active_model
+    if isinstance(active_model, str):
+        logger.warning(
+            "Unknown MLX active model %r in journal config; falling back to %s",
+            active_model,
+            QWEN_35_9B,
+        )
+    return QWEN_35_9B
 
 
 def _is_snapshot_missing_oserror(exc: OSError) -> bool:
@@ -240,7 +320,7 @@ def _extract_usage(result: Any) -> dict[str, int] | None:
 
 def run_generate(
     contents: str | list[Any],
-    model: str = _DEFAULT_MODEL,
+    model: str | None = None,
     temperature: float = 0.3,
     max_output_tokens: int = 8192 * 2,
     system_instruction: str | None = None,
@@ -250,6 +330,8 @@ def run_generate(
     timeout_s: float | None = None,
     **kwargs: Any,
 ) -> GenerateResult:
+    if model is None:
+        model = _resolve_default_model()
     mlx_model, processor, config = _load_model(model)
     text_prompt, images = _split_contents(contents)
     messages = _build_messages(system_instruction, text_prompt)
@@ -289,7 +371,7 @@ def run_generate(
 
 async def run_agenerate(
     contents: str | list[Any],
-    model: str = _DEFAULT_MODEL,
+    model: str | None = None,
     temperature: float = 0.3,
     max_output_tokens: int = 8192 * 2,
     system_instruction: str | None = None,
@@ -299,6 +381,8 @@ async def run_agenerate(
     timeout_s: float | None = None,
     **kwargs: Any,
 ) -> GenerateResult:
+    if model is None:
+        model = _resolve_default_model()
     # mlx-vlm generation is synchronous, so async callers run it in a worker thread.
     return await asyncio.to_thread(
         run_generate,
@@ -334,8 +418,7 @@ def validate_key(api_key: str) -> dict:
 
 
 __all__ = [
-    "MLX_MODEL_REPO",
-    "MLX_MODEL_REVISION",
+    "GEMMA4_26B_A4B_4BIT",
     "MLXModelSpec",
     "ModelSnapshotMissingError",
     "QWEN_35_9B",

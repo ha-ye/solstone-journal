@@ -60,6 +60,26 @@ def _install_mlx_stub(monkeypatch, *, load_exc=None, text="ok"):
     )
 
 
+def _gemma4_stubs(*, optional_attrs: bool = True):
+    image_processor = SimpleNamespace(max_soft_tokens=0)
+    processor = SimpleNamespace(tokenizer=object(), image_processor=image_processor)
+    pooler = SimpleNamespace(default_output_length=0)
+    vision_tower = SimpleNamespace(
+        position_embedding_size=10240,
+        pooling_kernel_size=3,
+        max_patches=0,
+        default_output_length=0,
+        pooler=pooler,
+    )
+    if optional_attrs:
+        image_processor.image_seq_length = 0
+        processor.image_seq_length = 0
+    else:
+        delattr(vision_tower, "pooler")
+    model = SimpleNamespace(vision_tower=vision_tower)
+    return model, processor
+
+
 def test_registration():
     from solstone.think.providers import (
         PROVIDER_METADATA,
@@ -221,7 +241,6 @@ def test_registry_pins_qwen_spec(monkeypatch):
 
     provider = _provider(monkeypatch)
 
-    assert list(provider._MLX_MODEL_REGISTRY) == [QWEN_35_9B]
     spec = provider._MLX_MODEL_REGISTRY[QWEN_35_9B]
     assert spec.repo == "mlx-community/Qwen3.5-9B-MLX-8bit"
     assert spec.revision == "84f7c2deea248d8df56240f88102def51c7ed5d6"
@@ -229,14 +248,21 @@ def test_registry_pins_qwen_spec(monkeypatch):
     assert spec.post_load is None
 
 
-def test_legacy_aliases_derive_from_registry(monkeypatch):
-    from solstone.think.models import QWEN_35_9B
-
+def test_registry_pins_gemma4_spec(monkeypatch):
     provider = _provider(monkeypatch)
-    spec = provider._MLX_MODEL_REGISTRY[QWEN_35_9B]
 
-    assert provider.MLX_MODEL_REPO == spec.repo
-    assert provider.MLX_MODEL_REVISION == spec.revision
+    spec = provider._MLX_MODEL_REGISTRY[provider.GEMMA4_26B_A4B_4BIT]
+    assert spec.repo == "mlx-community/gemma-4-26b-a4b-it-4bit"
+    assert spec.revision == "efbeee6e582ebfd06abc9d65e90839c4b5d2116b"
+    assert spec.min_ram_bytes == 24 * 1024**3
+    assert spec.post_load is provider._gemma4_post_load
+
+
+@pytest.mark.parametrize("suffix", ["REPO", "REVISION"])
+def test_legacy_mlx_repo_constants_are_not_importable(suffix):
+    name = "MLX_MODEL_" + suffix
+    with pytest.raises(ImportError):
+        exec(f"from solstone.think.providers.mlx import {name}", {})
 
 
 def test_list_models_returns_registry_keys(monkeypatch):
@@ -244,7 +270,7 @@ def test_list_models_returns_registry_keys(monkeypatch):
 
     provider = _provider(monkeypatch)
 
-    assert provider.list_models() == [QWEN_35_9B]
+    assert provider.list_models() == [QWEN_35_9B, provider.GEMMA4_26B_A4B_4BIT]
 
 
 def test_load_model_rejects_unknown_model(monkeypatch):
@@ -290,9 +316,8 @@ def test_cache_holds_multiple_models_independently(monkeypatch):
     assert set(provider._module_level_cache) == {QWEN_35_9B, "test:other"}
     assert second is not first
     assert stub.load.call_count == 2
-    stub.load.assert_any_call(
-        provider.MLX_MODEL_REPO, revision=provider.MLX_MODEL_REVISION
-    )
+    qwen_spec = provider._MLX_MODEL_REGISTRY[QWEN_35_9B]
+    stub.load.assert_any_call(qwen_spec.repo, revision=qwen_spec.revision)
     stub.load.assert_any_call("example/test-mlx", revision="test-rev")
 
 
@@ -368,8 +393,31 @@ def test_is_mlx_available_for_model_low_ram_includes_model_name(monkeypatch):
     )
 
 
+def test_is_mlx_available_for_gemma4_low_ram_includes_model_name(monkeypatch):
+    provider = _provider(monkeypatch)
+    monkeypatch.setattr(provider.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(provider.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(
+        provider.psutil,
+        "virtual_memory",
+        lambda: SimpleNamespace(total=16 * 1024**3),
+    )
+    monkeypatch.setitem(sys.modules, "mlx_vlm", types.ModuleType("mlx_vlm"))
+
+    result = provider.is_mlx_available_for_model(
+        provider._MLX_MODEL_REGISTRY[provider.GEMMA4_26B_A4B_4BIT]
+    )
+
+    assert result == (
+        False,
+        "insufficient RAM for gemma-4-26b-a4b-it-mlx-4bit (need 24 GB, have 16 GB)",
+    )
+
+
 def test_snapshot_missing_error_contains_repo_and_revision(monkeypatch):
     from huggingface_hub.errors import LocalEntryNotFoundError
+
+    from solstone.think.models import QWEN_35_9B
 
     provider = _provider(monkeypatch)
     _install_mlx_stub(monkeypatch, load_exc=LocalEntryNotFoundError("missing"))
@@ -378,6 +426,201 @@ def test_snapshot_missing_error_contains_repo_and_revision(monkeypatch):
         provider.run_generate("hi")
 
     assert "model snapshot not present" in str(exc_info.value)
-    assert f"{provider.MLX_MODEL_REPO}@{provider.MLX_MODEL_REVISION}" in str(
-        exc_info.value
+    spec = provider._MLX_MODEL_REGISTRY[QWEN_35_9B]
+    assert f"{spec.repo}@{spec.revision}" in str(exc_info.value)
+
+
+def test_gemma4_post_load_writes_all_patch_attributes(monkeypatch):
+    provider = _provider(monkeypatch)
+    model, processor = _gemma4_stubs()
+
+    provider._gemma4_post_load(model, processor)
+
+    assert processor.image_processor.max_soft_tokens == 1120
+    assert processor.image_processor.image_seq_length == 1120
+    assert processor.image_seq_length == 1120
+    assert model.vision_tower.max_patches == 10080
+    assert model.vision_tower.default_output_length == 1120
+    assert model.vision_tower.pooler.default_output_length == 1120
+
+
+def test_gemma4_post_load_refuses_small_position_embedding(monkeypatch):
+    provider = _provider(monkeypatch)
+    model, processor = _gemma4_stubs()
+    model.vision_tower.position_embedding_size = 5120
+
+    with pytest.raises(RuntimeError) as exc_info:
+        provider._gemma4_post_load(model, processor)
+
+    message = str(exc_info.value)
+    assert provider.GEMMA4_26B_A4B_4BIT in message
+    assert "10240" in message
+    assert "5120" in message
+
+
+def test_gemma4_post_load_refuses_missing_position_embedding(monkeypatch):
+    provider = _provider(monkeypatch)
+    model, processor = _gemma4_stubs()
+    delattr(model.vision_tower, "position_embedding_size")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        provider._gemma4_post_load(model, processor)
+
+    message = str(exc_info.value)
+    assert provider.GEMMA4_26B_A4B_4BIT in message
+    assert "position_embedding_size" in message
+    assert "missing" in message
+
+
+@pytest.mark.parametrize(
+    ("attr_name", "expected_message"),
+    [
+        ("max_soft_tokens", "processor.image_processor.max_soft_tokens"),
+        ("max_patches", "model.vision_tower.max_patches"),
+        ("default_output_length", "model.vision_tower.default_output_length"),
+    ],
+)
+def test_gemma4_post_load_asserts_required_writes_stick(
+    monkeypatch, attr_name, expected_message
+):
+    provider = _provider(monkeypatch)
+    model, processor = _gemma4_stubs()
+
+    if attr_name == "max_soft_tokens":
+
+        class NoOpImageProcessor:
+            image_seq_length = 0
+
+            @property
+            def max_soft_tokens(self):
+                return 0
+
+            @max_soft_tokens.setter
+            def max_soft_tokens(self, _value):
+                return None
+
+        processor.image_processor = NoOpImageProcessor()
+    elif attr_name == "max_patches":
+
+        class NoOpMaxPatchesVisionTower:
+            position_embedding_size = 10240
+            pooling_kernel_size = 3
+            default_output_length = 0
+            pooler = SimpleNamespace(default_output_length=0)
+
+            @property
+            def max_patches(self):
+                return 0
+
+            @max_patches.setter
+            def max_patches(self, _value):
+                return None
+
+        model.vision_tower = NoOpMaxPatchesVisionTower()
+    else:
+
+        class NoOpDefaultOutputVisionTower:
+            position_embedding_size = 10240
+            pooling_kernel_size = 3
+            max_patches = 0
+            pooler = SimpleNamespace(default_output_length=0)
+
+            @property
+            def default_output_length(self):
+                return 0
+
+            @default_output_length.setter
+            def default_output_length(self, _value):
+                return None
+
+        model.vision_tower = NoOpDefaultOutputVisionTower()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        provider._gemma4_post_load(model, processor)
+
+    assert expected_message in str(exc_info.value)
+
+
+def test_gemma4_post_load_skips_missing_conditional_writes(monkeypatch):
+    provider = _provider(monkeypatch)
+    model, processor = _gemma4_stubs(optional_attrs=False)
+
+    provider._gemma4_post_load(model, processor)
+
+    assert processor.image_processor.max_soft_tokens == 1120
+    assert model.vision_tower.max_patches == 10080
+    assert model.vision_tower.default_output_length == 1120
+    assert not hasattr(processor.image_processor, "image_seq_length")
+    assert not hasattr(processor, "image_seq_length")
+    assert not hasattr(model.vision_tower, "pooler")
+
+
+def test_resolve_default_model_reads_config_active_model(monkeypatch):
+    provider = _provider(monkeypatch)
+    monkeypatch.setattr(
+        provider,
+        "get_config",
+        lambda: {"providers": {"mlx": {"active_model": provider.GEMMA4_26B_A4B_4BIT}}},
     )
+
+    assert provider._resolve_default_model() == provider.GEMMA4_26B_A4B_4BIT
+
+
+def test_run_generate_uses_active_model_when_model_omitted(monkeypatch):
+    provider = _provider(monkeypatch)
+    stub = _install_mlx_stub(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        provider,
+        "get_config",
+        lambda: {"providers": {"mlx": {"active_model": provider.GEMMA4_26B_A4B_4BIT}}},
+    )
+
+    def fake_load_model(model_name):
+        calls.append(model_name)
+        return stub.model, stub.processor, stub.model.config
+
+    monkeypatch.setattr(provider, "_load_model", fake_load_model)
+
+    provider.run_generate("hi")
+
+    assert calls == [provider.GEMMA4_26B_A4B_4BIT]
+
+
+def test_resolve_default_model_unknown_config_warns_and_falls_back(monkeypatch, caplog):
+    from solstone.think.models import QWEN_35_9B
+
+    provider = _provider(monkeypatch)
+    monkeypatch.setattr(
+        provider,
+        "get_config",
+        lambda: {"providers": {"mlx": {"active_model": "bogus"}}},
+    )
+
+    with caplog.at_level("WARNING"):
+        assert provider._resolve_default_model() == QWEN_35_9B
+
+    assert "bogus" in caplog.text
+
+
+def test_resolve_default_model_unreadable_config_falls_back(monkeypatch, caplog):
+    from solstone.think.models import QWEN_35_9B
+
+    provider = _provider(monkeypatch)
+    monkeypatch.setattr(
+        provider,
+        "get_config",
+        MagicMock(side_effect=OSError("config unreadable")),
+    )
+
+    with caplog.at_level("WARNING"):
+        assert provider._resolve_default_model() == QWEN_35_9B
+
+    assert "config unreadable" in caplog.text
+
+
+def test_run_generate_explicit_unknown_model_still_raises(monkeypatch):
+    provider = _provider(monkeypatch)
+
+    with pytest.raises(ValueError, match="unknown MLX model"):
+        provider.run_generate("hi", model="bogus")

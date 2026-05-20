@@ -71,6 +71,7 @@ OLLAMA_FLASH = "ollama-local/qwen3.5:9b"
 OLLAMA_LITE = "ollama-local/qwen3.5:2b"
 
 QWEN_35_9B = "qwen3.5:9b"
+GEMMA4_26B_A4B_4BIT = "gemma-4-26b-a4b-it-mlx-4bit"
 MLX_PRO = QWEN_35_9B
 MLX_FLASH = QWEN_35_9B
 MLX_LITE = QWEN_35_9B
@@ -668,7 +669,9 @@ def get_model_provider(model: str) -> str:
     """
     model_lower = model.lower()
 
-    if model_lower == QWEN_35_9B.lower():
+    if model_lower == GEMMA4_26B_A4B_4BIT.lower():
+        return "mlx"
+    elif model_lower == QWEN_35_9B.lower():
         return "mlx"
     elif model_lower.startswith("ollama-local/"):
         return "ollama"
@@ -1522,6 +1525,7 @@ __all__ = [
     "GPT_5",
     "CLAUDE_SONNET_4",
     "QWEN_35_9B",
+    "GEMMA4_26B_A4B_4BIT",
     "MLX_FLASH",
     # Unified API
     "generate",

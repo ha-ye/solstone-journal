@@ -54,14 +54,25 @@ def test_workspace_mlx_unavailable_option_disabled_title_and_suffix():
         assert reason
 
 
-def test_workspace_mlx_model_identifier_uses_generate_tier():
+def test_workspace_mlx_model_identifier_uses_active_model():
     text = _workspace_text()
 
     assert 'id="mlxModelIdentifier"' in text
+    assert 'id="field-mlx-active-model"' in text
     assert "function getSelectedMlxModel()" in text
-    assert "const MLX_PROVIDER_DEFAULTS" in text
+    assert "providersData?.mlx?.active_model" in text
     assert "model_present" in text
     assert "model: ${getSelectedMlxModel()}" in text
+
+
+def test_workspace_mlx_model_picker_labels_are_pinned():
+    text = _workspace_text()
+
+    assert "qwen 3.5 — 16 GB Mac" in text
+    assert "gemma 4 (26B) — 24 GB Mac" in text
+    assert text.index('id="field-mlx-active-model"') < text.index(
+        'id="mlxBootstrapProgressShell"'
+    )
 
 
 def test_workspace_mlx_v1_scope_copy_is_generate_gated():
@@ -100,6 +111,7 @@ def test_workspace_mlx_retry_button_is_failed_only():
 
     assert 'id="mlxBootstrapRetry"' in text
     assert "retry.style.display = state === 'failed' ? '' : 'none'" in text
+    assert "retry.disabled = !!status?.bootstrap_disabled" in text
     assert "retry.onclick" in text
     assert "mountMlxProgress()" in text
 
@@ -109,7 +121,9 @@ def test_workspace_mlx_polling_starts_and_stops_on_terminal_states():
 
     assert "let mlxBootstrapPollTimer = null" in text
     assert "let mlxBootstrapPostStarted = false" in text
-    assert "fetch('api/mlx/bootstrap', { method: 'POST' })" in text
+    assert "api/mlx/bootstrap?model=${model}" in text
+    assert "api/mlx/bootstrap/status?model=${model}" in text
+    assert "api/mlx/availability?model=${model}" in text
     assert "setInterval(pollMlxBootstrap, 1000)" in text
     assert "clearInterval(mlxBootstrapPollTimer)" in text
     assert "state === 'installed'" in text

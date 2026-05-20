@@ -17,6 +17,7 @@ from solstone.think.models import (
     GEMINI_FLASH,
     GEMINI_LITE,
     GEMINI_PRO,
+    GEMMA4_26B_A4B_4BIT,
     GPT_5,
     GPT_5_MINI,
     GPT_5_NANO,
@@ -33,6 +34,7 @@ from solstone.think.models import (
     generate,
     generate_with_result,
     get_context_registry,
+    get_model_provider,
     get_usage_cost,
     iter_token_log,
     request_health_recheck,
@@ -96,6 +98,27 @@ def test_calc_token_cost_unknown_model():
 
     result = calc_token_cost(token_data)
     assert result is None
+
+
+def test_get_model_provider_gemma4_is_mlx():
+    assert get_model_provider(GEMMA4_26B_A4B_4BIT) == "mlx"
+
+
+def test_calc_token_cost_gemma4_zero_cost():
+    token_data = {
+        "model": GEMMA4_26B_A4B_4BIT,
+        "usage": {
+            "input_tokens": 1000,
+            "output_tokens": 100,
+        },
+    }
+
+    assert calc_token_cost(token_data) == {
+        "total_cost": 0.0,
+        "input_cost": 0.0,
+        "output_cost": 0.0,
+        "currency": "USD",
+    }
 
 
 def test_calc_token_cost_missing_data():

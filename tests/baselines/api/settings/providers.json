@@ -616,5 +616,8 @@
     }
   ],
   "vertex_credentials_configured": false,
-  "vertex_credentials_email": ""
+  "vertex_credentials_email": "",
+  "mlx": {
+    "active_model": "qwen3.5:9b"
+  }
 }

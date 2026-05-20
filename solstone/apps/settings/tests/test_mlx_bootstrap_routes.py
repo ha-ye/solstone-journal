@@ -17,7 +17,8 @@ import tomllib
 
 from solstone.apps.settings import mlx_bootstrap
 from solstone.convey import create_app
-from solstone.think.providers.mlx import MLX_MODEL_REPO, MLX_MODEL_REVISION
+from solstone.think.models import GEMMA4_26B_A4B_4BIT, QWEN_35_9B
+from solstone.think.providers.mlx import _MLX_MODEL_REGISTRY
 
 
 def _client(journal_path):
@@ -40,14 +41,18 @@ def _settings_config() -> dict:
 
 @pytest.fixture(autouse=True)
 def _reset_mlx_state(monkeypatch, tmp_path):
-    monkeypatch.setattr(mlx_bootstrap, "_STATE", mlx_bootstrap.MlxBootstrapState())
+    monkeypatch.setattr(
+        mlx_bootstrap,
+        "_STATES",
+        {name: mlx_bootstrap.MlxBootstrapState() for name in _MLX_MODEL_REGISTRY},
+    )
     monkeypatch.setattr(mlx_bootstrap.constants, "HF_HUB_CACHE", str(tmp_path / "hf"))
 
 
-def _set_state(**updates):
-    with mlx_bootstrap._STATE_LOCK:
+def _set_state(model: str = QWEN_35_9B, **updates):
+    with mlx_bootstrap._STATES_LOCK:
         for key, value in updates.items():
-            setattr(mlx_bootstrap._STATE, key, value)
+            setattr(mlx_bootstrap._STATES[model], key, value)
 
 
 class _FakeThread:
@@ -75,8 +80,10 @@ class _DeadThread:
 
 def test_mlx_availability_payload_exact_shape(settings_env, monkeypatch):
     journal_path, _config = settings_env(_settings_config())
-    monkeypatch.setattr(mlx_bootstrap, "is_mlx_available", lambda: (True, ""))
-    monkeypatch.setattr(mlx_bootstrap, "check_model_present", lambda: True)
+    monkeypatch.setattr(
+        mlx_bootstrap, "is_mlx_available_for_model", lambda _spec: (True, "")
+    )
+    monkeypatch.setattr(mlx_bootstrap, "check_model_present", lambda _model: True)
     monkeypatch.setattr(mlx_bootstrap.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(mlx_bootstrap.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(
@@ -92,17 +99,21 @@ def test_mlx_availability_payload_exact_shape(settings_env, monkeypatch):
     assert response.status_code == 200
     payload = response.get_json()
     assert set(payload) == {
+        "model",
         "is_apple_silicon",
         "total_memory_gb",
         "mlx_installed",
+        "min_ram_gb",
         "model_present",
         "available",
         "reason",
     }
     assert payload == {
+        "model": QWEN_35_9B,
         "is_apple_silicon": True,
         "total_memory_gb": 32.0,
         "mlx_installed": True,
+        "min_ram_gb": 16,
         "model_present": True,
         "available": True,
         "reason": "",
@@ -122,12 +133,14 @@ def test_mlx_availability_payload_exact_shape(settings_env, monkeypatch):
 
 def test_bootstrap_post_is_idempotent_while_downloading(settings_env, monkeypatch):
     settings_env(_settings_config())
-    monkeypatch.setattr(mlx_bootstrap, "is_mlx_available", lambda: (True, ""))
+    monkeypatch.setattr(
+        mlx_bootstrap, "is_mlx_available_for_model", lambda _spec: (True, "")
+    )
     present_barrier = threading.Barrier(2)
     present_lock = threading.Lock()
     present_calls = 0
 
-    def fake_check_model_present():
+    def fake_check_model_present(_model):
         nonlocal present_calls
         with present_lock:
             present_calls += 1
@@ -149,7 +162,7 @@ def test_bootstrap_post_is_idempotent_while_downloading(settings_env, monkeypatc
     def call_start_bootstrap():
         try:
             call_barrier.wait(timeout=2)
-            result = mlx_bootstrap.start_bootstrap()
+            result = mlx_bootstrap.start_bootstrap(QWEN_35_9B)
             with results_lock:
                 results.append(result)
         except Exception as exc:  # pragma: no cover - surfaced by assertion below
@@ -181,8 +194,10 @@ def test_bootstrap_post_already_installed_returns_installed_without_worker(
     monkeypatch,
 ):
     journal_path, _config = settings_env(_settings_config())
-    monkeypatch.setattr(mlx_bootstrap, "is_mlx_available", lambda: (True, ""))
-    monkeypatch.setattr(mlx_bootstrap, "check_model_present", lambda: True)
+    monkeypatch.setattr(
+        mlx_bootstrap, "is_mlx_available_for_model", lambda _spec: (True, "")
+    )
+    monkeypatch.setattr(mlx_bootstrap, "check_model_present", lambda _model: True)
     monkeypatch.setattr(
         mlx_bootstrap.threading,
         "Thread",
@@ -207,7 +222,9 @@ def test_bootstrap_post_already_installed_returns_installed_without_worker(
 )
 def test_bootstrap_post_rejects_unqualified_host(settings_env, monkeypatch, reason):
     journal_path, _config = settings_env(_settings_config())
-    monkeypatch.setattr(mlx_bootstrap, "is_mlx_available", lambda: (False, reason))
+    monkeypatch.setattr(
+        mlx_bootstrap, "is_mlx_available_for_model", lambda _spec: (False, reason)
+    )
     client = _client(journal_path)
 
     response = client.post("/app/settings/api/mlx/bootstrap")
@@ -287,11 +304,199 @@ def test_routes_import_without_mlx_vlm_registers_mlx_endpoints(
     assert "/app/settings/api/mlx/availability" in registered
     assert "/app/settings/api/mlx/bootstrap" in registered
     assert "/app/settings/api/mlx/bootstrap/status" in registered
+    assert "/app/settings/api/mlx/models" in registered
 
 
-def _write_snapshot(tmp_path: Path, monkeypatch, files: dict[str, bytes]) -> Path:
+def test_mlx_models_route_returns_settings_shape(settings_env):
+    journal_path, _config = settings_env(_settings_config())
+    client = _client(journal_path)
+
+    response = client.get("/app/settings/api/mlx/models")
+
+    assert response.status_code == 200
+    assert response.get_json() == [
+        {
+            "name": QWEN_35_9B,
+            "label": "qwen 3.5 — 16 GB Mac",
+            "min_ram_gb": 16,
+        },
+        {
+            "name": GEMMA4_26B_A4B_4BIT,
+            "label": "gemma 4 (26B) — 24 GB Mac",
+            "min_ram_gb": 24,
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "/app/settings/api/mlx/availability"),
+        ("post", "/app/settings/api/mlx/bootstrap"),
+        ("get", "/app/settings/api/mlx/bootstrap/status"),
+    ],
+)
+def test_mlx_routes_reject_unknown_model(settings_env, method, path):
+    journal_path, _config = settings_env(_settings_config())
+    client = _client(journal_path)
+
+    response = getattr(client, method)(f"{path}?model=not-real")
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["reason_code"] == "invalid_request_value"
+    assert "not-real" in payload["detail"]
+    assert QWEN_35_9B in payload["detail"]
+    assert GEMMA4_26B_A4B_4BIT in payload["detail"]
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "helper_name", "return_value"),
+    [
+        (
+            "get",
+            "/app/settings/api/mlx/availability",
+            "get_availability_payload",
+            {"available": True},
+        ),
+        (
+            "post",
+            "/app/settings/api/mlx/bootstrap",
+            "start_bootstrap",
+            ({"state": "installed"}, 200),
+        ),
+        (
+            "get",
+            "/app/settings/api/mlx/bootstrap/status",
+            "get_state",
+            {"state": "idle"},
+        ),
+    ],
+)
+def test_mlx_routes_default_to_qwen_model(
+    settings_env, monkeypatch, method, path, helper_name, return_value
+):
+    journal_path, _config = settings_env(_settings_config())
+    calls = []
+
+    def fake_helper(model):
+        calls.append(model)
+        return return_value
+
+    monkeypatch.setattr(mlx_bootstrap, helper_name, fake_helper)
+    client = _client(journal_path)
+
+    response = getattr(client, method)(path)
+
+    assert response.status_code == 200
+    assert calls == [QWEN_35_9B]
+
+
+def test_update_providers_mlx_round_trip_persists_active_model(
+    settings_env, monkeypatch
+):
+    journal_path, _config = settings_env(_settings_config())
+    client = _client(journal_path)
+
+    response = client.put(
+        "/app/settings/api/providers",
+        json={"mlx": {"active_model": GEMMA4_26B_A4B_4BIT}},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["mlx"]["active_model"] == GEMMA4_26B_A4B_4BIT
+    saved = json.loads((journal_path / "config" / "journal.json").read_text())
+    assert saved["providers"]["mlx"]["active_model"] == GEMMA4_26B_A4B_4BIT
+
+    from solstone.think.providers import mlx
+
+    monkeypatch.setattr(mlx, "_module_level_cache", {})
+    assert mlx._resolve_default_model() == GEMMA4_26B_A4B_4BIT
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"mlx": "string-not-object"},
+        {"mlx": {"active_model": 123}},
+        {"mlx": {"unknown_field": "x"}},
+        {"mlx": {"active_model": "not-a-real-model"}},
+    ],
+)
+def test_update_providers_mlx_rejects_malformed_payload(settings_env, payload):
+    journal_path, _config = settings_env(_settings_config())
+    client = _client(journal_path)
+    before = (journal_path / "config" / "journal.json").read_text()
+
+    response = client.put("/app/settings/api/providers", json=payload)
+
+    assert response.status_code == 400
+    assert response.get_json()["reason_code"] == "invalid_config_value"
+    assert (journal_path / "config" / "journal.json").read_text() == before
+
+
+def test_bootstrap_state_is_per_model_under_concurrent_access(monkeypatch):
+    releases = {
+        QWEN_35_9B: threading.Event(),
+        GEMMA4_26B_A4B_4BIT: threading.Event(),
+    }
+    started = {
+        QWEN_35_9B: threading.Event(),
+        GEMMA4_26B_A4B_4BIT: threading.Event(),
+    }
+    monkeypatch.setattr(
+        mlx_bootstrap,
+        "is_mlx_available_for_model",
+        lambda _spec: (True, ""),
+    )
+    monkeypatch.setattr(mlx_bootstrap, "check_model_present", lambda _model: False)
+
+    def fake_worker(model):
+        started[model].set()
+        releases[model].wait(timeout=2)
+        with mlx_bootstrap._STATES_LOCK:
+            mlx_bootstrap._mark_installed_locked(model)
+
+    monkeypatch.setattr(mlx_bootstrap, "_run_bootstrap_worker", fake_worker)
+
+    assert mlx_bootstrap.start_bootstrap(QWEN_35_9B) == ({"state": "downloading"}, 202)
+    assert started[QWEN_35_9B].wait(timeout=2)
+    assert mlx_bootstrap.start_bootstrap(GEMMA4_26B_A4B_4BIT) == (
+        {"state": "downloading"},
+        202,
+    )
+    assert started[GEMMA4_26B_A4B_4BIT].wait(timeout=2)
+    assert mlx_bootstrap.get_state(QWEN_35_9B)["state"] == "downloading"
+    assert mlx_bootstrap.get_state(GEMMA4_26B_A4B_4BIT)["state"] == "downloading"
+
+    releases[QWEN_35_9B].set()
+    deadline = time.monotonic() + 2
+    while (
+        mlx_bootstrap.get_state(QWEN_35_9B)["state"] != "installed"
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.01)
+    assert mlx_bootstrap.get_state(QWEN_35_9B)["state"] == "installed"
+    assert mlx_bootstrap.get_state(GEMMA4_26B_A4B_4BIT)["state"] == "downloading"
+
+    releases[GEMMA4_26B_A4B_4BIT].set()
+    deadline = time.monotonic() + 2
+    while (
+        mlx_bootstrap.get_state(GEMMA4_26B_A4B_4BIT)["state"] != "installed"
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.01)
+    assert mlx_bootstrap.get_state(GEMMA4_26B_A4B_4BIT)["state"] == "installed"
+
+
+def _write_snapshot(
+    tmp_path: Path,
+    monkeypatch,
+    files: dict[str, bytes],
+    model: str = QWEN_35_9B,
+) -> Path:
     monkeypatch.setattr(mlx_bootstrap.constants, "HF_HUB_CACHE", str(tmp_path / "hf"))
-    snapshot_dir = mlx_bootstrap._snapshot_dir()
+    snapshot_dir = mlx_bootstrap._snapshot_dir(model)
     snapshot_dir.mkdir(parents=True)
     (snapshot_dir / "model.safetensors.index.json").write_text(
         json.dumps({"weight_map": {f"w{i}": path for i, path in enumerate(files)}}),
@@ -314,10 +519,12 @@ def test_model_present_requires_index_and_all_safetensors(tmp_path, monkeypatch)
         },
     )
 
-    assert mlx_bootstrap.check_model_present() is True
+    assert mlx_bootstrap.check_model_present(QWEN_35_9B) is True
 
-    (mlx_bootstrap._snapshot_dir() / "model-00002-of-00002.safetensors").unlink()
-    assert mlx_bootstrap.check_model_present() is False
+    (
+        mlx_bootstrap._snapshot_dir(QWEN_35_9B) / "model-00002-of-00002.safetensors"
+    ).unlink()
+    assert mlx_bootstrap.check_model_present(QWEN_35_9B) is False
 
 
 def test_snapshot_download_called_without_resume_download(monkeypatch):
@@ -331,13 +538,14 @@ def test_snapshot_download_called_without_resume_download(monkeypatch):
         mlx_bootstrap.huggingface_hub, "snapshot_download", fake_snapshot_download
     )
     monkeypatch.setattr(
-        mlx_bootstrap, "_verify_safetensors_sha256_hashes", lambda: None
+        mlx_bootstrap, "_verify_safetensors_sha256_hashes", lambda _model: None
     )
 
-    mlx_bootstrap._run_bootstrap_worker()
+    mlx_bootstrap._run_bootstrap_worker(QWEN_35_9B)
 
-    assert calls["repo_id"] == MLX_MODEL_REPO
-    assert calls["revision"] == MLX_MODEL_REVISION
+    spec = _MLX_MODEL_REGISTRY[QWEN_35_9B]
+    assert calls["repo_id"] == spec.repo
+    assert calls["revision"] == spec.revision
     assert "resume_download" not in calls
 
 
@@ -361,10 +569,11 @@ def test_hfapi_list_repo_tree_called_with_pinned_revision(tmp_path, monkeypatch)
     monkeypatch.setattr(mlx_bootstrap.huggingface_hub, "HfApi", lambda: FakeApi())
     _set_state(state="verifying")
 
-    mlx_bootstrap._verify_safetensors_sha256_hashes()
+    mlx_bootstrap._verify_safetensors_sha256_hashes(QWEN_35_9B)
 
-    assert calls["repo_id"] == MLX_MODEL_REPO
-    assert calls["revision"] == MLX_MODEL_REVISION
+    spec = _MLX_MODEL_REGISTRY[QWEN_35_9B]
+    assert calls["repo_id"] == spec.repo
+    assert calls["revision"] == spec.revision
     assert calls["recursive"] is True
 
 
@@ -372,7 +581,7 @@ def test_worker_enters_verifying_state_between_download_and_install(monkeypatch)
     entered_verify = threading.Event()
     release_verify = threading.Event()
 
-    def slow_verify():
+    def slow_verify(_model):
         entered_verify.set()
         release_verify.wait(timeout=2)
 
@@ -381,15 +590,17 @@ def test_worker_enters_verifying_state_between_download_and_install(monkeypatch)
         mlx_bootstrap.huggingface_hub, "snapshot_download", lambda **_kwargs: None
     )
     monkeypatch.setattr(mlx_bootstrap, "_verify_safetensors_sha256_hashes", slow_verify)
-    worker = threading.Thread(target=mlx_bootstrap._run_bootstrap_worker)
+    worker = threading.Thread(
+        target=mlx_bootstrap._run_bootstrap_worker, args=(QWEN_35_9B,)
+    )
     _set_state(thread=worker)
 
     worker.start()
     assert entered_verify.wait(timeout=2)
-    assert mlx_bootstrap.get_state()["state"] == "verifying"
+    assert mlx_bootstrap.get_state(QWEN_35_9B)["state"] == "verifying"
     release_verify.set()
     worker.join(timeout=2)
-    assert mlx_bootstrap.get_state()["state"] == "installed"
+    assert mlx_bootstrap.get_state(QWEN_35_9B)["state"] == "installed"
 
 
 def test_worker_verify_mismatch_transitions_to_failed_with_filename(
@@ -414,8 +625,8 @@ def test_worker_verify_mismatch_transitions_to_failed_with_filename(
     )
     monkeypatch.setattr(mlx_bootstrap.huggingface_hub, "HfApi", lambda: FakeApi())
 
-    mlx_bootstrap._run_bootstrap_worker()
-    payload = mlx_bootstrap.get_state()
+    mlx_bootstrap._run_bootstrap_worker(QWEN_35_9B)
+    payload = mlx_bootstrap.get_state(QWEN_35_9B)
 
     assert payload["state"] == "failed"
     assert "model.safetensors" in payload["message"]
@@ -430,9 +641,9 @@ def test_worker_exception_sets_failed_message(monkeypatch):
         lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("download broke")),
     )
 
-    mlx_bootstrap._run_bootstrap_worker()
+    mlx_bootstrap._run_bootstrap_worker(QWEN_35_9B)
 
-    payload = mlx_bootstrap.get_state()
+    payload = mlx_bootstrap.get_state(QWEN_35_9B)
     assert payload["state"] == "failed"
     assert "download broke" in payload["message"]
 

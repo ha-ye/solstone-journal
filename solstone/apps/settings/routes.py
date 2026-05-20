@@ -53,8 +53,10 @@ from solstone.convey.sol_initiated.settings import (
     save_settings as save_sol_voice_settings,
 )
 from solstone.convey.utils import error_response
+from solstone.think.models import QWEN_35_9B
 from solstone.think.pairing.config import get_host_url
 from solstone.think.providers.google import validate_vertex_credentials
+from solstone.think.providers.mlx import _MLX_MODEL_REGISTRY
 from solstone.think.retention import (
     _human_bytes,
     check_storage_health,
@@ -592,12 +594,37 @@ def _sol_voice_response(settings: SolVoiceSettings) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 VALID_TIERS = {1, 2, 3}
+MLX_MODEL_LABELS = {
+    QWEN_35_9B: "qwen 3.5 — 16 GB Mac",
+    "gemma-4-26b-a4b-it-mlx-4bit": "gemma 4 (26B) — 24 GB Mac",
+}
+
+
+def _mlx_model_error(model: str) -> Any:
+    return error_response(
+        INVALID_REQUEST_VALUE,
+        detail=(
+            f"Unknown MLX model: {model}. "
+            f"Must be one of: {', '.join(_MLX_MODEL_REGISTRY.keys())}"
+        ),
+    )
+
+
+def _mlx_model_from_request() -> tuple[str | None, Any | None]:
+    model = request.args.get("model") or QWEN_35_9B
+    if model not in _MLX_MODEL_REGISTRY:
+        return None, _mlx_model_error(model)
+    return model, None
 
 
 @settings_bp.route("/api/mlx/availability")
 def get_mlx_availability() -> Any:
     try:
-        return jsonify(mlx_bootstrap.get_availability_payload())
+        model, error = _mlx_model_from_request()
+        if error is not None:
+            return error
+        assert model is not None
+        return jsonify(mlx_bootstrap.get_availability_payload(model))
     except Exception:
         logger.exception("error loading MLX availability")
         return _settings_operation_failed()
@@ -606,7 +633,11 @@ def get_mlx_availability() -> Any:
 @settings_bp.route("/api/mlx/bootstrap", methods=["POST"])
 def start_mlx_bootstrap() -> Any:
     try:
-        payload, status = mlx_bootstrap.start_bootstrap()
+        model, error = _mlx_model_from_request()
+        if error is not None:
+            return error
+        assert model is not None
+        payload, status = mlx_bootstrap.start_bootstrap(model)
         return jsonify(payload), status
     except mlx_bootstrap.MlxBootstrapUnavailableError as exc:
         return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
@@ -621,9 +652,31 @@ def start_mlx_bootstrap() -> Any:
 @settings_bp.route("/api/mlx/bootstrap/status")
 def get_mlx_bootstrap_status() -> Any:
     try:
-        return jsonify(mlx_bootstrap.get_state())
+        model, error = _mlx_model_from_request()
+        if error is not None:
+            return error
+        assert model is not None
+        return jsonify(mlx_bootstrap.get_state(model))
     except Exception:
         logger.exception("error loading MLX bootstrap status")
+        return _settings_operation_failed()
+
+
+@settings_bp.route("/api/mlx/models")
+def get_mlx_models() -> Any:
+    try:
+        return jsonify(
+            [
+                {
+                    "name": name,
+                    "label": MLX_MODEL_LABELS[name],
+                    "min_ram_gb": spec.min_ram_bytes // 1024**3,
+                }
+                for name, spec in _MLX_MODEL_REGISTRY.items()
+            ]
+        )
+    except Exception:
+        logger.exception("error loading MLX models")
         return _settings_operation_failed()
 
 
@@ -731,6 +784,10 @@ def get_providers() -> Any:
             provider: bundled.get_provider_state(provider)
             for provider in ("anthropic", "openai")
         }
+        mlx_config = providers_config.get("mlx", {})
+        mlx_active_model = (
+            mlx_config.get("active_model") if isinstance(mlx_config, dict) else None
+        ) or QWEN_35_9B
 
         return jsonify(
             {
@@ -744,6 +801,7 @@ def get_providers() -> Any:
                 "auth": auth,
                 "key_validation": key_validation,
                 "bundled": bundled_status,
+                "mlx": {"active_model": mlx_active_model},
                 "google_backend": providers_config.get("google_backend", "auto"),
                 "vertex_credentials_configured": vertex_creds_configured,
                 "vertex_credentials_email": vertex_creds_email,
@@ -1116,6 +1174,48 @@ def update_providers() -> Any:
                             "new": ctx_config,
                         }
                     config["providers"]["contexts"][pattern] = ctx_config
+
+        # Handle MLX model selection
+        if "mlx" in request_data:
+            mlx_data = request_data["mlx"]
+            if not isinstance(mlx_data, dict):
+                return error_response(
+                    INVALID_CONFIG_VALUE,
+                    detail="mlx must be an object",
+                )
+            unknown_fields = sorted(set(mlx_data) - {"active_model"})
+            if unknown_fields:
+                return error_response(
+                    INVALID_CONFIG_VALUE,
+                    detail=f"Invalid mlx field: {unknown_fields[0]}",
+                )
+            if "active_model" in mlx_data:
+                active_model = mlx_data["active_model"]
+                if not isinstance(active_model, str):
+                    return error_response(
+                        INVALID_CONFIG_VALUE,
+                        detail="mlx.active_model must be a string",
+                    )
+                if active_model not in _MLX_MODEL_REGISTRY:
+                    return error_response(
+                        INVALID_CONFIG_VALUE,
+                        detail=(
+                            f"Invalid MLX model: {active_model}. "
+                            f"Must be one of: {', '.join(_MLX_MODEL_REGISTRY.keys())}"
+                        ),
+                    )
+                if "mlx" not in config["providers"]:
+                    config["providers"]["mlx"] = {}
+                old_mlx = old_providers.get("mlx", {})
+                old_model = (
+                    old_mlx.get("active_model") if isinstance(old_mlx, dict) else None
+                )
+                if old_model != active_model:
+                    changed_fields["mlx.active_model"] = {
+                        "old": old_model,
+                        "new": active_model,
+                    }
+                config["providers"]["mlx"]["active_model"] = active_model
 
         # Handle Google backend settings
         if "google_backend" in request_data:
