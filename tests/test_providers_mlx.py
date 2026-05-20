@@ -15,7 +15,7 @@ from PIL import Image
 def _provider(monkeypatch):
     import solstone.think.providers.mlx as provider
 
-    monkeypatch.setattr(provider, "_module_level_cache", None)
+    monkeypatch.setattr(provider, "_module_level_cache", {})
     return provider
 
 
@@ -214,3 +214,170 @@ def test_cache_reuse(monkeypatch):
     provider.run_generate("two")
 
     stub.load.assert_called_once()
+
+
+def test_registry_pins_qwen_spec(monkeypatch):
+    from solstone.think.models import QWEN_35_9B
+
+    provider = _provider(monkeypatch)
+
+    assert list(provider._MLX_MODEL_REGISTRY) == [QWEN_35_9B]
+    spec = provider._MLX_MODEL_REGISTRY[QWEN_35_9B]
+    assert spec.repo == "mlx-community/Qwen3.5-9B-MLX-8bit"
+    assert spec.revision == "84f7c2deea248d8df56240f88102def51c7ed5d6"
+    assert spec.min_ram_bytes == 16 * 1024**3
+    assert spec.post_load is None
+
+
+def test_legacy_aliases_derive_from_registry(monkeypatch):
+    from solstone.think.models import QWEN_35_9B
+
+    provider = _provider(monkeypatch)
+    spec = provider._MLX_MODEL_REGISTRY[QWEN_35_9B]
+
+    assert provider.MLX_MODEL_REPO == spec.repo
+    assert provider.MLX_MODEL_REVISION == spec.revision
+
+
+def test_list_models_returns_registry_keys(monkeypatch):
+    from solstone.think.models import QWEN_35_9B
+
+    provider = _provider(monkeypatch)
+
+    assert provider.list_models() == [QWEN_35_9B]
+
+
+def test_load_model_rejects_unknown_model(monkeypatch):
+    provider = _provider(monkeypatch)
+
+    with pytest.raises(ValueError) as exc_info:
+        provider._load_model("nope:1.0")
+
+    assert "unknown MLX model" in str(exc_info.value)
+    assert "nope:1.0" in str(exc_info.value)
+
+
+def test_cache_is_keyed_by_model_name(monkeypatch):
+    from solstone.think.models import QWEN_35_9B
+
+    provider = _provider(monkeypatch)
+    stub = _install_mlx_stub(monkeypatch)
+
+    first = provider._load_model(QWEN_35_9B)
+    second = provider._load_model(QWEN_35_9B)
+
+    stub.load.assert_called_once()
+    assert second is first
+
+
+def test_cache_holds_multiple_models_independently(monkeypatch):
+    from solstone.think.models import QWEN_35_9B
+
+    provider = _provider(monkeypatch)
+    stub = _install_mlx_stub(monkeypatch)
+    other_spec = provider.MLXModelSpec(
+        name="test:other",
+        repo="example/test-mlx",
+        revision="test-rev",
+        min_ram_bytes=1,
+        post_load=None,
+    )
+    monkeypatch.setitem(provider._MLX_MODEL_REGISTRY, "test:other", other_spec)
+
+    first = provider._load_model(QWEN_35_9B)
+    second = provider._load_model("test:other")
+
+    assert set(provider._module_level_cache) == {QWEN_35_9B, "test:other"}
+    assert second is not first
+    assert stub.load.call_count == 2
+    stub.load.assert_any_call(
+        provider.MLX_MODEL_REPO, revision=provider.MLX_MODEL_REVISION
+    )
+    stub.load.assert_any_call("example/test-mlx", revision="test-rev")
+
+
+def test_post_load_runs_once_before_cache(monkeypatch):
+    from solstone.think.models import QWEN_35_9B
+
+    provider = _provider(monkeypatch)
+    stub = _install_mlx_stub(monkeypatch)
+    hook = MagicMock()
+    base_spec = provider._MLX_MODEL_REGISTRY[QWEN_35_9B]
+    monkeypatch.setitem(
+        provider._MLX_MODEL_REGISTRY,
+        QWEN_35_9B,
+        provider.MLXModelSpec(
+            name=base_spec.name,
+            repo=base_spec.repo,
+            revision=base_spec.revision,
+            min_ram_bytes=base_spec.min_ram_bytes,
+            post_load=hook,
+        ),
+    )
+
+    provider._load_model(QWEN_35_9B)
+    provider._load_model(QWEN_35_9B)
+
+    hook.assert_called_once_with(stub.model, stub.processor)
+
+
+def test_post_load_exception_leaves_cache_empty(monkeypatch):
+    from solstone.think.models import QWEN_35_9B
+
+    provider = _provider(monkeypatch)
+    _install_mlx_stub(monkeypatch)
+    base_spec = provider._MLX_MODEL_REGISTRY[QWEN_35_9B]
+    monkeypatch.setitem(
+        provider._MLX_MODEL_REGISTRY,
+        QWEN_35_9B,
+        provider.MLXModelSpec(
+            name=base_spec.name,
+            repo=base_spec.repo,
+            revision=base_spec.revision,
+            min_ram_bytes=base_spec.min_ram_bytes,
+            post_load=MagicMock(side_effect=RuntimeError("post-load broke")),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="post-load broke"):
+        provider.run_generate("hi")
+
+    assert QWEN_35_9B not in provider._module_level_cache
+
+
+def test_is_mlx_available_for_model_low_ram_includes_model_name(monkeypatch):
+    from solstone.think.models import QWEN_35_9B
+
+    provider = _provider(monkeypatch)
+    monkeypatch.setattr(provider.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(provider.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(
+        provider.psutil,
+        "virtual_memory",
+        lambda: SimpleNamespace(total=8 * 1024**3),
+    )
+    monkeypatch.setitem(sys.modules, "mlx_vlm", types.ModuleType("mlx_vlm"))
+
+    result = provider.is_mlx_available_for_model(
+        provider._MLX_MODEL_REGISTRY[QWEN_35_9B]
+    )
+
+    assert result == (
+        False,
+        "insufficient RAM for qwen3.5:9b (need 16 GB, have 8 GB)",
+    )
+
+
+def test_snapshot_missing_error_contains_repo_and_revision(monkeypatch):
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    provider = _provider(monkeypatch)
+    _install_mlx_stub(monkeypatch, load_exc=LocalEntryNotFoundError("missing"))
+
+    with pytest.raises(provider.ModelSnapshotMissingError) as exc_info:
+        provider.run_generate("hi")
+
+    assert "model snapshot not present" in str(exc_info.value)
+    assert f"{provider.MLX_MODEL_REPO}@{provider.MLX_MODEL_REVISION}" in str(
+        exc_info.value
+    )

@@ -10,6 +10,7 @@ import asyncio
 import importlib
 import logging
 import platform
+from dataclasses import dataclass
 from typing import Any, Callable
 
 import psutil
@@ -18,14 +19,32 @@ from solstone.think.models import QWEN_35_9B
 
 from .shared import GenerateResult
 
-MLX_MODEL_REPO = "mlx-community/Qwen3.5-9B-MLX-8bit"
-MLX_MODEL_REVISION = "84f7c2deea248d8df56240f88102def51c7ed5d6"
-_MIN_RAM_BYTES = 16 * 1024**3
+
+@dataclass(frozen=True)
+class MLXModelSpec:
+    name: str
+    repo: str
+    revision: str
+    min_ram_bytes: int
+    post_load: Callable[[Any, Any], None] | None = None
+
+
+_MLX_MODEL_REGISTRY: dict[str, MLXModelSpec] = {
+    QWEN_35_9B: MLXModelSpec(
+        name=QWEN_35_9B,
+        repo="mlx-community/Qwen3.5-9B-MLX-8bit",
+        revision="84f7c2deea248d8df56240f88102def51c7ed5d6",
+        min_ram_bytes=16 * 1024**3,
+        post_load=None,
+    )
+}
+MLX_MODEL_REPO = _MLX_MODEL_REGISTRY[QWEN_35_9B].repo
+MLX_MODEL_REVISION = _MLX_MODEL_REGISTRY[QWEN_35_9B].revision
 _DEFAULT_MODEL = QWEN_35_9B
 
 logger = logging.getLogger(__name__)
 
-_module_level_cache: tuple[Any, Any, Any] | None = None
+_module_level_cache: dict[str, tuple[Any, Any, Any]] = {}
 
 
 class ModelSnapshotMissingError(RuntimeError):
@@ -38,15 +57,11 @@ class ModelSnapshotMissingError(RuntimeError):
         return f"model snapshot not present: {text}"
 
 
-def is_mlx_available() -> tuple[bool, str]:
+def _check_platform_and_package() -> tuple[bool, str]:
     if platform.system() != "Darwin":
         return False, "not running on macOS"
     if platform.machine() != "arm64":
         return False, "not running on Apple Silicon"
-
-    total_ram = psutil.virtual_memory().total
-    if total_ram < _MIN_RAM_BYTES:
-        return False, f"insufficient RAM (need 16 GB, have {total_ram // 1024**3} GB)"
 
     try:
         importlib.import_module("mlx_vlm")
@@ -56,9 +71,34 @@ def is_mlx_available() -> tuple[bool, str]:
     return True, ""
 
 
-def _snapshot_missing_error() -> ModelSnapshotMissingError:
+def is_mlx_available() -> tuple[bool, str]:
+    ok, reason = _check_platform_and_package()
+    if not ok:
+        return ok, reason
+    spec = _MLX_MODEL_REGISTRY[QWEN_35_9B]
+    total_ram = psutil.virtual_memory().total
+    if total_ram < spec.min_ram_bytes:
+        return False, f"insufficient RAM (need 16 GB, have {total_ram // 1024**3} GB)"
+    return True, ""
+
+
+def is_mlx_available_for_model(spec: MLXModelSpec) -> tuple[bool, str]:
+    ok, reason = _check_platform_and_package()
+    if not ok:
+        return ok, reason
+    total_ram = psutil.virtual_memory().total
+    if total_ram < spec.min_ram_bytes:
+        return False, (
+            f"insufficient RAM for {spec.name} "
+            f"(need {spec.min_ram_bytes // 1024**3} GB, "
+            f"have {total_ram // 1024**3} GB)"
+        )
+    return True, ""
+
+
+def _snapshot_missing_error(spec: MLXModelSpec) -> ModelSnapshotMissingError:
     return ModelSnapshotMissingError(
-        f"model snapshot not present at {MLX_MODEL_REPO}@{MLX_MODEL_REVISION}"
+        f"model snapshot not present at {spec.repo}@{spec.revision}"
     )
 
 
@@ -75,29 +115,34 @@ def _is_snapshot_missing_oserror(exc: OSError) -> bool:
     )
 
 
-def _load_model() -> tuple[Any, Any, Any]:
-    global _module_level_cache
-    if _module_level_cache is not None:
-        return _module_level_cache
+def _load_model(model_name: str) -> tuple[Any, Any, Any]:
+    if model_name in _module_level_cache:
+        return _module_level_cache[model_name]
+    spec = _MLX_MODEL_REGISTRY.get(model_name)
+    if spec is None:
+        raise ValueError(
+            f"unknown MLX model: {model_name!r}; known: {sorted(_MLX_MODEL_REGISTRY)}"
+        )
 
     import mlx_vlm
     from huggingface_hub.errors import LocalEntryNotFoundError
 
     try:
-        model, processor = mlx_vlm.load(
-            MLX_MODEL_REPO,
-            revision=MLX_MODEL_REVISION,
-        )
+        model, processor = mlx_vlm.load(spec.repo, revision=spec.revision)
     except LocalEntryNotFoundError as exc:
-        raise _snapshot_missing_error() from exc
+        raise _snapshot_missing_error(spec) from exc
     except OSError as exc:
         if _is_snapshot_missing_oserror(exc):
-            raise _snapshot_missing_error() from exc
+            raise _snapshot_missing_error(spec) from exc
         raise
 
+    if spec.post_load is not None:
+        spec.post_load(model, processor)
+
     config = model.config
-    _module_level_cache = (model, processor, config)
-    return _module_level_cache
+    loaded = (model, processor, config)
+    _module_level_cache[model_name] = loaded
+    return loaded
 
 
 def _split_contents(contents: str | list[Any]) -> tuple[str, list[Any]]:
@@ -205,7 +250,7 @@ def run_generate(
     timeout_s: float | None = None,
     **kwargs: Any,
 ) -> GenerateResult:
-    mlx_model, processor, config = _load_model()
+    mlx_model, processor, config = _load_model(model)
     text_prompt, images = _split_contents(contents)
     messages = _build_messages(system_instruction, text_prompt)
 
@@ -281,7 +326,7 @@ async def run_cogitate(
 
 
 def list_models() -> list[str]:
-    return [QWEN_35_9B]
+    return list(_MLX_MODEL_REGISTRY.keys())
 
 
 def validate_key(api_key: str) -> dict:
@@ -291,9 +336,11 @@ def validate_key(api_key: str) -> dict:
 __all__ = [
     "MLX_MODEL_REPO",
     "MLX_MODEL_REVISION",
+    "MLXModelSpec",
     "ModelSnapshotMissingError",
     "QWEN_35_9B",
     "is_mlx_available",
+    "is_mlx_available_for_model",
     "list_models",
     "run_agenerate",
     "run_cogitate",
