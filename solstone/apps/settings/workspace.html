@@ -903,6 +903,132 @@ input:checked + .slider:before {
   text-decoration: underline;
 }
 
+.bundled-provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.85em;
+  margin-bottom: 1.25em;
+}
+
+.bundled-provider-card {
+  border: 1px solid var(--facet-border, #e5e0db);
+  border-radius: 8px;
+  padding: 0.85em;
+  background: #fff;
+}
+
+.bundled-provider-card header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75em;
+  margin-bottom: 0.65em;
+}
+
+.bundled-provider-title {
+  font-weight: 600;
+  color: #333;
+}
+
+.bundled-provider-meta {
+  display: grid;
+  gap: 0.25em;
+  color: #666;
+  font-size: 0.85em;
+  margin-bottom: 0.75em;
+}
+
+.bundled-provider-badge {
+  border-radius: 999px;
+  padding: 0.2em 0.55em;
+  font-size: 0.75em;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.bundled-provider-badge[data-tone="success"] {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.bundled-provider-badge[data-tone="warning"] {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.bundled-provider-badge[data-tone="error"] {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.bundled-provider-badge[data-tone="neutral"] {
+  background: #f3f4f6;
+  color: #374151;
+}
+
+.bundled-provider-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  flex-wrap: wrap;
+}
+
+.bundled-provider-actions button,
+.bundled-provider-menu button {
+  border: 1px solid #d1d5db;
+  background: white;
+  color: #374151;
+  border-radius: 6px;
+  padding: 0.4em 0.75em;
+  font-size: 0.85em;
+  cursor: pointer;
+}
+
+.bundled-provider-actions button:disabled {
+  color: #999;
+  cursor: default;
+}
+
+.bundled-provider-menu {
+  position: relative;
+}
+
+.bundled-provider-menu summary {
+  cursor: pointer;
+  color: #555;
+  font-size: 0.9em;
+}
+
+.bundled-provider-menu-body {
+  display: grid;
+  gap: 0.35em;
+  position: absolute;
+  right: 0;
+  top: 1.5em;
+  min-width: 8em;
+  padding: 0.45em;
+  border: 1px solid var(--facet-border, #e5e0db);
+  border-radius: 8px;
+  background: #fff;
+  z-index: 3;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.12);
+}
+
+.bundled-provider-inline {
+  margin-top: 0.65em;
+  color: #856404;
+  font-size: 0.85em;
+}
+
+.bundled-provider-inline a {
+  color: #0066cc;
+  text-decoration: none;
+}
+
+.bundled-provider-inline a:hover {
+  text-decoration: underline;
+}
+
 .mlx-bootstrap-region {
   align-items: flex-start;
   margin-top: -0.25em;
@@ -2253,9 +2379,12 @@ button:focus:not(:focus-visible) {
       <h2>providers</h2>
       <p class="settings-section-desc">configure ai providers separately for generation (text analysis) and cogitate (tool-calling agents).</p>
 
-      <form class="settings-form" onsubmit="return false;">
+	      <form class="settings-form" onsubmit="return false;">
 
-      <h3 class="settings-subsection-title">generate</h3>
+	      <h3 class="settings-subsection-title">bundled cogitate CLIs</h3>
+	      <div id="bundledProviders" class="bundled-provider-grid"></div>
+
+	      <h3 class="settings-subsection-title">generate</h3>
       <p class="settings-subsection-desc">text generation for analysis, extraction, and transcription tasks.</p>
       <div class="provider-row">
         <div class="settings-field">
@@ -4836,6 +4965,7 @@ function promptReload() {
 let providersData = null;
 let mlxBootstrapPollTimer = null;
 let mlxBootstrapPostStarted = false;
+let bundledProviderPollTimer = null;
 
 const MLX_COGITATE_UNSUPPORTED_TITLE = 'MLX provider does not support cogitate in v1 — it is vision/generate-only. Configure a cloud provider for cogitate agents.';
 const MLX_SCOPE_COPY = 'vision and text on your device. tool-calling agents continue to use your configured cogitate provider.';
@@ -4870,6 +5000,9 @@ function populateProviders(data) {
   if (data.key_validation) {
     keyValidationData = data.key_validation;
   }
+
+  renderBundledProviders(data.bundled || {});
+  syncBundledProviderPolling(data.bundled || {});
 
   // Populate all provider/backup dropdowns for both types
   for (const type of ['generate', 'cogitate']) {
@@ -4934,6 +5067,215 @@ function populateProviders(data) {
 
   // Populate context overrides
   renderContextGroups(data);
+}
+
+function bundledProviderMeta(state) {
+  const map = {
+    'not-enabled': { badge: 'Not installed', tone: 'neutral', button: 'Install bundled CLI', action: 'install', disabled: false },
+    'enabling': { badge: 'Installing...', tone: 'warning', button: 'Installing...', action: null, disabled: true },
+    'installed-no-key': {
+      badge: 'Needs API key',
+      tone: 'warning',
+      button: state.key_configured ? 'Validate key' : 'Add API key',
+      action: state.key_configured ? 'validate-key' : 'focus-key',
+      disabled: false
+    },
+    'key-validating': { badge: 'Validating key...', tone: 'warning', button: 'Validating...', action: null, disabled: true },
+    'valid': { badge: 'Ready', tone: 'success', button: 'Revalidate key', action: 'validate-key', disabled: false },
+    'invalid-key': { badge: 'Invalid key', tone: 'error', button: 'Fix API key', action: 'focus-key', disabled: false },
+    'install-failed': { badge: 'Install failed', tone: 'error', button: 'Retry install', action: 'install', disabled: false },
+    'disabled': { badge: 'Disabled', tone: 'neutral', button: 'Enable', action: 'enable', disabled: false },
+  };
+  return map[state.state] || map['not-enabled'];
+}
+
+function renderBundledProviders(bundled) {
+  const container = document.getElementById('bundledProviders');
+  if (!container) return;
+  container.innerHTML = '';
+  for (const name of ['anthropic', 'openai']) {
+    const state = bundled[name];
+    if (!state) continue;
+    container.appendChild(renderBundledProviderCard(state));
+  }
+}
+
+function renderBundledProviderCard(state) {
+  const meta = bundledProviderMeta(state);
+  const card = document.createElement('div');
+  card.className = 'bundled-provider-card';
+
+  const header = document.createElement('header');
+  const title = document.createElement('div');
+  title.className = 'bundled-provider-title';
+  title.textContent = state.label || state.name;
+  const badge = document.createElement('span');
+  badge.className = 'bundled-provider-badge';
+  badge.dataset.tone = meta.tone;
+  badge.textContent = meta.badge;
+  header.append(title, badge);
+
+  const details = document.createElement('div');
+  details.className = 'bundled-provider-meta';
+  details.append(
+    bundledProviderMetaLine('CLI', state.binary_path ? 'installed' : 'not installed'),
+    bundledProviderMetaLine('Key', state.key_configured ? (state.key_valid ? 'valid' : 'configured') : 'missing')
+  );
+
+  const actions = document.createElement('div');
+  actions.className = 'bundled-provider-actions';
+  const primary = document.createElement('button');
+  primary.type = 'button';
+  primary.textContent = meta.button;
+  primary.disabled = meta.disabled;
+  if (meta.action) {
+    primary.addEventListener('click', () => runBundledProviderAction(state.name, meta.action));
+  }
+  actions.appendChild(primary);
+
+  const overflow = bundledProviderOverflow(state);
+  if (overflow) actions.appendChild(overflow);
+
+  card.append(header, details, actions);
+
+  if (state.stuck_enabling) {
+    const stuck = document.createElement('div');
+    stuck.className = 'bundled-provider-inline';
+    stuck.textContent = 'Install may be stuck - ';
+    const retry = document.createElement('a');
+    retry.href = '#';
+    retry.textContent = 'Retry?';
+    retry.addEventListener('click', (event) => {
+      event.preventDefault();
+      runBundledProviderAction(state.name, 'install');
+    });
+    stuck.appendChild(retry);
+    card.appendChild(stuck);
+  } else if (state.issues && state.issues.length) {
+    const issue = document.createElement('div');
+    issue.className = 'bundled-provider-inline';
+    issue.textContent = state.issues[0];
+    card.appendChild(issue);
+  }
+
+  return card;
+}
+
+function bundledProviderMetaLine(label, value) {
+  const line = document.createElement('span');
+  line.textContent = `${label}: ${value}`;
+  return line;
+}
+
+function bundledProviderOverflow(state) {
+  const itemsByState = {
+    'installed-no-key': ['disable', 'uninstall'],
+    'valid': ['disable', 'uninstall'],
+    'invalid-key': ['validate-key', 'disable', 'uninstall'],
+    'install-failed': ['uninstall'],
+    'disabled': ['uninstall'],
+  };
+  const items = itemsByState[state.state] || [];
+  if (!items.length) return null;
+  const details = document.createElement('details');
+  details.className = 'bundled-provider-menu';
+  const summary = document.createElement('summary');
+  summary.textContent = 'more';
+  const body = document.createElement('div');
+  body.className = 'bundled-provider-menu-body';
+  for (const action of items) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = bundledProviderActionLabel(action);
+    button.addEventListener('click', () => {
+      details.open = false;
+      runBundledProviderAction(state.name, action);
+    });
+    body.appendChild(button);
+  }
+  details.append(summary, body);
+  return details;
+}
+
+function bundledProviderActionLabel(action) {
+  return {
+    'validate-key': 'Validate key',
+    disable: 'Disable',
+    enable: 'Enable',
+    uninstall: 'Uninstall',
+    install: 'Install',
+  }[action] || action;
+}
+
+function runBundledProviderAction(name, action) {
+  if (action === 'focus-key') {
+    focusBundledProviderKey(name);
+    return;
+  }
+  postBundledProviderAction(name, action);
+}
+
+function focusBundledProviderKey(name) {
+  const envKey = name === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
+  switchSection('apikeys');
+  window.requestAnimationFrame(() => {
+    const input = document.querySelector(`[data-key="${envKey}"]`);
+    if (input) {
+      input.focus();
+      input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  });
+}
+
+async function postBundledProviderAction(name, action) {
+  try {
+    const response = await fetch(`api/providers/${name}/${action}`, { method: 'POST' });
+    const payload = await response.json();
+    if (!response.ok || payload.error) throw new Error(payload.detail || payload.error || 'provider action failed');
+    providersData = providersData || {};
+    providersData.bundled = providersData.bundled || {};
+    providersData.bundled[name] = payload;
+    renderBundledProviders(providersData.bundled);
+    syncBundledProviderPolling(providersData.bundled);
+  } catch (err) {
+    notifyError('Provider action failed', err.message);
+  }
+}
+
+function syncBundledProviderPolling(bundled) {
+  const active = Object.values(bundled || {}).some(state => ['enabling', 'key-validating'].includes(state.state));
+  if (active) {
+    startBundledProviderPolling();
+  } else {
+    clearBundledProviderPollTimer();
+  }
+}
+
+function startBundledProviderPolling() {
+  if (bundledProviderPollTimer) return;
+  bundledProviderPollTimer = setInterval(pollBundledProviders, 2000);
+}
+
+function clearBundledProviderPollTimer() {
+  if (bundledProviderPollTimer) {
+    clearInterval(bundledProviderPollTimer);
+    bundledProviderPollTimer = null;
+  }
+}
+
+async function pollBundledProviders() {
+  try {
+    const response = await fetch('api/providers/bundled');
+    const payload = await response.json();
+    if (!response.ok || payload.error) throw new Error(payload.detail || payload.error || 'provider status failed');
+    providersData = providersData || {};
+    providersData.bundled = payload;
+    renderBundledProviders(payload);
+    syncBundledProviderPolling(payload);
+  } catch (err) {
+    clearBundledProviderPollTimer();
+    notifyError('Provider status failed', err.message);
+  }
 }
 
 function getMlxAvailability() {

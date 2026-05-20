@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from solstone.think.models import GPT_5, OPENAI_EFFORT_SUFFIXES
+from solstone.think.providers import bundled
 from solstone.think.providers._image import encode_image_part, is_image_part
 from solstone.think.providers.cli import (
     CLIRunner,
@@ -188,45 +189,45 @@ async def run_cogitate(
     # Write-enabled agents get full sandbox access
     sandbox = "workspace-write" if config.get("write") else "read-only"
 
-    session_id = config.get("session_id")
-    sandbox = "workspace-write" if config.get("write") else "read-only"
-    if session_id:
-        cmd = [
-            "codex",
-            "exec",
-            "resume",
-            session_id,
-            "--json",
-            "-s",
-            sandbox,
-            "-m",
-            model,
-        ]
-    else:
-        cmd = ["codex", "exec", "--json", "-s", sandbox, "-m", model]
-
-    if effort:
-        cmd.extend(["-c", f'model_reasoning_effort="{effort}"'])
-
-    cmd.append("-")  # read prompt from stdin
-
-    # Create runner
-    usage_holder: list[dict[str, Any]] = [{}]
-    aggregator = ThinkingAggregator(cb, model)
-    translate = functools.partial(_translate_codex, usage_holder=usage_holder)
-    cwd_value = config.get("cwd")
-    runner = CLIRunner(
-        cmd=cmd,
-        prompt_text=prompt_text,
-        translate=translate,
-        callback=cb,
-        aggregator=aggregator,
-        cwd=Path(cwd_value) if cwd_value else None,
-        env=build_cogitate_env("openai"),
-    )
-    runner.provider = "openai"
-
     try:
+        session_id = config.get("session_id")
+        codex_binary = str(bundled.resolve_bundled_binary("openai"))
+        if session_id:
+            cmd = [
+                codex_binary,
+                "exec",
+                "resume",
+                session_id,
+                "--json",
+                "-s",
+                sandbox,
+                "-m",
+                model,
+            ]
+        else:
+            cmd = [codex_binary, "exec", "--json", "-s", sandbox, "-m", model]
+
+        if effort:
+            cmd.extend(["-c", f'model_reasoning_effort="{effort}"'])
+
+        cmd.append("-")  # read prompt from stdin
+
+        # Create runner
+        usage_holder: list[dict[str, Any]] = [{}]
+        aggregator = ThinkingAggregator(cb, model)
+        translate = functools.partial(_translate_codex, usage_holder=usage_holder)
+        cwd_value = config.get("cwd")
+        runner = CLIRunner(
+            cmd=cmd,
+            prompt_text=prompt_text,
+            translate=translate,
+            callback=cb,
+            aggregator=aggregator,
+            cwd=Path(cwd_value) if cwd_value else None,
+            env=build_cogitate_env("openai"),
+        )
+        runner.provider = "openai"
+
         result = await runner.run()
     except QuotaExhaustedError:
         raise

@@ -5,6 +5,7 @@
 
 import asyncio
 import importlib
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 # ---------------------------------------------------------------------------
@@ -18,9 +19,12 @@ class TestAnthropicWriteFlag:
     def _provider(self):
         return importlib.import_module("solstone.think.providers.anthropic")
 
-    @patch("solstone.think.providers.anthropic.check_cli_binary")
+    @patch(
+        "solstone.think.providers.anthropic.bundled.resolve_bundled_binary",
+        return_value=Path("/usr/bin/claude"),
+    )
     @patch("solstone.think.providers.anthropic.CLIRunner")
-    def test_no_write_restricts_tools(self, mock_runner_cls, mock_check):
+    def test_no_write_restricts_tools(self, mock_runner_cls, mock_resolve):
         """Without write flag, --allowedTools restricts to sol."""
         provider = self._provider()
         mock_instance = AsyncMock()
@@ -35,9 +39,12 @@ class TestAnthropicWriteFlag:
         assert "--allowedTools" in cmd
         assert "Bash(sol *)" in cmd
 
-    @patch("solstone.think.providers.anthropic.check_cli_binary")
+    @patch(
+        "solstone.think.providers.anthropic.bundled.resolve_bundled_binary",
+        return_value=Path("/usr/bin/claude"),
+    )
     @patch("solstone.think.providers.anthropic.CLIRunner")
-    def test_write_true_grants_full_access(self, mock_runner_cls, mock_check):
+    def test_write_true_grants_full_access(self, mock_runner_cls, mock_resolve):
         """With write=True, --allowedTools is omitted for full tool access."""
         provider = self._provider()
         mock_instance = AsyncMock()
@@ -51,9 +58,12 @@ class TestAnthropicWriteFlag:
         cmd = mock_runner_cls.call_args.kwargs["cmd"]
         assert "--allowedTools" not in cmd
 
-    @patch("solstone.think.providers.anthropic.check_cli_binary")
+    @patch(
+        "solstone.think.providers.anthropic.bundled.resolve_bundled_binary",
+        return_value=Path("/usr/bin/claude"),
+    )
     @patch("solstone.think.providers.anthropic.CLIRunner")
-    def test_write_false_restricts_tools(self, mock_runner_cls, mock_check):
+    def test_write_false_restricts_tools(self, mock_runner_cls, mock_resolve):
         """Explicit write=False keeps restriction."""
         provider = self._provider()
         mock_instance = AsyncMock()
@@ -79,8 +89,12 @@ class TestOpenAIWriteFlag:
     def _provider(self):
         return importlib.import_module("solstone.think.providers.openai")
 
+    @patch(
+        "solstone.think.providers.openai.bundled.resolve_bundled_binary",
+        return_value=Path("/usr/bin/codex"),
+    )
     @patch("solstone.think.providers.openai.CLIRunner")
-    def test_no_write_uses_readonly_sandbox(self, mock_runner_cls):
+    def test_no_write_uses_readonly_sandbox(self, mock_runner_cls, mock_resolve):
         """Without write flag, sandbox is read-only."""
         provider = self._provider()
         mock_instance = AsyncMock()
@@ -96,8 +110,12 @@ class TestOpenAIWriteFlag:
         s_idx = cmd.index("-s")
         assert cmd[s_idx + 1] == "read-only"
 
+    @patch(
+        "solstone.think.providers.openai.bundled.resolve_bundled_binary",
+        return_value=Path("/usr/bin/codex"),
+    )
     @patch("solstone.think.providers.openai.CLIRunner")
-    def test_write_true_uses_write_sandbox(self, mock_runner_cls):
+    def test_write_true_uses_write_sandbox(self, mock_runner_cls, mock_resolve):
         """With write=True, sandbox is write."""
         provider = self._provider()
         mock_instance = AsyncMock()
@@ -112,8 +130,12 @@ class TestOpenAIWriteFlag:
         s_idx = cmd.index("-s")
         assert cmd[s_idx + 1] == "workspace-write"
 
+    @patch(
+        "solstone.think.providers.openai.bundled.resolve_bundled_binary",
+        return_value=Path("/usr/bin/codex"),
+    )
     @patch("solstone.think.providers.openai.CLIRunner")
-    def test_write_true_with_session_resume(self, mock_runner_cls):
+    def test_write_true_with_session_resume(self, mock_runner_cls, mock_resolve):
         """Write flag works correctly with session resume path."""
         provider = self._provider()
         mock_instance = AsyncMock()

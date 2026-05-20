@@ -646,7 +646,11 @@ def get_providers() -> Any:
             TYPE_DEFAULTS,
             get_context_registry,
         )
-        from solstone.think.providers import build_provider_status, get_provider_list
+        from solstone.think.providers import (
+            build_provider_status,
+            bundled,
+            get_provider_list,
+        )
         from solstone.think.talent import get_talent_configs
 
         config = get_journal_config()
@@ -723,6 +727,10 @@ def get_providers() -> Any:
                 pass
 
         provider_status = build_provider_status(providers_list, vertex_creds_configured)
+        bundled_status = {
+            provider: bundled.get_provider_state(provider)
+            for provider in ("anthropic", "openai")
+        }
 
         return jsonify(
             {
@@ -735,6 +743,7 @@ def get_providers() -> Any:
                 "api_keys": api_keys,
                 "auth": auth,
                 "key_validation": key_validation,
+                "bundled": bundled_status,
                 "google_backend": providers_config.get("google_backend", "auto"),
                 "vertex_credentials_configured": vertex_creds_configured,
                 "vertex_credentials_email": vertex_creds_email,
@@ -743,6 +752,79 @@ def get_providers() -> Any:
     except Exception:
         logger.exception("error loading providers")
         return _settings_operation_failed()
+
+
+@settings_bp.route("/api/providers/bundled")
+def get_bundled_providers() -> Any:
+    """Return bundled cogitate provider status."""
+
+    try:
+        from solstone.think.providers import bundled
+
+        return jsonify(
+            {
+                provider: bundled.get_provider_state(provider)
+                for provider in ("anthropic", "openai")
+            }
+        )
+    except Exception:
+        logger.exception("error loading bundled providers")
+        return _settings_operation_failed()
+
+
+def _bundled_action_response(name: str, action: str) -> Any:
+    from solstone.think.providers import bundled
+
+    actions = {
+        "install": bundled.install_provider,
+        "uninstall": bundled.uninstall_provider,
+        "disable": bundled.disable_provider,
+        "enable": bundled.enable_provider,
+        "validate-key": bundled.validate_key,
+    }
+    try:
+        return jsonify(actions[action](name))
+    except bundled.CogitateProviderInstallInFlight:
+        return jsonify({"error": "install in flight", "state": "enabling"}), 409
+    except bundled.UnsupportedBundledProvider as exc:
+        return error_response(INVALID_CONFIG_VALUE, detail=str(exc))
+    except bundled.BundledProviderError as exc:
+        return _settings_operation_failed(str(exc))
+
+
+@settings_bp.route("/api/providers/<name>/install", methods=["POST"])
+def install_bundled_provider(name: str) -> Any:
+    """Install or retry a bundled cogitate provider."""
+
+    return _bundled_action_response(name, "install")
+
+
+@settings_bp.route("/api/providers/<name>/uninstall", methods=["POST"])
+def uninstall_bundled_provider(name: str) -> Any:
+    """Uninstall a bundled cogitate provider."""
+
+    return _bundled_action_response(name, "uninstall")
+
+
+@settings_bp.route("/api/providers/<name>/disable", methods=["POST"])
+def disable_bundled_provider(name: str) -> Any:
+    """Disable a bundled cogitate provider."""
+
+    return _bundled_action_response(name, "disable")
+
+
+@settings_bp.route("/api/providers/<name>/enable", methods=["POST"])
+def enable_bundled_provider(name: str) -> Any:
+    """Enable a bundled cogitate provider."""
+
+    return _bundled_action_response(name, "enable")
+
+
+@settings_bp.route("/api/providers/<name>/validate-key", methods=["POST"])
+def validate_bundled_provider_key(name: str) -> Any:
+    """Validate a bundled provider API key."""
+
+    return _bundled_action_response(name, "validate-key")
 
 
 @settings_bp.route("/api/validate-keys", methods=["POST"])

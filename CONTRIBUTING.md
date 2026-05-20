@@ -137,27 +137,31 @@ See [AGENTS.md](AGENTS.md) for the full Makefile command table and [docs/testing
 solstone runs two distinct AI workloads, and they have different prerequisites:
 
 - **Generate** — direct text generation (transcription, vision analysis, insights, descriptions). Uses each provider's SDK and works as soon as the API key is set. No extra binaries.
-- **Cogitate** — tool-using agents (entity detection, entity assist, entity describe, and any talent under `solstone/apps/entities/talent/*.md` with `"type": "cogitate"`). solstone shells out to the provider's official CLI binary as a subprocess. The binary must be installed and on `PATH`.
+- **Cogitate** — tool-using agents (entity detection, entity assist, entity describe, and any talent under `solstone/apps/entities/talent/*.md` with `"type": "cogitate"`). solstone shells out to a provider CLI binary as a subprocess. Anthropic and OpenAI are installed into your journal on demand; Google and Ollama still use CLIs you install yourself.
 
-Because cogitate-type talents only run when an entity-related dream completes, missing CLI binaries are invisible during initial install — generate-only paths produce transcripts and summaries, but **entities never appear**. `sol top` Agents Health flags this with messages like `"Google generate passes but Google cogitate fails: gemini CLI not installed"`. Install the binary for **each provider whose API key you configured above**. If you only set `GOOGLE_API_KEY`, you only need `gemini`.
+Because cogitate-type talents only run when an entity-related dream completes, missing CLI binaries are invisible during initial install — generate-only paths produce transcripts and summaries, but **entities never appear**. `sol top` Agents Health flags this with messages like `"Google generate passes but Google cogitate fails: gemini CLI not installed"`. Enable the cogitate binary for **each provider whose API key you configured above**. If you only set `GOOGLE_API_KEY`, you only need `gemini`.
 
 | provider  | binary     | install                                                         |
 |-----------|------------|-----------------------------------------------------------------|
+| anthropic | `claude`   | `sol call settings providers install anthropic`                 |
+| openai    | `codex`    | `sol call settings providers install openai`                    |
 | google    | `gemini`   | `npm install -g @google/gemini-cli` (Node 20+)                  |
-| anthropic | `claude`   | `npm install -g @anthropic-ai/claude-code` (Node 18+)           |
-| openai    | `codex`    | `npm install -g @openai/codex` (Node 16+)                       |
 | ollama    | `opencode` | `curl -fsSL https://opencode.ai/install \| bash`                |
 
-If you don't have Node.js: `brew install node` on macOS, your distro's package manager on Linux (e.g. `sudo dnf install nodejs`, `sudo apt install nodejs npm`). Verify each binary is on `PATH` after install:
+For Anthropic and OpenAI, check install status with:
+
+```bash
+sol call settings providers status
+```
+
+For Google, install Node.js first if needed: `brew install node` on macOS, your distro's package manager on Linux (e.g. `sudo dnf install nodejs`, `sudo apt install nodejs npm`). Verify manually installed binaries are on `PATH` after install:
 
 ```bash
 gemini --version
-claude --version
-codex --version
 opencode --version
 ```
 
-After installing a CLI binary while solstone is running, restart the service so cortex picks up the new `PATH`:
+After installing a manually managed CLI binary while solstone is running, restart the service so cortex picks up the new `PATH`:
 
 ```bash
 sol service restart

@@ -13,6 +13,60 @@
     "ollama": "platform",
     "openai": "platform"
   },
+  "bundled": {
+    "anthropic": {
+      "actions": [
+        "install"
+      ],
+      "auth_mode": "platform",
+      "binary_exists": false,
+      "binary_name": "claude",
+      "binary_path": null,
+      "codex_artifact": null,
+      "codex_sha256": null,
+      "codex_version": null,
+      "env_key": "ANTHROPIC_API_KEY",
+      "install_error": null,
+      "issues": [
+        "bundled CLI not installed — run `sol call settings providers install anthropic`"
+      ],
+      "key_configured": false,
+      "key_valid": false,
+      "key_validation": {},
+      "label": "Anthropic (Claude)",
+      "last_transition_at": "<TIMESTAMP>",
+      "name": "anthropic",
+      "sdk_spec": "claude-agent-sdk==0.2.82",
+      "state": "not-enabled",
+      "stuck_enabling": false
+    },
+    "openai": {
+      "actions": [
+        "install"
+      ],
+      "auth_mode": "platform",
+      "binary_exists": false,
+      "binary_name": "codex",
+      "binary_path": null,
+      "codex_artifact": null,
+      "codex_sha256": null,
+      "codex_version": null,
+      "env_key": "OPENAI_API_KEY",
+      "install_error": null,
+      "issues": [
+        "bundled CLI not installed — run `sol call settings providers install openai`"
+      ],
+      "key_configured": false,
+      "key_valid": false,
+      "key_validation": {},
+      "label": "OpenAI (GPT)",
+      "last_transition_at": "<TIMESTAMP>",
+      "name": "openai",
+      "sdk_spec": "openai-codex-sdk==0.1.11",
+      "state": "not-enabled",
+      "stuck_enabling": false
+    }
+  },
   "cogitate": {
     "backup": "anthropic",
     "provider": "openai",
@@ -485,7 +539,7 @@
       "generate_ready": false,
       "issues": [
         "ANTHROPIC_API_KEY not set",
-        "claude CLI not found on PATH"
+        "bundled CLI not installed — run `sol call settings providers install anthropic`"
       ]
     },
     "google": {
@@ -526,7 +580,7 @@
       "generate_ready": false,
       "issues": [
         "OPENAI_API_KEY not set",
-        "codex CLI not found on PATH"
+        "bundled CLI not installed — run `sol call settings providers install openai`"
       ]
     }
   },

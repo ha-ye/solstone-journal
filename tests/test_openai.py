@@ -6,6 +6,7 @@ import base64
 import functools
 import importlib
 import io
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,12 +14,25 @@ import pytest
 from PIL import Image
 
 from solstone.think.models import GPT_5
+from solstone.think.providers import bundled
 from solstone.think.providers.cli import ThinkingAggregator
 from solstone.think.providers.shared import JSONEventCallback
 
 
 def _openai_provider():
     return importlib.reload(importlib.import_module("solstone.think.providers.openai"))
+
+
+@contextmanager
+def _patched_openai_runner(runner_cls):
+    with (
+        patch("solstone.think.providers.openai.CLIRunner", runner_cls),
+        patch(
+            "solstone.think.providers.openai.bundled.resolve_bundled_binary",
+            return_value=Path("/usr/bin/codex"),
+        ),
+    ):
+        yield
 
 
 def _assert_write_mode_sandbox():
@@ -35,7 +49,7 @@ def _assert_write_mode_sandbox():
             self.run = AsyncMock(return_value="test result")
             MockCLIRunner.last_instance = self
 
-    with patch("solstone.think.providers.openai.CLIRunner", MockCLIRunner):
+    with _patched_openai_runner(MockCLIRunner):
         asyncio.run(
             provider.run_cogitate(
                 {"prompt": "hello", "model": GPT_5, "write": True},
@@ -313,7 +327,7 @@ class TestRunCogitate:
                 self.run = AsyncMock(return_value="test result")
                 MockCLIRunner.last_instance = self
 
-        with patch("solstone.think.providers.openai.CLIRunner", MockCLIRunner):
+        with _patched_openai_runner(MockCLIRunner):
             result = asyncio.run(
                 provider.run_cogitate(
                     {"prompt": "hello", "model": GPT_5}, events.append
@@ -323,7 +337,7 @@ class TestRunCogitate:
         assert result == "test result"
         assert MockCLIRunner.last_instance is not None
         assert MockCLIRunner.last_instance.cmd[:6] == [
-            "codex",
+            "/usr/bin/codex",
             "exec",
             "--json",
             "-s",
@@ -361,7 +375,7 @@ class TestRunCogitate:
                 self.run = AsyncMock(return_value="test result")
                 MockCLIRunner.last_instance = self
 
-        with patch("solstone.think.providers.openai.CLIRunner", MockCLIRunner):
+        with _patched_openai_runner(MockCLIRunner):
             asyncio.run(
                 provider.run_cogitate(
                     {
@@ -392,7 +406,7 @@ class TestRunCogitate:
                 self.run = AsyncMock(return_value="test result")
                 MockCLIRunner.last_instance = self
 
-        with patch("solstone.think.providers.openai.CLIRunner", MockCLIRunner):
+        with _patched_openai_runner(MockCLIRunner):
             asyncio.run(
                 provider.run_cogitate(
                     {
@@ -422,7 +436,7 @@ class TestRunCogitate:
                 self.run = AsyncMock(return_value="test result")
                 MockCLIRunner.last_instance = self
 
-        with patch("solstone.think.providers.openai.CLIRunner", MockCLIRunner):
+        with _patched_openai_runner(MockCLIRunner):
             asyncio.run(
                 provider.run_cogitate(
                     {
@@ -451,7 +465,7 @@ class TestRunCogitate:
                 self.cli_session_id = "test-session-id"
                 self.run = AsyncMock(return_value="result text")
 
-        with patch("solstone.think.providers.openai.CLIRunner", MockCLIRunner):
+        with _patched_openai_runner(MockCLIRunner):
             result = asyncio.run(
                 provider.run_cogitate(
                     {"prompt": "hello", "model": GPT_5}, events.append
@@ -475,7 +489,7 @@ class TestRunCogitate:
                 self.cli_session_id = None  # no session ID
                 self.run = AsyncMock(return_value="result text")
 
-        with patch("solstone.think.providers.openai.CLIRunner", MockCLIRunner):
+        with _patched_openai_runner(MockCLIRunner):
             asyncio.run(
                 provider.run_cogitate(
                     {"prompt": "hello", "model": GPT_5}, events.append
@@ -506,7 +520,7 @@ class TestRunCogitate:
                 translate_fn(turn_event, agg, cb)
                 self.run = AsyncMock(return_value="done")
 
-        with patch("solstone.think.providers.openai.CLIRunner", MockCLIRunner):
+        with _patched_openai_runner(MockCLIRunner):
             asyncio.run(
                 provider.run_cogitate(
                     {"prompt": "hello", "model": GPT_5}, events.append
@@ -530,7 +544,7 @@ class TestRunCogitate:
                 self.run = AsyncMock(side_effect=RuntimeError("boom"))
 
         exc = None
-        with patch("solstone.think.providers.openai.CLIRunner", MockCLIRunner):
+        with _patched_openai_runner(MockCLIRunner):
             try:
                 asyncio.run(
                     provider.run_cogitate(
@@ -545,6 +559,31 @@ class TestRunCogitate:
         assert getattr(exc, "_evented", False) is True
         assert events[-1]["event"] == "error"
         assert events[-1]["error"] == "boom"
+
+    def test_resolve_error_emits_event_and_reraises(self):
+        provider = _openai_provider()
+        events = []
+        exc = None
+        hint = "sol call settings providers install openai"
+
+        with patch(
+            "solstone.think.providers.openai.bundled.resolve_bundled_binary",
+            side_effect=bundled.CogitateProviderNotInstalled(hint),
+        ):
+            try:
+                asyncio.run(
+                    provider.run_cogitate(
+                        {"prompt": "hello", "model": GPT_5}, events.append
+                    )
+                )
+            except bundled.CogitateProviderNotInstalled as caught:
+                exc = caught
+
+        assert exc is not None
+        assert getattr(exc, "_evented", False) is True
+        assert events[-1]["event"] == "error"
+        assert events[-1]["provider"] == "openai"
+        assert hint in events[-1]["error"]
 
 
 class TestBuildInput:

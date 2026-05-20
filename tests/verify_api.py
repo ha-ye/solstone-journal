@@ -471,7 +471,7 @@ def normalize(data: Any, journal_path: str) -> Any:
                             and "not set" not in i
                             and "not reachable" not in i
                         ]
-                        if cli:
+                        if cli and _name not in {"anthropic", "openai"}:
                             issues.append(f"{cli} CLI not found on PATH")
                         # Re-add generic key-not-set issues per provider
                         env_keys = {
@@ -486,6 +486,15 @@ def normalize(data: Any, journal_path: str) -> Any:
                                 "Ollama not reachable at http://localhost:11434"
                             )
                         status["issues"] = sorted(issues)
+            if key == "bundled":
+                for _name, status in result.items():
+                    if isinstance(status, dict):
+                        if "last_transition_at" in status:
+                            status["last_transition_at"] = "<TIMESTAMP>"
+                        if "binary_path" in status and status["binary_path"]:
+                            status["binary_path"] = "<PATH>"
+                        if "binary_exists" in status:
+                            status["binary_exists"] = False
             # Normalize env-dependent API key presence
             if key in ("api_keys", "runtime_env"):
                 for k in result:

@@ -10,9 +10,11 @@ import os
 from datetime import datetime, timezone
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
 from solstone.think.call import call_app
+from solstone.think.providers import bundled
 
 runner = CliRunner()
 
@@ -192,14 +194,23 @@ class TestProvidersShow:
         assert payload["cogitate"]["provider"] == "openai"
 
     def test_provider_status_key_set_cli_found(self, settings_env):
-        """Provider with key set and CLI binary found."""
-        settings_env()
+        """Provider with key set and bundled CLI installed."""
+        tmp_path, config = settings_env()
+        config["providers"]["bundled"] = {
+            "openai": {
+                "state": "installed-no-key",
+                "last_transition_at": "2026-05-20T00:00:00+00:00",
+                "sdk_spec": "openai-codex-sdk==0.1.11",
+                "binary_path": "/tmp/codex",
+                "install_error": None,
+            }
+        }
+        (tmp_path / "config" / "journal.json").write_text(
+            json.dumps(config, indent=2) + "\n",
+            encoding="utf-8",
+        )
 
-        with (
-            patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}),
-            patch("shutil.which", return_value="/usr/bin/codex"),
-        ):
-            result = runner.invoke(call_app, ["settings", "providers", "show"])
+        result = runner.invoke(call_app, ["settings", "providers", "show"])
 
         assert result.exit_code == 0
         payload = json.loads(result.output)
@@ -213,14 +224,14 @@ class TestProvidersShow:
 
     def test_provider_status_key_missing(self, settings_env):
         """Provider with key not set."""
-        settings_env()
+        tmp_path, config = settings_env()
+        config["env"].pop("OPENAI_API_KEY", None)
+        (tmp_path / "config" / "journal.json").write_text(
+            json.dumps(config, indent=2) + "\n",
+            encoding="utf-8",
+        )
 
-        with (
-            patch.dict(os.environ, {}, clear=False),
-            patch("shutil.which", return_value=None),
-        ):
-            os.environ.pop("OPENAI_API_KEY", None)
-            result = runner.invoke(call_app, ["settings", "providers", "show"])
+        result = runner.invoke(call_app, ["settings", "providers", "show"])
 
         assert result.exit_code == 0
         payload = json.loads(result.output)
@@ -231,14 +242,15 @@ class TestProvidersShow:
         assert "OPENAI_API_KEY not set" in status["issues"]
 
     def test_provider_status_key_set_cli_missing(self, settings_env):
-        """Provider with key set but CLI binary not found."""
-        settings_env()
+        """Provider with key set but bundled CLI not installed."""
+        tmp_path, config = settings_env()
+        config["env"]["ANTHROPIC_API_KEY"] = "test-key"
+        (tmp_path / "config" / "journal.json").write_text(
+            json.dumps(config, indent=2) + "\n",
+            encoding="utf-8",
+        )
 
-        with (
-            patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}),
-            patch("shutil.which", return_value=None),
-        ):
-            result = runner.invoke(call_app, ["settings", "providers", "show"])
+        result = runner.invoke(call_app, ["settings", "providers", "show"])
 
         assert result.exit_code == 0
         payload = json.loads(result.output)
@@ -247,7 +259,108 @@ class TestProvidersShow:
         assert status["generate_ready"] is True
         assert status["cogitate_ready"] is False
         assert status["cogitate_cli_found"] is False
-        assert "claude CLI not found on PATH" in status["issues"]
+        assert (
+            "bundled CLI not installed — run `sol call settings providers install anthropic`"
+            in status["issues"]
+        )
+
+
+class TestProvidersBundled:
+    def test_status_single_json(self, settings_env):
+        tmp_path, config = settings_env()
+        config["providers"]["bundled"] = {
+            "anthropic": {
+                "state": "valid",
+                "last_transition_at": "2026-05-20T00:00:00+00:00",
+                "sdk_spec": "claude-agent-sdk==0.2.82",
+                "binary_path": "/tmp/claude",
+                "install_error": None,
+            }
+        }
+        config["env"]["ANTHROPIC_API_KEY"] = "test-key"
+        config["providers"]["key_validation"]["anthropic"] = {"valid": True}
+        (tmp_path / "config" / "journal.json").write_text(
+            json.dumps(config, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(
+            call_app, ["settings", "providers", "status", "anthropic"]
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["name"] == "anthropic"
+        assert payload["state"] == "valid"
+
+    def test_status_all_json(self, settings_env):
+        settings_env()
+
+        result = runner.invoke(call_app, ["settings", "providers", "status"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert set(payload) == {"anthropic", "openai"}
+
+    def test_status_human(self, settings_env):
+        settings_env()
+
+        result = runner.invoke(
+            call_app,
+            ["settings", "providers", "status", "--human"],
+        )
+
+        assert result.exit_code == 0
+        assert "provider" in result.output
+        assert "anthropic" in result.output
+
+    def test_status_json_human_conflict(self, settings_env):
+        settings_env()
+
+        result = runner.invoke(
+            call_app,
+            ["settings", "providers", "status", "--json", "--human"],
+        )
+
+        assert result.exit_code == 1
+        assert "--json and --human cannot be used together" in result.output
+
+    @pytest.mark.parametrize(
+        ("command", "function_name"),
+        [
+            ("install", "install_provider"),
+            ("uninstall", "uninstall_provider"),
+            ("disable", "disable_provider"),
+            ("enable", "enable_provider"),
+            ("validate-key", "validate_key"),
+        ],
+    )
+    def test_write_verbs_emit_json(
+        self, settings_env, monkeypatch, command, function_name
+    ):
+        settings_env()
+        payload = {"name": "openai", "state": "valid"}
+        monkeypatch.setattr(bundled, function_name, lambda name: payload)
+
+        result = runner.invoke(call_app, ["settings", "providers", command, "openai"])
+
+        assert result.exit_code == 0
+        assert json.loads(result.output) == payload
+
+    def test_write_verb_error_exits_nonzero(self, settings_env, monkeypatch):
+        settings_env()
+
+        def fail(_name):
+            raise bundled.UnsupportedBundledProvider("bad provider")
+
+        monkeypatch.setattr(bundled, "install_provider", fail)
+
+        result = runner.invoke(call_app, ["settings", "providers", "install", "google"])
+
+        assert result.exit_code == 1
+        payload = json.loads(result.stderr)
+        assert payload["error"] == "bad provider"
+        assert payload["type"] == "UnsupportedBundledProvider"
 
 
 class TestProvidersSetGenerate:

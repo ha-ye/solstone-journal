@@ -69,21 +69,16 @@ convey_app.add_typer(trust_localhost_app, name="trust-localhost")
 
 def _get_config():
     """Read journal config."""
-    from solstone.think.utils import get_config
+    from solstone.think.journal_config import read_journal_config
 
-    return get_config()
+    return read_journal_config()
 
 
 def _write_config(config: dict) -> None:
     """Write journal config with indent=2, trailing newline, 0o600."""
-    from solstone.think.utils import get_journal
+    from solstone.think.journal_config import write_journal_config
 
-    config_path = Path(get_journal()) / "config" / "journal.json"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-    os.chmod(config_path, 0o600)
+    write_journal_config(config)
 
 
 def _convey_password_is_set(config: dict) -> bool:
@@ -492,6 +487,146 @@ def providers_show() -> None:
         "key_validation": providers_config.get("key_validation", {}),
     }
     typer.echo(json.dumps(result, indent=2))
+
+
+def _bundled_status_payload(name: str | None) -> dict:
+    from solstone.think.providers import bundled
+
+    if name:
+        return bundled.get_provider_state(name)
+    return {
+        provider: bundled.get_provider_state(provider)
+        for provider in ("anthropic", "openai")
+    }
+
+
+def _echo_bundled_result(payload: dict, *, human: bool = False) -> None:
+    if not human:
+        typer.echo(json.dumps(payload, indent=2))
+        return
+
+    rows = payload.values() if "state" not in payload else [payload]
+    headers = ("provider", "state", "key", "binary", "issues")
+    rendered = []
+    for row in rows:
+        rendered.append(
+            (
+                row["name"],
+                row["state"],
+                "yes" if row["key_configured"] else "no",
+                "yes" if row["binary_path"] else "no",
+                "; ".join(row.get("issues", [])),
+            )
+        )
+    widths = [
+        max(len(str(value)) for value in (header, *(row[idx] for row in rendered)))
+        for idx, header in enumerate(headers)
+    ]
+    typer.echo(
+        "  ".join(header.ljust(widths[idx]) for idx, header in enumerate(headers))
+    )
+    typer.echo("  ".join("-" * width for width in widths))
+    for row in rendered:
+        typer.echo(
+            "  ".join(str(value).ljust(widths[idx]) for idx, value in enumerate(row))
+        )
+
+
+def _bundled_error_exit(exc: Exception) -> None:
+    typer.echo(
+        json.dumps(
+            {
+                "error": str(exc),
+                "type": exc.__class__.__name__,
+            },
+            indent=2,
+        ),
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
+@providers_app.command("status")
+def providers_bundled_status(
+    name: str | None = typer.Argument(None, help="Bundled provider name."),
+    json_flag: bool = typer.Option(False, "--json", help="Print JSON output."),
+    human: bool = typer.Option(False, "--human", help="Print a compact table."),
+) -> None:
+    """Show bundled cogitate provider status."""
+    from solstone.think.providers import bundled
+
+    if json_flag and human:
+        typer.echo("--json and --human cannot be used together.", err=True)
+        raise typer.Exit(1)
+    try:
+        _echo_bundled_result(_bundled_status_payload(name), human=human)
+    except bundled.BundledProviderError as exc:
+        _bundled_error_exit(exc)
+
+
+@providers_app.command("install")
+def providers_bundled_install(
+    name: str = typer.Argument(..., help="Bundled provider name."),
+) -> None:
+    """Install or retry a bundled cogitate provider."""
+    from solstone.think.providers import bundled
+
+    try:
+        typer.echo(json.dumps(bundled.install_provider(name), indent=2))
+    except bundled.BundledProviderError as exc:
+        _bundled_error_exit(exc)
+
+
+@providers_app.command("uninstall")
+def providers_bundled_uninstall(
+    name: str = typer.Argument(..., help="Bundled provider name."),
+) -> None:
+    """Uninstall a bundled cogitate provider."""
+    from solstone.think.providers import bundled
+
+    try:
+        typer.echo(json.dumps(bundled.uninstall_provider(name), indent=2))
+    except bundled.BundledProviderError as exc:
+        _bundled_error_exit(exc)
+
+
+@providers_app.command("disable")
+def providers_bundled_disable(
+    name: str = typer.Argument(..., help="Bundled provider name."),
+) -> None:
+    """Disable a bundled cogitate provider."""
+    from solstone.think.providers import bundled
+
+    try:
+        typer.echo(json.dumps(bundled.disable_provider(name), indent=2))
+    except bundled.BundledProviderError as exc:
+        _bundled_error_exit(exc)
+
+
+@providers_app.command("enable")
+def providers_bundled_enable(
+    name: str = typer.Argument(..., help="Bundled provider name."),
+) -> None:
+    """Enable a bundled cogitate provider."""
+    from solstone.think.providers import bundled
+
+    try:
+        typer.echo(json.dumps(bundled.enable_provider(name), indent=2))
+    except bundled.BundledProviderError as exc:
+        _bundled_error_exit(exc)
+
+
+@providers_app.command("validate-key")
+def providers_bundled_validate_key(
+    name: str = typer.Argument(..., help="Bundled provider name."),
+) -> None:
+    """Validate a bundled provider API key."""
+    from solstone.think.providers import bundled
+
+    try:
+        typer.echo(json.dumps(bundled.validate_key(name), indent=2))
+    except bundled.BundledProviderError as exc:
+        _bundled_error_exit(exc)
 
 
 @providers_app.command("set-generate")

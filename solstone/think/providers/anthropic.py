@@ -47,6 +47,7 @@ from anthropic.types import (
 )
 
 from solstone.think.models import CLAUDE_SONNET_4
+from solstone.think.providers import bundled
 from solstone.think.providers._image import encode_image_part, is_image_part
 from solstone.think.utils import now_ms
 
@@ -56,7 +57,6 @@ from .cli import (
     ThinkingAggregator,
     assemble_prompt,
     build_cogitate_env,
-    check_cli_binary,
 )
 from .shared import (
     GenerateResult,
@@ -248,7 +248,7 @@ async def run_cogitate(
     callback = JSONEventCallback(on_event)
 
     try:
-        check_cli_binary("claude")
+        claude_binary = bundled.resolve_bundled_binary("anthropic")
 
         prompt_body, system_instruction = assemble_prompt(
             config,
@@ -256,7 +256,7 @@ async def run_cogitate(
         )
 
         cmd = [
-            "claude",
+            str(claude_binary),
             "-p",
             "-",
             "--verbose",

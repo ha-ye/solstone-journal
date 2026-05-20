@@ -8,6 +8,7 @@ import io
 import json
 import sys
 import types
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -162,7 +163,9 @@ def _setup_claude_cli_stub(
     with_redacted_thinking=False,
 ):
     monkeypatch.setattr(
-        provider_mod, "check_cli_binary", lambda _name: "/usr/bin/claude"
+        provider_mod.bundled,
+        "resolve_bundled_binary",
+        lambda _name: Path("/usr/bin/claude"),
     )
 
     class DummyCLIRunner:

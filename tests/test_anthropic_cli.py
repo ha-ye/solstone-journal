@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from solstone.think.providers import bundled
 from solstone.think.providers.anthropic import _translate_claude
 from solstone.think.providers.cli import ThinkingAggregator
 from solstone.think.providers.shared import JSONEventCallback
@@ -30,7 +31,10 @@ def _assert_write_mode_bypasses_restrictions(make_runner, config_override=None):
         config.update(config_override)
     with (
         patch("solstone.think.providers.anthropic.CLIRunner", MockCLIRunner),
-        patch("solstone.think.providers.anthropic.check_cli_binary"),
+        patch(
+            "solstone.think.providers.anthropic.bundled.resolve_bundled_binary",
+            return_value=Path("/usr/bin/claude"),
+        ),
     ):
         asyncio.run(provider.run_cogitate(config, lambda e: None))
     cmd = MockCLIRunner.last_instance.cmd
@@ -400,7 +404,10 @@ class TestRunCogitateCommand:
         MockCLIRunner = self._mock_runner()
         with (
             patch("solstone.think.providers.anthropic.CLIRunner", MockCLIRunner),
-            patch("solstone.think.providers.anthropic.check_cli_binary"),
+            patch(
+                "solstone.think.providers.anthropic.bundled.resolve_bundled_binary",
+                return_value=Path("/usr/bin/claude"),
+            ),
         ):
             asyncio.run(
                 provider.run_cogitate(
@@ -426,3 +433,29 @@ class TestRunCogitateCommand:
         assert (
             "Do not invent or call a tool literally named `sol`." not in system_prompt
         )
+
+    def test_resolve_error_emits_event_and_reraises(self):
+        provider = _anthropic_provider()
+        events = []
+        exc = None
+        hint = "sol call settings providers install anthropic"
+
+        with patch(
+            "solstone.think.providers.anthropic.bundled.resolve_bundled_binary",
+            side_effect=bundled.CogitateProviderNotInstalled(hint),
+        ):
+            try:
+                asyncio.run(
+                    provider.run_cogitate(
+                        {"prompt": "hello", "model": "claude-sonnet-4"},
+                        events.append,
+                    )
+                )
+            except bundled.CogitateProviderNotInstalled as caught:
+                exc = caught
+
+        assert exc is not None
+        assert getattr(exc, "_evented", False) is True
+        assert events[-1]["event"] == "error"
+        assert events[-1]["provider"] == "anthropic"
+        assert hint in events[-1]["error"]

@@ -155,12 +155,14 @@ def build_provider_status(
         cogitate_ready, cogitate_cli, cogitate_cli_found, issues.
     """
     status = {}
+    bundled_cli_states = {"installed-no-key", "key-validating", "valid", "invalid-key"}
     for provider in providers_list:
         name = provider["name"]
         env_key = provider.get("env_key", "")
         meta = PROVIDER_METADATA.get(name, {})
         cogitate_cli = meta.get("cogitate_cli", "")
         issues: list[str] = []
+        bundled_state: dict[str, Any] | None = None
 
         if name == "ollama":
             try:
@@ -183,17 +185,39 @@ def build_provider_status(
             configured = has_key or vertex_creds_configured
             if not configured:
                 issues.append(f"{env_key} not set")
+        elif name in {"anthropic", "openai"}:
+            from solstone.think.providers import bundled
+
+            bundled_state = bundled.get_provider_state(name)
+            configured = bool(bundled_state["key_configured"])
+            if not configured and env_key:
+                issues.append(f"{env_key} not set")
         else:
             configured = bool(os.getenv(env_key)) if env_key else False
             if not configured and env_key:
                 issues.append(f"{env_key} not set")
 
-        cogitate_cli_found = bool(shutil.which(cogitate_cli)) if cogitate_cli else False
-        if cogitate_cli and not cogitate_cli_found:
-            issues.append(f"{cogitate_cli} CLI not found on PATH")
+        if bundled_state is not None:
+            bundled_contract_state = bundled_state["state"]
+            cogitate_cli_found = bundled_contract_state in bundled_cli_states
+            if not cogitate_cli_found:
+                issues.append(
+                    f"bundled CLI not installed — run `sol call settings providers install {name}`"
+                )
+            elif bundled_contract_state == "invalid-key":
+                issues.extend(bundled_state.get("issues", []))
+            cogitate_ready = (
+                bundled_contract_state in {"installed-no-key", "valid"} and configured
+            )
+        else:
+            cogitate_cli_found = (
+                bool(shutil.which(cogitate_cli)) if cogitate_cli else False
+            )
+            if cogitate_cli and not cogitate_cli_found:
+                issues.append(f"{cogitate_cli} CLI not found on PATH")
+            cogitate_ready = configured and cogitate_cli_found
 
         generate_ready = configured
-        cogitate_ready = configured and cogitate_cli_found
 
         status[name] = {
             "configured": configured,

@@ -353,7 +353,7 @@ solstone/
 
 ### The `solstone/apps/` dual role
 
-`solstone/apps/` contains both CLI apps (with `call.py`) and convey web routes (without). The presence of `call.py` is the marker for "this app exposes CLI commands." Web-only apps (home, search, settings, stats, etc.) only serve the convey UI.
+`solstone/apps/` contains both CLI apps (with `call.py`) and convey web routes (without). The presence of `call.py` is the marker for "this app exposes CLI commands." Web-only apps (home, search, stats, etc.) only serve the convey UI.
 
 ## Current Command Inventory
 
@@ -364,7 +364,7 @@ solstone/
 | Think (processing) | `import`, `think`, `planner`, `indexer`, `supervisor`, `schedule`, `top`, `health`, `callosum`, `notify`, `heartbeat` |
 | Service | `service` (+ aliases `up`, `down`, `start`) |
 | Observe (capture) | `transcribe`, `describe`, `sense`, `transfer`, `observer` |
-| Talent (AI agents) | `agents`, `cortex`, `talent`, `call`, `engage` |
+| Talent (AI agents) | `agents`, `cortex`, `talent`, `call`, `engage`, `providers` |
 | Convey (web UI) | `convey`, `restart-convey`, `maint` |
 | Specialized | `config`, `skills`, `streams`, `journal-stats`, `formatter`, `detect-created` |
 | Installation | `doctor` |
@@ -382,6 +382,7 @@ solstone/
 | `transcripts` | `solstone/apps/transcripts/call.py` | list, read, segments |
 | `support` | `solstone/apps/support/call.py` | register, search, article, create, list, show, reply, attach, feedback, announcements, diagnose |
 | `sol` | `solstone/apps/sol/call.py` | name, set-name, reset, thickness, set-owner, sol-init |
+| `settings` | `solstone/apps/settings/call.py` | keys (show/set/delete), providers (show/set-auth/status/install/uninstall/disable/enable/validate-key), vertex service-account |
 | `awareness` | `solstone/apps/awareness/call.py` | status, imports, log, log-read |
 | `journal` | `solstone/think/tools/call.py` | search, events, facets, facet (show/create/update/rename/mute/unmute/delete/merge), news, agents, read, imports, import, retention purge, storage-summary |
 | `routines` | `solstone/think/tools/routines.py` | list, templates, create, edit, delete, run, output, suggestions, suggest-respond, suggest-state |
