@@ -4,7 +4,6 @@
   "schedule": "segment",
   "priority": 41,
   "provider": "google",
-  "model": "gemini-3.1-flash-lite",
   "output": "json",
   "schema": "segment_summary.schema.json",
   "hook": {"pre": "timeline:segment_summary", "post": "timeline:segment_summary"},

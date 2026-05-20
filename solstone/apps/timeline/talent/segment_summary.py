@@ -13,11 +13,12 @@ import time
 from pathlib import Path
 from typing import Any
 
+from solstone.think.models import GEMINI_LITE
 from solstone.think.utils import day_path, iter_segments, segment_path
 
 logger = logging.getLogger(__name__)
 
-MODEL = "gemini-3.1-flash-lite"
+MODEL = GEMINI_LITE
 
 SYSTEM_INSTRUCTION = (
     "Pick the SINGLE MOST IMPORTANT EVENT from this ~5-minute slice of a "

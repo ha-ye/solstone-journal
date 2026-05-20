@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from solstone.apps.timeline.talent import segment_summary
+from solstone.think.models import GEMINI_LITE
 
 DAY = "20260512"
 SEGMENT = "120000_60"
@@ -124,7 +125,7 @@ def test_post_process_writes_augmented_timeline_atomically(
         "title": "Display Reset",
         "description": "Restarts display manager.",
         "origin": f"{DAY}/archon/{SEGMENT}",
-        "model": "gemini-3.1-flash-lite",
+        "model": GEMINI_LITE,
         "generated_at": 1770000000,
     }
 
@@ -139,10 +140,7 @@ def test_post_process_records_literal_model(timeline_journal):
     )
 
     timeline = timeline_journal / "chronicle" / DAY / SEGMENT / "timeline.json"
-    assert (
-        json.loads(timeline.read_text(encoding="utf-8"))["model"]
-        == "gemini-3.1-flash-lite"
-    )
+    assert json.loads(timeline.read_text(encoding="utf-8"))["model"] == GEMINI_LITE
 
 
 @pytest.mark.parametrize(

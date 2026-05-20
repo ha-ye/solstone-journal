@@ -54,9 +54,9 @@ MODEL_PRICE_ALIASES: Dict[str, str] = {
     "claude-opus-4-7": "claude-opus-4-5",
 }
 
-GEMINI_PRO = "gemini-3.1-pro-preview"
-GEMINI_FLASH = "gemini-3-flash-preview"
-GEMINI_LITE = "gemini-2.5-flash-lite"
+GEMINI_PRO = "gemini-pro-latest"
+GEMINI_FLASH = "gemini-flash-latest"
+GEMINI_LITE = "gemini-flash-lite-latest"
 
 GPT_5 = "gpt-5.5"
 GPT_5_MINI = "gpt-5.4-mini"
@@ -441,7 +441,7 @@ def resolve_provider(context: str, agent_type: str) -> tuple[str, str]:
     then glob patterns (via fnmatch), falling back to type-specific defaults.
 
     Supports both explicit model strings and tier-based routing:
-    - {"provider": "google", "model": "gemini-3-flash-preview"} - explicit model
+    - {"provider": "google", "model": "gemini-flash-latest"} - explicit model
     - {"provider": "google", "tier": 2} - tier-based (2=flash)
     - {"tier": 1} - tier only, inherits provider from type default
 
@@ -564,7 +564,7 @@ def log_token_usage(
     Parameters
     ----------
     model : str
-        Model name (e.g., "gpt-5", "gemini-2.5-flash")
+        Model name (e.g., "gpt-5", "gemini-flash-latest")
     usage : dict
         Normalized usage dict with keys from USAGE_KEYS.
     context : str, optional
@@ -660,7 +660,7 @@ def get_model_provider(model: str) -> str:
     Parameters
     ----------
     model : str
-        Model name (e.g., "gpt-5", "gemini-2.5-flash", "claude-sonnet-4-5")
+        Model name (e.g., "gpt-5", "gemini-flash-latest", "claude-sonnet-4-5")
 
     Returns
     -------
@@ -693,7 +693,7 @@ def calc_token_cost(token_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     token_data : dict
         Token usage record from journal logs with structure:
         {
-            "model": "gemini-2.5-flash",
+            "model": "gemini-flash-latest",
             "usage": {
                 "input_tokens": 1500,
                 "output_tokens": 500,
@@ -796,6 +796,10 @@ def calc_agent_cost(
     """
     if not model or not usage:
         return None
+    # Token logs store resolved models; this boundary covers cortex start-event aliases.
+    resolved_model = usage.get("model_version")
+    if resolved_model:
+        model = resolved_model
     try:
         cost_data = calc_token_cost({"model": model, "usage": usage})
         if cost_data:
@@ -1096,7 +1100,7 @@ def generate(
     # still get their usage recorded)
     if result.get("usage"):
         log_token_usage(
-            model=model,
+            model=result.get("model") or model,
             usage=result["usage"],
             context=context,
             type="generate",
@@ -1396,7 +1400,7 @@ def generate_with_result(
     # still get their usage recorded)
     if result.get("usage"):
         log_token_usage(
-            model=model,
+            model=result.get("model") or model,
             usage=result["usage"],
             context=context,
             type="generate",
@@ -1500,7 +1504,7 @@ async def agenerate(
     # still get their usage recorded)
     if result.get("usage"):
         log_token_usage(
-            model=model,
+            model=result.get("model") or model,
             usage=result["usage"],
             context=context,
             type="generate",

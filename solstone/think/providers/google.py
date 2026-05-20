@@ -365,11 +365,14 @@ def _extract_usage(response: Any) -> dict | None:
         return None
 
     metadata = response.usage_metadata
-    usage: dict[str, int] = {
+    usage: dict[str, Any] = {
         "input_tokens": getattr(metadata, "prompt_token_count", 0),
         "output_tokens": getattr(metadata, "candidates_token_count", 0),
         "total_tokens": getattr(metadata, "total_token_count", 0),
     }
+    model_version = getattr(response, "model_version", None)
+    if model_version:
+        usage["model_version"] = model_version
     # Only include optional fields if non-zero
     cached = getattr(metadata, "cached_content_token_count", 0)
     if cached:
@@ -378,6 +381,12 @@ def _extract_usage(response: Any) -> dict | None:
     if reasoning:
         usage["reasoning_tokens"] = reasoning
     return usage
+
+
+def _resolved_model(response: Any, requested: str) -> str:
+    """Return resolved model_version from the response, falling back to requested."""
+    resolved = getattr(response, "model_version", None)
+    return resolved or requested
 
 
 def _extract_thinking(response: Any) -> list | None:
@@ -553,6 +562,7 @@ def run_generate(
 
     return GenerateResult(
         text=_extract_response_text(response),
+        model=_resolved_model(response, model),
         usage=_extract_usage(response),
         finish_reason=_normalize_finish_reason(response),
         thinking=_extract_thinking(response),
@@ -606,6 +616,7 @@ async def run_agenerate(
 
     return GenerateResult(
         text=_extract_response_text(response),
+        model=_resolved_model(response, model),
         usage=_extract_usage(response),
         finish_reason=_normalize_finish_reason(response),
         thinking=_extract_thinking(response),
@@ -797,6 +808,7 @@ async def run_cogitate(
         )
         read_call_count = 0
         usage: dict[str, Any] = {}
+        resolved_model = model
 
         next_message: str | list[types.Part] = prompt_body
         result_parts: list[str] = []
@@ -807,6 +819,7 @@ async def run_cogitate(
                 chunk_usage = _extract_usage(chunk)
                 if chunk_usage:
                     usage = chunk_usage
+                    resolved_model = _resolved_model(chunk, model)
                 for part in _iter_response_parts(chunk):
                     text = getattr(part, "text", None)
                     is_thought = bool(getattr(part, "thought", False))
@@ -815,7 +828,7 @@ async def run_cogitate(
                             {
                                 "event": "thinking",
                                 "summary": text.strip(),
-                                "model": model,
+                                "model": resolved_model,
                                 "ts": now_ms(),
                             }
                         )
@@ -825,7 +838,7 @@ async def run_cogitate(
                             {
                                 "event": "text_delta",
                                 "delta": text,
-                                "model": model,
+                                "model": resolved_model,
                                 "ts": now_ms(),
                             }
                         )

@@ -12,6 +12,7 @@ from typer.testing import CliRunner
 
 from solstone.apps.timeline.call import _rollup_day, app
 from solstone.apps.timeline.tests.conftest import write_json
+from solstone.think.models import GEMINI_FLASH, GEMINI_LITE
 
 DAY = "20260512"
 
@@ -23,7 +24,7 @@ def _write_segment(journal, day, segment, title, hour_stream="archon"):
             "title": title,
             "description": f"{title} description.",
             "origin": f"{day}/{hour_stream}/{segment}",
-            "model": "gemini-3.1-flash-lite",
+            "model": GEMINI_LITE,
             "generated_at": 1770000000,
         },
     )
@@ -65,12 +66,12 @@ def test_rollup_day_writes_seed_shape(timeline_journal, mock_agenerate):
         (timeline_journal / "chronicle" / DAY / "timeline.json").read_text()
     )
     assert payload["day"] == DAY
-    assert payload["model"] == "gemini-3-flash-preview"
+    assert payload["model"] == GEMINI_FLASH
     assert payload["segment_count"] == 5
     assert payload["hour_count"] == 1
     assert len(payload["day_top"]) == 4
     assert payload["hours"]["12"]["rationale"] == "highest consequence"
-    assert mock.call_args.kwargs["model"] == "gemini-3-flash-preview"
+    assert mock.call_args.kwargs["model"] == GEMINI_FLASH
 
 
 def test_rollup_day_skip_when_exists_without_force(timeline_journal, mock_agenerate):

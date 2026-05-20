@@ -373,6 +373,7 @@ class GenerateResult(TypedDict, total=False):
     """
 
     text: Required[str]  # Response text
+    model: Optional[str]  # Resolved model identifier when provider returns one
     usage: Optional[dict]  # Normalized usage dict (input_tokens, output_tokens, etc.)
     finish_reason: Optional[str]  # Normalized: "stop", "max_tokens", "safety", etc.
     thinking: Optional[list]  # List of thinking block dicts

@@ -314,7 +314,6 @@
         "talents": false,
         "transcripts": false
       },
-      "model": "gemini-3.1-flash-lite",
       "mtime": 0,
       "output": "json",
       "path": "<PROJECT>/solstone/apps/timeline/talent/segment_summary.md",

@@ -8,6 +8,8 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+from google.genai import types as genai_types
+
 from solstone.think.models import GEMINI_FLASH
 from solstone.think.providers import google as google_provider
 from solstone.think.providers.google import (
@@ -33,6 +35,57 @@ def _assert_structured_contents(contents):
         ["second"],
         ["third"],
     ]
+
+
+def _fake_generate_content_response(model_version):
+    return genai_types.GenerateContentResponse(
+        model_version=model_version,
+        candidates=[
+            genai_types.Candidate(
+                content=genai_types.Content(
+                    role="model",
+                    parts=[genai_types.Part(text="ok")],
+                ),
+                finish_reason=genai_types.FinishReason.STOP,
+            )
+        ],
+        usage_metadata=genai_types.GenerateContentResponseUsageMetadata(
+            prompt_token_count=1,
+            candidates_token_count=2,
+            total_token_count=3,
+        ),
+    )
+
+
+def test_run_generate_records_resolved_model_version():
+    response = _fake_generate_content_response("gemini-3.5-flash")
+    client = SimpleNamespace(
+        models=SimpleNamespace(generate_content=MagicMock(return_value=response))
+    )
+
+    result = google_provider.run_generate(
+        contents="hello",
+        model="gemini-flash-latest",
+        client=client,
+    )
+
+    assert result["model"] == "gemini-3.5-flash"
+    assert result["usage"]["model_version"] == "gemini-3.5-flash"
+
+
+def test_run_generate_model_version_falls_back_to_requested():
+    response = _fake_generate_content_response(None)
+    client = SimpleNamespace(
+        models=SimpleNamespace(generate_content=MagicMock(return_value=response))
+    )
+
+    result = google_provider.run_generate(
+        contents="hello",
+        model="gemini-flash-latest",
+        client=client,
+    )
+
+    assert result["model"] == "gemini-flash-latest"
 
 
 def test_google_main(monkeypatch, tmp_path, capsys):

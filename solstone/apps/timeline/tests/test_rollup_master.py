@@ -12,6 +12,7 @@ from typer.testing import CliRunner
 
 from solstone.apps.timeline.call import _rollup_master, app
 from solstone.apps.timeline.tests.conftest import write_json
+from solstone.think.models import GEMINI_FLASH
 
 
 def _write_day(journal, day, titles):
@@ -19,7 +20,7 @@ def _write_day(journal, day, titles):
         journal / "chronicle" / day / "timeline.json",
         {
             "day": day,
-            "model": "gemini-3-flash-preview",
+            "model": GEMINI_FLASH,
             "generated_at": 1770000000,
             "segment_count": len(titles),
             "hour_count": 1,
@@ -64,13 +65,13 @@ def test_rollup_master_writes_seed_shape(timeline_journal, mock_agenerate):
     )
 
     payload = json.loads((timeline_journal / "timeline.json").read_text())
-    assert payload["model"] == "gemini-3-flash-preview"
+    assert payload["model"] == GEMINI_FLASH
     assert payload["top_n"] == 4
     assert list(payload["months"]) == ["202605"]
     assert payload["months"]["202605"]["day_count"] == 2
     assert payload["months"]["202605"]["month_top"][0]["title"] == "E"
     assert payload["year_top"][0]["month"] == "202605"
-    assert mock.call_args.kwargs["model"] == "gemini-3-flash-preview"
+    assert mock.call_args.kwargs["model"] == GEMINI_FLASH
 
 
 def test_rollup_master_year_top_is_month_top_first_per_month(timeline_journal):

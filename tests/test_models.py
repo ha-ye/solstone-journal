@@ -30,6 +30,7 @@ from solstone.think.models import (
     IncompleteJSONError,
     _validate_schema,
     agenerate,
+    calc_agent_cost,
     calc_token_cost,
     generate,
     generate_with_result,
@@ -84,6 +85,18 @@ def test_calc_token_cost_with_cache():
     assert result["total_cost"] > 0
     # Cached tokens should reduce the cost compared to all uncached
     assert result["input_cost"] >= 0
+
+
+def test_calc_agent_cost_uses_resolved_model_version_from_usage():
+    usage = {
+        "input_tokens": 1000,
+        "output_tokens": 500,
+        "model_version": "gemini-2.5-flash",
+    }
+
+    cost = calc_agent_cost("gemini-flash-latest", usage)
+
+    assert cost is not None and cost > 0
 
 
 def test_calc_token_cost_unknown_model():
@@ -190,12 +203,12 @@ def test_resolve_provider_glob_match(use_fixtures_journal):
     # observe.* pattern should match
     provider, model = resolve_provider("observe.describe.frame", "generate")
     assert provider == "google"
-    assert model == "gemini-2.5-flash-lite"
+    assert model == GEMINI_LITE
 
     # Also matches with other suffixes
     provider, model = resolve_provider("observe.enrich", "generate")
     assert provider == "google"
-    assert model == "gemini-2.5-flash-lite"
+    assert model == GEMINI_LITE
 
 
 def test_resolve_provider_anthropic(use_fixtures_journal):
@@ -567,8 +580,12 @@ def test_all_default_models_have_pricing():
         ]
     )
 
+    # Google latest aliases are request aliases. Token logs use the resolved
+    # response model_version for pricing when the provider returns it.
+    request_aliases = {GEMINI_PRO, GEMINI_FLASH, GEMINI_LITE}
+
     missing_pricing = []
-    for model in sorted(all_models):
+    for model in sorted(all_models - request_aliases):
         token_data = {
             "model": model,
             "usage": {

@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import json
 
+from solstone.think.models import GEMINI_FLASH
+
 # Use the full flash, not lite — qualitative ranking benefits from headroom.
-MODEL = "gemini-3-flash-preview"
+MODEL = GEMINI_FLASH
 
 
 # Schema: a list of indices into the candidate array. We don't ask the model

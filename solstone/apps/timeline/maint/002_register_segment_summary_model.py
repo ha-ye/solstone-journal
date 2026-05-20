@@ -20,7 +20,7 @@ from solstone.think.utils import get_journal, setup_cli
 logger = logging.getLogger(__name__)
 
 CONTEXT_NAME = "talent.timeline.segment_summary"
-EXPECTED_CONTEXT = {"provider": "google", "model": "gemini-3.1-flash-lite"}
+EXPECTED_CONTEXT = {"provider": "google", "model": "gemini-flash-lite-latest"}
 
 
 @dataclass

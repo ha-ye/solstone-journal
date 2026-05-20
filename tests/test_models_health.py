@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from solstone.think.models import record_provider_failure
+from solstone.think.models import GEMINI_FLASH, record_provider_failure
 
 
 def _read_health(tmp_path):
@@ -18,7 +18,7 @@ def test_record_provider_failure_appends_new_row(monkeypatch, tmp_path):
     record_provider_failure(
         "google",
         "flash",
-        "gemini-3-flash-preview",
+        GEMINI_FLASH,
         "cogitate",
         12345,
     )
@@ -28,7 +28,7 @@ def test_record_provider_failure_appends_new_row(monkeypatch, tmp_path):
     row = payload["results"][0]
     assert row["provider"] == "google"
     assert row["tier"] == "flash"
-    assert row["model"] == "gemini-3-flash-preview"
+    assert row["model"] == GEMINI_FLASH
     assert row["interface"] == "cogitate"
     assert row["ok"] is False
     assert row["status"] == "quota_exhausted"
