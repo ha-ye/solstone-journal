@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -32,6 +33,24 @@ def journal_config(tmp_path, monkeypatch):
         return config_path
 
     return _write
+
+
+def _patch_purelib(monkeypatch, site_packages: Path) -> None:
+    monkeypatch.setattr(
+        bundled.sysconfig,
+        "get_paths",
+        lambda: {"purelib": str(site_packages)},
+    )
+
+
+def _build_openai_codex_sdk_tree(site_packages: Path) -> Path:
+    package_dir = site_packages / "openai_codex_sdk"
+    binary = package_dir / "vendor" / "x86_64-unknown-linux-musl" / "codex" / "codex"
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.touch()
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "_install.py").write_text("", encoding="utf-8")
+    return package_dir
 
 
 @pytest.mark.parametrize("provider", ["anthropic", "openai"])
@@ -258,6 +277,109 @@ def test_uninstall_preserves_keys_auth_and_env(journal_config, monkeypatch):
     assert persisted["env"]["ANTHROPIC_API_KEY"] == "test-key"
     assert persisted["providers"]["auth"]["anthropic"] == "api_key"
     assert persisted["providers"]["key_validation"]["anthropic"]["valid"] is True
+
+
+def test_uninstall_openai_reclaims_vendor_tree(journal_config, monkeypatch, tmp_path):
+    site_packages = tmp_path / "site-packages"
+    package_dir = _build_openai_codex_sdk_tree(site_packages)
+    _patch_purelib(monkeypatch, site_packages)
+    monkeypatch.setattr(bundled, "_run_uv_pip_uninstall", lambda sdk_spec: None)
+    journal_config(bundled_provider_config("openai", "valid"))
+
+    state = bundled.uninstall_provider("openai")
+
+    assert state["state"] == "not-enabled"
+    assert not package_dir.exists()
+    assert site_packages.is_dir()
+
+
+def test_uninstall_openai_skips_when_outside_site_packages(
+    journal_config,
+    monkeypatch,
+    tmp_path,
+    caplog,
+):
+    site_packages = tmp_path / "site-packages"
+    site_packages.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    package_dir = _build_openai_codex_sdk_tree(elsewhere)
+    (site_packages / "openai_codex_sdk").symlink_to(
+        package_dir,
+        target_is_directory=True,
+    )
+    _patch_purelib(monkeypatch, site_packages)
+    monkeypatch.setattr(bundled, "_run_uv_pip_uninstall", lambda sdk_spec: None)
+    journal_config(bundled_provider_config("openai", "valid"))
+
+    with caplog.at_level(logging.WARNING):
+        state = bundled.uninstall_provider("openai")
+
+    assert state["state"] == "not-enabled"
+    assert package_dir.exists()
+    assert any("outside site-packages" in record.message for record in caplog.records)
+
+
+def test_uninstall_openai_rmtree_failure_is_non_fatal(
+    journal_config,
+    monkeypatch,
+    tmp_path,
+    caplog,
+):
+    site_packages = tmp_path / "site-packages"
+    package_dir = _build_openai_codex_sdk_tree(site_packages)
+    _patch_purelib(monkeypatch, site_packages)
+    monkeypatch.setattr(bundled, "_run_uv_pip_uninstall", lambda sdk_spec: None)
+
+    def fail_rmtree(_path):
+        raise OSError("boom")
+
+    monkeypatch.setattr(bundled.shutil, "rmtree", fail_rmtree)
+    journal_config(bundled_provider_config("openai", "valid"))
+
+    with caplog.at_level(logging.WARNING):
+        state = bundled.uninstall_provider("openai")
+
+    assert state["state"] == "not-enabled"
+    assert package_dir.exists()
+    assert any("boom" in record.message for record in caplog.records)
+
+
+def test_uninstall_openai_missing_target_is_silent_noop(
+    journal_config,
+    monkeypatch,
+    tmp_path,
+    caplog,
+):
+    site_packages = tmp_path / "site-packages"
+    site_packages.mkdir()
+    _patch_purelib(monkeypatch, site_packages)
+    monkeypatch.setattr(bundled, "_run_uv_pip_uninstall", lambda sdk_spec: None)
+    journal_config(bundled_provider_config("openai", "valid"))
+
+    with caplog.at_level(logging.WARNING):
+        state = bundled.uninstall_provider("openai")
+
+    assert state["state"] == "not-enabled"
+    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+
+def test_uninstall_anthropic_does_not_invoke_openai_cleanup(
+    journal_config,
+    monkeypatch,
+):
+    calls = []
+    monkeypatch.setattr(bundled, "_run_uv_pip_uninstall", lambda sdk_spec: None)
+    monkeypatch.setattr(
+        bundled,
+        "_remove_openai_post_install_artifacts",
+        lambda: calls.append(True),
+    )
+    journal_config(bundled_provider_config("anthropic", "valid"))
+
+    state = bundled.uninstall_provider("anthropic")
+
+    assert state["state"] == "not-enabled"
+    assert calls == []
 
 
 def test_resolve_bundled_binary_success(journal_config):

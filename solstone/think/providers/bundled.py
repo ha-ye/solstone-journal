@@ -6,10 +6,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform
+import shutil
 import subprocess
 import sys
+import sysconfig
 import threading
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -17,6 +20,8 @@ from pathlib import Path
 from typing import Any, TypeAlias
 
 from solstone.think.journal_config import read_journal_config, write_journal_config
+
+logger = logging.getLogger(__name__)
 
 STUCK_ENABLING_SECONDS = 300
 
@@ -405,6 +410,8 @@ def uninstall_provider(name: str) -> ContractState:
 
     try:
         _run_uv_pip_uninstall(PINS[name]["sdk_spec"])
+        if name == "openai":
+            _remove_openai_post_install_artifacts()
     finally:
         with lock:
             _transition_state(
@@ -625,6 +632,45 @@ def _run_uv_pip_uninstall(sdk_spec: str) -> None:
     if "not installed" in lower or "skipping" in lower:
         return
     raise CogitateProviderInstallFailed(f"uninstall: {output.strip()}")
+
+
+def _remove_openai_post_install_artifacts() -> None:
+    """Remove the openai_codex_sdk package directory left behind by Codex.install().
+
+    Best-effort. Scoped to the active venv's site-packages. Idempotent.
+    Cleanup failure is non-fatal -- the uninstall state transition still happens.
+    """
+
+    purelib = Path(sysconfig.get_paths()["purelib"]).resolve()
+    if not purelib.is_dir():
+        logger.warning("active site-packages directory does not exist: %s", purelib)
+        return
+
+    target = (purelib / "openai_codex_sdk").resolve(strict=False)
+    if not target.exists():
+        return
+
+    target_resolved = target.resolve()
+    if not target_resolved.is_relative_to(purelib):
+        logger.warning(
+            "refusing to remove openai_codex_sdk outside site-packages: %s "
+            "(site-packages: %s)",
+            target_resolved,
+            purelib,
+        )
+        return
+
+    try:
+        shutil.rmtree(target_resolved)
+    except OSError as exc:
+        logger.warning(
+            "failed to reclaim openai_codex_sdk vendor tree at %s: %s",
+            target_resolved,
+            exc,
+        )
+        return
+
+    logger.info("reclaimed openai_codex_sdk vendor tree at %s", target_resolved)
 
 
 def _smoke_check_binary(path: Path) -> None:
