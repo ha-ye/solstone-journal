@@ -396,7 +396,7 @@ def _delete_index_rows(journal: str, rel_path: str) -> dict[str, int]:
     """
     db_path = Path(journal) / "indexer" / "journal.sqlite"
     if not db_path.exists():
-        return {"chunks": 0, "files": 0, "entities": 0}
+        return {"chunks": 0, "files": 0}
 
     try:
         conn = sqlite3.connect(db_path)
@@ -413,22 +413,15 @@ def _delete_index_rows(journal: str, rel_path: str) -> dict[str, int]:
             )
             files_deleted = cur.rowcount
 
-            cur = conn.execute(
-                "DELETE FROM entities WHERE path LIKE ?",
-                (f"{rel_path}/%",),
-            )
-            entities_deleted = cur.rowcount
-
             conn.commit()
         finally:
             conn.close()
     except sqlite3.Error:
-        return {"chunks": 0, "files": 0, "entities": 0}
+        return {"chunks": 0, "files": 0}
 
     return {
         "chunks": chunks_deleted,
         "files": files_deleted,
-        "entities": entities_deleted,
     }
 
 
@@ -590,7 +583,7 @@ def cmd_move(args: argparse.Namespace) -> None:
         deleted = _delete_index_rows(journal, old_rel)
         if any(deleted.values()) or verbose:
             print(
-                f"  deleted index rows: chunks={deleted['chunks']}, files={deleted['files']}, entities={deleted['entities']}"
+                f"  deleted index rows: chunks={deleted['chunks']}, files={deleted['files']}"
             )
         new_rel = f"{to_day}/{stream}/{new_segment}"
         indexed = _reindex_segment(journal, dst_dir)

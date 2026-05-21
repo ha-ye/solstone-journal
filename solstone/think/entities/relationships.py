@@ -169,6 +169,31 @@ def load_all_facet_relationships(facet: str) -> dict[str, EntityDict]:
     return relationships
 
 
+def load_all_facet_relationships_across_facets() -> dict[
+    str, list[tuple[str, EntityDict]]
+]:
+    """Load facet relationships across every facet in sorted facet order.
+
+    Returns:
+        Dict mapping entity_id to [(facet_name, relationship_dict), ...]
+    """
+    from solstone.think.facets import get_facets
+
+    relationships_by_entity: dict[str, list[tuple[str, EntityDict]]] = {}
+    facet_names = set(get_facets())
+    facets_dir = Path(get_journal()) / "facets"
+    if facets_dir.is_dir():
+        facet_names.update(path.name for path in facets_dir.iterdir() if path.is_dir())
+
+    for facet_name in sorted(facet_names):
+        for entity_id, relationship in load_all_facet_relationships(facet_name).items():
+            relationships_by_entity.setdefault(entity_id, []).append(
+                (facet_name, relationship)
+            )
+
+    return relationships_by_entity
+
+
 def enrich_relationship_with_journal(
     relationship: EntityDict,
     journal_entity: EntityDict | None,

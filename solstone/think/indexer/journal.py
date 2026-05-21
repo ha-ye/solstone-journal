@@ -16,7 +16,6 @@ Raw audio/screen transcripts are formattable but not indexed by default.
 """
 
 import calendar
-import json
 import logging
 import os
 import re
@@ -24,9 +23,16 @@ import sqlite3
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
-from solstone.think.entities.core import entity_slug
+from solstone.think.entities.journal import (
+    clear_journal_entity_cache,
+    load_all_journal_entities,
+)
+from solstone.think.entities.relationships import (
+    clear_relationship_caches,
+    load_all_facet_relationships_across_facets,
+)
 from solstone.think.formatters import (
     extract_path_metadata,
     find_formattable_files,
@@ -49,6 +55,8 @@ logger = logging.getLogger(__name__)
 # Database constants
 INDEX_DIR = "indexer"
 DB_NAME = "journal.sqlite"
+ENTITY_SEARCH_WATERMARK_MTIME_PATH = "entity_search:__mtime__"
+ENTITY_SEARCH_WATERMARK_COUNT_PATH = "entity_search:__count__"
 
 # Schema for the unified journal index
 SCHEMA = [
@@ -65,324 +73,13 @@ SCHEMA = [
         time_bucket UNINDEXED
     )
     """,
-    """
-    CREATE TABLE IF NOT EXISTS entities(
-        entity_id TEXT NOT NULL,
-        source TEXT NOT NULL,
-        facet TEXT,
-        day TEXT,
-        name TEXT,
-        type TEXT,
-        description TEXT,
-        tags TEXT,
-        contact TEXT,
-        aka TEXT,
-        is_principal INTEGER,
-        blocked INTEGER,
-        observation_count INTEGER,
-        last_observed TEXT,
-        attached_at TEXT,
-        updated_at TEXT,
-        last_seen TEXT,
-        created_at TEXT,
-        detached INTEGER,
-        path TEXT NOT NULL,
-        PRIMARY KEY (path, entity_id, source)
-    )
-    """,
-    "CREATE INDEX IF NOT EXISTS idx_entities_id ON entities(entity_id)",
-    "CREATE INDEX IF NOT EXISTS idx_entities_facet ON entities(facet)",
-    "CREATE INDEX IF NOT EXISTS idx_entities_source ON entities(source)",
 ]
-
-ENTITY_COLUMNS = [
-    "entity_id",
-    "source",
-    "facet",
-    "day",
-    "name",
-    "type",
-    "description",
-    "tags",
-    "contact",
-    "aka",
-    "is_principal",
-    "blocked",
-    "observation_count",
-    "last_observed",
-    "attached_at",
-    "updated_at",
-    "last_seen",
-    "created_at",
-    "detached",
-    "path",
-]
-
-
-def _insert_entity_row(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
-    """Insert one entity row into the entities table."""
-    columns = ",".join(ENTITY_COLUMNS)
-    placeholders = ",".join("?" for _ in ENTITY_COLUMNS)
-    values = [row.get(col) for col in ENTITY_COLUMNS]
-    conn.execute(f"INSERT INTO entities({columns}) VALUES ({placeholders})", values)
-
-
-def _entity_source_from_path(rel_path: str) -> str | None:
-    """Infer entity source type from a relative path."""
-    rel = rel_path.replace("\\", "/")
-    if re.fullmatch(r"entities/[^/]+/entity\.json", rel):
-        return "identity"
-    if re.fullmatch(r"facets/[^/]+/entities/[^/]+/entity\.json", rel):
-        return "relationship"
-    if re.match(r"\d{8}\.jsonl$", Path(rel).name) and re.fullmatch(
-        r"facets/[^/]+/entities/\d{8}\.jsonl", rel
-    ):
-        return "detected"
-    if re.fullmatch(r"facets/[^/]+/entities/[^/]+/observations\.jsonl", rel):
-        return "observation"
-    return None
-
-
-def _find_entity_files(journal: str) -> dict[str, tuple[str, str]]:
-    """Find all supported entity source files.
-
-    Returns:
-        Mapping from relative path to tuple of (absolute_path, source_type).
-    """
-    journal_path = Path(journal)
-    files: dict[str, tuple[str, str]] = {}
-
-    for path in journal_path.glob("entities/*/entity.json"):
-        if path.is_file():
-            rel = path.relative_to(journal_path).as_posix()
-            files[rel] = (str(path), "identity")
-
-    for path in journal_path.glob("facets/*/entities/*/entity.json"):
-        if path.is_file():
-            rel = path.relative_to(journal_path).as_posix()
-            files[rel] = (str(path), "relationship")
-
-    for path in journal_path.glob("facets/*/entities/*.jsonl"):
-        filename = path.name
-        if re.match(r"\d{8}\.jsonl$", filename):
-            rel = path.relative_to(journal_path).as_posix()
-            files[rel] = (str(path), "detected")
-
-    for path in journal_path.glob("facets/*/entities/*/observations.jsonl"):
-        if path.is_file():
-            rel = path.relative_to(journal_path).as_posix()
-            files[rel] = (str(path), "observation")
-
-    return files
-
-
-def _extract_entity_identity(journal: str, rel_path: str) -> list[dict[str, Any]]:
-    """Read a journal entity file and return row data."""
-    abs_path = os.path.join(journal, rel_path)
-    rel_parts = rel_path.replace("\\", "/").split("/")
-    if len(rel_parts) < 2:
-        return []
-    entity_id = rel_parts[1]
-
-    try:
-        with open(abs_path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        logger.warning("Skipping %s: %s", rel_path, e)
-        return []
-
-    return [
-        {
-            "entity_id": entity_id,
-            "source": "identity",
-            "facet": None,
-            "day": None,
-            "name": data.get("name"),
-            "type": data.get("type"),
-            "description": None,
-            "tags": None,
-            "contact": None,
-            "aka": json.dumps(data["aka"]) if data.get("aka") else None,
-            "is_principal": 1 if data.get("is_principal") else 0,
-            "blocked": 1 if data.get("blocked") else 0,
-            "observation_count": None,
-            "last_observed": None,
-            "attached_at": None,
-            "updated_at": data.get("updated_at"),
-            "last_seen": None,
-            "created_at": data.get("created_at"),
-            "detached": None,
-            "path": rel_path,
-        }
-    ]
-
-
-def _extract_entity_relationship(journal: str, rel_path: str) -> list[dict[str, Any]]:
-    """Read a relationship entity file and return row data."""
-    abs_path = os.path.join(journal, rel_path)
-    rel_parts = rel_path.replace("\\", "/").split("/")
-    if len(rel_parts) < 4:
-        return []
-    facet = rel_parts[1]
-    entity_id = rel_parts[3]
-
-    try:
-        with open(abs_path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        logger.warning("Skipping %s: %s", rel_path, e)
-        return []
-
-    return [
-        {
-            "entity_id": entity_id,
-            "source": "relationship",
-            "facet": facet,
-            "day": None,
-            "name": None,
-            "type": None,
-            "description": data.get("description"),
-            "tags": json.dumps(data["tags"]) if data.get("tags") else None,
-            "contact": data.get("contact"),
-            "aka": None,
-            "is_principal": None,
-            "blocked": None,
-            "observation_count": None,
-            "last_observed": None,
-            "attached_at": data.get("attached_at"),
-            "updated_at": data.get("updated_at"),
-            "last_seen": data.get("last_seen"),
-            "created_at": None,
-            "detached": 1 if data.get("detached") else 0,
-            "path": rel_path,
-        }
-    ]
-
-
-def _extract_entity_detected(journal: str, rel_path: str) -> list[dict[str, Any]]:
-    """Read an entities JSONL file and return one row per valid entity."""
-    abs_path = os.path.join(journal, rel_path)
-    rel_parts = rel_path.replace("\\", "/").split("/")
-    if len(rel_parts) < 3:
-        return []
-    facet = rel_parts[1]
-    day = Path(rel_path).name.removesuffix(".jsonl")
-
-    rows: list[dict[str, Any]] = []
-    try:
-        with open(abs_path, encoding="utf-8") as f:
-            for raw in f:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    data = json.loads(raw)
-                except json.JSONDecodeError as e:
-                    logger.warning("Skipping malformed JSONL in %s: %s", rel_path, e)
-                    continue
-
-                name = data.get("name")
-                if not name:
-                    continue
-
-                entity_id = data.get("id") or entity_slug(name)
-                rows.append(
-                    {
-                        "entity_id": entity_id,
-                        "source": "detected",
-                        "facet": facet,
-                        "day": day,
-                        "name": name,
-                        "type": data.get("type"),
-                        "description": data.get("description"),
-                        "tags": None,
-                        "contact": None,
-                        "aka": None,
-                        "is_principal": None,
-                        "blocked": None,
-                        "observation_count": None,
-                        "last_observed": None,
-                        "attached_at": None,
-                        "updated_at": None,
-                        "last_seen": None,
-                        "created_at": None,
-                        "detached": None,
-                        "path": rel_path,
-                    }
-                )
-    except OSError as e:
-        logger.warning("Skipping %s: %s", rel_path, e)
-        return []
-
-    return rows
-
-
-def _extract_entity_observations(journal: str, rel_path: str) -> list[dict[str, Any]]:
-    """Summarize observations for an entity into a single row."""
-    abs_path = os.path.join(journal, rel_path)
-    rel_parts = rel_path.replace("\\", "/").split("/")
-    if len(rel_parts) < 4:
-        return []
-    facet = rel_parts[1]
-    entity_id = rel_parts[3]
-
-    count = 0
-    last_observed = None
-
-    try:
-        with open(abs_path, encoding="utf-8") as f:
-            for raw in f:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    data = json.loads(raw)
-                except json.JSONDecodeError as e:
-                    logger.warning("Skipping malformed JSONL in %s: %s", rel_path, e)
-                    continue
-
-                count += 1
-                observed_at = data.get("observed_at")
-                if observed_at and (
-                    last_observed is None or observed_at > last_observed
-                ):
-                    last_observed = observed_at
-    except OSError as e:
-        logger.warning("Skipping %s: %s", rel_path, e)
-        return []
-
-    if count == 0:
-        return []
-
-    return [
-        {
-            "entity_id": entity_id,
-            "source": "observation",
-            "facet": facet,
-            "day": None,
-            "name": None,
-            "type": None,
-            "description": None,
-            "tags": None,
-            "contact": None,
-            "aka": None,
-            "is_principal": None,
-            "blocked": None,
-            "observation_count": count,
-            "last_observed": last_observed,
-            "attached_at": None,
-            "updated_at": None,
-            "last_seen": None,
-            "created_at": None,
-            "detached": None,
-            "path": rel_path,
-        }
-    ]
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     """Create required tables if they don't exist."""
     conn.execute("DROP TABLE IF EXISTS entity_signals")
+    conn.execute("DROP TABLE IF EXISTS entities")
     for statement in SCHEMA:
         conn.execute(statement)
 
@@ -673,131 +370,6 @@ def _is_historical_day(rel_path: str) -> bool:
     return first_part < today
 
 
-def _is_historical_entity_file(rel_path: str, source_type: str | None) -> bool:
-    """Check if a detected entity file is historical based on filename day."""
-    if source_type != "detected":
-        return False
-
-    from datetime import datetime
-
-    filename = Path(rel_path).name
-    match = re.match(r"\d{8}\.jsonl$", filename)
-    if not match:
-        return False
-
-    today = datetime.now().strftime("%Y%m%d")
-    day = filename[:-6]
-    return day < today
-
-
-def scan_entities(
-    journal: str,
-    conn: sqlite3.Connection,
-    verbose: bool = False,
-    full: bool = False,
-) -> bool:
-    """Scan and index entity source files."""
-    entity_files = _find_entity_files(journal)
-
-    in_scope: dict[str, tuple[str, str]] = entity_files
-    if not full:
-        in_scope = {
-            rel: (path, source_type)
-            for rel, (path, source_type) in entity_files.items()
-            if not _is_historical_entity_file(rel, source_type)
-        }
-
-    logger.info("Scanning %s entity files...", len(in_scope))
-
-    # Get current file mtimes from database.
-    # Entity paths are stored with an "entity:" prefix to avoid collisions
-    # with the chunk indexer, which also tracks some of the same files.
-    ENTITY_PREFIX = "entity:"
-    db_mtimes = {
-        path: mtime
-        for path, mtime in conn.execute(
-            "SELECT path, mtime FROM files WHERE path LIKE 'entity:%'"
-        )
-    }
-    to_index: list[tuple[str, str, int, str]] = []
-    for rel, (path, source_type) in in_scope.items():
-        try:
-            mtime = int(os.path.getmtime(path))
-        except OSError as e:
-            logger.warning("Unable to stat %s: %s", rel, e)
-            continue
-        if db_mtimes.get(ENTITY_PREFIX + rel) != mtime:
-            to_index.append((rel, path, mtime, source_type))
-
-    cached = len(in_scope) - len(to_index)
-    logger.info(
-        "%s total entity files, %s cached, %s to index",
-        len(in_scope),
-        cached,
-        len(to_index),
-    )
-
-    start = time.time()
-
-    for i, (rel, path, mtime, source_type) in enumerate(to_index, 1):
-        if verbose:
-            logger.info("[%s/%s] %s", i, len(to_index), rel)
-
-        conn.execute("DELETE FROM entities WHERE path=?", (rel,))
-
-        if source_type == "identity":
-            rows = _extract_entity_identity(journal, rel)
-        elif source_type == "relationship":
-            rows = _extract_entity_relationship(journal, rel)
-        elif source_type == "detected":
-            rows = _extract_entity_detected(journal, rel)
-        elif source_type == "observation":
-            rows = _extract_entity_observations(journal, rel)
-        else:
-            rows = []
-
-        for row in rows:
-            _insert_entity_row(conn, row)
-
-        conn.execute(
-            "REPLACE INTO files(path, mtime) VALUES (?, ?)",
-            (ENTITY_PREFIX + rel, mtime),
-        )
-
-    # Entity files removed from scope (full vs light)
-    removed: set[str] = set()
-    db_entity_paths = {
-        row[0] for row in conn.execute("SELECT DISTINCT path FROM entities").fetchall()
-    }
-
-    if full:
-        removed = db_entity_paths - set(entity_files)
-    else:
-        in_scope_db = {
-            path
-            for path in db_entity_paths
-            if not _is_historical_entity_file(path, _entity_source_from_path(path))
-        }
-        removed = in_scope_db - set(in_scope)
-
-    for rel in removed:
-        conn.execute("DELETE FROM entities WHERE path=?", (rel,))
-        conn.execute("DELETE FROM files WHERE path=?", (ENTITY_PREFIX + rel,))
-
-    if to_index or removed:
-        conn.commit()
-
-    elapsed = time.time() - start
-    logger.info(
-        "%s entity files indexed, %s entity rows removed in %.2f seconds",
-        len(to_index),
-        len(removed),
-        elapsed,
-    )
-
-    return bool(to_index or removed)
-
-
 def _ts_to_day(ts_value: str | int | None) -> str:
     """Convert a millisecond timestamp to YYYYMMDD string.
 
@@ -814,8 +386,45 @@ def _ts_to_day(ts_value: str | int | None) -> str:
         return ""
 
 
+def _entity_search_watermark(journal: Path) -> tuple[float, int]:
+    """Return (max_mtime, file_count) for entity_search source files."""
+    max_mtime = 0.0
+    count = 0
+    entities_dir = journal / "entities"
+    if entities_dir.is_dir():
+        for slug_dir in entities_dir.iterdir():
+            if not slug_dir.is_dir():
+                continue
+            entity_file = slug_dir / "entity.json"
+            if entity_file.is_file():
+                mtime = entity_file.stat().st_mtime
+                if mtime > max_mtime:
+                    max_mtime = mtime
+                count += 1
+
+    facets_dir = journal / "facets"
+    if facets_dir.is_dir():
+        for facet_dir in facets_dir.iterdir():
+            if not facet_dir.is_dir():
+                continue
+            rel_root = facet_dir / "entities"
+            if not rel_root.is_dir():
+                continue
+            for slug_dir in rel_root.iterdir():
+                if not slug_dir.is_dir():
+                    continue
+                relationship_file = slug_dir / "entity.json"
+                if relationship_file.is_file():
+                    mtime = relationship_file.stat().st_mtime
+                    if mtime > max_mtime:
+                        max_mtime = mtime
+                    count += 1
+
+    return max_mtime, count
+
+
 def _index_entity_search_chunks(conn: sqlite3.Connection) -> int:
-    """Generate FTS5 search chunks from the entities table.
+    """Generate FTS5 search chunks from entity domain files.
 
     Combines identity records (name, type, aka) with relationship records
     (description, tags, facet) to create searchable chunks for each entity.
@@ -824,86 +433,63 @@ def _index_entity_search_chunks(conn: sqlite3.Connection) -> int:
     Returns the number of entity chunks indexed.
     """
     # Clean up: remove previous entity search chunks and legacy formatter chunks
+    conn.execute("DELETE FROM chunks WHERE agent='entity'")
     conn.execute("DELETE FROM chunks WHERE path LIKE 'entity_search:%'")
     conn.execute("DELETE FROM chunks WHERE path LIKE 'entities/%/entity.json'")
 
-    # Load all non-blocked identity records
-    identities: dict[str, dict[str, Any]] = {}
-    for row in conn.execute(
-        "SELECT entity_id, name, type, aka, created_at, updated_at "
-        "FROM entities WHERE source='identity' AND (blocked IS NULL OR blocked=0)"
-    ).fetchall():
-        entity_id, name, etype, aka, created_at, updated_at = row
-        identities[entity_id] = {
-            "name": name,
-            "type": etype,
-            "aka": aka,
-            "created_at": created_at,
-            "updated_at": updated_at,
-        }
-
-    # Load all non-detached relationship records, grouped by entity_id
-    relationships: dict[str, list[dict[str, Any]]] = {}
-    for row in conn.execute(
-        "SELECT entity_id, facet, description, tags, last_seen, updated_at, attached_at "
-        "FROM entities "
-        "WHERE source='relationship' AND (detached IS NULL OR detached=0)"
-    ).fetchall():
-        entity_id, facet, description, tags, last_seen, updated_at, attached_at = row
-        relationships.setdefault(entity_id, []).append(
-            {
-                "facet": facet,
-                "description": description,
-                "tags": tags,
-                "last_seen": last_seen,
-                "updated_at": updated_at,
-                "attached_at": attached_at,
-            }
-        )
+    identities = load_all_journal_entities()
+    all_relationships = load_all_facet_relationships_across_facets()
+    relationships: dict[str, list[tuple[str, dict[str, Any]]]] = {
+        entity_id: [
+            (facet, relationship)
+            for facet, relationship in facet_relationships
+            if not relationship.get("detached")
+        ]
+        for entity_id, facet_relationships in all_relationships.items()
+    }
 
     count = 0
     for entity_id, identity in identities.items():
-        name = identity["name"] or entity_id.replace("_", " ").title()
-        etype = identity["type"] or "Unknown"
-        aka_raw = identity["aka"]
+        if identity.get("blocked"):
+            continue
+
+        name = identity.get("name") or entity_id.replace("_", " ").title()
+        etype = identity.get("type") or "Unknown"
+        aka_list = identity.get("aka") or []
 
         # Build common identity lines (included in every chunk for this entity)
         identity_lines = [f"{name} ({etype})"]
-        if aka_raw:
-            try:
-                aka_list = json.loads(aka_raw)
-                if aka_list:
-                    identity_lines.append(f"Also known as: {', '.join(aka_list)}")
-            except (json.JSONDecodeError, TypeError):
-                pass
+        if isinstance(aka_list, list) and aka_list:
+            identity_lines.append(f"Also known as: {', '.join(aka_list)}")
 
         path = f"entity_search:{entity_id}"
         rels = relationships.get(entity_id, [])
 
         if rels:
             # One chunk per facet relationship, enriched with identity data
-            for idx, rel in enumerate(rels):
+            for idx, (facet_name, rel) in enumerate(rels):
                 lines = list(identity_lines)
-                if rel["description"]:
+                if rel.get("description"):
                     lines.append(rel["description"])
-                if rel["tags"]:
-                    try:
-                        tags_list = json.loads(rel["tags"])
-                        if tags_list:
-                            lines.append(f"Tags: {', '.join(tags_list)}")
-                    except (json.JSONDecodeError, TypeError):
-                        pass
+                tags_list = rel.get("tags") or []
+                if isinstance(tags_list, list) and tags_list:
+                    lines.append(f"Tags: {', '.join(tags_list)}")
 
                 content = "\n".join(lines)
-                facet = (rel["facet"] or "").lower()
+                facet = facet_name.lower()
 
                 # Best available day: last_seen > updated_at > attached_at
                 day = ""
-                if rel["last_seen"] and len(rel["last_seen"]) == 8:
-                    day = rel["last_seen"]
+                last_seen = rel.get("last_seen")
+                if (
+                    isinstance(last_seen, str)
+                    and len(last_seen) == 8
+                    and last_seen.isdigit()
+                ):
+                    day = last_seen
                 else:
-                    day = _ts_to_day(rel["updated_at"]) or _ts_to_day(
-                        rel["attached_at"]
+                    day = _ts_to_day(rel.get("updated_at")) or _ts_to_day(
+                        rel.get("attached_at")
                     )
 
                 conn.execute(
@@ -915,8 +501,8 @@ def _index_entity_search_chunks(conn: sqlite3.Connection) -> int:
         else:
             # Identity-only entity — one chunk with no facet
             content = "\n".join(identity_lines)
-            day = _ts_to_day(identity["updated_at"]) or _ts_to_day(
-                identity["created_at"]
+            day = _ts_to_day(identity.get("updated_at")) or _ts_to_day(
+                identity.get("created_at")
             )
             conn.execute(
                 "INSERT INTO chunks(content, path, day, facet, agent, stream, idx, time_bucket) "
@@ -943,6 +529,7 @@ def scan_journal(journal: str, verbose: bool = False, full: bool = False) -> boo
         True if any files were indexed or removed
     """
     conn, db_path = get_journal_index(journal)
+    journal_path = Path(journal)
     files = find_formattable_files(journal)
 
     # Light mode: exclude historical day directories
@@ -956,8 +543,12 @@ def scan_journal(journal: str, verbose: bool = False, full: bool = False) -> boo
     # Get current file mtimes from database
     db_mtimes = {
         path: mtime
-        for path, mtime in conn.execute("SELECT path, mtime FROM files")
-        if not (path.startswith("entity:") or path.startswith("signal:"))
+        for path, mtime in conn.execute(
+            "SELECT path, mtime FROM files "
+            "WHERE path NOT LIKE 'entity:%' "
+            "AND path NOT LIKE 'signal:%' "
+            "AND path NOT LIKE 'entity_search:%'"
+        )
     }
 
     to_index = []
@@ -1042,16 +633,39 @@ def scan_journal(journal: str, verbose: bool = False, full: bool = False) -> boo
             len(affected_segments),
         )
 
-    entity_changed = scan_entities(journal, conn, verbose=verbose, full=full)
-
-    # Regenerate entity search chunks when entity data changes or chunks are missing
-    if (
-        entity_changed
-        or not conn.execute(
-            "SELECT 1 FROM chunks WHERE agent='entity' LIMIT 1"
-        ).fetchone()
-    ):
+    fresh_mtime, fresh_count = _entity_search_watermark(journal_path)
+    stored_mtime_row = conn.execute(
+        "SELECT mtime FROM files WHERE path=?",
+        (ENTITY_SEARCH_WATERMARK_MTIME_PATH,),
+    ).fetchone()
+    stored_count_row = conn.execute(
+        "SELECT mtime FROM files WHERE path=?",
+        (ENTITY_SEARCH_WATERMARK_COUNT_PATH,),
+    ).fetchone()
+    stored_mtime = stored_mtime_row[0] if stored_mtime_row else 0.0
+    stored_count = int(stored_count_row[0]) if stored_count_row else 0
+    has_entity_chunks = (
+        conn.execute("SELECT 1 FROM chunks WHERE agent='entity' LIMIT 1").fetchone()
+        is not None
+    )
+    entity_changed = (
+        fresh_mtime > stored_mtime
+        or fresh_count != stored_count
+        or (fresh_count > 0 and not has_entity_chunks)
+    )
+    if entity_changed:
+        clear_journal_entity_cache()
+        clear_relationship_caches()
         _index_entity_search_chunks(conn)
+        conn.execute(
+            "REPLACE INTO files(path, mtime) VALUES (?, ?)",
+            (ENTITY_SEARCH_WATERMARK_MTIME_PATH, fresh_mtime),
+        )
+        conn.execute(
+            "REPLACE INTO files(path, mtime) VALUES (?, ?)",
+            (ENTITY_SEARCH_WATERMARK_COUNT_PATH, float(fresh_count)),
+        )
+        conn.commit()
 
     conn.close()
     return bool(to_index or removed or entity_changed)
@@ -1469,34 +1083,26 @@ def search_counts(
     }
 
 
-def _load_index_entity_dicts(
-    conn: sqlite3.Connection,
-) -> list[dict[str, Any]]:
-    """Load identity entities from the journal index as entity dicts.
+def _load_index_entity_dicts() -> list[dict[str, Any]]:
+    """Load identity entities as entity dicts for name resolution.
 
     Returns dicts with "id", "name", and "aka" suitable for
     build_name_resolution_map().
     """
-    rows = conn.execute(
-        "SELECT entity_id, name, aka FROM entities WHERE source='identity'"
-    ).fetchall()
     entity_dicts: list[dict[str, Any]] = []
-    for entity_id, name, aka_str in rows:
-        d: dict[str, Any] = {"id": entity_id, "name": name, "aka": []}
-        if aka_str:
-            try:
-                aka_list = json.loads(aka_str)
-                if isinstance(aka_list, list):
-                    d["aka"] = aka_list
-            except (ValueError, TypeError):
-                pass
-        entity_dicts.append(d)
+    for entity_id, entity in load_all_journal_entities().items():
+        entity_dicts.append(
+            {
+                "id": entity_id,
+                "name": entity.get("name") or "",
+                "aka": entity.get("aka") or [],
+            }
+        )
     return entity_dicts
 
 
 def _build_entity_name_map(
-    conn: sqlite3.Connection,
-    names: list[str] | set[str],
+    names: Iterable[str],
 ) -> dict[str, str]:
     """Map entity names to entity_ids via shared name resolution.
 
@@ -1505,7 +1111,7 @@ def _build_entity_name_map(
     """
     from solstone.think.entities.matching import build_name_resolution_map
 
-    entity_dicts = _load_index_entity_dicts(conn)
+    entity_dicts = _load_index_entity_dicts()
     return build_name_resolution_map(
         sorted({name for name in names if name}), entity_dicts
     )
@@ -1537,108 +1143,96 @@ def search_entities(
     limit: int = 20,
 ) -> list[dict[str, Any]]:
     """Search entities by text query, type, facet, and/or detected activity."""
-    conn, _ = get_journal_index()
-    try:
-        id_where_parts = ["source='identity'"]
-        id_params: list[Any] = []
-        if entity_type:
-            id_where_parts.append("LOWER(type)=LOWER(?)")
-            id_params.append(entity_type)
+    entities_by_id = load_all_journal_entities()
+    relationships_by_id = load_all_facet_relationships_across_facets()
 
-        id_rows = conn.execute(
-            f"SELECT entity_id, name, type, description FROM entities WHERE {' AND '.join(id_where_parts)}",
-            id_params,
-        ).fetchall()
+    active_ids: set[str] | None = None
+    if since:
+        from solstone.think.entities.activity import iter_detected_entity_names_since
 
-        entities: dict[str, dict[str, Any]] = {
-            r[0]: {
-                "entity_id": r[0],
-                "name": r[1],
-                "type": r[2],
-                "description": r[3] or "",
+        detected_names = [
+            name for name, _facet, _day in iter_detected_entity_names_since(since)
+        ]
+        name_map = _build_entity_name_map(detected_names)
+        active_ids = set(name_map.values())
+
+    if query:
+        candidate_ids: list[str] = []
+        seen_ids: set[str] = set()
+
+        _, entity_results = search_journal(query, limit=100, agent="entity")
+        for result in entity_results:
+            path = result.get("metadata", {}).get("path", "")
+            if not path.startswith("entity_search:"):
+                continue
+            entity_id = path.removeprefix("entity_search:")
+            if entity_id and entity_id not in seen_ids:
+                candidate_ids.append(entity_id)
+                seen_ids.add(entity_id)
+
+        _, detected_results = search_journal(query, limit=100, agent="entity:detected")
+        for result in detected_results:
+            path = result.get("metadata", {}).get("path", "")
+            parts = path.split("/")
+            if "entities" not in parts:
+                continue
+            idx = parts.index("entities")
+            if idx + 1 >= len(parts):
+                continue
+            entity_id = parts[idx + 1]
+            if entity_id and "." not in entity_id and entity_id not in seen_ids:
+                candidate_ids.append(entity_id)
+                seen_ids.add(entity_id)
+
+        match_names = _extract_match_candidates(detected_results)
+        for entity_id in _build_entity_name_map(match_names).values():
+            if entity_id not in seen_ids:
+                candidate_ids.append(entity_id)
+                seen_ids.add(entity_id)
+    else:
+        candidate_ids = list(entities_by_id)
+
+    if active_ids is not None:
+        candidate_ids = [
+            entity_id for entity_id in candidate_ids if entity_id in active_ids
+        ]
+
+    facet_filter = facet.lower() if facet else None
+    type_filter = entity_type.lower() if entity_type else None
+    result_list = []
+    for entity_id in candidate_ids:
+        entity = entities_by_id.get(entity_id)
+        if not entity:
+            continue
+
+        entity_type_value = entity.get("type") or ""
+        if type_filter and entity_type_value.lower() != type_filter:
+            continue
+
+        facet_relationships = relationships_by_id.get(entity_id, [])
+        facets: list[str] = []
+        description = ""
+        for relationship_facet, relationship in facet_relationships:
+            if relationship_facet and relationship_facet not in facets:
+                facets.append(relationship_facet)
+            if not description and relationship.get("description"):
+                description = str(relationship["description"])
+
+        if facet_filter and not any(
+            relationship_facet.lower() == facet_filter for relationship_facet in facets
+        ):
+            continue
+
+        result_list.append(
+            {
+                "entity_id": entity_id,
+                "name": entity.get("name") or "",
+                "type": entity_type_value,
+                "description": description,
+                "facets": facets,
             }
-            for r in id_rows
-        }
+        )
 
-        relationship_ids: set[str] | None = None
-        if facet:
-            rel_rows = conn.execute(
-                "SELECT DISTINCT entity_id FROM entities WHERE source='relationship' AND facet=?",
-                [facet.lower()],
-            ).fetchall()
-            relationship_ids = {eid for (eid,) in rel_rows}
-
-        if since:
-            from solstone.think.entities.activity import (
-                iter_detected_entity_names_since,
-            )
-
-            detected_names = [
-                name for name, _facet, _day in iter_detected_entity_names_since(since)
-            ]
-            name_map = _build_entity_name_map(conn, detected_names)
-            active_ids = set(name_map.values())
-            if relationship_ids is not None:
-                active_ids &= relationship_ids
-            entities = {eid: e for eid, e in entities.items() if eid in active_ids}
-        elif relationship_ids is not None:
-            entities = {
-                eid: e for eid, e in entities.items() if eid in relationship_ids
-            }
-
-        if query:
-            _, fts_results = search_journal(query, limit=100, agent="entity:detected")
-            fts_ids = set()
-            for r in fts_results:
-                path = r.get("metadata", {}).get("path", "")
-                parts = path.split("/")
-                if "entities" in parts:
-                    idx = parts.index("entities")
-                    if idx + 1 < len(parts):
-                        candidate = parts[idx + 1]
-                        if candidate and "." not in candidate:
-                            fts_ids.add(candidate)
-
-            if not fts_ids:
-                match_names = _extract_match_candidates(fts_results)
-                name_map = _build_entity_name_map(conn, match_names)
-                fts_ids.update(name_map.values())
-
-            if not fts_ids:
-                like_term = f"%{query.lower()}%"
-                identity_rows = conn.execute(
-                    """
-                    SELECT DISTINCT entity_id
-                    FROM entities
-                    WHERE source='identity'
-                      AND (
-                        LOWER(name) LIKE ?
-                        OR LOWER(type) LIKE ?
-                        OR LOWER(description) LIKE ?
-                      )
-                    """,
-                    [like_term, like_term, like_term],
-                ).fetchall()
-                for (eid,) in identity_rows:
-                    fts_ids.add(eid)
-
-            entities = {eid: e for eid, e in entities.items() if eid in fts_ids}
-
-        result_list = []
-        for eid, e in entities.items():
-            e["facets"] = []
-
-            rel_facets = conn.execute(
-                "SELECT DISTINCT facet FROM entities WHERE entity_id=? AND source='relationship' AND facet IS NOT NULL AND facet != ''",
-                [eid],
-            ).fetchall()
-            for (rf,) in rel_facets:
-                if rf and rf not in e["facets"]:
-                    e["facets"].append(rf)
-
-            result_list.append(e)
-
+    if not query:
         result_list.sort(key=lambda x: (str(x["name"]).lower(), str(x["name"])))
-        return result_list[:limit]
-    finally:
-        conn.close()
+    return result_list[:limit]
