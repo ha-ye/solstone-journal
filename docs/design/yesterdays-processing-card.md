@@ -23,7 +23,6 @@ Internal helpers called only by `_summarize_yesterday_processing`:
 
 - `_collect_entities_yesterday(yesterday: str) -> list[dict[str, Any]]`
   Same DB access pattern as `_collect_entities_today` at `solstone/apps/home/routes.py:296+`: `try`/`finally`, `conn.close()`, graceful empty on error.
-  Query `entity_signals` grouped by `entity_name`, join/fallback through `entities` identity rows the same way the existing helper does.
 
 - `_collect_top_activities_yesterday(yesterday: str) -> list[dict[str, Any]]`
   Iterate enabled facets, call `load_activity_records(facet, yesterday)`, derive `duration_minutes` via `estimate_duration_minutes(record["segments"])`, annotate `facet`, normalize display title, and sort descending by duration.
@@ -48,7 +47,7 @@ Hide conditions:
 
 - `stats.json` missing.
 - `journal_age_days == 0`.
-- Stats are effectively empty: no transcript duration, no transcript segments, no facet activity, no activity records, no entity signals.
+- Stats are effectively empty: no transcript duration, no transcript segments, no facet activity, no activity records.
 
 Mode resolution:
 

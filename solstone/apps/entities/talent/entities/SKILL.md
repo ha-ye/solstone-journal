@@ -237,22 +237,23 @@ sol call entities observe "Alicia Chen" "Prefers design docs before implementati
 ## search
 
 ```bash
-sol call entities search [QUERY] [--type TYPE] [--facet FACET] [--active-days N]
+sol call entities search [--query QUERY] [--type TYPE] [--facet FACET] [--since YYYYMMDD] [--limit N]
 ```
 
-Search entities by text, type, facet, or recent activity.
+Search entities by text, type, facet, or detected activity since a day.
 
-- `QUERY`: optional text query.
+- `--query`: optional text query.
 - `--type`: filter by entity type (e.g., `Person`, `Company`).
 - `--facet`: filter by facet.
-- `--active-days`: filter to entities active within N days.
+- `--since`: filter to entities detected on or after `YYYYMMDD`.
+- `--limit`: maximum results.
 
 Examples:
 
 ```bash
-sol call entities search "Chen"
+sol call entities search --query "Chen"
 sol call entities search --type Person --facet work
-sol call entities search --active-days 7
+sol call entities search --since 20260115
 ```
 
 ## consolidate

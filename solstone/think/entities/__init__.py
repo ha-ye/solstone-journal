@@ -24,6 +24,7 @@ This package is organized into focused modules:
 
 # Activity tracking
 from solstone.think.entities.activity import (
+    iter_detected_entity_names_since,
     load_detected_entities_recent,
     parse_knowledge_graph_entities,
     touch_entities_from_activity,
@@ -94,6 +95,9 @@ from solstone.think.entities.observations import (
     observations_file_path,
     save_observations,
 )
+
+# Photos
+from solstone.think.entities.photos import entity_photos_path, save_entity_photos
 
 # Facet relationships and memory
 from solstone.think.entities.relationships import (
@@ -181,6 +185,7 @@ __all__ = [
     "resolve_entity",
     "validate_aka_uniqueness",
     # Activity
+    "iter_detected_entity_names_since",
     "load_detected_entities_recent",
     "parse_knowledge_graph_entities",
     "touch_entities_from_activity",
@@ -194,6 +199,9 @@ __all__ = [
     "load_entity_voiceprints_file",
     "load_existing_voiceprint_keys",
     "normalize_embedding",
+    # Photos
+    "entity_photos_path",
+    "save_entity_photos",
     # Formatting
     "format_entities",
     "format_observations",

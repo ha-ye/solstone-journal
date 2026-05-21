@@ -12,7 +12,7 @@ This module handles:
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from solstone.think.entities.core import EntityDict
 from solstone.think.entities.loading import load_entities, parse_entity_file
@@ -278,3 +278,21 @@ def load_detected_entities_recent(facet: str, days: int = 30) -> list[EntityDict
                 detected_map[key]["count"] += 1
 
     return list(detected_map.values())
+
+
+def iter_detected_entity_names_since(since: str) -> Iterator[tuple[str, str, str]]:
+    """Yield detected entity names from facet entity files since YYYYMMDD."""
+    facets_dir = Path(get_journal()) / "facets"
+    if not facets_dir.exists():
+        return
+
+    for day_file in sorted(facets_dir.glob("*/entities/*.jsonl")):
+        day = day_file.stem
+        if not re.fullmatch(r"\d{8}", day) or day < since:
+            continue
+
+        facet = day_file.parent.parent.name
+        for entity in parse_entity_file(str(day_file)):
+            name = str(entity.get("name") or "").strip()
+            if name:
+                yield name, facet, day

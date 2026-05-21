@@ -522,7 +522,7 @@ def entity_search(
     query: str | None = typer.Option(None, "--query", "-q", help="Text search."),
     type_: str | None = typer.Option(None, "--type", "-t", help="Entity type."),
     facet: str | None = typer.Option(None, "--facet", "-f", help="Filter by facet."),
-    since: str | None = typer.Option(None, "--since", help="Signals since YYYYMMDD."),
+    since: str | None = typer.Option(None, "--since", help="Detected since YYYYMMDD."),
     limit: int = typer.Option(20, "--limit", "-n", help="Max results."),
 ) -> None:
     """Search entities by text, type, facet, or activity."""
@@ -541,4 +541,4 @@ def entity_search(
         facets = ", ".join(e.get("facets", []))
         typer.echo(f"  - {e['name']} ({e['type']}): {e['description']}")
         if facets:
-            typer.echo(f"    facets: {facets} | signals: {e.get('signal_count', 0)}")
+            typer.echo(f"    facets: {facets}")

@@ -17,6 +17,7 @@ from solstone.think.entities import (
     entity_slug,
     find_matching_entity,
     get_identity_names,
+    iter_detected_entity_names_since,
     load_all_attached_entities,
     load_detected_entities_recent,
     load_entities,
@@ -852,6 +853,13 @@ def test_load_detected_entities_recent_basic(fixture_journal):
         assert "description" in entity
         assert "count" in entity
         assert "last_seen" in entity
+
+
+def test_iter_detected_entity_names_since_fixture(fixture_journal):
+    """Detected entity iterator yields names with facet and day."""
+    detected = set(iter_detected_entity_names_since("20260310"))
+
+    assert ("Romeo Montague", "montague", "20260310") in detected
 
 
 def test_load_detected_entities_recent_excludes_attached(

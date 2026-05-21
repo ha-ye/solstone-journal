@@ -26,7 +26,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from solstone.think.entities.core import entity_slug, is_noise_entity
+from solstone.think.entities.core import entity_slug
 from solstone.think.formatters import (
     extract_path_metadata,
     find_formattable_files,
@@ -35,7 +35,6 @@ from solstone.think.formatters import (
 )
 from solstone.think.markdown import format_markdown
 from solstone.think.utils import (
-    CHRONICLE_DIR,
     DATE_RE,
     get_journal,
     journal_relative_path,
@@ -45,18 +44,6 @@ from solstone.think.utils import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _strip_md_formatting(text: str) -> str:
-    """Strip bold markers and backticks from a markdown table cell value."""
-    text = text.strip()
-    # Remove bold markers
-    if text.startswith("**") and text.endswith("**"):
-        text = text[2:-2]
-    # Remove backticks
-    if text.startswith("`") and text.endswith("`"):
-        text = text[1:-1]
-    return text.strip()
 
 
 # Database constants
@@ -106,25 +93,6 @@ SCHEMA = [
     "CREATE INDEX IF NOT EXISTS idx_entities_id ON entities(entity_id)",
     "CREATE INDEX IF NOT EXISTS idx_entities_facet ON entities(facet)",
     "CREATE INDEX IF NOT EXISTS idx_entities_source ON entities(source)",
-    """
-    CREATE TABLE IF NOT EXISTS entity_signals(
-        signal_type TEXT NOT NULL,
-        entity_name TEXT NOT NULL,
-        entity_type TEXT,
-        target_name TEXT,
-        relationship_type TEXT,
-        day TEXT,
-        facet TEXT,
-        event_title TEXT,
-        event_type TEXT,
-        path TEXT NOT NULL
-    )
-    """,
-    "CREATE INDEX IF NOT EXISTS idx_signals_type ON entity_signals(signal_type)",
-    "CREATE INDEX IF NOT EXISTS idx_signals_entity ON entity_signals(entity_name)",
-    "CREATE INDEX IF NOT EXISTS idx_signals_day ON entity_signals(day)",
-    "CREATE INDEX IF NOT EXISTS idx_signals_path ON entity_signals(path)",
-    "CREATE INDEX IF NOT EXISTS idx_signals_facet ON entity_signals(facet)",
 ]
 
 ENTITY_COLUMNS = [
@@ -150,19 +118,6 @@ ENTITY_COLUMNS = [
     "path",
 ]
 
-SIGNAL_COLUMNS = [
-    "signal_type",
-    "entity_name",
-    "entity_type",
-    "target_name",
-    "relationship_type",
-    "day",
-    "facet",
-    "event_title",
-    "event_type",
-    "path",
-]
-
 
 def _insert_entity_row(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
     """Insert one entity row into the entities table."""
@@ -170,16 +125,6 @@ def _insert_entity_row(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
     placeholders = ",".join("?" for _ in ENTITY_COLUMNS)
     values = [row.get(col) for col in ENTITY_COLUMNS]
     conn.execute(f"INSERT INTO entities({columns}) VALUES ({placeholders})", values)
-
-
-def _insert_signal_row(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
-    """Insert one signal row into the entity_signals table."""
-    columns = ",".join(SIGNAL_COLUMNS)
-    placeholders = ",".join("?" for _ in SIGNAL_COLUMNS)
-    values = [row.get(col) for col in SIGNAL_COLUMNS]
-    conn.execute(
-        f"INSERT INTO entity_signals({columns}) VALUES ({placeholders})", values
-    )
 
 
 def _entity_source_from_path(rel_path: str) -> str | None:
@@ -227,29 +172,6 @@ def _find_entity_files(journal: str) -> dict[str, tuple[str, str]]:
         if path.is_file():
             rel = path.relative_to(journal_path).as_posix()
             files[rel] = (str(path), "observation")
-
-    return files
-
-
-def _find_signal_files(journal: str) -> dict[str, tuple[str, str]]:
-    """Find all signal source files (KG markdown + event JSONL)."""
-    journal_path = Path(journal)
-    files: dict[str, tuple[str, str]] = {}
-    day_root = (
-        journal_path / CHRONICLE_DIR
-        if (journal_path / CHRONICLE_DIR).is_dir()
-        else journal_path
-    )
-
-    for path in day_root.glob("*/talents/knowledge_graph.md"):
-        if path.is_file():
-            rel = path.relative_to(day_root).as_posix()
-            files[rel] = (str(path), "kg")
-
-    for path in journal_path.glob("facets/*/events/*.jsonl"):
-        if path.is_file() and re.match(r"\d{8}\.jsonl$", path.name):
-            rel = path.relative_to(journal_path).as_posix()
-            files[rel] = (str(path), "event")
 
     return files
 
@@ -458,356 +380,9 @@ def _extract_entity_observations(journal: str, rel_path: str) -> list[dict[str, 
     ]
 
 
-def _is_historical_signal_file(rel_path: str, source_type: str) -> bool:
-    """Check if a signal source file is historical and should be skipped in light mode.
-
-    KG files are never historical — they are accumulated (indexed once, kept forever)
-    like events. Only today's KG file changes; historical KG files are stable and should
-    be indexed incrementally then left alone.
-    """
-    return False
-
-
-def _load_facet_entities_for_day(journal: str, day: str) -> dict[str, set[str]]:
-    """Load entity names detected in each facet for a given day.
-
-    Returns a mapping of lowercase entity name → set of facets where detected.
-    """
-    journal_path = Path(journal)
-    result: dict[str, set[str]] = {}
-
-    for detection_file in journal_path.glob(f"facets/*/entities/{day}.jsonl"):
-        facet = detection_file.relative_to(journal_path).parts[1]
-        try:
-            with open(detection_file, encoding="utf-8") as f:
-                for raw in f:
-                    raw = raw.strip()
-                    if not raw:
-                        continue
-                    try:
-                        data = json.loads(raw)
-                    except json.JSONDecodeError:
-                        continue
-                    name = data.get("name", "").strip()
-                    if name:
-                        result.setdefault(name.lower(), set()).add(facet)
-        except OSError:
-            continue
-
-    return result
-
-
-def _extract_signal_kg(journal: str, rel_path: str) -> list[dict[str, Any]]:
-    """Extract KG appearance and edge signals from a knowledge graph markdown file."""
-    abs_path = resolve_journal_path(journal, rel_path)
-    day = rel_path.split("/")[0]
-
-    try:
-        with open(abs_path, encoding="utf-8") as f:
-            content = f.read()
-    except OSError as e:
-        logger.warning("Skipping %s: %s", rel_path, e)
-        return []
-
-    # Split entity vs relationship sections by finding the relationship table
-    # header row. Requires both "Source" and either "Target" or "Relationship"
-    # in the same pipe-delimited row to avoid false positives on entity rows
-    # that happen to contain "Source" as part of an entity name.
-    source_hdr = re.search(
-        r"^\|[^|]*Source\s*\w*[^|]*\|[^|]*(?:Target|Relationship)\s*\w*[^|]*\|",
-        content,
-        re.MULTILINE | re.IGNORECASE,
-    )
-    if source_hdr:
-        entity_section = content[: source_hdr.start()]
-        relationship_section = content[source_hdr.start() :]
-    else:
-        entity_section = content
-        relationship_section = ""
-
-    rows: list[dict[str, Any]] = []
-
-    # Match entity rows in pipe-delimited tables. Handles bold (**Name**),
-    # backtick (`Name`), or plain text entity names. The second column must
-    # look like an entity type (not a separator row or header underline).
-    appearance_re = re.compile(
-        r"^\|\s*(?:\*\*(.+?)\*\*|`([^`]+)`|([^|*`\n][^|\n]*?))\s*\|\s*([^|]+?)\s*\|",
-        re.MULTILINE,
-    )
-    # Column header values that should not be treated as entity types
-    _HEADER_VALUES = frozenset(
-        {
-            "entity type",
-            "type",
-            "category",
-            "classification",
-            "role",
-            "entity name",
-            "name",
-            "first appearance",
-            "total engagement",
-            "context",
-            "description",
-            "notes",
-        }
-    )
-    for m in appearance_re.finditer(entity_section):
-        entity_name = (m.group(1) or m.group(2) or m.group(3) or "").strip()
-        entity_type = m.group(4).strip()
-        if not entity_name:
-            continue
-        if entity_type.startswith(":") or entity_type.startswith("-"):
-            continue
-        if entity_type.lower() in _HEADER_VALUES:
-            continue
-        if is_noise_entity(entity_name):
-            continue
-        rows.append(
-            {
-                "signal_type": "kg_appearance",
-                "entity_name": entity_name,
-                "entity_type": entity_type,
-                "target_name": None,
-                "relationship_type": None,
-                "day": day,
-                "facet": None,
-                "event_title": None,
-                "event_type": None,
-                "path": rel_path,
-            }
-        )
-
-    # --- Edge extraction (table format) ---
-    # KG files use varied table formats (LLM-generated). Parse the relationship
-    # table header to detect column positions, then extract by index. Handles
-    # bold/non-bold entity names and any column order.
-    if relationship_section:
-        rel_lines = relationship_section.split("\n")
-        source_col = target_col = rel_col = -1
-        data_start = 0
-        for li, line in enumerate(rel_lines):
-            cells = [c.strip().lower() for c in line.split("|")]
-            for ci, cell in enumerate(cells):
-                if "source" in cell:
-                    source_col = ci
-                elif "target" in cell:
-                    target_col = ci
-                elif "relationship" in cell:
-                    rel_col = ci
-            if source_col >= 0 and (target_col >= 0 or rel_col >= 0):
-                data_start = li + 1
-                break
-
-        # Skip separator row (| :--- | :--- | ... |)
-        if data_start < len(rel_lines) and re.match(
-            r"^\s*\|[\s:\-|]+\|\s*$", rel_lines[data_start]
-        ):
-            data_start += 1
-
-        if source_col >= 0 and target_col >= 0 and rel_col >= 0:
-            for line in rel_lines[data_start:]:
-                if not line.strip().startswith("|"):
-                    if line.strip().startswith("#") or (line.strip() == "---"):
-                        break  # next section
-                    continue
-                cells = [c.strip() for c in line.split("|")]
-                if max(source_col, target_col, rel_col) >= len(cells):
-                    continue
-                source = _strip_md_formatting(cells[source_col])
-                target = _strip_md_formatting(cells[target_col])
-                rel_type = _strip_md_formatting(cells[rel_col])
-                if not source or not target or not rel_type:
-                    continue
-                if rel_type.startswith(":") or rel_type.startswith("-"):
-                    continue
-                if is_noise_entity(source) or is_noise_entity(target):
-                    continue
-                rows.append(
-                    {
-                        "signal_type": "kg_edge",
-                        "entity_name": source,
-                        "entity_type": None,
-                        "target_name": target,
-                        "relationship_type": rel_type,
-                        "day": day,
-                        "facet": None,
-                        "event_title": None,
-                        "event_type": None,
-                        "path": rel_path,
-                    }
-                )
-
-    # --- Edge extraction (bullet-list formats, early KG files) ---
-    # Format C: * **Source** `rel-type` **Target**
-    edge_re_bullet = re.compile(
-        r"^\s*[\*\-]\s+\*\*(.+?)\*\*\s+`([^`]+)`\s+\*\*(.+?)\*\*",
-        re.MULTILINE,
-    )
-    # Format D: `Source` -> `rel-type` -> `Target`
-    edge_re_arrow = re.compile(
-        r"^\s*[\*\-]\s+`([^`]+)`\s*->\s*`([^`]+)`\s*->\s*`([^`]+)`",
-        re.MULTILINE,
-    )
-    # Format E: (Source) -> `rel-type` -> (Target)
-    edge_re_paren = re.compile(
-        r"^\s*[\*\-]\s+\(([^)]+)\)\s*->\s*`([^`]+)`\s*->\s*\(([^)]+)\)",
-        re.MULTILINE,
-    )
-    # Format F: `Source` **rel-type** `Target`
-    edge_re_bold_rel = re.compile(
-        r"^\s*[\*\-]\s+`([^`]+)`\s+\*\*([^*]+)\*\*\s+`([^`]+)`",
-        re.MULTILINE,
-    )
-    # Format G: Source `rel-type` Target (no bold, no parens — plain text with backtick rel)
-    edge_re_plain = re.compile(
-        r"^\s*[\*\-]\s+([A-Z][^`\n]+?)\s+`([^`]+)`\s+([A-Z][^`\n]+?)$",
-        re.MULTILINE,
-    )
-    # Format H: **Source** ---[rel]---> **Target** or **Source** --- `rel` ---> **Target**
-    edge_re_graph = re.compile(
-        r"^\s*[\*\-]\s+\*\*(.+?)\*\*\s*(?:\([^)]*\)\s*)?-+\s*[\[`]([^\]`]+)[\]`]\s*-+>?\s*\*\*(.+?)\*\*",
-        re.MULTILINE,
-    )
-    # Format I: (Source) `rel-type` (Target) (parens without arrows)
-    edge_re_paren_backtick = re.compile(
-        r"^\s*[\*\-]\s+\(([^)]+)\)\s+`([^`]+)`\s+\(([^)]+)\)",
-        re.MULTILINE,
-    )
-    # Format J: **Source:** X -> **Relationship:** `rel` -> **Target:** Y (labeled arrow)
-    edge_re_labeled = re.compile(
-        r"^\s*[\*\-]\s+\*\*Source:\*\*\s*(.+?)\s*->\s*\*\*Relationship:\*\*\s*`([^`]+)`\s*->\s*\*\*Target:\*\*\s*(.+?)$",
-        re.MULTILINE,
-    )
-    # Format K: `(Source) -> [rel] -> (Target)` (backtick-wrapped arrow with bracket rel)
-    edge_re_backtick_arrow = re.compile(
-        r"^\s*[\*\-]\s+`\(([^)]+)\)\s*->\s*\[([^\]]+)\]\s*->\s*\(([^)]+)\)`",
-        re.MULTILINE,
-    )
-
-    # Scope bullet-list edge matching to the relationship section only (or full
-    # content when no section split was found) to avoid false matches from
-    # bullet-formatted engagement notes in entity appearance tables.
-    bullet_search_text = relationship_section or content
-    for regex in (
-        edge_re_bullet,
-        edge_re_arrow,
-        edge_re_paren,
-        edge_re_bold_rel,
-        edge_re_plain,
-        edge_re_graph,
-        edge_re_paren_backtick,
-        edge_re_labeled,
-        edge_re_backtick_arrow,
-    ):
-        for m in regex.finditer(bullet_search_text):
-            source = m.group(1).strip()
-            rel_type = m.group(2).strip()
-            target = m.group(3).strip()
-            if is_noise_entity(source) or is_noise_entity(target):
-                continue
-            rows.append(
-                {
-                    "signal_type": "kg_edge",
-                    "entity_name": source,
-                    "entity_type": None,
-                    "target_name": target,
-                    "relationship_type": rel_type,
-                    "day": day,
-                    "facet": None,
-                    "event_title": None,
-                    "event_type": None,
-                    "path": rel_path,
-                }
-            )
-
-    # Assign facets by cross-referencing entity names against facet detection data
-    facet_entities = _load_facet_entities_for_day(journal, day)
-    if not facet_entities:
-        return rows  # no detection data for this day — all stay facet=None
-
-    expanded: list[dict[str, Any]] = []
-    for row in rows:
-        if row["signal_type"] == "kg_appearance":
-            facets = facet_entities.get(row["entity_name"].lower(), set())
-            if facets:
-                for facet in sorted(facets):
-                    expanded.append({**row, "facet": facet})
-            else:
-                expanded.append(row)
-        elif row["signal_type"] == "kg_edge":
-            source_facets = facet_entities.get(row["entity_name"].lower(), set())
-            target_facets = facet_entities.get(
-                (row["target_name"] or "").lower(), set()
-            )
-            shared = source_facets & target_facets
-            if shared:
-                for facet in sorted(shared):
-                    expanded.append({**row, "facet": facet})
-            else:
-                expanded.append(row)
-        else:
-            expanded.append(row)
-
-    return expanded
-
-
-def _extract_signal_event_participants(
-    journal: str, rel_path: str
-) -> list[dict[str, Any]]:
-    """Extract participant signals from an event JSONL file."""
-    abs_path = os.path.join(journal, rel_path)
-    parts = rel_path.replace("\\", "/").split("/")
-    if len(parts) < 4:
-        return []
-    facet = parts[1]
-    day = Path(rel_path).stem
-
-    rows: list[dict[str, Any]] = []
-    try:
-        with open(abs_path, encoding="utf-8") as f:
-            for event_index, raw in enumerate(f):
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    event = json.loads(raw)
-                except json.JSONDecodeError as e:
-                    logger.warning("Skipping malformed JSONL in %s: %s", rel_path, e)
-                    continue
-
-                participants = event.get("participants", [])
-                if not participants:
-                    continue
-
-                event_path = f"{rel_path}#{event_index}"
-                title = event.get("title", "")
-                event_type = event.get("type", "")
-                for name in participants:
-                    if not name or is_noise_entity(name):
-                        continue
-                    rows.append(
-                        {
-                            "signal_type": "event_participant",
-                            "entity_name": name,
-                            "entity_type": None,
-                            "target_name": None,
-                            "relationship_type": None,
-                            "day": day,
-                            "facet": facet,
-                            "event_title": title,
-                            "event_type": event_type,
-                            "path": event_path,
-                        }
-                    )
-    except OSError as e:
-        logger.warning("Skipping %s: %s", rel_path, e)
-        return []
-
-    return rows
-
-
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     """Create required tables if they don't exist."""
+    conn.execute("DROP TABLE IF EXISTS entity_signals")
     for statement in SCHEMA:
         conn.execute(statement)
 
@@ -1223,113 +798,6 @@ def scan_entities(
     return bool(to_index or removed)
 
 
-def scan_signals(
-    journal: str,
-    conn: sqlite3.Connection,
-    verbose: bool = False,
-    full: bool = False,
-) -> bool:
-    """Scan and index signal source files."""
-    signal_files = _find_signal_files(journal)
-
-    in_scope: dict[str, tuple[str, str]] = signal_files
-    if not full:
-        in_scope = {
-            rel: (path, source_type)
-            for rel, (path, source_type) in signal_files.items()
-            if not _is_historical_signal_file(rel, source_type)
-        }
-
-    logger.info("Scanning %s signal files...", len(in_scope))
-
-    SIGNAL_PREFIX = "signal:"
-    db_mtimes = {
-        path: mtime
-        for path, mtime in conn.execute(
-            "SELECT path, mtime FROM files WHERE path LIKE 'signal:%'"
-        )
-    }
-    to_index: list[tuple[str, str, int, str]] = []
-    for rel, (path, source_type) in in_scope.items():
-        try:
-            mtime = int(os.path.getmtime(path))
-        except OSError as e:
-            logger.warning("Unable to stat %s: %s", rel, e)
-            continue
-        if db_mtimes.get(SIGNAL_PREFIX + rel) != mtime:
-            to_index.append((rel, path, mtime, source_type))
-
-    cached = len(in_scope) - len(to_index)
-    logger.info(
-        "%s total signal files, %s cached, %s to index",
-        len(in_scope),
-        cached,
-        len(to_index),
-    )
-
-    start = time.time()
-
-    for i, (rel, path, mtime, source_type) in enumerate(to_index, 1):
-        if verbose:
-            logger.info("[%s/%s] %s", i, len(to_index), rel)
-
-        conn.execute(
-            "DELETE FROM entity_signals WHERE path=? OR path LIKE ?",
-            (rel, rel + "#%"),
-        )
-
-        if source_type == "kg":
-            rows = _extract_signal_kg(journal, rel)
-        elif source_type == "event":
-            rows = _extract_signal_event_participants(journal, rel)
-        else:
-            rows = []
-
-        for row in rows:
-            _insert_signal_row(conn, row)
-
-        conn.execute(
-            "REPLACE INTO files(path, mtime) VALUES (?, ?)",
-            (SIGNAL_PREFIX + rel, mtime),
-        )
-
-    removed: set[str] = set()
-    db_signal_paths = {
-        row[0]
-        for row in conn.execute("SELECT DISTINCT path FROM entity_signals").fetchall()
-    }
-
-    if full:
-        removed = {p for p in db_signal_paths if p.split("#")[0] not in signal_files}
-    else:
-        in_scope_db = {
-            path
-            for path in db_signal_paths
-            if not _is_historical_signal_file(
-                path.split("#")[0],
-                "kg" if "/talents/knowledge_graph.md" in path else "event",
-            )
-        }
-        removed = {p for p in in_scope_db if p.split("#")[0] not in in_scope}
-
-    for rel in removed:
-        conn.execute("DELETE FROM entity_signals WHERE path=?", (rel,))
-        conn.execute("DELETE FROM files WHERE path=?", (SIGNAL_PREFIX + rel,))
-
-    if to_index or removed:
-        conn.commit()
-
-    elapsed = time.time() - start
-    logger.info(
-        "%s signal files indexed, %s removed in %.2f seconds",
-        len(to_index),
-        len(removed),
-        elapsed,
-    )
-
-    return bool(to_index or removed)
-
-
 def _ts_to_day(ts_value: str | int | None) -> str:
     """Convert a millisecond timestamp to YYYYMMDD string.
 
@@ -1575,7 +1043,6 @@ def scan_journal(journal: str, verbose: bool = False, full: bool = False) -> boo
         )
 
     entity_changed = scan_entities(journal, conn, verbose=verbose, full=full)
-    signal_changed = scan_signals(journal, conn, verbose=verbose, full=full)
 
     # Regenerate entity search chunks when entity data changes or chunks are missing
     if (
@@ -1587,7 +1054,7 @@ def scan_journal(journal: str, verbose: bool = False, full: bool = False) -> boo
         _index_entity_search_chunks(conn)
 
     conn.close()
-    return bool(to_index or removed or entity_changed or signal_changed)
+    return bool(to_index or removed or entity_changed)
 
 
 # Compiled patterns for temporal extraction (checked against unquoted text only)
@@ -2004,18 +1471,14 @@ def search_counts(
 
 def _load_index_entity_dicts(
     conn: sqlite3.Connection,
-    principal_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Load identity entities from the journal index as entity dicts.
 
     Returns dicts with "id", "name", and "aka" suitable for
     build_name_resolution_map().
     """
-    where = "source='identity'"
-    if principal_only:
-        where += " AND is_principal=1"
     rows = conn.execute(
-        f"SELECT entity_id, name, aka FROM entities WHERE {where}"
+        "SELECT entity_id, name, aka FROM entities WHERE source='identity'"
     ).fetchall()
     entity_dicts: list[dict[str, Any]] = []
     for entity_id, name, aka_str in rows:
@@ -2031,31 +1494,11 @@ def _load_index_entity_dicts(
     return entity_dicts
 
 
-def get_principal_entity_names(conn: sqlite3.Connection) -> set[str]:
-    """Return signal entity_names that correspond to principal entities.
-
-    Uses shared name resolution (build_name_resolution_map) to ensure
-    consistent matching — the same name resolves the same way everywhere.
-    """
-    from solstone.think.entities.matching import build_name_resolution_map
-
-    entity_dicts = _load_index_entity_dicts(conn, principal_only=True)
-    if not entity_dicts:
-        return set()
-
-    signal_names = [
-        r[0]
-        for r in conn.execute(
-            "SELECT DISTINCT entity_name FROM entity_signals"
-        ).fetchall()
-    ]
-
-    name_map = build_name_resolution_map(signal_names, entity_dicts)
-    return set(name_map.keys())
-
-
-def _build_entity_name_map(conn: sqlite3.Connection) -> dict[str, str]:
-    """Map signal entity_names to entity_ids via shared name resolution.
+def _build_entity_name_map(
+    conn: sqlite3.Connection,
+    names: list[str] | set[str],
+) -> dict[str, str]:
+    """Map entity names to entity_ids via shared name resolution.
 
     Returns dict mapping entity_name -> entity_id. Uses the same tiered
     matching as all other name resolution call sites.
@@ -2063,14 +1506,9 @@ def _build_entity_name_map(conn: sqlite3.Connection) -> dict[str, str]:
     from solstone.think.entities.matching import build_name_resolution_map
 
     entity_dicts = _load_index_entity_dicts(conn)
-    signal_names = [
-        r[0]
-        for r in conn.execute(
-            "SELECT DISTINCT entity_name FROM entity_signals"
-        ).fetchall()
-    ]
-
-    return build_name_resolution_map(signal_names, entity_dicts)
+    return build_name_resolution_map(
+        sorted({name for name in names if name}), entity_dicts
+    )
 
 
 def _extract_match_candidates(fts_results: list[dict[str, Any]]) -> set[str]:
@@ -2098,7 +1536,7 @@ def search_entities(
     since: str | None = None,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
-    """Search entities by text query, type, facet, and/or signal activity."""
+    """Search entities by text query, type, facet, and/or detected activity."""
     conn, _ = get_journal_index()
     try:
         id_where_parts = ["source='identity'"]
@@ -2122,36 +1560,31 @@ def search_entities(
             for r in id_rows
         }
 
-        if facet or since:
-            sig_where = []
-            sig_params: list[Any] = []
-            if facet:
-                sig_where.append("facet=?")
-                sig_params.append(facet.lower())
-            if since:
-                sig_where.append("day>=?")
-                sig_params.append(since)
-
-            sig_rows = conn.execute(
-                f"SELECT DISTINCT entity_name FROM entity_signals WHERE {' AND '.join(sig_where)}",
-                sig_params,
+        relationship_ids: set[str] | None = None
+        if facet:
+            rel_rows = conn.execute(
+                "SELECT DISTINCT entity_id FROM entities WHERE source='relationship' AND facet=?",
+                [facet.lower()],
             ).fetchall()
-            name_map = _build_entity_name_map(conn)
-            active_ids = set()
-            for (sname,) in sig_rows:
-                eid = name_map.get(sname)
-                if eid:
-                    active_ids.add(eid)
+            relationship_ids = {eid for (eid,) in rel_rows}
 
-            if facet:
-                rel_rows = conn.execute(
-                    "SELECT DISTINCT entity_id FROM entities WHERE source='relationship' AND facet=?",
-                    [facet.lower()],
-                ).fetchall()
-                for (eid,) in rel_rows:
-                    active_ids.add(eid)
+        if since:
+            from solstone.think.entities.activity import (
+                iter_detected_entity_names_since,
+            )
 
+            detected_names = [
+                name for name, _facet, _day in iter_detected_entity_names_since(since)
+            ]
+            name_map = _build_entity_name_map(conn, detected_names)
+            active_ids = set(name_map.values())
+            if relationship_ids is not None:
+                active_ids &= relationship_ids
             entities = {eid: e for eid, e in entities.items() if eid in active_ids}
+        elif relationship_ids is not None:
+            entities = {
+                eid: e for eid, e in entities.items() if eid in relationship_ids
+            }
 
         if query:
             _, fts_results = search_journal(query, limit=100, agent="entity:detected")
@@ -2167,11 +1600,9 @@ def search_entities(
                             fts_ids.add(candidate)
 
             if not fts_ids:
-                name_map = _build_entity_name_map(conn)
                 match_names = _extract_match_candidates(fts_results)
-                for sname, eid in name_map.items():
-                    if sname in match_names:
-                        fts_ids.add(eid)
+                name_map = _build_entity_name_map(conn, match_names)
+                fts_ids.update(name_map.values())
 
             if not fts_ids:
                 like_term = f"%{query.lower()}%"
@@ -2193,31 +1624,9 @@ def search_entities(
 
             entities = {eid: e for eid, e in entities.items() if eid in fts_ids}
 
-        name_map = _build_entity_name_map(conn)
-        reverse_map: dict[str, list[str]] = {}
-        for sname, eid in name_map.items():
-            reverse_map.setdefault(eid, []).append(sname)
-
         result_list = []
         for eid, e in entities.items():
-            signal_names = reverse_map.get(eid, [])
-            if signal_names:
-                placeholders = ",".join("?" for _ in signal_names)
-                row = conn.execute(
-                    f"SELECT COUNT(*), MAX(day), COUNT(DISTINCT facet) FROM entity_signals WHERE entity_name IN ({placeholders})",
-                    signal_names,
-                ).fetchone()
-                e["signal_count"] = row[0]
-                e["last_active"] = row[1] or ""
-                facet_rows = conn.execute(
-                    f"SELECT DISTINCT facet FROM entity_signals WHERE entity_name IN ({placeholders}) AND facet IS NOT NULL AND facet != ''",
-                    signal_names,
-                ).fetchall()
-                e["facets"] = [r[0] for r in facet_rows if r[0]]
-            else:
-                e["signal_count"] = 0
-                e["last_active"] = ""
-                e["facets"] = []
+            e["facets"] = []
 
             rel_facets = conn.execute(
                 "SELECT DISTINCT facet FROM entities WHERE entity_id=? AND source='relationship' AND facet IS NOT NULL AND facet != ''",
@@ -2229,7 +1638,7 @@ def search_entities(
 
             result_list.append(e)
 
-        result_list.sort(key=lambda x: (-x["signal_count"], x["name"]))
+        result_list.sort(key=lambda x: (str(x["name"]).lower(), str(x["name"])))
         return result_list[:limit]
     finally:
         conn.close()
