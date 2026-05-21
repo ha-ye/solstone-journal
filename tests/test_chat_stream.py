@@ -368,7 +368,7 @@ def test_reduce_chat_state_extracts_latest_sol_and_active_talents(
     append_chat_event(
         "chat_error",
         ts=start + 6_000,
-        reason="chat had trouble — try again",
+        reason="unknown",
         use_id=None,
     )
     append_chat_event(

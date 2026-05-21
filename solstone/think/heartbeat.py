@@ -13,7 +13,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from solstone.think.cortex_client import cortex_request, wait_for_uses
+from solstone.think.cortex_client import (
+    CortexSpawnUnavailable,
+    cortex_request,
+    wait_for_uses,
+)
 from solstone.think.identity import ensure_identity_directory
 from solstone.think.utils import get_journal, require_solstone, setup_cli
 
@@ -104,10 +108,13 @@ def main() -> None:
         pid_file.write_text(str(os.getpid()))
         start_time = time.monotonic()
 
-        use_id = cortex_request(
-            prompt="Run heartbeat check.",
-            name="heartbeat",
-        )
+        try:
+            use_id = cortex_request(
+                prompt="Run heartbeat check.",
+                name="heartbeat",
+            )
+        except CortexSpawnUnavailable:
+            use_id = None
         if use_id is None:
             logger.error("Failed to send heartbeat request to cortex")
             _log_run(health_dir, start_time, "error")

@@ -37,6 +37,7 @@ from solstone.convey.sol_initiated import (
 from solstone.convey.sol_initiated.copy import KIND_SOL_CHAT_REQUEST, SURFACE_CONVEY
 from solstone.convey.utils import error_response
 from solstone.think.callosum import CallosumConnection, callosum_send
+from solstone.think.cortex_client import CortexSpawnUnavailable
 from solstone.think.utils import get_journal, now_ms
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,13 @@ class ChatRuntimeState:
     apps: list[Any] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ChatSpawnResult:
+    ok: bool
+    reason: str = ""
+    detail: str = ""
+
+
 @chat_bp.route("", methods=["POST"])
 def post_chat() -> Any:
     """Accept an owner message and schedule the chat singleton."""
@@ -125,12 +133,18 @@ def post_chat() -> Any:
             response_use_id = _queue_trigger_locked(trigger, location)
             queued = True
 
-    if start_info is not None and not _spawn_chat_generate(start_info):
-        _handle_chat_failure(response_use_id, "unknown")
-        return error_response(
-            AGENT_UNAVAILABLE,
-            detail="Failed to connect to agent service",
-        )
+    if start_info is not None:
+        spawn_result = _spawn_chat_generate(start_info)
+        if not spawn_result.ok:
+            _handle_chat_failure(
+                response_use_id,
+                spawn_result.reason,
+                detail=spawn_result.detail,
+            )
+            return error_response(
+                AGENT_UNAVAILABLE,
+                detail="Failed to connect to agent service",
+            )
 
     return jsonify(use_id=response_use_id, queued=queued)
 
@@ -474,15 +488,21 @@ def _on_cortex_error(message: dict[str, Any]) -> None:
             logical_use_id = str(_current_chat_use_id)
             reason_code = str(message.get("reason_code") or "unknown")
             provider = str(message.get("provider") or "")
+            detail = _normalize_chat_error_detail(message.get("error"))
             _cancel_watchdog_locked(use_id)
             append_chat_event(
                 "chat_error",
                 reason=reason_code,
                 use_id=logical_use_id,
                 provider=provider,
-                detail=_normalize_chat_error_detail(message.get("error")),
+                detail=detail,
             )
-            error_payload = {"use_id": logical_use_id, "reason": reason_code}
+            error_payload = {
+                "use_id": logical_use_id,
+                "reason": reason_code,
+                "provider": provider,
+                "detail": detail,
+            }
             next_info = _clear_current_locked()
         elif use_id in _active_talents:
             reason = str(message.get("error") or "unknown")
@@ -510,7 +530,12 @@ def _on_cortex_error(message: dict[str, Any]) -> None:
 
     _run_next_action(next_info)
     if error_payload is not None:
-        _emit_error(error_payload["use_id"], error_payload["reason"])
+        _emit_error(
+            error_payload["use_id"],
+            error_payload["reason"],
+            provider=error_payload.get("provider", ""),
+            detail=error_payload.get("detail", ""),
+        )
 
 
 def _handle_talent_terminal_locked(
@@ -552,8 +577,13 @@ def _run_next_action(action: dict[str, Any] | None) -> None:
     if action is None:
         return
     if action.get("kind") == "chat":
-        if not _spawn_chat_generate(action):
-            _handle_chat_failure(action["logical_use_id"], "unknown")
+        spawn_result = _spawn_chat_generate(action)
+        if not spawn_result.ok:
+            _handle_chat_failure(
+                action["logical_use_id"],
+                spawn_result.reason,
+                detail=spawn_result.detail,
+            )
         return
     if action.get("kind") == "talent":
         if not _spawn_talent(action):
@@ -567,7 +597,7 @@ def _run_next_action(action: dict[str, Any] | None) -> None:
             )
 
 
-def _spawn_chat_generate(action: dict[str, Any]) -> bool:
+def _spawn_chat_generate(action: dict[str, Any]) -> ChatSpawnResult:
     logger.info(
         "starting chat generate logical=%s raw=%s trigger=%s",
         action["logical_use_id"],
@@ -583,17 +613,24 @@ def _spawn_chat_generate(action: dict[str, Any]) -> bool:
         "trigger": action["trigger"],
         "chat_request_use_id": action["logical_use_id"],
     }
-    use_id = spawn_agent(
-        prompt="",
-        name="chat",
-        provider=None,
-        config=config,
-        use_id=action["raw_use_id"],
-    )
+    try:
+        use_id = spawn_agent(
+            prompt="",
+            name="chat",
+            provider=None,
+            config=config,
+            use_id=action["raw_use_id"],
+        )
+    except CortexSpawnUnavailable as exc:
+        return ChatSpawnResult(
+            ok=False,
+            reason="chat_pipeline_unavailable",
+            detail=exc.detail or "",
+        )
     if use_id is None:
-        return False
+        return ChatSpawnResult(ok=False, reason="unknown")
     _emit_cortex_event("thinking", use_id=action["logical_use_id"], chat_proxy=True)
-    return True
+    return ChatSpawnResult(ok=True)
 
 
 def _spawn_talent(action: dict[str, Any]) -> bool:
@@ -611,13 +648,16 @@ def _spawn_talent(action: dict[str, Any]) -> bool:
         "facet": action["location"]["facet"],
         "chat_parent_use_id": action["logical_use_id"],
     }
-    use_id = spawn_agent(
-        prompt=prompt,
-        name=action["target"],
-        provider=None,
-        config=config,
-        use_id=action["use_id"],
-    )
+    try:
+        use_id = spawn_agent(
+            prompt=prompt,
+            name=action["target"],
+            provider=None,
+            config=config,
+            use_id=action["use_id"],
+        )
+    except CortexSpawnUnavailable:
+        return False
     if use_id is None:
         return False
     _emit_cortex_event("thinking", use_id=action["logical_use_id"], chat_proxy=True)
@@ -651,7 +691,13 @@ def _handle_talent_spawn_failure(action: dict[str, Any]) -> None:
     _run_next_action(next_info)
 
 
-def _handle_chat_failure(logical_use_id: str, reason: str) -> None:
+def _handle_chat_failure(
+    logical_use_id: str,
+    reason: str,
+    *,
+    detail: str = "",
+) -> None:
+    normalized_detail = _normalize_chat_error_detail(detail)
     next_info: dict[str, Any] | None = None
     with _state_lock:
         append_chat_event(
@@ -659,7 +705,7 @@ def _handle_chat_failure(logical_use_id: str, reason: str) -> None:
             reason=reason,
             use_id=logical_use_id,
             provider="",
-            detail="",
+            detail=normalized_detail,
         )
         if _current_chat_use_id == logical_use_id:
             if _current_chat_state is not None:
@@ -667,7 +713,7 @@ def _handle_chat_failure(logical_use_id: str, reason: str) -> None:
                     str(_current_chat_state.get("raw_use_id") or "")
                 )
             next_info = _clear_current_locked()
-    _emit_error(logical_use_id, reason)
+    _emit_error(logical_use_id, reason, detail=normalized_detail)
     _run_next_action(next_info)
 
 
@@ -743,8 +789,14 @@ def _recover_chat_if_needed() -> None:
         trigger = _trigger_from_stream_event(unresolved)
         start_info = _activate_current_locked(logical_use_id, trigger, location)
 
-    if start_info is not None and not _spawn_chat_generate(start_info):
-        _handle_chat_failure(start_info["logical_use_id"], "unknown")
+    if start_info is not None:
+        spawn_result = _spawn_chat_generate(start_info)
+        if not spawn_result.ok:
+            _handle_chat_failure(
+                start_info["logical_use_id"],
+                spawn_result.reason,
+                detail=spawn_result.detail,
+            )
 
 
 def _activate_current_locked(
@@ -1061,11 +1113,19 @@ def _emit_finish(use_id: str, message: str) -> None:
     )
 
 
-def _emit_error(use_id: str, reason: str) -> None:
+def _emit_error(
+    use_id: str,
+    reason: str,
+    *,
+    provider: str = "",
+    detail: str = "",
+) -> None:
     _emit_cortex_event(
         "error",
         use_id=use_id,
         error=reason,
+        provider=provider,
+        detail=detail,
         chat_proxy=True,
     )
 

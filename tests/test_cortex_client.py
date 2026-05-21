@@ -14,6 +14,7 @@ import pytest
 
 from solstone.think.callosum import CallosumConnection, CallosumServer
 from solstone.think.cortex_client import (
+    CortexSpawnUnavailable,
     cortex_request,
     cortex_uses,
     get_use_end_state,
@@ -148,21 +149,24 @@ def test_cortex_request_unique_agent_ids(callosum_server):
     assert len(set(agent_ids)) == 3
 
 
-def test_cortex_request_returns_none_on_send_failure(callosum_server, monkeypatch):
-    """Test cortex_request returns None when callosum_send fails."""
+def test_cortex_request_raises_when_callosum_unavailable(tmp_path, monkeypatch):
+    """Test cortex_request classifies Callosum send failures."""
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     monkeypatch.setattr(
-        "solstone.think.cortex_client.callosum_send", lambda *a, **kw: False
+        "solstone.think.cortex_client.callosum_send_classified",
+        lambda *a, **kw: "FileNotFoundError",
     )
 
-    use_id = cortex_request(prompt="Test", name="chat", provider="openai")
+    with pytest.raises(CortexSpawnUnavailable) as excinfo:
+        cortex_request(prompt="Test", name="chat", provider="openai")
 
-    assert use_id is None
+    assert excinfo.value.detail == "FileNotFoundError"
 
 
 def test_cortex_request_empty_journal(tmp_path, monkeypatch):
     """Test cortex_request works with an empty journal directory."""
     monkeypatch.setattr(
-        "solstone.think.cortex_client.callosum_send", lambda *a, **kw: True
+        "solstone.think.cortex_client.callosum_send_classified", lambda *a, **kw: ""
     )
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 

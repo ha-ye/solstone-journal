@@ -310,6 +310,7 @@ def register_app_context(app: Flask, registry: AppRegistry) -> None:
             pass  # Default placeholder on any error
 
         today = date.today().strftime("%Y%m%d")
+        from solstone.convey.chat_reasons import render_chat_reason
         from solstone.convey.chat_stream import read_chat_events
         from solstone.convey.sol_initiated.state import (
             latest_unresolved_sol_chat_request,
@@ -331,6 +332,8 @@ def register_app_context(app: Flask, registry: AppRegistry) -> None:
             "chat_bar_placeholder": chat_bar_placeholder,
             "chat_bar_attention": chat_bar_attention,
             "chat_bar_sol_request": chat_bar_sol_request,
+            # Shared renderer keeps chat error SSR in parity with chat chrome JS.
+            "render_chat_reason": render_chat_reason,
             "convey_settings": {"reporting_enabled": reporting_enabled()},
             "CONVEY_COPY": {
                 name.removeprefix("CONVEY_"): getattr(convey_copy, name)

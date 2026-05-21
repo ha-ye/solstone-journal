@@ -29,7 +29,11 @@ from solstone.think.activities import (
 from solstone.think.activity_state_machine import ActivityStateMachine
 from solstone.think.callosum import CallosumConnection
 from solstone.think.cluster import cluster_segments
-from solstone.think.cortex_client import cortex_request, wait_for_uses
+from solstone.think.cortex_client import (
+    CortexSpawnUnavailable,
+    cortex_request,
+    wait_for_uses,
+)
 from solstone.think.facets import (
     get_active_facets,
     get_enabled_facets,
@@ -237,7 +241,11 @@ def _cortex_request_with_retry(**kwargs) -> str | None:
     Retries up to len(_SEND_RETRY_DELAYS) times with short sleeps in between.
     Returns the use_id on success, or None if all attempts failed.
     """
-    use_id = cortex_request(**kwargs)
+    try:
+        use_id = cortex_request(**kwargs)
+    except CortexSpawnUnavailable as exc:
+        logging.info("cortex_request unavailable: %s", exc.detail or "unknown")
+        return None
     if use_id is not None:
         return use_id
 
@@ -245,7 +253,11 @@ def _cortex_request_with_retry(**kwargs) -> str | None:
     for i, delay in enumerate(_SEND_RETRY_DELAYS, 1):
         logging.warning("Retrying cortex request for '%s' (attempt %d)", name, i + 1)
         time.sleep(delay)
-        use_id = cortex_request(**kwargs)
+        try:
+            use_id = cortex_request(**kwargs)
+        except CortexSpawnUnavailable as exc:
+            logging.info("cortex_request unavailable: %s", exc.detail or "unknown")
+            return None
         if use_id is not None:
             return use_id
 

@@ -18,6 +18,7 @@ EXPECTED_CODES = {
     "network_unreachable",
     "provider_response_invalid",
     "provider_unavailable",
+    "chat_pipeline_unavailable",
     "chat_timeout",
     "unknown",
 }
@@ -85,7 +86,7 @@ def _render_js_chat_reason(
 
 def test_registry_shape():
     assert set(CHAT_REASONS) == EXPECTED_CODES
-    assert len(CHAT_REASONS) == 7
+    assert len(CHAT_REASONS) == 8
     for code, reason in CHAT_REASONS.items():
         assert isinstance(reason, ChatReason)
         assert reason.code == code
@@ -151,6 +152,15 @@ def test_render_empty_provider():
     }
 
 
+def test_render_no_placeholder_artifacts_for_all_providers():
+    providers = ["", "google", "openai", "anthropic", "ollama", "weirdslug"]
+    for code in CHAT_REASONS:
+        for provider in providers:
+            message = render_chat_reason(code, provider)["message"]
+            assert "{provider}" not in message
+            assert "None" not in message
+
+
 def test_js_parity():
     js_path = Path("solstone/convey/static/chat_reasons.js")
     text = js_path.read_text(encoding="utf-8")
@@ -186,3 +196,21 @@ def test_js_parity():
 
     removed_constants = ("CHAT_" + "TROUBLE_REASON", "CHAT_" + "WATCHDOG_REASON")
     assert all(name not in text for name in removed_constants)
+
+
+def test_no_hardcoded_chat_had_trouble_literal():
+    roots = [Path("solstone/apps/chat"), Path("solstone/convey")]
+    excluded_names = {"chat_reasons.py", "chat_reasons.js"}
+    text_suffixes = {".css", ".html", ".js", ".json", ".md", ".py", ".txt"}
+
+    offenders = []
+    for root in roots:
+        for path in root.rglob("*"):
+            if not path.is_file() or path.suffix not in text_suffixes:
+                continue
+            if path.name in excluded_names or "tests" in path.parts:
+                continue
+            if "chat had trouble" in path.read_text(encoding="utf-8"):
+                offenders.append(str(path))
+
+    assert offenders == []

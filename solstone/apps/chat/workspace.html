@@ -404,9 +404,22 @@
       return buildReflectionCard(event.day || '', event.url || '');
     }
 
+    const renderedReason = window.renderChatReason
+      ? window.renderChatReason(event.reason || 'unknown', event.provider || '')
+      : {message: event.reason || 'unknown'};
     const block = document.createElement('div');
     block.className = 'chat-error-block';
-    block.textContent = 'chat had trouble — try again';
+    const message = document.createElement('div');
+    message.textContent = renderedReason.message;
+    block.appendChild(message);
+    if (event.detail) {
+      const detail = document.createElement('div');
+      detail.className = 'chat-error-detail';
+      const code = document.createElement('code');
+      code.textContent = event.detail;
+      detail.appendChild(code);
+      block.appendChild(detail);
+    }
     return block;
   }
 

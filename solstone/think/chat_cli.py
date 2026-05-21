@@ -10,7 +10,11 @@ import sys
 import threading
 
 from solstone.think.callosum import CallosumConnection
-from solstone.think.cortex_client import cortex_request, read_use_events
+from solstone.think.cortex_client import (
+    CortexSpawnUnavailable,
+    cortex_request,
+    read_use_events,
+)
 from solstone.think.utils import require_solstone, setup_cli
 
 
@@ -43,12 +47,15 @@ def main() -> None:
     if args.facet:
         config["facet"] = args.facet
 
-    use_id = cortex_request(
-        prompt=message,
-        name=args.talent,
-        provider=args.provider,
-        config=config if config else None,
-    )
+    try:
+        use_id = cortex_request(
+            prompt=message,
+            name=args.talent,
+            provider=args.provider,
+            config=config if config else None,
+        )
+    except CortexSpawnUnavailable:
+        use_id = None
     if use_id is None:
         print(
             "Error: failed to connect to cortex (is the stack running?)",

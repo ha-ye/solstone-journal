@@ -30,6 +30,10 @@
       "template": "{provider} is having trouble — try again",
       "action": null
     },
+    "chat_pipeline_unavailable": {
+      "template": "the chat pipeline isn't ready yet — try again in a moment",
+      "action": null
+    },
     "chat_timeout": {
       "template": "chat took too long — try again",
       "action": null

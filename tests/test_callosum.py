@@ -267,6 +267,18 @@ def test_callosum_send_with_custom_path():
     assert result is False
 
 
+def test_callosum_send_classified_returns_exception_class_name(tmp_path):
+    """Test classified send reports the swallowed exception class name."""
+    from solstone.think.callosum import callosum_send_classified
+
+    custom_path = tmp_path / "nonexistent_callosum.sock"
+    result = callosum_send_classified(
+        "test", "event", socket_path=custom_path, data="value"
+    )
+
+    assert result == "FileNotFoundError"
+
+
 # --- CLI helper tests ---
 
 

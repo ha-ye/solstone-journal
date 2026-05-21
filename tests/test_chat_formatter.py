@@ -39,7 +39,7 @@ def test_format_chat_produces_markdown_for_each_kind():
         {
             "ts": 6,
             "kind": "chat_error",
-            "reason": "chat had trouble — try again",
+            "reason": "unknown",
         },
     ]
 
@@ -55,7 +55,7 @@ def test_format_chat_produces_markdown_for_each_kind():
         "*[exec spawned: compare drafts]*",
         "*[exec finished: summarized the differences]*",
         "*[exec errored: repo unavailable]*",
-        "*[chat trouble: chat had trouble — try again]*",
+        "*[chat trouble: unknown]*",
     ]
 
 

@@ -30,9 +30,12 @@ def _engage(
         config_data["day"] = day
     config = config_data or None
 
-    from solstone.think.cortex_client import cortex_request
+    from solstone.think.cortex_client import CortexSpawnUnavailable, cortex_request
 
-    use_id = cortex_request(prompt=prompt, name=name, config=config)
+    try:
+        use_id = cortex_request(prompt=prompt, name=name, config=config)
+    except CortexSpawnUnavailable:
+        use_id = None
     if use_id is None:
         typer.echo("Error: failed to send cortex request.", err=True)
         raise typer.Exit(1)

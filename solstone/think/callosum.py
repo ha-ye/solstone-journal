@@ -425,6 +425,22 @@ class CallosumConnection:
             logger.warning("Background thread did not stop cleanly")
 
 
+def _callosum_send_once(
+    tract: str,
+    event: str,
+    socket_path: Path,
+    timeout: float,
+    fields: dict[str, Any],
+) -> None:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(timeout)
+        sock.connect(str(socket_path))
+
+        message = {"tract": tract, "event": event, **fields}
+        line = json.dumps(message) + "\n"
+        sock.sendall(line.encode("utf-8"))
+
+
 def callosum_send(
     tract: str,
     event: str,
@@ -451,18 +467,30 @@ def callosum_send(
         socket_path = Path(get_journal()) / "health" / "callosum.sock"
 
     try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        sock.connect(str(socket_path))
-
-        message = {"tract": tract, "event": event, **fields}
-        line = json.dumps(message) + "\n"
-        sock.sendall(line.encode("utf-8"))
-        sock.close()
+        _callosum_send_once(tract, event, socket_path, timeout, fields)
         return True
     except Exception as e:
         logger.debug(f"callosum_send() failed: {e}")
         return False
+
+
+def callosum_send_classified(
+    tract: str,
+    event: str,
+    socket_path: Path | None = None,
+    timeout: float = 2.0,
+    **fields,
+) -> str:
+    """Send one message and return the exception class name on failure."""
+    if socket_path is None:
+        socket_path = Path(get_journal()) / "health" / "callosum.sock"
+
+    try:
+        _callosum_send_once(tract, event, socket_path, timeout, fields)
+        return ""
+    except Exception as exc:
+        logger.debug(f"callosum_send() failed: {exc}")
+        return type(exc).__name__
 
 
 def _parse_value(value: str) -> Any:

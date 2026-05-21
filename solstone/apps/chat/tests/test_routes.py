@@ -177,8 +177,8 @@ def test_chat_day_renders_all_event_kinds(journal_copy, monkeypatch):
     )
     append_chat_event(
         "chat_error",
-        ts=_ms(2026, 4, 20, 9, 5),
-        reason="network",
+        ts=_ms(2099, 1, 2, 9, 5),
+        reason="network_unreachable",
         use_id="use-4",
     )
     append_chat_event(
@@ -199,7 +199,7 @@ def test_chat_day_renders_all_event_kinds(journal_copy, monkeypatch):
     assert 'data-talent-use-id="use-3"' in html
     assert "weekly reflection ready" in html
     assert 'href="/app/reflections/20981228"' in html
-    assert "chat had trouble" in html
+    assert "I couldn&#39;t reach the network" in html
 
 
 def test_chat_day_emits_raw_talent_markdown_source_for_bootstrap(

@@ -611,7 +611,7 @@ def test_start_chat_runtime_recovers_exactly_one_unresponded_trigger(
     )
     monkeypatch.setattr(
         "solstone.convey.chat._spawn_chat_generate",
-        lambda action: starts.append(action) or True,
+        lambda action: starts.append(action) or chat.ChatSpawnResult(ok=True),
     )
 
     app = Flask(__name__)
@@ -1505,8 +1505,14 @@ def test_on_cortex_error_stores_normalized_detail(
 
     _setup_journal(tmp_path, monkeypatch)
     _reset_chat_state(chat)
+    emitted_errors: list[tuple[str, str, dict]] = []
     monkeypatch.setattr("solstone.convey.chat._run_next_action", lambda action: None)
-    monkeypatch.setattr("solstone.convey.chat._emit_error", lambda *args: None)
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_error",
+        lambda use_id, reason, **kwargs: emitted_errors.append(
+            (use_id, reason, kwargs)
+        ),
+    )
 
     logical_use_id = "1713632500000"
     raw_use_id = "1713632500001"
@@ -1545,6 +1551,13 @@ def test_on_cortex_error_stores_normalized_detail(
         assert "  " not in detail
         assert len(detail) <= 240
         assert detail[-1] == "…"
+    assert emitted_errors == [
+        (
+            logical_use_id,
+            "unknown",
+            {"provider": "google", "detail": detail},
+        )
+    ]
 
 
 def test_cortex_error_logs_warning_for_unrouteable_use_id(

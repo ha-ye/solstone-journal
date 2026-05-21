@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 from flask import Flask
 
-from solstone.convey.chat import chat_bp
-from solstone.convey.chat_stream import append_chat_event
+from solstone.convey.chat import ChatSpawnResult, chat_bp
+from solstone.convey.chat_stream import append_chat_event, read_chat_events
+from solstone.think.cortex_client import CortexSpawnUnavailable
 
 
 def _setup_journal(tmp_path, monkeypatch):
@@ -68,7 +69,7 @@ def test_post_chat_appends_owner_message_and_returns_reserved_use_id(
     )
     monkeypatch.setattr(
         "solstone.convey.chat._spawn_chat_generate",
-        lambda action: starts.append(action) or True,
+        lambda action: starts.append(action) or ChatSpawnResult(ok=True),
     )
 
     response = chat_client.post(
@@ -86,6 +87,74 @@ def test_post_chat_appends_owner_message_and_returns_reserved_use_id(
     assert payload["queued"] is False
     assert payload["use_id"].isdigit()
     assert starts and starts[-1]["logical_use_id"] == payload["use_id"]
+
+
+def test_handle_chat_failure_threads_pipeline_unavailable(chat_client, monkeypatch):
+    monkeypatch.setattr(
+        "solstone.think.identity.ensure_identity_directory", lambda: None
+    )
+
+    def fail_spawn(*_args, **_kwargs):
+        raise CortexSpawnUnavailable(detail="FileNotFoundError")
+
+    monkeypatch.setattr("solstone.convey.utils.spawn_agent", fail_spawn)
+
+    response = chat_client.post(
+        "/api/chat",
+        json={
+            "message": "hello there",
+            "app": "sol",
+            "path": "/app/sol",
+            "facet": "work",
+        },
+    )
+
+    assert response.status_code != 200
+    errors = [
+        event
+        for event in read_chat_events(date.today().strftime("%Y%m%d"))
+        if event["kind"] == "chat_error"
+    ]
+    assert errors[-1]["reason"] == "chat_pipeline_unavailable"
+    assert errors[-1]["detail"] == "FileNotFoundError"
+
+
+def test_chat_event_error_persists_and_emits_detail(tmp_path, monkeypatch):
+    import solstone.convey.chat as chat
+
+    _setup_journal(tmp_path, monkeypatch)
+    _reset_chat_state(chat)
+    emitted: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_cortex_event",
+        lambda event, **fields: emitted.append((event, fields)),
+    )
+
+    chat._handle_chat_failure(
+        "1713626000000",
+        "chat_pipeline_unavailable",
+        detail=" FileNotFoundError \n",
+    )
+
+    errors = [
+        event
+        for event in read_chat_events(date.today().strftime("%Y%m%d"))
+        if event["kind"] == "chat_error"
+    ]
+    assert errors[-1]["reason"] == "chat_pipeline_unavailable"
+    assert errors[-1]["detail"] == "FileNotFoundError"
+    assert emitted == [
+        (
+            "error",
+            {
+                "use_id": "1713626000000",
+                "error": "chat_pipeline_unavailable",
+                "provider": "",
+                "detail": "FileNotFoundError",
+                "chat_proxy": True,
+            },
+        )
+    ]
 
 
 def test_session_endpoint_reduces_from_chat_stream(chat_client, monkeypatch):
@@ -149,7 +218,7 @@ def test_chat_session_retries_unresolved_trigger_when_idle(chat_client, monkeypa
     starts: list[dict] = []
     monkeypatch.setattr(
         "solstone.convey.chat._spawn_chat_generate",
-        lambda action: starts.append(action) or True,
+        lambda action: starts.append(action) or ChatSpawnResult(ok=True),
     )
 
     response = chat_client.get("/api/chat/session")
@@ -177,7 +246,9 @@ def test_chat_session_retries_again_when_spawn_fails_and_trigger_remains_unresol
 
     def fake_spawn(action):
         starts.append(action)
-        return len(starts) > 1
+        if len(starts) > 1:
+            return ChatSpawnResult(ok=True)
+        return ChatSpawnResult(ok=False, reason="unknown")
 
     monkeypatch.setattr("solstone.convey.chat._spawn_chat_generate", fake_spawn)
     monkeypatch.setattr(

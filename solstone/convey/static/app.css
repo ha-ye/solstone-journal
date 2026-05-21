@@ -2976,6 +2976,13 @@ body.has-date-nav .chat-app {
   border-radius: 14px;
 }
 
+.chat-error-detail {
+  margin-top: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  color: #7f1d1d;
+}
+
 .surface-state {
   display: flex;
   flex-direction: column;

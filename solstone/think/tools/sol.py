@@ -19,7 +19,11 @@ from pathlib import Path
 
 import typer
 
-from solstone.think.cortex_client import cortex_request, wait_for_uses
+from solstone.think.cortex_client import (
+    CortexSpawnUnavailable,
+    cortex_request,
+    wait_for_uses,
+)
 from solstone.think.identity import (
     ensure_identity_directory,
     update_identity_section,
@@ -358,7 +362,10 @@ def digest_cmd(
         return
 
     before_mtime_ns = digest_path.stat().st_mtime_ns if digest_path.exists() else None
-    use_id = cortex_request(prompt="", name="digest")
+    try:
+        use_id = cortex_request(prompt="", name="digest")
+    except CortexSpawnUnavailable:
+        use_id = None
     if use_id is None:
         typer.echo("Error: failed to send digest request to cortex.", err=True)
         raise typer.Exit(1)

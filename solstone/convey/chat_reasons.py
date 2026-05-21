@@ -53,6 +53,11 @@ CHAT_REASONS: dict[str, ChatReason] = {
         template="{provider} is having trouble — try again",
         action=None,
     ),
+    "chat_pipeline_unavailable": ChatReason(
+        code="chat_pipeline_unavailable",
+        template="the chat pipeline isn't ready yet — try again in a moment",
+        action=None,
+    ),
     "chat_timeout": ChatReason(
         code="chat_timeout",
         template="chat took too long — try again",

@@ -9,10 +9,19 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from solstone.think.callosum import CallosumConnection, callosum_send
+from solstone.think.callosum import CallosumConnection, callosum_send_classified
 from solstone.think.utils import get_journal, now_ms
 
 logger = logging.getLogger(__name__)
+
+
+class CortexSpawnUnavailable(Exception):
+    """Raised when a Cortex spawn request cannot reach Callosum."""
+
+    def __init__(self, detail: str = "") -> None:
+        super().__init__("cortex spawn unavailable")
+        self.detail = detail
+
 
 # Module-level state for monotonic timestamp generation
 _last_ts = 0
@@ -92,15 +101,14 @@ def cortex_request(
         # Merge config overrides directly into the request for a flat schema
         request.update(config)
 
-    # Broadcast request to Callosum
-    # Note: callosum_send() signature is send(tract, event, **fields)
-    # Remove "event" from request dict to avoid conflict
+    # Broadcast request to Callosum via classified send.
+    # Remove "event" from request dict to avoid conflict with the send signature.
     request_fields = {k: v for k, v in request.items() if k != "event"}
-    sent = callosum_send("cortex", "request", **request_fields)
+    unavailable_detail = callosum_send_classified("cortex", "request", **request_fields)
 
-    if not sent:
+    if unavailable_detail:
         logger.info("Failed to send cortex request for talent '%s'", name)
-        return None
+        raise CortexSpawnUnavailable(detail=unavailable_detail)
 
     return use_id
 

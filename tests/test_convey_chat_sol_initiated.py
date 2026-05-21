@@ -61,7 +61,9 @@ def test_recover_wakes_chat_from_sol_request(tmp_path, monkeypatch) -> None:
     _append_request()
     starts: list[dict] = []
     monkeypatch.setattr(
-        chat, "_spawn_chat_generate", lambda action: starts.append(action) or True
+        chat,
+        "_spawn_chat_generate",
+        lambda action: starts.append(action) or chat.ChatSpawnResult(ok=True),
     )
 
     chat._recover_chat_if_needed()
@@ -87,7 +89,9 @@ def test_owner_message_queues_while_sol_request_generates(
     _append_request()
     starts: list[dict] = []
     monkeypatch.setattr(
-        chat, "_spawn_chat_generate", lambda action: starts.append(action) or True
+        chat,
+        "_spawn_chat_generate",
+        lambda action: starts.append(action) or chat.ChatSpawnResult(ok=True),
     )
     chat._recover_chat_if_needed()
 

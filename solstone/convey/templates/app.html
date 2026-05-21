@@ -943,7 +943,8 @@
       input.value = '';
       resizeComposer();
     } catch (_err) {
-      setStatus('chat had trouble — try again', 'chat had trouble — try again');
+      var renderedReason = window.renderChatReason('unknown', '');
+      setStatus(renderedReason.message, renderedReason.message, renderedReason.action);
     } finally {
       setPendingState(false);
       input.focus();
