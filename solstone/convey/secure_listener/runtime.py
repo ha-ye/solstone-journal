@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import logging
+import socket
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -38,6 +39,7 @@ class RuntimeState:
     )
     listener: SecureListener | None = None
     start_error: BaseException | None = None
+    sockets: tuple[socket.socket, ...] = field(default_factory=tuple)
 
 
 _RUNTIME_LOCK = threading.Lock()
@@ -90,6 +92,7 @@ def _thread_main(runtime: RuntimeState) -> None:
         )
         runtime.listener = listener
         loop.run_until_complete(listener.start())
+        runtime.sockets = listener.sockets
         runtime.started_event.set()
         loop.run_forever()
     except BaseException as exc:
@@ -170,10 +173,28 @@ def stop_all_secure_listener() -> None:
             app.secure_listener_started = False
         except Exception:
             logger.exception("secure listener app cleanup failed")
+
+    closed = 0
+    for sock in runtime.sockets:
+        try:
+            sock.close()
+            closed += 1
+        except OSError:
+            pass
+    if closed:
+        logger.info("secure_listener: closed %d listening socket(s)", closed)
+
     if runtime.loop is not None:
-        runtime.loop.call_soon_threadsafe(runtime.loop.stop)
+        try:
+            runtime.loop.call_soon_threadsafe(runtime.loop.stop)
+        except (RuntimeError, OSError) as exc:
+            logger.debug("secure_listener: loop stop best-effort skipped: %s", exc)
+
     if runtime.thread is not None:
-        runtime.thread.join(timeout=5.0)
+        try:
+            runtime.thread.join(timeout=5.0)
+        except RuntimeError as exc:
+            logger.debug("secure_listener: thread join best-effort skipped: %s", exc)
 
 
 __all__ = [

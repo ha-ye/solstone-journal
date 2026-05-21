@@ -7,6 +7,7 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 ## [Unreleased]
 
 ### Fixed
+- convey now cleanly releases its paired-device listener on port 7657 when the service restarts, so a fresh convey can immediately bind in place of one that's still shutting down. on the first upgrade past this fix, if a previous convey is still holding the port at upgrade time, stop it once manually; subsequent restarts are seamless.
 - solstone's local `describe.log` and `transcribe.log` were including the http client's full request URL on every outbound call — noisy, and on the Google provider those URLs carried the API key as a query parameter. http info-level logging is now off, so those logs are quieter going forward. they're local to your install either way.
 
 ### Changed

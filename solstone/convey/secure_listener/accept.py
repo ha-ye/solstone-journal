@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import ipaddress
 import logging
+import socket
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -50,7 +51,12 @@ class SecureListener:
         self._port = port
         self._log = logger or log
         self._server: asyncio.AbstractServer | None = None
+        self._sockets: tuple[socket.socket, ...] = ()
         self._tasks: set[asyncio.Task[None]] = set()
+
+    @property
+    def sockets(self) -> tuple[socket.socket, ...]:
+        return self._sockets
 
     async def start(self) -> None:
         if self._server is not None:
@@ -59,7 +65,9 @@ class SecureListener:
             self._accept,
             host=self._host,
             port=self._port,
+            reuse_port=True,
         )
+        self._sockets = tuple(getattr(self._server, "_sockets", None) or ())
         self._log.info("secure_listener bound on %s:%d", self._host, self._port)
 
     async def stop(self) -> None:
