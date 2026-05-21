@@ -17,6 +17,7 @@ from flask import (
     url_for,
 )
 
+from solstone.apps.todos import copy as todos_copy
 from solstone.apps.todos.todo import (
     TodoChecklist,
     TodoEmptyTextError,
@@ -39,7 +40,15 @@ from solstone.convey.reasons import (
 from solstone.convey.utils import DATE_RE, error_response, format_date
 from solstone.think.facets import get_facets
 
+VISIBLE_INCOMPLETE_BUDGET = 30
+VISIBLE_COMPLETED_BUDGET = 5
+
 todos_bp = Blueprint("app:todos", __name__, url_prefix="/app/todos")
+
+
+@todos_bp.app_context_processor
+def _inject_todos_copy() -> dict:
+    return {"todos_copy": todos_copy}
 
 
 def _compute_badge_counts(day: str, facet: str) -> dict:
@@ -453,6 +462,9 @@ def todos_day(day: str):  # type: ignore[override]
 
     # Collect todos from each facet (excluding cancelled, including empty facets)
     todos_by_facet = {}
+    visible_incomplete_by_facet = {}
+    visible_completed_by_facet = {}
+    facet_totals = {}
     for facet_name in facet_map.keys():
         facet_todos = get_todos(day, facet_name)
         if facet_todos:
@@ -463,17 +475,34 @@ def todos_day(day: str):  # type: ignore[override]
                 todo["facet"] = facet_name
         else:
             facet_todos = []
-        todos_by_facet[facet_name] = facet_todos
+        incomplete_list = [t for t in facet_todos if not t.get("completed")]
+        completed_list = [t for t in facet_todos if t.get("completed")]
+        incomplete_total = len(incomplete_list)
+        completed_total = len(completed_list)
+        visible_incomplete = incomplete_list[:VISIBLE_INCOMPLETE_BUDGET]
+        visible_completed = completed_list[:VISIBLE_COMPLETED_BUDGET]
+
+        facet_totals[facet_name] = {
+            "incomplete_total": incomplete_total,
+            "completed_total": completed_total,
+            "incomplete_hidden": max(0, incomplete_total - VISIBLE_INCOMPLETE_BUDGET),
+            "completed_hidden": max(0, completed_total - VISIBLE_COMPLETED_BUDGET),
+        }
+        visible_incomplete_by_facet[facet_name] = visible_incomplete
+        visible_completed_by_facet[facet_name] = visible_completed
+        todos_by_facet[facet_name] = visible_incomplete + visible_completed
 
     # Sort facets for initial page load:
     # 1. Facets with incomplete items first, sorted by incomplete count (descending)
     # 2. Fully completed facets next, sorted alphabetically
     # 3. Empty facets last, sorted alphabetically
     def facet_sort_key(item):
-        facet_name, facet_todos = item
-        incomplete_count = sum(1 for todo in facet_todos if not todo.get("completed"))
-        has_no_todos = len(facet_todos) == 0
-        all_complete = incomplete_count == 0 and len(facet_todos) > 0
+        facet_name, _facet_todos = item
+        totals = facet_totals[facet_name]
+        incomplete_count = totals["incomplete_total"]
+        total_count = totals["incomplete_total"] + totals["completed_total"]
+        has_no_todos = total_count == 0
+        all_complete = incomplete_count == 0 and total_count > 0
         # Return tuple: (has_no_todos, all_complete, -incomplete_count, facet_name)
         # has_no_todos=False sorts before has_no_todos=True (empty facets last)
         # all_complete=False sorts before all_complete=True (incomplete before complete)
@@ -487,8 +516,8 @@ def todos_day(day: str):  # type: ignore[override]
 
     # Compute facet counts for facet pill badges
     facet_counts = {}
-    for facet_name, facet_todos in todos_by_facet.items():
-        pending = sum(1 for t in facet_todos if not t.get("completed"))
+    for facet_name, totals in facet_totals.items():
+        pending = totals["incomplete_total"]
         if pending > 0:
             facet_counts[facet_name] = pending
 
@@ -497,9 +526,50 @@ def todos_day(day: str):  # type: ignore[override]
         title=format_date(day),
         today_day=today_day,
         todos_by_facet=sorted_todos_by_facet,
+        visible_incomplete_by_facet=visible_incomplete_by_facet,
+        visible_completed_by_facet=visible_completed_by_facet,
         facet_map=facet_map,
+        facet_totals=facet_totals,
         facet_counts=facet_counts,
         format_nudge=format_nudge,
+    )
+
+
+@todos_bp.route("/<day>/overflow/<facet>/<section>", methods=["GET"])
+def todos_overflow(day: str, facet: str, section: str):
+    """Return todo row HTML past the visible budget."""
+    if not DATE_RE.fullmatch(day):
+        return "", 404
+
+    if section not in ("incomplete", "completed"):
+        return "", 400
+
+    facet_map = get_facets()
+    if facet not in facet_map:
+        return "", 404
+
+    facet_todos = get_todos(day, facet) or []
+    facet_todos = [todo for todo in facet_todos if not todo.get("cancelled")]
+    facet_todos.sort(key=lambda todo: todo.get("completed", False))
+    for todo in facet_todos:
+        todo["facet"] = facet
+
+    incomplete_list = [todo for todo in facet_todos if not todo.get("completed")]
+    completed_list = [todo for todo in facet_todos if todo.get("completed")]
+    if section == "incomplete":
+        hidden = incomplete_list[VISIBLE_INCOMPLETE_BUDGET:]
+    else:
+        hidden = completed_list[VISIBLE_COMPLETED_BUDGET:]
+
+    return "\n".join(
+        render_template(
+            "todos/_row.html",
+            item=item,
+            facet_name=facet,
+            day=day,
+            format_nudge=format_nudge,
+        )
+        for item in hidden
     )
 
 

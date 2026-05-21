@@ -303,6 +303,26 @@
   display: none;
 }
 
+.todo-overflow-row {
+  list-style: none;
+  padding: 0.35rem 0 0.35rem 3.25rem;
+}
+
+.todo-overflow-btn {
+  padding: 0.375rem 0.625rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  background: #fafbfc;
+  color: #4b5563;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.todo-overflow-btn:hover:not(:disabled) {
+  border-color: #d1d5db;
+  background: #f3f4f6;
+}
+
 .todo-add-form {
   display: flex;
   align-items: center;
@@ -527,14 +547,18 @@
     {% endif %}
   {% endwith %}
 
-  {% if todos_by_facet.values() | map('length') | sum > 0 %}
-    {% for facet_name, facet_todos in todos_by_facet.items() %}
+  {% if todos_by_facet %}
+    {% for facet_name in todos_by_facet %}
       {% set facet_info = facet_map.get(facet_name, {}) %}
       {% set facet_title = facet_info.get('title', facet_name.title()) %}
       {% set facet_color = facet_info.get('color', '#6b7280') %}
       {% set facet_emoji = facet_info.get('emoji', '') %}
-      {% set incomplete_count = facet_todos | selectattr('completed', 'equalto', false) | list | length %}
-      {% set total_count = facet_todos | length %}
+      {% set totals = facet_totals[facet_name] %}
+      {% set incomplete_count = totals.incomplete_total %}
+      {% set completed_count = totals.completed_total %}
+      {% set total_count = incomplete_count + completed_count %}
+      {% set visible_incomplete = visible_incomplete_by_facet[facet_name] %}
+      {% set visible_completed = visible_completed_by_facet[facet_name] %}
       {% if total_count == 0 %}
         {% set count_emoji = '0️⃣' %}
       {% elif incomplete_count == 0 %}
@@ -545,12 +569,12 @@
         {% set count_emoji = '*️⃣' %}
       {% endif %}
 
-      <div class="facet-section" data-facet="{{ facet_name }}">
-        <div class="facet-header" role="button" tabindex="0" aria-expanded="true" aria-controls="todo-list-{{ facet_name }}" style="border-color: {{ facet_color }};">
+      <div class="facet-section{% if incomplete_count == 0 %} collapsed{% endif %}" data-facet="{{ facet_name }}" data-incomplete-total="{{ incomplete_count }}" data-completed-total="{{ completed_count }}">
+        <div class="facet-header" role="button" tabindex="0" aria-expanded="{% if incomplete_count == 0 %}false{% else %}true{% endif %}" aria-controls="todo-list-{{ facet_name }}" style="border-color: {{ facet_color }};">
           <span class="facet-chevron" aria-hidden="true">▸</span>
           {% if facet_emoji %}<span class="facet-emoji" aria-hidden="true">{{ facet_emoji }}</span>{% endif %}
           <h2 class="facet-title">{{ facet_title }}</h2>
-          <span class="facet-pending-text">{% if total_count == 0 %}{% elif incomplete_count == 0 %}all done{% else %}{{ total_count - incomplete_count }} of {{ total_count }} done{% endif %}</span>
+          <span class="facet-pending-text">{% if total_count == 0 %}{% elif incomplete_count == 0 %}all done{% else %}{{ completed_count }} of {{ total_count }} done{% endif %}</span>
           <button type="button"
              class="facet-generate-btn"
              data-facet="{{ facet_name }}"
@@ -561,81 +585,43 @@
         </div>
 
         <ul class="todo-list" id="todo-list-{{ facet_name }}">
-          {% for item in facet_todos %}
-            <li class="todo-row {% if item.completed %}completed{% endif %}" data-todo-row>
-              <form method="post" style="display: contents;">
-                <input type="hidden" name="action" value="{{ 'uncomplete' if item.completed else 'complete' }}">
-                <input type="hidden" name="facet" value="{{ facet_name }}">
-                <input type="hidden" name="index" value="{{ item.index }}">
-                <label class="todo-checkbox-target">
-                  <input
-                    type="checkbox"
-                    class="todo-checkbox"
-                    id="todo-{{ facet_name }}-{{ item.index }}"
-                    {% if item.completed %}checked{% endif %}
-                    data-index="{{ item.index }}"
-                    data-facet="{{ facet_name }}"
-                    data-completed="{{ 'true' if item.completed else 'false' }}"
-                  >
-                </label>
-              </form>
-
-              <label class="todo-content" for="todo-{{ facet_name }}-{{ item.index }}">
-                <span
-                  class="todo-text"
-                  tabindex="0"
-                  title="{{ item.text }}"
-                  data-index="{{ item.index }}"
-                  data-facet="{{ facet_name }}"
-                >{{ item.text }}</span>
-                {% if item.nudge %}
-                  <span class="todo-nudge">{{ format_nudge(item.nudge) }}</span>
-                {% endif %}
-              </label>
-
-              <div class="todo-actions">
-                <button
-                  type="button"
-                  class="todo-action-btn edit"
-                  aria-label="edit todo"
-                  title="edit"
-                  data-index="{{ item.index }}"
-                  data-facet="{{ facet_name }}"
-                >
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 1.5l3 3L5 14H2v-3L11.5 1.5z"/></svg>
-                </button>
-                <button
-                  type="button"
-                  class="todo-action-btn move"
-                  aria-label="move to another day"
-                  title="move to another day"
-                  data-index="{{ item.index }}"
-                  data-facet="{{ facet_name }}"
-                  data-current-day="{{ day }}"
-                >
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2.5" width="13" height="12" rx="1.5"/><line x1="1.5" y1="6.5" x2="14.5" y2="6.5"/><line x1="5" y1="1" x2="5" y2="4"/><line x1="11" y1="1" x2="11" y2="4"/></svg>
-                </button>
-
-                <button
-                  type="button"
-                  class="todo-action-btn cancel"
-                  aria-label="cancel todo"
-                  title="cancel"
-                  data-index="{{ item.index }}"
-                  data-facet="{{ facet_name }}"
-                >
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4h12"/><path d="M5 4V2.5a1 1 0 011-1h4a1 1 0 011 1V4"/><path d="M3.5 4l.75 10a1.5 1.5 0 001.5 1.5h4.5a1.5 1.5 0 001.5-1.5L12.5 4"/></svg>
-                </button>
-              </div>
-            </li>
+          {% for item in visible_incomplete %}
+            {% include "todos/_row.html" %}
           {% endfor %}
+          {% if totals.incomplete_hidden > 0 %}
+            <li class="todo-overflow-row" data-overflow-section="incomplete">
+              <button
+                type="button"
+                class="todo-overflow-btn"
+                data-facet="{{ facet_name }}"
+                data-day="{{ day }}"
+                data-section="incomplete"
+                aria-label="{{ todos_copy.SHOW_MORE_INCOMPLETE_ARIA.format(count=totals.incomplete_hidden, facet=facet_name) }}"
+              >{{ todos_copy.SHOW_MORE_INCOMPLETE.format(count=totals.incomplete_hidden) }}</button>
+            </li>
+          {% endif %}
+          {% for item in visible_completed %}
+            {% include "todos/_row.html" %}
+          {% endfor %}
+          {% if totals.completed_hidden > 0 %}
+            <li class="todo-overflow-row" data-overflow-section="completed">
+              <button
+                type="button"
+                class="todo-overflow-btn"
+                data-facet="{{ facet_name }}"
+                data-day="{{ day }}"
+                data-section="completed"
+                aria-label="{{ todos_copy.SHOW_MORE_COMPLETED_ARIA.format(count=totals.completed_hidden, facet=facet_name) }}"
+              >{{ todos_copy.SHOW_MORE_COMPLETED.format(count=totals.completed_hidden) }}</button>
+            </li>
+          {% endif %}
         </ul>
         <form class="todo-add-form" method="post" data-facet="{{ facet_name }}">
           <input type="hidden" name="action" value="add">
           <label for="todo-add-{{ facet_name }}" class="sr-only">add a todo to {{ facet_title }}</label>
           <input type="text" id="todo-add-{{ facet_name }}" name="text" placeholder="add a todo..." autocomplete="off">
         </form>
-        {% if facet_todos | length == 0 %}
+        {% if total_count == 0 %}
         <div class="todo-facet-empty" data-facet-empty="{{ facet_name }}">No todos in {{ facet_title }}</div>
         {% endif %}
       </div>
@@ -802,14 +788,28 @@ document.addEventListener('DOMContentLoaded', function() {
     saveCollapsedState(collapsedState);
   }
 
+  function getFacetTotal(facetSection, key) {
+    const value = parseInt(facetSection.dataset[key], 10);
+    return Number.isNaN(value) ? 0 : value;
+  }
+
+  function setFacetTotal(facetSection, key, value) {
+    facetSection.dataset[key] = String(Math.max(0, value));
+  }
+
+  function adjustFacetTotals(facetSection, incompleteDelta, completedDelta) {
+    setFacetTotal(facetSection, 'incompleteTotal', getFacetTotal(facetSection, 'incompleteTotal') + incompleteDelta);
+    setFacetTotal(facetSection, 'completedTotal', getFacetTotal(facetSection, 'completedTotal') + completedDelta);
+  }
+
   // Utility function to update facet count emoji
   function updateFacetCount(facetSection) {
     const countSpan = facetSection.querySelector('.facet-count');
     if (!countSpan) return;
 
-    const todoRows = Array.from(facetSection.querySelectorAll('[data-todo-row]'));
-    const totalCount = todoRows.length;
-    const incompleteCount = todoRows.filter(row => !row.classList.contains('completed')).length;
+    const incompleteCount = getFacetTotal(facetSection, 'incompleteTotal');
+    const completedCount = getFacetTotal(facetSection, 'completedTotal');
+    const totalCount = incompleteCount + completedCount;
 
     const emojis = ['0️⃣', '1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣'];
 
@@ -838,16 +838,15 @@ document.addEventListener('DOMContentLoaded', function() {
       } else if (isAllComplete) {
         pendingText.textContent = 'all done';
       } else {
-        const doneCount = totalCount - incompleteCount;
-        pendingText.textContent = `${doneCount} of ${totalCount} done`;
+        pendingText.textContent = `${completedCount} of ${totalCount} done`;
       }
     }
   }
 
   // Show per-facet empty state if facet has no remaining todos
   function showFacetEmptyIfNeeded(facetSection) {
-    const todoRows = facetSection.querySelectorAll('[data-todo-row]');
-    if (todoRows.length > 0) return;
+    const totalCount = getFacetTotal(facetSection, 'incompleteTotal') + getFacetTotal(facetSection, 'completedTotal');
+    if (totalCount > 0) return;
 
     let emptyEl = facetSection.querySelector('.todo-facet-empty');
     if (emptyEl) {
@@ -956,10 +955,12 @@ document.addEventListener('DOMContentLoaded', function() {
       todoRow.style.opacity = '0';
       setTimeout(() => {
         const facetSection = todoRow.closest('.facet-section');
+        const wasCompleted = todoRow.classList.contains('completed');
         todoRow.remove();
 
         // Update the count emoji
         if (facetSection) {
+          adjustFacetTotals(facetSection, wasCompleted ? 0 : -1, wasCompleted ? -1 : 0);
           updateFacetCount(facetSection);
           showFacetEmptyIfNeeded(facetSection);
         }
@@ -976,6 +977,50 @@ document.addEventListener('DOMContentLoaded', function() {
 
   // Delegated click handler for todo actions
   workspaceContent.addEventListener('click', (e) => {
+    const overflowBtn = e.target.closest('.todo-overflow-btn');
+    if (overflowBtn) {
+      e.stopPropagation();
+
+      const day = overflowBtn.dataset.day;
+      const facet = overflowBtn.dataset.facet;
+      const section = overflowBtn.dataset.section;
+      const originalText = overflowBtn.textContent;
+      overflowBtn.disabled = true;
+      overflowBtn.textContent = '⏳';
+
+      (async () => {
+        try {
+          const response = await fetch(`/app/todos/${day}/overflow/${facet}/${section}`);
+          if (!response.ok) {
+            throw new Error('overflow failed');
+          }
+
+          const text = await response.text();
+          const row = overflowBtn.closest('.todo-overflow-row');
+          if (!row) return;
+          row.insertAdjacentHTML('beforebegin', text);
+
+          const insertedRows = [];
+          let cursor = row.previousElementSibling;
+          while (cursor && cursor.matches('[data-todo-row]')) {
+            insertedRows.unshift(cursor);
+            cursor = cursor.previousElementSibling;
+          }
+
+          row.remove();
+          const firstText = insertedRows[0]?.querySelector('.todo-text');
+          if (firstText) {
+            firstText.focus();
+          }
+        } catch (error) {
+          overflowBtn.disabled = false;
+          overflowBtn.textContent = originalText;
+          showMessage(window.CONVEY_COPY.RELOAD_HINT, 'error');
+        }
+      })();
+      return;
+    }
+
     const moveBtn = e.target.closest('.todo-action-btn.move');
     if (moveBtn) {
       e.stopPropagation();
@@ -1051,9 +1096,11 @@ document.addEventListener('DOMContentLoaded', function() {
             todoRow.style.opacity = '0';
             setTimeout(() => {
               const facetSection = todoRow.closest('.facet-section');
+              const wasCompleted = todoRow.classList.contains('completed');
               todoRow.remove();
 
               if (facetSection) {
+                adjustFacetTotals(facetSection, wasCompleted ? 0 : -1, wasCompleted ? -1 : 0);
                 updateFacetCount(facetSection);
                 showFacetEmptyIfNeeded(facetSection);
               }
@@ -1141,6 +1188,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
         const facetSection = todoRow.closest('.facet-section');
         if (facetSection) {
+          if (isCompleted) {
+            adjustFacetTotals(facetSection, -1, 1);
+          } else {
+            adjustFacetTotals(facetSection, 1, -1);
+          }
           updateFacetCount(facetSection);
         }
 
@@ -1460,6 +1512,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // Update facet count
+    adjustFacetTotals(facetSection, 1, 0);
     updateFacetCount(facetSection);
 
     // Expand facet if collapsed

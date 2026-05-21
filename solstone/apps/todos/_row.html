@@ -1,0 +1,66 @@
+            <li class="todo-row {% if item.completed %}completed{% endif %}" data-todo-row>
+              <form method="post" style="display: contents;">
+                <input type="hidden" name="action" value="{{ 'uncomplete' if item.completed else 'complete' }}">
+                <input type="hidden" name="facet" value="{{ facet_name }}">
+                <input type="hidden" name="index" value="{{ item.index }}">
+                <label class="todo-checkbox-target">
+                  <input
+                    type="checkbox"
+                    class="todo-checkbox"
+                    id="todo-{{ facet_name }}-{{ item.index }}"
+                    {% if item.completed %}checked{% endif %}
+                    data-index="{{ item.index }}"
+                    data-facet="{{ facet_name }}"
+                    data-completed="{{ 'true' if item.completed else 'false' }}"
+                  >
+                </label>
+              </form>
+
+              <label class="todo-content" for="todo-{{ facet_name }}-{{ item.index }}">
+                <span
+                  class="todo-text"
+                  tabindex="0"
+                  title="{{ item.text }}"
+                  data-index="{{ item.index }}"
+                  data-facet="{{ facet_name }}"
+                >{{ item.text }}</span>
+                {% if item.nudge %}
+                  <span class="todo-nudge">{{ format_nudge(item.nudge) }}</span>
+                {% endif %}
+              </label>
+
+              <div class="todo-actions">
+                <button
+                  type="button"
+                  class="todo-action-btn edit"
+                  aria-label="edit todo"
+                  title="edit"
+                  data-index="{{ item.index }}"
+                  data-facet="{{ facet_name }}"
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 1.5l3 3L5 14H2v-3L11.5 1.5z"/></svg>
+                </button>
+                <button
+                  type="button"
+                  class="todo-action-btn move"
+                  aria-label="move to another day"
+                  title="move to another day"
+                  data-index="{{ item.index }}"
+                  data-facet="{{ facet_name }}"
+                  data-current-day="{{ day }}"
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2.5" width="13" height="12" rx="1.5"/><line x1="1.5" y1="6.5" x2="14.5" y2="6.5"/><line x1="5" y1="1" x2="5" y2="4"/><line x1="11" y1="1" x2="11" y2="4"/></svg>
+                </button>
+
+                <button
+                  type="button"
+                  class="todo-action-btn cancel"
+                  aria-label="cancel todo"
+                  title="cancel"
+                  data-index="{{ item.index }}"
+                  data-facet="{{ facet_name }}"
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4h12"/><path d="M5 4V2.5a1 1 0 011-1h4a1 1 0 011 1V4"/><path d="M3.5 4l.75 10a1.5 1.5 0 001.5 1.5h4.5a1.5 1.5 0 001.5-1.5L12.5 4"/></svg>
+                </button>
+              </div>
+            </li>
