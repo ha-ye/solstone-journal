@@ -29,7 +29,7 @@ from flask import (
 
 import solstone.think.deferred_deletes as deferred_deletes
 from solstone.apps.utils import log_app_action
-from solstone.convey import emit, state
+from solstone.convey import emit
 from solstone.convey.reasons import (
     FILE_NOT_FOUND,
     FILE_READ_FAILED,
@@ -45,6 +45,7 @@ from solstone.observe.screen import format_screen
 from solstone.observe.utils import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
 from solstone.think.cluster import cluster_scan, cluster_segments, scan_day
 from solstone.think.entities.journal import get_journal_principal, load_journal_entity
+from solstone.think.media import MIME_TYPES
 from solstone.think.models import get_usage_cost
 from solstone.think.supervisor import is_supervisor_up
 from solstone.think.utils import STREAM_RE, day_dirs, day_path, segment_path
@@ -205,11 +206,11 @@ def serve_file(day: str, rel_path: str) -> Any:
         return error_response(INVALID_DAY, status=404, detail="Day not found")
 
     try:
-        full_path = os.path.join(state.journal_root, day, rel_path)
-        day_dir = str(day_path(day, create=False))
-        if not os.path.commonpath([full_path, day_dir]) == day_dir:
+        day_dir = day_path(day, create=False).resolve()
+        full_path = (day_dir / rel_path).resolve()
+        if os.path.commonpath([str(full_path), str(day_dir)]) != str(day_dir):
             return error_response(INVALID_PATH, status=403, detail="Invalid file path")
-        if not os.path.isfile(full_path):
+        if not full_path.is_file():
             return error_response(FILE_NOT_FOUND, detail="File not found")
     except (OSError, ValueError):
         logger.warning(
@@ -222,7 +223,12 @@ def serve_file(day: str, rel_path: str) -> Any:
             FILE_READ_FAILED, status=404, detail="Failed to serve file"
         )
 
-    return send_file(full_path, conditional=True)
+    mimetype = MIME_TYPES.get(full_path.suffix.lower())
+    if mimetype is None:
+        raise ValueError(
+            f"unregistered media extension for serve_file: {full_path.suffix}"
+        )
+    return send_file(full_path, conditional=True, mimetype=mimetype)
 
 
 @transcripts_bp.route("/api/stats/<month>")
