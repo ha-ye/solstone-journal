@@ -2118,6 +2118,9 @@ def main() -> None:
         logging.info("Supervisor shutdown complete.")
         print("Shutdown complete.", flush=True)
 
+    if _sync_conflict_shutdown:
+        sys.exit(2)
+
 
 if __name__ == "__main__":
     main()

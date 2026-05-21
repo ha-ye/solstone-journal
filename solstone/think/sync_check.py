@@ -200,9 +200,6 @@ def check_journal_sync(
         digest = hashlib.sha256(data).hexdigest()
         current_snapshot[path.name] = (mtime, digest)
 
-        if path.name == self_path.name:
-            continue
-
         previous_tuple = previous.files.get(path.name) if previous else None
         changed_since_snapshot = previous_tuple is not None and previous_tuple != (
             mtime,
@@ -240,6 +237,11 @@ def check_journal_sync(
             solstone_version = str(payload.get("solstone_version") or "")
             wall_time = str(payload.get("wall_time") or "")
             is_live = is_fresh or changed_since_snapshot or appeared_since_snapshot
+
+        if self_machine_id and machine_id == self_machine_id:
+            continue
+        if path.name == self_path.name:
+            continue
 
         foreign_writers.append(
             ForeignWriter(

@@ -224,6 +224,73 @@ def test_check_journal_sync_fresh_foreign_is_live(tmp_path, monkeypatch):
     assert result.primary_conflict.hostname == "other-host"
 
 
+def test_check_journal_sync_same_machine_multiple_filenames_skip(tmp_path, monkeypatch):
+    journal = tmp_path / "journal"
+    _set_identity(monkeypatch, machine_id="abc-machine", hostname="newhost")
+    now = 1000.0
+    for hostname in ("newhost", "oldhost"):
+        _write_foreign(
+            journal,
+            hostname,
+            payload={
+                "schema": sync_check.SCHEMA_VERSION,
+                "machine_id": "abc-machine",
+                "hostname": hostname,
+                "pid": 123,
+                "wall_time": "2026-05-11T00:00:00Z",
+                "solstone_version": "1.2.3",
+                "journal_path": "/self/journal",
+            },
+            mtime=now - 5,
+        )
+
+    result = sync_check.check_journal_sync(journal=journal, now=now)
+
+    assert result.is_conflict is False
+    assert result.foreign_writers == ()
+
+
+def test_check_journal_sync_same_machine_different_pids_skip(tmp_path, monkeypatch):
+    journal = tmp_path / "journal"
+    _set_identity(monkeypatch, machine_id="abc-machine", hostname="host")
+    now = 1000.0
+    for hostname, pid in (("host", 111), ("host-old", 222)):
+        _write_foreign(
+            journal,
+            hostname,
+            payload={
+                "schema": sync_check.SCHEMA_VERSION,
+                "machine_id": "abc-machine",
+                "hostname": hostname,
+                "pid": pid,
+                "wall_time": "2026-05-11T00:00:00Z",
+                "solstone_version": "1.2.3",
+                "journal_path": "/self/journal",
+            },
+            mtime=now - 5,
+        )
+
+    result = sync_check.check_journal_sync(journal=journal, now=now)
+
+    assert result.is_conflict is False
+    assert result.foreign_writers == ()
+
+
+def test_check_journal_sync_empty_machine_id_malformed_file_not_skipped(
+    tmp_path, monkeypatch
+):
+    journal = tmp_path / "journal"
+    _set_identity(monkeypatch, machine_id="", hostname="self")
+    now = 1000.0
+    _write_foreign(journal, "weird-name", raw=b"{not json", mtime=now - 5)
+
+    result = sync_check.check_journal_sync(journal=journal, now=now)
+
+    assert len(result.foreign_writers) == 1
+    assert result.foreign_writers[0].path.name == "weird-name.check"
+    assert result.foreign_writers[0].parse_error == "invalid JSON"
+
+
 def test_check_journal_sync_stale_foreign_is_history_only(tmp_path, monkeypatch):
     journal = tmp_path / "journal"
     _set_identity(monkeypatch)

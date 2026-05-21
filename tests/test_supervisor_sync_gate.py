@@ -21,7 +21,7 @@ def _set_identity(monkeypatch):
     monkeypatch.setattr(sync_check, "_solstone_version", lambda: "test-version")
 
 
-def _write_foreign(journal, *, host="other-host", mtime=None):
+def _write_foreign(journal, *, host="other-host", mtime=None, machine_id=None):
     sync_dir = journal / "health" / "sync"
     sync_dir.mkdir(parents=True, exist_ok=True)
     path = sync_dir / f"{host}.check"
@@ -29,7 +29,9 @@ def _write_foreign(journal, *, host="other-host", mtime=None):
         json.dumps(
             {
                 "schema": sync_check.SCHEMA_VERSION,
-                "machine_id": f"{host}-machine",
+                "machine_id": (
+                    machine_id if machine_id is not None else f"{host}-machine"
+                ),
                 "hostname": host,
                 "pid": 456,
                 "wall_time": "2026-05-11T00:00:00Z",
@@ -69,6 +71,34 @@ def test_startup_check_clean_journal_proceeds_past_flock(tmp_path, monkeypatch):
         mod.main()
 
     assert exc.value.code == 0
+    assert (tmp_path / "health" / "supervisor.pid").read_text().strip() == str(
+        os.getpid()
+    )
+
+
+def test_startup_check_same_machine_old_hostname_proceeds_past_flock(
+    tmp_path, monkeypatch, capsys
+):
+    _set_identity(monkeypatch)
+    _write_foreign(
+        tmp_path,
+        host="old-host",
+        machine_id="self-machine-1234",
+        mtime=time.time() - 5,
+    )
+    mod = _load_supervisor(tmp_path, monkeypatch)
+
+    def stop_after_probe():
+        raise SystemExit(0)
+
+    monkeypatch.setattr(mod, "start_callosum_in_process", stop_after_probe)
+
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
+
+    assert exc.value.code == 0
+    captured = capsys.readouterr()
+    assert "Refusing to start" not in captured.err
     assert (tmp_path / "health" / "supervisor.pid").read_text().strip() == str(
         os.getpid()
     )
@@ -207,8 +237,10 @@ def test_finally_does_not_clear_self_heartbeat_after_mid_run_conflict(
     monkeypatch.setattr(mod.asyncio, "run", interrupt_supervise)
 
     try:
-        mod.main()
+        with pytest.raises(SystemExit) as exc:
+            mod.main()
     finally:
         os.environ.pop("SOL_SUPERVISOR_SPAWNED", None)
 
+    assert exc.value.code == 2
     assert sync_check._self_heartbeat_path(tmp_path).exists()
