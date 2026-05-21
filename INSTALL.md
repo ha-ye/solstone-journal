@@ -80,6 +80,25 @@ uv tool upgrade solstone && sol setup
 
 (or `pipx upgrade solstone && sol setup`.) the second command refreshes the runtime artifacts and reconciles the service unit if anything has changed.
 
+## uninstall
+
+1. remove setup-managed runtime files: `sol setup --clean-uninstall`
+   this removes the user service, managed `~/.local/bin/sol` wrapper, user config, and setup manifest. it does not remove your journal.
+2. optional: uninstall bundled providers you installed: `sol call settings providers uninstall <name>`.
+3. optional: remove agentic-tooling skills: `sol skills uninstall`.
+4. uninstall the python package: `uv tool uninstall solstone` (or `pipx uninstall solstone`).
+5. macOS only: drag `/Applications/solstone.app` to Trash.
+6. macOS only, optional: remove observer app data and the parakeet model cache:
+   ```bash
+   rm -rf ~/Library/Application\ Support/solstone/
+   ```
+   this evicts the ~2.5 GB parakeet cache; reinstall will re-download it.
+7. macOS only, optional: reset privacy permissions:
+   ```bash
+   tccutil reset Microphone app.solstone.observer && tccutil reset ScreenCapture app.solstone.observer
+   ```
+   or use System Settings → Privacy & Security.
+
 ## done
 
 once the observer is running, your observers experience your day along with you, transcribe conversations, surface people and projects, build a knowledge graph, and make everything searchable at http://localhost:5015. everything stays in your journal — one folder per day.

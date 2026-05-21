@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -12,7 +13,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from solstone.think import health_cli, service, setup
+from solstone.think import health_cli, install_guard, service, setup
 from solstone.think.user_config import write_user_config
 
 
@@ -264,6 +265,51 @@ def read_manifest(journal: Path) -> dict[str, Any]:
 def touch_file(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch()
+
+
+def write_owned_wrapper(home: Path, repo: Path, journal: Path) -> Path:
+    wrapper = home / ".local" / "bin" / "sol"
+    wrapper.parent.mkdir(parents=True, exist_ok=True)
+    target = repo / ".venv" / "bin" / "sol"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("", encoding="utf-8")
+    wrapper.write_text(
+        install_guard.render_wrapper(str(journal), str(target)),
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    return wrapper
+
+
+def seed_clean_uninstall_artifacts(
+    home: Path, repo: Path, journal: Path
+) -> dict[str, Path]:
+    service_path = setup._service_path_for_uninstall()
+    touch_file(service_path)
+    wrapper_path = write_owned_wrapper(home, repo, journal)
+    write_user_config(journal=str(journal))
+    manifest_path = journal / "health" / "setup-state.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text("{}", encoding="utf-8")
+    return {
+        "service": service_path,
+        "wrapper": wrapper_path,
+        "config": setup.config_path(),
+        "manifest": manifest_path,
+    }
+
+
+def digest_journal_tree(journal: Path, exclude: set[Path] | None = None) -> str:
+    excluded = {path.resolve() for path in (exclude or set())}
+    digest = hashlib.sha256()
+    for path in sorted(p for p in journal.rglob("*") if p.is_file()):
+        if path.resolve() in excluded:
+            continue
+        digest.update(path.relative_to(journal).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def prior_artifact_paths(journal: Path) -> dict[str, list[Path]]:
@@ -1001,6 +1047,367 @@ def test_port_out_of_range_rejected_at_parse_time(
 
     assert raised.value.code == 2
     assert "--port must be in 1024-65535" in capsys.readouterr().err
+
+
+def test_clean_uninstall_appears_in_help(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        setup.main(["--help"])
+
+    assert "--clean-uninstall" in capsys.readouterr().out
+
+
+def test_clean_uninstall_rejects_jsonl_with_specific_message(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as raised:
+        setup.main(["--clean-uninstall", "--jsonl"])
+
+    assert raised.value.code == 2
+    assert (
+        "JSONL output is not supported for --clean-uninstall in this version."
+        in capsys.readouterr().err
+    )
+
+
+@pytest.mark.parametrize(
+    "flag_argv",
+    [
+        ["--journal", "journal"],
+        ["--port", "5015"],
+        ["--port=5015"],
+        ["--variant", "auto"],
+        ["--variant=auto"],
+        ["--step-timeout-seconds", "1800"],
+        ["--step-timeout-seconds=1800"],
+        ["--dry-run"],
+        ["--explain"],
+        ["--skip-models"],
+        ["--skip-skills"],
+        ["--skip-service"],
+        ["--accept-existing-journal"],
+        ["--force"],
+    ],
+)
+def test_clean_uninstall_rejects_other_setup_flags(
+    flag_argv: list[str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as raised:
+        setup.main(["--clean-uninstall", *flag_argv])
+
+    assert raised.value.code == 2
+    assert "--clean-uninstall cannot be combined with" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("answer", ["", "n", "no"])
+def test_clean_uninstall_prompt_cancels_without_mutation(
+    answer: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    repo = patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.chdir(repo)
+    patch_tty(monkeypatch)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    journal = home / "journal"
+    paths = seed_clean_uninstall_artifacts(home, repo, journal)
+    monkeypatch.setattr("builtins.input", lambda _prompt: answer)
+
+    rc = setup.main(["--clean-uninstall"])
+
+    assert rc == 0
+    assert all(path.exists() for path in paths.values())
+    out = capsys.readouterr().out
+    assert "sol setup --clean-uninstall will remove these runtime artifacts:" in out
+    assert "[present] service:" in out
+    assert "[present] wrapper:" in out
+    assert "[present] config:" in out
+    assert "[present] manifest:" in out
+    assert "will not remove:" in out
+    assert "journal directory:" in out
+    assert "/Applications/solstone.app" in out
+    assert "~/Library/Application Support/solstone/" in out
+    assert "macOS microphone or screen recording permissions" in out
+    assert "the python package" in out
+    assert "cancelled" in out
+
+
+def test_clean_uninstall_eof_cancels_without_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    repo = patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.chdir(repo)
+    patch_tty(monkeypatch)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    journal = home / "journal"
+    paths = seed_clean_uninstall_artifacts(home, repo, journal)
+
+    def raise_eof(_prompt: str) -> str:
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", raise_eof)
+
+    rc = setup.main(["--clean-uninstall"])
+
+    assert rc == 0
+    assert all(path.exists() for path in paths.values())
+    assert "cancelled" in capsys.readouterr().out
+
+
+def test_clean_uninstall_non_tty_cancels_without_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    repo = patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    journal = home / "journal"
+    paths = seed_clean_uninstall_artifacts(home, repo, journal)
+
+    rc = setup.main(["--clean-uninstall"])
+
+    assert rc == 0
+    assert all(path.exists() for path in paths.values())
+    assert (
+        "not a tty; rerun with --yes to proceed non-interactively (cancelled)"
+        in capsys.readouterr().out
+    )
+
+
+def test_clean_uninstall_yes_removes_all_seeded_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    repo = patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    journal = home / "journal"
+    paths = seed_clean_uninstall_artifacts(home, repo, journal)
+    monkeypatch.setattr(setup, "_run_service_uninstall", lambda: 0)
+
+    rc = setup.main(["--clean-uninstall", "--yes"])
+
+    assert rc == 0
+    assert not any(path.exists() or path.is_symlink() for path in paths.values())
+    out = capsys.readouterr().out
+    assert out.index("[step 1/4] running service uninstall...") < out.index(
+        "[step 2/4] running wrapper uninstall..."
+    )
+    assert out.index("[step 2/4] running wrapper uninstall...") < out.index(
+        "[step 3/4] running config uninstall..."
+    )
+    assert out.index("[step 3/4] running config uninstall...") < out.index(
+        "[step 4/4] running manifest uninstall..."
+    )
+    assert "[step 1/4] removed service:" in out
+    assert "[step 2/4] removed wrapper:" in out
+    assert "[step 3/4] removed config:" in out
+    assert "[step 4/4] removed manifest:" in out
+    assert (
+        "clean uninstall complete: 4 removed, 0 already-absent, 0 skipped, 0 failed"
+        in out
+    )
+
+
+def test_clean_uninstall_noop_when_all_paths_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    patch_home(monkeypatch, tmp_path)
+    repo = patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    service_calls: list[str] = []
+    monkeypatch.setattr(
+        setup, "_run_service_uninstall", lambda: service_calls.append("service") or 0
+    )
+
+    rc = setup.main(["--clean-uninstall", "--yes"])
+
+    assert rc == 0
+    assert service_calls == []
+    assert capsys.readouterr().out == "nothing to remove (all paths already absent)\n"
+
+
+def test_clean_uninstall_service_failure_is_best_effort(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    repo = patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    journal = home / "journal"
+    paths = seed_clean_uninstall_artifacts(home, repo, journal)
+
+    def fail_service() -> int:
+        raise RuntimeError("service exploded")
+
+    monkeypatch.setattr(setup, "_run_service_uninstall", fail_service)
+
+    rc = setup.main(["--clean-uninstall", "--yes"])
+
+    assert rc == 1
+    assert paths["service"].exists()
+    assert not paths["wrapper"].exists()
+    assert not paths["config"].exists()
+    assert not paths["manifest"].exists()
+    out = capsys.readouterr().out
+    assert "[step 1/4] failed service: RuntimeError: service exploded" in out
+    assert "[step 2/4] removed wrapper:" in out
+    assert "[step 3/4] removed config:" in out
+    assert "[step 4/4] removed manifest:" in out
+    assert (
+        "clean uninstall complete: 3 removed, 0 already-absent, 0 skipped, 1 failed"
+        in out
+    )
+
+
+def test_clean_uninstall_wrapper_cross_repo_is_skipped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    repo = patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    other = tmp_path / "other" / ".venv" / "bin" / "sol"
+    other.parent.mkdir(parents=True)
+    other.write_text("", encoding="utf-8")
+    wrapper = home / ".local" / "bin" / "sol"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.symlink_to(other)
+    monkeypatch.setattr(setup, "_run_service_uninstall", lambda: 0)
+
+    rc = setup.main(["--clean-uninstall", "--yes"])
+
+    assert rc == 0
+    assert wrapper.is_symlink()
+    assert wrapper.resolve() == other
+    out = capsys.readouterr().out
+    assert f"[step 2/4] skipped wrapper: alias points at {other}, not removing" in out
+    assert (
+        "clean uninstall complete: 0 removed, 3 already-absent, 1 skipped, 0 failed"
+        in out
+    )
+
+
+def test_clean_uninstall_wrapper_worktree_is_skipped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").write_text("gitdir: /tmp/worktree\n", encoding="utf-8")
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(setup, "get_project_root", lambda: str(repo))
+    monkeypatch.setattr(setup, "source_checkout", lambda: True)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    wrapper = home / ".local" / "bin" / "sol"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text("foreign", encoding="utf-8")
+    monkeypatch.setattr(setup, "_run_service_uninstall", lambda: 0)
+
+    rc = setup.main(["--clean-uninstall", "--yes"])
+
+    assert rc == 0
+    assert wrapper.read_text(encoding="utf-8") == "foreign"
+    out = capsys.readouterr().out
+    assert "[step 2/4] skipped wrapper: refusing to act from a git worktree" in out
+    assert (
+        "clean uninstall complete: 0 removed, 3 already-absent, 1 skipped, 0 failed"
+        in out
+    )
+
+
+def test_clean_uninstall_uses_env_config_default_without_source_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    parser = setup.build_parser()
+    args = parser.parse_args(["--clean-uninstall", "--yes"])
+
+    assert setup.resolve_clean_uninstall_context(args).journal_path == home / "journal"
+
+    config_journal = tmp_path / "config-journal"
+    write_user_config(journal=str(config_journal))
+    assert setup.resolve_clean_uninstall_context(args).journal_path == config_journal
+
+    env_journal = tmp_path / "env-journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(env_journal))
+    assert setup.resolve_clean_uninstall_context(args).journal_path == env_journal
+
+
+@pytest.mark.parametrize(
+    ("platform", "expected_rel"),
+    [
+        ("darwin", "Library/LaunchAgents/org.solpbc.solstone.plist"),
+        ("linux", ".config/systemd/user/solstone.service"),
+    ],
+)
+def test_clean_uninstall_service_path_uses_platform_constants(
+    platform: str,
+    expected_rel: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    monkeypatch.setattr(setup.sys, "platform", platform)
+
+    assert setup._service_path_for_uninstall() == home / expected_rel
+
+
+def test_clean_uninstall_preserves_journal_contents_except_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    repo = patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    journal = home / "journal"
+    paths = seed_clean_uninstall_artifacts(home, repo, journal)
+    seeded_files = {
+        "chronicle/20260520/_default/090000_60/transcript.jsonl": "{}\n",
+        "config/journal.json": "{}\n",
+        "entities/alice/entity.json": '{"name":"Alice"}\n',
+        "facets/work/activities/20260520.jsonl": "{}\n",
+        "health/other-health.json": "{}\n",
+    }
+    for rel, content in seeded_files.items():
+        path = journal / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    before = digest_journal_tree(journal, exclude={paths["manifest"]})
+    monkeypatch.setattr(setup, "_run_service_uninstall", lambda: 0)
+
+    rc = setup.main(["--clean-uninstall", "--yes"])
+
+    assert rc == 0
+    assert digest_journal_tree(journal, exclude={paths["manifest"]}) == before
+    assert journal.exists()
+    assert not paths["manifest"].exists()
+    for rel in seeded_files:
+        assert (journal / rel).exists()
 
 
 def test_packaged_install_runs_service_step(

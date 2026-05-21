@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import logging
 import os
@@ -40,6 +42,7 @@ DOCTOR_JSONL_EVENTS = frozenset(
 )
 
 StepStatus = Literal["ok", "skipped", "failed"]
+CleanUninstallState = Literal["removed", "already-absent", "skipped", "failed"]
 
 
 def narrate(ctx: "SetupContext | None", *args: Any, **kwargs: Any) -> None:
@@ -93,6 +96,26 @@ class StepResult:
     started_at: str
     finished_at: str
     error: dict[str, object] | None
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class CleanUninstallContext:
+    journal_path: Path
+    service_path: Path
+    wrapper_path: Path
+    config_path: Path
+    manifest_path: Path
+    yes: bool
+    stdin_is_tty: bool
+    curdir: Path
+
+
+@dataclass(frozen=True)
+class CleanUninstallStepResult:
+    name: str
+    state: CleanUninstallState
+    path: Path | None
     reason: str | None = None
 
 
@@ -221,6 +244,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help="re-run all steps unconditionally",
+    )
+    parser.add_argument(
+        "--clean-uninstall",
+        action="store_true",
+        help="remove setup-managed runtime artifacts and exit",
     )
     return parser
 
@@ -1282,6 +1310,237 @@ def step_service(ctx: SetupContext, step_index: int) -> StepResult:
     return step_result("service", "ok", paths, started_at)
 
 
+CLEAN_UNINSTALL_TOTAL_STEPS = 4
+CLEAN_UNINSTALL_STEP_NAMES = ("service", "wrapper", "config", "manifest")
+
+
+def _service_path_for_uninstall() -> Path:
+    from solstone.think.service import SERVICE_LABEL, SYSTEMD_UNIT
+
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "LaunchAgents" / f"{SERVICE_LABEL}.plist"
+    if sys.platform.startswith("linux"):
+        return Path.home() / ".config" / "systemd" / "user" / f"{SYSTEMD_UNIT}.service"
+    raise RuntimeError(f"unsupported platform: {sys.platform}")
+
+
+def _resolve_journal_for_uninstall() -> Path:
+    env_path = os.environ.get("SOLSTONE_JOURNAL", "").strip()
+    configured = read_user_config().get("journal", "").strip()
+    return expand_path(env_path or configured or default_journal())
+
+
+def resolve_clean_uninstall_context(args: argparse.Namespace) -> CleanUninstallContext:
+    journal_path = _resolve_journal_for_uninstall()
+    return CleanUninstallContext(
+        journal_path=journal_path,
+        service_path=_service_path_for_uninstall(),
+        wrapper_path=Path.home() / ".local" / "bin" / "sol",
+        config_path=config_path(),
+        manifest_path=journal_path / "health" / "setup-state.json",
+        yes=bool(args.yes),
+        stdin_is_tty=sys.stdin.isatty(),
+        curdir=Path.cwd().resolve(),
+    )
+
+
+def _run_service_uninstall() -> int:
+    from solstone.think.service import _uninstall
+
+    return int(_uninstall())
+
+
+def _path_present_for_uninstall(path: Path) -> bool:
+    return path.is_symlink() or path.exists()
+
+
+def _existence_marker(path: Path) -> str:
+    return "present" if _path_present_for_uninstall(path) else "absent"
+
+
+def _clean_uninstall_paths(ctx: CleanUninstallContext) -> tuple[Path, ...]:
+    return (ctx.service_path, ctx.wrapper_path, ctx.config_path, ctx.manifest_path)
+
+
+def _print_clean_confirmation(ctx: CleanUninstallContext) -> bool:
+    print("sol setup --clean-uninstall will remove these runtime artifacts:")
+    print()
+    print(f"  [{_existence_marker(ctx.service_path):<7}] service: {ctx.service_path}")
+    print(f"  [{_existence_marker(ctx.wrapper_path):<7}] wrapper: {ctx.wrapper_path}")
+    print(f"  [{_existence_marker(ctx.config_path):<7}] config: {ctx.config_path}")
+    print(
+        f"  [{_existence_marker(ctx.manifest_path):<7}] manifest: {ctx.manifest_path}"
+    )
+    print()
+    print("will not remove:")
+    print(f"  - journal directory: {ctx.journal_path}")
+    print("  - /Applications/solstone.app")
+    print("  - ~/Library/Application Support/solstone/")
+    print("  - macOS microphone or screen recording permissions")
+    print("  - the python package")
+    print()
+    try:
+        answer = input("proceed? [y/N]: ").strip().lower()
+    except EOFError:
+        print("cancelled")
+        return False
+    if answer not in {"y", "yes"}:
+        print("cancelled")
+        return False
+    return True
+
+
+def _print_clean_step_header(index: int, name: str) -> None:
+    print(f"[step {index}/{CLEAN_UNINSTALL_TOTAL_STEPS}] running {name} uninstall...")
+
+
+def _print_clean_step_result(index: int, result: CleanUninstallStepResult) -> None:
+    prefix = (
+        f"[step {index}/{CLEAN_UNINSTALL_TOTAL_STEPS}] {result.state} {result.name}"
+    )
+    if result.state in {"removed", "already-absent"}:
+        print(f"{prefix}: {result.path}")
+        return
+    print(f"{prefix}: {result.reason or ''}")
+
+
+def _clean_failed_reason(exc: Exception) -> str:
+    message = str(exc)
+    return f"{exc.__class__.__name__}: {message}" if message else exc.__class__.__name__
+
+
+def _clean_uninstall_service(ctx: CleanUninstallContext) -> CleanUninstallStepResult:
+    pre_exists = _path_present_for_uninstall(ctx.service_path)
+    try:
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            rc = _run_service_uninstall()
+    except Exception as exc:
+        return CleanUninstallStepResult(
+            "service", "failed", ctx.service_path, _clean_failed_reason(exc)
+        )
+    if rc != 0:
+        return CleanUninstallStepResult(
+            "service", "failed", ctx.service_path, f"service uninstall exited {rc}"
+        )
+    if pre_exists:
+        try:
+            ctx.service_path.unlink(missing_ok=True)
+        except OSError as exc:
+            return CleanUninstallStepResult(
+                "service", "failed", ctx.service_path, _clean_failed_reason(exc)
+            )
+    state: CleanUninstallState = "removed" if pre_exists else "already-absent"
+    return CleanUninstallStepResult("service", state, ctx.service_path)
+
+
+def _clean_uninstall_wrapper(ctx: CleanUninstallContext) -> CleanUninstallStepResult:
+    from solstone.think import install_guard
+
+    pre_exists = _path_present_for_uninstall(ctx.wrapper_path)
+    try:
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            rc = install_guard.cmd_uninstall(ctx.curdir)
+    except Exception as exc:
+        return CleanUninstallStepResult(
+            "wrapper", "failed", ctx.wrapper_path, _clean_failed_reason(exc)
+        )
+    if rc == 0:
+        state: CleanUninstallState = "removed" if pre_exists else "already-absent"
+        return CleanUninstallStepResult("wrapper", state, ctx.wrapper_path)
+
+    state, target = install_guard.check_alias(ctx.curdir)
+    if state is install_guard.AliasState.WORKTREE:
+        return CleanUninstallStepResult(
+            "wrapper",
+            "skipped",
+            ctx.wrapper_path,
+            "refusing to act from a git worktree",
+        )
+    if state is install_guard.AliasState.CROSS_REPO:
+        return CleanUninstallStepResult(
+            "wrapper",
+            "skipped",
+            ctx.wrapper_path,
+            f"alias points at {target}, not removing",
+        )
+    if state is install_guard.AliasState.DANGLING:
+        return CleanUninstallStepResult(
+            "wrapper",
+            "skipped",
+            ctx.wrapper_path,
+            f"alias is dangling (target {target} missing), not removing",
+        )
+    if state is install_guard.AliasState.FOREIGN:
+        return CleanUninstallStepResult(
+            "wrapper",
+            "skipped",
+            ctx.wrapper_path,
+            "alias is not a managed symlink, not removing",
+        )
+    return CleanUninstallStepResult(
+        "wrapper", "failed", ctx.wrapper_path, f"unexpected alias state: {state.name}"
+    )
+
+
+def _clean_uninstall_path(name: str, path: Path) -> CleanUninstallStepResult:
+    if not _path_present_for_uninstall(path):
+        return CleanUninstallStepResult(name, "already-absent", path)
+    try:
+        path.unlink()
+    except OSError as exc:
+        return CleanUninstallStepResult(name, "failed", path, _clean_failed_reason(exc))
+    return CleanUninstallStepResult(name, "removed", path)
+
+
+def run_clean_uninstall(ctx: CleanUninstallContext) -> int:
+    if not any(
+        _path_present_for_uninstall(path) for path in _clean_uninstall_paths(ctx)
+    ):
+        print("nothing to remove (all paths already absent)")
+        return 0
+
+    if not ctx.yes:
+        if not ctx.stdin_is_tty:
+            print(
+                "not a tty; rerun with --yes to proceed non-interactively (cancelled)"
+            )
+            return 0
+        if not _print_clean_confirmation(ctx):
+            return 0
+
+    results: list[CleanUninstallStepResult] = []
+    for index, name in enumerate(CLEAN_UNINSTALL_STEP_NAMES, start=1):
+        _print_clean_step_header(index, name)
+        if name == "service":
+            result = _clean_uninstall_service(ctx)
+        elif name == "wrapper":
+            result = _clean_uninstall_wrapper(ctx)
+        elif name == "config":
+            result = _clean_uninstall_path("config", ctx.config_path)
+        else:
+            result = _clean_uninstall_path("manifest", ctx.manifest_path)
+        results.append(result)
+        _print_clean_step_result(index, result)
+
+    counts = {state: 0 for state in ("removed", "already-absent", "skipped", "failed")}
+    for result in results:
+        counts[result.state] += 1
+    print(
+        "clean uninstall complete: "
+        f"{counts['removed']} removed, "
+        f"{counts['already-absent']} already-absent, "
+        f"{counts['skipped']} skipped, "
+        f"{counts['failed']} failed"
+    )
+    return 1 if counts["failed"] else 0
+
+
 def dead_end_existing_journal(ctx: SetupContext) -> None:
     message = "\n".join(
         [
@@ -1683,6 +1942,36 @@ def main(argv: list[str] | None = None) -> int:
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
     parser = build_parser()
     args = parser.parse_args(raw_argv)
+    if args.clean_uninstall:
+        if args.jsonl:
+            parser.error(
+                "JSONL output is not supported for --clean-uninstall in this version."
+            )
+        incompatible: list[str] = []
+        if args.journal is not None:
+            incompatible.append("--journal")
+        for flag in ("--port", "--variant", "--step-timeout-seconds"):
+            if arg_supplied(raw_argv, flag):
+                incompatible.append(flag)
+        if args.dry_run:
+            incompatible.append("--dry-run")
+        if args.explain:
+            incompatible.append("--explain")
+        if args.skip_models:
+            incompatible.append("--skip-models")
+        if args.skip_skills:
+            incompatible.append("--skip-skills")
+        if args.skip_service:
+            incompatible.append("--skip-service")
+        if args.accept_existing_journal:
+            incompatible.append("--accept-existing-journal")
+        if args.force:
+            incompatible.append("--force")
+        if incompatible:
+            parser.error(
+                "--clean-uninstall cannot be combined with " + ", ".join(incompatible)
+            )
+        return run_clean_uninstall(resolve_clean_uninstall_context(args))
     ctx: SetupContext | None = None
     started_monotonic = time.monotonic()
     try:
