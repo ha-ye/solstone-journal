@@ -1,8 +1,5 @@
-// Mock data is the baseline used when the API server is unreachable.
-// loadIndex() (below) replaces months[] entirely with the 12 most-recent
-// real months from the server, and loadDay()/loadSegment() lazy-fetch
-// per-day rollups + per-segment audio/screen jsonl on demand.
-let months = window.timelineData.months;
+// Timeline data comes from the real API; empty and failure states render visibly.
+let months = [];
 let realHourPlan = {};
 let realDayPlan = {};
 const segmentAvail = {};        // "monthIdx:day:hour" → buckets (12 entries)
@@ -49,14 +46,23 @@ async function loadIndex() {
   try {
     const res = await fetch("/app/timeline/api/index", { cache: "no-store" });
     if (!res.ok) {
-      console.info(`/app/timeline/api/index failed (${res.status}); falling back to mock months`);
-      return;
+      console.info(`/app/timeline/api/index failed (${res.status}); showing timeline error`);
+      return { state: "error" };
     }
-    const idx = await res.json();
+    let idx;
+    try {
+      idx = await res.json();
+    } catch (e) {
+      console.warn("/app/timeline/api/index returned unreadable JSON; showing timeline error", e);
+      return { state: "error" };
+    }
     rebuildMonthsFromIndex(idx);
+    const state = months.every((m) => !m.yearEvent && !(m.day_count > 0)) ? "empty" : "data";
     console.info(`loaded /app/timeline/api/index (${idx.months.length} months, year_top=${idx.year_top.length})`);
+    return { state };
   } catch (e) {
-    console.warn("/app/timeline/api/index fetch failed; falling back to mock months", e);
+    console.warn("/app/timeline/api/index fetch failed; showing timeline error", e);
+    return { state: "error" };
   }
 }
 
@@ -66,9 +72,7 @@ function rebuildMonthsFromIndex(idx) {
     const head = (m.month_top || [])[0] || null;
     const yearEvent = head
       ? { title: head.title, text: head.description, origin: head.origin || "" }
-      : { title: `${fullName} ${m.year}`,
-          text: m.day_count ? `${m.day_count} day${m.day_count === 1 ? "" : "s"} with observations` : "no observations yet",
-          _empty: true };
+      : null;
     return {
       name: fullName,
       short: fullName.slice(0, 3).toUpperCase(),
@@ -87,8 +91,6 @@ function rebuildMonthsFromIndex(idx) {
     };
   });
   months = newMonths;
-  // Stash on the global so console-debugging is easier.
-  window.timelineData.months = months;
 }
 
 async function loadMonth(ym) {
@@ -335,8 +337,6 @@ let selectedMonth = null;
 let selectedDay = null;
 let selectedHour = null;
 let selectedMinute = null;
-let appScreen = "cover";
-let transitionToken = 0;
 
 const holidays = new Map(
   [
@@ -370,122 +370,24 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
-function solLogoSvg(className = "sol-logo") {
+function renderEmptyState() {
   return `
-    <svg class="${className}" xmlns="http://www.w3.org/2000/svg" viewBox="2.5 2.5 27 27" role="img" aria-label="sol logo">
-      <title>sol</title>
-      <path fill="#F5C740" d="M16.0 2.5 L18.6 7.3 A9.1 9.1 0 0 0 13.4 7.3 Z M23.9 5.1 L23.2 10.5 A9.1 9.1 0 0 0 19.0 7.4 Z M28.8 11.8 L25.1 15.8 A9.1 9.1 0 0 0 23.5 10.9 Z M28.8 20.2 L23.5 21.1 A9.1 9.1 0 0 0 25.1 16.2 Z M23.9 26.9 L19.0 24.6 A9.1 9.1 0 0 0 23.2 21.5 Z M16.0 29.5 L13.4 24.7 A9.1 9.1 0 0 0 18.6 24.7 Z M8.1 26.9 L8.8 21.5 A9.1 9.1 0 0 0 13.0 24.6 Z M3.2 20.2 L6.9 16.2 A9.1 9.1 0 0 0 8.5 21.1 Z M3.2 11.8 L8.5 10.9 A9.1 9.1 0 0 0 6.9 15.8 Z M8.1 5.1 L13.0 7.4 A9.1 9.1 0 0 0 8.8 10.5 Z"/>
-      <circle cx="16" cy="16" r="8.0" fill="none" stroke="#E8923A" stroke-width="1.2"/>
-      <path fill="#E8923A" fill-rule="evenodd" d="M12.079 18.795C13.489 18.795 14.229 18.065 14.229 17.155C14.229 16.365 13.729 15.835 12.229 15.535C11.149 15.315 10.939 15.095 10.939 14.725C10.939 14.345 11.399 14.135 11.989 14.135C12.499 14.135 12.859 14.235 13.199 14.555C13.399 14.745 13.729 14.815 13.949 14.665C14.159 14.505 14.169 14.255 13.989 14.035C13.589 13.545 12.889 13.245 12.009 13.245C10.989 13.245 9.959 13.735 9.959 14.755C9.959 15.525 10.529 16.075 11.879 16.335C12.919 16.525 13.249 16.815 13.239 17.215C13.229 17.615 12.809 17.895 12.039 17.895C11.429 17.895 10.889 17.625 10.659 17.375C10.469 17.175 10.189 17.125 9.929 17.335C9.699 17.515 9.659 17.825 9.859 18.035C10.299 18.475 11.149 18.795 12.079 18.795Z M16.999 18.795C18.609 18.795 19.749 17.645 19.749 16.025C19.739 14.395 18.599 13.245 16.999 13.245C15.379 13.245 14.239 14.395 14.239 16.025C14.239 17.645 15.379 18.795 16.999 18.795ZM16.999 17.895C15.959 17.895 15.219 17.125 15.219 16.025C15.219 14.925 15.959 14.145 16.999 14.145C18.039 14.145 18.769 14.925 18.769 16.025C18.769 17.125 18.039 17.895 16.999 17.895Z M21.569 18.755H21.589C21.989 18.755 22.269 18.545 22.269 18.255C22.269 17.965 22.079 17.755 21.819 17.755H21.569C21.279 17.755 21.069 17.405 21.069 16.905V11.445C21.069 11.155 20.859 10.945 20.569 10.945C20.279 10.945 20.069 11.155 20.069 11.445V16.905C20.069 17.985 20.689 18.755 21.569 18.755Z"/>
-    </svg>
+    <div class="timeline-empty-state" data-timeline-state="empty">
+      <h2>no timeline data yet</h2>
+      <p>once observers experience a day alongside you and sol rolls it up, that day will show up here</p>
+      <a href="/app/health">system health →</a>
+    </div>
   `;
 }
 
-function getTransitionFrames(mode, phase) {
-  const enter = phase === "enter";
-  const frames = {
-    "zoom-in": enter
-      ? [{ opacity: 0, transform: "scale(0.985) translateY(8px)" }, { opacity: 1, transform: "scale(1) translateY(0)" }]
-      : [{ opacity: 1, transform: "scale(1) translateY(0)" }, { opacity: 0, transform: "scale(1.015) translateY(-8px)" }],
-    "zoom-out": enter
-      ? [{ opacity: 0, transform: "scale(1.015) translateY(-8px)" }, { opacity: 1, transform: "scale(1) translateY(0)" }]
-      : [{ opacity: 1, transform: "scale(1) translateY(0)" }, { opacity: 0, transform: "scale(0.985) translateY(8px)" }],
-    lateral: enter
-      ? [{ opacity: 0, transform: "translateX(18px)" }, { opacity: 1, transform: "translateX(0)" }]
-      : [{ opacity: 1, transform: "translateX(0)" }, { opacity: 0, transform: "translateX(-18px)" }],
-  };
-
-  return frames[mode] || frames["zoom-in"];
-}
-
-async function setTimeline(markup, mode = "zoom-in") {
-  const token = ++transitionToken;
-  const shouldReduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const currentView = timeline.firstElementChild;
-
-  if (!currentView || mode === "none" || shouldReduceMotion) {
-    timeline.innerHTML = markup;
-    return;
-  }
-
-  await currentView
-    .animate(getTransitionFrames(mode, "leave"), {
-      duration: 95,
-      easing: "cubic-bezier(.2, 0, .2, 1)",
-      fill: "forwards",
-    })
-    .finished.catch(() => {});
-
-  if (token !== transitionToken) return;
-
-  timeline.innerHTML = markup;
-  const nextView = timeline.firstElementChild;
-  if (!nextView) return;
-
-  nextView.animate(getTransitionFrames(mode, "enter"), {
-    duration: 145,
-    easing: "cubic-bezier(.2, 0, .2, 1)",
-    fill: "both",
-  });
-}
-
-function renderCover(mode = "zoom-out") {
-  appScreen = "cover";
-  selectedMonth = null;
-  selectedDay = null;
-  selectedHour = null;
-  selectedMinute = null;
-
-  setTimeline(`
-    <div class="cover-screen">
-      <button class="cover-button" type="button" data-start-demo onclick="event.stopPropagation(); showTimeline('zoom-in');" aria-label="Start timeline demo">
-        ${solLogoSvg()}
-      </button>
+function renderErrorState() {
+  return `
+    <div class="timeline-empty-state" data-timeline-state="error" role="alert">
+      <h2>couldn't reach the timeline service</h2>
+      <p>reload to try again, or check whether sol is running</p>
+      <a href="/app/health">system health →</a>
     </div>
-  `, mode);
-}
-
-function renderClosing(mode = "zoom-in") {
-  appScreen = "closing";
-
-  setTimeline(`
-    <div class="closing-screen">
-      <div class="closing-content">
-        <div class="closing-logo" aria-hidden="true">${solLogoSvg()}</div>
-        <p class="install-url">solstone.app/install</p>
-      </div>
-    </div>
-  `, mode);
-}
-
-function showTimeline(mode = "zoom-in") {
-  selectedMonth = null;
-  selectedDay = null;
-  selectedHour = null;
-  selectedMinute = null;
-  renderYear(mode);
-}
-
-function goNextScreen() {
-  if (appScreen === "cover") {
-    showTimeline("zoom-in");
-    return;
-  }
-
-  if (appScreen === "timeline") {
-    renderClosing("zoom-in");
-  }
-}
-
-function goPreviousScreen() {
-  if (appScreen === "closing") {
-    showTimeline("zoom-out");
-    return;
-  }
-
-  if (appScreen === "timeline") {
-    renderCover("zoom-out");
-  }
+  `;
 }
 
 function eventColumn(day, span, days) {
@@ -650,19 +552,25 @@ function getFiveMinutePlan(monthIndex, day, hour, minute) {
   return base;
 }
 
-function renderYear(mode = "zoom-out") {
-  appScreen = "timeline";
-  setTimeline(`
+function renderYear() {
+  if (months.every((m) => !m.yearEvent && !(m.day_count > 0))) {
+    timeline.innerHTML = renderEmptyState();
+    return;
+  }
+
+  timeline.innerHTML = `
     <div class="year-view">
       ${months
         .map(
           (month, index) => `
             <article class="milestone timeline-${month.side} accent-${month.accent}" style="grid-column: ${index + 1}">
-              <div class="timeline-card">
-                <div class="timeline-date">${month.name} ${month.year || ""}</div>
-                <h2>${escapeHtml(month.yearEvent.title)}</h2>
-                <p>${escapeHtml(month.yearEvent.text)}</p>
-              </div>
+              ${month.yearEvent ? `
+                <div class="timeline-card">
+                  <div class="timeline-date">${month.name} ${month.year || ""}</div>
+                  <h2>${escapeHtml(month.yearEvent.title)}</h2>
+                  <p>${escapeHtml(month.yearEvent.text)}</p>
+                </div>
+              ` : ""}
               <button class="timeline-node" type="button" data-month="${index}" aria-label="Open ${month.name} ${month.year || ""}">
                 ${month.short}
               </button>
@@ -671,11 +579,10 @@ function renderYear(mode = "zoom-out") {
         )
         .join("")}
     </div>
-  `, mode);
+  `;
 }
 
-async function renderMonth(index, mode = "zoom-in") {
-  appScreen = "timeline";
+async function renderMonth(index) {
   const month = months[index];
   const previous = index > 0 ? months[index - 1] : null;
   const next = index < months.length - 1 ? months[index + 1] : null;
@@ -684,7 +591,7 @@ async function renderMonth(index, mode = "zoom-in") {
   const bottomEvents = monthEvents.filter((event) => event.side === "bottom");
   const eventDays = new Map(monthEvents.map((event) => [event.day, event.side]));
 
-  await setTimeline(`
+  timeline.innerHTML = `
     <div class="month-view accent-${month.accent}" style="--days: ${month.days}">
       ${previous ? renderEdgeMonth(previous, index - 1, "prev") : ""}
       ${next ? renderEdgeMonth(next, index + 1, "next") : ""}
@@ -725,17 +632,11 @@ async function renderMonth(index, mode = "zoom-in") {
         </div>
       </section>
     </div>
-  `, mode);
+  `;
   layoutMonth();
-  const view = document.querySelector(".month-view");
-  if (view && view.getAnimations) {
-    Promise.all(view.getAnimations().map((a) => a.finished.catch(() => {})))
-      .then(() => layoutMonth());
-  }
 }
 
-async function renderDay(monthIndex, day, mode = "zoom-in") {
-  appScreen = "timeline";
+async function renderDay(monthIndex, day) {
   const month = months[monthIndex];
   const previous = day > 1 ? day - 1 : null;
   const next = day < month.days ? day + 1 : null;
@@ -750,7 +651,7 @@ async function renderDay(monthIndex, day, mode = "zoom-in") {
   const { dayType, holiday } = getDayMeta(monthIndex, day);
   const dayLabel = `${month.short} ${day}`;
 
-  await setTimeline(`
+  timeline.innerHTML = `
     <div class="day-view accent-${month.accent}">
       ${previous ? renderEdgeDay(monthIndex, previous, "prev") : ""}
       ${next ? renderEdgeDay(monthIndex, next, "next") : ""}
@@ -789,14 +690,8 @@ async function renderDay(monthIndex, day, mode = "zoom-in") {
         </div>
       </section>
     </div>
-  `, mode);
+  `;
   layoutDay();
-  // Settle pass once enter animation completes.
-  const view = document.querySelector(".day-view");
-  if (view && view.getAnimations) {
-    Promise.all(view.getAnimations().map((a) => a.finished.catch(() => {})))
-      .then(() => layoutDay());
-  }
 }
 
 // Generic layout primitive used by every "axis with events above and
@@ -962,8 +857,7 @@ window.addEventListener("resize", () => {
   if (document.querySelector(".month-view")) layoutMonth();
 });
 
-async function renderMinute(monthIndex, day, hour, mode = "zoom-in") {
-  appScreen = "timeline";
+async function renderMinute(monthIndex, day, hour) {
   const month = months[monthIndex];
   const previous = hour > 0 ? hour - 1 : null;
   const next = hour < 23 ? hour + 1 : null;
@@ -978,7 +872,7 @@ async function renderMinute(monthIndex, day, hour, mode = "zoom-in") {
   const focusLabel = `${month.short} ${day} ${formatHour(hour)}`;
   const buckets = segmentAvail[`${monthIndex}:${day}:${hour}`] || [];
 
-  await setTimeline(`
+  timeline.innerHTML = `
     <div class="minute-view accent-${month.accent}">
       ${previous !== null ? renderEdgeHour(monthIndex, day, previous, "prev") : ""}
       ${next !== null ? renderEdgeHour(monthIndex, day, next, "next") : ""}
@@ -1029,25 +923,17 @@ async function renderMinute(monthIndex, day, hour, mode = "zoom-in") {
         </div>
       </section>
     </div>
-  `, mode);
+  `;
   layoutMinute();
-  // Re-layout once the enter animation settles — getBoundingClientRect
-  // reads animated transforms, so an early-pass call lands the line
-  // endpoints a few pixels off. Settling is ~145ms.
-  const view = document.querySelector(".minute-view");
-  if (view && view.getAnimations) {
-    Promise.all(view.getAnimations().map((a) => a.finished.catch(() => {})))
-      .then(() => layoutMinute());
-  }
 }
 
 // Empty-state river when a 5-min cell has no underlying segment data.
 // The hour view should disable empty cells, so this is a defensive render.
-async function renderEmptySegment(monthIndex, day, hour, minute, mode, focusLabel) {
+async function renderEmptySegment(monthIndex, day, hour, minute, focusLabel) {
   const month = months[monthIndex];
   const previous = minute > 0 ? minute - 5 : null;
   const next = minute < 55 ? minute + 5 : null;
-  await setTimeline(`
+  timeline.innerHTML = `
     <div class="segment-view accent-${month.accent}">
       ${previous !== null ? renderEdgeSegment(monthIndex, day, hour, previous, "prev") : ""}
       ${next !== null ? renderEdgeSegment(monthIndex, day, hour, next, "next") : ""}
@@ -1060,16 +946,15 @@ async function renderEmptySegment(monthIndex, day, hour, minute, mode, focusLabe
         <div class="segment-empty">no observation in this slice</div>
       </section>
     </div>
-  `, mode);
+  `;
 }
 
-async function renderFiveMinute(monthIndex, day, hour, minute, mode = "zoom-in") {
+async function renderFiveMinute(monthIndex, day, hour, minute) {
   // The 5-min view breaks from the event-cards-around-an-axis pattern
   // of higher levels. Here we visualize what sol *actually observed* in
   // that 5-minute window — screen frames as ticks above the time axis,
   // transcript lines as dots below. No cards, no slants. Data loads
   // dynamically per the cell's best_origin from the day endpoint.
-  appScreen = "timeline";
   const month = months[monthIndex];
   const previous = minute > 0 ? minute - 5 : null;
   const next = minute < 55 ? minute + 5 : null;
@@ -1086,7 +971,7 @@ async function renderFiveMinute(monthIndex, day, hour, minute, mode = "zoom-in")
   // No data → render an empty-state river. (Cell shouldn't have been
   // clickable in the first place; this is a defensive fallback.)
   if (!origin) {
-    return renderEmptySegment(monthIndex, day, hour, minute, mode, focusLabel);
+    return renderEmptySegment(monthIndex, day, hour, minute, focusLabel);
   }
 
   // Derive the segment's wall-clock start from its segment name's HHMMSS.
@@ -1102,7 +987,7 @@ async function renderFiveMinute(monthIndex, day, hour, minute, mode = "zoom-in")
 
   const sample = await loadSegment(origin);
   if (!sample) {
-    return renderEmptySegment(monthIndex, day, hour, minute, mode, focusLabel);
+    return renderEmptySegment(monthIndex, day, hour, minute, focusLabel);
   }
 
   // Stash for the click-driven detail handlers.
@@ -1167,7 +1052,7 @@ async function renderFiveMinute(monthIndex, day, hour, minute, mode = "zoom-in")
   const endHHMM = segmentTimeLabel(meta, dur).slice(0, 5);
   const minutesStr = `${Math.floor(dur / 60)} min${dur % 60 ? ` ${dur % 60}s` : ""}`;
 
-  await setTimeline(`
+  timeline.innerHTML = `
     <div class="segment-view accent-${month.accent}">
       ${previous !== null ? renderEdgeSegment(monthIndex, day, hour, previous, "prev") : ""}
       ${next !== null ? renderEdgeSegment(monthIndex, day, hour, next, "next") : ""}
@@ -1214,7 +1099,7 @@ async function renderFiveMinute(monthIndex, day, hour, minute, mode = "zoom-in")
         </footer>
       </section>
     </div>
-  `, mode);
+  `;
 
   // Wire click handlers for tick + audio-dot selection.
   for (const tick of document.querySelectorAll(".river-tick[data-frame-id]")) {
@@ -1315,18 +1200,6 @@ function renderMicroEvent(event, hour, minute) {
 }
 
 timeline.addEventListener("click", async (event) => {
-  const startButton = event.target.closest("[data-start-demo]");
-  if (startButton) {
-    showTimeline("zoom-in");
-    return;
-  }
-
-  const closeButton = event.target.closest("[data-close-demo]");
-  if (closeButton) {
-    renderClosing("zoom-in");
-    return;
-  }
-
   const returnHourButton = event.target.closest("[data-return-hour]");
   if (returnHourButton) {
     const monthIndex = Number(returnHourButton.dataset.month);
@@ -1337,7 +1210,7 @@ timeline.addEventListener("click", async (event) => {
       selectedDay = day;
       selectedHour = hour;
       selectedMinute = null;
-      renderMinute(monthIndex, day, hour, "zoom-out");
+      renderMinute(monthIndex, day, hour);
     }
     return;
   }
@@ -1351,7 +1224,7 @@ timeline.addEventListener("click", async (event) => {
       selectedDay = day;
       selectedHour = null;
       selectedMinute = null;
-      renderDay(monthIndex, day, "zoom-out");
+      renderDay(monthIndex, day);
     }
     return;
   }
@@ -1365,7 +1238,7 @@ timeline.addEventListener("click", async (event) => {
       selectedHour = null;
       selectedMinute = null;
       if (months[monthIndex]?.ym) await loadMonth(months[monthIndex].ym);
-      renderMonth(monthIndex, "zoom-out");
+      renderMonth(monthIndex);
     }
     return;
   }
@@ -1386,7 +1259,7 @@ timeline.addEventListener("click", async (event) => {
       selectedDay = day;
       selectedHour = hour;
       selectedMinute = minute;
-      renderFiveMinute(monthIndex, day, hour, minute, minuteButton.classList.contains("edge-segment") ? "lateral" : "zoom-in");
+      renderFiveMinute(monthIndex, day, hour, minute);
     }
     return;
   }
@@ -1401,7 +1274,7 @@ timeline.addEventListener("click", async (event) => {
       selectedDay = day;
       selectedHour = hour;
       selectedMinute = null;
-      renderMinute(monthIndex, day, hour, hourButton.classList.contains("edge-hour") ? "lateral" : "zoom-in");
+      renderMinute(monthIndex, day, hour);
     }
     return;
   }
@@ -1415,7 +1288,7 @@ timeline.addEventListener("click", async (event) => {
       selectedDay = day;
       selectedHour = null;
       selectedMinute = null;
-      renderDay(monthIndex, day, dayButton.classList.contains("edge-day") ? "lateral" : "zoom-in");
+      renderDay(monthIndex, day);
     }
     return;
   }
@@ -1431,7 +1304,7 @@ timeline.addEventListener("click", async (event) => {
     selectedDay = null;
     selectedHour = null;
     selectedMinute = null;
-    renderYear("zoom-out");
+    renderYear();
     return;
   }
 
@@ -1440,23 +1313,13 @@ timeline.addEventListener("click", async (event) => {
   selectedHour = null;
   selectedMinute = null;
   if (months[index]?.ym) await loadMonth(months[index].ym);
-  renderMonth(index, button.classList.contains("edge-node") ? "lateral" : "zoom-in");
+  renderMonth(index);
 });
 
-document.addEventListener("keydown", (event) => {
-  if (event.key === "ArrowRight") {
-    event.preventDefault();
-    goNextScreen();
-    return;
-  }
-
-  if (event.key === "ArrowLeft") {
-    event.preventDefault();
-    goPreviousScreen();
+loadIndex().then((result) => {
+  if (result.state === "error") {
+    timeline.innerHTML = renderErrorState();
+  } else {
+    renderYear();
   }
 });
-
-// Block initial render on the index fetch so the first paint already
-// reflects real-month names + headlines. Cover screen is content-free,
-// so a small delay is invisible to the user.
-loadIndex().finally(() => renderCover("none"));

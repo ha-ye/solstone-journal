@@ -44,69 +44,20 @@
   scrollbar-gutter: stable;
 }
 
-.timeline-shell:focus-within {
-  outline: 2px solid rgba(39, 104, 201, 0.16);
-  outline-offset: 8px;
-}
-
-#timeline-shell #timeline-root {
-  transform-origin: center;
-}
-
-.timeline-shell .cover-screen,
-.timeline-shell .closing-screen {
-  display: grid;
-  place-items: center;
-  min-height: calc(100vh - 96px);
+.timeline-shell .timeline-empty-state {
+  width: min(100%, 520px);
+  margin: clamp(96px, 18vh, 180px) auto;
+  padding: 2rem;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
   text-align: center;
+  box-shadow: var(--shadow);
 }
-
-.timeline-shell .cover-button {
-  display: grid;
-  place-items: center;
-  width: min(72vmin, 660px);
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-  padding: 0;
-}
-
-.timeline-shell .cover-button:focus-visible,
-.timeline-shell .closing-logo:focus-visible {
-  outline: 2px solid rgba(232, 146, 58, 0.55);
-  outline-offset: 14px;
-  border-radius: 50%;
-}
-
-.timeline-shell .sol-logo {
-  display: block;
-  width: 100%;
-  height: auto;
-  filter: drop-shadow(0 22px 36px rgba(232, 146, 58, 0.12));
-}
-
-.timeline-shell .closing-content {
-  display: grid;
-  justify-items: center;
-  gap: clamp(34px, 5vw, 62px);
-}
-
-.timeline-shell .closing-logo {
-  display: block;
-  width: min(34vmin, 320px);
-  border: 0;
-  background: transparent;
-  padding: 0;
-}
-
-.timeline-shell .install-url {
-  margin: 0;
-  color: #e8923a;
-  font-size: clamp(3.2rem, 9vw, 8.5rem);
-  font-weight: 850;
-  line-height: 0.95;
-  letter-spacing: 0;
-}
+.timeline-shell .timeline-empty-state h2 { margin: 0 0 .75rem; font-size: 1.15rem; font-weight: 600; color: var(--ink); }
+.timeline-shell .timeline-empty-state p { margin: 0 auto 1rem; max-width: 30rem; color: var(--muted); line-height: 1.6; font-size: .92rem; }
+.timeline-shell .timeline-empty-state a { color: var(--blue); text-decoration: none; font-size: .85rem; font-weight: 600; }
+.timeline-shell .timeline-empty-state a:hover { text-decoration: underline; }
 
 .timeline-shell .year-view {
   position: relative;

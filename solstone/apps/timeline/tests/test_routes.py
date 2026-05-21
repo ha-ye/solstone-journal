@@ -6,11 +6,51 @@ from __future__ import annotations
 import json
 import os
 import time
+from pathlib import Path
+
+import pytest
 
 from solstone.apps.timeline import routes
 
 DAY = "20260510"
 MONTH = "202605"
+
+
+@pytest.fixture
+def empty_timeline_env(tmp_path: Path, monkeypatch):
+    journal = tmp_path / "journal"
+    journal.mkdir()
+    (journal / "chronicle").mkdir()
+
+    facet_dir = journal / "facets" / "work"
+    facet_dir.mkdir(parents=True)
+    (facet_dir / "facet.json").write_text(
+        json.dumps({"title": "Work", "description": "Test facet"}) + "\n",
+        encoding="utf-8",
+    )
+    (journal / "config").mkdir()
+    (journal / "config" / "journal.json").write_text(
+        json.dumps(
+            {
+                "convey": {"secret": "test-secret", "trust_localhost": True},
+                "setup": {"completed_at": 1700000000000},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    return journal
+
+
+@pytest.fixture
+def empty_client(empty_timeline_env):
+    from solstone.convey import create_app
+
+    app = create_app(str(empty_timeline_env))
+    app.config.update(TESTING=True)
+    return app.test_client()
 
 
 def test_workspace_root_renders(client):
@@ -19,9 +59,32 @@ def test_workspace_root_renders(client):
     assert response.status_code == 200
     assert b'id="timeline-shell"' in response.data
     assert b"/app/timeline/static/timeline.css" in response.data
-    assert b"/app/timeline/static/data-mock.js" in response.data
+    assert b"/app/timeline/static/data-mock.js" not in response.data
     assert b"/app/timeline/static/timeline.js" in response.data
     assert b"defer" in response.data
+
+
+def test_empty_journal_workspace_has_no_demo_shell(empty_client):
+    response = empty_client.get("/app/timeline/", follow_redirects=True)
+
+    assert response.status_code == 200
+    assert b'id="timeline-shell"' in response.data
+    assert b"Start timeline demo" not in response.data
+    assert b"solstone.app/install" not in response.data
+    assert b"data-mock.js" not in response.data
+    assert b"no observations yet" not in response.data
+
+
+def test_empty_journal_index_returns_empty_recent_months(empty_client):
+    response = empty_client.get("/app/timeline/api/index")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert len(payload["months"]) == 12
+    for month in payload["months"]:
+        assert month["month_top"] == []
+        assert month["day_count"] == 0
+        assert month["days_with_data"] == []
 
 
 def test_index_shape_and_size(client):
