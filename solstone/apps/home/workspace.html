@@ -386,64 +386,6 @@
   vertical-align: baseline;
 }
 
-/* Network Pulse */
-.pulse-network {
-  padding: 1.25rem;
-  background: #fff;
-  border-radius: 10px;
-  border: 1px solid #e2e8f0;
-}
-
-.pulse-entities {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.pulse-entity {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.3rem 0.6rem;
-  background: #f8fafc;
-  border-radius: 6px;
-  border: 1px solid #e2e8f0;
-  font-size: 0.8rem;
-  color: #334155;
-}
-
-.pulse-entity-type {
-  font-size: 0.75rem;
-  padding: 0.1rem 0.3rem;
-  border-radius: 4px;
-  font-weight: 600;
-}
-
-.pulse-entity-type.person { background: #dbeafe; color: #1d4ed8; }
-.pulse-entity-type.company { background: #dcfce7; color: #15803d; }
-.pulse-entity-type.project { background: #fef3c7; color: #b45309; }
-.pulse-entity-type.tool { background: #f3f4f6; color: #4b5563; }
-
-.pulse-entity:hover {
-  border-color: #cbd5e1;
-}
-
-.pulse-entity[data-conversation]:hover {
-  border-radius: 6px;
-}
-
-.pulse-network-link {
-  margin-top: 0.5rem;
-  font-size: 0.8rem;
-}
-
-.pulse-network-link a {
-  color: #6366f1;
-  text-decoration: none;
-}
-
-.pulse-network-link a:hover { text-decoration: underline; }
-
 /* Click-to-converse interactive elements */
 [data-conversation] {
   cursor: pointer;
@@ -936,7 +878,6 @@
 .pulse-needs,
 .pulse-routines,
 .pulse-skills,
-.pulse-network,
 .pulse-yesterday,
 .pulse-briefing-card,
 .pulse-empty-state {
@@ -959,7 +900,6 @@
 }
 
 .pulse-needs-more a:focus-visible,
-.pulse-network-link a:focus-visible,
 .pulse-empty-state .pulse-empty-message a:focus-visible {
   outline: 2px solid #6366f1;
   outline-offset: 2px;
@@ -967,7 +907,6 @@
 }
 
 .pulse-needs-more a:active,
-.pulse-network-link a:active,
 .pulse-empty-state .pulse-empty-message a:active {
   color: #4f46e5;
 }
@@ -988,7 +927,6 @@
     display: none;
   }
 
-  .pulse-entity,
   .pulse-facet-chip,
   .pulse-briefing-section-toggle,
   .pulse-section-toggle,
@@ -1016,14 +954,12 @@
   .pulse-skills,
   .pulse-today,
   .pulse-needs,
-  .pulse-network,
   .pulse-yesterday,
   .pulse-briefing-card,
   .pulse-empty-state {
     padding: 0.75rem;
   }
 
-  .pulse-entities,
   .pulse-facet-dist {
     gap: 0.35rem;
   }
@@ -1035,7 +971,6 @@
   .pulse-needs,
   .pulse-routines,
   .pulse-skills,
-  .pulse-network,
   .pulse-yesterday,
   .pulse-briefing-card,
   .pulse-empty-state {
@@ -1133,7 +1068,7 @@
   {% if show_welcome %}
   <div class="pulse-welcome">
     <h2>welcome to your home page</h2>
-    <p>this is where your day comes together — narrative summaries, calendar events, tasks, routines, and the people in your network. as observers experience your day along with you and sol curates, sections will appear here automatically.</p>
+    <p>this is where your day comes together — narrative summaries, calendar events, tasks, and routines. as observers experience your day along with you and sol curates, sections will appear here automatically.</p>
     <a href="/app/health">check system health →</a>
   </div>
   {% endif %}
@@ -1371,33 +1306,6 @@
   </div>
   {% endif %}
 
-  <!-- Network Pulse -->
-  {% if entities %}
-  <div class="pulse-network" id="pulse-network" data-section-collapsed="true">
-    <div class="pulse-section-toggle" role="button" tabindex="0" aria-expanded="false" onclick="toggleSection(this.parentElement)">
-      <h2 class="pulse-section-header">network pulse</h2>
-      <span class="pulse-section-summary">{{ network_summary }}</span>
-    </div>
-    <div class="pulse-section-body">
-    <div class="pulse-entities">
-      {% for ent in entities %}
-      <div class="pulse-entity" role="button" tabindex="0" data-conversation="What do you know about {{ ent.get('name', '') }}?">
-        <span class="pulse-entity-type {{ ent.get('entity_type', 'unknown') }}">{{ ent.get('entity_type', '?')[:3] }}</span>
-        <span>{{ ent.get('name', '') }}</span>
-      </div>
-      {% endfor %}
-    </div>
-    <div class="pulse-network-link"><a href="/app/graph">view full graph →</a></div>
-    </div>
-  </div>
-  {% endif %}
-  {% if not entities and not show_welcome %}
-  <div class="pulse-empty-state">
-    <h2 class="pulse-section-header">network pulse</h2>
-    <div class="pulse-empty-message">no one has appeared in today's journal yet.</div>
-  </div>
-  {% endif %}
-
 </div>
 
 <script>
@@ -1615,14 +1523,13 @@
   };
 
   // Section collapse/expand
-  var SECTION_IDS = ['pulse-narrative', 'pulse-routines', 'pulse-skills', 'pulse-today', 'pulse-needs', 'pulse-network'];
+  var SECTION_IDS = ['pulse-narrative', 'pulse-routines', 'pulse-skills', 'pulse-today', 'pulse-needs'];
   var SECTION_DEFAULTS = {
     'pulse-narrative': 'true',
     'pulse-routines': 'true',
     'pulse-skills': 'true',
     'pulse-today': 'true',
-    'pulse-needs': 'false',
-    'pulse-network': 'true'
+    'pulse-needs': 'false'
   };
 
   // Restore saved section states from sessionStorage

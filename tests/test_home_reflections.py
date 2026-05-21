@@ -39,7 +39,6 @@ def _minimal_pulse_context(latest_weekly_reflection):
         "anticipated_activities": [],
         "activities": [],
         "todos": [],
-        "entities": [],
         "routines": [],
         "skills": [],
         "skills_summary": "",
@@ -65,7 +64,6 @@ def _minimal_pulse_context(latest_weekly_reflection):
         "routines_summary": "",
         "today_summary": "",
         "needs_summary": "",
-        "network_summary": "",
     }
 
 

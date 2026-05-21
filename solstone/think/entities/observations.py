@@ -15,11 +15,12 @@ import json
 import random
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from solstone.think.entities.core import atomic_write
+from solstone.think.entities.journal import load_all_journal_entities
 from solstone.think.entities.relationships import entity_memory_path
-from solstone.think.utils import now_ms
+from solstone.think.utils import get_journal, now_ms
 
 # Global cache for entity observations: {(facet, entity_slug): list[dict]}
 _OBSERVATION_CACHE: dict[tuple[str, str], list[dict[str, Any]]] | None = None
@@ -57,6 +58,81 @@ def observations_file_path(facet: str, name: str) -> Path:
     """
     folder = entity_memory_path(facet, name)
     return folder / "observations.jsonl"
+
+
+def _iter_observation_files() -> Iterator[Path]:
+    facets_dir = Path(get_journal()) / "facets"
+    if not facets_dir.is_dir():
+        return
+
+    for path in facets_dir.glob("*/entities/*/observations.jsonl"):
+        if path.is_file():
+            yield path
+
+
+def _count_observation_file(obs_file: Path) -> int:
+    global _OBSERVATION_COUNT_CACHE
+    if not obs_file.exists():
+        return 0
+
+    if _OBSERVATION_COUNT_CACHE is None:
+        _OBSERVATION_COUNT_CACHE = {}
+
+    cached = _OBSERVATION_COUNT_CACHE.get(obs_file)
+    if cached is not None:
+        return cached
+
+    try:
+        with open(obs_file, "r", encoding="utf-8") as f:
+            count = sum(1 for line in f if line.strip())
+    except OSError:
+        return 0
+
+    _OBSERVATION_COUNT_CACHE[obs_file] = count
+    return count
+
+
+def _observation_depth_by_slug() -> dict[str, int]:
+    depths: dict[str, int] = {}
+    for obs_file in _iter_observation_files():
+        count = _count_observation_file(obs_file)
+        if count <= 0:
+            continue
+        slug = obs_file.parent.name
+        depths[slug] = depths.get(slug, 0) + count
+    return depths
+
+
+def count_entities_with_min_observation_depth(min_depth: int) -> int:
+    """Count observed entity slugs whose total observations meet ``min_depth``."""
+    return sum(
+        1 for depth in _observation_depth_by_slug().values() if depth >= min_depth
+    )
+
+
+def iter_entity_names_for_recall() -> list[str]:
+    """Return lowercased names and aliases for entities with observations."""
+    observed_slugs = set(_observation_depth_by_slug())
+    entities = load_all_journal_entities()
+    names: set[str] = set()
+
+    for slug in observed_slugs:
+        entity = entities.get(slug)
+        if not entity:
+            continue
+
+        name = str(entity.get("name") or "").strip()
+        if name:
+            names.add(name.lower())
+
+        aka = entity.get("aka") or []
+        if isinstance(aka, list):
+            for alias in aka:
+                alias_name = str(alias).strip()
+                if alias_name:
+                    names.add(alias_name.lower())
+
+    return sorted(names)
 
 
 def load_observations(facet: str, name: str) -> list[dict[str, Any]]:
@@ -109,30 +185,12 @@ def load_observations(facet: str, name: str) -> list[dict[str, Any]]:
 
 def count_observations(facet: str, name: str) -> int:
     """Count observations for an entity."""
-    global _OBSERVATION_COUNT_CACHE
     try:
         obs_file = entity_memory_path(facet, name) / "observations.jsonl"
     except ValueError:
         return 0
 
-    if not obs_file.exists():
-        return 0
-
-    if _OBSERVATION_COUNT_CACHE is None:
-        _OBSERVATION_COUNT_CACHE = {}
-
-    cached = _OBSERVATION_COUNT_CACHE.get(obs_file)
-    if cached is not None:
-        return cached
-
-    try:
-        with open(obs_file, "r", encoding="utf-8") as f:
-            count = sum(1 for line in f if line.strip())
-    except OSError:
-        return 0
-
-    _OBSERVATION_COUNT_CACHE[obs_file] = count
-    return count
+    return _count_observation_file(obs_file)
 
 
 def save_observations(

@@ -3,17 +3,16 @@ name: solstone
 version: 1.0.0
 description: >
   Read-only query of the solstone journal from any project. Look up people
-  and relationships, today's events, todos; read transcripts; intelligence
-  briefings on entities. TRIGGER: solstone, my journal, search my memory,
-  what happened, who is, meeting with, co-brain, recall, sol call
-  journal/entities/transcripts/todos.
+  and relationships, today's events, todos; read transcripts. TRIGGER:
+  solstone, my journal, search my memory, what happened, who is, meeting
+  with, co-brain, recall, sol call journal/entities/transcripts/todos.
 ---
 
 # solstone — journal query interface
 
 Read-only query interface to your solstone journal. Invoke via Bash: `sol call <subcommand> [flags]`.
 
-Use this skill to search memories, look up people, check today's events, read transcripts, and get relationship briefings — all from any project context.
+Use this skill to search memories, look up people, check today's events, and read transcripts — all from any project context.
 
 ## Prerequisites
 
@@ -40,22 +39,17 @@ sol call journal search "<query>" --day-from 20260320 --day-to 20260327
 
 Dates use `YYYYMMDD` format. Omit `--day` to search all days. Omit `--facet` to search all facets.
 
-### who — entity intelligence
+### who — entities
 
 Look up what the journal knows about a person, company, or project.
 
 ```bash
-# Full intelligence briefing for a named entity
-sol call entities intelligence "<name>"
-
 # Search for entities by text, type, or activity
 sol call entities search --query "<query>"
 
 # See observations recorded for an entity (requires facet)
 sol call entities observations "<entity_name>" --facet "<facet>"
 ```
-
-`intelligence` gives the richest answer — use it first, then `search` if the entity isn't attached.
 
 ### today — what's happening now
 
@@ -92,21 +86,6 @@ sol call transcripts stats
 
 `scan` first to see what's available, then `read` with `--start` (HHMMSS, 24h format) and `--length` (minutes) to narrow down.
 
-### people — relationship strength
-
-See who the strongest relationships are, or who's been active recently.
-
-```bash
-# Overall relationship strength ranking
-sol call entities strength
-
-# Strength since a specific date
-sol call entities strength --since 20260320
-
-# Strength within a facet
-sol call entities strength --facet work
-```
-
 ### status — system health
 
 Check if solstone is running and how much data exists.
@@ -137,18 +116,15 @@ External callers should never need to set these. The commands above use explicit
 
 For richer answers, combine multiple commands:
 
-**"Brief me on today"** — events + todos + calendar + recent entity strength:
+**"Brief me on today"** — events + todos + calendar:
 ```bash
 sol call todos upcoming
 sol call activities list --source anticipated
-sol call entities strength --since $(date +%Y%m%d)
 ```
 
-**"Prep me for a meeting with X"** — entity intelligence + recent transcript mentions + relationship strength:
+**"Prep me for a meeting with X"** — recent transcript mentions:
 ```bash
-sol call entities intelligence "<name>"
 sol call journal search "<name>" --day-from 20260320
-sol call entities strength --since 20260301
 ```
 
 **"What did I miss yesterday?"** — yesterday's events + transcripts + news:

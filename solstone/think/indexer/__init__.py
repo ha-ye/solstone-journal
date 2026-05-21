@@ -11,8 +11,6 @@ from .cli import main
 
 # Import from journal (unified index)
 from .journal import (
-    get_entity_intelligence,
-    get_entity_strength,
     get_journal_index,
     index_file,
     reset_journal_index,
@@ -26,8 +24,6 @@ from .journal import (
 # All public functions and constants
 __all__ = [
     # Journal (unified index)
-    "get_entity_intelligence",
-    "get_entity_strength",
     "get_journal_index",
     "index_file",
     "reset_journal_index",

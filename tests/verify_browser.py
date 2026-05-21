@@ -52,15 +52,6 @@ SCENARIOS: list[dict[str, Any]] = [
         ],
     },
     {
-        "app": "graph",
-        "name": "smoke",
-        "steps": [
-            {"do": "navigate", "path": "/app/graph"},
-            {"do": "wait", "ms": 1000},
-            {"do": "screenshot"},
-        ],
-    },
-    {
         "app": "speakers",
         "name": "smoke",
         "steps": [
@@ -174,15 +165,6 @@ SCENARIOS: list[dict[str, Any]] = [
         ],
     },
     {
-        "app": "graph",
-        "name": "load",
-        "steps": [
-            {"do": "navigate", "path": "/app/graph"},
-            {"do": "wait", "ms": 1000},
-            {"do": "screenshot"},
-        ],
-    },
-    {
         "app": "entities",
         "name": "entity-detail",
         "steps": [
@@ -197,16 +179,6 @@ SCENARIOS: list[dict[str, Any]] = [
         "steps": [
             {"do": "evaluate", "expression": "document.cookie='facet=work;path=/'"},
             {"do": "navigate", "path": "/app/todos/20260304"},
-            {"do": "wait", "ms": 1200},
-            {"do": "screenshot"},
-        ],
-    },
-    {
-        "app": "graph",
-        "name": "facet-filter",
-        "steps": [
-            {"do": "evaluate", "expression": "document.cookie='facet=montague;path=/'"},
-            {"do": "navigate", "path": "/app/graph"},
             {"do": "wait", "ms": 1200},
             {"do": "screenshot"},
         ],

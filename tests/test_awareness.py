@@ -221,18 +221,23 @@ class TestComputeThickness:
         from solstone.think.awareness import compute_thickness
 
         with unittest.mock.patch(
-            "solstone.think.indexer.journal.get_entity_strength", return_value=[]
+            "solstone.think.entities.observations.count_entities_with_min_observation_depth",
+            return_value=0,
         ):
             with unittest.mock.patch(
-                "solstone.think.awareness._recent_chat_exchanges", return_value=[]
+                "solstone.think.entities.observations.iter_entity_names_for_recall",
+                return_value=[],
             ):
                 with unittest.mock.patch(
-                    "solstone.think.facets.get_enabled_facets", return_value={}
+                    "solstone.think.awareness._recent_chat_exchanges", return_value=[]
                 ):
                     with unittest.mock.patch(
-                        "solstone.think.utils.day_dirs", return_value={}
+                        "solstone.think.facets.get_enabled_facets", return_value={}
                     ):
-                        result = compute_thickness()
+                        with unittest.mock.patch(
+                            "solstone.think.utils.day_dirs", return_value={}
+                        ):
+                            result = compute_thickness()
 
         assert result["entity_depth"] == 0
         assert result["conversation_count"] == 0
@@ -245,9 +250,7 @@ class TestComputeThickness:
         """ready=True when all primary thresholds met and facet_count >= 2."""
         from solstone.think.awareness import compute_thickness
 
-        entities = [
-            {"entity_name": f"entity_{i}", "observation_depth": 3} for i in range(12)
-        ]
+        entity_names = [f"entity_{i}" for i in range(12)]
         exchanges = [
             {
                 "talent": "chat",
@@ -259,19 +262,24 @@ class TestComputeThickness:
         facets = {"work": {}, "personal": {}}
 
         with unittest.mock.patch(
-            "solstone.think.indexer.journal.get_entity_strength", return_value=entities
+            "solstone.think.entities.observations.count_entities_with_min_observation_depth",
+            return_value=12,
         ):
             with unittest.mock.patch(
-                "solstone.think.awareness._recent_chat_exchanges",
-                return_value=exchanges,
+                "solstone.think.entities.observations.iter_entity_names_for_recall",
+                return_value=entity_names,
             ):
                 with unittest.mock.patch(
-                    "solstone.think.facets.get_enabled_facets", return_value=facets
+                    "solstone.think.awareness._recent_chat_exchanges",
+                    return_value=exchanges,
                 ):
                     with unittest.mock.patch(
-                        "solstone.think.utils.day_dirs", return_value={}
+                        "solstone.think.facets.get_enabled_facets", return_value=facets
                     ):
-                        result = compute_thickness()
+                        with unittest.mock.patch(
+                            "solstone.think.utils.day_dirs", return_value={}
+                        ):
+                            result = compute_thickness()
 
         assert result["entity_depth"] == 12
         assert result["conversation_count"] == 6
@@ -283,9 +291,7 @@ class TestComputeThickness:
         """ready=True when facet_count < 2 but journal_days >= 3."""
         from solstone.think.awareness import compute_thickness
 
-        entities = [
-            {"entity_name": f"entity_{i}", "observation_depth": 2} for i in range(10)
-        ]
+        entity_names = [f"entity_{i}" for i in range(10)]
         exchanges = [
             {
                 "talent": "chat",
@@ -302,23 +308,28 @@ class TestComputeThickness:
         }
 
         with unittest.mock.patch(
-            "solstone.think.indexer.journal.get_entity_strength", return_value=entities
+            "solstone.think.entities.observations.count_entities_with_min_observation_depth",
+            return_value=10,
         ):
             with unittest.mock.patch(
-                "solstone.think.awareness._recent_chat_exchanges",
-                return_value=exchanges,
+                "solstone.think.entities.observations.iter_entity_names_for_recall",
+                return_value=entity_names,
             ):
                 with unittest.mock.patch(
-                    "solstone.think.facets.get_enabled_facets", return_value=facets
+                    "solstone.think.awareness._recent_chat_exchanges",
+                    return_value=exchanges,
                 ):
                     with unittest.mock.patch(
-                        "solstone.think.utils.day_dirs", return_value=days
+                        "solstone.think.facets.get_enabled_facets", return_value=facets
                     ):
                         with unittest.mock.patch(
-                            "solstone.think.utils.iter_segments",
-                            return_value=[("default", "090000_300", "/seg")],
+                            "solstone.think.utils.day_dirs", return_value=days
                         ):
-                            result = compute_thickness()
+                            with unittest.mock.patch(
+                                "solstone.think.utils.iter_segments",
+                                return_value=[("default", "090000_300", "/seg")],
+                            ):
+                                result = compute_thickness()
 
         assert result["facet_count"] == 1
         assert result["journal_days"] == 3
@@ -328,9 +339,7 @@ class TestComputeThickness:
         """Not ready when recall_success is 0 even if other thresholds met."""
         from solstone.think.awareness import compute_thickness
 
-        entities = [
-            {"entity_name": f"entity_{i}", "observation_depth": 3} for i in range(15)
-        ]
+        entity_names = [f"entity_{i}" for i in range(15)]
         exchanges = [
             {"talent": "chat", "agent_response": "hello there", "user_message": "hi"}
             for _ in range(10)
@@ -338,19 +347,24 @@ class TestComputeThickness:
         facets = {"work": {}, "personal": {}, "hobby": {}}
 
         with unittest.mock.patch(
-            "solstone.think.indexer.journal.get_entity_strength", return_value=entities
+            "solstone.think.entities.observations.count_entities_with_min_observation_depth",
+            return_value=15,
         ):
             with unittest.mock.patch(
-                "solstone.think.awareness._recent_chat_exchanges",
-                return_value=exchanges,
+                "solstone.think.entities.observations.iter_entity_names_for_recall",
+                return_value=entity_names,
             ):
                 with unittest.mock.patch(
-                    "solstone.think.facets.get_enabled_facets", return_value=facets
+                    "solstone.think.awareness._recent_chat_exchanges",
+                    return_value=exchanges,
                 ):
                     with unittest.mock.patch(
-                        "solstone.think.utils.day_dirs", return_value={}
+                        "solstone.think.facets.get_enabled_facets", return_value=facets
                     ):
-                        result = compute_thickness()
+                        with unittest.mock.patch(
+                            "solstone.think.utils.day_dirs", return_value={}
+                        ):
+                            result = compute_thickness()
 
         assert result["entity_depth"] == 15
         assert result["conversation_count"] == 10
@@ -361,7 +375,6 @@ class TestComputeThickness:
         """Exchanges with talent='onboarding' are excluded from conversation_count."""
         from solstone.think.awareness import compute_thickness
 
-        entities = [{"entity_name": "foo", "observation_depth": 3}] * 10
         exchanges = [
             {
                 "talent": "onboarding",
@@ -381,20 +394,25 @@ class TestComputeThickness:
         ]
 
         with unittest.mock.patch(
-            "solstone.think.indexer.journal.get_entity_strength", return_value=entities
+            "solstone.think.entities.observations.count_entities_with_min_observation_depth",
+            return_value=10,
         ):
             with unittest.mock.patch(
-                "solstone.think.awareness._recent_chat_exchanges",
-                return_value=exchanges,
+                "solstone.think.entities.observations.iter_entity_names_for_recall",
+                return_value=["foo"],
             ):
                 with unittest.mock.patch(
-                    "solstone.think.facets.get_enabled_facets",
-                    return_value={"a": {}, "b": {}},
+                    "solstone.think.awareness._recent_chat_exchanges",
+                    return_value=exchanges,
                 ):
                     with unittest.mock.patch(
-                        "solstone.think.utils.day_dirs", return_value={}
+                        "solstone.think.facets.get_enabled_facets",
+                        return_value={"a": {}, "b": {}},
                     ):
-                        result = compute_thickness()
+                        with unittest.mock.patch(
+                            "solstone.think.utils.day_dirs", return_value={}
+                        ):
+                            result = compute_thickness()
 
         assert result["conversation_count"] == 1
         assert result["recall_success"] == 1
@@ -404,22 +422,26 @@ class TestComputeThickness:
         from solstone.think.awareness import compute_thickness
 
         with unittest.mock.patch(
-            "solstone.think.indexer.journal.get_entity_strength",
-            side_effect=Exception("db error"),
+            "solstone.think.entities.observations.count_entities_with_min_observation_depth",
+            side_effect=Exception("observation count error"),
         ):
             with unittest.mock.patch(
-                "solstone.think.awareness._recent_chat_exchanges",
-                side_effect=Exception("no file"),
+                "solstone.think.entities.observations.iter_entity_names_for_recall",
+                side_effect=Exception("observation names error"),
             ):
                 with unittest.mock.patch(
-                    "solstone.think.facets.get_enabled_facets",
-                    side_effect=Exception("no facets"),
+                    "solstone.think.awareness._recent_chat_exchanges",
+                    side_effect=Exception("no file"),
                 ):
                     with unittest.mock.patch(
-                        "solstone.think.utils.day_dirs",
-                        side_effect=Exception("no journal"),
+                        "solstone.think.facets.get_enabled_facets",
+                        side_effect=Exception("no facets"),
                     ):
-                        result = compute_thickness()
+                        with unittest.mock.patch(
+                            "solstone.think.utils.day_dirs",
+                            side_effect=Exception("no journal"),
+                        ):
+                            result = compute_thickness()
 
         assert result["entity_depth"] == 0
         assert result["conversation_count"] == 0
@@ -433,18 +455,23 @@ class TestComputeThickness:
         from solstone.think.awareness import compute_thickness
 
         with unittest.mock.patch(
-            "solstone.think.indexer.journal.get_entity_strength", return_value=[]
+            "solstone.think.entities.observations.count_entities_with_min_observation_depth",
+            return_value=0,
         ):
             with unittest.mock.patch(
-                "solstone.think.awareness._recent_chat_exchanges", return_value=[]
+                "solstone.think.entities.observations.iter_entity_names_for_recall",
+                return_value=[],
             ):
                 with unittest.mock.patch(
-                    "solstone.think.facets.get_enabled_facets", return_value={}
+                    "solstone.think.awareness._recent_chat_exchanges", return_value=[]
                 ):
                     with unittest.mock.patch(
-                        "solstone.think.utils.day_dirs", return_value={}
+                        "solstone.think.facets.get_enabled_facets", return_value={}
                     ):
-                        result = compute_thickness()
+                        with unittest.mock.patch(
+                            "solstone.think.utils.day_dirs", return_value={}
+                        ):
+                            result = compute_thickness()
 
         assert set(result.keys()) == {
             "entity_depth",

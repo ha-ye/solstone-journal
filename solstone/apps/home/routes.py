@@ -25,7 +25,6 @@ from solstone.think import skills as think_skills
 from solstone.think.awareness import get_current
 from solstone.think.capture_health import get_capture_health
 from solstone.think.facets import get_enabled_facets, get_facets
-from solstone.think.indexer.journal import get_journal_index
 from solstone.think.pipeline_health import (
     pipeline_status_message,
     summarize_pipeline_day,
@@ -53,17 +52,6 @@ home_bp = Blueprint(
 )
 
 _FIRST_WEEK_FRAMING = "Most of what I learn becomes useful in the third or fourth week, when I've seen enough patterns to surface them. For now, here's what's already happening:"
-
-_ENTITY_TYPE_LABELS = {
-    "company": ("company", "companies"),
-    "decision": ("decision", "decisions"),
-    "person": ("person", "people"),
-    "place": ("place", "places"),
-    "project": ("project", "projects"),
-    "topic": ("topic", "topics"),
-    "tool": ("tool", "tools"),
-    "unknown": ("thing", "things"),
-}
 
 
 def _today() -> str:
@@ -415,99 +403,6 @@ def _collect_activities(today: str) -> list[dict[str, Any]]:
     return activities
 
 
-def _collect_entities_today(today: str) -> list[dict[str, Any]]:
-    """Get today's entities from entity_signals table."""
-    try:
-        conn, _ = get_journal_index()
-        try:
-            rows = conn.execute(
-                """SELECT entity_name, COUNT(*) as signal_count,
-                          GROUP_CONCAT(DISTINCT signal_type) as types
-                   FROM entity_signals
-                   WHERE day = ?
-                   GROUP BY entity_name
-                   ORDER BY signal_count DESC
-                   LIMIT 8""",
-                (today,),
-            ).fetchall()
-
-            entity_meta = {}
-            meta_rows = conn.execute(
-                "SELECT entity_id, name, type FROM entities WHERE source='identity'"
-            ).fetchall()
-            for row in meta_rows:
-                entity_meta[row[0]] = {"name": row[1], "type": row[2] or "unknown"}
-                entity_meta[row[1].lower()] = {
-                    "name": row[1],
-                    "type": row[2] or "unknown",
-                }
-
-            entities = []
-            for row in rows:
-                name = row[0]
-                meta = entity_meta.get(name, entity_meta.get(name.lower(), {}))
-                entities.append(
-                    {
-                        "name": meta.get("name", name),
-                        "signal_count": row[1],
-                        "types": row[2] or "",
-                        "entity_type": meta.get("type", "unknown"),
-                    }
-                )
-            return entities
-        finally:
-            conn.close()
-    except Exception:
-        logger.warning("home: failed to collect entities", exc_info=True)
-        return []
-
-
-def _collect_entities_yesterday(yesterday: str) -> list[dict[str, Any]]:
-    """Get yesterday's entities from entity_signals table."""
-    try:
-        conn, _ = get_journal_index()
-        try:
-            rows = conn.execute(
-                """SELECT entity_name, COUNT(*) as signal_count,
-                          GROUP_CONCAT(DISTINCT signal_type) as types
-                   FROM entity_signals
-                   WHERE day = ?
-                   GROUP BY entity_name
-                   ORDER BY signal_count DESC""",
-                (yesterday,),
-            ).fetchall()
-
-            entity_meta = {}
-            meta_rows = conn.execute(
-                "SELECT entity_id, name, type FROM entities WHERE source='identity'"
-            ).fetchall()
-            for row in meta_rows:
-                entity_meta[row[0]] = {"name": row[1], "type": row[2] or "unknown"}
-                entity_meta[row[1].lower()] = {
-                    "name": row[1],
-                    "type": row[2] or "unknown",
-                }
-
-            entities = []
-            for row in rows:
-                name = row[0]
-                meta = entity_meta.get(name, entity_meta.get(name.lower(), {}))
-                entities.append(
-                    {
-                        "name": meta.get("name", name),
-                        "signal_count": row[1],
-                        "types": row[2] or "",
-                        "entity_type": meta.get("type", "unknown"),
-                    }
-                )
-            return entities
-        finally:
-            conn.close()
-    except Exception:
-        logger.warning("home: failed to collect yesterday entities", exc_info=True)
-        return []
-
-
 def _normalize_activity_title(record: dict[str, Any]) -> str:
     title = str(record.get("description") or "").strip()
     if title:
@@ -718,44 +613,6 @@ def _join_phrases(parts: list[str]) -> str:
     if len(parts) == 2:
         return f"{parts[0]} and {parts[1]}"
     return ", ".join(parts[:-1]) + f", and {parts[-1]}"
-
-
-def _format_entity_count(type_key: str, count: int) -> str:
-    singular, plural = _ENTITY_TYPE_LABELS.get(type_key, (type_key, f"{type_key}s"))
-    label = singular if count == 1 else plural
-    return f"{count} {label}"
-
-
-def _format_entity_summary(entities: list[dict[str, Any]]) -> str | None:
-    counts: dict[str, int] = {}
-    for entity in entities:
-        type_key = str(entity.get("entity_type") or "unknown").strip().lower()
-        counts[type_key] = counts.get(type_key, 0) + 1
-
-    if not counts:
-        return None
-
-    ordered_keys = []
-    if counts.get("person"):
-        ordered_keys.append("person")
-    ordered_keys.extend(
-        key
-        for key, _count in sorted(
-            (
-                (key, count)
-                for key, count in counts.items()
-                if key != "person" and count > 0
-            ),
-            key=lambda item: (-item[1], item[0]),
-        )
-    )
-
-    labels = [
-        _format_entity_count(key, counts[key]) for key in ordered_keys if counts[key]
-    ]
-    if not labels:
-        return None
-    return f"I recognized {_join_phrases(labels)}."
 
 
 def _format_activity_label(activity: dict[str, Any]) -> str:
@@ -969,14 +826,12 @@ def _summarize_yesterday_processing(
         for facet in facet_data.values()
     )
 
-    entities = _collect_entities_yesterday(yesterday)
     activities = _collect_top_activities_yesterday(yesterday)
     if (
         transcript_seconds <= 0
         and transcript_segments <= 0
         and not has_facet_activity
         and not activities
-        and not entities
     ):
         return None
 
@@ -1069,10 +924,6 @@ def _summarize_yesterday_processing(
 
     for activity in activities[:2]:
         details.append(_format_activity_label(activity))
-
-    entity_summary = _format_entity_summary(entities)
-    if entity_summary:
-        details.append(entity_summary)
 
     default_collapsed = mode == "healthy" and journal_age_days >= 8
     return {
@@ -1422,7 +1273,6 @@ def _build_pulse_context() -> dict[str, Any]:
     anticipated_activities = _collect_anticipated_activities(today)
     activities = _collect_activities(today)
     todos = _collect_todos(today)
-    entities = _collect_entities_today(today)
     routines = _collect_routines()
     skills = _collect_skills()
     latest_weekly_reflection = _load_latest_weekly_reflection()
@@ -1449,7 +1299,6 @@ def _build_pulse_context() -> dict[str, Any]:
         and not anticipated_activities
         and not activities
         and not todos
-        and not entities
         and not unseen_routines
         and not skills
         and not briefing_exists
@@ -1497,21 +1346,6 @@ def _build_pulse_context() -> dict[str, Any]:
             f"{needs_count} item{'s' if needs_count != 1 else ''} "
             f"need{'s' if needs_count == 1 else ''} attention"
         )
-
-    network_summary = ""
-    if entities:
-        people = sum(1 for e in entities if e.get("entity_type") == "person")
-        others = len(entities) - people
-        if people and others:
-            network_summary = (
-                f"{people} {'people' if people != 1 else 'person'}, {others} more"
-            )
-        elif people:
-            network_summary = f"{people} {'people' if people != 1 else 'person'}"
-        else:
-            network_summary = (
-                f"{len(entities)} {'entities' if len(entities) != 1 else 'entity'}"
-            )
 
     pulse_needs_normalized = {_normalize_item(item) for item in pulse_needs}
     briefing_needs_deduped = []
@@ -1565,7 +1399,6 @@ def _build_pulse_context() -> dict[str, Any]:
         "anticipated_activities": anticipated_activities,
         "activities": activities,
         "todos": todos,
-        "entities": entities,
         "routines": routines,
         "skills": skills,
         "skills_summary": skills_summary,
@@ -1586,7 +1419,6 @@ def _build_pulse_context() -> dict[str, Any]:
         "routines_summary": routines_summary,
         "today_summary": today_summary,
         "needs_summary": needs_summary,
-        "network_summary": network_summary,
     }
 
 

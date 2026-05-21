@@ -197,36 +197,6 @@ class TestPhotosSync:
         assert "Found 1 named face clusters." in result.output
         assert "Matched 0 to entities." in result.output
 
-    def test_strength_includes_photo_count(self, tmp_path, monkeypatch):
-        photos_db = tmp_path / "Photos.sqlite"
-        journal_dir = tmp_path / "journal"
-        journal_dir.mkdir()
-        _create_photos_db(
-            photos_db,
-            [(1, "Alice Johnson")],
-            [(1, 1, 1), (2, 1, 2)],
-        )
-        _create_journal(
-            journal_dir,
-            [{"id": "alice_johnson", "name": "Alice Johnson", "type": "Person"}],
-        )
-
-        monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_dir))
-        monkeypatch.setattr(sys, "platform", "darwin")
-
-        runner.invoke(call_app, ["photos", "sync", "--library", str(photos_db)])
-
-        from solstone.think.indexer.journal import get_entity_strength
-
-        results = get_entity_strength()
-        alice = next(
-            (r for r in results if r.get("entity_id") == "alice_johnson"), None
-        )
-        assert alice is not None
-        assert "photo_count" in alice
-        assert alice["photo_count"] == 2
-        assert alice["score"] > 0
-
     def test_fallback_tables(self, tmp_path, monkeypatch):
         photos_db = tmp_path / "Photos.sqlite"
         journal_dir = tmp_path / "journal"

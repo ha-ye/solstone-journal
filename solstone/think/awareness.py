@@ -262,15 +262,19 @@ def compute_thickness() -> dict[str, Any]:
     - ``journal_days``: number of day directories with at least one segment
     - ``ready``: True when the naming ceremony should trigger
     """
+    from solstone.think.entities.observations import (
+        count_entities_with_min_observation_depth,
+        iter_entity_names_for_recall,
+    )
     from solstone.think.facets import get_enabled_facets
-    from solstone.think.indexer.journal import get_entity_strength
     from solstone.think.utils import day_dirs, iter_segments
 
     try:
-        entities = get_entity_strength(limit=10000)
+        entity_depth = count_entities_with_min_observation_depth(2)
+        entity_names = iter_entity_names_for_recall()
     except Exception:
-        entities = []
-    entity_depth = sum(1 for e in entities if e.get("observation_depth", 0) >= 2)
+        entity_depth = 0
+        entity_names = []
 
     try:
         exchanges = _recent_chat_exchanges(limit=10000)
@@ -283,7 +287,6 @@ def compute_thickness() -> dict[str, Any]:
     ]
     conversation_count = len(non_onboarding)
 
-    entity_names = [e["entity_name"].lower() for e in entities if e.get("entity_name")]
     recall_success = 0
     for ex in non_onboarding:
         resp = (ex.get("agent_response") or "").lower()

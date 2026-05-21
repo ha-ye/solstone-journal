@@ -39,11 +39,7 @@ from solstone.think.entities.saving import (
     update_detected_entity,
 )
 from solstone.think.facets import log_call_action
-from solstone.think.indexer.journal import (
-    get_entity_intelligence,
-    get_entity_strength,
-    search_entities,
-)
+from solstone.think.indexer.journal import search_entities
 from solstone.think.utils import (
     get_journal,
     now_ms,
@@ -521,28 +517,6 @@ def observe_entity(
     typer.echo(f"Observation added to '{resolved_name}'.")
 
 
-@app.command("strength")
-def entity_strength(
-    facet: str | None = typer.Option(None, "--facet", "-f", help="Filter by facet."),
-    since: str | None = typer.Option(None, "--since", help="Signals since YYYYMMDD."),
-    limit: int = typer.Option(20, "--limit", "-n", help="Max results."),
-) -> None:
-    """Rank entities by relationship strength score."""
-    results = get_entity_strength(facet=facet, since=since, limit=limit)
-    if not results:
-        typer.echo("No entity signals found.")
-        return
-    for r in results:
-        name = r.get("entity_name", "")
-        score = r.get("score", 0)
-        eid = r.get("entity_id", "")
-        label = f"{name} ({eid})" if eid and eid != entity_slug(name) else name
-        typer.echo(f"  {score:>8.1f}  {label}")
-        typer.echo(
-            f"           kg={r['kg_edge_count']} co={r['co_occurrence']} pho={r['photo_count']} rec={r['recency']:.3f} obs={r['observation_depth']} fac={r['facet_breadth']}"
-        )
-
-
 @app.command("search")
 def entity_search(
     query: str | None = typer.Option(None, "--query", "-q", help="Text search."),
@@ -568,21 +542,3 @@ def entity_search(
         typer.echo(f"  - {e['name']} ({e['type']}): {e['description']}")
         if facets:
             typer.echo(f"    facets: {facets} | signals: {e.get('signal_count', 0)}")
-
-
-@app.command("intelligence")
-def entity_intel(
-    entity: str = typer.Argument(help="Entity name or identifier."),
-    facet: str | None = typer.Option(None, "--facet", "-f", help="Filter by facet."),
-    brief: bool = typer.Option(
-        False, "--brief", "-b", help="Truncate activity and network to 20 items."
-    ),
-) -> None:
-    """Get a full intelligence briefing for an entity."""
-    import json as _json
-
-    result = get_entity_intelligence(entity, facet=facet, brief=brief)
-    if result is None:
-        typer.echo(f"Error: Entity '{entity}' not found.", err=True)
-        raise typer.Exit(1)
-    typer.echo(_json.dumps(result, indent=2))

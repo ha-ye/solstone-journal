@@ -359,9 +359,6 @@ def test_api_pulse_includes_skills(monkeypatch, home_client):
         "solstone.apps.home.routes._collect_activities", lambda today: []
     )
     monkeypatch.setattr("solstone.apps.home.routes._collect_todos", lambda today: [])
-    monkeypatch.setattr(
-        "solstone.apps.home.routes._collect_entities_today", lambda today: []
-    )
     monkeypatch.setattr("solstone.apps.home.routes._collect_routines", lambda: [])
     monkeypatch.setattr(
         "solstone.apps.home.routes._collect_skills",

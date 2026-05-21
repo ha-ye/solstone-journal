@@ -34,14 +34,13 @@ sol call identity self
 Collect the past 7 days of journal activity. Calculate the date range from today
 and query each source. If a source returns empty or errors, skip it — gaps are fine.
 
-1. `sol call entities strength --since YYYYMMDD` (7 days back) — relationship activity
-2. For each of the past 7 days:
+1. For each of the past 7 days:
    - `sol call activities list --source anticipated --day YYYYMMDD` — scheduled activity patterns
    - `sol call todos list -d YYYYMMDD` — task patterns
-3. For each active facet (from `sol call journal facets`):
+2. For each active facet (from `sol call journal facets`):
    - `sol call journal news FACET --day YYYYMMDD` (most recent day available) — work themes
-4. `sol call journal search "" --day-from YYYYMMDD -a pulse -n 10` — pulse narratives for behavioral patterns
-5. `sol call journal search "" --day-from YYYYMMDD -a decisions -n 10` — decision patterns
+3. `sol call journal search "" --day-from YYYYMMDD -a pulse -n 10` — pulse narratives for behavioral patterns
+4. `sol call journal search "" --day-from YYYYMMDD -a decisions -n 10` — decision patterns
 
 ## Step 3: Analyze and write observations
 
@@ -62,8 +61,8 @@ vs decisions? Evidence: meeting frequency, todo phrasing patterns, entity intera
 frequency.
 
 **relationship priorities** — Who matters most to them right now? Which relationships
-are they investing in? Who have they been neglecting? Evidence: entity strength scores,
-meeting attendees, interaction frequency.
+are they investing in? Who have they been neglecting? Evidence: meeting attendees,
+interaction frequency.
 
 **decision style** — How do they make decisions? Fast or deliberate? Do they seek
 input or decide independently? Do they revisit decisions? Evidence: decisions agent
