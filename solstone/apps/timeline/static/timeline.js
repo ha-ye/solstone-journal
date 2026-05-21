@@ -673,12 +673,17 @@ function layoutScale(opts) {
 
   // Mobile responsive layouts use a stacked block flow; skip the
   // absolute-positioned overlay entirely so it doesn't fight CSS.
-  const isMobile = window.matchMedia("(max-width: 800px)").matches;
+  const isMobile = window.matchMedia("(max-width: 768px)").matches;
   if (isMobile) {
     svg.innerHTML = "";
     for (const c of view.querySelectorAll(opts.eventSelector)) c.style.left = "";
     return;
   }
+
+  const tabletQuery = window.matchMedia("(max-width: 1023px) and (min-width: 769px)");
+  const useTablet = tabletQuery.matches && opts.tablet;
+  const cardWidth = useTablet ? opts.tablet.cardWidth : opts.cardWidth;
+  const cardGap = useTablet ? opts.tablet.cardGap : opts.cardGap;
 
   const panelRect = panel.getBoundingClientRect();
   svg.setAttribute("viewBox", `0 0 ${panelRect.width} ${panelRect.height}`);
@@ -707,15 +712,15 @@ function layoutScale(opts) {
         card,
         cell,
         anchor,
-        idealLeft: cellCenterInLane - opts.cardWidth / 2,
+        idealLeft: cellCenterInLane - cardWidth / 2,
       };
     }).sort((a, b) => a.anchor - b.anchor);
 
     // Forward pass: never let a card overlap its left neighbor.
     let prevRight = -Infinity;
     for (const it of items) {
-      it.left = Math.max(it.idealLeft, prevRight + opts.cardGap);
-      prevRight = it.left + opts.cardWidth;
+      it.left = Math.max(it.idealLeft, prevRight + cardGap);
+      prevRight = it.left + cardWidth;
     }
     for (const it of items) {
       it.card.style.left = it.left + "px";
@@ -770,6 +775,7 @@ const LAYOUT_MINUTE = {
   cellSelectorFor: (k) => `.segment-cell[data-minute="${k}"]`,
   cardWidth: 170,
   cardGap: 14,
+  tablet: { cardWidth: 140, cardGap: 10 },
 };
 const LAYOUT_DAY = {
   viewSelector: ".day-view",
@@ -782,6 +788,7 @@ const LAYOUT_DAY = {
   cellSelectorFor: (k) => `.hour-cell[data-hour="${k}"]`,
   cardWidth: 170,
   cardGap: 12,
+  tablet: { cardWidth: 140, cardGap: 10 },
 };
 const LAYOUT_MONTH = {
   viewSelector: ".month-view",
@@ -794,6 +801,7 @@ const LAYOUT_MONTH = {
   cellSelectorFor: (k) => `.day-cell[data-day="${k}"]`,
   cardWidth: 170,
   cardGap: 12,
+  tablet: { cardWidth: 140, cardGap: 10 },
 };
 
 function layoutMinute() { layoutScale(LAYOUT_MINUTE); }
@@ -897,7 +905,7 @@ async function renderEmptySegment(monthIndex, day, hour, minute, focusLabel) {
       ${next !== null ? renderEdgeSegment(monthIndex, day, hour, next, "next") : ""}
       <section class="segment-panel">
         <div class="timeline-focus-heading">
-          <button class="five-focus-node" type="button"
+          <button class="segment-focus-node" type="button"
                   data-month="${monthIndex}" data-day="${day}" data-hour="${hour}"
                   data-return-hour="true">${focusLabel}</button>
         </div>
@@ -1017,7 +1025,7 @@ async function renderFiveMinute(monthIndex, day, hour, minute) {
 
       <section class="segment-panel" aria-label="${month.name} ${day}, ${month.year || ""} ${focusLabel} segment observations">
         <div class="timeline-focus-heading">
-          <button class="five-focus-node" type="button"
+          <button class="segment-focus-node" type="button"
                   data-month="${monthIndex}" data-day="${day}" data-hour="${hour}"
                   data-return-hour="true"
                   aria-label="Return to ${formatHour(hour)} on ${month.name} ${day}, ${month.year || ""}">
