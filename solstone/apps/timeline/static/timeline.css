@@ -472,43 +472,11 @@
   color: #475569;
 }
 
-.timeline-shell .day-cell.holiday {
-  border-color: color-mix(in srgb, var(--coral), white 48%);
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--coral), white 84%) 0 28%, transparent 28%),
-    rgba(255, 255, 255, 0.92);
-}
-
-.timeline-shell .day-cell.weekend.holiday {
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--coral), white 82%) 0 28%, transparent 28%),
-    #eef3f6;
-}
-
-.timeline-shell .holiday-mark {
-  position: absolute;
-  top: -5px;
-  right: -4px;
-  width: 8px;
-  height: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.96);
-  border-radius: 50%;
-  background: var(--coral);
-  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.18);
-}
-
 .timeline-shell .day-cell.has-event {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent), white 89%);
   color: var(--accent);
   box-shadow: inset 0 -3px 0 var(--accent);
-}
-
-.timeline-shell .day-cell.has-event.holiday {
-  border-color: var(--accent);
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--coral), white 78%) 0 28%, transparent 28%),
-    color-mix(in srgb, var(--accent), white 89%);
 }
 
 /* day-cell perpendicular dotted-pip removed; SVG layer in

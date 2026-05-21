@@ -28,6 +28,16 @@ function minuteFromOrigin(origin) {
   return parseInt(seg.slice(2, 4), 10);
 }
 
+function segmentCountFromHoursAvail(hoursAvail) {
+  return Object.values(hoursAvail || {}).reduce((total, hour) => {
+    return total + (hour.buckets || []).reduce((sum, bucket) => sum + (bucket.segment_count || 0), 0);
+  }, 0);
+}
+
+function formatDateLabel(month, day) {
+  return `${month.name} ${day}${month.year ? `, ${month.year}` : ""}`;
+}
+
 // Compose a wall-clock label from a "seconds-from-segment-start" offset
 // anchored to a per-call meta {startSec}. Used by the river view.
 function segmentTimeLabel(meta, secondsFromStart) {
@@ -154,20 +164,70 @@ function populateDayLookups(monthIdx, yyyymmdd, data) {
   const dayInt = parseInt(yyyymmdd.slice(6, 8), 10);
   // Day-view hour events: first pick of each hour with picks, alternating sides.
   const dayPlan = [];
+  const seenOrigins = new Set();
+  const eventByHour = new Map();
   let toggle = true;
   for (const hh of Object.keys(data.hours || {}).sort()) {
     const picks = data.hours[hh].picks || [];
     if (!picks.length) continue;
     const p = picks[0];
-    dayPlan.push({
-      hour: parseInt(hh, 10),
+    const hour = parseInt(hh, 10);
+    const event = {
+      hour,
       side: toggle ? "top" : "bottom",
       kind: "work",
       title: p.title, text: p.description, origin: p.origin || "",
-    });
+    };
+    dayPlan.push(event);
+    if (event.origin) seenOrigins.add(event.origin);
+    eventByHour.set(hour, event);
     toggle = !toggle;
   }
-  if (dayPlan.length) realDayPlan[`${monthIdx}:${dayInt}`] = dayPlan;
+
+  for (const pick of data.day_top || []) {
+    const origin = pick && pick.origin;
+    if (!origin) {
+      console.warn("timeline: day_top pick missing origin", pick);
+      continue;
+    }
+    const parts = origin.split("/");
+    const segName = parts[parts.length - 1] || "";
+    const match = /^(\d{2})/.exec(segName);
+    if (!match) {
+      console.warn("timeline: day_top pick has malformed origin", origin);
+      continue;
+    }
+    const hour = parseInt(match[1], 10);
+    if (!(hour >= 0 && hour <= 23)) {
+      console.warn("timeline: day_top pick has out-of-range hour", origin);
+      continue;
+    }
+    if (seenOrigins.has(origin)) continue;
+
+    let side;
+    const existing = eventByHour.get(hour);
+    if (existing) {
+      side = existing.side;
+    } else {
+      side = toggle ? "top" : "bottom";
+      toggle = !toggle;
+    }
+
+    const event = {
+      hour,
+      side,
+      kind: "work",
+      title: pick.title,
+      text: pick.description,
+      origin,
+    };
+    dayPlan.push(event);
+    seenOrigins.add(origin);
+    if (!eventByHour.has(hour)) eventByHour.set(hour, event);
+  }
+
+  dayPlan.sort((a, b) => a.hour - b.hour);
+  realDayPlan[`${monthIdx}:${dayInt}`] = dayPlan;
   // Hour view minute events.
   for (const [hh, hd] of Object.entries(data.hours || {})) {
     const picks = hd.picks || [];
@@ -338,30 +398,6 @@ let selectedDay = null;
 let selectedHour = null;
 let selectedMinute = null;
 
-const holidays = new Map(
-  [
-    [0, 1, "New Year's Day"],
-    [0, 20, "Martin Luther King Jr. Day"],
-    [1, 14, "Valentine's Day"],
-    [1, 17, "Presidents' Day"],
-    [2, 17, "St. Patrick's Day"],
-    [3, 20, "Easter"],
-    [4, 11, "Mother's Day"],
-    [4, 26, "Memorial Day"],
-    [5, 15, "Father's Day"],
-    [5, 19, "Juneteenth"],
-    [6, 4, "Independence Day"],
-    [8, 1, "Labor Day"],
-    [9, 13, "Indigenous Peoples' Day"],
-    [9, 31, "Halloween"],
-    [10, 11, "Veterans Day"],
-    [10, 27, "Thanksgiving"],
-    [11, 24, "Christmas Eve"],
-    [11, 25, "Christmas Day"],
-    [11, 31, "New Year's Eve"],
-  ].map(([monthIndex, day, name]) => [`${monthIndex}-${day}`, name]),
-);
-
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -370,12 +406,16 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
-function renderEmptyState() {
+function renderEmptyState(headline, body, opts = {}) {
+  const classes = ["timeline-empty-state", opts.modifierClass || ""].filter(Boolean).join(" ");
+  const link = opts.href && opts.linkText
+    ? `<a href="${escapeHtml(opts.href)}">${escapeHtml(opts.linkText)}</a>`
+    : "";
   return `
-    <div class="timeline-empty-state" data-timeline-state="empty">
-      <h2>no timeline data yet</h2>
-      <p>once observers experience a day alongside you and sol rolls it up, that day will show up here</p>
-      <a href="/app/health">system health →</a>
+    <div class="${classes}" data-timeline-state="empty">
+      <h2>${escapeHtml(headline)}</h2>
+      <p>${escapeHtml(body)}</p>
+      ${link}
     </div>
   `;
 }
@@ -415,10 +455,8 @@ function getDayMeta(monthIndex, day) {
   const monthNum = (m.month_num != null ? m.month_num - 1 : monthIndex);
   const date = new Date(year, monthNum, day);
   const weekday = date.getDay();
-  const holiday = holidays.get(`${monthIndex}-${day}`);
   return {
     dayType: weekday === 0 || weekday === 6 ? "weekend" : "weekday",
-    holiday,
   };
 }
 
@@ -435,126 +473,13 @@ function formatTime(hour, minute = 0) {
   return `${normalizedHour}:${String(minute).padStart(2, "0")}${suffix}`;
 }
 
-function getDayEvent(monthIndex, day) {
-  const yyyymmdd = isoDay(monthIndex, day);
-  if (!yyyymmdd || !months[monthIndex].dayEvents) return null;
-  return months[monthIndex].dayEvents[yyyymmdd] || null;
-}
-
-function getDayPlan(monthIndex, day) {
-  // Real per-day rollup data overrides the synthetic plan when populated.
-  const realKey = `${monthIndex}:${day}`;
-  if (realDayPlan[realKey]) {
-    return realDayPlan[realKey];
-  }
-
-  const { dayType, holiday } = getDayMeta(monthIndex, day);
-  const keyEvent = getDayEvent(monthIndex, day);
-  const isWeekend = dayType === "weekend";
-  const base = isWeekend
-    ? [
-        { hour: 7, side: "top", kind: "personal", title: "Slow Start", text: "Breakfast, a walk, and a lighter read on the week." },
-        { hour: 10, side: "bottom", kind: "personal", title: "Personal Block", text: "Errands, family time, or a longer reset away from the desk." },
-        { hour: 19, side: "bottom", kind: "personal", title: "Evening Offline", text: "Dinner, downtime, and a clear stop before the next week." },
-      ]
-    : [
-        { hour: 6, side: "top", kind: "personal", title: "Morning Reset", text: "Walk, breakfast, and a quick scan of the day's shape." },
-        { hour: 8, side: "bottom", kind: "work", title: "Deep Work", text: "Protected build time before calls and inbox pressure arrive." },
-        { hour: 13, side: "bottom", kind: "personal", title: "Lunch Walk", text: "A short reset between maker work and afternoon coordination." },
-        { hour: 16, side: "top", kind: "work", title: "Calls & Follow-up", text: "Customer notes, investor replies, or team coordination." },
-        { hour: 20, side: "bottom", kind: "personal", title: "Home Block", text: "Dinner, cleanup, and a cleaner boundary around the evening." },
-      ];
-
-  if (keyEvent) {
-    base.splice(isWeekend ? 2 : 2, 0, {
-      hour: isWeekend ? 12 : 11,
-      side: "top",
-      kind: "work",
-      title: keyEvent.title,
-      text: keyEvent.text,
-      featured: true,
-    });
-  }
-
-  if (holiday) {
-    base.splice(1, 0, {
-      hour: 9,
-      side: "bottom",
-      kind: "personal",
-      title: holiday,
-      text: "Keeps the day lighter and protects space around the holiday.",
-      featured: true,
-    });
-  }
-
-  return base.sort((a, b) => a.hour - b.hour);
-}
-
-function getHourEvent(monthIndex, day, hour) {
-  return getDayPlan(monthIndex, day).find((event) => event.hour === hour);
-}
-
-function getMinutePlan(monthIndex, day, hour) {
-  // Real per-segment data overrides the synthetic plan when populated.
-  const realKey = `${monthIndex}:${day}:${hour}`;
-  if (realHourPlan[realKey]) {
-    return realHourPlan[realKey];
-  }
-
-  const hourEvent = getHourEvent(monthIndex, day, hour);
-  const isWorkHour = hour >= 8 && hour <= 17;
-  const base = hourEvent
-    ? [
-        { minute: 0, side: "top", title: "Set Context", text: "Opens notes, names the goal, and removes small distractions." },
-        { minute: 20, side: "bottom", title: hourEvent.title, text: hourEvent.text, featured: true },
-        { minute: 45, side: "top", title: "Name Next Step", text: "Writes the decision, owner, and next concrete action before moving on." },
-      ]
-    : isWorkHour
-      ? [
-          { minute: 5, side: "top", title: "Focus Setup", text: "Chooses one concrete task and closes unrelated tabs." },
-          { minute: 20, side: "bottom", title: "Build / Decide", text: "Uses the middle of the hour for the hardest work or decision." },
-          { minute: 50, side: "top", title: "Commit Notes", text: "Leaves the workspace in a state that is easy to resume." },
-        ]
-      : [
-          { minute: 5, side: "top", title: "Transition", text: "Moves out of the previous context and checks what the body needs." },
-          { minute: 25, side: "bottom", title: "Personal Reset", text: "Walks, eats, reads, or handles home logistics without rushing." },
-          { minute: 50, side: "top", title: "Light Plan", text: "Sets up the next hour without turning the break into work." },
-        ];
-
-  return base;
-}
-
-function getSegmentEvent(monthIndex, day, hour, minute) {
-  return getMinutePlan(monthIndex, day, hour).find((event) => event.minute === minute);
-}
-
-function getFiveMinutePlan(monthIndex, day, hour, minute) {
-  const segmentEvent = getSegmentEvent(monthIndex, day, hour, minute);
-  const isWorkHour = hour >= 8 && hour <= 17;
-  const base = segmentEvent
-    ? [
-        { offset: 0, side: "top", title: "Orient", text: "Reads the immediate cue and decides what this tiny window is for." },
-        { offset: 2, side: "bottom", title: segmentEvent.title, text: segmentEvent.text, featured: true },
-        { offset: 4, side: "top", title: "Leave Trace", text: "Notes the result so the next block starts with context." },
-      ]
-    : isWorkHour
-      ? [
-          { offset: 0, side: "top", title: "Open Thread", text: "Pulls up the exact file, note, or message needed now." },
-          { offset: 2, side: "bottom", title: "Make Progress", text: "Uses the middle minutes for one concrete edit or decision." },
-          { offset: 4, side: "top", title: "Close Loop", text: "Saves the small result and names the next action." },
-        ]
-      : [
-          { offset: 0, side: "top", title: "Pause", text: "Steps out of the previous context and slows the pace." },
-          { offset: 2, side: "bottom", title: "Reset", text: "Takes care of the small personal need that this break is for." },
-          { offset: 4, side: "top", title: "Return Cue", text: "Sets up the next transition without over-planning." },
-        ];
-
-  return base;
-}
-
 function renderYear() {
   if (months.every((m) => !m.yearEvent && !(m.day_count > 0))) {
-    timeline.innerHTML = renderEmptyState();
+    timeline.innerHTML = renderEmptyState(
+      "no timeline data yet",
+      "once observers experience a day alongside you and sol rolls it up, that day will show up here",
+      { href: "/app/health", linkText: "system health →" },
+    );
     return;
   }
 
@@ -587,6 +512,15 @@ async function renderMonth(index) {
   const previous = index > 0 ? months[index - 1] : null;
   const next = index < months.length - 1 ? months[index + 1] : null;
   const monthEvents = Object.values(month.dayEvents || {}).filter(Boolean);
+
+  if (!monthEvents.length) {
+    timeline.innerHTML = renderEmptyState(
+      `nothing observed in ${month.name}`,
+      "this month has no timeline rollups yet.",
+    );
+    return;
+  }
+
   const topEvents = monthEvents.filter((event) => event.side === "top");
   const bottomEvents = monthEvents.filter((event) => event.side === "bottom");
   const eventDays = new Map(monthEvents.map((event) => [event.day, event.side]));
@@ -613,15 +547,14 @@ async function renderMonth(index) {
           ${Array.from({ length: month.days }, (_, dayIndex) => {
             const day = dayIndex + 1;
             const side = eventDays.get(day);
-            const { dayType, holiday } = getDayMeta(index, day);
-            const classes = ["day-cell", dayType, holiday ? "holiday" : "", side ? `has-event timeline-${side}` : ""]
+            const { dayType } = getDayMeta(index, day);
+            const classes = ["day-cell", dayType, side ? `has-event timeline-${side}` : ""]
               .filter(Boolean)
               .join(" ");
-            const label = `${month.name} ${day}, ${month.year || ""}${holiday ? `, ${holiday}` : ""}`;
+            const label = `${month.name} ${day}, ${month.year || ""}`;
             return `
               <button class="${classes}" type="button" data-month="${index}" data-day="${day}" title="${escapeHtml(label)}" aria-label="Open ${escapeHtml(label)}">
                 ${day}
-                ${holiday ? '<span class="holiday-mark" aria-hidden="true"></span>' : ""}
               </button>
             `;
           }).join("")}
@@ -643,12 +576,29 @@ async function renderDay(monthIndex, day) {
   // Lazy-fetch the day's rollup so realDayPlan/realHourPlan/segmentAvail
   // are populated before the day-view renders.
   const yyyymmdd = isoDay(monthIndex, day);
-  if (yyyymmdd) await loadDay(yyyymmdd);
-  const plan = getDayPlan(monthIndex, day);
+  const data = yyyymmdd ? await loadDay(yyyymmdd) : { day_top: [], hours: {}, hours_avail: {} };
+  const plan = realDayPlan[`${monthIndex}:${day}`] || [];
+  const segmentCount = segmentCountFromHoursAvail(data.hours_avail);
+  const dateLabel = formatDateLabel(month, day);
+  if (!plan.length && segmentCount === 0) {
+    timeline.innerHTML = renderEmptyState(
+      `nothing observed on ${dateLabel}`,
+      "the day looks empty here.",
+      { href: "/app/health", linkText: "system health →" },
+    );
+    return;
+  }
+  if (!plan.length && segmentCount > 0 && !(data.day_top || []).length) {
+    const noun = segmentCount === 1 ? "segment" : "segments";
+    timeline.innerHTML = renderEmptyState(
+      `rollup pending for ${dateLabel}`,
+      `${segmentCount} ${noun} are ready for a timeline rollup.`,
+    );
+    return;
+  }
   const topEvents = plan.filter((event) => event.side === "top");
   const bottomEvents = plan.filter((event) => event.side === "bottom");
   const eventHours = new Map(plan.map((event) => [event.hour, event]));
-  const { dayType, holiday } = getDayMeta(monthIndex, day);
   const dayLabel = `${month.short} ${day}`;
 
   timeline.innerHTML = `
@@ -865,12 +815,20 @@ async function renderMinute(monthIndex, day, hour) {
   // loaded before we compute the plan + grid.
   const yyyymmdd = isoDay(monthIndex, day);
   if (yyyymmdd) await loadDay(yyyymmdd);
-  const plan = getMinutePlan(monthIndex, day, hour);
+  const buckets = segmentAvail[`${monthIndex}:${day}:${hour}`] || [];
+  if (!buckets.some((bucket) => bucket && bucket.best_origin)) {
+    timeline.innerHTML = renderEmptyState(
+      "nothing observed in this hour",
+      `there are no segment observations for ${formatTime(hour, 0)}.`,
+    );
+    return;
+  }
+
+  const plan = realHourPlan[`${monthIndex}:${day}:${hour}`] || [];
   const topEvents = plan.filter((event) => event.side === "top");
   const bottomEvents = plan.filter((event) => event.side === "bottom");
   const eventMinutes = new Map(plan.map((event) => [event.minute, event]));
   const focusLabel = `${month.short} ${day} ${formatHour(hour)}`;
-  const buckets = segmentAvail[`${monthIndex}:${day}:${hour}`] || [];
 
   timeline.innerHTML = `
     <div class="minute-view accent-${month.accent}">
@@ -1183,16 +1141,6 @@ function renderMinuteEvent(event) {
   return `
     <article class="minute-event timeline-${event.side}" data-anchor-minute="${event.minute}" data-side="${event.side}"${originAttr}>
       <div class="minute-time">${String(event.minute).padStart(2, "0")}</div>
-      <h3>${escapeHtml(event.title)}</h3>
-      <p>${escapeHtml(event.text)}</p>
-    </article>
-  `;
-}
-
-function renderMicroEvent(event, hour, minute) {
-  return `
-    <article class="micro-event timeline-${event.side}" style="grid-column: ${event.offset + 1} / span 1">
-      <div class="micro-time">${formatTime(hour, minute + event.offset)}</div>
       <h3>${escapeHtml(event.title)}</h3>
       <p>${escapeHtml(event.text)}</p>
     </article>
