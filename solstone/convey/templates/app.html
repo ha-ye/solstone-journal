@@ -7,12 +7,12 @@
   <link rel="stylesheet" href="{{ url_for('root.static', filename='app.css') }}">
 
   <!-- Error handling FIRST - catches all subsequent errors -->
-  <script src="{{ url_for('root.static', filename='error-handler.js') }}"></script>
-  <script src="{{ url_for('root.static', filename='relative-time.js') }}"></script>
-  <script src="{{ url_for('root.static', filename='sol_initiated_constants.js') }}"></script>
-  <script src="{{ url_for('root.static', filename='convey_copy.js') }}"></script>
+  <script src="{{ url_for('root.static', filename='error-handler.js') }}" defer></script>
+  <script src="{{ url_for('root.static', filename='relative-time.js') }}" defer></script>
+  <script src="{{ url_for('root.static', filename='sol_initiated_constants.js') }}" defer></script>
+  <script src="{{ url_for('root.static', filename='convey_copy.js') }}" defer></script>
   <script src="{{ url_for('root.static', filename='diagnostic-console.js') }}" defer></script>
-  <script src="{{ url_for('root.static', filename='chat_reasons.js') }}"></script>
+  <script src="{{ url_for('root.static', filename='chat_reasons.js') }}" defer></script>
 
   <!-- Embed facets data for immediate client-side access -->
   <script>
@@ -25,14 +25,14 @@
   </script>
 
   <!-- SSE connection for Callosum events -->
-  <script src="{{ url_for('root.static', filename='websocket.js') }}"></script>
-  <script src="{{ url_for('root.static', filename='api.js') }}"></script>
+  <script src="{{ url_for('root.static', filename='websocket.js') }}" defer></script>
+  <script src="{{ url_for('root.static', filename='api.js') }}" defer></script>
   <!-- App JavaScript (includes AppServices framework) -->
-  <script src="{{ url_for('root.static', filename='app.js') }}"></script>
-  <script src="{{ url_for('root.static', filename='report-error.js') }}"></script>
+  <script src="{{ url_for('root.static', filename='app.js') }}" defer></script>
+  <script src="{{ url_for('root.static', filename='report-error.js') }}" defer></script>
   <!-- Markdown rendering deps (marked + DOMPurify). Must load before workspace include. -->
-  <script src="{{ vendor_lib('marked') }}"></script>
-  <script src="{{ vendor_lib('dompurify') }}"></script>
+  <script src="{{ vendor_lib('marked') }}" defer></script>
+  <script src="{{ vendor_lib('dompurify') }}" defer></script>
 
   <!-- Apply facet theme immediately to prevent flash -->
   {% if selected_facet and app_registry.apps[app].facets_enabled() %}

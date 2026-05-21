@@ -138,6 +138,7 @@ def create_app(journal: str = "") -> Flask:
     _migrate_password_hash()
     _migrate_setup_completed()
     app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = timedelta(seconds=300)
     app.config.setdefault("SECURE_LISTENER_ENABLED", False)
     install_identity_stamper(app)
     install_request_id_stamper(app)
