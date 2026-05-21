@@ -6,11 +6,14 @@ from __future__ import annotations
 import json
 import os
 import time
+from datetime import date
 from pathlib import Path
 
 import pytest
 
 from solstone.apps.timeline import routes
+
+from .conftest import seed_segment
 
 DAY = "20260510"
 MONTH = "202605"
@@ -62,6 +65,71 @@ def test_workspace_root_renders(client):
     assert b"/app/timeline/static/data-mock.js" not in response.data
     assert b"/app/timeline/static/timeline.js" in response.data
     assert b"defer" in response.data
+
+
+def test_root_redirects_to_today(client, monkeypatch):
+    class _FakeDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 5, 21)
+
+    monkeypatch.setattr(routes, "date", _FakeDate)
+
+    response = client.get("/app/timeline/")
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/app/timeline/20260521")
+
+
+def test_year_view_renders_shell(client):
+    response = client.get("/app/timeline/year")
+
+    assert response.status_code == 200
+    assert b'id="timeline-shell"' in response.data
+    assert (
+        b'window.timelineInitial = {"day": null, "month": null, "view": "year"}'
+        in response.data
+    )
+
+
+def test_month_view_renders_shell(client):
+    response = client.get("/app/timeline/202605")
+
+    assert response.status_code == 200
+    assert b'id="timeline-shell"' in response.data
+    assert (
+        b'window.timelineInitial = {"day": null, "month": "202605", "view": "month"}'
+        in response.data
+    )
+
+
+def test_day_view_renders_shell(client):
+    response = client.get("/app/timeline/20260510")
+
+    assert response.status_code == 200
+    assert b'id="timeline-shell"' in response.data
+    assert (
+        b'window.timelineInitial = {"day": "20260510", "month": null, "view": "day"}'
+        in response.data
+    )
+
+
+def test_day_view_accepts_calendar_invalid(client):
+    response = client.get("/app/timeline/20260230")
+
+    assert response.status_code == 200
+    assert (
+        b'window.timelineInitial = {"day": "20260230", "month": null, "view": "day"}'
+        in response.data
+    )
+
+
+def test_unknown_path_returns_404(client):
+    response = client.get("/app/timeline/notaday")
+    short_digits = client.get("/app/timeline/2026053")
+
+    assert response.status_code == 404
+    assert short_digits.status_code == 404
 
 
 def test_empty_journal_workspace_has_no_demo_shell(empty_client):
@@ -225,6 +293,57 @@ def test_segment_bad_input_returns_400(client):
 
     assert response.status_code == 400
     assert response.get_json()["reason_code"] == "invalid_path"
+
+
+def test_stats_returns_seg_counts(empty_client, empty_timeline_env):
+    seed_segment(empty_timeline_env, DAY, "090000_300")
+    seed_segment(empty_timeline_env, DAY, "091000_300", stream="default")
+
+    response = empty_client.get(f"/app/timeline/api/stats/{MONTH}")
+
+    assert response.status_code == 200
+    assert response.get_json() == {DAY: 2}
+
+
+def test_stats_empty_month(empty_client):
+    response = empty_client.get("/app/timeline/api/stats/202501")
+
+    assert response.status_code == 200
+    assert response.get_json() == {}
+
+
+def test_stats_invalid_month(empty_client):
+    response = empty_client.get("/app/timeline/api/stats/notamonth")
+
+    assert response.status_code == 400
+    assert response.get_json()["reason_code"] == "invalid_month"
+
+
+def test_stats_missing_journal_root(client, monkeypatch):
+    monkeypatch.setattr(routes.state, "journal_root", None)
+
+    response = client.get(f"/app/timeline/api/stats/{MONTH}")
+
+    assert response.status_code == 200
+    assert response.get_json() == {}
+
+
+def test_stats_cache_invalidates_on_mtime(empty_client, empty_timeline_env):
+    seed_segment(empty_timeline_env, DAY, "090000_300")
+    first = empty_client.get(f"/app/timeline/api/stats/{MONTH}")
+
+    assert first.status_code == 200
+    assert first.get_json() == {DAY: 1}
+
+    second_segment = seed_segment(empty_timeline_env, DAY, "091000_300")
+    bumped = time.time() + 10
+    os.utime(second_segment, (bumped, bumped))
+    os.utime(second_segment / "marker", (bumped, bumped))
+
+    second = empty_client.get(f"/app/timeline/api/stats/{MONTH}")
+
+    assert second.status_code == 200
+    assert second.get_json() == {DAY: 2}
 
 
 def test_master_cache_invalidates_on_mtime(client, timeline_env):

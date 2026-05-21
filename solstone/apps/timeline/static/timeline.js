@@ -393,6 +393,9 @@ function clearSegmentDetail() {
 }
 
 const timeline = document.querySelector("#timeline-root");
+const timelineInitial = window.timelineInitial || { view: "year", day: null, month: null };
+const { view: initialView, day: initialDay, month: initialMonth } = timelineInitial;
+let currentView = initialView;
 let selectedMonth = null;
 let selectedDay = null;
 let selectedHour = null;
@@ -471,6 +474,143 @@ function formatTime(hour, minute = 0) {
   const suffix = hour < 12 ? "a" : "p";
   const normalizedHour = hour % 12 === 0 ? 12 : hour % 12;
   return `${normalizedHour}:${String(minute).padStart(2, "0")}${suffix}`;
+}
+
+function syncPathStateFromLocation() {
+  const match = /^\/app\/timeline\/?([^/]*)$/.exec(window.location.pathname);
+  let view = initialView;
+  let day = initialDay;
+  let month = initialMonth;
+
+  if (match) {
+    const value = match[1];
+    if (value === "year") {
+      view = "year";
+      day = null;
+      month = null;
+    } else if (/^\d{8}$/.test(value)) {
+      view = "day";
+      day = value;
+      month = null;
+    } else if (/^\d{6}$/.test(value)) {
+      view = "month";
+      day = null;
+      month = value;
+    }
+  }
+
+  currentView = view;
+  if (view === "day" && day) {
+    selectedMonth = isoToMonthIdx(day.slice(0, 6));
+    selectedDay = parseInt(day.slice(6, 8), 10);
+  } else if (view === "month" && month) {
+    selectedMonth = isoToMonthIdx(month);
+    selectedDay = null;
+  } else {
+    selectedMonth = null;
+    selectedDay = null;
+  }
+}
+
+async function dispatchBootView() {
+  if (currentView === "year") {
+    renderYear();
+    return;
+  }
+
+  if (currentView === "month") {
+    const month = months[selectedMonth];
+    if (!month) {
+      timeline.innerHTML = renderEmptyState(
+        "month not in timeline",
+        "this month is outside the current timeline window.",
+      );
+      return;
+    }
+    await loadMonth(month.ym);
+    await renderMonth(selectedMonth);
+    return;
+  }
+
+  if (currentView === "day") {
+    const day = selectedMonth !== null && selectedDay !== null
+      ? isoDay(selectedMonth, selectedDay)
+      : null;
+    const month = months[selectedMonth];
+    if (!day || !month) {
+      timeline.innerHTML = renderEmptyState(
+        "day not in timeline",
+        "this day is outside the current timeline window.",
+      );
+      return;
+    }
+    await loadMonth(day.slice(0, 6));
+    await loadDay(day);
+    await renderDay(selectedMonth, selectedDay);
+    return;
+  }
+
+  renderYear();
+}
+
+async function prefetchSegmentForMinute(hour, minute) {
+  const buckets = segmentAvail[`${selectedMonth}:${selectedDay}:${hour}`] || [];
+  const bucket = buckets[Math.floor(minute / 5)] || null;
+  if (bucket && bucket.best_origin) {
+    await loadSegment(bucket.best_origin);
+  }
+}
+
+async function applyHash(hash) {
+  syncPathStateFromLocation();
+  if (!hash || hash === "#") {
+    selectedHour = null;
+    selectedMinute = null;
+    return dispatchBootView();
+  }
+
+  const hourMatch = hash.match(/^#h=(\d{1,2})$/);
+  if (hourMatch) {
+    const hour = parseInt(hourMatch[1], 10);
+    if (
+      hour >= 0 &&
+      hour <= 23 &&
+      currentView === "day" &&
+      Number.isInteger(selectedMonth) &&
+      selectedMonth >= 0 &&
+      Number.isInteger(selectedDay)
+    ) {
+      selectedHour = hour;
+      selectedMinute = null;
+      return renderMinute(selectedMonth, selectedDay, hour);
+    }
+  }
+
+  const minuteMatch = hash.match(/^#m=(\d{4})$/);
+  if (minuteMatch) {
+    const hour = parseInt(minuteMatch[1].slice(0, 2), 10);
+    const minute = parseInt(minuteMatch[1].slice(2, 4), 10);
+    if (
+      hour >= 0 &&
+      hour <= 23 &&
+      minute >= 0 &&
+      minute <= 59 &&
+      minute % 5 === 0 &&
+      currentView === "day" &&
+      Number.isInteger(selectedMonth) &&
+      selectedMonth >= 0 &&
+      Number.isInteger(selectedDay)
+    ) {
+      selectedHour = hour;
+      selectedMinute = minute;
+      await prefetchSegmentForMinute(hour, minute);
+      return renderFiveMinute(selectedMonth, selectedDay, hour, minute);
+    }
+  }
+
+  selectedHour = null;
+  selectedMinute = null;
+  return dispatchBootView();
 }
 
 function renderYear() {
@@ -1162,11 +1302,13 @@ timeline.addEventListener("click", async (event) => {
     const day = Number(returnHourButton.dataset.day);
     const hour = Number(returnHourButton.dataset.hour);
     if (Number.isInteger(monthIndex) && Number.isInteger(day) && Number.isInteger(hour)) {
+      currentView = "day";
       selectedMonth = monthIndex;
       selectedDay = day;
       selectedHour = hour;
       selectedMinute = null;
-      renderMinute(monthIndex, day, hour);
+      history.pushState({}, "", "#h=" + hour);
+      await renderMinute(monthIndex, day, hour);
     }
     return;
   }
@@ -1176,11 +1318,13 @@ timeline.addEventListener("click", async (event) => {
     const monthIndex = Number(returnDayButton.dataset.month);
     const day = Number(returnDayButton.dataset.day);
     if (Number.isInteger(monthIndex) && Number.isInteger(day)) {
+      currentView = "day";
       selectedMonth = monthIndex;
       selectedDay = day;
       selectedHour = null;
       selectedMinute = null;
-      renderDay(monthIndex, day);
+      history.pushState({}, "", window.location.pathname);
+      await renderDay(monthIndex, day);
     }
     return;
   }
@@ -1188,13 +1332,16 @@ timeline.addEventListener("click", async (event) => {
   const returnMonthButton = event.target.closest("[data-return-month]");
   if (returnMonthButton) {
     const monthIndex = Number(returnMonthButton.dataset.month);
-    if (Number.isInteger(monthIndex)) {
+    const ym = months[monthIndex]?.ym;
+    if (Number.isInteger(monthIndex) && ym) {
+      currentView = "month";
       selectedMonth = monthIndex;
       selectedDay = null;
       selectedHour = null;
       selectedMinute = null;
-      if (months[monthIndex]?.ym) await loadMonth(months[monthIndex].ym);
-      renderMonth(monthIndex);
+      history.pushState({}, "", "/app/timeline/" + ym);
+      await loadMonth(ym);
+      await renderMonth(monthIndex);
     }
     return;
   }
@@ -1204,18 +1351,22 @@ timeline.addEventListener("click", async (event) => {
     const monthIndex = Number(minuteButton.dataset.month);
     const day = Number(minuteButton.dataset.day);
     const hour = Number(minuteButton.dataset.hour);
-    const minute = Number(minuteButton.dataset.minute);
+    const targetMinute = Number(minuteButton.dataset.minute);
     if (
       Number.isInteger(monthIndex) &&
       Number.isInteger(day) &&
       Number.isInteger(hour) &&
-      Number.isInteger(minute)
+      Number.isInteger(targetMinute)
     ) {
+      currentView = "day";
       selectedMonth = monthIndex;
       selectedDay = day;
       selectedHour = hour;
-      selectedMinute = minute;
-      renderFiveMinute(monthIndex, day, hour, minute);
+      selectedMinute = targetMinute;
+      const hh = String(selectedHour).padStart(2, "0");
+      const mm = String(targetMinute).padStart(2, "0");
+      history.pushState({}, "", "#m=" + hh + mm);
+      await renderFiveMinute(monthIndex, day, hour, targetMinute);
     }
     return;
   }
@@ -1226,11 +1377,13 @@ timeline.addEventListener("click", async (event) => {
     const day = Number(hourButton.dataset.day);
     const hour = Number(hourButton.dataset.hour);
     if (Number.isInteger(monthIndex) && Number.isInteger(day) && Number.isInteger(hour)) {
+      currentView = "day";
       selectedMonth = monthIndex;
       selectedDay = day;
       selectedHour = hour;
       selectedMinute = null;
-      renderMinute(monthIndex, day, hour);
+      history.pushState({}, "", "#h=" + hour);
+      await renderMinute(monthIndex, day, hour);
     }
     return;
   }
@@ -1239,12 +1392,15 @@ timeline.addEventListener("click", async (event) => {
   if (dayButton) {
     const monthIndex = Number(dayButton.dataset.month);
     const day = Number(dayButton.dataset.day);
-    if (Number.isInteger(monthIndex) && Number.isInteger(day)) {
+    const dayString = isoDay(monthIndex, day);
+    if (Number.isInteger(monthIndex) && Number.isInteger(day) && dayString) {
+      currentView = "day";
       selectedMonth = monthIndex;
       selectedDay = day;
       selectedHour = null;
       selectedMinute = null;
-      renderDay(monthIndex, day);
+      history.pushState({}, "", "/app/timeline/" + dayString);
+      await renderDay(monthIndex, day);
     }
     return;
   }
@@ -1256,26 +1412,44 @@ timeline.addEventListener("click", async (event) => {
   if (!Number.isInteger(index)) return;
 
   if (selectedMonth === index && button.classList.contains("timeline-focus-node")) {
+    currentView = "year";
     selectedMonth = null;
     selectedDay = null;
     selectedHour = null;
     selectedMinute = null;
+    history.pushState({}, "", "/app/timeline/year");
     renderYear();
     return;
   }
 
+  const ym = months[index]?.ym;
+  if (!ym) return;
+  currentView = "month";
   selectedMonth = index;
   selectedDay = null;
   selectedHour = null;
   selectedMinute = null;
-  if (months[index]?.ym) await loadMonth(months[index].ym);
-  renderMonth(index);
+  history.pushState({}, "", "/app/timeline/" + ym);
+  await loadMonth(ym);
+  await renderMonth(index);
 });
 
-loadIndex().then((result) => {
+window.addEventListener("popstate", (e) => {
+  // Pathname is authoritative for view; hash is authoritative for sub-day depth.
+  // For 3b, popstate only fires within the same document, so pathname is stable
+  // across all events EXCEPT browser back/forward across the boot pathname.
+  // Day URLs are the only pathname that hosts sub-day fragments, so we re-derive
+  // hash state and re-render relative to the current day/month/year context.
+  applyHash(window.location.hash);
+});
+
+async function bootTimeline() {
+  const result = await loadIndex();
   if (result.state === "error") {
     timeline.innerHTML = renderErrorState();
-  } else {
-    renderYear();
+    return;
   }
-});
+  await applyHash(window.location.hash);
+}
+
+bootTimeline();

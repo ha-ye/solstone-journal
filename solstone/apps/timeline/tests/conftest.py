@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from solstone.think.utils import DEFAULT_STREAM
+
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
@@ -27,10 +29,12 @@ def _reset_caches():
     routes._master_cache = None
     routes._master_key = None
     routes._seg_cache.clear()
+    routes._stats_for_month.cache_clear()
     yield
     routes._master_cache = None
     routes._master_key = None
     routes._seg_cache.clear()
+    routes._stats_for_month.cache_clear()
 
 
 @pytest.fixture
@@ -89,6 +93,18 @@ def write_json(path: Path, payload: dict) -> None:
     path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+
+
+def seed_segment(
+    journal: Path, day: str, segment: str, stream: str = DEFAULT_STREAM
+) -> Path:
+    if stream == DEFAULT_STREAM:
+        seg_dir = journal / "chronicle" / day / segment
+    else:
+        seg_dir = journal / "chronicle" / day / stream / segment
+    seg_dir.mkdir(parents=True, exist_ok=True)
+    (seg_dir / "marker").write_text("x", encoding="utf-8")
+    return seg_dir
 
 
 @pytest.fixture

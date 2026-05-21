@@ -1,4 +1,7 @@
 <link rel="stylesheet" href="{{ url_for('app:timeline.static', filename='timeline.css') }}">
+<script>
+window.timelineInitial = {{ initial|tojson }};
+</script>
 
 <div class="workspace-content-wide">
   <div id="timeline-shell" class="timeline-shell">

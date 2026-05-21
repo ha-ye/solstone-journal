@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import calendar
+import functools
 import json
 import re
 from collections import OrderedDict, defaultdict
@@ -11,7 +12,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, redirect, render_template, url_for
 
 from solstone.convey import state
 from solstone.convey.reasons import (
@@ -285,6 +286,112 @@ def _load_segment(day: str, stream: str, seg: str) -> dict[str, Any]:
     if len(_seg_cache) > _SEG_CACHE_MAX:
         _seg_cache.popitem(last=False)
     return out
+
+
+@timeline_bp.route("/")
+def index():
+    today = date.today().strftime("%Y%m%d")
+    return redirect(url_for("app:timeline.timeline_value_view", value=today))
+
+
+@timeline_bp.route("/year")
+def timeline_year_view() -> str:
+    return render_template(
+        "app.html",
+        view="year",
+        title="timeline",
+        initial={"view": "year", "day": None, "month": None},
+    )
+
+
+@timeline_bp.route("/<value>")
+def timeline_value_view(value: str) -> tuple[str, int] | str:
+    if _DAY_RE.fullmatch(value):
+        return render_template(
+            "app.html",
+            view="day",
+            title=f"timeline · {value}",
+            initial={"view": "day", "day": value, "month": None},
+        )
+    if _MONTH_RE.fullmatch(value):
+        return render_template(
+            "app.html",
+            view="month",
+            title=f"timeline · {value}",
+            initial={"view": "month", "day": None, "month": value},
+        )
+    return "", 404
+
+
+def _day_seg_count_mtime(day_dir: Path) -> float:
+    """Return latest mtime under a day directory, or 0.0 if missing."""
+    try:
+        max_mtime = day_dir.stat().st_mtime
+    except FileNotFoundError:
+        return 0.0
+
+    try:
+        for child in day_dir.rglob("*"):
+            try:
+                child_mtime = child.stat().st_mtime
+            except FileNotFoundError:
+                continue
+            if child_mtime > max_mtime:
+                max_mtime = child_mtime
+    except FileNotFoundError:
+        return max_mtime
+    return max_mtime
+
+
+@functools.lru_cache(maxsize=64)
+def _stats_for_month(month: str, mtime_key: float) -> dict[str, int]:
+    """Return segment counts by day for a month."""
+    del mtime_key
+
+    if not state.journal_root:
+        return {}
+
+    chronicle = Path(state.journal_root) / "chronicle"
+    if not chronicle.exists():
+        return {}
+
+    out: dict[str, int] = {}
+    for day_dir in chronicle.iterdir():
+        if not day_dir.is_dir():
+            continue
+        day = day_dir.name
+        if not _DAY_RE.fullmatch(day) or not day.startswith(month):
+            continue
+        seg_count = len(iter_segments(day_dir))
+        if seg_count:
+            out[day] = seg_count
+    return out
+
+
+@timeline_bp.route("/api/stats/<ym>")
+def timeline_stats(ym: str) -> Any:
+    if not _MONTH_RE.fullmatch(ym):
+        return error_response(INVALID_MONTH, detail="Invalid month format")
+
+    if not state.journal_root:
+        return jsonify({})
+
+    chronicle = Path(state.journal_root) / "chronicle"
+    if not chronicle.exists():
+        return jsonify({})
+
+    matching = [
+        day_dir
+        for day_dir in chronicle.iterdir()
+        if day_dir.is_dir()
+        and _DAY_RE.fullmatch(day_dir.name)
+        and day_dir.name.startswith(ym)
+    ]
+    if not matching:
+        return jsonify({})
+
+    mtime_key = max(_day_seg_count_mtime(day_dir) for day_dir in matching)
+    return jsonify(_stats_for_month(ym, mtime_key))
 
 
 @timeline_bp.route("/api/index")

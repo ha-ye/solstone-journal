@@ -2,5 +2,6 @@
   "icon": "🕰️",
   "label": "timeline",
   "facets": {"disabled": true},
-  "date_nav": false
+  "date_nav": true,
+  "allow_future_dates": false
 }
