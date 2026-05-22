@@ -89,12 +89,19 @@ fi
 GIT_REF=$(git rev-parse HEAD)
 
 # 1. Linux artifacts: sdist + py3-none-any.whl
-echo "==> [1/4] building Linux artifacts (sdist + py3-none-any.whl)"
+echo "==> [1/5] building Linux artifacts (sdist + py3-none-any.whl)"
 rm -rf dist/
 uv build
 
+# Pre-flight the CHANGELOG block now — before the expensive pro5e leg and the
+# irreversible PyPI upload. extract_changelog.sh exits non-zero if the
+# `## [VERSION]` block is missing, so a forgotten changelog fails fast instead
+# of after publish.
+VERSION=$(ls dist/solstone-*-py3-none-any.whl | head -1 | sed -E 's/.*solstone-([^-]+)-.*/\1/')
+bash scripts/extract_changelog.sh "$VERSION" >/dev/null
+
 # 2. macOS arm64 wheel: build helper + sign + notarize + bundle on pro5e
-echo "==> [2/4] pro5e: building macosx_14_0_arm64 wheel from $GIT_REF"
+echo "==> [2/5] pro5e: building macosx_14_0_arm64 wheel from $GIT_REF"
 if ! ssh -o ConnectTimeout=5 "$PRO5E_HOST" true 2>/dev/null; then
     echo "error: $PRO5E_HOST not reachable; skip with --no-macos to publish only Linux artifacts (not implemented)" >&2
     exit 1
@@ -112,7 +119,7 @@ ssh "$PRO5E_HOST" "tmux-run hopper ~/projects/solstone 'set -e; \
     NOTARY_KEYCHAIN_PROFILE=$NOTARY_PROFILE make wheel-macos'"
 
 # 3. Pull the macOS wheel back into local dist/
-echo "==> [3/4] rsyncing macOS wheel back"
+echo "==> [3/5] rsyncing macOS wheel back"
 rsync -av --include='*macosx_14_0_arm64.whl' --exclude='*' \
     "$PRO5E_HOST:projects/solstone/dist/" ./dist/
 
@@ -122,14 +129,53 @@ ls -la dist/
 
 # 4. twine check + upload
 echo
-echo "==> [4/4] twine check + upload to $TARGET"
+echo "==> [4/5] twine check + upload to $TARGET"
 uvx twine check dist/*
 TWINE_USERNAME=__token__ TWINE_PASSWORD="$TOKEN" \
     uvx twine upload "${REPOSITORY_ARGS[@]}" dist/*
 
-VERSION=$(ls dist/solstone-*-py3-none-any.whl | head -1 | sed -E 's/.*solstone-([^-]+)-.*/\1/')
 echo
 echo "published solstone ${VERSION} to ${TARGET}:"
 echo "  sdist: dist/solstone-${VERSION}.tar.gz"
 echo "  any:   dist/solstone-${VERSION}-py3-none-any.whl"
 echo "  macos: dist/solstone-${VERSION}-py3-none-macosx_14_0_arm64.whl"
+
+# 5. tag the commit + cut a GitHub Release. Production only — a TestPyPI dry-run
+#    should not leave a git tag or a public release behind. Mirrors the
+#    solstone-linux release.sh tail so all product repos share one shape, with
+#    release notes pulled from the shared scripts/extract_changelog.sh.
+if [[ "$TARGET" != "pypi" ]]; then
+    echo
+    echo "skipping git tag + GitHub release (TestPyPI run)"
+    exit 0
+fi
+
+TAG="v${VERSION}"
+echo
+echo "==> [5/5] tagging ${TAG} + creating GitHub release"
+git tag -a "$TAG" -m "solstone ${VERSION}"
+if ! git push origin "$TAG"; then
+    echo "error: git push origin ${TAG} failed; the tag was created locally but not pushed." >&2
+    echo "       PyPI is published and immutable. Resolve the push and create the release manually:" >&2
+    echo "       gh release create ${TAG} dist/solstone-${VERSION}.tar.gz dist/solstone-${VERSION}-*.whl --title 'solstone ${VERSION}' --notes-file <(scripts/extract_changelog.sh ${VERSION})" >&2
+    exit 1
+fi
+
+NOTES_FILE=$(mktemp)
+trap 'rm -f "$NOTES_FILE"' EXIT
+scripts/extract_changelog.sh "$VERSION" > "$NOTES_FILE"
+
+if ! gh release create "$TAG" \
+    "dist/solstone-${VERSION}.tar.gz" \
+    dist/solstone-${VERSION}-*.whl \
+    --title "solstone ${VERSION}" \
+    --notes-file "$NOTES_FILE"; then
+    echo "error: gh release create failed." >&2
+    echo "       PyPI is published and immutable; the git tag ${TAG} is pushed." >&2
+    echo "       Re-run manually:" >&2
+    echo "       gh release create ${TAG} dist/solstone-${VERSION}.tar.gz dist/solstone-${VERSION}-*.whl --title 'solstone ${VERSION}' --notes-file <(scripts/extract_changelog.sh ${VERSION})" >&2
+    exit 1
+fi
+
+echo
+echo "✓ tagged ${TAG} and created GitHub release with sdist + wheels attached"
