@@ -4,7 +4,7 @@
 """AI provider backends for think.
 
 This package contains provider-specific implementations for LLM generation
-and agent execution. Each provider module exposes:
+and agent execution. Effective provider modules expose:
 
 - run_generate(): Sync text generation, returns GenerateResult
 - run_agenerate(): Async text generation, returns GenerateResult
@@ -31,7 +31,7 @@ from typing import Any, Dict, List
 # Provider Registry
 # ---------------------------------------------------------------------------
 # Central registry of supported providers and their module paths.
-# All registered providers must implement:
+# All registered provider module targets must implement:
 #   - run_generate(contents, model, ...) -> GenerateResult
 #   - run_agenerate(contents, model, ...) -> GenerateResult
 #   - run_cogitate(config, on_event) -> str

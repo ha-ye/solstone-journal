@@ -696,7 +696,7 @@ def log_token_usage(
         ):
             normalized_usage["cached_tokens"] = usage["cached_input_tokens"]
 
-        # Compute total_tokens from parts when missing (e.g. Codex CLI omits it)
+        # Compute total_tokens from parts when missing.
         if not normalized_usage.get("total_tokens"):
             inp = normalized_usage.get("input_tokens", 0)
             out = normalized_usage.get("output_tokens", 0)

@@ -417,21 +417,6 @@ def test_uninstall_anthropic_does_not_invoke_openai_cleanup(
     assert calls == []
 
 
-def test_resolve_bundled_binary_success(journal_config):
-    journal_config(bundled_provider_config("openai", "valid"))
-
-    assert bundled.resolve_bundled_binary("openai") == Path("/tmp/solstone-test/openai")
-
-
-def test_resolve_bundled_binary_missing_has_install_hint(journal_config):
-    journal_config(bundled_provider_config("anthropic", "not-enabled"))
-
-    with pytest.raises(bundled.CogitateProviderNotInstalled) as exc_info:
-        bundled.resolve_bundled_binary("anthropic")
-
-    assert "sol call settings providers install anthropic" in str(exc_info.value)
-
-
 def test_uv_install_error_categorization(monkeypatch):
     monkeypatch.setattr(
         bundled.subprocess,

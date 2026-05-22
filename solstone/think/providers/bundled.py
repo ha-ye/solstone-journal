@@ -649,26 +649,6 @@ def validate_key(name: str) -> ContractState:
         return get_provider_state(name)
 
 
-def resolve_bundled_binary(name: str) -> Path:
-    """Return the installed bundled binary path for a provider."""
-
-    state = get_provider_state(name)
-    if state["state"] == "disabled":
-        raise CogitateProviderDisabled(
-            f"Bundled provider {name} is disabled. Run `{_install_hint(name)}` to reinstall or enable it."
-        )
-    if state["state"] not in BINARY_STATES:
-        raise CogitateProviderNotInstalled(
-            f"Bundled cogitate provider {name} is not installed. Run `{_install_hint(name)}`."
-        )
-    path = state.get("binary_path")
-    if not path:
-        raise CogitateProviderNotInstalled(
-            f"Bundled cogitate provider {name} has no binary path. Run `{_install_hint(name)}`."
-        )
-    return Path(path)
-
-
 def _install_thread(name: str) -> None:
     try:
         _run_uv_pip_install(_sdk_specs(name))
@@ -993,7 +973,6 @@ __all__ = [
     "get_provider_state",
     "install_provider",
     "is_stuck_enabling",
-    "resolve_bundled_binary",
     "uninstall_provider",
     "validate_key",
 ]
