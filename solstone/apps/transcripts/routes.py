@@ -48,7 +48,13 @@ from solstone.think.entities.journal import get_journal_principal, load_journal_
 from solstone.think.media import MIME_TYPES
 from solstone.think.models import get_usage_cost
 from solstone.think.supervisor import is_supervisor_up
-from solstone.think.utils import STREAM_RE, day_dirs, day_path, segment_path
+from solstone.think.utils import (
+    STREAM_RE,
+    day_dirs,
+    day_path,
+    segment_parse,
+    segment_path,
+)
 from solstone.think.utils import segment_key as validate_segment_key
 
 logger = logging.getLogger(__name__)
@@ -272,8 +278,6 @@ def _load_jsonl(path: str) -> list[dict]:
 
 def _format_time_from_offset(segment_key: str, offset_sec: float) -> str:
     """Convert segment start + offset to HH:MM:SS format."""
-    from solstone.think.utils import segment_parse
-
     start_time, _ = segment_parse(segment_key)
     if not start_time:
         return ""
@@ -285,6 +289,36 @@ def _format_time_from_offset(segment_key: str, offset_sec: float) -> str:
     m = (total_sec % 3600) // 60
     s = total_sec % 60
     return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def _read_audio_duration_seconds(entries: list[dict], segment_key: str) -> float:
+    """Best-effort segment audio duration in seconds (read-only).
+
+    Prefers the transcribe-time `duration` from the audio header entry (the
+    metadata entry without a `start`); falls back to the segment-key window
+    length (HHMMSS_LEN). Returns 0.0 if neither is available.
+    """
+    for entry in entries:
+        if "start" in entry:
+            continue
+        duration = entry.get("duration")
+        try:
+            duration_seconds = float(duration)
+        except (TypeError, ValueError):
+            continue
+        if duration_seconds > 0:
+            return duration_seconds
+
+    start_time, end_time = segment_parse(segment_key)
+    if not start_time or not end_time:
+        return 0.0
+
+    start_seconds = start_time.hour * 3600 + start_time.minute * 60 + start_time.second
+    end_seconds = end_time.hour * 3600 + end_time.minute * 60 + end_time.second
+    window_seconds = end_seconds - start_seconds
+    if window_seconds > 0:
+        return float(window_seconds)
+    return 0.0
 
 
 @transcripts_bp.route("/api/segment/<day>/<stream>/<segment_key>")
@@ -334,6 +368,7 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
 
     chunks: list[dict] = []
     audio_file_url = None
+    audio_duration = 0.0
     video_files: dict[str, str] = {}  # jsonl filename -> video URL
     media_sizes: dict[str, int] = {"audio": 0, "screen": 0}
     has_raw_reference = False
@@ -375,6 +410,10 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
     for audio_path in sorted(audio_files):
         try:
             entries = _load_jsonl(audio_path)
+            audio_duration = max(
+                audio_duration,
+                _read_audio_duration_seconds(entries, segment_key),
+            )
             formatted_chunks, meta = format_audio(entries, {"file_path": audio_path})
 
             # Build sentence_id mapping (1-based over transcript entries only).
@@ -573,6 +612,7 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
         {
             "chunks": chunks,
             "audio_file": audio_file_url,
+            "duration": audio_duration,
             "video_files": video_files,
             "md_files": md_files,
             "segment_key": segment_key,

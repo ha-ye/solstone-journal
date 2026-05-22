@@ -303,6 +303,62 @@ def test_segment_content_returns_warning_details_for_parse_failures(
     assert all(detail["ts"] for detail in data["warning_details"])
 
 
+def test_segment_content_returns_audio_header_duration(client, journal_copy):
+    day = "20990107"
+    stream = "default"
+    segment = "090000_300"
+    _write_segment(journal_copy, day, stream, segment, screen=False)
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    _write_jsonl(
+        segment_dir / "audio.jsonl",
+        [
+            {"raw": "raw.m4a", "duration": 123.4},
+            {
+                "start": "00:00:05",
+                "source": "mic",
+                "speaker": 1,
+                "text": "duration from header",
+            },
+        ],
+    )
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    duration = response.get_json()["duration"]
+    assert duration == 123.4
+    assert isinstance(duration, float)
+    assert duration > 0
+
+
+def test_segment_content_falls_back_to_segment_window_duration(client, journal_copy):
+    day = "20990108"
+    stream = "default"
+    segment = "090000_300"
+    _write_segment(journal_copy, day, stream, segment, screen=False)
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    _write_jsonl(
+        segment_dir / "audio.jsonl",
+        [
+            {"raw": "raw.m4a"},
+            {
+                "start": "00:00:05",
+                "source": "mic",
+                "speaker": 1,
+                "text": "duration from segment key",
+            },
+        ],
+    )
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    duration = response.get_json()["duration"]
+    assert duration == 300.0
+    assert isinstance(duration, float)
+    assert duration > 0
+
+
 def test_segment_content_drops_screen_md_when_screen_chunks_present(client):
     response = client.get(
         f"/app/transcripts/api/segment/{FIXTURE_DAY}/{FIXTURE_STREAM}/{FIXTURE_SEGMENT}"

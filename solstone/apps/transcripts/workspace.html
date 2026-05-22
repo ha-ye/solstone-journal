@@ -2605,6 +2605,19 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     }
   }
 
+  function formatAudioDuration(seconds) {
+    const totalSeconds = Math.round(Number(seconds) || 0);
+    if (totalSeconds <= 0) return '';
+
+    const secs = totalSeconds % 60;
+    const minutes = Math.floor(totalSeconds / 60) % 60;
+    const hours = Math.floor(totalSeconds / 3600);
+    if (hours > 0) {
+      return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    }
+    return `${minutes}:${String(secs).padStart(2, '0')}`;
+  }
+
   function renderSegmentTimeline(data, showAudio, showScreen, targetEl) {
     const chunks = (data.chunks || []).filter(c => {
       if (c.type === 'audio' && !showAudio) return false;
@@ -2638,10 +2651,14 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
 
     // Audio player section (if we have audio)
     if (data.audio_file && showAudio) {
+      const audioExt = (data.audio_file.split('.').pop() || '').toLowerCase();
+      const audioMime = ({flac:'audio/flac', m4a:'audio/mp4', mp4:'audio/mp4', mp3:'audio/mpeg', wav:'audio/wav', ogg:'audio/ogg'})[audioExt] || '';
+      const audioDuration = formatAudioDuration(data.duration);
+      const audioLabel = audioDuration ? `segment audio · ${audioDuration}` : 'segment audio';
       html += '<div class="tr-audio-players" role="presentation">';
       html += '<div class="tr-audio-player">';
-      html += '<div class="tr-audio-player-label">segment audio</div>';
-      html += `<audio data-role="segment-audio" controls preload="metadata"><source src="${data.audio_file}" type="audio/flac">Your browser does not support audio.</audio>`;
+      html += `<div class="tr-audio-player-label">${audioLabel}</div>`;
+      html += `<audio data-role="segment-audio" controls preload="metadata"><source src="${escapeHtml(data.audio_file)}" type="${audioMime}">Your browser does not support audio.</audio>`;
       html += '</div></div>';
     }
 
@@ -2693,6 +2710,24 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
 
     // Get audio element reference
     const paneAudioEl = targetEl.querySelector('audio[data-role="segment-audio"]');
+    if (paneAudioEl) {
+      paneAudioEl.addEventListener('loadedmetadata', () => {
+        if (Number.isFinite(paneAudioEl.duration) && paneAudioEl.duration > 0) {
+          return;
+        }
+
+        const handleDurationChange = () => {
+          if (!Number.isFinite(paneAudioEl.duration) || paneAudioEl.duration === 0) {
+            return;
+          }
+          paneAudioEl.currentTime = 0;
+          paneAudioEl.removeEventListener('durationchange', handleDurationChange);
+        };
+
+        paneAudioEl.addEventListener('durationchange', handleDurationChange);
+        paneAudioEl.currentTime = 1e7;
+      }, { once: true });
+    }
 
     // Add click handlers for audio entries to seek
     targetEl.querySelectorAll('.tr-entry-audio').forEach(entry => {
