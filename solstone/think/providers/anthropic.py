@@ -33,9 +33,7 @@ from __future__ import annotations
 
 import logging
 import os
-import traceback
-from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from anthropic import AsyncAnthropic
 from anthropic._constants import MODEL_NONSTREAMING_TOKENS
@@ -47,23 +45,9 @@ from anthropic.types import (
 )
 
 from solstone.think.models import CLAUDE_SONNET_4
-from solstone.think.providers import bundled
 from solstone.think.providers._image import encode_image_part, is_image_part
-from solstone.think.utils import now_ms
 
-from .cli import (
-    CLIRunner,
-    QuotaExhaustedError,
-    ThinkingAggregator,
-    assemble_prompt,
-    build_cogitate_env,
-)
-from .shared import (
-    GenerateResult,
-    JSONEventCallback,
-    classify_provider_error,
-    safe_raw,
-)
+from .shared import GenerateResult
 
 # Default values are now handled internally
 _DEFAULT_MODEL = CLAUDE_SONNET_4
@@ -80,264 +64,6 @@ _NONSTREAMING_TIME_CAP_TOKENS = (
     21_333  # SDK time formula: 60*60*max_tokens/128_000 > 600 ≈ 21,333.
 )
 # anthropic._constants.MODEL_NONSTREAMING_TOKENS adds per-model non-streaming caps on top of this threshold.
-
-
-def _compute_thinking_params(max_tokens: int) -> tuple[int, int]:
-    """Compute thinking budget and adjusted max_tokens.
-
-    Returns (thinking_budget, adjusted_max_tokens) ensuring:
-    - thinking_budget >= _MIN_THINKING_BUDGET
-    - thinking_budget < adjusted_max_tokens
-    """
-    # Budget is the lesser of default or what fits in max_tokens
-    thinking_budget = min(_DEFAULT_THINKING_BUDGET, max(max_tokens - 1000, 0))
-
-    # Ensure minimum thinking budget
-    if thinking_budget < _MIN_THINKING_BUDGET:
-        thinking_budget = _MIN_THINKING_BUDGET
-        # Increase max_tokens to accommodate thinking + output
-        max_tokens = max(max_tokens, thinking_budget + 1000)
-
-    return thinking_budget, max_tokens
-
-
-def _resolve_agent_thinking_params(
-    max_output_tokens: int, thinking_budget_config: int | None
-) -> tuple[int, int]:
-    """Resolve thinking budget and max tokens for agent run.
-
-    Args:
-        max_output_tokens: Maximum output tokens from config.
-        thinking_budget_config: Explicit thinking budget from config, or None.
-
-    Returns:
-        Tuple of (thinking_budget, effective_max_tokens).
-        If thinking_budget_config is provided and > 0, uses it directly.
-        Otherwise computes defaults via _compute_thinking_params.
-    """
-    if thinking_budget_config is not None and thinking_budget_config > 0:
-        return thinking_budget_config, max_output_tokens
-    return _compute_thinking_params(max_output_tokens)
-
-
-def _translate_claude(
-    event: dict[str, Any],
-    aggregator: ThinkingAggregator,
-    callback: JSONEventCallback,
-    pending_tools: dict[str, dict[str, Any]],
-    result_meta: dict[str, Any],
-) -> str | None:
-    """Translate a Claude CLI JSONL event into our Event format.
-
-    Args:
-        event: Raw parsed JSON event from Claude CLI stdout.
-        aggregator: ThinkingAggregator for text buffering.
-        callback: JSONEventCallback for emitting events.
-        pending_tools: Mutable dict tracking active tool calls (tool_use_id -> {tool, args}).
-        result_meta: Mutable dict for storing cost/usage from result event.
-
-    Returns:
-        Session ID string from init events, None otherwise.
-    """
-    event_type = event.get("type")
-
-    if event_type == "system":
-        if event.get("subtype") == "init":
-            return event.get("session_id")
-
-    elif event_type == "assistant":
-        message = event.get("message", {})
-        resolved_model = message.get("model")
-        if isinstance(resolved_model, str) and resolved_model:
-            result_meta["resolved_model"] = resolved_model
-        content_blocks = message.get("content", [])
-
-        # Two-pass: text/thinking first, then tool_use
-        tool_use_blocks = []
-        for block in content_blocks:
-            block_type = block.get("type")
-            if block_type == "text":
-                aggregator.accumulate(block.get("text", ""))
-            elif block_type == "thinking":
-                thinking_event: dict[str, Any] = {
-                    "event": "thinking",
-                    "summary": block.get("thinking", ""),
-                    "raw": safe_raw([event]),
-                }
-                if aggregator._model:
-                    thinking_event["model"] = aggregator._model
-                callback.emit(thinking_event)
-            elif block_type == "tool_use":
-                tool_use_blocks.append(block)
-
-        for block in tool_use_blocks:
-            aggregator.flush_as_thinking(raw_events=[event])
-
-            tool_id = block.get("id", "")
-            tool_name = block.get("name", "")
-            tool_args = block.get("input", {})
-
-            pending_tools[tool_id] = {"tool": tool_name, "args": tool_args}
-
-            callback.emit(
-                {
-                    "event": "tool_start",
-                    "tool": tool_name,
-                    "args": tool_args,
-                    "call_id": tool_id,
-                    "raw": safe_raw([event]),
-                }
-            )
-
-    elif event_type == "user":
-        message = event.get("message", {})
-        content_blocks = message.get("content", [])
-
-        for block in content_blocks:
-            if block.get("type") == "tool_result":
-                tool_use_id = block.get("tool_use_id", "")
-                tool_info = pending_tools.pop(tool_use_id, {})
-
-                callback.emit(
-                    {
-                        "event": "tool_end",
-                        "tool": tool_info.get("tool", ""),
-                        "args": tool_info.get("args"),
-                        "result": block.get("content", ""),
-                        "call_id": tool_use_id,
-                        "raw": safe_raw([event]),
-                    }
-                )
-
-    elif event_type == "result":
-        result_meta["cost_usd"] = event.get("total_cost_usd")
-        usage = event.get("usage")
-        if usage:
-            input_tokens = usage.get("input_tokens") or 0
-            output_tokens = usage.get("output_tokens") or 0
-            usage_dict: dict[str, Any] = {
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "total_tokens": input_tokens + output_tokens,
-            }
-            cache_creation = usage.get("cache_creation_input_tokens")
-            if cache_creation:
-                usage_dict["cache_creation_tokens"] = cache_creation
-            cache_read = usage.get("cache_read_input_tokens")
-            if cache_read:
-                usage_dict["cached_tokens"] = cache_read
-            resolved = result_meta.get("resolved_model")
-            if isinstance(resolved, str) and resolved:
-                usage_dict["model_version"] = resolved
-            result_meta["usage"] = usage_dict
-
-    return None
-
-
-async def run_cogitate(
-    config: dict[str, Any],
-    on_event: Callable[[dict], None] | None = None,
-) -> str:
-    """Run a prompt with tool-calling support via Claude CLI subprocess.
-
-    Spawns the Claude CLI in streaming JSON mode and translates its
-    JSONL output into our standard Event format.
-
-    Args:
-        config: Complete configuration dictionary including prompt, system_instruction,
-            user_instruction, extra_context, model, etc.
-        on_event: Optional event callback
-    """
-    model = config.get("model", _DEFAULT_MODEL)
-    session_id = config.get("session_id")
-
-    callback = JSONEventCallback(on_event)
-
-    try:
-        claude_binary = bundled.resolve_bundled_binary("anthropic")
-
-        prompt_body, system_instruction = assemble_prompt(
-            config,
-            sol_tool_name="Bash" if not config.get("write") else None,
-        )
-
-        cmd = [
-            str(claude_binary),
-            "-p",
-            "-",
-            "--verbose",
-            "--output-format",
-            "stream-json",
-            "--permission-mode",
-            "plan",
-            "--model",
-            model,
-        ]
-
-        # Restrict tool access unless write mode is enabled
-        if not config.get("write"):
-            cmd.extend(["--allowedTools", "Bash(sol *)"])
-
-        if system_instruction:
-            cmd.extend(["--system-prompt", system_instruction])
-
-        if session_id:
-            cmd.extend(["--resume", session_id])
-
-        aggregator = ThinkingAggregator(callback, model=model)
-        pending_tools: dict[str, dict[str, Any]] = {}
-        result_meta: dict[str, Any] = {}
-
-        def translate(
-            event: dict[str, Any],
-            agg: ThinkingAggregator,
-            cb: JSONEventCallback,
-        ) -> str | None:
-            return _translate_claude(event, agg, cb, pending_tools, result_meta)
-
-        cwd_value = config.get("cwd")
-        runner = CLIRunner(
-            cmd=cmd,
-            prompt_text=prompt_body,
-            translate=translate,
-            callback=callback,
-            aggregator=aggregator,
-            cwd=Path(cwd_value) if cwd_value else None,
-            env=build_cogitate_env("anthropic"),
-        )
-        runner.provider = "anthropic"
-
-        result = await runner.run()
-
-        # Build finish event with usage from result meta
-        usage_dict = result_meta.get("usage")
-
-        callback.emit(
-            {
-                "event": "finish",
-                "result": result,
-                "cli_session_id": runner.cli_session_id,
-                "usage": usage_dict,
-                "ts": now_ms(),
-            }
-        )
-
-        return result
-    except QuotaExhaustedError:
-        raise
-    except Exception as exc:
-        callback.emit(
-            {
-                "event": "error",
-                "error": str(exc),
-                "reason_code": classify_provider_error(exc, "anthropic"),
-                "provider": "anthropic",
-                "trace": traceback.format_exc(),
-                "ts": now_ms(),
-            }
-        )
-        setattr(exc, "_evented", True)
-        raise
 
 
 # ---------------------------------------------------------------------------
@@ -719,7 +445,6 @@ def validate_key(api_key: str) -> dict:
 
 
 __all__ = [
-    "run_cogitate",
     "run_generate",
     "run_agenerate",
     "list_models",

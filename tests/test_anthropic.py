@@ -8,7 +8,6 @@ import io
 import json
 import sys
 import types
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -152,88 +151,6 @@ def _setup_anthropic_stub(
     monkeypatch.setitem(sys.modules, "anthropic", anthropic_stub)
     monkeypatch.setitem(sys.modules, "anthropic._constants", anthropic_constants_stub)
     monkeypatch.setitem(sys.modules, "anthropic.types", anthropic_types_stub)
-
-
-def _setup_claude_cli_stub(
-    monkeypatch,
-    provider_mod,
-    *,
-    error=False,
-    with_thinking=False,
-    with_redacted_thinking=False,
-):
-    monkeypatch.setattr(
-        provider_mod.bundled,
-        "resolve_bundled_binary",
-        lambda _name: Path("/usr/bin/claude"),
-    )
-
-    class DummyCLIRunner:
-        def __init__(
-            self,
-            cmd,
-            prompt_text,
-            translate,
-            callback,
-            aggregator,
-            cwd=None,
-            env=None,
-            timeout=600,
-        ):
-            self.translate = translate
-            self.callback = callback
-            self.aggregator = aggregator
-            self.cli_session_id = None
-
-        async def run(self):
-            if error:
-                raise RuntimeError("boo")
-
-            raw_events = [
-                {
-                    "type": "system",
-                    "subtype": "init",
-                    "session_id": "test-session-abc123",
-                }
-            ]
-            if with_thinking:
-                raw_events.append(
-                    {
-                        "type": "assistant",
-                        "message": {
-                            "content": [
-                                {
-                                    "type": "thinking",
-                                    "thinking": "I'm thinking about this...",
-                                }
-                            ]
-                        },
-                    }
-                )
-            if with_redacted_thinking:
-                raw_events.append(
-                    {
-                        "type": "assistant",
-                        "message": {
-                            "content": [{"type": "thinking", "thinking": "[redacted]"}]
-                        },
-                    }
-                )
-            raw_events.append(
-                {
-                    "type": "assistant",
-                    "message": {"content": [{"type": "text", "text": "ok"}]},
-                }
-            )
-
-            for raw_event in raw_events:
-                session_id = self.translate(raw_event, self.aggregator, self.callback)
-                if session_id:
-                    self.cli_session_id = session_id
-
-            return self.aggregator.flush_as_result()
-
-    monkeypatch.setattr(provider_mod, "CLIRunner", DummyCLIRunner)
 
 
 def _setup_openhands_cogitate_stub(
@@ -507,61 +424,6 @@ class TestRunGenerateJsonSchema:
 
         assert result["model"] == "claude-haiku-4-5"
         assert "model_version" not in result["usage"]
-
-    def test_translate_claude_captures_resolved_model_from_assistant_event(self):
-        provider = importlib.reload(
-            importlib.import_module("solstone.think.providers.anthropic")
-        )
-        result_meta = {}
-
-        provider._translate_claude(
-            {
-                "type": "assistant",
-                "message": {
-                    "model": "claude-haiku-4-5-20251001",
-                    "content": [],
-                },
-            },
-            MagicMock(),
-            MagicMock(),
-            {},
-            result_meta,
-        )
-        provider._translate_claude(
-            {
-                "type": "result",
-                "usage": {"input_tokens": 10, "output_tokens": 5},
-                "total_cost_usd": 0.01,
-            },
-            MagicMock(),
-            MagicMock(),
-            {},
-            result_meta,
-        )
-
-        assert result_meta["usage"]["model_version"] == "claude-haiku-4-5-20251001"
-
-        result_meta = {}
-        provider._translate_claude(
-            {"type": "assistant", "message": {"content": []}},
-            MagicMock(),
-            MagicMock(),
-            {},
-            result_meta,
-        )
-        provider._translate_claude(
-            {
-                "type": "result",
-                "usage": {"input_tokens": 10, "output_tokens": 5},
-                "total_cost_usd": 0.01,
-            },
-            MagicMock(),
-            MagicMock(),
-            {},
-            result_meta,
-        )
-
-        assert "model_version" not in result_meta["usage"]
 
     def test_structured_messages_passthrough(self, monkeypatch):
         provider = importlib.reload(
