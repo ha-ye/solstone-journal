@@ -246,6 +246,9 @@ def classify_provider_error(exc: BaseException, provider: str) -> str:
         exc_name = type(exc).__name__
         exc_name_lower = exc_name.lower()
         message_lower = str(exc).lower()
+        explicit_reason_code = getattr(exc, "reason_code", None)
+        if isinstance(explicit_reason_code, str) and explicit_reason_code:
+            return explicit_reason_code
 
         if exc_name == "QuotaExhaustedError":
             return "provider_quota_exceeded"

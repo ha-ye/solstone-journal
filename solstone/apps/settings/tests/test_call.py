@@ -299,16 +299,13 @@ class TestProvidersShow:
                 "cogitate_cli_found": False,
                 "issues": [],
             },
-            "ollama": {
-                "configured": True,
-                "generate_ready": True,
+            "local": {
+                "configured": False,
+                "generate_ready": False,
                 "cogitate_ready": False,
-                "cogitate_cli": "opencode",
+                "cogitate_cli": "llama-server",
                 "cogitate_cli_found": False,
-                "issues": [
-                    "opencode CLI not found on PATH — run: "
-                    "curl -fsSL https://opencode.ai/install | bash"
-                ],
+                "issues": ["binary_missing"],
             },
             "openai": {
                 "configured": True,
@@ -329,10 +326,7 @@ class TestProvidersShow:
             )
 
         assert result.exit_code == 0
-        assert (
-            "ollama: opencode CLI not found on PATH — run: "
-            "curl -fsSL https://opencode.ai/install | bash"
-        ) in result.output.splitlines()
+        assert "local: binary_missing" in result.output.splitlines()
         assert not result.output.lstrip().startswith("{")
 
 

@@ -920,24 +920,24 @@ input:checked + .slider:before {
   text-decoration: underline;
 }
 
-#ollamaCogitateStatus {
+#localCogitateStatus {
   align-items: flex-start;
 }
 
-#ollamaCogitateStatus-detail {
+#localCogitateStatus-detail {
   display: flex;
   flex-direction: column;
   gap: 0.4em;
 }
 
-.ollama-command-row {
+.local-command-row {
   display: flex;
   flex-wrap: wrap;
   gap: 0.4em;
   align-items: center;
 }
 
-.ollama-command-row input {
+.local-command-row input {
   min-width: min(100%, 22em);
   flex: 1;
   font-family: 'SF Mono', 'Fira Code', 'Fira Mono', 'Roboto Mono', 'Consolas', monospace;
@@ -1070,19 +1070,22 @@ input:checked + .slider:before {
   text-decoration: underline;
 }
 
-.mlx-bootstrap-region {
+.mlx-bootstrap-region,
+.local-bootstrap-region {
   align-items: flex-start;
   margin-top: -0.25em;
 }
 
-.mlx-progress-shell {
+.mlx-progress-shell,
+.local-progress-shell {
   border: 1px solid var(--facet-border, #e5e0db);
   border-radius: 8px;
   padding: 0.75em;
   background: #fafafa;
 }
 
-.mlx-progress-header {
+.mlx-progress-header,
+.local-progress-header {
   display: flex;
   justify-content: space-between;
   gap: 1em;
@@ -1091,12 +1094,14 @@ input:checked + .slider:before {
   margin-bottom: 0.5em;
 }
 
-#mlxBootstrapProgress {
+#mlxBootstrapProgress,
+#localBootstrapProgress {
   width: 100%;
   height: 0.7em;
 }
 
-#mlxBootstrapRetry {
+#mlxBootstrapRetry,
+#localBootstrapRetry {
   margin-top: 0.75em;
 }
 
@@ -2452,11 +2457,11 @@ button:focus:not(:focus-visible) {
           <small></small>
         </div>
       </div>
-      <div id="mlxBootstrapRegion" class="provider-row mlx-bootstrap-region" style="display:none">
-        <div class="settings-field">
-          <label for="field-mlx-active-model">model</label>
-          <select id="field-mlx-active-model">
-            <!-- Populated dynamically from registry -->
+	      <div id="mlxBootstrapRegion" class="provider-row mlx-bootstrap-region" style="display:none">
+	        <div class="settings-field">
+	          <label for="field-mlx-active-model">model</label>
+	          <select id="field-mlx-active-model">
+	            <!-- Populated dynamically from registry -->
           </select>
           <small></small>
           <div id="mlxBootstrapProgressShell" class="mlx-progress-shell">
@@ -2468,14 +2473,33 @@ button:focus:not(:focus-visible) {
             <button type="button" id="mlxBootstrapRetry" style="display:none">retry</button>
           </div>
           <small id="mlxModelIdentifier" style="display:none"></small>
-          <small id="mlxScopeCopy" style="display:none">vision and text on your device. tool-calling agents continue to use your configured cogitate provider.</small>
-        </div>
-      </div>
-      <div id="generateProviderKeyWarning" class="provider-key-warning" style="display:none">
-        <span>&#9888;</span>
-        <span>API key not configured for generate provider.</span>
-        <a href="#" id="generateProviderKeyLink">configure in API keys</a>
-      </div>
+	          <small id="mlxScopeCopy" style="display:none">vision and text on your device. tool-calling agents continue to use your configured cogitate provider.</small>
+	        </div>
+	      </div>
+	      <div id="localBootstrapRegion" class="provider-row local-bootstrap-region" style="display:none">
+	        <div class="settings-field">
+	          <label for="field-local-active-model">local model</label>
+	          <select id="field-local-active-model">
+	            <!-- Populated dynamically from registry -->
+	          </select>
+	          <small></small>
+	          <div id="localBootstrapProgressShell" class="local-progress-shell">
+	            <div class="local-progress-header">
+	              <span id="localBootstrapState">idle</span>
+	              <span id="localBootstrapBytes">0 B / 0 B</span>
+	            </div>
+	            <progress id="localBootstrapProgress" value="0" max="100"></progress>
+	            <button type="button" id="localBootstrapRetry" style="display:none">retry</button>
+	          </div>
+	          <small id="localModelIdentifier" style="display:none"></small>
+	          <small id="localScopeCopy" style="display:none">on-device generate and cogitate using bundled llama-server.</small>
+	        </div>
+	      </div>
+	      <div id="generateProviderKeyWarning" class="provider-key-warning" style="display:none">
+	        <span>&#9888;</span>
+	        <span>API key not configured for generate provider.</span>
+	        <a href="#" id="generateProviderKeyLink">configure in API keys</a>
+	      </div>
 
       <h3 class="settings-subsection-title">cogitate</h3>
       <p class="settings-subsection-desc">tool-calling agents for interactive chat, daily briefings, and complex reasoning.</p>
@@ -2554,10 +2578,10 @@ button:focus:not(:focus-visible) {
         <span>API key not configured for cogitate provider.</span>
         <a href="#" id="cogitateProviderKeyLink">configure in API keys</a>
       </div>
-      <div id="ollamaCogitateStatus" class="provider-key-warning" style="display: none;">
-        <div id="ollamaCogitateStatus-indicator"></div>
-        <div id="ollamaCogitateStatus-detail"></div>
-      </div>
+	      <div id="localCogitateStatus" class="provider-key-warning" style="display: none;">
+	        <div id="localCogitateStatus-indicator"></div>
+	        <div id="localCogitateStatus-detail"></div>
+	      </div>
       <small id="providerStatus">loading...</small>
 
       <!-- Detailed Tasks -->
@@ -5034,9 +5058,12 @@ let providersData = null;
 let mlxBootstrapPollTimer = null;
 let mlxBootstrapPostStarted = false;
 let mlxModels = [];
+let localBootstrapPollTimer = null;
+let localBootstrapPostStarted = false;
+let localModels = [];
 let bundledProviderPollTimer = null;
-let ollamaStatusLoading = false;
-let ollamaStatusError = '';
+let localStatusLoading = false;
+let localStatusError = '';
 
 const MLX_COGITATE_UNSUPPORTED_TITLE = 'MLX provider does not support cogitate in v1 — it is vision/generate-only. Configure a cloud provider for cogitate agents.';
 const MLX_SCOPE_COPY = 'vision and text on your device. tool-calling agents continue to use your configured cogitate provider.';
@@ -5044,8 +5071,11 @@ const MLX_MODEL_LABELS = {
   'qwen3.5:9b': 'qwen 3.5 — 16 GB Mac',
   'gemma-4-26b-a4b-it-mlx-4bit': 'gemma 4 (26B) — 24 GB Mac',
 };
-const OLLAMA_OPENCODE_INSTALL_COMMAND = 'curl -fsSL https://opencode.ai/install | bash';
-const OLLAMA_OPENCODE_TITLE = 'OpenCode CLI not found on PATH — Ollama cogitate features will not work until OpenCode is installed.';
+const LOCAL_SCOPE_COPY = 'on-device generate and cogitate using bundled llama-server.';
+const LOCAL_MODEL_LABELS = {
+  'local/qwen2.5-coder-7b': 'qwen 2.5 coder 7B — 12 GB',
+  'local/qwen3-coder-30b-a3b-q4_k_m': 'qwen3 coder 30B — 32 GB',
+};
 
 async function loadProviders() {
   try {
@@ -5055,6 +5085,9 @@ async function loadProviders() {
     mlxModels = await loadMlxModels();
     providersData.mlx_models = mlxModels;
     providersData.mlx_availability = await loadMlxAvailability();
+    localModels = await loadLocalModels();
+    providersData.local_models = localModels;
+    providersData.local_availability = await loadLocalAvailability();
     populateProviders(providersData);
   } catch (err) {
     console.error('Error loading providers:', err);
@@ -5074,6 +5107,21 @@ async function loadMlxAvailability() {
   const response = await fetch(`api/mlx/availability?model=${model}`);
   const availability = await response.json();
   if (!response.ok) throw new Error(availability.detail || availability.error || 'MLX availability failed');
+  return availability;
+}
+
+async function loadLocalModels() {
+  const response = await fetch('api/local/models');
+  const models = await response.json();
+  if (!response.ok) throw new Error(models.detail || models.error || 'Local models failed');
+  return models;
+}
+
+async function loadLocalAvailability() {
+  const model = encodeURIComponent(getSelectedLocalModel());
+  const response = await fetch(`api/local/availability?model=${model}`);
+  const availability = await response.json();
+  if (!response.ok) throw new Error(availability.detail || availability.error || 'Local availability failed');
   return availability;
 }
 
@@ -5102,9 +5150,6 @@ function populateProviders(data) {
             opt.disabled = true;
             opt.title = disabledReason;
           }
-          if (ollamaNeedsOpenCode(p, type)) {
-            opt.title = OLLAMA_OPENCODE_TITLE;
-          }
           select.appendChild(opt);
         }
       }
@@ -5132,6 +5177,7 @@ function populateProviders(data) {
     backendSelect.value = data.google_backend || 'auto';
   }
   populateMlxModelPicker(data);
+  populateLocalModelPicker(data);
   // Show/hide vertex fields
   const vertexFields = document.getElementById('vertexFields');
   if (vertexFields) {
@@ -5143,6 +5189,7 @@ function populateProviders(data) {
   // Update status text
   document.getElementById('providerStatus').textContent = '';
   syncMlxProgressRegion();
+  syncLocalProgressRegion();
 
   // Refresh env status displays with latest validation data
   const env = configData?.env || {};
@@ -5153,14 +5200,14 @@ function populateProviders(data) {
 
   // Populate context overrides
   renderContextGroups(data);
-  renderOllamaCogitateStatus();
+  renderLocalCogitateStatus();
 }
 
 function getSelectedCogitateProvider() {
   return document.getElementById('field-cogitate-provider')?.value || providersData?.cogitate?.provider || '';
 }
 
-function setOllamaStatusTone(statusEl, tone) {
+function setLocalStatusTone(statusEl, tone) {
   if (tone === 'ready') {
     statusEl.style.background = '#e8f5e9';
     statusEl.style.borderColor = '#a5d6a7';
@@ -5176,7 +5223,7 @@ function setOllamaStatusTone(statusEl, tone) {
   }
 }
 
-function setOllamaIndicator(indicator, text, color) {
+function setLocalIndicator(indicator, text, color) {
   indicator.innerHTML = '';
   indicator.style.display = 'flex';
   indicator.style.alignItems = 'center';
@@ -5192,112 +5239,93 @@ function setOllamaIndicator(indicator, text, color) {
   indicator.append(dot, document.createTextNode(text));
 }
 
-function appendOllamaStatusError(row) {
-  if (!ollamaStatusError) return;
+function appendLocalStatusError(row) {
+  if (!localStatusError) return;
   const error = document.createElement('span');
   error.style.fontSize = '0.9em';
-  error.textContent = ollamaStatusError;
+  error.textContent = localStatusError;
   row.appendChild(error);
 }
 
-function createOllamaRecheckButton(row) {
+function createLocalRecheckButton(row) {
   const button = document.createElement('button');
   button.type = 'button';
-  button.textContent = ollamaStatusLoading ? 'Checking…' : 'Re-check';
-  button.disabled = ollamaStatusLoading;
-  button.addEventListener('click', recheckOllamaStatus);
+  button.textContent = localStatusLoading ? 'Checking…' : 'Re-check';
+  button.disabled = localStatusLoading;
+  button.addEventListener('click', recheckLocalStatus);
   row.appendChild(button);
-  appendOllamaStatusError(row);
+  appendLocalStatusError(row);
   return button;
 }
 
-async function copyOllamaInstallCommand(input) {
-  try {
-    await navigator.clipboard.writeText(OLLAMA_OPENCODE_INSTALL_COMMAND);
-  } catch (err) {
-    input.focus();
-    input.select();
-  }
+function localIssueCopy(issue) {
+  const messages = {
+    binary_missing: 'local runtime is not installed',
+    model_missing: 'local model files are not installed',
+    server_unhealthy: 'local runtime is not ready',
+    ram_insufficient: 'not enough memory for the selected local model',
+  };
+  return messages[issue] || issue || 'local provider is not ready';
 }
 
-function renderOllamaCogitateStatus() {
-  const statusEl = document.getElementById('ollamaCogitateStatus');
-  const indicator = document.getElementById('ollamaCogitateStatus-indicator');
-  const detail = document.getElementById('ollamaCogitateStatus-detail');
+function renderLocalCogitateStatus() {
+  const statusEl = document.getElementById('localCogitateStatus');
+  const indicator = document.getElementById('localCogitateStatus-indicator');
+  const detail = document.getElementById('localCogitateStatus-detail');
   if (!statusEl || !indicator || !detail) return;
 
   indicator.innerHTML = '';
   detail.innerHTML = '';
-  if (getSelectedCogitateProvider() !== 'ollama') {
+  if (getSelectedCogitateProvider() !== 'local') {
     statusEl.style.display = 'none';
     return;
   }
 
   statusEl.style.display = 'flex';
-  const status = providersData?.provider_status?.ollama || {};
-  if (ollamaStatusLoading) {
-    setOllamaStatusTone(statusEl, 'checking');
-    setOllamaIndicator(indicator, 'Checking…', '#6c757d');
+  const status = providersData?.provider_status?.local || {};
+  if (localStatusLoading) {
+    setLocalStatusTone(statusEl, 'checking');
+    setLocalIndicator(indicator, 'Checking…', '#6c757d');
     const row = document.createElement('div');
-    row.className = 'ollama-command-row';
-    createOllamaRecheckButton(row);
+    row.className = 'local-command-row';
+    createLocalRecheckButton(row);
     detail.appendChild(row);
     return;
   }
   if (status.cogitate_ready === true) {
-    setOllamaStatusTone(statusEl, 'ready');
-    setOllamaIndicator(indicator, 'Ready', '#2e7d32');
+    setLocalStatusTone(statusEl, 'ready');
+    setLocalIndicator(indicator, 'Ready', '#2e7d32');
     return;
   }
 
-  setOllamaStatusTone(statusEl, 'warning');
-  if (status.cogitate_cli_found === false) {
-    setOllamaIndicator(indicator, 'OpenCode missing', '#856404');
-    const context = document.createElement('div');
-    context.textContent = 'OpenCode is the agent CLI solstone runs to let Ollama use tools for chat, briefings, and digests.';
-
-    const row = document.createElement('div');
-    row.className = 'ollama-command-row';
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.readOnly = true;
-    input.value = OLLAMA_OPENCODE_INSTALL_COMMAND;
-    const copy = document.createElement('button');
-    copy.type = 'button';
-    copy.textContent = 'Copy';
-    copy.addEventListener('click', () => copyOllamaInstallCommand(input));
-    row.append(input, copy);
-    createOllamaRecheckButton(row);
-    detail.append(context, row);
-    return;
-  }
-
-  setOllamaIndicator(indicator, 'Ollama not reachable', '#856404');
+  setLocalStatusTone(statusEl, 'warning');
+  const issue = (status.issues || [])[0];
+  setLocalIndicator(indicator, localIssueCopy(issue), '#856404');
   const row = document.createElement('div');
-  row.className = 'ollama-command-row';
-  createOllamaRecheckButton(row);
+  row.className = 'local-command-row';
+  createLocalRecheckButton(row);
   detail.appendChild(row);
 }
 
-async function recheckOllamaStatus() {
-  ollamaStatusLoading = true;
-  ollamaStatusError = '';
-  renderOllamaCogitateStatus();
+async function recheckLocalStatus() {
+  localStatusLoading = true;
+  localStatusError = '';
+  renderLocalCogitateStatus();
   try {
-    const response = await fetch('api/providers/ollama/status');
+    const response = await fetch('api/providers/local/status');
     const payload = await response.json();
     if (!response.ok || payload.error) {
-      throw new Error(payload.detail || payload.error || 'Ollama status check failed');
+      throw new Error(payload.detail || payload.error || 'Local status check failed');
     }
     providersData = providersData || {};
     providersData.provider_status = providersData.provider_status || {};
-    providersData.provider_status.ollama = payload;
+    providersData.provider_status.local = payload;
   } catch (err) {
-    console.error('Error rechecking Ollama status:', err);
-    ollamaStatusError = 'Re-check failed.';
+    console.error('Error rechecking local status:', err);
+    localStatusError = 'Re-check failed.';
   } finally {
-    ollamaStatusLoading = false;
-    renderOllamaCogitateStatus();
+    localStatusLoading = false;
+    renderLocalCogitateStatus();
   }
 }
 
@@ -5313,6 +5341,21 @@ function populateMlxModelPicker(data) {
     select.appendChild(opt);
   }
   select.value = data.mlx?.active_model || 'qwen3.5:9b';
+}
+
+function populateLocalModelPicker(data) {
+  const select = document.getElementById('field-local-active-model');
+  if (!select) return;
+  const models = data.local_models || localModels || [];
+  select.innerHTML = '';
+  for (const model of models) {
+    const opt = document.createElement('option');
+    opt.value = model.name;
+    opt.textContent = LOCAL_MODEL_LABELS[model.name] || model.label || model.name;
+    select.appendChild(opt);
+  }
+  const active = data.local_availability?.model || 'local/qwen2.5-coder-7b';
+  select.value = active;
 }
 
 function bundledProviderMeta(state) {
@@ -5538,18 +5581,8 @@ function getProviderOptionDisabledReason(provider, type) {
   return '';
 }
 
-function ollamaNeedsOpenCode(provider, type) {
-  return provider?.name === 'ollama'
-    && type === 'cogitate'
-    && providersData?.provider_status?.ollama?.cogitate_cli_found === false;
-}
-
 function getProviderOptionLabel(provider, type) {
   let label = provider.label;
-  if (ollamaNeedsOpenCode(provider, type)) {
-    label += ' — needs OpenCode';
-    return label;
-  }
   if (provider.name !== 'mlx') return label;
   const availability = getMlxAvailability();
   if (availability && availability.available === false) {
@@ -5561,6 +5594,11 @@ function getProviderOptionLabel(provider, type) {
 function getSelectedMlxModel() {
   const select = document.getElementById('field-mlx-active-model');
   return select?.value || providersData?.mlx?.active_model || 'qwen3.5:9b';
+}
+
+function getSelectedLocalModel() {
+  const select = document.getElementById('field-local-active-model');
+  return select?.value || providersData?.local_availability?.model || 'local/qwen2.5-coder-7b';
 }
 
 function formatMlxBytes(value) {
@@ -5770,13 +5808,219 @@ function handleMlxBootstrapStatus(status) {
   }
 }
 
+function getLocalAvailability() {
+  return providersData?.local_availability || null;
+}
+
+function setLocalProgressVisible(visible) {
+  const shell = document.getElementById('localBootstrapProgressShell');
+  if (shell) shell.style.display = visible ? '' : 'none';
+}
+
+function updateLocalModelIdentifier() {
+  const identifier = document.getElementById('localModelIdentifier');
+  const scopeCopy = document.getElementById('localScopeCopy');
+  const selected = isLocalProviderSelected();
+  const availability = getLocalAvailability();
+  const installed = !!(availability?.binary_present && availability?.model_present);
+  if (scopeCopy) {
+    scopeCopy.textContent = LOCAL_SCOPE_COPY;
+    scopeCopy.style.display = selected ? '' : 'none';
+  }
+  if (!identifier) return;
+  if (selected && installed) {
+    identifier.textContent = `model: ${getSelectedLocalModel()}`;
+    identifier.style.display = '';
+  } else {
+    identifier.textContent = '';
+    identifier.style.display = 'none';
+  }
+}
+
+function isLocalProviderSelected() {
+  return document.getElementById('field-generate-provider')?.value === 'local'
+    || document.getElementById('field-cogitate-provider')?.value === 'local';
+}
+
+function syncLocalProgressRegion() {
+  const region = document.getElementById('localBootstrapRegion');
+  if (!region) return;
+  if (!isLocalProviderSelected()) {
+    unmountLocalProgress();
+    return;
+  }
+  region.style.display = '';
+  updateLocalModelIdentifier();
+  const availability = getLocalAvailability();
+  if (availability?.binary_present && availability?.model_present) {
+    clearLocalBootstrapPollTimer();
+    setLocalProgressVisible(false);
+    return;
+  }
+  if (isLocalBootstrapBlocked(availability)) {
+    clearLocalBootstrapPollTimer();
+    localBootstrapPostStarted = false;
+    setLocalProgressVisible(true);
+    handleLocalBootstrapStatus({
+      state: 'failed',
+      received_bytes: 0,
+      total_bytes: 0,
+      message: availability.reason,
+      bootstrap_disabled: true,
+    });
+    return;
+  }
+  mountLocalProgress();
+}
+
+function isLocalBootstrapBlocked(availability) {
+  const installableReasons = [
+    'local runtime is not installed',
+    'local model files are not installed',
+  ];
+  return !!(
+    availability &&
+    availability.available === false &&
+    availability.reason &&
+    !installableReasons.includes(availability.reason)
+  );
+}
+
+function clearLocalBootstrapPollTimer() {
+  if (localBootstrapPollTimer) {
+    clearInterval(localBootstrapPollTimer);
+    localBootstrapPollTimer = null;
+  }
+}
+
+function mountLocalProgress() {
+  const region = document.getElementById('localBootstrapRegion');
+  if (!region) return;
+  region.style.display = '';
+  setLocalProgressVisible(true);
+  updateLocalModelIdentifier();
+  const retry = document.getElementById('localBootstrapRetry');
+  if (retry) retry.style.display = 'none';
+  if (!localBootstrapPostStarted) {
+    localBootstrapPostStarted = true;
+    startLocalBootstrap();
+  }
+  startLocalBootstrapPolling();
+}
+
+function unmountLocalProgress() {
+  clearLocalBootstrapPollTimer();
+  localBootstrapPostStarted = false;
+  const region = document.getElementById('localBootstrapRegion');
+  if (region) region.style.display = 'none';
+  updateLocalModelIdentifier();
+}
+
+async function startLocalBootstrap() {
+  try {
+    const model = encodeURIComponent(getSelectedLocalModel());
+    const response = await fetch(`api/local/bootstrap?model=${model}`, { method: 'POST' });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || payload.error || 'Local bootstrap failed');
+    handleLocalBootstrapStatus({
+      state: payload.state,
+      received_bytes: 0,
+      total_bytes: 0,
+      message: null,
+    });
+  } catch (err) {
+    handleLocalBootstrapStatus({
+      state: 'failed',
+      received_bytes: 0,
+      total_bytes: 0,
+      message: err.message,
+    });
+  }
+}
+
+function startLocalBootstrapPolling() {
+  if (localBootstrapPollTimer) return;
+  pollLocalBootstrap();
+  localBootstrapPollTimer = setInterval(pollLocalBootstrap, 1000);
+}
+
+async function pollLocalBootstrap() {
+  try {
+    const model = encodeURIComponent(getSelectedLocalModel());
+    const response = await fetch(`api/local/bootstrap/status?model=${model}`);
+    const status = await response.json();
+    if (!response.ok) throw new Error(status.detail || status.error || 'Local bootstrap status failed');
+    handleLocalBootstrapStatus(status);
+  } catch (err) {
+    handleLocalBootstrapStatus({
+      state: 'failed',
+      received_bytes: 0,
+      total_bytes: 0,
+      message: err.message,
+    });
+  }
+}
+
+async function refreshLocalAvailability() {
+  try {
+    const availability = await loadLocalAvailability();
+    providersData = providersData || {};
+    providersData.local_availability = availability;
+    updateLocalModelIdentifier();
+    await recheckLocalStatus();
+  } catch (err) {
+    console.error('Error refreshing local availability:', err);
+  }
+}
+
+function handleLocalBootstrapStatus(status) {
+  const state = status?.state || 'idle';
+  const received = Number(status?.received_bytes || 0);
+  const total = Number(status?.total_bytes || 0);
+  const stateEl = document.getElementById('localBootstrapState');
+  const bytesEl = document.getElementById('localBootstrapBytes');
+  const progressEl = document.getElementById('localBootstrapProgress');
+  const retry = document.getElementById('localBootstrapRetry');
+  const stateLabels = {
+    idle: 'idle',
+    downloading: 'Downloading...',
+    verifying: 'Verifying...',
+    installed: 'installed',
+    failed: status?.message || 'failed',
+  };
+
+  if (stateEl) stateEl.textContent = stateLabels[state] || state;
+  if (bytesEl) bytesEl.textContent = `${formatMlxBytes(received)} / ${formatMlxBytes(total)}`;
+  if (progressEl) {
+    progressEl.value = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : 0;
+  }
+  if (retry) {
+    retry.style.display = state === 'failed' ? '' : 'none';
+    retry.disabled = !!status?.bootstrap_disabled;
+    retry.onclick = () => {
+      if (retry.disabled) return;
+      localBootstrapPostStarted = false;
+      mountLocalProgress();
+    };
+  }
+
+  if (state === 'installed') {
+    clearLocalBootstrapPollTimer();
+    setLocalProgressVisible(false);
+    refreshLocalAvailability();
+  } else if (state === 'failed') {
+    clearLocalBootstrapPollTimer();
+    setLocalProgressVisible(true);
+  }
+}
+
 function updateTypeProviderKeyWarning(type, provider, apiKeys, auth) {
   const warning = document.getElementById(`${type}ProviderKeyWarning`);
   const link = document.getElementById(`${type}ProviderKeyLink`);
   if (!warning || !link) return;
   const message = warning.querySelectorAll('span')[1];
 
-  // Providers with no env_key (e.g., Ollama local) don't need API keys
+  // Providers with no env_key (e.g., local) don't need API keys
   const providerMeta = providersData?.providers?.find(p => p.name === provider);
   if (providerMeta && !providerMeta.env_key) {
     warning.style.display = 'none';
@@ -6041,8 +6285,14 @@ for (const type of ['generate', 'cogitate']) {
           }],
           onSuccess: (result) => {
             const previousMlxAvailability = providersData?.mlx_availability;
+            const previousMlxModels = providersData?.mlx_models || mlxModels;
+            const previousLocalAvailability = providersData?.local_availability;
+            const previousLocalModels = providersData?.local_models || localModels;
             providersData = result;
             providersData.mlx_availability = previousMlxAvailability;
+            providersData.mlx_models = previousMlxModels;
+            providersData.local_availability = previousLocalAvailability;
+            providersData.local_models = previousLocalModels;
             if (field === 'provider') {
               updateTypeProviderKeyWarning(type, value, result.api_keys, result.auth);
               if (type === 'cogitate') {
@@ -6050,12 +6300,17 @@ for (const type of ['generate', 'cogitate']) {
                 if (authSelect && result.auth) {
                   authSelect.value = result.auth[value] || 'platform';
                 }
-                renderOllamaCogitateStatus();
+                renderLocalCogitateStatus();
               }
             }
             if (type === 'generate' && (field === 'provider' || field === 'tier')) {
               syncMlxProgressRegion();
               refreshMlxAvailability().then(syncMlxProgressRegion);
+            }
+            if (field === 'provider' || field === 'tier') {
+              syncLocalProgressRegion();
+              refreshLocalAvailability().then(syncLocalProgressRegion);
+              renderLocalCogitateStatus();
             }
             showFieldStatus(el, 'saved');
           },
@@ -6101,6 +6356,25 @@ document.getElementById('field-mlx-active-model')?.addEventListener('change', as
     });
   } catch (err) {
     notifyError('MLX model save failed', err.message);
+  }
+});
+
+document.getElementById('field-local-active-model')?.addEventListener('change', async function() {
+  const select = this;
+  const model = select.value;
+  const errorHost = prepareFieldErrorHost(select);
+  clearLocalBootstrapPollTimer();
+  localBootstrapPostStarted = false;
+  providersData = providersData || {};
+  try {
+    providersData.local_availability = await loadLocalAvailability();
+    populateLocalModelPicker(providersData);
+    syncLocalProgressRegion();
+    renderLocalCogitateStatus();
+    showFieldStatus(select, 'saved');
+  } catch (err) {
+    showFieldError(errorHost, err.message);
+    notifyError('Local model update failed', err.message);
   }
 });
 

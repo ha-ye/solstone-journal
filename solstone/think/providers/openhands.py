@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import subprocess
 import traceback
 import uuid
 from collections.abc import Callable
@@ -56,7 +55,7 @@ _API_KEY_ENV = {
     "openai": "OPENAI_API_KEY",
     "google": "GOOGLE_API_KEY",
 }
-_KNOWN_MODEL_PREFIXES = frozenset({"anthropic", "openai", "google", "gemini"})
+_KNOWN_MODEL_PREFIXES = frozenset({"anthropic", "openai", "google", "gemini", "local"})
 _SHELL_STDOUT_CAP = 6000
 _SHELL_STDERR_CAP = 6000
 _SHELL_TIMEOUT_SECONDS = 30
@@ -64,6 +63,12 @@ _COST_WARNING_TEXT = "Cost calculation failed"
 
 
 def _prefixed_model(provider: str, model: str) -> str:
+    if provider == "local":
+        base_model = str(model)
+        if base_model.startswith("openai/"):
+            return base_model
+        return f"openai/{base_model}"
+
     prefix = _MODEL_PREFIXES[provider]
     base_model = str(model)
     if "/" in base_model:
@@ -104,6 +109,22 @@ def _session_identity(value: Any) -> tuple[str, uuid.UUID]:
 
 def _build_llm(provider: str, model: str) -> Any:
     from openhands.sdk import LLM
+
+    if provider == "local":
+        from solstone.think.providers import local_server
+
+        model_id = str(model)
+        if model_id.startswith("openai/"):
+            model_id = model_id[len("openai/") :]
+        server = local_server.ensure_running(model_id)
+        return LLM(
+            model=f"openai/{model_id}",
+            base_url=f"http://127.0.0.1:{server.port}/v1",
+            api_key="EMPTY",
+            native_tool_calling=False,
+            input_cost_per_token=0,
+            chat_template_kwargs={"enable_thinking": False},
+        )
 
     if provider not in _MODEL_PREFIXES:
         raise ValueError(f"Unsupported OpenHands provider: {provider}")
@@ -218,6 +239,8 @@ def _build_sol_tools(
 
 
 def _run_shell_command(command: str) -> dict[str, Any]:
+    import subprocess
+
     try:
         completed = subprocess.run(
             ["bash", "-lc", command],

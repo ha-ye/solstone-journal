@@ -17,7 +17,7 @@ from typing import Any
 from flask import Blueprint, jsonify, request
 
 from solstone.apps.settings import copy as settings_copy
-from solstone.apps.settings import mlx_bootstrap
+from solstone.apps.settings import local_bootstrap, mlx_bootstrap
 from solstone.apps.settings.copy import (
     CONVEY_REFUSE_NO_PASSWORD_NETWORK,
     CONVEY_REFUSE_NO_PASSWORD_TRUST,
@@ -53,9 +53,10 @@ from solstone.convey.sol_initiated.settings import (
     save_settings as save_sol_voice_settings,
 )
 from solstone.convey.utils import error_response
-from solstone.think.models import QWEN_35_9B
+from solstone.think.models import LOCAL_FLASH, QWEN_35_9B
 from solstone.think.pairing.config import get_host_url
 from solstone.think.providers.google import validate_vertex_credentials
+from solstone.think.providers.local import LOCAL_MODEL_SPECS
 from solstone.think.providers.mlx import _MLX_MODEL_REGISTRY
 from solstone.think.retention import (
     _human_bytes,
@@ -598,6 +599,10 @@ MLX_MODEL_LABELS = {
     QWEN_35_9B: "qwen 3.5 — 16 GB Mac",
     "gemma-4-26b-a4b-it-mlx-4bit": "gemma 4 (26B) — 24 GB Mac",
 }
+LOCAL_MODEL_LABELS = {
+    LOCAL_FLASH: "qwen 2.5 coder 7B — 12 GB",
+    "local/qwen3-coder-30b-a3b-q4_k_m": "qwen3 coder 30B — 32 GB",
+}
 
 
 def _mlx_model_error(model: str) -> Any:
@@ -614,6 +619,23 @@ def _mlx_model_from_request() -> tuple[str | None, Any | None]:
     model = request.args.get("model") or QWEN_35_9B
     if model not in _MLX_MODEL_REGISTRY:
         return None, _mlx_model_error(model)
+    return model, None
+
+
+def _local_model_error(model: str) -> Any:
+    return error_response(
+        INVALID_REQUEST_VALUE,
+        detail=(
+            f"Unknown local model: {model}. "
+            f"Must be one of: {', '.join(LOCAL_MODEL_SPECS.keys())}"
+        ),
+    )
+
+
+def _local_model_from_request() -> tuple[str | None, Any | None]:
+    model = request.args.get("model") or LOCAL_FLASH
+    if model not in LOCAL_MODEL_SPECS:
+        return None, _local_model_error(model)
     return model, None
 
 
@@ -677,6 +699,70 @@ def get_mlx_models() -> Any:
         )
     except Exception:
         logger.exception("error loading MLX models")
+        return _settings_operation_failed()
+
+
+@settings_bp.route("/api/local/availability")
+def get_local_availability() -> Any:
+    try:
+        model, error = _local_model_from_request()
+        if error is not None:
+            return error
+        assert model is not None
+        return jsonify(local_bootstrap.get_availability_payload(model))
+    except Exception:
+        logger.exception("error loading local provider availability")
+        return _settings_operation_failed()
+
+
+@settings_bp.route("/api/local/bootstrap", methods=["POST"])
+def start_local_bootstrap() -> Any:
+    try:
+        model, error = _local_model_from_request()
+        if error is not None:
+            return error
+        assert model is not None
+        payload, status = local_bootstrap.start_bootstrap(model)
+        return jsonify(payload), status
+    except local_bootstrap.LocalBootstrapUnavailableError as exc:
+        return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
+    except local_bootstrap.LocalBootstrapStartError as exc:
+        logger.exception("error starting local provider bootstrap")
+        return _settings_operation_failed(str(exc))
+    except Exception:
+        logger.exception("error starting local provider bootstrap")
+        return _settings_operation_failed()
+
+
+@settings_bp.route("/api/local/bootstrap/status")
+def get_local_bootstrap_status() -> Any:
+    try:
+        model, error = _local_model_from_request()
+        if error is not None:
+            return error
+        assert model is not None
+        return jsonify(local_bootstrap.get_state(model))
+    except Exception:
+        logger.exception("error loading local provider bootstrap status")
+        return _settings_operation_failed()
+
+
+@settings_bp.route("/api/local/models")
+def get_local_models() -> Any:
+    try:
+        return jsonify(
+            [
+                {
+                    "name": name,
+                    "label": LOCAL_MODEL_LABELS[name],
+                    "min_ram_gb": spec.min_ram_bytes // 1024**3,
+                    "size_bytes": spec.size_bytes,
+                }
+                for name, spec in LOCAL_MODEL_SPECS.items()
+            ]
+        )
+    except Exception:
+        logger.exception("error loading local provider models")
         return _settings_operation_failed()
 
 
@@ -830,21 +916,21 @@ def get_bundled_providers() -> Any:
         return _settings_operation_failed()
 
 
-@settings_bp.route("/api/providers/ollama/status")
-def get_ollama_provider_status() -> Any:
-    """Return Ollama provider readiness status."""
+@settings_bp.route("/api/providers/local/status")
+def get_local_provider_status() -> Any:
+    """Return local provider readiness status."""
 
     try:
         from solstone.think.providers import build_provider_status, get_provider_list
 
         providers_list = get_provider_list()
-        ollama_provider = next(
-            provider for provider in providers_list if provider["name"] == "ollama"
+        local_provider = next(
+            provider for provider in providers_list if provider["name"] == "local"
         )
-        provider_status = build_provider_status([ollama_provider], False)
-        return jsonify(provider_status["ollama"])
+        provider_status = build_provider_status([local_provider], False)
+        return jsonify(provider_status["local"])
     except Exception:
-        logger.exception("error loading Ollama provider status")
+        logger.exception("error loading local provider status")
         return _settings_operation_failed()
 
 

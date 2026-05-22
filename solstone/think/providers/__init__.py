@@ -17,7 +17,7 @@ Available providers:
 - google: Google Gemini models
 - openai: OpenAI GPT models
 - anthropic: Anthropic Claude models
-- ollama: Ollama local models
+- local: bundled on-device llama-server models
 - mlx: MLX local Apple Silicon models
 """
 
@@ -41,7 +41,7 @@ PROVIDER_REGISTRY: Dict[str, str] = {
     "google": "solstone.think.providers.openhands",
     "openai": "solstone.think.providers.openhands",
     "anthropic": "solstone.think.providers.openhands",
-    "ollama": "solstone.think.providers.ollama",
+    "local": "solstone.think.providers.local",
     "mlx": "solstone.think.providers.mlx",
 }
 
@@ -72,11 +72,10 @@ PROVIDER_METADATA: Dict[str, Dict[str, Any]] = {
         "env_key": "ANTHROPIC_API_KEY",
         "cogitate_runtime": "openhands",
     },
-    "ollama": {
-        "label": "Ollama (Local)",
+    "local": {
+        "label": "Local (on-device)",
         "env_key": "",
-        "cogitate_cli": "opencode",
-        "cogitate_cli_install": "curl -fsSL https://opencode.ai/install | bash",
+        "cogitate_runtime": "openhands",
     },
     "mlx": {
         "label": "MLX (Local, Apple Silicon)",
@@ -179,22 +178,35 @@ def build_provider_status(
         cogitate_cli = meta.get("cogitate_cli", "")
         issues: list[str] = []
 
-        if name == "ollama":
-            try:
-                import httpx
+        if name == "local":
+            from solstone.think.providers import local_install, local_server
 
-                base_url = os.getenv(
-                    "OLLAMA_BASE_URL", "http://localhost:11434"
-                ).rstrip("/")
-                resp = httpx.get(f"{base_url}/api/version", timeout=2)
-                resp.raise_for_status()
-                configured = True
-            except Exception:
-                configured = False
-                base_url = os.getenv(
-                    "OLLAMA_BASE_URL", "http://localhost:11434"
-                ).rstrip("/")
-                issues.append(f"Ollama not reachable at {base_url}")
+            readiness = local_install.inspect_readiness()
+            binary_installed = bool(readiness["binary_installed"])
+            model_installed = bool(readiness["model_installed"])
+            ram_sufficient = bool(readiness["ram_sufficient"])
+            server_healthy = local_server.is_healthy()
+            configured = binary_installed and model_installed and ram_sufficient
+
+            if not binary_installed:
+                issues.append("binary_missing")
+            if not model_installed:
+                issues.append("model_missing")
+            if not ram_sufficient:
+                issues.append("ram_insufficient")
+            if configured and not server_healthy:
+                issues.append("server_unhealthy")
+
+            ready = configured and server_healthy
+            status[name] = {
+                "configured": configured,
+                "generate_ready": ready,
+                "cogitate_ready": ready,
+                "cogitate_cli": "llama-server",
+                "cogitate_cli_found": binary_installed,
+                "issues": issues,
+            }
+            continue
         elif name in {"google", "anthropic", "openai"}:
             from solstone.think.providers import bundled
 

@@ -153,7 +153,7 @@ def test_render_empty_provider():
 
 
 def test_render_no_placeholder_artifacts_for_all_providers():
-    providers = ["", "google", "openai", "anthropic", "ollama", "weirdslug"]
+    providers = ["", "google", "openai", "anthropic", "local", "weirdslug"]
     for code in CHAT_REASONS:
         for provider in providers:
             message = render_chat_reason(code, provider)["message"]

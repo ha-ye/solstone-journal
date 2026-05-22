@@ -462,14 +462,25 @@ def normalize(data: Any, journal_path: str) -> Any:
                             and "not set" not in i
                             and "not reachable" not in i
                         ]
+                        if _name == "local":
+                            local_issues = [
+                                i
+                                for i in issues
+                                if i
+                                in {
+                                    "binary_missing",
+                                    "model_missing",
+                                    "ram_insufficient",
+                                    "server_unhealthy",
+                                }
+                            ]
+                            for local_issue in ("binary_missing", "model_missing"):
+                                if local_issue not in local_issues:
+                                    local_issues.append(local_issue)
+                            status["issues"] = sorted(local_issues)
+                            continue
                         if cli and _name not in {"anthropic", "openai", "google"}:
-                            if _name == "ollama":
-                                issues.append(
-                                    f"{cli} CLI not found on PATH — run: "
-                                    "curl -fsSL https://opencode.ai/install | bash"
-                                )
-                            else:
-                                issues.append(f"{cli} CLI not found on PATH")
+                            issues.append(f"{cli} CLI not found on PATH")
                         # Re-add generic key-not-set issues per provider
                         env_keys = {
                             "anthropic": "ANTHROPIC_API_KEY",
@@ -478,10 +489,6 @@ def normalize(data: Any, journal_path: str) -> Any:
                         }
                         if _name in env_keys:
                             issues.append(f"{env_keys[_name]} not set")
-                        if _name == "ollama":
-                            issues.append(
-                                "Ollama not reachable at http://localhost:11434"
-                            )
                         status["issues"] = sorted(issues)
             if key == "bundled":
                 for _name, status in result.items():

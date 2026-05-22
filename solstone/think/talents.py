@@ -570,7 +570,7 @@ def prepare_config(request: dict) -> dict:
     health_data = load_health_status()
     config["health_stale"] = should_recheck_health(health_data)
 
-    if not is_provider_model_interface_healthy(
+    if provider != "local" and not is_provider_model_interface_healthy(
         provider, model, talent_type, health_data
     ):
         backup = get_backup_provider(talent_type)
@@ -882,6 +882,8 @@ async def _execute_with_tools(
     try:
         await provider_mod.run_cogitate(config=config, on_event=talent_emit_event)
     except Exception as exc:
+        if provider == "local":
+            raise
         if config.get("fallback_from") or not _should_fallback(exc):
             raise
         if isinstance(exc, QuotaExhaustedError):
@@ -1031,6 +1033,9 @@ async def _execute_generate(
             timeout_s=timeout_s,
         )
     except Exception as exc:
+        provider = config.get("provider", "google")
+        if provider == "local":
+            raise
         if config.get("fallback_from") or not _should_fallback(exc):
             raise
         from solstone.think.models import (
@@ -1039,7 +1044,6 @@ async def _execute_generate(
         )
         from solstone.think.providers import PROVIDER_METADATA
 
-        provider = config.get("provider", "google")
         backup = get_backup_provider("generate")
         if not backup or backup == provider:
             raise

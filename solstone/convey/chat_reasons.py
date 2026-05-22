@@ -24,7 +24,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "google": "Gemini",
     "openai": "OpenAI",
     "anthropic": "Anthropic",
-    "ollama": "Ollama",
+    "local": "Local",
 }
 
 CHAT_REASONS: dict[str, ChatReason] = {

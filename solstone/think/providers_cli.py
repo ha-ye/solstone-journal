@@ -17,7 +17,14 @@ from pathlib import Path
 
 from solstone.think.utils import get_journal, require_solstone, setup_cli
 
-_OPENHANDS_BACKED_PROVIDERS = {"anthropic", "openai", "google"}
+_OPENHANDS_BACKED_PROVIDERS = {"anthropic", "openai", "google", "local"}
+
+
+def _local_readiness_message(status: dict[str, object] | None = None) -> str:
+    issues = (status or {}).get("issues") or []
+    if issues:
+        return "; ".join(str(issue) for issue in issues)
+    return "Local provider not ready"
 
 
 def _provider_status(provider_name: str) -> dict[str, object]:
@@ -50,9 +57,15 @@ def _check_generate(provider_name: str, tier: int, timeout: int) -> tuple[str, s
 
         result = validate_key(provider_name, "")
         if not result.get("valid"):
+            if provider_name == "local":
+                return (
+                    "skip",
+                    f"Local provider not ready ({result.get('error', 'not ready')})",
+                )
             return (
                 "skip",
-                f"Ollama not reachable ({result.get('error', 'unreachable')})",
+                f"{PROVIDER_METADATA[provider_name]['label']} not reachable "
+                f"({result.get('error', 'unreachable')})",
             )
 
     try:
@@ -95,7 +108,11 @@ async def _check_cogitate(
     from solstone.think.providers import PROVIDER_METADATA, get_provider_module
 
     env_key = PROVIDER_METADATA[provider_name]["env_key"]
-    if provider_name in _OPENHANDS_BACKED_PROVIDERS:
+    if provider_name == "local":
+        status = _provider_status(provider_name)
+        if not status.get("cogitate_ready"):
+            return "skip", _local_readiness_message(status)
+    elif provider_name in _OPENHANDS_BACKED_PROVIDERS:
         label = PROVIDER_METADATA[provider_name]["label"]
         status = _provider_status(provider_name)
         if not status.get("configured"):
@@ -116,9 +133,15 @@ async def _check_cogitate(
 
         result = validate_key(provider_name, "")
         if not result.get("valid"):
+            if provider_name == "local":
+                return (
+                    "skip",
+                    f"Local provider not ready ({result.get('error', 'not ready')})",
+                )
             return (
                 "skip",
-                f"Ollama not reachable ({result.get('error', 'unreachable')})",
+                f"{PROVIDER_METADATA[provider_name]['label']} not reachable "
+                f"({result.get('error', 'unreachable')})",
             )
 
     binary = PROVIDER_METADATA[provider_name].get("cogitate_cli", "")

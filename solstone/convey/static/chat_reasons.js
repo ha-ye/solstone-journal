@@ -6,7 +6,7 @@
     "google": "Gemini",
     "openai": "OpenAI",
     "anthropic": "Anthropic",
-    "ollama": "Ollama"
+    "local": "Local"
   });
 
   const CHAT_REASONS = Object.freeze({

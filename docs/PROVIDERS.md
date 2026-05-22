@@ -309,33 +309,30 @@ client = OpenAI(
 
 This allows reusing much of the OpenAI provider's patterns for request/response handling.
 
-The Ollama provider (`solstone/think/providers/ollama.py`) takes a different approach —
-it uses Ollama's native ``/api/chat`` endpoint directly via ``httpx`` for
-reliable thinking control. See the Ollama section below.
+The bundled local provider (`solstone/think/providers/local.py`) is OpenAI-
+compatible over a loopback llama-server runtime, while still requiring no API
+key.
 
-## Ollama (Local) Provider
+## Local (On-device) Provider
 
-The ``ollama`` provider connects to a local Ollama instance via the native
-``/api/chat`` endpoint (not the OpenAI-compatible endpoint, which silently
-ignores the ``think`` parameter on models like Qwen3.5). Key differences
-from cloud providers:
+The ``local`` provider installs pinned llama.cpp ``llama-server`` and GGUF
+artifacts on demand, then serves requests on ``127.0.0.1`` through the
+OpenAI-compatible ``/v1`` surface. Key differences from cloud providers:
 
-- **No API key required.** ``validate_key()`` checks Ollama reachability
-  instead of key validity.
-- **Model prefix convention:** Models use the ``ollama-local/`` prefix
-  (e.g., ``ollama-local/qwen3.5:9b``). The prefix is stripped before
-  sending requests to the Ollama API.
-- **Thinking support:** Controlled via Ollama's ``think`` parameter,
-  mapped from ``thinking_budget``. Budget > 0 enables thinking;
-  None or 0 disables it.
-- **Cogitate via OpenCode CLI.** Cloud cogitate runs through the OpenHands
-  facade; Ollama is the provider that uses ``opencode run --format json`` via
-  ``CLIRunner``. Requires OpenCode CLI installed and configured with a
-  user-level ``.opencode/opencode.json`` that registers the local Ollama
-  instance as a provider. Do not place this config in the project root — it
-  belongs in the user's config directory.
-- **Base URL:** Reads ``OLLAMA_BASE_URL`` env var, defaults to
-  ``http://localhost:11434``.
+- **No API key required.** ``validate_key()`` performs a loopback health check
+  through a tiny local generation request.
+- **Bundled runtime.** Settings installs the pinned llama-server binary plus the
+  selected GGUF model under the journal cache. v1 ships macOS arm64 Metal and
+  Linux x86_64 CPU slices; Linux CUDA is deferred until an upstream Linux CUDA
+  tarball is pinned.
+- **Model prefix convention:** Models use the ``local/`` prefix
+  (for example, ``local/qwen2.5-coder-7b``).
+- **Cogitate through OpenHands.** Cogitate uses the OpenHands + LiteLLM facade
+  with ``base_url=http://127.0.0.1:<port>/v1`` and ``api_key=EMPTY``. Generate
+  uses the provider's direct loopback client.
+- **No cloud fallback.** If the local runtime, model files, RAM gate, or
+  loopback server are not ready, the local provider surfaces that recovery
+  reason instead of silently falling back to a cloud provider.
 
 ## MLX (Local, Apple Silicon) Provider
 

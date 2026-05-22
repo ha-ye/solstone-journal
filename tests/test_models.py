@@ -750,11 +750,11 @@ def test_calc_token_cost_fallback_returns_none_for_unknown_model():
     )
 
 
-def test_calc_token_cost_fallback_keeps_ollama_free():
+def test_calc_token_cost_fallback_keeps_local_free():
     assert (
         calc_token_cost(
             {
-                "model": "ollama-local/qwen3.5:9b",
+                "model": "local/qwen2.5-coder-7b",
                 "usage": {"input_tokens": 1000, "output_tokens": 100},
             }
         )["total_cost"]

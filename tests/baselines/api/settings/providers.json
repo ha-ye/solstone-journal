@@ -2,15 +2,15 @@
   "api_keys": {
     "anthropic": false,
     "google": false,
+    "local": false,
     "mlx": false,
-    "ollama": false,
     "openai": false
   },
   "auth": {
     "anthropic": "platform",
     "google": "platform",
+    "local": "platform",
     "mlx": "platform",
-    "ollama": "platform",
     "openai": "platform"
   },
   "bundled": {
@@ -540,8 +540,8 @@
       "tier": 2
     },
     "test.ollama": {
-      "model": "ollama-local/qwen3.5:2b",
-      "provider": "ollama"
+      "model": "local/qwen2.5-coder-7b",
+      "provider": "local"
     },
     "test.openai": {
       "model": "gpt-5-mini",
@@ -592,6 +592,17 @@
         "bundled runtime not installed — run `sol call settings providers install openhands` missing: openhands.sdk, litellm"
       ]
     },
+    "local": {
+      "cogitate_cli": "llama-server",
+      "cogitate_cli_found": false,
+      "cogitate_ready": false,
+      "configured": false,
+      "generate_ready": false,
+      "issues": [
+        "binary_missing",
+        "model_missing"
+      ]
+    },
     "mlx": {
       "cogitate_cli": "",
       "cogitate_cli_found": false,
@@ -599,17 +610,6 @@
       "configured": false,
       "generate_ready": false,
       "issues": []
-    },
-    "ollama": {
-      "cogitate_cli": "opencode",
-      "cogitate_cli_found": false,
-      "cogitate_ready": false,
-      "configured": false,
-      "generate_ready": false,
-      "issues": [
-        "Ollama not reachable at http://localhost:11434",
-        "opencode CLI not found on PATH — run: curl -fsSL https://opencode.ai/install | bash"
-      ]
     },
     "openai": {
       "cogitate_cli": "openhands-sdk",
@@ -626,13 +626,13 @@
   "providers": [
     {
       "env_key": "",
-      "label": "MLX (Local, Apple Silicon)",
-      "name": "mlx"
+      "label": "Local (on-device)",
+      "name": "local"
     },
     {
       "env_key": "",
-      "label": "Ollama (Local)",
-      "name": "ollama"
+      "label": "MLX (Local, Apple Silicon)",
+      "name": "mlx"
     },
     {
       "env_key": "ANTHROPIC_API_KEY",

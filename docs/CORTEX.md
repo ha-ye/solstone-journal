@@ -92,8 +92,8 @@ The `finish` event may include a `skipped` field when generation is skipped:
 
 Conversation continuation is owned by the active provider runtime. Include a
 `session_id` field in the request with the session ID from a previous talent's
-finish event; cloud providers continue through OpenHands, and Ollama continues
-through opencode.
+finish event; cloud providers and the bundled local provider continue through
+OpenHands.
 
 Chats are locked to their original provider — continuations must use the same provider
 that started the conversation. The `chat_id` field enables reverse lookup from an

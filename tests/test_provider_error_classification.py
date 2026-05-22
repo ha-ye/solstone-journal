@@ -166,12 +166,12 @@ def test_classifies_httpx_errors():
 
     assert (
         classify_provider_error(
-            httpx.ConnectError("connect failed", request=request), "ollama"
+            httpx.ConnectError("connect failed", request=request), "local"
         )
         == "network_unreachable"
     )
     assert (
-        classify_provider_error(httpx.ReadTimeout("timeout", request=request), "ollama")
+        classify_provider_error(httpx.ReadTimeout("timeout", request=request), "local")
         == "chat_timeout"
     )
 
@@ -179,4 +179,13 @@ def test_classifies_httpx_errors():
     status_exc = httpx.HTTPStatusError(
         "server failed", request=request, response=response
     )
-    assert classify_provider_error(status_exc, "ollama") == "provider_unavailable"
+    assert classify_provider_error(status_exc, "local") == "provider_unavailable"
+
+
+def test_classifies_local_reason_code():
+    from solstone.think.providers.local import LocalProviderError
+
+    assert (
+        classify_provider_error(LocalProviderError("model_missing", "missing"), "local")
+        == "model_missing"
+    )

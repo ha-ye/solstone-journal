@@ -63,10 +63,10 @@ def test_get_providers_includes_bundled(settings_client):
     assert set(payload["bundled"]) == {"anthropic", "openai", "openhands"}
 
 
-def test_get_ollama_provider_status_shape(settings_client):
+def test_get_local_provider_status_shape(settings_client):
     client, _journal = settings_client
 
-    response = client.get("/app/settings/api/providers/ollama/status")
+    response = client.get("/app/settings/api/providers/local/status")
 
     assert response.status_code == 200
     payload = response.get_json()
@@ -78,7 +78,7 @@ def test_get_ollama_provider_status_shape(settings_client):
         "cogitate_cli_found",
         "issues",
     }
-    assert payload["cogitate_cli"] == "opencode"
+    assert payload["cogitate_cli"] == "llama-server"
 
 
 @pytest.mark.parametrize(

@@ -146,9 +146,9 @@ CLAUDE_OPUS_4 = "claude-opus-4-7"
 CLAUDE_SONNET_4 = "claude-sonnet-4-6"
 CLAUDE_HAIKU_4 = "claude-haiku-4-5"
 
-OLLAMA_PRO = "ollama-local/qwen3.5:35b-a3b-bf16"
-OLLAMA_FLASH = "ollama-local/qwen3.5:9b"
-OLLAMA_LITE = "ollama-local/qwen3.5:2b"
+LOCAL_PRO = "local/qwen3-coder-30b-a3b-q4_k_m"
+LOCAL_FLASH = "local/qwen2.5-coder-7b"
+LOCAL_LITE = "local/qwen2.5-coder-7b"
 
 QWEN_35_9B = "qwen3.5:9b"
 GEMMA4_26B_A4B_4BIT = "gemma-4-26b-a4b-it-mlx-4bit"
@@ -176,10 +176,10 @@ PROVIDER_DEFAULTS: Dict[str, Dict[int, str]] = {
         TIER_FLASH: CLAUDE_SONNET_4,
         TIER_LITE: CLAUDE_HAIKU_4,
     },
-    "ollama": {
-        TIER_PRO: OLLAMA_PRO,
-        TIER_FLASH: OLLAMA_FLASH,
-        TIER_LITE: OLLAMA_LITE,
+    "local": {
+        TIER_PRO: LOCAL_PRO,
+        TIER_FLASH: LOCAL_FLASH,
+        TIER_LITE: LOCAL_LITE,
     },
     "mlx": {
         TIER_PRO: MLX_PRO,
@@ -745,7 +745,7 @@ def get_model_provider(model: str) -> str:
     Returns
     -------
     str
-        Provider name: "openai", "google", "anthropic", "ollama", or "unknown"
+        Provider name: "openai", "google", "anthropic", "local", or "unknown"
     """
     model_lower = model.lower()
 
@@ -753,8 +753,8 @@ def get_model_provider(model: str) -> str:
         return "mlx"
     elif model_lower == QWEN_35_9B.lower():
         return "mlx"
-    elif model_lower.startswith("ollama-local/"):
-        return "ollama"
+    elif model_lower.startswith("local/"):
+        return "local"
     elif model_lower.startswith("gpt"):
         return "openai"
     elif model_lower.startswith("gemini"):
@@ -815,7 +815,7 @@ def calc_token_cost(token_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if provider_id == "unknown":
             return None
 
-        if provider_id in {"ollama", "mlx"}:
+        if provider_id in {"local", "mlx"}:
             return {
                 "total_cost": 0.0,
                 "input_cost": 0.0,
@@ -1227,6 +1227,8 @@ def get_backup_provider(agent_type: str) -> Optional[str]:
     type_config = providers_config.get(agent_type, {})
     primary_provider = type_config.get("provider", type_defaults["provider"])
     backup = type_config.get("backup", type_defaults["backup"])
+    if primary_provider == "local":
+        return None
     if agent_type == "generate" and primary_provider == "mlx":
         return None
     if backup == primary_provider:

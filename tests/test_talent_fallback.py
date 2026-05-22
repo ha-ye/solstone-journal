@@ -173,10 +173,10 @@ def test_get_backup_provider_none_when_same_as_primary(monkeypatch):
         ("google", "anthropic"),
         ("openai", "anthropic"),
         ("anthropic", None),
-        ("ollama", "anthropic"),
+        ("local", None),
     ],
 )
-def test_get_backup_provider_generate_mlx_disables_backup(
+def test_get_backup_provider_generate_local_and_mlx_disable_backup(
     monkeypatch, primary, expected_backup
 ):
     monkeypatch.setattr(
@@ -188,6 +188,49 @@ def test_get_backup_provider_generate_mlx_disables_backup(
         },
     )
     assert get_backup_provider("generate") == expected_backup
+
+
+def test_get_backup_provider_cogitate_local_disables_backup(monkeypatch):
+    monkeypatch.setattr(
+        "solstone.think.models.get_config",
+        lambda: {
+            "providers": {
+                "cogitate": {"provider": "local", "backup": "anthropic"},
+            }
+        },
+    )
+    assert get_backup_provider("cogitate") is None
+
+
+def test_execute_with_tools_local_failure_does_not_consult_backup(monkeypatch):
+    from solstone.think import talents
+
+    class LocalModule:
+        @staticmethod
+        async def run_cogitate(config, on_event=None):
+            raise RuntimeError("binary_missing")
+
+    monkeypatch.setattr(
+        "solstone.think.providers.get_provider_module",
+        lambda provider: LocalModule,
+    )
+
+    def fail_backup(_agent_type):
+        raise AssertionError("local failure must not consult cloud backup")
+
+    monkeypatch.setattr("solstone.think.models.get_backup_provider", fail_backup)
+
+    with pytest.raises(RuntimeError, match="binary_missing"):
+        asyncio.run(
+            talents._execute_with_tools(
+                {
+                    "provider": "local",
+                    "model": "local/qwen2.5-coder-7b",
+                    "output_path": None,
+                },
+                lambda _event: None,
+            )
+        )
 
 
 def _mock_base_agent_config() -> dict:

@@ -165,7 +165,7 @@ The `sol providers check` command is an ad-hoc provider check CLI. Cortex does n
 sol providers check [TASK_FILE] [--provider PROVIDER] [--model MODEL] [--max-tokens N] [-o OUT_FILE]
 ```
 
-The provider can be ``openai`` (default), ``google``, ``anthropic``, or ``ollama``. Configure the corresponding API key in the ``env`` section of ``journal/config/journal.json`` (e.g., ``OPENAI_API_KEY``, ``GOOGLE_API_KEY``, or ``ANTHROPIC_API_KEY``). The ``ollama`` provider requires no API key — it connects to a local Ollama instance. Keys are loaded into ``os.environ`` by ``setup_cli()`` at process startup.
+The provider can be ``openai`` (default), ``google``, ``anthropic``, ``local``, or ``mlx``. Configure cloud API keys in the ``env`` section of ``journal/config/journal.json`` (for example, ``OPENAI_API_KEY``, ``GOOGLE_API_KEY``, or ``ANTHROPIC_API_KEY``). The ``local`` provider requires no API key — Settings installs a bundled loopback llama-server runtime and GGUF model on demand. Keys are loaded into ``os.environ`` by ``setup_cli()`` at process startup.
 
 ### Provider modules
 
@@ -233,17 +233,18 @@ Cortex (orchestrator)
    ├── Tool execution via `sol call`
    └── Agent subprocess management
           ↓
-   Providers (openai, google, anthropic, ollama)
+   Providers (openai, google, anthropic, local, mlx)
 ```
 
 ## Providers
 
 | Provider | Module | Features |
 |----------|--------|----------|
-| OpenAI | `solstone/think/providers/openai.py` | GPT models via Agents SDK |
-| Google | `solstone/think/providers/google.py` | Gemini models |
-| Anthropic | `solstone/think/providers/anthropic.py` | Claude via Anthropic SDK |
-| Ollama | `solstone/think/providers/ollama.py` | Local models via Ollama |
+| OpenAI | `solstone/think/providers/openhands.py` | GPT models via OpenHands/LiteLLM |
+| Google | `solstone/think/providers/openhands.py` | Gemini models via OpenHands/LiteLLM |
+| Anthropic | `solstone/think/providers/openhands.py` | Claude via OpenHands/LiteLLM |
+| Local | `solstone/think/providers/local.py` | On-device llama-server models |
+| MLX | `solstone/think/providers/mlx.py` | On-device Apple Silicon vision/generate |
 
 Providers implement `run_generate()`, `run_agenerate()`, and `run_cogitate()` functions. See [PROVIDERS.md](PROVIDERS.md) for implementation details.
 

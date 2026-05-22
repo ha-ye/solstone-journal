@@ -3,9 +3,9 @@
 
 """Shared prompt, error, and subprocess support for provider tool agents.
 
-OpenHands and Ollama share prompt assembly and quota handling. The CLIRunner
-handles subprocess lifecycle, stdin piping, and event emission for the
-Ollama/OpenCode path.
+OpenHands-backed providers share prompt assembly and quota handling. The
+CLIRunner handles subprocess lifecycle, stdin piping, and event emission for
+tool-agent CLI paths.
 """
 
 from __future__ import annotations
