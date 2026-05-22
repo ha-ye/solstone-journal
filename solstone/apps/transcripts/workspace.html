@@ -1474,7 +1474,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
 
 <script>
 (() => {
-  const escapeHtml = window.AppServices.escapeHtml;
+  const escapeHtml = (value) => window.AppServices.escapeHtml(value);
   // Timeline bounds - computed dynamically from content
   const DEFAULT_START = 8 * 60;   // 8:00 AM default
   const DEFAULT_END = 20 * 60;    // 8:00 PM default
@@ -3309,35 +3309,43 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
 	    });
 	  }
 
-	  loadDayData();
+  function initTranscripts() {
+    loadDayData();
 
-	  // Handle browser back/forward
-  window.addEventListener('hashchange', () => {
-    const rawHash = window.location.hash.slice(1);
-    const [segKey, tabIdFromHash] = rawHash.split('/', 2);
-    if (!segKey) {
-      return;
-    }
+    // Handle browser back/forward
+    window.addEventListener('hashchange', () => {
+      const rawHash = window.location.hash.slice(1);
+      const [segKey, tabIdFromHash] = rawHash.split('/', 2);
+      if (!segKey) {
+        return;
+      }
 
-    const seg = allSegments.find(s => s.key === segKey);
-    if (!seg) {
-      return;
-    }
+      const seg = allSegments.find(s => s.key === segKey);
+      if (!seg) {
+        return;
+      }
 
-    if (!selectedSegment || selectedSegment.key !== segKey) {
-      selectSegment(seg, false, tabIdFromHash);
-      return;
-    }
+      if (!selectedSegment || selectedSegment.key !== segKey) {
+        selectSegment(seg, false, tabIdFromHash);
+        return;
+      }
 
-    if (
-      tabIdFromHash
-      && [...tabsContainer.querySelectorAll('.tr-tab')].some(
-        tab => tab.dataset.tab === tabIdFromHash
-      )
-    ) {
-      activateTab(tabIdFromHash);
-    }
-  });
+      if (
+        tabIdFromHash
+        && [...tabsContainer.querySelectorAll('.tr-tab')].some(
+          tab => tab.dataset.tab === tabIdFromHash
+        )
+      ) {
+        activateTab(tabIdFromHash);
+      }
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initTranscripts);
+  } else {
+    initTranscripts();
+  }
 
   // Keyboard navigation for segment stepping
   document.addEventListener('keydown', (e) => {

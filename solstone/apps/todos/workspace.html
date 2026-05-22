@@ -646,7 +646,7 @@
 </div>
 
 <script>
-document.addEventListener('DOMContentLoaded', function() {
+function initTodos() {
   const moveEndpoint = {{ url_for('app:todos.move_todo', day=day) | tojson }};
   const currentDay = {{ day | tojson }};
   const storageKey = `todos_collapsed_${currentDay}`;
@@ -1587,5 +1587,11 @@ document.addEventListener('DOMContentLoaded', function() {
       }
     });
   });
-});
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initTodos);
+} else {
+  initTodos();
+}
 </script>

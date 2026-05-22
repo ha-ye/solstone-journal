@@ -713,7 +713,7 @@ let importsCache = [];
 let currentSourceFilter = '';
 let currentPage = 1;
 let totalImports = 0;
-const escapeHtml = window.AppServices.escapeHtml;
+const escapeHtml = (value) => window.AppServices.escapeHtml(value);
 let importEventsCleanup = null;
 
 function malformedImportHistoryResponse(url) {
@@ -2005,30 +2005,38 @@ function loadFacets(defaultValue = null, selectEl = null) {
   }
 }
 
-importEventsCleanup = appEvents.listen('importer', {
-  correlationKey: 'import_id',
-  timeout: IMPORT_STALL_TIMEOUT_MS,
-  onTimeout: markRowStalled,
-}, eventData => {
-  if (!IMPORT_ROW_EVENTS.has(eventData.event)) {
-    return;
-  }
-  if (IMPORT_TERMINAL_EVENTS.has(eventData.event)) {
-    clearPendingImport(eventData.import_id);
-  } else {
-    trackPendingImport(eventData.import_id);
-  }
-  updateImportRow(eventData.import_id, eventData);
-});
+function initImportWorkspace() {
+  importEventsCleanup = window.appEvents.listen('importer', {
+    correlationKey: 'import_id',
+    timeout: IMPORT_STALL_TIMEOUT_MS,
+    onTimeout: markRowStalled,
+  }, eventData => {
+    if (!IMPORT_ROW_EVENTS.has(eventData.event)) {
+      return;
+    }
+    if (IMPORT_TERMINAL_EVENTS.has(eventData.event)) {
+      clearPendingImport(eventData.import_id);
+    } else {
+      trackPendingImport(eventData.import_id);
+    }
+    updateImportRow(eventData.import_id, eventData);
+  });
 
-loadSourceGrid();
-loadFacets();
-loadImports();
-handleHashChange();
+  loadSourceGrid();
+  loadFacets();
+  loadImports();
+  handleHashChange();
 
-window.addEventListener('facet.switch', e => {
-  filterImportsByFacet(e.detail.facet);
-});
+  window.addEventListener('facet.switch', e => {
+    filterImportsByFacet(e.detail.facet);
+  });
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initImportWorkspace);
+} else {
+  initImportWorkspace();
+}
 </script>
 
 {% elif view == 'detail' %}

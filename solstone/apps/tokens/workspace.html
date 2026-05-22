@@ -533,7 +533,7 @@ function formatSegmentKey(segment) {
 }
 
 // Escape HTML special characters for safe innerHTML interpolation
-const escapeHtml = window.AppServices.escapeHtml;
+const escapeHtml = (value) => window.AppServices.escapeHtml(value);
 
 // Create percent bar
 function createPercentBar(percent, color) {
@@ -816,7 +816,7 @@ function renderSegmentTable(segments, filter = '') {
 }
 
 // Context search filter
-document.addEventListener('DOMContentLoaded', () => {
+function initTokens() {
   const contextSearchInput = document.getElementById('context-search');
   contextSearchInput.addEventListener('input', (e) => {
     if (currentData) {
@@ -856,5 +856,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Load initial data
   loadTokenData(currentDay);
-});
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initTokens);
+} else {
+  initTokens();
+}
 </script>

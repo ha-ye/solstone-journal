@@ -510,7 +510,7 @@ button.activity-detail-back {
 <script>
 (function() {
   const day = '{{ day }}';
-  const escapeHtml = window.AppServices.escapeHtml;
+  const escapeHtml = (value) => window.AppServices.escapeHtml(value);
 
   // Breadcrumb month link
   const monthLink = document.getElementById('breadcrumbMonth');
@@ -986,14 +986,21 @@ button.activity-detail-back {
     hideActivityDetail();
   }
 
-  window.addEventListener('hashchange', handleHashChange);
-
   // ── Init ──
 
-  window.addEventListener('facet.switch', () => {
-    applyFilters();
-  });
+  function initActivitiesDay() {
+    window.addEventListener('hashchange', handleHashChange);
+    window.addEventListener('facet.switch', () => {
+      applyFilters();
+    });
 
-  loadData();
+    loadData();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initActivitiesDay);
+  } else {
+    initActivitiesDay();
+  }
 })();
 </script>

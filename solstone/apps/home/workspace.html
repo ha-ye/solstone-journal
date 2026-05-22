@@ -1316,11 +1316,6 @@
   var skillContent = {{ skills_content|default({})|tojson|safe }};
   var sectionOrder = ['your_day', 'yesterday', 'forward_look', 'reading'];
 
-  if (narrativeRaw) {
-    const el = document.getElementById('pulse-narrative-content');
-    if (el) el.innerHTML = window.AppServices.renderMarkdown(narrativeRaw);
-  }
-
   function renderBriefingSections(sections) {
     sectionOrder.forEach(function(key) {
       var raw = sections[key];
@@ -1380,8 +1375,6 @@
     return text.substring(Math.max(0, text.length - 5));
   }
 
-  renderBriefingSections(briefingSections);
-
   function toggleSkillDetail(skillId) {
       var detail = document.getElementById('skill-detail-' + skillId);
       if (!detail) return;
@@ -1395,109 +1388,118 @@
     }
   }
 
-  // Click-to-converse: delegated handler for all [data-conversation] elements
-  var dashboard = document.querySelector('.pulse-dashboard');
-  if (dashboard) {
-    function dispatchConversationElement(el) {
-      if (el.closest('[data-routine-click]') || el.hasAttribute('data-routine-click')) {
-        fetch('/app/home/api/routines/seen', {method: 'POST'});
-      }
-      if (el.classList.contains('pulse-needs-item')) {
-        window.suggestChat(el.dataset.conversation);
-      } else {
-        window.fillChat(el.dataset.conversation);
-      }
+  function initHome() {
+    if (narrativeRaw) {
+      const el = document.getElementById('pulse-narrative-content');
+      if (el) el.innerHTML = window.AppServices.renderMarkdown(narrativeRaw);
     }
 
-    dashboard.addEventListener('click', function(e) {
-      // Skill inline expansion
-      var skillEl = e.target.closest('[data-skill-click]');
-      if (skillEl && !e.target.closest('.pulse-section-toggle')) {
-        e.preventDefault();
-        toggleSkillDetail(skillEl.dataset.skillId);
-        fetch('/app/home/api/skills/seen', {method: 'POST'});
-        return;
-      }
-      var plainLink = e.target.closest('a[href]');
-      if (plainLink && !plainLink.matches('[data-conversation]')) return;
-      var el = e.target.closest('[data-conversation]');
-      if (el) {
-        e.preventDefault();
-        dispatchConversationElement(el);
-      }
-    });
-    dashboard.addEventListener('keydown', function(e) {
-      if (e.key !== 'Enter' && e.key !== ' ') return;
-      var toggleEl = e.target.closest('.pulse-section-toggle');
-      if (toggleEl) {
-        e.preventDefault();
-        toggleSection(toggleEl.parentElement);
-        return;
-      }
-      var skillEl = e.target.closest('[data-skill-click]');
-      if (skillEl) {
-        e.preventDefault();
-        toggleSkillDetail(skillEl.dataset.skillId);
-        fetch('/app/home/api/skills/seen', {method: 'POST'});
-        return;
-      }
-      var plainLink = e.target.closest('a[href]');
-      if (plainLink && !plainLink.matches('[data-conversation]')) return;
-      var el = e.target.closest('[data-conversation]');
-      if (el) {
-        e.preventDefault();
-        dispatchConversationElement(el);
-      }
-    });
-  }
+    renderBriefingSections(briefingSections);
 
-  var briefingHeader = document.querySelector('.pulse-briefing-header');
-  if (briefingHeader) {
-    briefingHeader.addEventListener('click', function() {
-      toggleBriefingCard();
-    });
-    briefingHeader.addEventListener('keydown', function(e) {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
+    // Click-to-converse: delegated handler for all [data-conversation] elements
+    var dashboard = document.querySelector('.pulse-dashboard');
+    if (dashboard) {
+      function dispatchConversationElement(el) {
+        if (el.closest('[data-routine-click]') || el.hasAttribute('data-routine-click')) {
+          fetch('/app/home/api/routines/seen', {method: 'POST'});
+        }
+        if (el.classList.contains('pulse-needs-item')) {
+          window.suggestChat(el.dataset.conversation);
+        } else {
+          window.fillChat(el.dataset.conversation);
+        }
+      }
+
+      dashboard.addEventListener('click', function(e) {
+        // Skill inline expansion
+        var skillEl = e.target.closest('[data-skill-click]');
+        if (skillEl && !e.target.closest('.pulse-section-toggle')) {
+          e.preventDefault();
+          toggleSkillDetail(skillEl.dataset.skillId);
+          fetch('/app/home/api/skills/seen', {method: 'POST'});
+          return;
+        }
+        var plainLink = e.target.closest('a[href]');
+        if (plainLink && !plainLink.matches('[data-conversation]')) return;
+        var el = e.target.closest('[data-conversation]');
+        if (el) {
+          e.preventDefault();
+          dispatchConversationElement(el);
+        }
+      });
+      dashboard.addEventListener('keydown', function(e) {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        var toggleEl = e.target.closest('.pulse-section-toggle');
+        if (toggleEl) {
+          e.preventDefault();
+          toggleSection(toggleEl.parentElement);
+          return;
+        }
+        var skillEl = e.target.closest('[data-skill-click]');
+        if (skillEl) {
+          e.preventDefault();
+          toggleSkillDetail(skillEl.dataset.skillId);
+          fetch('/app/home/api/skills/seen', {method: 'POST'});
+          return;
+        }
+        var plainLink = e.target.closest('a[href]');
+        if (plainLink && !plainLink.matches('[data-conversation]')) return;
+        var el = e.target.closest('[data-conversation]');
+        if (el) {
+          e.preventDefault();
+          dispatchConversationElement(el);
+        }
+      });
+    }
+
+    var briefingHeader = document.querySelector('.pulse-briefing-header');
+    if (briefingHeader) {
+      briefingHeader.addEventListener('click', function() {
         toggleBriefingCard();
-      }
-    });
-  }
+      });
+      briefingHeader.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          toggleBriefingCard();
+        }
+      });
+    }
 
-  var yesterdayHeader = document.querySelector('.pulse-yesterday-header');
-  if (yesterdayHeader) {
-    yesterdayHeader.addEventListener('click', function() {
-      toggleYesterdayCard();
-    });
-    yesterdayHeader.addEventListener('keydown', function(e) {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
+    var yesterdayHeader = document.querySelector('.pulse-yesterday-header');
+    if (yesterdayHeader) {
+      yesterdayHeader.addEventListener('click', function() {
         toggleYesterdayCard();
-      }
-    });
-  }
+      });
+      yesterdayHeader.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          toggleYesterdayCard();
+        }
+      });
+    }
 
-  // WebSocket live updates
-  if (window.appEvents) {
-    // Vital signs: supervisor.status, observe.observed, observe.status
-    window.appEvents.listen('supervisor', function(msg) {
-      if (msg.event === 'status') refreshVitals();
-    });
-    window.appEvents.listen('observe', function(msg) {
-      if (msg.event === 'observed' || msg.event === 'status') refreshVitals();
-    });
+    // WebSocket live updates
+    if (window.appEvents) {
+      // Vital signs: supervisor.status, observe.observed, observe.status
+      window.appEvents.listen('supervisor', function(msg) {
+        if (msg.event === 'status') refreshVitals();
+      });
+      window.appEvents.listen('observe', function(msg) {
+        if (msg.event === 'observed' || msg.event === 'status') refreshVitals();
+      });
 
-    // Narrative: cortex.finish where name=flow or pulse
-    window.appEvents.listen('cortex', function(msg) {
-      if (msg.event === 'finish' && (msg.name === 'flow' || msg.name === 'pulse')) refreshNarrative();
-      if (msg.event === 'finish' && msg.name === 'morning_briefing') refreshBriefing();
-      if (msg.event === 'error') refreshVitals();
-    });
+      // Narrative: cortex.finish where name=flow or pulse
+      window.appEvents.listen('cortex', function(msg) {
+        if (msg.event === 'finish' && (msg.name === 'flow' || msg.name === 'pulse')) refreshNarrative();
+        if (msg.event === 'finish' && msg.name === 'morning_briefing') refreshBriefing();
+        if (msg.event === 'error') refreshVitals();
+      });
 
-    // Routines: refresh on completion
-    window.appEvents.listen('routines', function(msg) {
-      if (msg.event === 'complete') refreshRoutines();
-    });
+      // Routines: refresh on completion
+      window.appEvents.listen('routines', function(msg) {
+        if (msg.event === 'complete') refreshRoutines();
+      });
+    }
   }
 
   window.toggleBriefingCard = function() {
@@ -1906,6 +1908,12 @@
         detail: err,
       }));
     }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initHome);
+  } else {
+    initHome();
   }
 })();
 </script>

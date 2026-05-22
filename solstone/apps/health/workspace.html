@@ -3259,15 +3259,19 @@
 	    updateErrorSummary();
 	  }
 
-	  // Listen to all Callosum events
-  if (window.appEvents) {
-    window.appEvents.listen('*', handleEvent);
+		  // Listen to all Callosum events
+  function initHealthRealtime() {
+    if (window.appEvents) {
+      window.appEvents.listen('*', handleEvent);
+    }
+
+    armSkeletonTimeout();
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', armSkeletonTimeout, {once: true});
+    document.addEventListener('DOMContentLoaded', initHealthRealtime);
   } else {
-    armSkeletonTimeout();
+    initHealthRealtime();
   }
 
   function sweepStale() {

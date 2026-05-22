@@ -219,8 +219,10 @@
     return Promise.resolve();
   }
 
-  if (reflectionBody) {
-    reflectionBody.innerHTML = window.AppServices.renderMarkdown(markdownSource);
+  function initReflectionDetail() {
+    if (reflectionBody) {
+      reflectionBody.innerHTML = window.AppServices.renderMarkdown(markdownSource);
+    }
   }
 
   if (copyButton) {
@@ -238,7 +240,13 @@
           copyButton.textContent = originalLabel;
         }, 2000);
       }
-    });
+      });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initReflectionDetail);
+  } else {
+    initReflectionDetail();
   }
 })();
 </script>

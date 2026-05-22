@@ -1258,8 +1258,15 @@
 
   window._supportRunDiagnostics = runDiagnostics;
 
-  // Init
-  loadTickets();
-  loadAnnouncements();
+  function initSupport() {
+    loadTickets();
+    loadAnnouncements();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initSupport);
+  } else {
+    initSupport();
+  }
 })();
 </script>

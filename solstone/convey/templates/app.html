@@ -1027,14 +1027,22 @@
 <!-- Background script: {{ app_name }} -->
 <script>
 (function() {
-  try {
-    {% set blueprint = app_instance.get_blueprint() %}
-    {% with current_app = app_name %}
-    {% include background_tpl %}
-    {% endwith %}
-  } catch (err) {
-    window.AppServices.markBackgroundFailing('{{ app_name }}', err);
-    window.logError(err, { context: 'app-bg-register', app: '{{ app_name }}' });
+  function initBackgroundService() {
+    try {
+      {% set blueprint = app_instance.get_blueprint() %}
+      {% with current_app = app_name %}
+      {% include background_tpl %}
+      {% endwith %}
+    } catch (err) {
+      window.AppServices?.markBackgroundFailing?.('{{ app_name }}', err);
+      window.logError?.(err, { context: 'app-bg-register', app: '{{ app_name }}' });
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initBackgroundService);
+  } else {
+    initBackgroundService();
   }
 })();
 </script>

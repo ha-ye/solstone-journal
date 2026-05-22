@@ -2663,7 +2663,7 @@ function attachEntityToFacet(entity, description) {
 }
 
 // Edit form submission
-document.addEventListener('DOMContentLoaded', function() {
+function initEntities() {
   loadEntityTypes();  // Load entity types first for UI elements
   loadEntities();
   setupCortexListener();
@@ -2733,7 +2733,13 @@ document.addEventListener('DOMContentLoaded', function() {
       closeDeleteJournalEntityModal();
     }
   };
-});
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initEntities);
+} else {
+  initEntities();
+}
 
 function loadEntities() {
   // Hide all views and show loading

@@ -1057,10 +1057,17 @@ revealKeyBtn.onclick = () => {
   }
 };
 
-// Initial load
-loadObservers();
+function initObserver() {
+  loadObservers();
 
-// Refresh every 30 seconds to update connection status
-setInterval(loadObservers, 30000);
-setInterval(refreshTimestamps, 10000);
+  // Refresh every 30 seconds to update connection status
+  setInterval(loadObservers, 30000);
+  setInterval(refreshTimestamps, 10000);
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initObserver);
+} else {
+  initObserver();
+}
 </script>

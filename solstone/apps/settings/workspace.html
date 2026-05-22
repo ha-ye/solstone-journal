@@ -3466,7 +3466,7 @@ let insightsData = null;
 let keyValidationData = {};
 let solVoiceData = null;
 let solVoiceThrottledTimer = null;
-const escapeHtml = window.AppServices.escapeHtml;
+const escapeHtml = (value) => window.AppServices.escapeHtml(value);
 const conveyUiText = {
   networkModeOff: {{ convey_copy.SETTINGS_NETWORK_MODE_OFF | tojson }},
   networkModeOn: {{ convey_copy.SETTINGS_NETWORK_MODE_ON | tojson }},
@@ -7983,32 +7983,40 @@ document.getElementById('cleanupPreviewBtn').addEventListener('click', runCleanu
 document.getElementById('cleanupConfirmBtn').addEventListener('click', runCleanupExecute);
 
 // ========== INIT ==========
-updateFacetNav();
-initFromHash();
-loadConfig();
-loadSolVoiceSettings();
-loadProviders();
-loadObserve();
-loadVision();
-loadInsights();
-loadSync();
-loadStorage();
-setupAutoSave();
-setupSolVoiceListeners();
-setupStorageListeners();
+function initSettings() {
+  updateFacetNav();
+  initFromHash();
+  loadConfig();
+  loadSolVoiceSettings();
+  loadProviders();
+  loadObserve();
+  loadVision();
+  loadInsights();
+  loadSync();
+  loadStorage();
+  setupAutoSave();
+  setupSolVoiceListeners();
+  setupStorageListeners();
 
-// Enter-to-save for auto-save text inputs inside forms
-document.querySelectorAll('.settings-form input[data-section][type="text"], .settings-form input[data-section][type="number"], .settings-form input[data-section][type="password"]').forEach(input => {
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      input.blur();
-    }
+  // Enter-to-save for auto-save text inputs inside forms
+  document.querySelectorAll('.settings-form input[data-section][type="text"], .settings-form input[data-section][type="number"], .settings-form input[data-section][type="password"]').forEach(input => {
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        input.blur();
+      }
+    });
   });
-});
 
-// If facet is selected on load, load its config
-if (window.selectedFacet) {
-  loadFacetConfig(window.selectedFacet);
+  // If facet is selected on load, load its config
+  if (window.selectedFacet) {
+    loadFacetConfig(window.selectedFacet);
+  }
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initSettings);
+} else {
+  initSettings();
 }
 </script>

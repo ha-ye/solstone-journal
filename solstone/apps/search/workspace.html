@@ -505,7 +505,7 @@ button.day-header {
   const searchUrl = '{{ url_for("app:search.search_journal_api") }}';
   const dayResultsUrl = '{{ url_for("app:search.day_results_api") }}';
   const activitiesDayBase = '{{ url_for("app:activities.activities_day", day="") }}';
-  const escapeHtml = window.AppServices.escapeHtml;
+  const escapeHtml = (value) => window.AppServices.escapeHtml(value);
 
   // State
   let currentQuery = '';
@@ -532,7 +532,7 @@ button.day-header {
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', bootstrapSearch, { once: true });
+    document.addEventListener('DOMContentLoaded', bootstrapSearch);
   } else {
     bootstrapSearch();
   }

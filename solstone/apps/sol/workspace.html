@@ -2238,7 +2238,7 @@
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   }
 
-  const escapeHtml = window.AppServices.escapeHtml;
+  const escapeHtml = (value) => window.AppServices.escapeHtml(value);
 
   // Render agent events as a rich interactive timeline
   function renderEventTimeline(events) {
@@ -2598,15 +2598,23 @@
     }
   });
 
-  // Listen for facet changes
-  window.addEventListener('facet.switch', () => {
+  function initSol() {
+    // Listen for facet changes
+    window.addEventListener('facet.switch', () => {
+      loadUpdatedBanner();
+      loadTalents();
+    });
+
+    // Initial load
+    loadIdentity();
     loadUpdatedBanner();
     loadTalents();
-  });
+  }
 
-  // Initial load
-  loadIdentity();
-  loadUpdatedBanner();
-  loadTalents();
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initSol);
+  } else {
+    initSol();
+  }
 })();
 </script>

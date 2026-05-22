@@ -79,21 +79,28 @@
 
   insertTimeSeparators(transcript);
   decorateBubbles(transcript);
-  document.addEventListener('DOMContentLoaded', () => {
-    bootstrapMarkdownDetails(transcript);
-  }, { once: true });
 
-  if (isToday && window.appEvents) {
-    chatEventsCleanup = window.appEvents.listen('chat', {
-      schema: ['kind'],
-      correlationKey: 'use_id',
-      timeout: CHAT_TALENT_STALL_MS,
-      onDrop: (err) => window.logError(err, { context: 'chat: listener drop' }),
-      onTimeout: handleChatTalentTimeout,
-    }, (msg) => {
-      appendEventFromLive(msg, transcript);
-    });
-    window.addEventListener('beforeunload', chatEventsCleanup, { once: true });
+  function initChatWorkspace() {
+    bootstrapMarkdownDetails(transcript);
+
+    if (isToday && window.appEvents) {
+      chatEventsCleanup = window.appEvents.listen('chat', {
+        schema: ['kind'],
+        correlationKey: 'use_id',
+        timeout: CHAT_TALENT_STALL_MS,
+        onDrop: (err) => window.logError(err, { context: 'chat: listener drop' }),
+        onTimeout: handleChatTalentTimeout,
+      }, (msg) => {
+        appendEventFromLive(msg, transcript);
+      });
+      window.addEventListener('beforeunload', chatEventsCleanup, { once: true });
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initChatWorkspace);
+  } else {
+    initChatWorkspace();
   }
 
   transcript.addEventListener('click', (event) => {

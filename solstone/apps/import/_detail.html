@@ -462,8 +462,9 @@ function formatTimestamp(timestamp) {
 }
 
 // Load import details
-window.apiJson('/app/import/api/{{ timestamp }}')
-  .then(data => {
+function loadImportDetail() {
+  window.apiJson('/app/import/api/{{ timestamp }}')
+    .then(data => {
     // Update header metadata
     const metaDiv = document.getElementById('importMeta');
     if (data.import_json) {
@@ -641,20 +642,31 @@ window.apiJson('/app/import/api/{{ timestamp }}')
     document.getElementById('importJsonContent').innerHTML = formatJson(data.import_json);
     document.getElementById('importedJsonContent').innerHTML = data.imported_json ? formatJson(data.imported_json) : '<span class="no-data">Processing not yet completed</span>';
 
-  })
-  .catch(err => {
-    const serverMessage = err?.serverMessage || err?.message || '';
-    document.getElementById('importMeta').innerHTML = `<div class="surface-state-refresh-error">Couldn&#39;t load import details.${serverMessage ? ` ${escapeHtml(serverMessage)}` : ''}</div>`;
-    document.getElementById('overviewContent').innerHTML = '<div class="no-data">overview unavailable</div>';
-    document.getElementById('importJsonContent').textContent = 'upload metadata unavailable';
-    document.getElementById('importedJsonContent').textContent = 'processing results unavailable';
-    document.getElementById('linksSection').style.display = 'none';
-    document.getElementById('filesList').style.display = 'none';
-  });
+    })
+    .catch(err => {
+      const serverMessage = err?.serverMessage || err?.message || '';
+      document.getElementById('importMeta').innerHTML = `<div class="surface-state-refresh-error">Couldn&#39;t load import details.${serverMessage ? ` ${escapeHtml(serverMessage)}` : ''}</div>`;
+      document.getElementById('overviewContent').innerHTML = '<div class="no-data">overview unavailable</div>';
+      document.getElementById('importJsonContent').textContent = 'upload metadata unavailable';
+      document.getElementById('importedJsonContent').textContent = 'processing results unavailable';
+      document.getElementById('linksSection').style.display = 'none';
+      document.getElementById('filesList').style.display = 'none';
+    });
+}
 
-if (window.location.hash === '#content') {
-  tabs.forEach(t => t.classList.toggle('active', t.dataset.target === 'content'));
-  contents.forEach(c => c.classList.toggle('active', c.id === 'content'));
-  loadContent(1);
+function initImportDetail() {
+  loadImportDetail();
+
+  if (window.location.hash === '#content') {
+    tabs.forEach(t => t.classList.toggle('active', t.dataset.target === 'content'));
+    contents.forEach(c => c.classList.toggle('active', c.id === 'content'));
+    loadContent(1);
+  }
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initImportDetail);
+} else {
+  initImportDetail();
 }
 </script>
