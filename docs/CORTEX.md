@@ -90,10 +90,10 @@ The `finish` event may include a `skipped` field when generation is skipped:
 
 ### Conversation Continuations
 
-All providers (Anthropic, OpenAI, Google) support continuing conversations via CLI
-session resumption. Include a `session_id` field in the request with the CLI session
-ID from a previous talent's finish event. The provider CLI tool resumes the conversation
-internally using its native session management (e.g., `claude --resume`, `codex exec resume`).
+Conversation continuation is owned by the active provider runtime. Include a
+`session_id` field in the request with the session ID from a previous talent's
+finish event; cloud providers continue through OpenHands, and Ollama continues
+through opencode.
 
 Chats are locked to their original provider — continuations must use the same provider
 that started the conversation. The `chat_id` field enables reverse lookup from an

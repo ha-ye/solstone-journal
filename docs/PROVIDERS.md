@@ -328,12 +328,12 @@ from cloud providers:
 - **Thinking support:** Controlled via Ollama's ``think`` parameter,
   mapped from ``thinking_budget``. Budget > 0 enables thinking;
   None or 0 disables it.
-- **Cogitate via OpenCode CLI.** ``run_cogitate()`` uses the OpenCode CLI
-  (``opencode run --format json``) as a subprocess, following the same
-  CLIRunner pattern as the other providers. Requires OpenCode CLI installed
-  and configured with a user-level ``.opencode/opencode.json`` that registers
-  the local Ollama instance as a provider. Do not place this config in the
-  project root — it belongs in the user's config directory.
+- **Cogitate via OpenCode CLI.** Cloud cogitate runs through the OpenHands
+  facade; Ollama is the provider that uses ``opencode run --format json`` via
+  ``CLIRunner``. Requires OpenCode CLI installed and configured with a
+  user-level ``.opencode/opencode.json`` that registers the local Ollama
+  instance as a provider. Do not place this config in the project root — it
+  belongs in the user's config directory.
 - **Base URL:** Reads ``OLLAMA_BASE_URL`` env var, defaults to
   ``http://localhost:11434``.
 
