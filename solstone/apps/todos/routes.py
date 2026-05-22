@@ -480,7 +480,7 @@ def todos_day(day: str):  # type: ignore[override]
         incomplete_total = len(incomplete_list)
         completed_total = len(completed_list)
         visible_incomplete = incomplete_list[:VISIBLE_INCOMPLETE_BUDGET]
-        visible_completed = completed_list[:VISIBLE_COMPLETED_BUDGET]
+        visible_completed = completed_list[-VISIBLE_COMPLETED_BUDGET:]
 
         facet_totals[facet_name] = {
             "incomplete_total": incomplete_total,
@@ -559,7 +559,7 @@ def todos_overflow(day: str, facet: str, section: str):
     if section == "incomplete":
         hidden = incomplete_list[VISIBLE_INCOMPLETE_BUDGET:]
     else:
-        hidden = completed_list[VISIBLE_COMPLETED_BUDGET:]
+        hidden = completed_list[:-VISIBLE_COMPLETED_BUDGET]
 
     return "\n".join(
         render_template(

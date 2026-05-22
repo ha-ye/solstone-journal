@@ -998,17 +998,19 @@ document.addEventListener('DOMContentLoaded', function() {
           const text = await response.text();
           const row = overflowBtn.closest('.todo-overflow-row');
           if (!row) return;
+
+          // Boundary: the last originally-visible row (or null if the affordance is the
+          // only thing in the section). Newly-inserted rows land directly after it, so
+          // the first newly-revealed row is its next sibling once the fragment is in.
+          const lastVisibleRow = row.previousElementSibling;
           row.insertAdjacentHTML('beforebegin', text);
 
-          const insertedRows = [];
-          let cursor = row.previousElementSibling;
-          while (cursor && cursor.matches('[data-todo-row]')) {
-            insertedRows.unshift(cursor);
-            cursor = cursor.previousElementSibling;
-          }
+          const firstNewRow = lastVisibleRow
+            ? lastVisibleRow.nextElementSibling
+            : row.parentElement.querySelector('[data-todo-row]');
 
           row.remove();
-          const firstText = insertedRows[0]?.querySelector('.todo-text');
+          const firstText = firstNewRow?.querySelector('.todo-text');
           if (firstText) {
             firstText.focus();
           }

@@ -25,17 +25,20 @@ class TodosHTMLParser(HTMLParser):
         self.facet_sections: list[dict] = []
         self.empty_states: list[dict] = []
         self._current_button: dict | None = None
+        self._in_todo_text = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr_map = {key: value or "" for key, value in attrs}
         classes = attr_map.get("class", "").split()
 
         if tag == "li" and "todo-row" in classes and "data-todo-row" in attr_map:
-            self.todo_rows.append({"classes": classes, "attrs": attr_map})
+            self.todo_rows.append({"classes": classes, "attrs": attr_map, "text": ""})
         elif tag == "button" and "todo-overflow-btn" in classes:
             button = {"attrs": attr_map, "text": ""}
             self.overflow_buttons.append(button)
             self._current_button = button
+        elif tag == "span" and "todo-text" in classes:
+            self._in_todo_text = True
         elif tag == "div" and "facet-section" in classes:
             self.facet_sections.append({"classes": classes, "attrs": attr_map})
         elif tag == "div" and "todo-facet-empty" in classes:
@@ -44,8 +47,12 @@ class TodosHTMLParser(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._current_button is not None:
             self._current_button["text"] += data
+        if self._in_todo_text and self.todo_rows:
+            self.todo_rows[-1]["text"] += data
 
     def handle_endtag(self, tag: str) -> None:
+        if tag == "span":
+            self._in_todo_text = False
         if tag == "button":
             self._current_button = None
 
@@ -280,3 +287,42 @@ def test_count_stability_under_add_assertion_level(
     assert section["attrs"]["data-incomplete-total"] == "50"
     assert parser.overflow_buttons[0]["text"].strip() == "Show 20 more"
     assert len(incomplete_rows) == 30
+
+
+def test_completed_section_shows_most_recently_completed(
+    tmp_path: Path, todos_client
+) -> None:
+    day = "20260501"
+    _write_todos(tmp_path, "personal", day, completed=10)
+    client = todos_client()
+    _html, parser = _get_page(client, day)
+
+    completed_rows = [row for row in parser.todo_rows if "completed" in row["classes"]]
+    assert [row["text"] for row in completed_rows] == [
+        f"Done task {i}" for i in range(6, 11)
+    ]
+
+    overflow = client.get(f"/app/todos/{day}/overflow/personal/completed")
+    overflow_parser = _parse(overflow.get_data(as_text=True))
+    assert [row["text"] for row in overflow_parser.todo_rows] == [
+        f"Done task {i}" for i in range(1, 6)
+    ]
+
+
+def test_overflow_fragment_first_row_is_first_hidden_item(
+    tmp_path: Path, todos_client
+) -> None:
+    # Bug-1 focus contract stand-in: there is no JS test runner in CI, so the
+    # corrected focus logic (focus the first NEWLY-revealed row) cannot be
+    # asserted at runtime. It is validated server-side via the fragment's
+    # source-order contract: the first row in the overflow fragment is the
+    # first originally-hidden item, which is exactly the row the corrected
+    # focus handler lands on after insertion.
+    day = "20260502"
+    _write_todos(tmp_path, "personal", day, incomplete=35)
+    fragment = todos_client().get(f"/app/todos/{day}/overflow/personal/incomplete")
+    parser = _parse(fragment.get_data(as_text=True))
+
+    texts = [row["text"] for row in parser.todo_rows]
+    assert texts[0] == "Open task 31"
+    assert texts == [f"Open task {i}" for i in range(31, 36)]
