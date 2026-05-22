@@ -1,14 +1,26 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
+import builtins
 import json
+import math
 import re
+import shutil
+import subprocess
 import time
 from datetime import datetime
+from pathlib import Path
 
+import av
 import pytest
 
 from solstone.apps.transcripts.routes import _attach_streams_to_ranges
+from solstone.apps.transcripts.tests._media_helpers import (
+    build_moov_at_tail_m4a,
+    head_bytes,
+    read_true_duration_seconds,
+    top_level_atom_order,
+)
 
 # 20260304 is the canonical fully-analyzed reference day; see
 # tests/fixtures/journal/chronicle/20260304/README.md and
@@ -50,6 +62,37 @@ def _write_jsonl(path, entries: list[dict]) -> None:
         "\n".join(json.dumps(entry) for entry in entries) + "\n",
         encoding="utf-8",
     )
+
+
+def _write_moov_tail_audio_segment(
+    journal_root,
+    tmp_path,
+    day: str,
+    stream: str,
+    segment: str,
+    duration_seconds: float,
+) -> tuple[Path, float]:
+    _write_segment(journal_root, day, stream, segment, screen=False)
+    source_path = tmp_path / f"{day}-{segment}-raw.m4a"
+    build_moov_at_tail_m4a(source_path, duration_seconds)
+    true_duration = read_true_duration_seconds(source_path)
+
+    segment_dir = journal_root / "chronicle" / day / stream / segment
+    raw_path = segment_dir / "raw.m4a"
+    shutil.copyfile(source_path, raw_path)
+    _write_jsonl(
+        segment_dir / "audio.jsonl",
+        [
+            {"raw": "raw.m4a", "duration": true_duration},
+            {
+                "start": "00:00:01",
+                "source": "mic",
+                "speaker": 1,
+                "text": "tail moov duration",
+            },
+        ],
+    )
+    return raw_path, true_duration
 
 
 def _action_log_rows(journal_root, day):
@@ -360,6 +403,95 @@ def test_segment_content_falls_back_to_segment_window_duration(client, journal_c
     assert duration == 300.0
     assert isinstance(duration, float)
     assert duration > 0
+
+
+def test_moov_at_tail_m4a_fixture_has_tail_moov_and_true_duration(tmp_path):
+    media_path = tmp_path / "tail-moov.m4a"
+
+    build_moov_at_tail_m4a(media_path, 3.0)
+
+    assert read_true_duration_seconds(media_path) == pytest.approx(3.0, abs=0.2)
+    atom_order = top_level_atom_order(media_path)
+    assert atom_order.index("mdat") < atom_order.index("moov")
+    head = head_bytes(media_path, 4096)
+    assert b"moov" not in head
+    assert b"mvhd" not in head
+
+
+def test_segment_content_returns_finite_duration_for_moov_at_tail_audio(
+    client, journal_copy, tmp_path
+):
+    day = "20990109"
+    stream = "default"
+    segment = "090000_300"
+    _, true_duration = _write_moov_tail_audio_segment(
+        journal_copy, tmp_path, day, stream, segment, 3.0
+    )
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    duration = response.get_json()["duration"]
+    assert isinstance(duration, float)
+    assert math.isfinite(duration)
+    assert duration == pytest.approx(true_duration, abs=1.0)
+
+
+def test_segment_content_does_not_probe_served_m4a(
+    client, journal_copy, tmp_path, monkeypatch
+):
+    day = "20990112"
+    stream = "default"
+    segment = "090000_300"
+    raw_path, _ = _write_moov_tail_audio_segment(
+        journal_copy, tmp_path, day, stream, segment, 3.0
+    )
+    raw_path = raw_path.resolve()
+
+    subprocess_calls = []
+    av_calls = []
+    m4a_content_reads = []
+    original_builtin_open = builtins.open
+    original_path_open = Path.open
+
+    def resolved_target(target) -> Path | None:
+        try:
+            return Path(target).resolve()
+        except (TypeError, ValueError, OSError):
+            return None
+
+    def subprocess_run_spy(*args, **kwargs):
+        subprocess_calls.append(args[0] if args else kwargs.get("args"))
+        raise AssertionError("segment_content must not invoke subprocess probes")
+
+    def av_open_spy(path, *args, **kwargs):
+        av_calls.append(path)
+        raise AssertionError("segment_content must not open raw media with av")
+
+    def builtin_open_spy(file, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if resolved_target(file) == raw_path:
+            m4a_content_reads.append(("builtins.open", mode))
+        return original_builtin_open(file, *args, **kwargs)
+
+    def path_open_spy(self, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if self.resolve() == raw_path:
+            m4a_content_reads.append(("Path.open", mode))
+        return original_path_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", subprocess_run_spy)
+    monkeypatch.setattr(av, "open", av_open_spy)
+    monkeypatch.setattr(builtins, "open", builtin_open_spy)
+    monkeypatch.setattr(Path, "open", path_open_spy)
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    # os.path.isfile/getsize on raw media are metadata operations, not content reads.
+    assert subprocess_calls == []
+    assert av_calls == []
+    assert m4a_content_reads == []
 
 
 def test_segment_content_drops_screen_md_when_screen_chunks_present(client):

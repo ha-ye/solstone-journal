@@ -6,6 +6,7 @@
 import json
 import shutil
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -22,8 +23,9 @@ from solstone.observe.transcribe import (
     build_statement,
     build_statements_from_acoustic,
 )
-from solstone.observe.transcribe.main import EMBEDDER_NAME
+from solstone.observe.transcribe.main import EMBEDDER_NAME, _statements_to_jsonl
 from solstone.observe.utils import load_audio
+from solstone.observe.vad import VadResult
 
 
 class TestBuildStatementsFromAcoustic:
@@ -394,6 +396,25 @@ class TestEmbeddingsFormat:
 
 class TestJSONLFormat:
     """Test JSONL output format."""
+
+    def test_statements_to_jsonl_includes_duration(self):
+        """Audio metadata should include decode-derived duration."""
+        lines = _statements_to_jsonl(
+            [{"start": 1.0, "end": 2.0, "text": "Hello"}],
+            "audio.m4a",
+            datetime(2026, 5, 22, 9, 0, 0),
+            {"model": "unit", "device": "cpu", "compute_type": "int8"},
+            vad_result=VadResult(
+                duration=12.34,
+                speech_duration=1.0,
+                has_speech=True,
+            ),
+        )
+
+        metadata = json.loads(lines[0])
+
+        assert metadata["duration"] == 12.34
+        assert isinstance(metadata["duration"], float)
 
     def test_metadata_first_line(self):
         """First line should be metadata with 'raw' field."""

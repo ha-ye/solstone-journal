@@ -7,14 +7,19 @@ from pathlib import Path
 
 import pytest
 
+from solstone.apps.transcripts.tests._media_helpers import build_moov_at_tail_m4a
 from solstone.convey import create_app
 
 DAY = "20990104"
 STREAM = "pro5e"
 SEGMENT = "122500_300"
 MEDIA_FILE = "display_1_screen.mp4"
+AUDIO_FILE = "raw.m4a"
 FIXTURE_MEDIA = Path(__file__).parent / "fixtures" / "tiny-h264.mp4"
 SERVE_URL = f"/app/transcripts/api/serve_file/{DAY}/{STREAM}/{SEGMENT}/{MEDIA_FILE}"
+AUDIO_SERVE_URL = (
+    f"/app/transcripts/api/serve_file/{DAY}/{STREAM}/{SEGMENT}/{AUDIO_FILE}"
+)
 
 
 @pytest.fixture
@@ -35,6 +40,7 @@ def client(tmp_path, monkeypatch):
     segment_dir = journal / "chronicle" / DAY / STREAM / SEGMENT
     segment_dir.mkdir(parents=True)
     shutil.copyfile(FIXTURE_MEDIA, segment_dir / MEDIA_FILE)
+    build_moov_at_tail_m4a(segment_dir / AUDIO_FILE, 3.0)
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
     app = create_app(str(journal))
     return app.test_client()
@@ -62,6 +68,20 @@ def test_serve_file_returns_video_mp4_with_range_support(client):
     assert response.data[4:8] == b"ftyp"
 
     range_response = client.get(SERVE_URL, headers={"Range": "bytes=0-127"})
+
+    assert range_response.status_code == 206
+    assert range_response.headers["Accept-Ranges"] == "bytes"
+    assert range_response.headers["Content-Range"].startswith("bytes 0-127/")
+    assert len(range_response.data) == 128
+
+
+def test_serve_file_returns_audio_m4a_with_range_support(client):
+    response = client.get(AUDIO_SERVE_URL)
+
+    assert response.status_code == 200
+    assert response.headers["Content-Type"].startswith("audio/mp4")
+
+    range_response = client.get(AUDIO_SERVE_URL, headers={"Range": "bytes=0-127"})
 
     assert range_response.status_code == 206
     assert range_response.headers["Accept-Ranges"] == "bytes"

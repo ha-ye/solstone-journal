@@ -424,6 +424,7 @@ def _statements_to_jsonl(
 
     # Add noise detection metadata if available
     if vad_result:
+        metadata["duration"] = round(vad_result.duration, 2)
         metadata["noisy"] = vad_result.is_noisy()
         if vad_result.noisy_rms is not None:
             metadata["noisy_rms"] = round(vad_result.noisy_rms, 4)
