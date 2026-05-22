@@ -3,28 +3,7 @@
 <style>
 /* Transcripts app styles - all classes prefixed with .tr- to avoid conflicts */
 
-/*
- * Layout context:
- * - date_nav: true adds has-date-nav to body, which adds date-nav-height to workspace margin-top
- * - Need to account for facet-bar + date-nav at top
- *
- * Height calculation:
- * - 100vh (viewport)
- * - minus 60px (facet-bar-height)
- * - minus 40px (date-nav-height)
- */
-
-/* Lock workspace scrolling - content must fit, only .tr-panel scrolls */
-body.has-date-nav .workspace:has(.tr-wrap) {
-  overflow: hidden;
-  height: calc(100vh - var(--facet-bar-height) - var(--date-nav-height));
-}
-
-body.has-app-bar.has-date-nav .workspace:has(.tr-wrap) {
-  height: calc(
-    100vh - var(--facet-bar-height) - var(--date-nav-height) - var(--app-bar-height) - 80px
-  );
-}
+/* Columns are sticky+viewport-height; the content column scrolls the page. */
 
 /* Main container */
 .tr-wrap {
@@ -32,12 +11,10 @@ body.has-app-bar.has-date-nav .workspace:has(.tr-wrap) {
   margin: 0 auto;
   padding: 16px 24px;
   box-sizing: border-box;
-  height: 100%;
-  overflow: hidden;
 }
 
 .tr-card {
-  height: 100%;
+  min-height: calc(100vh - var(--facet-bar-height) - var(--date-nav-height) - 48px);
   background: #ffffff;
   border: 1px solid #e5e7eb;
   border-radius: 12px;
@@ -45,15 +22,22 @@ body.has-app-bar.has-date-nav .workspace:has(.tr-wrap) {
   --tr-day-col: 200px;
   --tr-zoom-col: 120px;
   grid-template-columns: var(--tr-day-col) var(--tr-zoom-col) 1fr;
-  overflow: hidden;
+}
+
+body.has-app-bar .tr-card {
+  min-height: calc(
+    100vh - var(--facet-bar-height) - var(--date-nav-height) - var(--app-bar-height) - 48px
+  );
 }
 
 /* Left timeline */
 .tr-timeline {
-  position: relative;
+  position: sticky;
+  top: calc(var(--facet-bar-height) + var(--date-nav-height) + 16px);
+  align-self: start;
   border-right: 1px solid #d1d5db;
   user-select: none;
-  height: 100%;
+  height: calc(100vh - var(--facet-bar-height) - var(--date-nav-height) - 32px);
   overflow: hidden;
   touch-action: pan-y;
   cursor: crosshair;
@@ -294,9 +278,7 @@ body.has-app-bar.has-date-nav .workspace:has(.tr-wrap) {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  height: 100%;
   box-sizing: border-box;
-  overflow: hidden;
 }
 
 .tr-header {
@@ -473,8 +455,6 @@ body.has-app-bar.has-date-nav .workspace:has(.tr-wrap) {
 .tr-panel {
   flex: 1;
   padding: 16px;
-  overflow-y: auto;
-  min-height: 0;
   overflow-x: hidden;
   font-size: 14px;
   line-height: 1.5;
@@ -498,13 +478,22 @@ body.has-app-bar.has-date-nav .workspace:has(.tr-wrap) {
 
 /* Middle zoom timeline (segment selector) */
 .tr-zoom {
-  position: relative;
+  position: sticky;
+  top: calc(var(--facet-bar-height) + var(--date-nav-height) + 16px);
+  align-self: start;
   border-right: 1px solid #e5e7eb;
   user-select: none;
-  height: 100%;
+  height: calc(100vh - var(--facet-bar-height) - var(--date-nav-height) - 32px);
   overflow: hidden;
   padding: 12px 0;
   box-sizing: border-box;
+}
+
+body.has-app-bar .tr-timeline,
+body.has-app-bar .tr-zoom {
+  height: calc(
+    100vh - var(--facet-bar-height) - var(--date-nav-height) - var(--app-bar-height) - 32px
+  );
 }
 
 .tr-zoom-timeline-label {
