@@ -2,6 +2,7 @@
 # Copyright (c) 2026 sol pbc
 
 import importlib
+import json
 
 import pytest
 
@@ -655,6 +656,31 @@ def test_scan_day_marks_stub_screen_pending(tmp_path, monkeypatch):
     ]
 
 
+def test_scan_day_marks_headerless_screen_frame_analyzed(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day_dir = day_path("20240101")
+
+    mod = importlib.import_module("solstone.think.cluster")
+
+    segment = day_dir / "default" / "090000_300"
+    segment.mkdir(parents=True)
+    frame = {
+        "frame_id": 1,
+        "timestamp": 1,
+        "analysis": {
+            "primary": "work",
+            "visual_description": "fedora tmux session",
+        },
+        "content": {},
+    }
+    (segment / "fedora_tmux_screen.jsonl").write_text(json.dumps(frame) + "\n")
+
+    _, screen_ranges, segments = mod.scan_day("20240101")
+
+    assert screen_ranges == [("09:00", "09:15")]
+    assert segments[0]["data_state"] == {"screen": "analyzed"}
+
+
 def test_scan_day_marks_analyzed_screen_analyzed(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     day_dir = day_path("20240101")
@@ -671,6 +697,38 @@ def test_scan_day_marks_analyzed_screen_analyzed(tmp_path, monkeypatch):
 
     assert screen_ranges == [("09:00", "09:15")]
     assert segments[0]["data_state"] == {"screen": "analyzed"}
+
+
+def test_scan_day_keeps_screen_raw_substring_collision_pending(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day_dir = day_path("20240101")
+
+    mod = importlib.import_module("solstone.think.cluster")
+
+    segment = day_dir / "default" / "090000_300"
+    segment.mkdir(parents=True)
+    (segment / "screen.jsonl").write_text('{"raw": "clip_timestamp.webm"}\n')
+
+    _, screen_ranges, segments = mod.scan_day("20240101")
+
+    assert screen_ranges == [("09:00", "09:15")]
+    assert segments[0]["data_state"] == {"screen": "pending"}
+
+
+def test_scan_day_marks_whitespace_only_screen_pending(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day_dir = day_path("20240101")
+
+    mod = importlib.import_module("solstone.think.cluster")
+
+    segment = day_dir / "default" / "090000_300"
+    segment.mkdir(parents=True)
+    (segment / "screen.jsonl").write_text("\n  \n\t\n")
+
+    _, screen_ranges, segments = mod.scan_day("20240101")
+
+    assert screen_ranges == [("09:00", "09:15")]
+    assert segments[0]["data_state"] == {"screen": "pending"}
 
 
 @pytest.mark.parametrize("raw_name", ["audio.flac", "audio.m4a"])
@@ -703,6 +761,41 @@ def test_scan_day_marks_header_only_audio_pending(tmp_path, monkeypatch):
     segment = day_dir / "default" / "090000_300"
     segment.mkdir(parents=True)
     (segment / "audio.jsonl").write_text('{"raw": "audio.flac"}\n')
+
+    audio_ranges, _, segments = mod.scan_day("20240101")
+
+    assert audio_ranges == [("09:00", "09:15")]
+    assert segments[0]["data_state"] == {"audio": "pending"}
+
+
+def test_scan_day_marks_analyzed_audio_analyzed(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day_dir = day_path("20240101")
+
+    mod = importlib.import_module("solstone.think.cluster")
+
+    segment = day_dir / "default" / "090000_300"
+    segment.mkdir(parents=True)
+    (segment / "audio.jsonl").write_text(
+        '{"raw": "audio.flac"}\n'
+        '{"start": "00:00:01", "source": "mic", "text": "audio line"}\n'
+    )
+
+    audio_ranges, _, segments = mod.scan_day("20240101")
+
+    assert audio_ranges == [("09:00", "09:15")]
+    assert segments[0]["data_state"] == {"audio": "analyzed"}
+
+
+def test_scan_day_keeps_audio_raw_substring_collision_pending(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day_dir = day_path("20240101")
+
+    mod = importlib.import_module("solstone.think.cluster")
+
+    segment = day_dir / "default" / "090000_300"
+    segment.mkdir(parents=True)
+    (segment / "audio.jsonl").write_text('{"raw": "startup_audio.flac"}\n')
 
     audio_ranges, _, segments = mod.scan_day("20240101")
 

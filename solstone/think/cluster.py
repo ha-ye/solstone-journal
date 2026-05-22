@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
+import json
 import os
 import re
 import sys
@@ -398,23 +399,28 @@ def _slots_to_ranges(slots: list[datetime]) -> list[tuple[str, str]]:
 
 
 def _jsonl_has_marker_row(path: Path, marker_key: str) -> bool:
-    """Return whether a JSONL file has a marker-bearing row after its header.
+    """Return whether an early JSONL object has the marker key.
 
-    This intentionally peeks at at most two nonblank lines and does not parse JSON;
-    day scans need to distinguish analyzed output from header-only stubs cheaply.
+    Key-based membership test on at most the first two nonblank lines.
     """
-    marker = f'"{marker_key}"'
-    nonblank = 0
     try:
+        lines = []
         with path.open("r", encoding="utf-8") as handle:
             for line in handle:
                 if not line.strip():
                     continue
-                nonblank += 1
-                if nonblank == 2:
-                    return marker in line
+                lines.append(line)
+                if len(lines) == 2:
+                    break
     except OSError:
         return False
+    for line in lines:
+        try:
+            parsed = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(parsed, dict) and marker_key in parsed:
+            return True
     return False
 
 

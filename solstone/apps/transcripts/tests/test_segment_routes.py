@@ -347,6 +347,31 @@ def test_segment_content_happy_path_returns_segment_payload(client):
     assert all(isinstance(value, bool) for value in data["media_purged"].values())
 
 
+def test_segment_content_marks_headerless_screen_frame_analyzed(client, journal_copy):
+    day = "20990115"
+    stream = "default"
+    segment = "090000_300"
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    segment_dir.mkdir(parents=True)
+    frame = {
+        "frame_id": 1,
+        "timestamp": 1,
+        "analysis": {
+            "primary": "work",
+            "visual_description": "fedora tmux session",
+        },
+        "content": {},
+    }
+    _write_jsonl(segment_dir / "fedora_tmux_screen.jsonl", [frame])
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["data_state"] == {"screen": "analyzed"}
+    assert any(chunk["type"] == "screen" for chunk in data["chunks"])
+
+
 def test_segment_content_strips_duplicate_audio_markdown_timestamp(
     client, journal_copy
 ):
