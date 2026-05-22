@@ -1,6 +1,16 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
+<head>{% if request.args.get('__pt_capture') %}
+<script>
+  // Test-only: capture parse-time + runtime errors before deferred scripts load.
+  window.__pt_errors = [];
+  window.addEventListener('error', function (e) { window.__pt_errors.push(String(e.message || e.error || e)); });
+  window.addEventListener('unhandledrejection', function (e) { window.__pt_errors.push('unhandledrejection: ' + String(e.reason)); });
+  window.onerror = function (msg, src, line, col, err) { window.__pt_errors.push(String(err || msg)); };
+  var __origConsoleError = console.error;
+  console.error = function () { window.__pt_errors.push('console.error: ' + Array.prototype.join.call(arguments, ' ')); return __origConsoleError.apply(console, arguments); };
+</script>
+{% endif %}
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>{{ app_registry.apps[app].label }} - solstone</title>

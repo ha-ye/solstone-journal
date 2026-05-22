@@ -10,12 +10,14 @@ import base64
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import requests
 
@@ -188,9 +190,43 @@ SCENARIOS: list[dict[str, Any]] = [
 
 _ERROR_LISTENER_JS = (
     "window.__pt_errors=[];"
-    "window.addEventListener('error',e=>window.__pt_errors.push(e.message));"
-    "window.onerror=(_,__,___,____,e)=>window.__pt_errors.push(e?.message||'unknown')"
+    "window.addEventListener('error',e=>window.__pt_errors.push("
+    "String(e.message||e.error||e)));"
+    "window.addEventListener('unhandledrejection',e=>window.__pt_errors.push("
+    "'unhandledrejection: '+String(e.reason)));"
+    "window.onerror=(msg,src,line,col,e)=>window.__pt_errors.push(String(e||msg));"
+    "if(!window.__pt_orig_console_error){window.__pt_orig_console_error=console.error;"
+    "console.error=function(){window.__pt_errors.push("
+    "'console.error: '+Array.prototype.join.call(arguments,' '));"
+    "return window.__pt_orig_console_error.apply(console,arguments);};}"
 )
+
+
+ROUTE_SMOKE_EXCLUDES = (
+    "/api/",
+    "/static",
+    "/ingest",
+    "/callosum",
+    "/local-endpoints",
+    "/raw",
+    "/pdf",
+    "/manifest/",
+    "/generation-status",
+    "/overflow/",
+)
+
+
+DETAIL_HREF_JS = """
+(() => {
+  const values = [window.location.pathname];
+  document.querySelectorAll('a[href]').forEach((el) => values.push(el.href));
+  document.querySelectorAll('[onclick]').forEach((el) => values.push(el.getAttribute('onclick') || ''));
+  document.querySelectorAll('[data-import-id]').forEach((el) => {
+    if (el.dataset.importId) values.push('/app/import/' + el.dataset.importId);
+  });
+  return JSON.stringify(values.filter(Boolean));
+})()
+"""
 
 
 def baseline_path(scenario: dict[str, Any]) -> Path:
@@ -402,8 +438,225 @@ def find_ref(snapshot: dict, text: str) -> str | None:
     return None
 
 
-def _resolve_url(base_url: str, path: str) -> str:
-    return f"{base_url.rstrip('/')}{path}"
+def _is_app_shell_path(path: str) -> bool:
+    return path.startswith("/app/") and not any(
+        excluded in path for excluded in ROUTE_SMOKE_EXCLUDES
+    )
+
+
+def _with_pt_capture(url: str) -> str:
+    parsed = urlparse(url)
+    query = parse_qsl(parsed.query, keep_blank_values=True)
+    query.append(("__pt_capture", "1"))
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
+def _resolve_url(base_url: str, path: str, *, capture: bool = False) -> str:
+    url = f"{base_url.rstrip('/')}{path}"
+    if capture:
+        return _with_pt_capture(url)
+    return url
+
+
+def _resolve_redirect_path(base_url: str, path: str) -> str:
+    try:
+        response = requests.get(
+            _resolve_url(base_url, path), allow_redirects=True, timeout=10
+        )
+    except requests.RequestException:
+        return path
+    final_path = urlparse(response.url).path
+    if response.ok and _is_app_shell_path(final_path):
+        return final_path
+    return path
+
+
+def _derive_app_page_routes() -> list[str]:
+    from flask import Flask
+
+    from solstone.apps import AppRegistry
+
+    registry = AppRegistry()
+    registry.discover()
+    app = Flask(__name__)
+    registry.register_blueprints(app)
+
+    routes: list[str] = []
+    seen: set[str] = set()
+    for rule in sorted(app.url_map.iter_rules(), key=lambda item: item.rule):
+        methods = rule.methods - {"HEAD", "OPTIONS"}
+        if "GET" not in methods or not rule.endpoint.startswith("app:"):
+            continue
+        if any(excluded in rule.rule for excluded in ROUTE_SMOKE_EXCLUDES):
+            continue
+        if rule.rule in seen:
+            continue
+        seen.add(rule.rule)
+        routes.append(rule.rule)
+    return routes
+
+
+def _parent_route(rule: str) -> str:
+    before_param = rule.split("<", 1)[0]
+    if before_param.endswith("/"):
+        return before_param
+    parent = before_param.rsplit("/", 1)[0]
+    return parent + "/"
+
+
+def _route_regex(rule: str) -> re.Pattern[str]:
+    parts: list[str] = []
+    cursor = 0
+    for match in re.finditer(r"<[^>]+>", rule):
+        parts.append(re.escape(rule[cursor : match.start()]))
+        parts.append(r"[^/?#]+")
+        cursor = match.end()
+    parts.append(re.escape(rule[cursor:]))
+    pattern = "".join(parts)
+    return re.compile(rf"^{pattern}/?$")
+
+
+def _candidate_paths(values: list[str]) -> list[str]:
+    paths: list[str] = []
+    for value in values:
+        parsed = urlparse(value)
+        if parsed.path.startswith("/app/"):
+            paths.append(parsed.path)
+            continue
+        for match in re.findall(r"/app/[A-Za-z0-9_./%:-]+", value):
+            paths.append(urlparse(match).path)
+    return paths
+
+
+def _extract_detail_path(pt: PinchTab, rule: str) -> str | None:
+    result = pt.evaluate(DETAIL_HREF_JS)
+    raw = result if isinstance(result, str) else result.get("result", "[]")
+    try:
+        values = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    matcher = _route_regex(rule)
+    for path in _candidate_paths(values):
+        if matcher.fullmatch(path):
+            return path
+    return None
+
+
+def _eval_json(pt: PinchTab, expression: str) -> Any:
+    result = pt.evaluate(f"JSON.stringify({expression})")
+    raw = result if isinstance(result, str) else result.get("result", "null")
+    return json.loads(raw)
+
+
+def _assert_loading_cleared(pt: PinchTab, path: str) -> list[str]:
+    checks: list[tuple[str, str]] = []
+    if re.fullmatch(r"/app/activities/\d{8}/?", path):
+        checks.append(
+            (
+                "activities-day Loading activities...",
+                "!document.body.innerText.includes('Loading activities...')",
+            )
+        )
+    elif path.rstrip("/") == "/app/import":
+        checks.append(
+            (
+                "import list loading imports...",
+                "!document.body.innerText.includes('loading imports...')",
+            )
+        )
+    elif re.fullmatch(r"/app/import/[^/]+/?", path):
+        checks.append(
+            (
+                "import detail loading...",
+                "!(document.getElementById('importMeta')?.innerText.toLowerCase().includes('loading')"
+                " || document.getElementById('overviewContent')?.innerText.toLowerCase().includes('loading'))",
+            )
+        )
+    elif re.fullmatch(r"/app/sol/\d{8}/?", path):
+        checks.append(
+            (
+                "sol loading agents...",
+                "getComputedStyle(document.getElementById('loading-view')).display === 'none'",
+            )
+        )
+    elif re.fullmatch(r"/app/speakers/\d{8}/?", path):
+        checks.append(
+            (
+                "speakers loading...",
+                "!(document.getElementById('spkSegmentList')?.innerText.trim().toLowerCase() === 'loading...')",
+            )
+        )
+    elif re.fullmatch(r"/app/tokens/\d{8}/?", path):
+        checks.append(
+            (
+                "tokens loading token usage data...",
+                "getComputedStyle(document.getElementById('tokens-loading')).display === 'none'",
+            )
+        )
+    elif path.rstrip("/") == "/app/observer":
+        checks.append(
+            (
+                "observer loading observers...",
+                "!document.body.innerText.includes('loading observers...')",
+            )
+        )
+    elif path.rstrip("/") == "/app/link":
+        checks.append(
+            (
+                "link status loading...",
+                "document.getElementById('link-status-text')?.innerText.trim() !== 'loading…'",
+            )
+        )
+    elif path.rstrip("/") == "/app/support":
+        checks.append(
+            (
+                "support checking for tickets",
+                "!document.body.innerText.includes('checking for tickets')",
+            )
+        )
+    elif path.rstrip("/") == "/app/settings":
+        checks.append(
+            (
+                "settings provider/context placeholders",
+                "["
+                "document.getElementById('providerStatus')?.innerText,"
+                "document.getElementById('contextGroups')?.innerText,"
+                "document.getElementById('visionCategoryGroups')?.innerText,"
+                "document.getElementById('segmentInsightsList')?.innerText,"
+                "document.getElementById('dailyInsightsList')?.innerText,"
+                "document.getElementById('mutedFacetsList')?.innerText"
+                "].every((text) => !String(text || '').trim().toLowerCase().startsWith('loading'))",
+            )
+        )
+
+    errors: list[str] = []
+    for label, expression in checks:
+        try:
+            if not _eval_json(pt, expression):
+                errors.append(f"loading sentinel still visible: {label}")
+        except Exception as exc:
+            errors.append(f"loading sentinel check failed for {label}: {exc}")
+    return errors
+
+
+def _resolve_route_path(
+    pt: PinchTab, base_url: str, rule: str
+) -> tuple[str | None, str | None]:
+    if "<" not in rule:
+        return _resolve_redirect_path(base_url, rule), None
+    if rule.startswith("/app/activities/<day>/screens/<stream>/"):
+        # pre-existing unrelated bug, out of scope: list emits timestamp-only URLs.
+        return None, "activities dev screen detail route has a stale list link"
+
+    parent = _resolve_redirect_path(base_url, _parent_route(rule))
+    if _route_regex(rule).fullmatch(parent):
+        return parent, None
+    pt.navigate(_resolve_url(base_url, parent, capture=True))
+    time.sleep(1.2)
+    path = _extract_detail_path(pt, rule)
+    if path:
+        return path, None
+    return None, f"no concrete link found from {parent}"
 
 
 def run_scenario(
@@ -427,13 +680,15 @@ def run_scenario(
         action = step["do"]
         try:
             if action == "navigate":
-                url = _resolve_url(base_url, step["path"])
+                capture = _is_app_shell_path(step["path"])
+                url = _resolve_url(base_url, step["path"], capture=capture)
                 pt.navigate(url)
                 time.sleep(0.3)
-                try:
-                    inject_error_listener(pt)
-                except Exception:
-                    pass
+                if not capture:
+                    try:
+                        inject_error_listener(pt)
+                    except Exception:
+                        pass
 
             elif action == "wait":
                 time.sleep(float(step["ms"]) / 1000)
@@ -505,6 +760,8 @@ def run_scenario(
         console_errors = collect_console_errors(pt)
     except Exception:
         logger.debug("Unable to collect console errors for %s", identifier)
+    if console_errors:
+        errors.extend(f"captured JS error: {err}" for err in console_errors)
 
     return {
         "ok": len(errors) == 0,
@@ -513,12 +770,55 @@ def run_scenario(
     }
 
 
+def run_cold_load_smoke(pt: PinchTab, base_url: str) -> list[dict[str, Any]]:
+    """Cold-load every registered app page route with pre-parse error capture."""
+    results: list[dict[str, Any]] = []
+    for rule in _derive_app_page_routes():
+        identifier = f"cold-load/{rule}"
+        logger.info("  %s", identifier)
+        errors: list[str] = []
+        console_errors: list[str] = []
+        path: str | None = None
+
+        try:
+            path, skip_reason = _resolve_route_path(pt, base_url, rule)
+            if skip_reason:
+                logger.info("    SKIP %s", skip_reason)
+                continue
+            if not path:
+                logger.info("    SKIP no concrete path")
+                continue
+
+            pt.navigate(_resolve_url(base_url, path, capture=True))
+            time.sleep(1.2)
+            errors.extend(_assert_loading_cleared(pt, path))
+            console_errors = collect_console_errors(pt)
+            if console_errors:
+                errors.extend(f"captured JS error: {err}" for err in console_errors)
+        except Exception as exc:
+            errors.append(f"cold-load route failed: {exc}")
+
+        results.append(
+            {
+                "scenario": identifier,
+                "ok": len(errors) == 0,
+                "errors": errors,
+                "console_errors": console_errors,
+            }
+        )
+    return results
+
+
 def run_all(
     pt: PinchTab, base_url: str, mode: str
 ) -> tuple[list[dict[str, Any]], list[tuple[str, list[str]]]]:
     """Run all scenarios. Returns (results, console_error_pairs)."""
     results: list[dict[str, Any]] = []
     all_console_errors: list[tuple[str, list[str]]] = []
+    for result in run_cold_load_smoke(pt, base_url):
+        results.append(result)
+        if result["console_errors"]:
+            all_console_errors.append((result["scenario"], result["console_errors"]))
     for scenario in SCENARIOS:
         identifier = f"{scenario['app']}/{scenario['name']}"
         result = run_scenario(pt, scenario, base_url, mode)
@@ -554,7 +854,7 @@ def main(argv: list[str] | None = None) -> int:
     pt.start()
 
     try:
-        logger.info("Running %d scenarios (%s)...", len(SCENARIOS), args.command)
+        logger.info("Running browser scenarios (%s)...", args.command)
         results, console_errors = run_all(pt, args.base_url, args.command)
 
         passed = sum(1 for r in results if r["ok"])
