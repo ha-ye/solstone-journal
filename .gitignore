@@ -16,6 +16,8 @@ tests/fixtures/journal/chronicle/*/health/*.jsonl
 *.sqlite-shm
 *.sqlite-wal
 *.log
+tests/baselines/visual/**/*.actual.png
+tests/baselines/visual/**/*.diff.png
 *.port
 /config*.py
 .installed

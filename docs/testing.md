@@ -37,6 +37,12 @@ The `tests/fixtures/journal/` directory contains a complete mock journal structu
 - `make ci` before committing (formats, lints, tests)
 - Always run `sol restart-convey` after editing `solstone/convey/` or `solstone/apps/` to reload code
 
+### Browser verification status
+
+Full `make verify-browser` is currently red due to pre-existing pinchtab REST instability. Use the isolated CDP transcripts scenarios in `tests/verify_browser.py --scenario transcripts/<name>` as the visual-regression validation gate.
+
+The transcripts CDP path carries a temporary pre-document `AppServices`/`SurfaceState` stub for a known transcripts load-order race; fix the app/template ordering long term rather than treating the harness stub as product behavior.
+
 ## Worktree Development
 
 Run the full stack (supervisor + callosum + sense + cortex + convey) against test fixture data:
