@@ -70,12 +70,6 @@
     allowFutureDates: {{ app_registry.apps[app].allow_future_dates|tojson }}
   });
 
-  // Toggle today button emphasis based on current day
-  const todayBtn = document.getElementById('date-nav-today');
-  if (currentDay !== MonthPicker.getToday()) {
-    todayBtn.classList.add('is-other-day');
-  }
-
   // Click label to toggle month picker
   document.getElementById('date-nav-label').addEventListener('click', () => {
     MonthPicker.toggle();

@@ -396,7 +396,7 @@ body:has(.status-pane.visible) .facet-bar::after {
   justify-content: flex-end;
 }
 
-/* Today button - always visible, de-emphasized when viewing today */
+/* Today button - hidden at rest, revealed on date-nav hover/focus */
 .date-nav-today {
   background: none;
   border: none;
@@ -407,14 +407,11 @@ body:has(.status-pane.visible) .facet-bar::after {
   color: #9ca3af;
   border-radius: 4px;
   transition: background 0.15s, color 0.15s, font-weight 0.15s, opacity 0.15s;
-}
-
-.date-nav-today:not(.is-other-day) {
   opacity: 0;
 }
 
-.date-nav:hover .date-nav-today:not(.is-other-day),
-.date-nav:focus-within .date-nav-today:not(.is-other-day) {
+.date-nav:hover .date-nav-today,
+.date-nav:focus-within .date-nav-today {
   opacity: 1;
 }
 
@@ -432,17 +429,6 @@ body:has(.status-pane.visible) .facet-bar::after {
   outline-offset: 2px;
   background: rgba(0, 0, 0, 0.05);
   color: #111827;
-}
-
-/* Prominent state when viewing a different day */
-.date-nav-today.is-other-day {
-  color: #111827;
-  background: rgba(0, 0, 0, 0.05);
-  font-weight: 600;
-}
-
-.date-nav-today.is-other-day:hover {
-  background: rgba(0, 0, 0, 0.08);
 }
 
 .date-nav-label {
