@@ -4,12 +4,23 @@
 from __future__ import annotations
 
 import importlib
+import threading
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from solstone.apps.settings import local_bootstrap
+from solstone.apps.settings.install_copy import INSTALL_FAILED_NO_PROGRESS
 from solstone.convey import create_app
 from solstone.think.models import LOCAL_FLASH, LOCAL_PRO
+from solstone.think.providers.install_state import (
+    InstallState,
+    InstallStatus,
+    make_idle_status,
+    read_install_status,
+    transition_state,
+    write_install_status,
+)
 from solstone.think.providers.local import LOCAL_MODEL_SPECS
 
 
@@ -32,12 +43,48 @@ def _settings_config() -> dict:
 
 
 @pytest.fixture(autouse=True)
-def _reset_local_state(monkeypatch):
-    monkeypatch.setattr(
-        local_bootstrap,
-        "_STATES",
-        {name: local_bootstrap.LocalBootstrapState() for name in LOCAL_MODEL_SPECS},
-    )
+def _reset_local_state():
+    with local_bootstrap._INSTALL_LOCK:
+        local_bootstrap._INSTALL_THREADS.clear()
+        local_bootstrap._INSTALL_PROGRESS.clear()
+
+
+class _FakeThread:
+    init_count = 0
+    start_count = 0
+
+    def __init__(self, *args, **kwargs):
+        type(self).init_count += 1
+        self.alive = True
+
+    def start(self):
+        type(self).start_count += 1
+
+    def is_alive(self):
+        return self.alive
+
+
+def _write_local_status(
+    state: InstallState,
+    *,
+    error: str | None = None,
+    last_progress_at: str | None = None,
+) -> InstallStatus:
+    status = make_idle_status(local_bootstrap.local_install.LOCAL_PROVIDER_NAME)
+    status["install_state"] = state
+    status["last_transition_at"] = "2026-05-23T00:00:00+00:00"
+    status["last_progress_at"] = last_progress_at
+    status["install_error"] = error if state == "failed" else None
+    write_install_status(status, scope="bundled")
+    return status
+
+
+def _old_progress_iso() -> str:
+    return (datetime.now(timezone.utc) - timedelta(seconds=90)).isoformat()
+
+
+def _fresh_progress_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def test_local_availability_payload_exact_shape(settings_env, monkeypatch):
@@ -182,6 +229,233 @@ def test_local_bootstrap_post_rejects_unqualified_host(settings_env, monkeypatch
     payload = response.get_json()
     assert payload["reason_code"] == "invalid_request_value"
     assert payload["detail"] == "unsupported platform"
+
+
+@pytest.mark.parametrize(
+    ("state", "expected_payload", "expected_status"),
+    [
+        ("installed", {"state": "installed"}, 200),
+        ("downloading", {"state": "downloading"}, 200),
+        ("verifying", {"state": "verifying"}, 200),
+        ("idle", {"state": "downloading"}, 202),
+        ("failed", {"state": "downloading"}, 202),
+    ],
+)
+def test_start_bootstrap_payload_for_canonical_states(
+    settings_env, monkeypatch, state, expected_payload, expected_status
+):
+    settings_env(_settings_config())
+    _write_local_status(
+        state,
+        error="failed before" if state == "failed" else None,
+        last_progress_at=(
+            _fresh_progress_iso() if state in ("downloading", "verifying") else None
+        ),
+    )
+    monkeypatch.setattr(
+        local_bootstrap,
+        "get_availability_payload",
+        lambda _model: {
+            "platform_supported": True,
+            "reason": "local runtime is not installed",
+            "binary_present": False,
+            "model_present": False,
+        },
+    )
+    _FakeThread.init_count = 0
+    _FakeThread.start_count = 0
+    monkeypatch.setattr(local_bootstrap.threading, "Thread", _FakeThread)
+
+    assert local_bootstrap.start_bootstrap(LOCAL_FLASH) == (
+        expected_payload,
+        expected_status,
+    )
+
+
+def test_local_bootstrap_status_returns_canonical_and_legacy_shape(settings_env):
+    journal_path, _config = settings_env(_settings_config())
+    _write_local_status("downloading", last_progress_at=_fresh_progress_iso())
+    with local_bootstrap._INSTALL_LOCK:
+        local_bootstrap._INSTALL_PROGRESS[LOCAL_FLASH] = (12, 24)
+    client = _client(journal_path)
+
+    response = client.get("/app/settings/api/local/bootstrap/status")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert {
+        "name",
+        "install_state",
+        "last_transition_at",
+        "last_progress_at",
+        "progress_bytes_received",
+        "progress_bytes_total",
+        "install_error",
+        "state",
+        "received_bytes",
+        "total_bytes",
+        "message",
+    } <= set(payload)
+    assert payload["install_state"] == "downloading"
+    assert payload["state"] == "downloading"
+    assert payload["progress_bytes_received"] == 12
+    assert payload["progress_bytes_total"] == 24
+    assert payload["received_bytes"] == 12
+    assert payload["total_bytes"] == 24
+
+
+def test_local_bootstrap_lazy_stall_without_live_thread_fails(settings_env):
+    settings_env(_settings_config())
+    _write_local_status("downloading", last_progress_at=_old_progress_iso())
+
+    payload = local_bootstrap.get_state(LOCAL_FLASH)
+
+    assert payload["state"] == "failed"
+    assert payload["install_error"] == INSTALL_FAILED_NO_PROGRESS
+    persisted = read_install_status(scope="bundled", name="local")
+    assert persisted["install_state"] == "failed"
+    assert persisted["install_error"] == INSTALL_FAILED_NO_PROGRESS
+
+
+def test_local_bootstrap_lazy_stall_with_live_thread_stays_in_flight(settings_env):
+    settings_env(_settings_config())
+    _write_local_status("verifying", last_progress_at=_old_progress_iso())
+    with local_bootstrap._INSTALL_LOCK:
+        local_bootstrap._INSTALL_THREADS[LOCAL_FLASH] = _FakeThread()
+
+    payload = local_bootstrap.get_state(LOCAL_FLASH)
+
+    assert payload["state"] == "verifying"
+    assert payload["install_error"] is None
+
+
+@pytest.mark.parametrize("state", ["installed", "failed"])
+def test_local_bootstrap_restart_terminal_states_have_no_bytes(settings_env, state):
+    settings_env(_settings_config())
+    _write_local_status(state, error="boom" if state == "failed" else None)
+
+    payload = local_bootstrap.get_state(LOCAL_FLASH)
+
+    assert payload["install_state"] == state
+    assert payload["progress_bytes_received"] is None
+    assert payload["progress_bytes_total"] is None
+    assert payload["received_bytes"] == 0
+    assert payload["total_bytes"] == 0
+
+
+def test_local_bootstrap_migrates_preexisting_install_without_worker(
+    settings_env, monkeypatch
+):
+    settings_env(_settings_config())
+    monkeypatch.setattr(
+        local_bootstrap.local_install,
+        "inspect_readiness",
+        lambda _model=None: {
+            "binary_installed": True,
+            "model_installed": True,
+            "ram_sufficient": True,
+            "binary_path": "/tmp/llama-server",
+            "model_path": "/tmp/model.gguf",
+        },
+    )
+    monkeypatch.setattr(local_bootstrap, "_platform_supported", lambda: (True, ""))
+    monkeypatch.setattr(
+        local_bootstrap.psutil,
+        "virtual_memory",
+        lambda: type("VMem", (), {"total": 32 * 1024**3})(),
+    )
+    monkeypatch.setattr(
+        local_bootstrap.threading,
+        "Thread",
+        lambda *args, **kwargs: pytest.fail("worker should not be created"),
+    )
+
+    assert local_bootstrap.start_bootstrap(LOCAL_FLASH) == ({"state": "installed"}, 200)
+    status = read_install_status(scope="bundled", name="local")
+    assert status["install_state"] == "installed"
+
+
+def test_local_worker_resets_progress_between_binary_and_model(
+    settings_env, monkeypatch
+):
+    settings_env(_settings_config())
+    observed = {}
+    _write_local_status("downloading", last_progress_at=_fresh_progress_iso())
+
+    def fake_llama_server():
+        _write_local_status("installed")
+
+    def fake_install_model(model):
+        observed.update(local_bootstrap.get_state(model))
+        status = read_install_status(scope="bundled", name="local")
+        write_install_status(
+            transition_state(status, new_state="installed"),
+            scope="bundled",
+        )
+
+    monkeypatch.setattr(
+        local_bootstrap.local_install, "install_llama_server", fake_llama_server
+    )
+    monkeypatch.setattr(
+        local_bootstrap.local_install, "install_model", fake_install_model
+    )
+
+    local_bootstrap._run_bootstrap_worker(LOCAL_FLASH)
+
+    gguf_size = LOCAL_MODEL_SPECS[LOCAL_FLASH].size_bytes
+    assert observed["state"] == "downloading"
+    assert observed["progress_bytes_total"] == gguf_size
+    assert observed["progress_bytes_received"] <= gguf_size // 100
+
+
+def test_local_worker_cleans_registered_thread(settings_env, monkeypatch):
+    settings_env(_settings_config())
+    current = threading.current_thread()
+    with local_bootstrap._INSTALL_LOCK:
+        local_bootstrap._INSTALL_THREADS[LOCAL_FLASH] = current
+    _write_local_status("downloading", last_progress_at=_fresh_progress_iso())
+
+    def fake_install_model(_model):
+        status = read_install_status(scope="bundled", name="local")
+        write_install_status(
+            transition_state(status, new_state="installed"),
+            scope="bundled",
+        )
+
+    monkeypatch.setattr(
+        local_bootstrap.local_install, "install_llama_server", lambda: None
+    )
+    monkeypatch.setattr(
+        local_bootstrap.local_install, "install_model", fake_install_model
+    )
+
+    local_bootstrap._run_bootstrap_worker(LOCAL_FLASH)
+
+    with local_bootstrap._INSTALL_LOCK:
+        assert LOCAL_FLASH not in local_bootstrap._INSTALL_THREADS
+
+
+def test_local_worker_cleans_registered_thread_after_failure(settings_env, monkeypatch):
+    settings_env(_settings_config())
+    current = threading.current_thread()
+    with local_bootstrap._INSTALL_LOCK:
+        local_bootstrap._INSTALL_THREADS[LOCAL_FLASH] = current
+    _write_local_status("downloading", last_progress_at=_fresh_progress_iso())
+
+    monkeypatch.setattr(
+        local_bootstrap.local_install,
+        "install_llama_server",
+        lambda: (_ for _ in ()).throw(RuntimeError("binary download broke")),
+    )
+
+    local_bootstrap._run_bootstrap_worker(LOCAL_FLASH)
+
+    with local_bootstrap._INSTALL_LOCK:
+        thread = local_bootstrap._INSTALL_THREADS.get(LOCAL_FLASH)
+    assert thread is None or not thread.is_alive()
+    status = read_install_status(scope="bundled", name="local")
+    assert status["install_state"] == "failed"
+    assert status["install_error"] == "binary download broke"
 
 
 def test_routes_import_registers_local_endpoints(settings_env):

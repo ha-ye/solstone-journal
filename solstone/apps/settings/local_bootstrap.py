@@ -7,14 +7,21 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
-from dataclasses import dataclass
-from typing import Literal
 
 import psutil
 
+from solstone.apps.settings.install_copy import INSTALL_FAILED_NO_PROGRESS
 from solstone.think.models import LOCAL_FLASH
 from solstone.think.providers import local_install
+from solstone.think.providers.install_state import (
+    IN_FLIGHT_STATES,
+    InstallStatus,
+    is_stalled,
+    make_idle_status,
+    read_install_status,
+    transition_state,
+    write_install_status,
+)
 from solstone.think.providers.local import (
     LOCAL_MODEL_SPECS,
     LocalProviderError,
@@ -23,19 +30,9 @@ from solstone.think.providers.local import (
 
 logger = logging.getLogger(__name__)
 
-BootstrapStateName = Literal["idle", "downloading", "verifying", "installed", "failed"]
-_STALL_SECONDS = 60.0
-
-
-@dataclass
-class LocalBootstrapState:
-    state: BootstrapStateName = "idle"
-    received_bytes: int = 0
-    total_bytes: int = 0
-    started_at: float | None = None
-    last_progress_at: float | None = None
-    message: str | None = None
-    thread: threading.Thread | None = None
+_INSTALL_THREADS: dict[str, threading.Thread] = {}
+_INSTALL_PROGRESS: dict[str, tuple[int | None, int | None]] = {}
+_INSTALL_LOCK = threading.Lock()
 
 
 class LocalBootstrapUnavailableError(RuntimeError):
@@ -44,12 +41,6 @@ class LocalBootstrapUnavailableError(RuntimeError):
 
 class LocalBootstrapStartError(RuntimeError):
     """Raised when the bootstrap worker could not be started."""
-
-
-_STATES: dict[str, LocalBootstrapState] = {
-    name: LocalBootstrapState() for name in LOCAL_MODEL_SPECS
-}
-_STATES_LOCK = threading.Lock()
 
 
 def check_binary_present() -> bool:
@@ -117,125 +108,111 @@ def get_availability_payload(model: str) -> dict[str, bool | float | int | str]:
     }
 
 
-def _serialize_state_locked(model: str) -> dict[str, int | str | None]:
-    state = _STATES[model]
+def _read_status() -> InstallStatus:
+    return read_install_status(scope="bundled", name=local_install.LOCAL_PROVIDER_NAME)
+
+
+def _write_status(status: InstallStatus) -> InstallStatus:
+    write_install_status(status, scope="bundled")
+    return status
+
+
+def _has_live_thread(model: str) -> bool:
+    with _INSTALL_LOCK:
+        thread = _INSTALL_THREADS.get(model)
+    return thread is not None and thread.is_alive()
+
+
+def _set_progress(model: str, received: int | None, total: int | None) -> None:
+    received = None if received is None else max(0, int(received))
+    total = None if total is None else max(0, int(total))
+    with _INSTALL_LOCK:
+        _INSTALL_PROGRESS[model] = (received, total)
+
+
+def _clear_progress(model: str) -> None:
+    with _INSTALL_LOCK:
+        _INSTALL_PROGRESS.pop(model, None)
+
+
+def _payload_for_status(
+    model: str, status: InstallStatus
+) -> dict[str, int | str | None]:
+    if status["install_state"] in IN_FLIGHT_STATES:
+        with _INSTALL_LOCK:
+            received, total = _INSTALL_PROGRESS.get(
+                model,
+                (
+                    status["progress_bytes_received"],
+                    status["progress_bytes_total"],
+                ),
+            )
+    else:
+        received, total = None, None
+
     return {
-        "state": state.state,
-        "received_bytes": int(state.received_bytes),
-        "total_bytes": int(state.total_bytes),
-        "message": state.message,
+        **status,
+        "progress_bytes_received": received,
+        "progress_bytes_total": total,
+        "state": status["install_state"],
+        "received_bytes": int(received or 0),
+        "total_bytes": int(total or 0),
+        "message": status["install_error"],
     }
 
 
-def _mark_installed_locked(model: str) -> None:
-    state = _STATES[model]
-    state.state = "installed"
-    state.received_bytes = state.total_bytes
-    state.message = None
-    state.thread = None
-    state.last_progress_at = time.monotonic()
-
-
-def _mark_downloading_locked(model: str, thread: threading.Thread, now: float) -> None:
-    state = _STATES[model]
-    state.state = "downloading"
-    state.received_bytes = 0
-    state.total_bytes = LOCAL_MODEL_SPECS[model].size_bytes
-    state.started_at = now
-    state.last_progress_at = now
-    state.message = None
-    state.thread = thread
-
-
-def _mark_verifying(model: str) -> None:
-    with _STATES_LOCK:
-        state = _STATES[model]
-        if state.state != "downloading":
-            return
-        state.state = "verifying"
-        state.received_bytes = 0
-        state.total_bytes = LOCAL_MODEL_SPECS[model].size_bytes
-        state.last_progress_at = time.monotonic()
-        state.message = None
-
-
-def _mark_failed_locked(model: str, message: str) -> None:
-    state = _STATES[model]
-    state.state = "failed"
-    state.message = message
-    state.last_progress_at = time.monotonic()
-
-
-def _set_progress(
-    model: str, received_bytes: int, total_bytes: int | None = None
-) -> None:
-    with _STATES_LOCK:
-        state = _STATES[model]
-        state.received_bytes = max(0, int(received_bytes))
-        if total_bytes is not None:
-            state.total_bytes = max(0, int(total_bytes))
-        state.last_progress_at = time.monotonic()
-
-
-def _observe_stall_locked(model: str, now: float) -> None:
-    state = _STATES[model]
-    if state.state not in ("downloading", "verifying"):
-        return
-    thread = state.thread
-    if thread is not None and thread.is_alive():
-        return
-    last_progress = state.last_progress_at or state.started_at
-    if last_progress is None or now - last_progress <= _STALL_SECONDS:
-        return
-    _mark_failed_locked(model, f"{state.state} stalled with no progress")
+def _normalize_stalled_status(model: str, status: InstallStatus) -> InstallStatus:
+    # Local downloads refresh progress per chunk, so stale status fails only without a live worker.
+    if is_stalled(status) and not _has_live_thread(model):
+        status = transition_state(
+            status,
+            new_state="failed",
+            error=INSTALL_FAILED_NO_PROGRESS,
+        )
+        _write_status(status)
+        _clear_progress(model)
+    return status
 
 
 def get_state(model: str) -> dict[str, int | str | None]:
     """Return the serialized bootstrap state, applying stall detection."""
     model_id = normalize_model_id(model)
-    with _STATES_LOCK:
-        _observe_stall_locked(model_id, time.monotonic())
-        return _serialize_state_locked(model_id)
+    status = _normalize_stalled_status(model_id, _read_status())
+    return _payload_for_status(model_id, status)
 
 
 def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
     """Start the local provider bootstrap worker if needed."""
     model_id = normalize_model_id(model)
+    get_state(model_id)
+    status = _read_status()
+    if status["install_state"] == "installed":
+        return {"state": "installed"}, 200
+
     availability = get_availability_payload(model_id)
     blocked_reason = _blocked_reason(availability)
     if blocked_reason:
         raise LocalBootstrapUnavailableError(blocked_reason)
 
     installed = bool(availability["binary_present"] and availability["model_present"])
-    with _STATES_LOCK:
-        state = _STATES[model_id]
-        if (
-            state.state in ("downloading", "verifying")
-            and state.thread
-            and state.thread.is_alive()
-        ):
-            return {"state": state.state}, 200
-        retry_after_failed = state.state == "failed"
-        if installed and not retry_after_failed:
-            _mark_installed_locked(model_id)
+    with _INSTALL_LOCK:
+        status = _read_status()
+        if status["install_state"] == "installed":
             return {"state": "installed"}, 200
 
-    with _STATES_LOCK:
-        state = _STATES[model_id]
-        if (
-            state.state in ("downloading", "verifying")
-            and state.thread
-            and state.thread.is_alive()
-        ):
-            return {"state": state.state}, 200
-        retry_after_failed = retry_after_failed or state.state == "failed"
-        if (
-            not retry_after_failed
-            and check_binary_present()
-            and check_model_present(model_id)
-        ):
-            _mark_installed_locked(model_id)
+        if status["install_state"] == "idle" and installed:
+            _write_status(
+                transition_state(
+                    make_idle_status(local_install.LOCAL_PROVIDER_NAME),
+                    new_state="installed",
+                )
+            )
+            _INSTALL_PROGRESS.pop(model_id, None)
             return {"state": "installed"}, 200
+
+        if status["install_state"] in IN_FLIGHT_STATES:
+            return {"state": status["install_state"]}, 200
+
         try:
             thread = threading.Thread(
                 target=_run_bootstrap_worker,
@@ -244,15 +221,24 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
                 daemon=True,
             )
         except Exception as exc:
-            _mark_failed_locked(model_id, str(exc))
+            _write_status(transition_state(status, new_state="failed", error=str(exc)))
+            _INSTALL_PROGRESS.pop(model_id, None)
             raise LocalBootstrapStartError(str(exc)) from exc
-        _mark_downloading_locked(model_id, thread, time.monotonic())
+
+        _write_status(transition_state(status, new_state="downloading"))
+        _INSTALL_PROGRESS[model_id] = (0, LOCAL_MODEL_SPECS[model_id].size_bytes)
+        _INSTALL_THREADS[model_id] = thread
 
     try:
         thread.start()
     except Exception as exc:
-        with _STATES_LOCK:
-            _mark_failed_locked(model_id, str(exc))
+        with _INSTALL_LOCK:
+            if _INSTALL_THREADS.get(model_id) is thread:
+                _INSTALL_THREADS.pop(model_id, None)
+        _write_status(
+            transition_state(_read_status(), new_state="failed", error=str(exc))
+        )
+        _clear_progress(model_id)
         raise LocalBootstrapStartError(str(exc)) from exc
     return {"state": "downloading"}, 202
 
@@ -268,16 +254,20 @@ def _blocked_reason(availability: dict[str, bool | float | int | str]) -> str:
 
 def _run_bootstrap_worker(model: str) -> None:
     spec = LOCAL_MODEL_SPECS[model]
+    current_thread = threading.current_thread()
     try:
         local_install.install_llama_server()
-        _set_progress(model, min(1, spec.size_bytes), spec.size_bytes)
+        _write_status(transition_state(_read_status(), new_state="downloading"))
+        _set_progress(model, 0, spec.size_bytes)
         local_install.install_model(model)
-        _mark_verifying(model)
         _set_progress(model, spec.size_bytes, spec.size_bytes)
-        with _STATES_LOCK:
-            if _STATES[model].state == "verifying":
-                _mark_installed_locked(model)
     except Exception as exc:
         logger.exception("local provider bootstrap failed")
-        with _STATES_LOCK:
-            _mark_failed_locked(model, str(exc))
+        _write_status(
+            transition_state(_read_status(), new_state="failed", error=str(exc))
+        )
+        _clear_progress(model)
+    finally:
+        with _INSTALL_LOCK:
+            if _INSTALL_THREADS.get(model) is current_thread:
+                _INSTALL_THREADS.pop(model, None)

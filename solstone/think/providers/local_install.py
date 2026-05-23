@@ -16,24 +16,37 @@ import shutil
 import stat
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from solstone.think.journal_config import read_journal_config, write_journal_config
 from solstone.think.models import LOCAL_FLASH
+from solstone.think.providers.install_state import (
+    IN_FLIGHT_STATES,
+    InstallStatus,
+    bump_progress,
+    read_install_status,
+    transition_state,
+    write_install_status,
+)
 from solstone.think.providers.local import (
     LOCAL_MODEL_SPECS,
     LocalModelSpec,
     LocalProviderError,
     normalize_model_id,
 )
-from solstone.think.utils import get_journal, now_ms
+from solstone.think.utils import get_journal
 
 LOCAL_PROVIDER_NAME = "local"
-STATE_IDLE = "idle"
-STATE_DOWNLOADING = "downloading"
-STATE_VERIFYING = "verifying"
-STATE_INSTALLED = "installed"
-STATE_FAILED = "failed"
+_LOCAL_METADATA_KEYS = frozenset(
+    {
+        "binary_artifact",
+        "binary_sha256",
+        "binary_path",
+        "model_id",
+        "model_path",
+        "model_sha256",
+    }
+)
 
 LLAMA_SERVER_PINS: dict[str, dict[str, str]] = {
     "aarch64-apple-darwin": {
@@ -107,38 +120,36 @@ def model_path(model_id: str) -> Path:
     return model_dir(spec.model_id) / spec.filename
 
 
-def read_install_state() -> dict[str, Any]:
-    config = read_journal_config()
-    record = config.get("providers", {}).get("bundled", {}).get(LOCAL_PROVIDER_NAME, {})
-    if not isinstance(record, dict):
-        record = {}
-    return {
-        "state": STATE_IDLE,
-        "last_transition_at": None,
-        "install_error": None,
-        **record,
-    }
+def _read_local_status() -> InstallStatus:
+    return read_install_status(scope="bundled", name=LOCAL_PROVIDER_NAME)
 
 
-def write_install_state(record: dict[str, Any]) -> dict[str, Any]:
+def _write_local_status(status: InstallStatus) -> InstallStatus:
+    write_install_status(status, scope="bundled")
+    return status
+
+
+def _write_local_metadata(updates: dict[str, str]) -> None:
+    unknown_keys = sorted(set(updates) - _LOCAL_METADATA_KEYS)
+    if unknown_keys:
+        raise ValueError(f"unknown local install metadata key: {unknown_keys[0]}")
+
     config = read_journal_config()
-    providers = config.setdefault("providers", {})
-    bundled = providers.setdefault("bundled", {})
-    existing = bundled.get(LOCAL_PROVIDER_NAME, {})
-    if not isinstance(existing, dict):
-        existing = {}
-    updated = {
-        **existing,
-        **record,
-        "last_transition_at": now_ms(),
-    }
-    bundled[LOCAL_PROVIDER_NAME] = updated
+    slot = (
+        config.setdefault("providers", {})
+        .setdefault("bundled", {})
+        .setdefault(LOCAL_PROVIDER_NAME, {})
+    )
+    for key, value in updates.items():
+        slot[key] = value
     write_journal_config(config)
-    return updated
 
 
-def _transition(state: str, **updates: Any) -> dict[str, Any]:
-    return write_install_state({"state": state, **updates})
+def _record_local_progress(received: int, total: int | None) -> None:
+    status = _read_local_status()
+    if status["install_state"] not in IN_FLIGHT_STATES:
+        return
+    _write_local_status(bump_progress(status, received=received, total=total))
 
 
 def _sha256_file(path: Path) -> str:
@@ -158,17 +169,29 @@ def _verify_sha256(path: Path, expected: str) -> None:
         )
 
 
-def _download_file(url: str, dest: Path, *, timeout_s: float = 600.0) -> None:
+def _download_file(
+    url: str,
+    dest: Path,
+    *,
+    timeout_s: float = 600.0,
+    on_progress: Callable[[int, int | None], None] | None = None,
+) -> None:
     import httpx
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".tmp")
     with httpx.stream("GET", url, timeout=timeout_s, follow_redirects=True) as response:
         response.raise_for_status()
+        total_header = response.headers.get("content-length")
+        total = int(total_header) if total_header and total_header.isdigit() else None
+        received = 0
         with tmp.open("wb") as handle:
             for chunk in response.iter_bytes():
                 if chunk:
                     handle.write(chunk)
+                    received += len(chunk)
+                    if on_progress is not None:
+                        on_progress(received, total)
     tmp.replace(dest)
 
 
@@ -235,11 +258,14 @@ def install_llama_server() -> dict[str, Any]:
     tarball = install_dir / pin["filename"]
 
     try:
-        _transition(
-            STATE_DOWNLOADING, binary_artifact=pin["filename"], install_error=None
+        _write_local_status(
+            transition_state(_read_local_status(), new_state="downloading")
         )
-        _download_file(url, tarball)
-        _transition(STATE_VERIFYING, binary_artifact=pin["filename"])
+        _write_local_metadata({"binary_artifact": pin["filename"]})
+        _download_file(url, tarball, on_progress=_record_local_progress)
+        _write_local_status(
+            transition_state(_read_local_status(), new_state="verifying")
+        )
         _verify_sha256(tarball, pin["sha256"])
         if install_dir.exists():
             for child in install_dir.iterdir():
@@ -256,15 +282,20 @@ def install_llama_server() -> dict[str, Any]:
             shutil.copy2(extracted, final_path)
         _chmod_executable(final_path)
         _clear_macos_quarantine(final_path)
-        return _transition(
-            STATE_INSTALLED,
-            binary_artifact=pin["filename"],
-            binary_sha256=pin["sha256"],
-            binary_path=str(final_path),
-            install_error=None,
+        _write_local_metadata(
+            {
+                "binary_artifact": pin["filename"],
+                "binary_sha256": pin["sha256"],
+                "binary_path": str(final_path),
+            }
+        )
+        return _write_local_status(
+            transition_state(_read_local_status(), new_state="installed")
         )
     except Exception as exc:
-        _transition(STATE_FAILED, install_error=str(exc))
+        _write_local_status(
+            transition_state(_read_local_status(), new_state="failed", error=str(exc))
+        )
         raise
 
 
@@ -274,19 +305,29 @@ def install_model(model_id: str = LOCAL_FLASH) -> dict[str, Any]:
     dest = model_path(spec.model_id)
 
     try:
-        _transition(STATE_DOWNLOADING, model_id=spec.model_id, install_error=None)
-        _download_file(url, dest)
-        _transition(STATE_VERIFYING, model_id=spec.model_id)
+        _write_local_status(
+            transition_state(_read_local_status(), new_state="downloading")
+        )
+        _write_local_metadata({"model_id": spec.model_id})
+        _download_file(url, dest, on_progress=_record_local_progress)
+        _write_local_status(
+            transition_state(_read_local_status(), new_state="verifying")
+        )
         _verify_sha256(dest, spec.sha256)
-        return _transition(
-            STATE_INSTALLED,
-            model_id=spec.model_id,
-            model_path=str(dest),
-            model_sha256=spec.sha256,
-            install_error=None,
+        _write_local_metadata(
+            {
+                "model_id": spec.model_id,
+                "model_path": str(dest),
+                "model_sha256": spec.sha256,
+            }
+        )
+        return _write_local_status(
+            transition_state(_read_local_status(), new_state="installed")
         )
     except Exception as exc:
-        _transition(STATE_FAILED, install_error=str(exc))
+        _write_local_status(
+            transition_state(_read_local_status(), new_state="failed", error=str(exc))
+        )
         raise
 
 
@@ -305,23 +346,27 @@ def _ram_sufficient(spec: LocalModelSpec) -> bool:
 
 
 def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
-    state = read_install_state()
+    config = read_journal_config()
+    record = config.get("providers", {}).get("bundled", {}).get(LOCAL_PROVIDER_NAME, {})
+    if not isinstance(record, dict):
+        record = {}
+    status = _read_local_status()
     selected_model = normalize_model_id(
-        model_id or state.get("model_id") or LOCAL_FLASH
+        model_id or record.get("model_id") or LOCAL_FLASH
     )
     spec = LOCAL_MODEL_SPECS[selected_model]
-    binary_path = Path(state.get("binary_path") or binary_path_for_pin())
-    gguf_path = Path(state.get("model_path") or model_path(selected_model))
+    binary_path = Path(record.get("binary_path") or binary_path_for_pin())
+    gguf_path = Path(record.get("model_path") or model_path(selected_model))
     ram_sufficient = _ram_sufficient(spec)
     return {
-        "state": state.get("state", STATE_IDLE),
+        "install_state": status["install_state"],
         "binary_installed": binary_path.exists() and os.access(binary_path, os.X_OK),
         "model_installed": gguf_path.exists(),
         "ram_sufficient": ram_sufficient,
         "binary_path": str(binary_path),
         "model_path": str(gguf_path),
         "model_id": selected_model,
-        "install_error": state.get("install_error"),
+        "install_error": status["install_error"],
     }
 
 
@@ -344,17 +389,10 @@ def ensure_artifacts_installed(model_id: str) -> tuple[Path, Path]:
 
 __all__ = [
     "LLAMA_SERVER_PINS",
-    "STATE_IDLE",
-    "STATE_DOWNLOADING",
-    "STATE_VERIFYING",
-    "STATE_INSTALLED",
-    "STATE_FAILED",
     "llama_server_artifact_key",
     "pin_for_current_platform",
     "binary_path_for_pin",
     "model_path",
-    "read_install_state",
-    "write_install_state",
     "install_llama_server",
     "install_model",
     "install_local",
