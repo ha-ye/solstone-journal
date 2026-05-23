@@ -554,6 +554,22 @@ smoke-cogitate: .installed
 	@test -f "$(COGITATE_SMOKE_RUNNER)" || { echo "cogitate smoke runner not found: $(COGITATE_SMOKE_RUNNER)" >&2; echo "set COGITATE_SMOKE_RUNNER=/path/to/script to override" >&2; exit 1; }
 	$(VENV_PY) "$(COGITATE_SMOKE_RUNNER)"
 
+# Operator-opt-in install-state smoke: drives the real install primitives
+# (real uv Popen for bundled providers, real httpx for local llama-server +
+# GGUF download, real huggingface_hub for MLX snapshot) against a tmp
+# journal_config and asserts canonical phase transitions, byte-count
+# surfacing, and post-restart state persistence. Hits the same code paths
+# the dashboard hits, end-to-end. Heavier than `make test` because it does
+# real network fetches; lighter than `make smoke-cogitate` because it does
+# not require API keys or a running supervisor.
+smoke-install-providers: .installed
+	@echo "Running install-state integration smoke..."
+	$(PYTEST_BASETEMP_INIT) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) \
+	  tests/integration/test_bundled_install_real_uv.py \
+	  tests/integration/test_bundled_provider_migration.py \
+	  tests/integration/test_local_install_canonical.py \
+	  -m integration -v --tb=short --timeout=120
+
 release: ## Publish solstone to PyPI (production)
 	@bash scripts/release.sh
 
