@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import traceback
 import uuid
 from collections.abc import Callable
@@ -140,13 +141,25 @@ def _build_llm(provider: str, model: str) -> Any:
     return LLM(**llm_kwargs)
 
 
-def _build_sol_tools(
-    *,
-    policy: CogitatePolicy,
-    callback: JSONEventCallback,
-    write: bool,
-    read_call_budget: int,
-) -> tuple[list[Any], Any]:
+# Lazy cache for the openhands-derived Sol* classes. The classes have to
+# live at module level (i.e. without `<locals>` in their __qualname__ and
+# discoverable as attributes on this module) — openhands-sdk persists tool
+# events to disk and re-validates them via `Event.model_validate_json`,
+# which walks `Action.__subclasses__()` and rejects any subclass whose
+# qualname contains "<locals>" with "Local classes not supported". A
+# `_build_sol_tools()` that defined the classes inline poisoned the entire
+# Action subclass pool and crashed the stuck_detector's event re-read.
+# We can't define the classes at literal module level because openhands-sdk
+# is installed on demand and may not be importable at import time; instead
+# we define them inside `_ensure_sol_types()` on first use and promote them
+# into the module namespace.
+_SOL_TYPES: dict[str, Any] = {}
+
+
+def _ensure_sol_types() -> dict[str, Any]:
+    if _SOL_TYPES:
+        return _SOL_TYPES
+
     from openhands.sdk.tool import ToolAnnotations, ToolDefinition, ToolExecutor
     from openhands.sdk.tool.schema import Action, Observation
     from pydantic import Field
@@ -173,7 +186,7 @@ def _build_sol_tools(
             self.read_call_count = 0
             self._budget_exhausted_emitted = False
 
-        def __call__(self, action: SolAction, conversation: Any = None) -> Any:
+        def __call__(self, action: Any, conversation: Any = None) -> Any:
             del conversation
 
             command = str(action.command)
@@ -206,36 +219,69 @@ def _build_sol_tools(
             result = _run_shell_command(command)
             return SolObservation.from_text(result["text"], is_error=result["is_error"])
 
-    executor = SolExecutor(
-        policy=policy,
-        callback=callback,
-        write=write,
-        read_call_budget=read_call_budget,
-    )
-
     class SolTool(ToolDefinition[SolAction, SolObservation]):
         name = "sol"
 
         @classmethod
         def create(cls, *args: Any, **kwargs: Any) -> list[Any]:
             del args, kwargs
-            return [
-                cls(
-                    description="Run a sol shell command after policy approval.",
-                    action_type=SolAction,
-                    observation_type=SolObservation,
-                    executor=executor,
-                    annotations=ToolAnnotations(
-                        title="sol",
-                        readOnlyHint=not write,
-                        destructiveHint=write,
-                        idempotentHint=not write,
-                        openWorldHint=False,
-                    ),
-                )
-            ]
+            return []
 
-    return list(SolTool.create()), executor
+    # Promote the closure-defined classes onto this module so they look
+    # module-level to openhands-sdk's serialization machinery. Without
+    # this, `__qualname__` carries `<locals>` and re-deserializing tool
+    # events fails inside stuck_detector with
+    # "Local classes not supported".
+    module = sys.modules[__name__]
+    for cls in (SolAction, SolObservation, SolExecutor, SolTool):
+        cls.__module__ = __name__
+        cls.__qualname__ = cls.__name__
+        setattr(module, cls.__name__, cls)
+
+    _SOL_TYPES.update(
+        SolAction=SolAction,
+        SolObservation=SolObservation,
+        SolExecutor=SolExecutor,
+        SolTool=SolTool,
+        ToolAnnotations=ToolAnnotations,
+    )
+    return _SOL_TYPES
+
+
+def _build_sol_tools(
+    *,
+    policy: CogitatePolicy,
+    callback: JSONEventCallback,
+    write: bool,
+    read_call_budget: int,
+) -> tuple[list[Any], Any]:
+    types = _ensure_sol_types()
+    sol_action = types["SolAction"]
+    sol_observation = types["SolObservation"]
+    sol_executor_cls = types["SolExecutor"]
+    sol_tool_cls = types["SolTool"]
+    tool_annotations = types["ToolAnnotations"]
+
+    executor = sol_executor_cls(
+        policy=policy,
+        callback=callback,
+        write=write,
+        read_call_budget=read_call_budget,
+    )
+    tool = sol_tool_cls(
+        description="Run a sol shell command after policy approval.",
+        action_type=sol_action,
+        observation_type=sol_observation,
+        executor=executor,
+        annotations=tool_annotations(
+            title="sol",
+            readOnlyHint=not write,
+            destructiveHint=write,
+            idempotentHint=not write,
+            openWorldHint=False,
+        ),
+    )
+    return [tool], executor
 
 
 def _run_shell_command(command: str) -> dict[str, Any]:
@@ -707,7 +753,8 @@ async def run_cogitate(
 
     try:
         from openhands.sdk import Agent, Conversation
-        from openhands.sdk.tool.builtins.finish import FinishTool
+        from openhands.sdk.tool.registry import register_tool
+        from openhands.sdk.tool.spec import Tool
 
         write = bool(config.get("write"))
         session_id, conversation_id = _session_identity(config.get("session_id"))
@@ -728,8 +775,18 @@ async def run_cogitate(
             write=write,
             read_call_budget=read_call_budget,
         )
-        tools = [*sol_tools, *FinishTool.create()]
-        agent = Agent(llm=llm, tools=tools, system_prompt=system_instruction)
+        # openhands-sdk v1.23 resolves Agent.tools by spec name via the
+        # registry; passing ToolDefinition instances directly fails pydantic
+        # validation. Re-register the per-run SolTool instance (its executor
+        # closure captures this run's policy / callback / budget) and
+        # reference it by name. FinishTool comes from the built-in registry.
+        register_tool("sol", sol_tools[0])
+        agent = Agent(
+            llm=llm,
+            tools=[Tool(name="sol")],
+            include_default_tools=["FinishTool"],
+            system_prompt=system_instruction,
+        )
 
         journal = Path(get_journal())
         persistence_dir = journal / ".cache" / "cogitate-history" / session_id

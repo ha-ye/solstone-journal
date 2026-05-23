@@ -93,6 +93,17 @@ class FinishTool:
         return [cls()]
 
 
+class Tool(FakeModel):
+    pass
+
+
+_REGISTERED_TOOLS: dict[str, Any] = {}
+
+
+def register_tool(name: str, factory: Any) -> None:
+    _REGISTERED_TOOLS[name] = factory
+
+
 class TokenUsage(FakeModel):
     prompt_tokens = 0
     completion_tokens = 0
@@ -159,6 +170,7 @@ class ConversationErrorEvent(FakeModel):
 def install_fake_openhands(monkeypatch: Any) -> types.SimpleNamespace:
     Conversation.instances = []
     Conversation.arun_impl = None
+    _REGISTERED_TOOLS.clear()
 
     root_mod = types.ModuleType("openhands")
     sdk_mod = types.ModuleType("openhands.sdk")
@@ -168,6 +180,8 @@ def install_fake_openhands(monkeypatch: Any) -> types.SimpleNamespace:
     schema_mod = types.ModuleType("openhands.sdk.tool.schema")
     builtins_mod = types.ModuleType("openhands.sdk.tool.builtins")
     finish_mod = types.ModuleType("openhands.sdk.tool.builtins.finish")
+    registry_mod = types.ModuleType("openhands.sdk.tool.registry")
+    spec_mod = types.ModuleType("openhands.sdk.tool.spec")
 
     sdk_mod.LLM = LLM
     sdk_mod.Agent = Agent
@@ -183,6 +197,8 @@ def install_fake_openhands(monkeypatch: Any) -> types.SimpleNamespace:
     schema_mod.Action = Action
     schema_mod.Observation = Observation
     finish_mod.FinishTool = FinishTool
+    registry_mod.register_tool = register_tool
+    spec_mod.Tool = Tool
 
     root_mod.sdk = sdk_mod
     sdk_mod.event = event_mod
@@ -190,6 +206,8 @@ def install_fake_openhands(monkeypatch: Any) -> types.SimpleNamespace:
     event_mod.conversation_error = conversation_error_mod
     tool_mod.schema = schema_mod
     tool_mod.builtins = builtins_mod
+    tool_mod.registry = registry_mod
+    tool_mod.spec = spec_mod
     builtins_mod.finish = finish_mod
 
     modules = {
@@ -201,6 +219,8 @@ def install_fake_openhands(monkeypatch: Any) -> types.SimpleNamespace:
         "openhands.sdk.tool.schema": schema_mod,
         "openhands.sdk.tool.builtins": builtins_mod,
         "openhands.sdk.tool.builtins.finish": finish_mod,
+        "openhands.sdk.tool.registry": registry_mod,
+        "openhands.sdk.tool.spec": spec_mod,
     }
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
