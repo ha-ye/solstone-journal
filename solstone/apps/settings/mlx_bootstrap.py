@@ -12,16 +12,24 @@ import logging
 import platform
 import sys
 import threading
-import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 import huggingface_hub
 import psutil
 from huggingface_hub import constants
 from huggingface_hub.file_download import repo_folder_name
 
+from solstone.apps.settings.install_copy import INSTALL_FAILED_NO_PROGRESS
+from solstone.think.providers.install_state import (
+    IN_FLIGHT_STATES,
+    InstallStatus,
+    bump_progress,
+    is_stalled,
+    make_idle_status,
+    read_install_status,
+    transition_state,
+    write_install_status,
+)
 from solstone.think.providers.mlx import (
     _MLX_MODEL_REGISTRY,
     is_mlx_available_for_model,
@@ -29,20 +37,10 @@ from solstone.think.providers.mlx import (
 
 logger = logging.getLogger(__name__)
 
-BootstrapStateName = Literal["idle", "downloading", "verifying", "installed", "failed"]
-_STALL_SECONDS = 60.0
 _HASH_CHUNK_SIZE = 1024 * 1024
-
-
-@dataclass
-class MlxBootstrapState:
-    state: BootstrapStateName = "idle"
-    received_bytes: int = 0
-    total_bytes: int = 0
-    started_at: float | None = None
-    last_progress_at: float | None = None
-    message: str | None = None
-    thread: threading.Thread | None = None
+_INSTALL_THREADS: dict[str, threading.Thread] = {}
+_INSTALL_PROGRESS: dict[str, tuple[int | None, int | None]] = {}
+_INSTALL_LOCK = threading.Lock()
 
 
 class MlxBootstrapUnavailableError(RuntimeError):
@@ -55,12 +53,6 @@ class MlxBootstrapStartError(RuntimeError):
 
 class MlxVerificationError(RuntimeError):
     """Raised when a downloaded file fails sha256 verification."""
-
-
-_STATES: dict[str, MlxBootstrapState] = {
-    name: MlxBootstrapState() for name in _MLX_MODEL_REGISTRY
-}
-_STATES_LOCK = threading.Lock()
 
 
 def _snapshot_dir(model: str) -> Path:
@@ -132,102 +124,107 @@ def get_availability_payload(model: str) -> dict[str, bool | float | int | str]:
     }
 
 
-def _serialize_state_locked(model: str) -> dict[str, int | str | None]:
-    state = _STATES[model]
-    return {
-        "state": state.state,
-        "received_bytes": int(state.received_bytes),
-        "total_bytes": int(state.total_bytes),
-        "message": state.message,
-    }
+def _read_status(model: str) -> InstallStatus:
+    return read_install_status(scope="mlx", name=model)
 
 
-def _mark_installed_locked(model: str) -> None:
-    state = _STATES[model]
-    state.state = "installed"
-    state.message = None
-    state.thread = None
-    state.last_progress_at = time.monotonic()
+def _write_status(status: InstallStatus) -> InstallStatus:
+    write_install_status(status, scope="mlx")
+    return status
 
 
-def _mark_downloading_locked(model: str, thread: threading.Thread, now: float) -> None:
-    state = _STATES[model]
-    state.state = "downloading"
-    state.received_bytes = 0
-    state.total_bytes = 0
-    state.started_at = now
-    state.last_progress_at = now
-    state.message = None
-    state.thread = thread
+def _has_live_thread(model: str) -> bool:
+    with _INSTALL_LOCK:
+        thread = _INSTALL_THREADS.get(model)
+    return thread is not None and thread.is_alive()
 
 
-def _mark_verifying(model: str) -> None:
-    now = time.monotonic()
-    with _STATES_LOCK:
-        state = _STATES[model]
-        if state.state != "downloading":
-            return
-        state.state = "verifying"
-        state.received_bytes = 0
-        state.total_bytes = 0
-        state.last_progress_at = now
-        state.message = None
+def _record_progress(model: str, received: int | None, total: int | None) -> None:
+    status = _read_status(model)
+    if status["install_state"] not in IN_FLIGHT_STATES:
+        return
+    updated = bump_progress(status, received=received, total=total)
+    with _INSTALL_LOCK:
+        _INSTALL_PROGRESS[model] = (
+            updated["progress_bytes_received"],
+            updated["progress_bytes_total"],
+        )
+    _write_status(updated)
 
 
-def _mark_failed_locked(model: str, message: str) -> None:
-    state = _STATES[model]
-    state.state = "failed"
-    state.message = message
-    state.last_progress_at = time.monotonic()
+def _clear_progress(model: str) -> None:
+    with _INSTALL_LOCK:
+        _INSTALL_PROGRESS.pop(model, None)
 
 
 def _add_progress(model: str, received_delta: int, total: int | None = None) -> None:
     if received_delta < 0:
         received_delta = 0
-    now = time.monotonic()
-    with _STATES_LOCK:
-        state = _STATES[model]
-        state.received_bytes += received_delta
-        if total is not None:
-            state.total_bytes = max(0, int(total))
-        state.last_progress_at = now
+    with _INSTALL_LOCK:
+        received, current_total = _INSTALL_PROGRESS.get(model, (0, None))
+    _record_progress(
+        model,
+        int(received or 0) + received_delta,
+        max(0, int(total)) if total is not None else current_total,
+    )
 
 
 def _set_progress_total(model: str, total: int) -> None:
-    with _STATES_LOCK:
-        state = _STATES[model]
-        state.total_bytes = max(0, int(total))
-        state.last_progress_at = time.monotonic()
+    with _INSTALL_LOCK:
+        received, _current_total = _INSTALL_PROGRESS.get(model, (0, None))
+    _record_progress(model, received, max(0, int(total)))
 
 
 def _set_verify_progress(model: str, received_bytes: int, total_bytes: int) -> None:
-    with _STATES_LOCK:
-        state = _STATES[model]
-        if state.state != "verifying":
-            return
-        state.received_bytes = max(0, int(received_bytes))
-        state.total_bytes = max(0, int(total_bytes))
-        state.last_progress_at = time.monotonic()
+    status = _read_status(model)
+    if status["install_state"] != "verifying":
+        return
+    _record_progress(model, max(0, int(received_bytes)), max(0, int(total_bytes)))
 
 
-def _observe_stall_locked(model: str, now: float) -> None:
-    state = _STATES[model]
-    if state.state not in ("downloading", "verifying"):
-        return
-    thread = state.thread
-    if thread is not None and thread.is_alive():
-        return
-    last_progress = state.last_progress_at or state.started_at
-    if last_progress is None or now - last_progress <= _STALL_SECONDS:
-        return
-    _mark_failed_locked(model, f"{state.state} stalled with no progress")
+def _payload_for_status(
+    model: str, status: InstallStatus
+) -> dict[str, int | str | None]:
+    if status["install_state"] in IN_FLIGHT_STATES:
+        with _INSTALL_LOCK:
+            received, total = _INSTALL_PROGRESS.get(
+                model,
+                (
+                    status["progress_bytes_received"],
+                    status["progress_bytes_total"],
+                ),
+            )
+    else:
+        received, total = None, None
+
+    return {
+        **status,
+        "progress_bytes_received": received,
+        "progress_bytes_total": total,
+        "state": status["install_state"],
+        "received_bytes": int(received or 0),
+        "total_bytes": int(total or 0),
+        "message": status["install_error"],
+    }
+
+
+def _normalize_stalled_status(model: str, status: InstallStatus) -> InstallStatus:
+    # MLX downloads refresh progress per chunk, so stale status fails only without a live worker.
+    if is_stalled(status) and not _has_live_thread(model):
+        status = transition_state(
+            status,
+            new_state="failed",
+            error=INSTALL_FAILED_NO_PROGRESS,
+        )
+        _write_status(status)
+        _clear_progress(model)
+    return status
 
 
 def get_state(model: str) -> dict[str, int | str | None]:
     """Return the serialized bootstrap state, applying stall detection."""
-    with _STATES_LOCK:
-        _observe_stall_locked(model, time.monotonic())
-        return _serialize_state_locked(model)
+    status = _normalize_stalled_status(model, _read_status(model))
+    return _payload_for_status(model, status)
 
 
 def _remote_safetensors_metadata(
@@ -324,36 +321,31 @@ class _BootstrapTqdm:
 
 def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
     """Start the MLX model bootstrap worker if needed."""
+    get_state(model)
+    status = _read_status(model)
+    if status["install_state"] == "installed":
+        return {"state": "installed"}, 200
+
     ok, reason = is_mlx_available_for_model(_MLX_MODEL_REGISTRY[model])
     if not ok:
         raise MlxBootstrapUnavailableError(reason)
 
     present = check_model_present(model)
-    with _STATES_LOCK:
-        state = _STATES[model]
-        if (
-            state.state in ("downloading", "verifying")
-            and state.thread
-            and state.thread.is_alive()
-        ):
-            return {"state": state.state}, 200
-        retry_after_failed = state.state == "failed"
-        if present and not retry_after_failed:
-            _mark_installed_locked(model)
+    with _INSTALL_LOCK:
+        status = _read_status(model)
+        if status["install_state"] == "installed":
             return {"state": "installed"}, 200
 
-    with _STATES_LOCK:
-        state = _STATES[model]
-        if (
-            state.state in ("downloading", "verifying")
-            and state.thread
-            and state.thread.is_alive()
-        ):
-            return {"state": state.state}, 200
-        retry_after_failed = retry_after_failed or state.state == "failed"
-        if not retry_after_failed and check_model_present(model):
-            _mark_installed_locked(model)
+        if status["install_state"] == "idle" and present:
+            _write_status(
+                transition_state(make_idle_status(model), new_state="installed")
+            )
+            _INSTALL_PROGRESS.pop(model, None)
             return {"state": "installed"}, 200
+
+        if status["install_state"] in IN_FLIGHT_STATES:
+            return {"state": status["install_state"]}, 200
+
         try:
             thread = threading.Thread(
                 target=_run_bootstrap_worker,
@@ -362,21 +354,31 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
                 daemon=True,
             )
         except Exception as exc:
-            _mark_failed_locked(model, str(exc))
+            _write_status(transition_state(status, new_state="failed", error=str(exc)))
+            _INSTALL_PROGRESS.pop(model, None)
             raise MlxBootstrapStartError(str(exc)) from exc
-        _mark_downloading_locked(model, thread, time.monotonic())
+
+        _write_status(transition_state(status, new_state="downloading"))
+        _INSTALL_PROGRESS[model] = (0, None)
+        _INSTALL_THREADS[model] = thread
 
     try:
         thread.start()
     except Exception as exc:
-        with _STATES_LOCK:
-            _mark_failed_locked(model, str(exc))
+        with _INSTALL_LOCK:
+            if _INSTALL_THREADS.get(model) is thread:
+                _INSTALL_THREADS.pop(model, None)
+        _write_status(
+            transition_state(_read_status(model), new_state="failed", error=str(exc))
+        )
+        _clear_progress(model)
         raise MlxBootstrapStartError(str(exc)) from exc
     return {"state": "downloading"}, 202
 
 
 def _run_bootstrap_worker(model: str) -> None:
     spec = _MLX_MODEL_REGISTRY[model]
+    current_thread = threading.current_thread()
 
     class _ModelBoundTqdm(_BootstrapTqdm):
         _model = model
@@ -388,12 +390,17 @@ def _run_bootstrap_worker(model: str) -> None:
             revision=spec.revision,
             tqdm_class=_ModelBoundTqdm,
         )
-        _mark_verifying(model)
+        _write_status(transition_state(_read_status(model), new_state="verifying"))
         _verify_safetensors_sha256_hashes(model)
-        with _STATES_LOCK:
-            if _STATES[model].state == "verifying":
-                _mark_installed_locked(model)
+        _write_status(transition_state(_read_status(model), new_state="installed"))
+        _clear_progress(model)
     except Exception as exc:
         logger.exception("MLX model bootstrap failed")
-        with _STATES_LOCK:
-            _mark_failed_locked(model, str(exc))
+        _write_status(
+            transition_state(_read_status(model), new_state="failed", error=str(exc))
+        )
+        _clear_progress(model)
+    finally:
+        with _INSTALL_LOCK:
+            if _INSTALL_THREADS.get(model) is current_thread:
+                _INSTALL_THREADS.pop(model, None)

@@ -9,6 +9,7 @@ import json
 import sys
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import huggingface_hub
@@ -16,8 +17,17 @@ import pytest
 import tomllib
 
 from solstone.apps.settings import mlx_bootstrap
+from solstone.apps.settings.install_copy import INSTALL_FAILED_NO_PROGRESS
 from solstone.convey import create_app
 from solstone.think.models import GEMMA4_26B_A4B_4BIT, QWEN_35_9B
+from solstone.think.providers.install_state import (
+    InstallState,
+    InstallStatus,
+    make_idle_status,
+    read_install_status,
+    transition_state,
+    write_install_status,
+)
 from solstone.think.providers.mlx import _MLX_MODEL_REGISTRY
 
 
@@ -41,18 +51,53 @@ def _settings_config() -> dict:
 
 @pytest.fixture(autouse=True)
 def _reset_mlx_state(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        mlx_bootstrap,
-        "_STATES",
-        {name: mlx_bootstrap.MlxBootstrapState() for name in _MLX_MODEL_REGISTRY},
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "journal.json").write_text(
+        json.dumps(_settings_config(), indent=2) + "\n",
+        encoding="utf-8",
     )
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    with mlx_bootstrap._INSTALL_LOCK:
+        mlx_bootstrap._INSTALL_THREADS.clear()
+        mlx_bootstrap._INSTALL_PROGRESS.clear()
     monkeypatch.setattr(mlx_bootstrap.constants, "HF_HUB_CACHE", str(tmp_path / "hf"))
 
 
-def _set_state(model: str = QWEN_35_9B, **updates):
-    with mlx_bootstrap._STATES_LOCK:
-        for key, value in updates.items():
-            setattr(mlx_bootstrap._STATES[model], key, value)
+def _set_state(
+    model: str = QWEN_35_9B,
+    *,
+    state: InstallState = "idle",
+    received_bytes: int | None = None,
+    total_bytes: int | None = None,
+    message: str | None = None,
+    thread: threading.Thread | object | None = None,
+    last_progress_at: str | None = None,
+) -> InstallStatus:
+    status = make_idle_status(model)
+    status["install_state"] = state
+    status["last_transition_at"] = "2026-05-23T00:00:00+00:00"
+    status["last_progress_at"] = last_progress_at
+    status["install_error"] = message if state == "failed" else None
+    write_install_status(status, scope="mlx")
+    with mlx_bootstrap._INSTALL_LOCK:
+        if thread is None:
+            mlx_bootstrap._INSTALL_THREADS.pop(model, None)
+        else:
+            mlx_bootstrap._INSTALL_THREADS[model] = thread
+        if received_bytes is None and total_bytes is None:
+            mlx_bootstrap._INSTALL_PROGRESS.pop(model, None)
+        else:
+            mlx_bootstrap._INSTALL_PROGRESS[model] = (received_bytes, total_bytes)
+    return status
+
+
+def _old_progress_iso() -> str:
+    return (datetime.now(timezone.utc) - timedelta(seconds=90)).isoformat()
+
+
+def _fresh_progress_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class _FakeThread:
@@ -235,6 +280,41 @@ def test_bootstrap_post_rejects_unqualified_host(settings_env, monkeypatch, reas
     assert payload["detail"] == reason
 
 
+@pytest.mark.parametrize(
+    ("state", "expected_payload", "expected_status"),
+    [
+        ("installed", {"state": "installed"}, 200),
+        ("downloading", {"state": "downloading"}, 200),
+        ("verifying", {"state": "verifying"}, 200),
+        ("idle", {"state": "downloading"}, 202),
+        ("failed", {"state": "downloading"}, 202),
+    ],
+)
+def test_mlx_start_bootstrap_payload_for_canonical_states(
+    settings_env, monkeypatch, state, expected_payload, expected_status
+):
+    settings_env(_settings_config())
+    _set_state(
+        state=state,
+        message="failed before" if state == "failed" else None,
+        last_progress_at=(
+            _fresh_progress_iso() if state in ("downloading", "verifying") else None
+        ),
+    )
+    monkeypatch.setattr(
+        mlx_bootstrap, "is_mlx_available_for_model", lambda _spec: (True, "")
+    )
+    monkeypatch.setattr(mlx_bootstrap, "check_model_present", lambda _model: False)
+    _FakeThread.init_count = 0
+    _FakeThread.start_count = 0
+    monkeypatch.setattr(mlx_bootstrap.threading, "Thread", _FakeThread)
+
+    assert mlx_bootstrap.start_bootstrap(QWEN_35_9B) == (
+        expected_payload,
+        expected_status,
+    )
+
+
 def test_bootstrap_status_always_returns_state_bytes_message(settings_env):
     journal_path, _config = settings_env(_settings_config())
     client = _client(journal_path)
@@ -246,13 +326,26 @@ def test_bootstrap_status_always_returns_state_bytes_message(settings_env):
             total_bytes=24,
             message="bad" if state == "failed" else None,
             thread=_FakeThread() if state in ("downloading", "verifying") else None,
-            started_at=time.monotonic(),
-            last_progress_at=time.monotonic(),
+            last_progress_at=(
+                _fresh_progress_iso() if state in ("downloading", "verifying") else None
+            ),
         )
         response = client.get("/app/settings/api/mlx/bootstrap/status")
         assert response.status_code == 200
         payload = response.get_json()
-        assert set(payload) == {"state", "received_bytes", "total_bytes", "message"}
+        assert {
+            "name",
+            "install_state",
+            "last_transition_at",
+            "last_progress_at",
+            "progress_bytes_received",
+            "progress_bytes_total",
+            "install_error",
+            "state",
+            "received_bytes",
+            "total_bytes",
+            "message",
+        } <= set(payload)
         assert payload["state"] == state
         assert isinstance(payload["received_bytes"], int)
         assert isinstance(payload["total_bytes"], int)
@@ -264,15 +357,14 @@ def test_bootstrap_status_transitions_stalled_download_to_failed(settings_env):
     _set_state(
         state="downloading",
         thread=_DeadThread(),
-        started_at=time.monotonic() - 90,
-        last_progress_at=time.monotonic() - 90,
+        last_progress_at=_old_progress_iso(),
     )
     client = _client(journal_path)
 
     payload = client.get("/app/settings/api/mlx/bootstrap/status").get_json()
 
     assert payload["state"] == "failed"
-    assert "stalled" in payload["message"] or "no progress" in payload["message"]
+    assert payload["message"] == INSTALL_FAILED_NO_PROGRESS
 
 
 def test_bootstrap_status_transitions_stalled_verifying_to_failed(settings_env):
@@ -280,15 +372,42 @@ def test_bootstrap_status_transitions_stalled_verifying_to_failed(settings_env):
     _set_state(
         state="verifying",
         thread=_DeadThread(),
-        started_at=time.monotonic() - 90,
-        last_progress_at=time.monotonic() - 90,
+        last_progress_at=_old_progress_iso(),
     )
     client = _client(journal_path)
 
     payload = client.get("/app/settings/api/mlx/bootstrap/status").get_json()
 
     assert payload["state"] == "failed"
-    assert "stalled" in payload["message"] or "no progress" in payload["message"]
+    assert payload["message"] == INSTALL_FAILED_NO_PROGRESS
+
+
+def test_mlx_bootstrap_lazy_stall_with_live_thread_stays_in_flight(settings_env):
+    settings_env(_settings_config())
+    _set_state(
+        state="downloading",
+        thread=_FakeThread(),
+        last_progress_at=_old_progress_iso(),
+    )
+
+    payload = mlx_bootstrap.get_state(QWEN_35_9B)
+
+    assert payload["state"] == "downloading"
+    assert payload["install_error"] is None
+
+
+@pytest.mark.parametrize("state", ["installed", "failed"])
+def test_mlx_bootstrap_restart_terminal_states_have_no_bytes(settings_env, state):
+    settings_env(_settings_config())
+    _set_state(state=state, message="boom" if state == "failed" else None)
+
+    payload = mlx_bootstrap.get_state(QWEN_35_9B)
+
+    assert payload["install_state"] == state
+    assert payload["progress_bytes_received"] is None
+    assert payload["progress_bytes_total"] is None
+    assert payload["received_bytes"] == 0
+    assert payload["total_bytes"] == 0
 
 
 def test_routes_import_without_mlx_vlm_registers_mlx_endpoints(
@@ -414,6 +533,36 @@ def test_update_providers_mlx_round_trip_persists_active_model(
     assert mlx._resolve_default_model() == GEMMA4_26B_A4B_4BIT
 
 
+def test_mlx_bootstrap_status_preserves_active_model_peer_key(
+    settings_env, monkeypatch
+):
+    journal_path, _config = settings_env(_settings_config())
+    client = _client(journal_path)
+    client.put(
+        "/app/settings/api/providers",
+        json={"mlx": {"active_model": GEMMA4_26B_A4B_4BIT}},
+    )
+    monkeypatch.setattr(
+        mlx_bootstrap, "is_mlx_available_for_model", lambda _spec: (True, "")
+    )
+    monkeypatch.setattr(mlx_bootstrap, "check_model_present", lambda _model: False)
+    monkeypatch.setattr(mlx_bootstrap.threading, "Thread", _FakeThread)
+
+    response = client.post(f"/app/settings/api/mlx/bootstrap?model={QWEN_35_9B}")
+
+    assert response.status_code == 202
+    saved = json.loads((journal_path / "config" / "journal.json").read_text())
+    assert saved["providers"]["mlx"]["active_model"] == GEMMA4_26B_A4B_4BIT
+    model_record = saved["providers"]["mlx"][QWEN_35_9B]
+    assert set(model_record) >= {
+        "install_state",
+        "last_transition_at",
+        "last_progress_at",
+        "install_error",
+    }
+    assert model_record["install_state"] == "downloading"
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -454,8 +603,13 @@ def test_bootstrap_state_is_per_model_under_concurrent_access(monkeypatch):
     def fake_worker(model):
         started[model].set()
         releases[model].wait(timeout=2)
-        with mlx_bootstrap._STATES_LOCK:
-            mlx_bootstrap._mark_installed_locked(model)
+        write_install_status(
+            transition_state(
+                read_install_status(scope="mlx", name=model),
+                new_state="installed",
+            ),
+            scope="mlx",
+        )
 
     monkeypatch.setattr(mlx_bootstrap, "_run_bootstrap_worker", fake_worker)
 
@@ -593,7 +747,7 @@ def test_worker_enters_verifying_state_between_download_and_install(monkeypatch)
     worker = threading.Thread(
         target=mlx_bootstrap._run_bootstrap_worker, args=(QWEN_35_9B,)
     )
-    _set_state(thread=worker)
+    _set_state(state="downloading", thread=worker)
 
     worker.start()
     assert entered_verify.wait(timeout=2)
@@ -646,6 +800,42 @@ def test_worker_exception_sets_failed_message(monkeypatch):
     payload = mlx_bootstrap.get_state(QWEN_35_9B)
     assert payload["state"] == "failed"
     assert "download broke" in payload["message"]
+
+
+def test_mlx_worker_cleans_registered_thread_after_failure(monkeypatch):
+    current = threading.current_thread()
+    _set_state(state="downloading", thread=current)
+    monkeypatch.setattr(
+        mlx_bootstrap.huggingface_hub,
+        "snapshot_download",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("download broke")),
+    )
+
+    mlx_bootstrap._run_bootstrap_worker(QWEN_35_9B)
+
+    with mlx_bootstrap._INSTALL_LOCK:
+        thread = mlx_bootstrap._INSTALL_THREADS.get(QWEN_35_9B)
+    assert thread is None or not thread.is_alive()
+    payload = mlx_bootstrap.get_state(QWEN_35_9B)
+    assert payload["state"] == "failed"
+
+
+def test_mlx_worker_cleans_registered_thread(monkeypatch):
+    current = threading.current_thread()
+    with mlx_bootstrap._INSTALL_LOCK:
+        mlx_bootstrap._INSTALL_THREADS[QWEN_35_9B] = current
+    _set_state(state="downloading", thread=current)
+    monkeypatch.setattr(
+        mlx_bootstrap.huggingface_hub, "snapshot_download", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        mlx_bootstrap, "_verify_safetensors_sha256_hashes", lambda _model: None
+    )
+
+    mlx_bootstrap._run_bootstrap_worker(QWEN_35_9B)
+
+    with mlx_bootstrap._INSTALL_LOCK:
+        assert QWEN_35_9B not in mlx_bootstrap._INSTALL_THREADS
 
 
 def test_pyproject_declares_huggingface_hub_top_level_dependency():
