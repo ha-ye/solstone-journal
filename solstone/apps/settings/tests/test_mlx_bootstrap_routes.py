@@ -227,8 +227,8 @@ def test_bootstrap_post_is_idempotent_while_downloading(settings_env, monkeypatc
     assert errors == []
     assert sorted(status for _payload, status in results) == [200, 202]
     assert [payload for payload, _status in results] == [
-        {"state": "downloading"},
-        {"state": "downloading"},
+        {"install_state": "downloading"},
+        {"install_state": "downloading"},
     ]
     assert _FakeThread.init_count == 1
     assert _FakeThread.start_count == 1
@@ -253,7 +253,7 @@ def test_bootstrap_post_already_installed_returns_installed_without_worker(
     response = client.post("/app/settings/api/mlx/bootstrap")
 
     assert response.status_code == 200
-    assert response.get_json() == {"state": "installed"}
+    assert response.get_json() == {"install_state": "installed"}
 
 
 @pytest.mark.parametrize(
@@ -283,11 +283,11 @@ def test_bootstrap_post_rejects_unqualified_host(settings_env, monkeypatch, reas
 @pytest.mark.parametrize(
     ("state", "expected_payload", "expected_status"),
     [
-        ("installed", {"state": "installed"}, 200),
-        ("downloading", {"state": "downloading"}, 200),
-        ("verifying", {"state": "verifying"}, 200),
-        ("idle", {"state": "downloading"}, 202),
-        ("failed", {"state": "downloading"}, 202),
+        ("installed", {"install_state": "installed"}, 200),
+        ("downloading", {"install_state": "downloading"}, 200),
+        ("verifying", {"install_state": "verifying"}, 200),
+        ("idle", {"install_state": "downloading"}, 202),
+        ("failed", {"install_state": "downloading"}, 202),
     ],
 )
 def test_mlx_start_bootstrap_payload_for_canonical_states(
@@ -315,7 +315,7 @@ def test_mlx_start_bootstrap_payload_for_canonical_states(
     )
 
 
-def test_bootstrap_status_always_returns_state_bytes_message(settings_env):
+def test_bootstrap_status_always_returns_canonical_fields(settings_env):
     journal_path, _config = settings_env(_settings_config())
     client = _client(journal_path)
 
@@ -341,15 +341,12 @@ def test_bootstrap_status_always_returns_state_bytes_message(settings_env):
             "progress_bytes_received",
             "progress_bytes_total",
             "install_error",
-            "state",
-            "received_bytes",
-            "total_bytes",
-            "message",
-        } <= set(payload)
-        assert payload["state"] == state
-        assert isinstance(payload["received_bytes"], int)
-        assert isinstance(payload["total_bytes"], int)
-        assert payload["message"] == ("bad" if state == "failed" else None)
+        } == set(payload)
+        assert payload["install_state"] == state
+        assert payload["install_error"] == ("bad" if state == "failed" else None)
+        if state in ("downloading", "verifying"):
+            assert isinstance(payload["progress_bytes_received"], int)
+            assert isinstance(payload["progress_bytes_total"], int)
 
 
 def test_bootstrap_status_transitions_stalled_download_to_failed(settings_env):
@@ -363,8 +360,8 @@ def test_bootstrap_status_transitions_stalled_download_to_failed(settings_env):
 
     payload = client.get("/app/settings/api/mlx/bootstrap/status").get_json()
 
-    assert payload["state"] == "failed"
-    assert payload["message"] == INSTALL_FAILED_NO_PROGRESS
+    assert payload["install_state"] == "failed"
+    assert payload["install_error"] == INSTALL_FAILED_NO_PROGRESS
 
 
 def test_bootstrap_status_transitions_stalled_verifying_to_failed(settings_env):
@@ -378,8 +375,8 @@ def test_bootstrap_status_transitions_stalled_verifying_to_failed(settings_env):
 
     payload = client.get("/app/settings/api/mlx/bootstrap/status").get_json()
 
-    assert payload["state"] == "failed"
-    assert payload["message"] == INSTALL_FAILED_NO_PROGRESS
+    assert payload["install_state"] == "failed"
+    assert payload["install_error"] == INSTALL_FAILED_NO_PROGRESS
 
 
 def test_mlx_bootstrap_lazy_stall_with_live_thread_stays_in_flight(settings_env):
@@ -392,7 +389,7 @@ def test_mlx_bootstrap_lazy_stall_with_live_thread_stays_in_flight(settings_env)
 
     payload = mlx_bootstrap.get_state(QWEN_35_9B)
 
-    assert payload["state"] == "downloading"
+    assert payload["install_state"] == "downloading"
     assert payload["install_error"] is None
 
 
@@ -406,8 +403,6 @@ def test_mlx_bootstrap_restart_terminal_states_have_no_bytes(settings_env, state
     assert payload["install_state"] == state
     assert payload["progress_bytes_received"] is None
     assert payload["progress_bytes_total"] is None
-    assert payload["received_bytes"] == 0
-    assert payload["total_bytes"] == 0
 
 
 def test_routes_import_without_mlx_vlm_registers_mlx_endpoints(
@@ -482,13 +477,13 @@ def test_mlx_routes_reject_unknown_model(settings_env, method, path):
             "post",
             "/app/settings/api/mlx/bootstrap",
             "start_bootstrap",
-            ({"state": "installed"}, 200),
+            ({"install_state": "installed"}, 200),
         ),
         (
             "get",
             "/app/settings/api/mlx/bootstrap/status",
             "get_state",
-            {"state": "idle"},
+            {"install_state": "idle"},
         ),
     ],
 )
@@ -613,34 +608,41 @@ def test_bootstrap_state_is_per_model_under_concurrent_access(monkeypatch):
 
     monkeypatch.setattr(mlx_bootstrap, "_run_bootstrap_worker", fake_worker)
 
-    assert mlx_bootstrap.start_bootstrap(QWEN_35_9B) == ({"state": "downloading"}, 202)
+    assert mlx_bootstrap.start_bootstrap(QWEN_35_9B) == (
+        {"install_state": "downloading"},
+        202,
+    )
     assert started[QWEN_35_9B].wait(timeout=2)
     assert mlx_bootstrap.start_bootstrap(GEMMA4_26B_A4B_4BIT) == (
-        {"state": "downloading"},
+        {"install_state": "downloading"},
         202,
     )
     assert started[GEMMA4_26B_A4B_4BIT].wait(timeout=2)
-    assert mlx_bootstrap.get_state(QWEN_35_9B)["state"] == "downloading"
-    assert mlx_bootstrap.get_state(GEMMA4_26B_A4B_4BIT)["state"] == "downloading"
+    assert mlx_bootstrap.get_state(QWEN_35_9B)["install_state"] == "downloading"
+    assert (
+        mlx_bootstrap.get_state(GEMMA4_26B_A4B_4BIT)["install_state"] == "downloading"
+    )
 
     releases[QWEN_35_9B].set()
     deadline = time.monotonic() + 2
     while (
-        mlx_bootstrap.get_state(QWEN_35_9B)["state"] != "installed"
+        mlx_bootstrap.get_state(QWEN_35_9B)["install_state"] != "installed"
         and time.monotonic() < deadline
     ):
         time.sleep(0.01)
-    assert mlx_bootstrap.get_state(QWEN_35_9B)["state"] == "installed"
-    assert mlx_bootstrap.get_state(GEMMA4_26B_A4B_4BIT)["state"] == "downloading"
+    assert mlx_bootstrap.get_state(QWEN_35_9B)["install_state"] == "installed"
+    assert (
+        mlx_bootstrap.get_state(GEMMA4_26B_A4B_4BIT)["install_state"] == "downloading"
+    )
 
     releases[GEMMA4_26B_A4B_4BIT].set()
     deadline = time.monotonic() + 2
     while (
-        mlx_bootstrap.get_state(GEMMA4_26B_A4B_4BIT)["state"] != "installed"
+        mlx_bootstrap.get_state(GEMMA4_26B_A4B_4BIT)["install_state"] != "installed"
         and time.monotonic() < deadline
     ):
         time.sleep(0.01)
-    assert mlx_bootstrap.get_state(GEMMA4_26B_A4B_4BIT)["state"] == "installed"
+    assert mlx_bootstrap.get_state(GEMMA4_26B_A4B_4BIT)["install_state"] == "installed"
 
 
 def _write_snapshot(
@@ -751,10 +753,10 @@ def test_worker_enters_verifying_state_between_download_and_install(monkeypatch)
 
     worker.start()
     assert entered_verify.wait(timeout=2)
-    assert mlx_bootstrap.get_state(QWEN_35_9B)["state"] == "verifying"
+    assert mlx_bootstrap.get_state(QWEN_35_9B)["install_state"] == "verifying"
     release_verify.set()
     worker.join(timeout=2)
-    assert mlx_bootstrap.get_state(QWEN_35_9B)["state"] == "installed"
+    assert mlx_bootstrap.get_state(QWEN_35_9B)["install_state"] == "installed"
 
 
 def test_worker_verify_mismatch_transitions_to_failed_with_filename(
@@ -782,8 +784,8 @@ def test_worker_verify_mismatch_transitions_to_failed_with_filename(
     mlx_bootstrap._run_bootstrap_worker(QWEN_35_9B)
     payload = mlx_bootstrap.get_state(QWEN_35_9B)
 
-    assert payload["state"] == "failed"
-    assert "model.safetensors" in payload["message"]
+    assert payload["install_state"] == "failed"
+    assert "model.safetensors" in payload["install_error"]
     assert (snapshot_dir / "model.safetensors").is_file()
 
 
@@ -798,8 +800,8 @@ def test_worker_exception_sets_failed_message(monkeypatch):
     mlx_bootstrap._run_bootstrap_worker(QWEN_35_9B)
 
     payload = mlx_bootstrap.get_state(QWEN_35_9B)
-    assert payload["state"] == "failed"
-    assert "download broke" in payload["message"]
+    assert payload["install_state"] == "failed"
+    assert "download broke" in payload["install_error"]
 
 
 def test_mlx_worker_cleans_registered_thread_after_failure(monkeypatch):
@@ -817,7 +819,7 @@ def test_mlx_worker_cleans_registered_thread_after_failure(monkeypatch):
         thread = mlx_bootstrap._INSTALL_THREADS.get(QWEN_35_9B)
     assert thread is None or not thread.is_alive()
     payload = mlx_bootstrap.get_state(QWEN_35_9B)
-    assert payload["state"] == "failed"
+    assert payload["install_state"] == "failed"
 
 
 def test_mlx_worker_cleans_registered_thread(monkeypatch):

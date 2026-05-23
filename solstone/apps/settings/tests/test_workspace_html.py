@@ -112,23 +112,23 @@ def test_workspace_mlx_progress_region_has_byte_readout():
     text = _workspace_text()
 
     assert 'id="mlxBootstrapBytes"' in text
-    assert "formatMlxBytes(received)" in text
-    assert "formatMlxBytes(total)" in text
+    assert "formatMlxBytes(receivedBytes)" in text
+    assert "formatMlxBytes(totalBytes)" in text
 
 
 def test_workspace_mlx_progress_region_has_state_text():
     text = _workspace_text()
 
     assert 'id="mlxBootstrapState"' in text
-    assert "downloading: 'Downloading...'" in text
-    assert "verifying: 'Verifying...'" in text
+    assert "downloading: INSTALL_COPY.INSTALL_PHASE_DOWNLOADING" in text
+    assert "verifying: INSTALL_COPY.INSTALL_PHASE_VERIFYING" in text
 
 
 def test_workspace_mlx_retry_button_is_failed_only():
     text = _workspace_text()
 
     assert 'id="mlxBootstrapRetry"' in text
-    assert "retry.style.display = state === 'failed' ? '' : 'none'" in text
+    assert "retry.style.display = installState === 'failed' ? '' : 'none'" in text
     assert "retry.disabled = !!status?.bootstrap_disabled" in text
     assert "retry.onclick" in text
     assert "mountMlxProgress()" in text
@@ -144,8 +144,8 @@ def test_workspace_mlx_polling_starts_and_stops_on_terminal_states():
     assert "api/mlx/availability?model=${model}" in text
     assert "setInterval(pollMlxBootstrap, 1000)" in text
     assert "clearInterval(mlxBootstrapPollTimer)" in text
-    assert "state === 'installed'" in text
-    assert "state === 'failed'" in text
+    assert "installState === 'installed'" in text
+    assert "installState === 'failed'" in text
     assert "unmountMlxProgress()" in text
 
 

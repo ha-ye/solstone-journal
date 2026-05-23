@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from typing import get_args
 
 import pytest
 from typer.testing import CliRunner
@@ -11,6 +12,7 @@ from typer.testing import CliRunner
 from solstone.convey import create_app
 from solstone.think.call import call_app
 from solstone.think.providers import bundled
+from solstone.think.providers.install_state import InstallState
 from tests.bundled_provider_fixtures import (
     BUNDLED_STATES,
     BundledCase,
@@ -18,6 +20,7 @@ from tests.bundled_provider_fixtures import (
 )
 
 runner = CliRunner()
+CANONICAL_INSTALL_STATES = set(get_args(InstallState))
 
 
 @pytest.fixture
@@ -66,6 +69,26 @@ def test_get_providers_includes_bundled(settings_client):
     assert response.status_code == 200
     payload = response.get_json()
     assert set(payload["bundled"]) == {"anthropic", "openai", "openhands"}
+
+
+def test_http_install_state_contract_covers_status_endpoints(settings_client):
+    client, _journal = settings_client
+
+    bundled_response = client.get("/app/settings/api/providers/bundled")
+    local_response = client.get("/app/settings/api/local/bootstrap/status")
+    mlx_response = client.get("/app/settings/api/mlx/bootstrap/status")
+
+    assert bundled_response.status_code == 200
+    bundled_payload = bundled_response.get_json()
+    assert set(bundled_payload) == {"anthropic", "openai", "openhands"}
+    for provider_payload in bundled_payload.values():
+        assert provider_payload["install_state"] in CANONICAL_INSTALL_STATES
+
+    assert local_response.status_code == 200
+    assert local_response.get_json()["install_state"] in CANONICAL_INSTALL_STATES
+
+    assert mlx_response.status_code == 200
+    assert mlx_response.get_json()["install_state"] in CANONICAL_INSTALL_STATES
 
 
 def test_get_local_provider_status_shape(settings_client):

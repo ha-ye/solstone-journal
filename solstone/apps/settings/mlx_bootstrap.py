@@ -201,10 +201,6 @@ def _payload_for_status(
         **status,
         "progress_bytes_received": received,
         "progress_bytes_total": total,
-        "state": status["install_state"],
-        "received_bytes": int(received or 0),
-        "total_bytes": int(total or 0),
-        "message": status["install_error"],
     }
 
 
@@ -324,7 +320,7 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
     get_state(model)
     status = _read_status(model)
     if status["install_state"] == "installed":
-        return {"state": "installed"}, 200
+        return {"install_state": "installed"}, 200
 
     ok, reason = is_mlx_available_for_model(_MLX_MODEL_REGISTRY[model])
     if not ok:
@@ -334,17 +330,17 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
     with _INSTALL_LOCK:
         status = _read_status(model)
         if status["install_state"] == "installed":
-            return {"state": "installed"}, 200
+            return {"install_state": "installed"}, 200
 
         if status["install_state"] == "idle" and present:
             _write_status(
                 transition_state(make_idle_status(model), new_state="installed")
             )
             _INSTALL_PROGRESS.pop(model, None)
-            return {"state": "installed"}, 200
+            return {"install_state": "installed"}, 200
 
         if status["install_state"] in IN_FLIGHT_STATES:
-            return {"state": status["install_state"]}, 200
+            return {"install_state": status["install_state"]}, 200
 
         try:
             thread = threading.Thread(
@@ -373,7 +369,7 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
         )
         _clear_progress(model)
         raise MlxBootstrapStartError(str(exc)) from exc
-    return {"state": "downloading"}, 202
+    return {"install_state": "downloading"}, 202
 
 
 def _run_bootstrap_worker(model: str) -> None:

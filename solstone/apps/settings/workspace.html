@@ -987,12 +987,13 @@ input:checked + .slider:before {
   white-space: nowrap;
 }
 
-.bundled-provider-badge[data-tone="success"] {
+.bundled-provider-badge[data-tone="ok"] {
   background: #dcfce7;
   color: #166534;
 }
 
-.bundled-provider-badge[data-tone="warning"] {
+.bundled-provider-badge[data-tone="progress"],
+.bundled-provider-badge[data-tone="warn"] {
   background: #fef3c7;
   color: #92400e;
 }
@@ -1002,7 +1003,7 @@ input:checked + .slider:before {
   color: #991b1b;
 }
 
-.bundled-provider-badge[data-tone="neutral"] {
+.bundled-provider-badge[data-tone="muted"] {
   background: #f3f4f6;
   color: #374151;
 }
@@ -3481,6 +3482,9 @@ button:focus:not(:focus-visible) {
 </div>
 
 <script>
+const INSTALL_COPY = {{ install_copy | tojson }};
+const IN_FLIGHT_INSTALL_STATES = ['resolving', 'downloading', 'verifying', 'installing'];
+
 // ========== STATE ==========
 let configData = null;
 let facetConfig = null;
@@ -5359,30 +5363,119 @@ function populateLocalModelPicker(data) {
 }
 
 function bundledProviderMeta(state) {
-  const map = {
-    'not-enabled': { badge: 'Not installed', tone: 'neutral', button: 'Install bundled CLI', action: 'install', disabled: false },
-    'enabling': { badge: 'Installing...', tone: 'warning', button: 'Installing...', action: null, disabled: true },
-    'installed-no-key': {
-      badge: 'Needs API key',
-      tone: 'warning',
-      button: state.key_configured ? 'Validate key' : 'Add API key',
-      action: state.key_configured ? 'validate-key' : 'focus-key',
-      disabled: false
-    },
-    'key-validating': { badge: 'Validating key...', tone: 'warning', button: 'Validating...', action: null, disabled: true },
-    'valid': { badge: 'Ready', tone: 'success', button: 'Revalidate key', action: 'validate-key', disabled: false },
-    'invalid-key': { badge: 'Invalid key', tone: 'error', button: 'Fix API key', action: 'focus-key', disabled: false },
-    'install-failed': { badge: 'Install failed', tone: 'error', button: 'Retry install', action: 'install', disabled: false },
-    'disabled': { badge: 'Disabled', tone: 'neutral', button: 'Enable', action: 'enable', disabled: false },
-  };
-  return map[state.state] || map['not-enabled'];
+  const installState = state.install_state || 'idle';
+  const keyStatus = state.key_status || 'key-needed';
+
+  if (state.disabled === true) {
+    return {
+      badge: 'Disabled',
+      tone: 'muted',
+      button: 'Enable',
+      action: 'enable',
+      disabled: false,
+    };
+  }
+
+  switch (installState) {
+    case 'idle':
+      return {
+        badge: INSTALL_COPY.INSTALL_PHASE_IDLE,
+        tone: 'muted',
+        button: INSTALL_COPY.INSTALL_BUTTON_INSTALL,
+        action: 'install',
+        disabled: false,
+      };
+    case 'resolving':
+      return {
+        badge: INSTALL_COPY.INSTALL_PHASE_RESOLVING,
+        tone: 'progress',
+        button: INSTALL_COPY.INSTALL_BUTTON_INSTALLING,
+        action: null,
+        disabled: true,
+      };
+    case 'downloading':
+      return {
+        badge: INSTALL_COPY.INSTALL_PHASE_DOWNLOADING,
+        tone: 'progress',
+        button: INSTALL_COPY.INSTALL_BUTTON_INSTALLING,
+        action: null,
+        disabled: true,
+      };
+    case 'verifying':
+      return {
+        badge: INSTALL_COPY.INSTALL_PHASE_VERIFYING,
+        tone: 'progress',
+        button: INSTALL_COPY.INSTALL_BUTTON_INSTALLING,
+        action: null,
+        disabled: true,
+      };
+    case 'installing':
+      return {
+        badge: INSTALL_COPY.INSTALL_PHASE_INSTALLING,
+        tone: 'progress',
+        button: INSTALL_COPY.INSTALL_BUTTON_INSTALLING,
+        action: null,
+        disabled: true,
+      };
+    case 'installed':
+      if (keyStatus === 'not-applicable' || keyStatus === 'valid') {
+        return {
+          badge: INSTALL_COPY.INSTALL_PHASE_INSTALLED,
+          tone: 'ok',
+          button: null,
+          action: null,
+          disabled: true,
+        };
+      }
+      if (keyStatus === 'validating') {
+        return {
+          badge: 'Validating key…',
+          tone: 'progress',
+          button: null,
+          action: null,
+          disabled: true,
+        };
+      }
+      if (keyStatus === 'invalid') {
+        return {
+          badge: 'Invalid key',
+          tone: 'warn',
+          button: 'Re-enter key',
+          action: 'focus-key',
+          disabled: false,
+        };
+      }
+      return {
+        badge: 'Key required',
+        tone: 'warn',
+        button: 'Add key',
+        action: 'focus-key',
+        disabled: false,
+      };
+    case 'failed':
+      return {
+        badge: `${INSTALL_COPY.INSTALL_PHASE_FAILED_PREFIX}${state.install_error || INSTALL_COPY.INSTALL_FAILED_FALLBACK}`,
+        tone: 'error',
+        button: INSTALL_COPY.INSTALL_BUTTON_RETRY,
+        action: 'install',
+        disabled: false,
+      };
+    default:
+      return {
+        badge: INSTALL_COPY.INSTALL_PHASE_IDLE,
+        tone: 'muted',
+        button: INSTALL_COPY.INSTALL_BUTTON_INSTALL,
+        action: 'install',
+        disabled: false,
+      };
+  }
 }
 
 function renderBundledProviders(bundled) {
   const container = document.getElementById('bundledProviders');
   if (!container) return;
   container.innerHTML = '';
-  for (const name of ['anthropic', 'openai']) {
+  for (const name of ['anthropic', 'openai', 'openhands']) {
     const state = bundled[name];
     if (!state) continue;
     container.appendChild(renderBundledProviderCard(state));
@@ -5407,40 +5500,32 @@ function renderBundledProviderCard(state) {
   const details = document.createElement('div');
   details.className = 'bundled-provider-meta';
   details.append(
-    bundledProviderMetaLine('CLI', state.binary_path ? 'installed' : 'not installed'),
-    bundledProviderMetaLine('Key', state.key_configured ? (state.key_valid ? 'valid' : 'configured') : 'missing')
+    bundledProviderMetaLine('CLI', state.binary_path ? 'installed' : 'not installed')
   );
+  if (state.key_status !== 'not-applicable') {
+    const keyLabel = state.key_configured ? (state.key_valid ? 'valid' : 'configured') : 'missing';
+    details.append(bundledProviderMetaLine('Key', keyLabel));
+  }
 
   const actions = document.createElement('div');
   actions.className = 'bundled-provider-actions';
-  const primary = document.createElement('button');
-  primary.type = 'button';
-  primary.textContent = meta.button;
-  primary.disabled = meta.disabled;
-  if (meta.action) {
-    primary.addEventListener('click', () => runBundledProviderAction(state.name, meta.action));
+  if (meta.button) {
+    const primary = document.createElement('button');
+    primary.type = 'button';
+    primary.textContent = meta.button;
+    primary.disabled = meta.disabled;
+    if (meta.action) {
+      primary.addEventListener('click', () => runBundledProviderAction(state.name, meta.action));
+    }
+    actions.appendChild(primary);
   }
-  actions.appendChild(primary);
 
   const overflow = bundledProviderOverflow(state);
   if (overflow) actions.appendChild(overflow);
 
   card.append(header, details, actions);
 
-  if (state.stuck_enabling) {
-    const stuck = document.createElement('div');
-    stuck.className = 'bundled-provider-inline';
-    stuck.textContent = 'Install may be stuck - ';
-    const retry = document.createElement('a');
-    retry.href = '#';
-    retry.textContent = 'Retry?';
-    retry.addEventListener('click', (event) => {
-      event.preventDefault();
-      runBundledProviderAction(state.name, 'install');
-    });
-    stuck.appendChild(retry);
-    card.appendChild(stuck);
-  } else if (state.issues && state.issues.length) {
+  if (state.issues && state.issues.length) {
     const issue = document.createElement('div');
     issue.className = 'bundled-provider-inline';
     issue.textContent = state.issues[0];
@@ -5457,14 +5542,16 @@ function bundledProviderMetaLine(label, value) {
 }
 
 function bundledProviderOverflow(state) {
-  const itemsByState = {
-    'installed-no-key': ['disable', 'uninstall'],
-    'valid': ['disable', 'uninstall'],
-    'invalid-key': ['validate-key', 'disable', 'uninstall'],
-    'install-failed': ['uninstall'],
-    'disabled': ['uninstall'],
-  };
-  const items = itemsByState[state.state] || [];
+  const items = [];
+  if (state.install_state === 'installed' || state.install_state === 'failed') {
+    items.push('uninstall');
+  }
+  if (state.install_state === 'installed' && !state.disabled) {
+    items.push('disable');
+  }
+  if (state.disabled === true) {
+    items.push('enable');
+  }
   if (!items.length) return null;
   const details = document.createElement('details');
   details.className = 'bundled-provider-menu';
@@ -5488,11 +5575,9 @@ function bundledProviderOverflow(state) {
 
 function bundledProviderActionLabel(action) {
   return {
-    'validate-key': 'Validate key',
     disable: 'Disable',
     enable: 'Enable',
     uninstall: 'Uninstall',
-    install: 'Install',
   }[action] || action;
 }
 
@@ -5532,7 +5617,12 @@ async function postBundledProviderAction(name, action) {
 }
 
 function syncBundledProviderPolling(bundled) {
-  const active = Object.values(bundled || {}).some(state => ['enabling', 'key-validating'].includes(state.state));
+  const active = Object.values(bundled || {}).some(
+    state => (
+      IN_FLIGHT_INSTALL_STATES.includes(state.install_state)
+      || state.key_status === 'validating'
+    )
+  );
   if (active) {
     startBundledProviderPolling();
   } else {
@@ -5660,10 +5750,8 @@ function syncMlxProgressRegion() {
     mlxBootstrapPostStarted = false;
     setMlxProgressVisible(true);
     handleMlxBootstrapStatus({
-      state: 'failed',
-      received_bytes: 0,
-      total_bytes: 0,
-      message: availability.reason,
+      install_state: 'failed',
+      install_error: availability.reason,
       bootstrap_disabled: true,
     });
     return;
@@ -5718,17 +5806,13 @@ async function startMlxBootstrap() {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || payload.error || 'MLX bootstrap failed');
     handleMlxBootstrapStatus({
-      state: payload.state,
-      received_bytes: 0,
-      total_bytes: 0,
-      message: null,
+      install_state: payload.install_state,
+      install_error: null,
     });
   } catch (err) {
     handleMlxBootstrapStatus({
-      state: 'failed',
-      received_bytes: 0,
-      total_bytes: 0,
-      message: err.message,
+      install_state: 'failed',
+      install_error: err.message,
     });
   }
 }
@@ -5748,10 +5832,8 @@ async function pollMlxBootstrap() {
     handleMlxBootstrapStatus(status);
   } catch (err) {
     handleMlxBootstrapStatus({
-      state: 'failed',
-      received_bytes: 0,
-      total_bytes: 0,
-      message: err.message,
+      install_state: 'failed',
+      install_error: err.message,
     });
   }
 }
@@ -5768,28 +5850,41 @@ async function refreshMlxAvailability() {
 }
 
 function handleMlxBootstrapStatus(status) {
-  const state = status?.state || 'idle';
-  const received = Number(status?.received_bytes || 0);
-  const total = Number(status?.total_bytes || 0);
+  const installState = status?.install_state || 'idle';
+  const received = status?.progress_bytes_received;
+  const total = status?.progress_bytes_total;
+  const receivedBytes = Number(received || 0);
+  const totalBytes = Number(total || 0);
   const stateEl = document.getElementById('mlxBootstrapState');
   const bytesEl = document.getElementById('mlxBootstrapBytes');
   const progressEl = document.getElementById('mlxBootstrapProgress');
   const retry = document.getElementById('mlxBootstrapRetry');
   const stateLabels = {
-    idle: 'idle',
-    downloading: 'Downloading...',
-    verifying: 'Verifying...',
-    installed: 'installed',
-    failed: status?.message || 'failed',
+    idle: INSTALL_COPY.INSTALL_PHASE_IDLE,
+    resolving: INSTALL_COPY.INSTALL_PHASE_RESOLVING,
+    downloading: INSTALL_COPY.INSTALL_PHASE_DOWNLOADING,
+    verifying: INSTALL_COPY.INSTALL_PHASE_VERIFYING,
+    installing: INSTALL_COPY.INSTALL_PHASE_INSTALLING,
+    installed: INSTALL_COPY.INSTALL_PHASE_INSTALLED,
+    failed: `${INSTALL_COPY.INSTALL_PHASE_FAILED_PREFIX}${status?.install_error || INSTALL_COPY.INSTALL_FAILED_FALLBACK}`,
   };
+  const stateLabel = stateLabels[installState] || installState;
+  const hasByteProgress = (
+    (received != null || total != null)
+    && (receivedBytes !== 0 || totalBytes !== 0)
+  );
+  const byteLabel = hasByteProgress
+    ? `${stateLabel} ${formatMlxBytes(receivedBytes)} / ${formatMlxBytes(totalBytes)}`
+    : stateLabel;
 
-  if (stateEl) stateEl.textContent = stateLabels[state] || state;
-  if (bytesEl) bytesEl.textContent = `${formatMlxBytes(received)} / ${formatMlxBytes(total)}`;
+  if (stateEl) stateEl.textContent = stateLabel;
+  if (bytesEl) bytesEl.textContent = byteLabel;
   if (progressEl) {
-    progressEl.value = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : 0;
+    progressEl.value = totalBytes > 0 ? Math.min(100, Math.round((receivedBytes / totalBytes) * 100)) : 0;
   }
   if (retry) {
-    retry.style.display = state === 'failed' ? '' : 'none';
+    retry.textContent = INSTALL_COPY.INSTALL_BUTTON_RETRY;
+    retry.style.display = installState === 'failed' ? '' : 'none';
     retry.disabled = !!status?.bootstrap_disabled;
     retry.onclick = () => {
       if (retry.disabled) return;
@@ -5798,11 +5893,11 @@ function handleMlxBootstrapStatus(status) {
     };
   }
 
-  if (state === 'installed') {
+  if (installState === 'installed') {
     clearMlxBootstrapPollTimer();
     setMlxProgressVisible(false);
     refreshMlxAvailability();
-  } else if (state === 'failed') {
+  } else if (installState === 'failed') {
     clearMlxBootstrapPollTimer();
     setMlxProgressVisible(true);
   }
@@ -5862,10 +5957,8 @@ function syncLocalProgressRegion() {
     localBootstrapPostStarted = false;
     setLocalProgressVisible(true);
     handleLocalBootstrapStatus({
-      state: 'failed',
-      received_bytes: 0,
-      total_bytes: 0,
-      message: availability.reason,
+      install_state: 'failed',
+      install_error: availability.reason,
       bootstrap_disabled: true,
     });
     return;
@@ -5923,17 +6016,13 @@ async function startLocalBootstrap() {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || payload.error || 'Local bootstrap failed');
     handleLocalBootstrapStatus({
-      state: payload.state,
-      received_bytes: 0,
-      total_bytes: 0,
-      message: null,
+      install_state: payload.install_state,
+      install_error: null,
     });
   } catch (err) {
     handleLocalBootstrapStatus({
-      state: 'failed',
-      received_bytes: 0,
-      total_bytes: 0,
-      message: err.message,
+      install_state: 'failed',
+      install_error: err.message,
     });
   }
 }
@@ -5953,10 +6042,8 @@ async function pollLocalBootstrap() {
     handleLocalBootstrapStatus(status);
   } catch (err) {
     handleLocalBootstrapStatus({
-      state: 'failed',
-      received_bytes: 0,
-      total_bytes: 0,
-      message: err.message,
+      install_state: 'failed',
+      install_error: err.message,
     });
   }
 }
@@ -5974,28 +6061,41 @@ async function refreshLocalAvailability() {
 }
 
 function handleLocalBootstrapStatus(status) {
-  const state = status?.state || 'idle';
-  const received = Number(status?.received_bytes || 0);
-  const total = Number(status?.total_bytes || 0);
+  const installState = status?.install_state || 'idle';
+  const received = status?.progress_bytes_received;
+  const total = status?.progress_bytes_total;
+  const receivedBytes = Number(received || 0);
+  const totalBytes = Number(total || 0);
   const stateEl = document.getElementById('localBootstrapState');
   const bytesEl = document.getElementById('localBootstrapBytes');
   const progressEl = document.getElementById('localBootstrapProgress');
   const retry = document.getElementById('localBootstrapRetry');
   const stateLabels = {
-    idle: 'idle',
-    downloading: 'Downloading...',
-    verifying: 'Verifying...',
-    installed: 'installed',
-    failed: status?.message || 'failed',
+    idle: INSTALL_COPY.INSTALL_PHASE_IDLE,
+    resolving: INSTALL_COPY.INSTALL_PHASE_RESOLVING,
+    downloading: INSTALL_COPY.INSTALL_PHASE_DOWNLOADING,
+    verifying: INSTALL_COPY.INSTALL_PHASE_VERIFYING,
+    installing: INSTALL_COPY.INSTALL_PHASE_INSTALLING,
+    installed: INSTALL_COPY.INSTALL_PHASE_INSTALLED,
+    failed: `${INSTALL_COPY.INSTALL_PHASE_FAILED_PREFIX}${status?.install_error || INSTALL_COPY.INSTALL_FAILED_FALLBACK}`,
   };
+  const stateLabel = stateLabels[installState] || installState;
+  const hasByteProgress = (
+    (received != null || total != null)
+    && (receivedBytes !== 0 || totalBytes !== 0)
+  );
+  const byteLabel = hasByteProgress
+    ? `${stateLabel} ${formatMlxBytes(receivedBytes)} / ${formatMlxBytes(totalBytes)}`
+    : stateLabel;
 
-  if (stateEl) stateEl.textContent = stateLabels[state] || state;
-  if (bytesEl) bytesEl.textContent = `${formatMlxBytes(received)} / ${formatMlxBytes(total)}`;
+  if (stateEl) stateEl.textContent = stateLabel;
+  if (bytesEl) bytesEl.textContent = byteLabel;
   if (progressEl) {
-    progressEl.value = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : 0;
+    progressEl.value = totalBytes > 0 ? Math.min(100, Math.round((receivedBytes / totalBytes) * 100)) : 0;
   }
   if (retry) {
-    retry.style.display = state === 'failed' ? '' : 'none';
+    retry.textContent = INSTALL_COPY.INSTALL_BUTTON_RETRY;
+    retry.style.display = installState === 'failed' ? '' : 'none';
     retry.disabled = !!status?.bootstrap_disabled;
     retry.onclick = () => {
       if (retry.disabled) return;
@@ -6004,11 +6104,11 @@ function handleLocalBootstrapStatus(status) {
     };
   }
 
-  if (state === 'installed') {
+  if (installState === 'installed') {
     clearLocalBootstrapPollTimer();
     setLocalProgressVisible(false);
     refreshLocalAvailability();
-  } else if (state === 'failed') {
+  } else if (installState === 'failed') {
     clearLocalBootstrapPollTimer();
     setLocalProgressVisible(true);
   }

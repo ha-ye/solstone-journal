@@ -183,13 +183,13 @@ def test_local_routes_reject_unknown_model(settings_env, method, path):
             "post",
             "/app/settings/api/local/bootstrap",
             "start_bootstrap",
-            ({"state": "installed"}, 200),
+            ({"install_state": "installed"}, 200),
         ),
         (
             "get",
             "/app/settings/api/local/bootstrap/status",
             "get_state",
-            {"state": "idle"},
+            {"install_state": "idle"},
         ),
     ],
 )
@@ -234,11 +234,11 @@ def test_local_bootstrap_post_rejects_unqualified_host(settings_env, monkeypatch
 @pytest.mark.parametrize(
     ("state", "expected_payload", "expected_status"),
     [
-        ("installed", {"state": "installed"}, 200),
-        ("downloading", {"state": "downloading"}, 200),
-        ("verifying", {"state": "verifying"}, 200),
-        ("idle", {"state": "downloading"}, 202),
-        ("failed", {"state": "downloading"}, 202),
+        ("installed", {"install_state": "installed"}, 200),
+        ("downloading", {"install_state": "downloading"}, 200),
+        ("verifying", {"install_state": "verifying"}, 200),
+        ("idle", {"install_state": "downloading"}, 202),
+        ("failed", {"install_state": "downloading"}, 202),
     ],
 )
 def test_start_bootstrap_payload_for_canonical_states(
@@ -272,7 +272,7 @@ def test_start_bootstrap_payload_for_canonical_states(
     )
 
 
-def test_local_bootstrap_status_returns_canonical_and_legacy_shape(settings_env):
+def test_local_bootstrap_status_returns_canonical_shape(settings_env):
     journal_path, _config = settings_env(_settings_config())
     _write_local_status("downloading", last_progress_at=_fresh_progress_iso())
     with local_bootstrap._INSTALL_LOCK:
@@ -291,17 +291,10 @@ def test_local_bootstrap_status_returns_canonical_and_legacy_shape(settings_env)
         "progress_bytes_received",
         "progress_bytes_total",
         "install_error",
-        "state",
-        "received_bytes",
-        "total_bytes",
-        "message",
-    } <= set(payload)
+    } == set(payload)
     assert payload["install_state"] == "downloading"
-    assert payload["state"] == "downloading"
     assert payload["progress_bytes_received"] == 12
     assert payload["progress_bytes_total"] == 24
-    assert payload["received_bytes"] == 12
-    assert payload["total_bytes"] == 24
 
 
 def test_local_bootstrap_lazy_stall_without_live_thread_fails(settings_env):
@@ -310,7 +303,7 @@ def test_local_bootstrap_lazy_stall_without_live_thread_fails(settings_env):
 
     payload = local_bootstrap.get_state(LOCAL_FLASH)
 
-    assert payload["state"] == "failed"
+    assert payload["install_state"] == "failed"
     assert payload["install_error"] == INSTALL_FAILED_NO_PROGRESS
     persisted = read_install_status(scope="bundled", name="local")
     assert persisted["install_state"] == "failed"
@@ -325,7 +318,7 @@ def test_local_bootstrap_lazy_stall_with_live_thread_stays_in_flight(settings_en
 
     payload = local_bootstrap.get_state(LOCAL_FLASH)
 
-    assert payload["state"] == "verifying"
+    assert payload["install_state"] == "verifying"
     assert payload["install_error"] is None
 
 
@@ -339,8 +332,6 @@ def test_local_bootstrap_restart_terminal_states_have_no_bytes(settings_env, sta
     assert payload["install_state"] == state
     assert payload["progress_bytes_received"] is None
     assert payload["progress_bytes_total"] is None
-    assert payload["received_bytes"] == 0
-    assert payload["total_bytes"] == 0
 
 
 def test_local_bootstrap_migrates_preexisting_install_without_worker(
@@ -370,7 +361,10 @@ def test_local_bootstrap_migrates_preexisting_install_without_worker(
         lambda *args, **kwargs: pytest.fail("worker should not be created"),
     )
 
-    assert local_bootstrap.start_bootstrap(LOCAL_FLASH) == ({"state": "installed"}, 200)
+    assert local_bootstrap.start_bootstrap(LOCAL_FLASH) == (
+        {"install_state": "installed"},
+        200,
+    )
     status = read_install_status(scope="bundled", name="local")
     assert status["install_state"] == "installed"
 
@@ -403,7 +397,7 @@ def test_local_worker_resets_progress_between_binary_and_model(
     local_bootstrap._run_bootstrap_worker(LOCAL_FLASH)
 
     gguf_size = LOCAL_MODEL_SPECS[LOCAL_FLASH].size_bytes
-    assert observed["state"] == "downloading"
+    assert observed["install_state"] == "downloading"
     assert observed["progress_bytes_total"] == gguf_size
     assert observed["progress_bytes_received"] <= gguf_size // 100
 

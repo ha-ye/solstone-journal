@@ -154,10 +154,6 @@ def _payload_for_status(
         **status,
         "progress_bytes_received": received,
         "progress_bytes_total": total,
-        "state": status["install_state"],
-        "received_bytes": int(received or 0),
-        "total_bytes": int(total or 0),
-        "message": status["install_error"],
     }
 
 
@@ -187,7 +183,7 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
     get_state(model_id)
     status = _read_status()
     if status["install_state"] == "installed":
-        return {"state": "installed"}, 200
+        return {"install_state": "installed"}, 200
 
     availability = get_availability_payload(model_id)
     blocked_reason = _blocked_reason(availability)
@@ -198,7 +194,7 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
     with _INSTALL_LOCK:
         status = _read_status()
         if status["install_state"] == "installed":
-            return {"state": "installed"}, 200
+            return {"install_state": "installed"}, 200
 
         if status["install_state"] == "idle" and installed:
             _write_status(
@@ -208,10 +204,10 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
                 )
             )
             _INSTALL_PROGRESS.pop(model_id, None)
-            return {"state": "installed"}, 200
+            return {"install_state": "installed"}, 200
 
         if status["install_state"] in IN_FLIGHT_STATES:
-            return {"state": status["install_state"]}, 200
+            return {"install_state": status["install_state"]}, 200
 
         try:
             thread = threading.Thread(
@@ -240,7 +236,7 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
         )
         _clear_progress(model_id)
         raise LocalBootstrapStartError(str(exc)) from exc
-    return {"state": "downloading"}, 202
+    return {"install_state": "downloading"}, 202
 
 
 def _blocked_reason(availability: dict[str, bool | float | int | str]) -> str:

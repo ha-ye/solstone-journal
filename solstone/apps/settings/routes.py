@@ -17,7 +17,7 @@ from typing import Any
 from flask import Blueprint, jsonify, request
 
 from solstone.apps.settings import copy as settings_copy
-from solstone.apps.settings import local_bootstrap, mlx_bootstrap
+from solstone.apps.settings import install_copy, local_bootstrap, mlx_bootstrap
 from solstone.apps.settings.copy import (
     CONVEY_REFUSE_NO_PASSWORD_NETWORK,
     CONVEY_REFUSE_NO_PASSWORD_TRUST,
@@ -141,6 +141,9 @@ def _project_public_config(config: dict[str, Any]) -> dict[str, Any]:
 def _inject_settings_copy() -> dict[str, Any]:
     return {
         "convey_copy": convey_copy,
+        "install_copy": {
+            name: getattr(install_copy, name) for name in install_copy.__all__
+        },
         "settings_copy": settings_copy,
         "sol_voice_copy": sol_voice_copy,
     }

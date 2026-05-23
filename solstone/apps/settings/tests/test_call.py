@@ -393,6 +393,7 @@ class TestProvidersBundled:
 
     def test_status_human_renders_install_and_key_columns(self, settings_env):
         tmp_path, config = settings_env()
+        now = datetime.now(timezone.utc).isoformat()
         config["providers"]["bundled"] = {
             "anthropic": {
                 "install_state": "installed",
@@ -406,8 +407,8 @@ class TestProvidersBundled:
             },
             "openai": {
                 "install_state": "installing",
-                "last_transition_at": "2026-05-20T00:00:00+00:00",
-                "last_progress_at": "2026-05-20T00:00:00+00:00",
+                "last_transition_at": now,
+                "last_progress_at": now,
                 "install_error": None,
                 "key_state": "key-needed",
                 "disabled": False,
