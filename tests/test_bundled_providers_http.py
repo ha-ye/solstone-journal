@@ -121,6 +121,10 @@ def test_install_during_install_route_returns_409(settings_client):
     config = bundled_provider_config(
         "anthropic", BundledCase("installing", "key-needed", False, False, False)
     )
+    record = config["providers"]["bundled"]["anthropic"]
+    timestamp = bundled._now_iso()
+    record["last_transition_at"] = timestamp
+    record["last_progress_at"] = timestamp
     _write_config(journal, config)
 
     response = client.post("/app/settings/api/providers/anthropic/install")

@@ -5,24 +5,37 @@
 
 from __future__ import annotations
 
+import errno
 import importlib.util
 import json
 import logging
 import os
 import platform
+import pty
+import re
 import shutil
 import subprocess
 import sys
 import sysconfig
 import threading
+from collections import deque
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
 
+from solstone.apps.settings.install_copy import (
+    INSTALL_FAILED_NO_PROGRESS,
+    INSTALL_FAILED_UV_MISSING,
+)
 from solstone.think.journal_config import read_journal_config, write_journal_config
 from solstone.think.providers.install_state import (
+    IN_FLIGHT_STATES,
+    TERMINAL_STATES,
+    InstallState,
     InstallStatus,
+    bump_progress,
+    is_stalled,
     read_install_status,
     transition_state,
     write_install_status,
@@ -96,8 +109,19 @@ KeyStatus: TypeAlias = Literal[
     "not-applicable",
 ]
 
-_LOCKS: dict[str, threading.Lock] = {}
+_UV_INSTALL_TIMEOUT_SECONDS = 3600
+_UV_ERROR_TAIL_LINES = 50
+_UV_PHASE_ORDER: dict[InstallState, int] = {
+    "resolving": 0,
+    "downloading": 1,
+    "installing": 2,
+}
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+_LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_LOCK = threading.Lock()
+_INSTALL_THREADS: dict[str, threading.Thread] = {}
+_INSTALL_PROCESSES: dict[str, "subprocess.Popen[str]"] = {}
+_OBSERVED_PHASES: dict[str, InstallState] = {}
 
 
 class BundledProviderError(Exception):
@@ -128,13 +152,107 @@ class CogitateProviderResolveError(BundledProviderError):
     """Raised when an installed bundled binary cannot be resolved."""
 
 
-def _provider_lock(name: str) -> threading.Lock:
+def _provider_lock(name: str) -> threading.RLock:
     with _LOCKS_LOCK:
         lock = _LOCKS.get(name)
         if lock is None:
-            lock = threading.Lock()
+            lock = threading.RLock()
             _LOCKS[name] = lock
         return lock
+
+
+def _resolve_uv_command() -> list[str]:
+    found = shutil.which("uv")
+    if found:
+        return [str(Path(found).resolve())]
+
+    candidates = [
+        Path("~/.local/bin/uv").expanduser(),
+        Path("~/.cargo/bin/uv").expanduser(),
+        Path("/opt/homebrew/bin/uv"),
+        Path("/usr/local/bin/uv"),
+    ]
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return [str(candidate.resolve())]
+
+    if importlib.util.find_spec("uv") is not None:
+        return [sys.executable, "-m", "uv"]
+
+    raise CogitateProviderInstallFailed(INSTALL_FAILED_UV_MISSING)
+
+
+def _clean_uv_line(raw: str) -> str:
+    return _ANSI_ESCAPE_RE.sub("", raw).rstrip()
+
+
+def _phase_from_uv_line(cleaned: str) -> InstallState | None:
+    if cleaned.startswith("Resolved ") or "Resolving dependencies" in cleaned:
+        return "resolving"
+    if (
+        cleaned.startswith("Prepared ")
+        or cleaned.startswith("Downloaded ")
+        or "Preparing packages" in cleaned
+    ):
+        return "downloading"
+    if cleaned.startswith("Installed ") or "Installing wheels" in cleaned:
+        return "installing"
+    return None
+
+
+def _has_live_install_thread_locked(name: str) -> bool:
+    thread = _INSTALL_THREADS.get(name)
+    return thread is not None and thread.is_alive()
+
+
+def _kill_process_best_effort(proc: subprocess.Popen[str] | None) -> None:
+    if proc is None:
+        return
+    try:
+        proc.kill()
+    except (OSError, ProcessLookupError):
+        pass
+
+
+def _advance_phase(name: str, phase: InstallState) -> None:
+    with _provider_lock(name):
+        status = read_install_status(scope="bundled", name=name)
+        if status["install_state"] in TERMINAL_STATES:
+            return
+        observed = _OBSERVED_PHASES.get(name)
+        if observed is None:
+            _OBSERVED_PHASES[name] = phase
+            write_install_status(
+                transition_state(status, new_state=phase),
+                scope="bundled",
+            )
+            return
+        if _UV_PHASE_ORDER[phase] > _UV_PHASE_ORDER[observed]:
+            _OBSERVED_PHASES[name] = phase
+            write_install_status(
+                transition_state(status, new_state=phase),
+                scope="bundled",
+            )
+            return
+        write_install_status(bump_progress(status), scope="bundled")
+
+
+def _apply_lazy_stall_locked(name: str) -> None:
+    status = read_install_status(scope="bundled", name=name)
+    if not is_stalled(status) or _has_live_install_thread_locked(name):
+        return
+    proc = _INSTALL_PROCESSES.pop(name, None)
+    _OBSERVED_PHASES.pop(name, None)
+    _INSTALL_THREADS.pop(name, None)
+    _kill_process_best_effort(proc)
+    write_install_status(
+        transition_state(
+            status,
+            new_state="failed",
+            error=INSTALL_FAILED_NO_PROGRESS,
+        ),
+        scope="bundled",
+    )
 
 
 def _now_iso() -> str:
@@ -352,7 +470,9 @@ def _runtime_module_paths(name: str) -> dict[str, str | None]:
 
 def _compose_install_status(config: dict[str, Any], name: str) -> InstallStatus:
     _migrate_legacy_record_if_needed(config, name, runtime=_is_runtime_key(name))
-    return read_install_status(scope="bundled", name=name)
+    with _provider_lock(name):
+        _apply_lazy_stall_locked(name)
+        return read_install_status(scope="bundled", name=name)
 
 
 def _compose_key_status(
@@ -601,19 +721,41 @@ def install_provider(name: str) -> ContractState:
     _require_supported(name)
     lock = _provider_lock(name)
     with lock:
+        status = read_install_status(scope="bundled", name=name)
+        persisted_state = status["install_state"]
+        if persisted_state in IN_FLIGHT_STATES and _has_live_install_thread_locked(
+            name
+        ):
+            raise CogitateProviderInstallInFlight("install in flight")
         current = get_provider_state(name)
         install_state = current["install_state"]
         if install_state == "installed":
             return current
+        if _has_live_install_thread_locked(name):
+            raise CogitateProviderInstallInFlight("install in flight")
         if install_state in {"resolving", "downloading", "verifying", "installing"}:
             raise CogitateProviderInstallInFlight("install in flight")
         status = read_install_status(scope="bundled", name=name)
+        thread = threading.Thread(target=_install_thread, args=(name,), daemon=True)
+        _OBSERVED_PHASES.pop(name, None)
         write_install_status(
             transition_state(status, new_state="installing"),
             scope="bundled",
         )
         _write_bundled_record_fields(name)
-        _start_thread(_install_thread, (name,))
+        _INSTALL_THREADS[name] = thread
+        try:
+            thread.start()
+        except Exception as exc:
+            if _INSTALL_THREADS.get(name) is thread:
+                _INSTALL_THREADS.pop(name, None)
+            _OBSERVED_PHASES.pop(name, None)
+            status = read_install_status(scope="bundled", name=name)
+            write_install_status(
+                transition_state(status, new_state="failed", error=str(exc)),
+                scope="bundled",
+            )
+            raise CogitateProviderInstallFailed(str(exc)) from exc
         return get_provider_state(name)
 
 
@@ -703,8 +845,9 @@ def validate_key(name: str) -> ContractState:
 
 
 def _install_thread(name: str) -> None:
+    current_thread = threading.current_thread()
     try:
-        _run_uv_pip_install(_sdk_specs(name))
+        _run_uv_pip_install(name, _sdk_specs(name))
         importlib.invalidate_caches()
         if _is_runtime_key(name):
             paths = _runtime_module_paths(name)
@@ -754,6 +897,11 @@ def _install_thread(name: str) -> None:
                 ),
                 scope="bundled",
             )
+    finally:
+        with _provider_lock(name):
+            if _INSTALL_THREADS.get(name) is current_thread:
+                _INSTALL_THREADS.pop(name, None)
+            _OBSERVED_PHASES.pop(name, None)
 
 
 def _validate_thread(name: str) -> None:
@@ -812,23 +960,120 @@ def _categorize_uv_error(sdk_specs: str | list[str], output: str) -> str:
     return f"install: {text}"
 
 
-def _run_uv_pip_install(sdk_specs: str | list[str]) -> None:
+def _run_uv_pip_install(name: str, specs: list[str]) -> None:
     """Install a provider SDK into the current Python environment."""
 
-    specs = [sdk_specs] if isinstance(sdk_specs, str) else sdk_specs
+    command = [
+        *_resolve_uv_command(),
+        "pip",
+        "install",
+        "--python",
+        sys.executable,
+        *specs,
+    ]
     env = os.environ.copy()
     env["UV_HTTP_TIMEOUT"] = "60"
-    result = subprocess.run(
-        ["uv", "pip", "install", "--python", sys.executable, *specs],
-        text=True,
-        capture_output=True,
-        env=env,
-        timeout=300,
-        check=False,
-    )
-    if result.returncode != 0:
-        output = "\n".join(part for part in (result.stderr, result.stdout) if part)
-        raise CogitateProviderInstallFailed(_categorize_uv_error(specs, output))
+    master_fd: int | None = None
+    slave_fd: int | None = None
+    proc: subprocess.Popen[str] | None = None
+    try:
+        master_fd, slave_fd = pty.openpty()
+        try:
+            proc = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=slave_fd,
+                stderr=subprocess.STDOUT,
+                env=env,
+                text=True,
+                bufsize=1,
+                close_fds=True,
+            )
+        except OSError as exc:
+            for fd in (slave_fd, master_fd):
+                if fd is None:
+                    continue
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            slave_fd = None
+            master_fd = None
+            raise CogitateProviderInstallFailed(INSTALL_FAILED_UV_MISSING) from exc
+
+        try:
+            os.close(slave_fd)
+        except OSError:
+            pass
+        slave_fd = None
+        with _provider_lock(name):
+            _INSTALL_PROCESSES[name] = proc
+
+        tail: deque[str] = deque(maxlen=_UV_ERROR_TAIL_LINES)
+        reader = os.fdopen(master_fd, "r", buffering=1, errors="replace")
+        master_fd = None
+        try:
+            while True:
+                try:
+                    raw = reader.readline()
+                except OSError as exc:
+                    if exc.errno == errno.EIO:
+                        break
+                    raise
+                if not raw:
+                    break
+                cleaned = _clean_uv_line(raw)
+                if cleaned:
+                    tail.append(cleaned)
+                phase = _phase_from_uv_line(cleaned)
+                if phase is not None:
+                    _advance_phase(name, phase)
+                elif cleaned:
+                    with _provider_lock(name):
+                        status = read_install_status(scope="bundled", name=name)
+                        if status["install_state"] in IN_FLIGHT_STATES:
+                            write_install_status(
+                                bump_progress(status),
+                                scope="bundled",
+                            )
+        finally:
+            try:
+                reader.close()
+            except OSError:
+                pass
+
+        try:
+            proc.wait(timeout=_UV_INSTALL_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as exc:
+            _kill_process_best_effort(proc)
+            proc.wait()
+            tail.append(f"timed out after {_UV_INSTALL_TIMEOUT_SECONDS} seconds")
+            raise CogitateProviderInstallFailed(
+                _categorize_uv_error(specs, "\n".join(tail))
+            ) from exc
+
+        if proc.returncode == 0:
+            return
+        if proc.returncode in (126, 127):
+            raise CogitateProviderInstallFailed(INSTALL_FAILED_UV_MISSING)
+        raise CogitateProviderInstallFailed(
+            _categorize_uv_error(specs, "\n".join(tail))
+        )
+    finally:
+        if slave_fd is not None:
+            try:
+                os.close(slave_fd)
+            except OSError:
+                pass
+        if master_fd is not None:
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
+        if proc is not None:
+            with _provider_lock(name):
+                if _INSTALL_PROCESSES.get(name) is proc:
+                    _INSTALL_PROCESSES.pop(name, None)
 
 
 def _run_uv_pip_uninstall(sdk_specs: str | list[str]) -> None:
@@ -837,10 +1082,17 @@ def _run_uv_pip_uninstall(sdk_specs: str | list[str]) -> None:
     specs = [sdk_specs] if isinstance(sdk_specs, str) else sdk_specs
     packages = [_package_name(spec) for spec in specs]
     result = subprocess.run(
-        ["uv", "pip", "uninstall", "--python", sys.executable, *packages],
+        [
+            *_resolve_uv_command(),
+            "pip",
+            "uninstall",
+            "--python",
+            sys.executable,
+            *packages,
+        ],
         text=True,
         capture_output=True,
-        timeout=120,
+        timeout=300,
         check=False,
     )
     if result.returncode == 0:

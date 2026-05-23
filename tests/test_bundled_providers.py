@@ -3,14 +3,22 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
+import os
 import subprocess
+import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from solstone.apps.settings.install_copy import (
+    INSTALL_FAILED_NO_PROGRESS,
+    INSTALL_FAILED_UV_MISSING,
+)
 from solstone.think.providers import bundled
 from tests.bundled_provider_fixtures import (
     BUNDLED_STATES,
@@ -22,6 +30,14 @@ from tests.bundled_provider_fixtures import (
 @pytest.fixture(autouse=True)
 def reset_bundled_locks():
     bundled._LOCKS.clear()
+    bundled._INSTALL_THREADS.clear()
+    bundled._INSTALL_PROCESSES.clear()
+    bundled._OBSERVED_PHASES.clear()
+    yield
+    bundled._LOCKS.clear()
+    bundled._INSTALL_THREADS.clear()
+    bundled._INSTALL_PROCESSES.clear()
+    bundled._OBSERVED_PHASES.clear()
 
 
 @pytest.fixture
@@ -58,10 +74,60 @@ def _canonical_valid_case() -> BundledCase:
     return BundledCase("installed", "valid", False, True, False)
 
 
+def _stale_installing_config(provider: str = "anthropic") -> dict:
+    config = bundled_provider_config(
+        provider, BundledCase("installing", "key-needed", False, False, False)
+    )
+    record = config["providers"]["bundled"][provider]
+    record["last_transition_at"] = "2000-01-01T00:00:00+00:00"
+    record["last_progress_at"] = "2000-01-01T00:00:00+00:00"
+    return config
+
+
+def _freshen_in_flight_config(config: dict, provider: str) -> dict:
+    record = config["providers"]["bundled"][provider]
+    if record["install_state"] in bundled.IN_FLIGHT_STATES:
+        timestamp = bundled._now_iso()
+        record["last_transition_at"] = timestamp
+        record["last_progress_at"] = timestamp
+    return config
+
+
+class _LiveThread:
+    def is_alive(self) -> bool:
+        return True
+
+
+class _FakeProc:
+    def __init__(
+        self,
+        returncode: int = 0,
+        *,
+        wait_raises: bool = False,
+    ) -> None:
+        self.returncode = returncode
+        self.wait_raises = wait_raises
+        self.kill_calls = 0
+        self.wait_calls = 0
+
+    def wait(self, timeout=None):
+        del timeout
+        self.wait_calls += 1
+        if self.wait_raises:
+            self.wait_raises = False
+            raise subprocess.TimeoutExpired("uv", bundled._UV_INSTALL_TIMEOUT_SECONDS)
+        return self.returncode
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+
+
 @pytest.mark.parametrize("provider", ["anthropic", "openai"])
 @pytest.mark.parametrize("case", BUNDLED_STATES)
 def test_fixture_states_compose_contract(journal_config, provider, case):
-    journal_config(bundled_provider_config(provider, case))
+    journal_config(
+        _freshen_in_flight_config(bundled_provider_config(provider, case), provider)
+    )
 
     contract = bundled.get_provider_state(provider)
 
@@ -272,39 +338,36 @@ def test_install_provider_persists_installing_and_rejects_reentry(
             "anthropic", BundledCase("idle", "key-needed", False, False, False)
         )
     )
-    started = []
-    monkeypatch.setattr(
-        bundled,
-        "_start_thread",
-        lambda target, args: started.append((target, args)),
-    )
+    release = threading.Event()
+    monkeypatch.setattr(bundled, "_install_thread", lambda _name: release.wait(1))
 
-    state = bundled.install_provider("anthropic")
+    thread = None
+    try:
+        state = bundled.install_provider("anthropic")
+        thread = bundled._INSTALL_THREADS.get("anthropic")
 
-    assert state["install_state"] == "installing"
-    assert len(started) == 1
-    with pytest.raises(bundled.CogitateProviderInstallInFlight):
-        bundled.install_provider("anthropic")
+        assert state["install_state"] == "installing"
+        assert thread is not None
+        assert thread.is_alive()
+        with pytest.raises(bundled.CogitateProviderInstallInFlight):
+            bundled.install_provider("anthropic")
+    finally:
+        release.set()
+        if thread is not None:
+            thread.join(timeout=1)
 
 
-def test_install_provider_installed_is_noop(journal_config, monkeypatch):
+def test_install_provider_installed_is_noop(journal_config):
     journal_config(
         bundled_provider_config(
             "anthropic", BundledCase("installed", "key-needed", False, True, False)
         )
     )
-    started = []
-    monkeypatch.setattr(
-        bundled,
-        "_start_thread",
-        lambda target, args: started.append((target, args)),
-    )
-
     state = bundled.install_provider("anthropic")
 
     assert state["install_state"] == "installed"
     assert state["key_status"] == "key-needed"
-    assert started == []
+    assert bundled._INSTALL_THREADS == {}
 
 
 def test_install_provider_retries_failed(journal_config, monkeypatch):
@@ -313,18 +376,22 @@ def test_install_provider_retries_failed(journal_config, monkeypatch):
             "openai", BundledCase("failed", "key-needed", False, False, True)
         )
     )
-    started = []
-    monkeypatch.setattr(
-        bundled,
-        "_start_thread",
-        lambda target, args: started.append((target, args)),
-    )
+    release = threading.Event()
+    monkeypatch.setattr(bundled, "_install_thread", lambda _name: release.wait(1))
 
-    state = bundled.install_provider("openai")
+    thread = None
+    try:
+        state = bundled.install_provider("openai")
+        thread = bundled._INSTALL_THREADS.get("openai")
 
-    assert state["install_state"] == "installing"
-    assert state["install_error"] is None
-    assert len(started) == 1
+        assert state["install_state"] == "installing"
+        assert state["install_error"] is None
+        assert thread is not None
+        assert thread.is_alive()
+    finally:
+        release.set()
+        if thread is not None:
+            thread.join(timeout=1)
 
 
 def test_install_thread_success_transitions_to_installed(journal_config, monkeypatch):
@@ -333,7 +400,7 @@ def test_install_thread_success_transitions_to_installed(journal_config, monkeyp
             "anthropic", BundledCase("installing", "key-needed", False, False, False)
         )
     )
-    monkeypatch.setattr(bundled, "_run_uv_pip_install", lambda sdk_spec: None)
+    monkeypatch.setattr(bundled, "_run_uv_pip_install", lambda name, specs: None)
     monkeypatch.setattr(
         bundled,
         "_resolve_anthropic_binary_via_subprocess",
@@ -355,7 +422,7 @@ def test_install_thread_failure_transitions_to_failed(journal_config, monkeypatc
         )
     )
 
-    def fail(_sdk_spec):
+    def fail(_name, _specs):
         raise bundled.CogitateProviderInstallFailed("network: timeout")
 
     monkeypatch.setattr(bundled, "_run_uv_pip_install", fail)
@@ -682,26 +749,342 @@ def test_uninstall_anthropic_does_not_invoke_openai_cleanup(
     assert calls == []
 
 
-def test_uv_install_error_categorization(monkeypatch):
+def test_resolve_uv_command_prefers_shutil_which(monkeypatch):
+    monkeypatch.setattr(bundled.shutil, "which", lambda name: f"/some/abs/{name}")
+
+    assert bundled._resolve_uv_command() == ["/some/abs/uv"]
+
+
+def test_resolve_uv_command_uses_home_local_candidate(tmp_path, monkeypatch):
+    monkeypatch.setattr(bundled.shutil, "which", lambda _name: None)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    uv = tmp_path / ".local" / "bin" / "uv"
+    uv.parent.mkdir(parents=True)
+    uv.write_text("#!/bin/sh\n", encoding="utf-8")
+    uv.chmod(0o755)
+
+    assert bundled._resolve_uv_command() == [str(uv.resolve())]
+
+
+def test_resolve_uv_command_uses_importlib_fallback(monkeypatch):
+    monkeypatch.setattr(bundled.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(bundled.Path, "is_file", lambda _self: False)
+    monkeypatch.setattr(bundled.os, "access", lambda *_args: False)
     monkeypatch.setattr(
-        bundled.subprocess,
-        "run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(
-            args[0],
-            1,
-            stdout="",
-            stderr="timed out connecting to pypi",
+        bundled.importlib.util,
+        "find_spec",
+        lambda name: SimpleNamespace(name=name) if name == "uv" else None,
+    )
+
+    assert bundled._resolve_uv_command() == [sys.executable, "-m", "uv"]
+
+
+def test_resolve_uv_command_raises_when_missing(monkeypatch):
+    monkeypatch.setattr(bundled.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(bundled.Path, "is_file", lambda _self: False)
+    monkeypatch.setattr(bundled.os, "access", lambda *_args: False)
+    monkeypatch.setattr(bundled.importlib.util, "find_spec", lambda _name: None)
+
+    with pytest.raises(bundled.CogitateProviderInstallFailed) as exc_info:
+        bundled._resolve_uv_command()
+
+    assert str(exc_info.value) == INSTALL_FAILED_UV_MISSING
+
+
+@pytest.mark.parametrize(
+    ("line", "phase"),
+    [
+        ("Resolved 5 packages in 165ms", "resolving"),
+        ("  Resolving dependencies...", "resolving"),
+        ("Prepared 5 packages in 51ms", "downloading"),
+        ("Downloaded cpython-3.11.14-linux-x86_64-gnu", "downloading"),
+        ("  Preparing packages...", "downloading"),
+        ("Installed 5 packages in 2ms", "installing"),
+        ("  Installing wheels...", "installing"),
+        ("Using Python 3.11.14 environment at: /tmp/venv", None),
+        (" + certifi==2026.5.20", None),
+    ],
+)
+def test_phase_from_uv_line(line, phase):
+    assert bundled._phase_from_uv_line(line) == phase
+
+
+def test_clean_uv_line_strips_ansi_for_phase_matching():
+    cleaned = bundled._clean_uv_line("\x1b[2K⠋ Resolving dependencies...\r")
+
+    assert cleaned == "⠋ Resolving dependencies..."
+    assert bundled._phase_from_uv_line(cleaned) == "resolving"
+
+
+def test_advance_phase_allows_first_observed_phase_from_installing(journal_config):
+    journal_config(
+        _freshen_in_flight_config(
+            bundled_provider_config(
+                "anthropic",
+                BundledCase("installing", "key-needed", False, False, False),
+            ),
+            "anthropic",
+        )
+    )
+
+    bundled._advance_phase("anthropic", "resolving")
+
+    state = bundled.get_provider_state("anthropic")
+    assert state["install_state"] == "resolving"
+    assert bundled._OBSERVED_PHASES["anthropic"] == "resolving"
+
+
+def test_advance_phase_advances_and_bumps_on_lower_rank(journal_config):
+    config = bundled_provider_config(
+        "anthropic", BundledCase("installing", "key-needed", False, False, False)
+    )
+    record = config["providers"]["bundled"]["anthropic"]
+    record["last_transition_at"] = "2000-01-01T00:00:00+00:00"
+    record["last_progress_at"] = "2000-01-01T00:00:00+00:00"
+    journal_config(config)
+
+    bundled._advance_phase("anthropic", "resolving")
+    bundled._advance_phase("anthropic", "downloading")
+    after_download = bundled.read_install_status(scope="bundled", name="anthropic")
+    bundled._advance_phase("anthropic", "resolving")
+    after_backtrack = bundled.read_install_status(scope="bundled", name="anthropic")
+
+    assert after_download["install_state"] == "downloading"
+    assert after_backtrack["install_state"] == "downloading"
+    assert after_backtrack["last_progress_at"] != after_download["last_progress_at"]
+    assert bundled._OBSERVED_PHASES["anthropic"] == "downloading"
+
+
+def test_advance_phase_does_not_move_observed_installing_back(journal_config):
+    journal_config(
+        _freshen_in_flight_config(
+            bundled_provider_config(
+                "anthropic",
+                BundledCase("installing", "key-needed", False, False, False),
+            ),
+            "anthropic",
+        )
+    )
+    bundled._OBSERVED_PHASES["anthropic"] = "installing"
+    before = bundled.read_install_status(scope="bundled", name="anthropic")
+
+    bundled._advance_phase("anthropic", "resolving")
+
+    after = bundled.read_install_status(scope="bundled", name="anthropic")
+    assert after["install_state"] == "installing"
+    assert after["last_progress_at"] != before["last_progress_at"]
+    assert bundled._OBSERVED_PHASES["anthropic"] == "installing"
+
+
+@pytest.mark.parametrize("install_state", ["failed", "installed"])
+def test_advance_phase_noops_for_terminal_state(journal_config, install_state):
+    journal_config(
+        bundled_provider_config(
+            "anthropic",
+            BundledCase(
+                install_state,
+                "key-needed",
+                False,
+                install_state == "installed",
+                install_state == "failed",
+            ),
+        )
+    )
+    before = bundled.read_install_status(scope="bundled", name="anthropic")
+
+    bundled._advance_phase("anthropic", "resolving")
+
+    assert bundled.read_install_status(scope="bundled", name="anthropic") == before
+    assert "anthropic" not in bundled._OBSERVED_PHASES
+
+
+def test_get_provider_state_fails_stalled_install_without_live_thread(journal_config):
+    journal_config(_stale_installing_config())
+
+    state = bundled.get_provider_state("anthropic")
+
+    assert state["install_state"] == "failed"
+    assert state["install_error"] == INSTALL_FAILED_NO_PROGRESS
+
+
+def test_get_provider_state_keeps_stalled_install_with_live_thread(journal_config):
+    journal_config(_stale_installing_config())
+    bundled._INSTALL_THREADS["anthropic"] = _LiveThread()
+
+    state = bundled.get_provider_state("anthropic")
+
+    assert state["install_state"] == "installing"
+    assert state["install_error"] is None
+
+
+def test_lazy_stall_kills_registered_process_once(journal_config):
+    journal_config(_stale_installing_config())
+    proc = _FakeProc()
+    bundled._INSTALL_PROCESSES["anthropic"] = proc
+
+    def read_state():
+        return bundled.get_provider_state("anthropic")
+
+    threads = [threading.Thread(target=read_state) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=1)
+
+    state = bundled.get_provider_state("anthropic")
+    assert state["install_state"] == "failed"
+    assert proc.kill_calls == 1
+    assert "anthropic" not in bundled._INSTALL_PROCESSES
+
+
+def test_install_provider_registers_and_cleans_up_thread(journal_config, monkeypatch):
+    journal_config(
+        bundled_provider_config(
+            "anthropic", BundledCase("idle", "key-needed", False, False, False)
+        )
+    )
+    release = threading.Event()
+
+    def wait_install(_name, _specs):
+        release.wait(1)
+
+    monkeypatch.setattr(bundled, "_run_uv_pip_install", wait_install)
+    monkeypatch.setattr(
+        bundled,
+        "_resolve_anthropic_binary_via_subprocess",
+        lambda: Path("/tmp/claude"),
+    )
+
+    state = bundled.install_provider("anthropic")
+    thread = bundled._INSTALL_THREADS.get("anthropic")
+    try:
+        assert state["install_state"] == "installing"
+        assert thread is not None
+        assert thread.is_alive()
+    finally:
+        release.set()
+        if thread is not None:
+            thread.join(timeout=1)
+
+    assert "anthropic" not in bundled._INSTALL_THREADS
+
+
+def test_uv_install_propagates_resolver_failure(monkeypatch):
+    monkeypatch.setattr(
+        bundled,
+        "_resolve_uv_command",
+        lambda: (_ for _ in ()).throw(
+            bundled.CogitateProviderInstallFailed(INSTALL_FAILED_UV_MISSING)
         ),
     )
 
     with pytest.raises(bundled.CogitateProviderInstallFailed) as exc_info:
-        bundled._run_uv_pip_install("claude-agent-sdk==0.2.82")
+        bundled._run_uv_pip_install("anthropic", ["claude-agent-sdk==0.2.82"])
 
+    assert str(exc_info.value) == INSTALL_FAILED_UV_MISSING
+
+
+def test_uv_install_popen_oserror_is_uv_missing(monkeypatch):
+    monkeypatch.setattr(bundled, "_resolve_uv_command", lambda: ["/missing/uv"])
+
+    def fail_popen(*_args, **_kwargs):
+        raise OSError(errno.ENOENT, "missing")
+
+    monkeypatch.setattr(bundled.subprocess, "Popen", fail_popen)
+
+    with pytest.raises(bundled.CogitateProviderInstallFailed) as exc_info:
+        bundled._run_uv_pip_install("anthropic", ["claude-agent-sdk==0.2.82"])
+
+    assert str(exc_info.value) == INSTALL_FAILED_UV_MISSING
+
+
+def test_uv_install_exit_126_is_uv_missing(monkeypatch):
+    monkeypatch.setattr(bundled, "_resolve_uv_command", lambda: ["/fake/uv"])
+
+    def fake_popen(*_args, **kwargs):
+        os.close(kwargs["stdout"])
+        return _FakeProc(returncode=126)
+
+    monkeypatch.setattr(bundled.subprocess, "Popen", fake_popen)
+
+    with pytest.raises(bundled.CogitateProviderInstallFailed) as exc_info:
+        bundled._run_uv_pip_install("anthropic", ["claude-agent-sdk==0.2.82"])
+
+    assert str(exc_info.value) == INSTALL_FAILED_UV_MISSING
+
+
+def test_uv_install_nonzero_uses_tail_for_categorization(monkeypatch):
+    monkeypatch.setattr(bundled, "_resolve_uv_command", lambda: ["/fake/uv"])
+
+    def fake_popen(*_args, **kwargs):
+        os.write(kwargs["stdout"], b"ResolutionImpossible\n")
+        os.close(kwargs["stdout"])
+        return _FakeProc(returncode=1)
+
+    monkeypatch.setattr(bundled.subprocess, "Popen", fake_popen)
+
+    with pytest.raises(bundled.CogitateProviderInstallFailed) as exc_info:
+        bundled._run_uv_pip_install("anthropic", ["claude-agent-sdk==0.2.82"])
+
+    assert str(exc_info.value) == "dependency conflict: claude-agent-sdk"
+
+
+def test_uv_install_timeout_kills_and_categorizes(monkeypatch):
+    monkeypatch.setattr(bundled, "_resolve_uv_command", lambda: ["/fake/uv"])
+    proc = _FakeProc(returncode=1, wait_raises=True)
+
+    def fake_popen(*_args, **kwargs):
+        os.close(kwargs["stdout"])
+        return proc
+
+    monkeypatch.setattr(bundled.subprocess, "Popen", fake_popen)
+
+    with pytest.raises(bundled.CogitateProviderInstallFailed) as exc_info:
+        bundled._run_uv_pip_install("anthropic", ["claude-agent-sdk==0.2.82"])
+
+    assert proc.kill_calls == 1
     assert str(exc_info.value).startswith("network:")
 
 
-def test_uv_install_accepts_multiple_specs(monkeypatch):
+def test_uv_install_drain_observes_phase_lines(journal_config, monkeypatch):
+    journal_config(
+        _freshen_in_flight_config(
+            bundled_provider_config(
+                "anthropic",
+                BundledCase("installing", "key-needed", False, False, False),
+            ),
+            "anthropic",
+        )
+    )
+    monkeypatch.setattr(bundled, "_resolve_uv_command", lambda: ["/fake/uv"])
+
+    def fake_popen(*_args, **kwargs):
+        writer_fd = os.dup(kwargs["stdout"])
+
+        def write_lines():
+            os.write(writer_fd, b"Resolved 1 package in 1ms\n")
+            os.write(writer_fd, b"Preparing packages... (0/1)\n")
+            os.write(writer_fd, b"Installing wheels...\n")
+            os.close(writer_fd)
+
+        writer = threading.Thread(target=write_lines)
+        writer.start()
+        proc = _FakeProc(returncode=0)
+        proc.wait = lambda timeout=None: (writer.join(timeout), proc.returncode)[1]
+        return proc
+
+    monkeypatch.setattr(bundled.subprocess, "Popen", fake_popen)
+
+    bundled._run_uv_pip_install("anthropic", ["claude-agent-sdk==0.2.82"])
+
+    status = bundled.read_install_status(scope="bundled", name="anthropic")
+    assert status["install_state"] == "installing"
+    assert bundled._OBSERVED_PHASES["anthropic"] == "installing"
+
+
+def test_uv_pip_uninstall_uses_resolved_uv_and_longer_timeout(monkeypatch):
     calls = []
+    monkeypatch.setattr(bundled, "_resolve_uv_command", lambda: ["/resolved/uv"])
 
     def fake_run(*args, **kwargs):
         calls.append((args, kwargs))
@@ -709,10 +1092,19 @@ def test_uv_install_accepts_multiple_specs(monkeypatch):
 
     monkeypatch.setattr(bundled.subprocess, "run", fake_run)
 
-    bundled._run_uv_pip_install(["openhands-sdk==1.23.*", "litellm"])
+    bundled._run_uv_pip_uninstall(["openhands-sdk==1.23.*", "litellm==1.0"])
 
     command = calls[0][0][0]
-    assert command[-2:] == ["openhands-sdk==1.23.*", "litellm"]
+    assert command == [
+        "/resolved/uv",
+        "pip",
+        "uninstall",
+        "--python",
+        sys.executable,
+        "openhands-sdk",
+        "litellm",
+    ]
+    assert calls[0][1]["timeout"] == 300
 
 
 @pytest.mark.parametrize(
