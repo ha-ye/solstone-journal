@@ -41,6 +41,10 @@ The `tests/fixtures/journal/` directory contains a complete mock journal structu
 
 Browser verification is CDP-only in `tests/verify_browser.py`. Pinchtab is retained to launch Chrome and expose the debug port; the harness drives pages through CDP because CTO advisory `req_4kcmthzo` diagnosed Pinchtab REST instability, around 60% per-request rejection under long-lived state, as the driver of the old full-suite failures.
 
+Scenario steps can use `{"do": "set_cookie", "name": "...", "value": "...", "path": "/"}` to dispatch `Network.setCookies` through CDP. The `path` field is optional and defaults to `/`; the cookie URL is derived from the run's `base_url`. Use this instead of an `evaluate` step with `document.cookie = ...` because CDP cookies can be set before any page navigation.
+
+Scenarios may define `expected_console_errors` as a list of case-sensitive substrings. Console-error messages containing any listed substring are dropped from the failure list; cold-load routes use the sibling `COLD_LOAD_EXPECTED_CONSOLE_ERRORS` dict keyed by Flask rule. Keep this allowlist narrow: it is for documented surface quirks, not a global console-error filter.
+
 ## Worktree Development
 
 Run the full stack (supervisor + callosum + sense + cortex + convey) against test fixture data:

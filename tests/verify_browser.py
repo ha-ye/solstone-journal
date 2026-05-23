@@ -221,6 +221,14 @@ SCENARIOS: list[dict[str, Any]] = [
             {"do": "wait", "ms": 1000},
             {"do": "screenshot"},
         ],
+        # See vpe/playbooks/sandbox-ui-review.md line 247 (sibling repo
+        # `extro`): the settings page surfaces a "Load Failed" toast on the
+        # sandbox fixture because the providers and convey-config endpoints
+        # return errors. Not a product bug.
+        "expected_console_errors": [
+            "Error loading providers",
+            "Error loading convey config",
+        ],
     },
     {
         "app": "stats",
@@ -258,7 +266,7 @@ SCENARIOS: list[dict[str, Any]] = [
         "app": "todos",
         "name": "todo-states",
         "steps": [
-            {"do": "evaluate", "expression": "document.cookie='facet=work;path=/'"},
+            {"do": "set_cookie", "name": "facet", "value": "work"},
             {"do": "navigate", "path": "/app/todos/20260304"},
             {"do": "wait", "ms": 1200},
             {"do": "screenshot"},
@@ -418,6 +426,19 @@ ROUTE_SMOKE_EXCLUDES = (
     "/generation-status",
     "/overflow/",
 )
+
+
+# Per-route console-error allowlist for the cold-load sweep. Keyed by raw Flask
+# rule. Mirrors the scenario-level `expected_console_errors` field; both ride on
+# the same _filter_expected_console_errors helper.
+#
+# See vpe/playbooks/sandbox-ui-review.md line 247 (sibling repo `extro`) - the
+# settings page surfaces a "Load Failed" toast on the sandbox fixture because
+# providers/convey-config endpoints return errors. Not a product bug; the
+# fixture-side fix is tracked separately.
+COLD_LOAD_EXPECTED_CONSOLE_ERRORS: dict[str, list[str]] = {
+    "/app/settings/": ["Error loading providers", "Error loading convey config"],
+}
 
 
 DETAIL_HREF_JS = """
@@ -948,6 +969,12 @@ class CdpPage:
             return remote["value"]
         return remote.get("description")
 
+    def set_cookie(self, url: str, name: str, value: str, *, path: str = "/") -> None:
+        self._connection.call(
+            "Network.setCookies",
+            {"cookies": [{"url": url, "name": name, "value": value, "path": path}]},
+        )
+
     def evaluate_json(self, expression: str, *, timeout: float = 10.0) -> Any:
         raw = self.evaluate(f"JSON.stringify({expression})", timeout=timeout)
         if not isinstance(raw, str):
@@ -1197,6 +1224,15 @@ def _write_diff_artifacts(
     return actual_path, diff_path
 
 
+def _filter_expected_console_errors(
+    messages: list[str], allowlist: list[str]
+) -> list[str]:
+    """Drop console-error messages that match any allowlist substring (case-sensitive)."""
+    if not allowlist:
+        return list(messages)
+    return [m for m in messages if not any(sub in m for sub in allowlist)]
+
+
 def run_cdp_scenario(
     cdp: CdpBrowser, scenario: dict[str, Any], base_url: str, mode: str
 ) -> dict[str, Any]:
@@ -1238,6 +1274,11 @@ def run_cdp_scenario(
 
             elif action == "evaluate":
                 page.evaluate(step["expression"])
+
+            elif action == "set_cookie":
+                page.set_cookie(
+                    base_url, step["name"], step["value"], path=step.get("path", "/")
+                )
 
             elif action == "assert_text":
                 if not page.assert_text(step["text"]):
@@ -1294,8 +1335,13 @@ def run_cdp_scenario(
 
         if page is not None:
             console_errors = page.collect_console_errors()
-            if console_errors:
-                errors.extend(f"captured JS error: {err}" for err in console_errors)
+            unexpected_console_errors = _filter_expected_console_errors(
+                console_errors, scenario.get("expected_console_errors", [])
+            )
+            if unexpected_console_errors:
+                errors.extend(
+                    f"captured JS error: {err}" for err in unexpected_console_errors
+                )
     except Exception as exc:
         errors.append(f"CDP scenario failed: {exc}")
     finally:
@@ -1340,8 +1386,13 @@ def run_cold_load_smoke(cdp: CdpBrowser, base_url: str) -> list[dict[str, Any]]:
                 time.sleep(1.2)
                 errors.extend(_assert_loading_cleared(page, path))
                 console_errors = page.collect_console_errors()
-                if console_errors:
-                    errors.extend(f"captured JS error: {err}" for err in console_errors)
+                unexpected_console_errors = _filter_expected_console_errors(
+                    console_errors, COLD_LOAD_EXPECTED_CONSOLE_ERRORS.get(rule, [])
+                )
+                if unexpected_console_errors:
+                    errors.extend(
+                        f"captured JS error: {err}" for err in unexpected_console_errors
+                    )
         except Exception as exc:
             errors.append(f"cold-load route failed: {exc}")
         finally:

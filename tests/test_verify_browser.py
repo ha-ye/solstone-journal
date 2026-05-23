@@ -339,3 +339,119 @@ def test_cdp_page_evaluate_step_calls_runtime() -> None:
         "Runtime.evaluate",
         {"expression": expression, "returnByValue": True, "awaitPromise": True},
     ) in connection.calls
+
+
+def test_cdp_page_set_cookie_calls_network_set_cookies() -> None:
+    connection = FakeConnection()
+    page = _page(connection)
+
+    page.set_cookie("http://localhost:8080", "facet", "work", path="/")
+
+    network_calls = [
+        call for call in connection.calls if call[0] == "Network.setCookies"
+    ]
+    assert network_calls == [
+        (
+            "Network.setCookies",
+            {
+                "cookies": [
+                    {
+                        "url": "http://localhost:8080",
+                        "name": "facet",
+                        "value": "work",
+                        "path": "/",
+                    }
+                ]
+            },
+        )
+    ]
+
+
+def test_run_cdp_scenario_set_cookie_step_dispatches_set_cookies() -> None:
+    connection = FakeConnection(["[]"])
+    scenario = {
+        "app": "x",
+        "name": "set-cookie",
+        "steps": [{"do": "set_cookie", "name": "facet", "value": "work"}],
+    }
+
+    result = vb.run_cdp_scenario(
+        FakeBrowser(connection), scenario, "http://localhost:8080", "verify"
+    )
+
+    assert result["ok"]
+    assert (
+        "Network.setCookies",
+        {
+            "cookies": [
+                {
+                    "url": "http://localhost:8080",
+                    "name": "facet",
+                    "value": "work",
+                    "path": "/",
+                }
+            ]
+        },
+    ) in connection.calls
+
+
+def test_filter_expected_console_errors_drops_matches() -> None:
+    messages = [
+        "Error loading providers: foo",
+        "Some other error",
+        "Error loading convey config at /x",
+    ]
+    allowlist = ["Error loading providers", "Error loading convey config"]
+
+    assert vb._filter_expected_console_errors(messages, allowlist) == [
+        "Some other error"
+    ]
+    assert vb._filter_expected_console_errors(messages, []) == messages
+    assert (
+        vb._filter_expected_console_errors(
+            ["Error loading providers: foo"], ["Error loading providers"]
+        )
+        == []
+    )
+
+
+def test_run_cdp_scenario_honors_expected_console_errors_allowlist() -> None:
+    scenario = {
+        "app": "x",
+        "name": "allowlisted",
+        "expected_console_errors": [
+            "Error loading providers",
+            "Error loading convey config",
+        ],
+        "steps": [],
+    }
+    all_allowlisted = vb.run_cdp_scenario(
+        FakeBrowser(
+            FakeConnection(
+                [
+                    (
+                        '["Error loading providers: foo",'
+                        '"Error loading convey config at /x"]'
+                    )
+                ]
+            )
+        ),
+        scenario,
+        "http://base",
+        "verify",
+    )
+
+    assert all_allowlisted["ok"]
+    assert all_allowlisted["errors"] == []
+
+    mixed = vb.run_cdp_scenario(
+        FakeBrowser(
+            FakeConnection(['["Error loading providers: foo","Some other error"]'])
+        ),
+        scenario,
+        "http://base",
+        "verify",
+    )
+
+    assert not mixed["ok"]
+    assert mixed["errors"] == ["captured JS error: Some other error"]
