@@ -944,21 +944,20 @@ input:checked + .slider:before {
   font-size: 0.95em;
 }
 
-.bundled-provider-grid {
+#providersPanel {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 0.85em;
-  margin-bottom: 1.25em;
+  gap: 0.75em;
+  margin: 1em 0 1.25em;
 }
 
-.bundled-provider-card {
+.provider-card {
   border: 1px solid var(--facet-border, #e5e0db);
   border-radius: 8px;
   padding: 0.85em;
   background: #fff;
 }
 
-.bundled-provider-card header {
+.provider-card__header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -966,20 +965,20 @@ input:checked + .slider:before {
   margin-bottom: 0.65em;
 }
 
-.bundled-provider-title {
+.provider-card__title {
   font-weight: 600;
   color: #333;
 }
 
-.bundled-provider-meta {
-  display: grid;
-  gap: 0.25em;
-  color: #666;
-  font-size: 0.85em;
-  margin-bottom: 0.75em;
+.provider-card__pills {
+  display: flex;
+  gap: 0.4em;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
-.bundled-provider-badge {
+.provider-card__badge,
+.provider-card__key-pill {
   border-radius: 999px;
   padding: 0.2em 0.55em;
   font-size: 0.75em;
@@ -987,36 +986,60 @@ input:checked + .slider:before {
   white-space: nowrap;
 }
 
-.bundled-provider-badge[data-tone="ok"] {
+.provider-card__badge[data-tone="ok"],
+.provider-card__key-pill[data-tone="ok"] {
   background: #dcfce7;
   color: #166534;
 }
 
-.bundled-provider-badge[data-tone="progress"],
-.bundled-provider-badge[data-tone="warn"] {
+.provider-card__badge[data-tone="progress"],
+.provider-card__badge[data-tone="warn"],
+.provider-card__key-pill[data-tone="progress"],
+.provider-card__key-pill[data-tone="warn"] {
   background: #fef3c7;
   color: #92400e;
 }
 
-.bundled-provider-badge[data-tone="error"] {
+.provider-card__badge[data-tone="error"],
+.provider-card__key-pill[data-tone="error"] {
   background: #fee2e2;
   color: #991b1b;
 }
 
-.bundled-provider-badge[data-tone="muted"] {
+.provider-card__badge[data-tone="muted"],
+.provider-card__key-pill[data-tone="muted"] {
   background: #f3f4f6;
   color: #374151;
 }
 
-.bundled-provider-actions {
+.provider-card__meta {
+  display: grid;
+  gap: 0.25em;
+  color: #666;
+  font-size: 0.85em;
+  margin-bottom: 0.75em;
+}
+
+.provider-card__bytes,
+.provider-card__issue {
+  color: #666;
+  font-size: 0.85em;
+  margin-bottom: 0.75em;
+}
+
+.provider-card__issue {
+  color: #856404;
+}
+
+.provider-card__actions {
   display: flex;
   align-items: center;
   gap: 0.5em;
   flex-wrap: wrap;
 }
 
-.bundled-provider-actions button,
-.bundled-provider-menu button {
+.provider-card__actions button,
+.provider-card__menu button {
   border: 1px solid #d1d5db;
   background: white;
   color: #374151;
@@ -1026,22 +1049,22 @@ input:checked + .slider:before {
   cursor: pointer;
 }
 
-.bundled-provider-actions button:disabled {
+.provider-card__actions button:disabled {
   color: #999;
   cursor: default;
 }
 
-.bundled-provider-menu {
+.provider-card__menu {
   position: relative;
 }
 
-.bundled-provider-menu summary {
+.provider-card__menu summary {
   cursor: pointer;
   color: #555;
   font-size: 0.9em;
 }
 
-.bundled-provider-menu-body {
+.provider-card__menu-body {
   display: grid;
   gap: 0.35em;
   position: absolute;
@@ -1056,54 +1079,9 @@ input:checked + .slider:before {
   box-shadow: 0 6px 18px rgba(0,0,0,0.12);
 }
 
-.bundled-provider-inline {
-  margin-top: 0.65em;
-  color: #856404;
-  font-size: 0.85em;
-}
-
-.bundled-provider-inline a {
-  color: #0066cc;
-  text-decoration: none;
-}
-
-.bundled-provider-inline a:hover {
-  text-decoration: underline;
-}
-
-.mlx-bootstrap-region,
-.local-bootstrap-region {
+.provider-model-row {
   align-items: flex-start;
   margin-top: -0.25em;
-}
-
-.mlx-progress-shell,
-.local-progress-shell {
-  border: 1px solid var(--facet-border, #e5e0db);
-  border-radius: 8px;
-  padding: 0.75em;
-  background: #fafafa;
-}
-
-.mlx-progress-header,
-.local-progress-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 1em;
-  color: #555;
-  font-size: 0.85em;
-  margin-bottom: 0.5em;
-}
-
-#mlxBootstrapProgress,
-#localBootstrapProgress {
-  width: 100%;
-  height: 0.7em;
-}
-
-#mlxBootstrapRetry,
-#localBootstrapRetry {
-  margin-top: 0.75em;
 }
 
 /* Backend settings fieldsets */
@@ -2425,13 +2403,11 @@ button:focus:not(:focus-visible) {
     <section class="settings-section" id="section-providers" role="tabpanel" aria-labelledby="tab-providers">
       <h2>providers</h2>
       <p class="settings-section-desc">configure ai providers separately for generation (text analysis) and cogitate (tool-calling agents).</p>
+      <div id="providersPanel" class="providers-panel"></div>
 
-	      <form class="settings-form" onsubmit="return false;">
+      <form class="settings-form" onsubmit="return false;">
 
-	      <h3 class="settings-subsection-title">bundled cogitate CLIs</h3>
-	      <div id="bundledProviders" class="bundled-provider-grid"></div>
-
-	      <h3 class="settings-subsection-title">generate</h3>
+      <h3 class="settings-subsection-title">generate</h3>
       <p class="settings-subsection-desc">text generation for analysis, extraction, and transcription tasks.</p>
       <div class="provider-row">
         <div class="settings-field">
@@ -2458,49 +2434,33 @@ button:focus:not(:focus-visible) {
           <small></small>
         </div>
       </div>
-	      <div id="mlxBootstrapRegion" class="provider-row mlx-bootstrap-region" style="display:none">
-	        <div class="settings-field">
-	          <label for="field-mlx-active-model">model</label>
-	          <select id="field-mlx-active-model">
-	            <!-- Populated dynamically from registry -->
+      <div id="mlxModelRow" class="provider-row provider-model-row" style="display:none">
+        <div class="settings-field">
+          <label for="field-mlx-active-model">model</label>
+          <select id="field-mlx-active-model">
+            <!-- Populated dynamically from registry -->
           </select>
           <small></small>
-          <div id="mlxBootstrapProgressShell" class="mlx-progress-shell">
-            <div class="mlx-progress-header">
-              <span id="mlxBootstrapState">idle</span>
-              <span id="mlxBootstrapBytes">0 B / 0 B</span>
-            </div>
-            <progress id="mlxBootstrapProgress" value="0" max="100"></progress>
-            <button type="button" id="mlxBootstrapRetry" style="display:none">retry</button>
-          </div>
           <small id="mlxModelIdentifier" style="display:none"></small>
-	          <small id="mlxScopeCopy" style="display:none">vision and text on your device. tool-calling agents continue to use your configured cogitate provider.</small>
-	        </div>
-	      </div>
-	      <div id="localBootstrapRegion" class="provider-row local-bootstrap-region" style="display:none">
-	        <div class="settings-field">
-	          <label for="field-local-active-model">local model</label>
-	          <select id="field-local-active-model">
-	            <!-- Populated dynamically from registry -->
-	          </select>
-	          <small></small>
-	          <div id="localBootstrapProgressShell" class="local-progress-shell">
-	            <div class="local-progress-header">
-	              <span id="localBootstrapState">idle</span>
-	              <span id="localBootstrapBytes">0 B / 0 B</span>
-	            </div>
-	            <progress id="localBootstrapProgress" value="0" max="100"></progress>
-	            <button type="button" id="localBootstrapRetry" style="display:none">retry</button>
-	          </div>
-	          <small id="localModelIdentifier" style="display:none"></small>
-	          <small id="localScopeCopy" style="display:none">on-device generate and cogitate using bundled llama-server.</small>
-	        </div>
-	      </div>
-	      <div id="generateProviderKeyWarning" class="provider-key-warning" style="display:none">
-	        <span>&#9888;</span>
-	        <span>API key not configured for generate provider.</span>
-	        <a href="#" id="generateProviderKeyLink">configure in API keys</a>
-	      </div>
+          <small id="mlxScopeCopy" style="display:none">vision and text on your device. tool-calling agents continue to use your configured cogitate provider.</small>
+        </div>
+      </div>
+      <div id="localModelRow" class="provider-row provider-model-row" style="display:none">
+        <div class="settings-field">
+          <label for="field-local-active-model">local model</label>
+          <select id="field-local-active-model">
+            <!-- Populated dynamically from registry -->
+          </select>
+          <small></small>
+          <small id="localModelIdentifier" style="display:none"></small>
+          <small id="localScopeCopy" style="display:none">on-device generate and cogitate using bundled llama-server.</small>
+        </div>
+      </div>
+      <div id="generateProviderKeyWarning" class="provider-key-warning" style="display:none">
+        <span>&#9888;</span>
+        <span>API key not configured for generate provider.</span>
+        <a href="#" id="generateProviderKeyLink">configure in API keys</a>
+      </div>
 
       <h3 class="settings-subsection-title">cogitate</h3>
       <p class="settings-subsection-desc">tool-calling agents for interactive chat, daily briefings, and complex reasoning.</p>
@@ -5059,16 +5019,16 @@ function promptReload() {
 
 // ========== PROVIDERS ==========
 let providersData = null;
-let mlxBootstrapPollTimer = null;
+let providersPanelPollTimer = null;
+let providersPanelActionPending = false;
 let mlxBootstrapPostStarted = false;
 let mlxModels = [];
-let localBootstrapPollTimer = null;
 let localBootstrapPostStarted = false;
 let localModels = [];
-let bundledProviderPollTimer = null;
 let localStatusLoading = false;
 let localStatusError = '';
 
+const PROVIDER_NAMES = ['anthropic', 'openai', 'openhands', 'local', 'mlx'];
 const MLX_COGITATE_UNSUPPORTED_TITLE = 'MLX provider does not support cogitate in v1 — it is vision/generate-only. Configure a cloud provider for cogitate agents.';
 const MLX_SCOPE_COPY = 'vision and text on your device. tool-calling agents continue to use your configured cogitate provider.';
 const MLX_MODEL_LABELS = {
@@ -5135,9 +5095,6 @@ function populateProviders(data) {
     keyValidationData = data.key_validation;
   }
 
-  renderBundledProviders(data.bundled || {});
-  syncBundledProviderPolling(data.bundled || {});
-
   // Populate all provider/backup dropdowns for both types
   for (const type of ['generate', 'cogitate']) {
     for (const suffix of ['provider', 'backup']) {
@@ -5192,8 +5149,10 @@ function populateProviders(data) {
 
   // Update status text
   document.getElementById('providerStatus').textContent = '';
-  syncMlxProgressRegion();
-  syncLocalProgressRegion();
+  syncProviderModelRows();
+  renderProvidersPanel(data);
+  syncProviderAutoFire();
+  syncProvidersPanelPolling(data);
 
   // Refresh env status displays with latest validation data
   const env = configData?.env || {};
@@ -5362,210 +5321,351 @@ function populateLocalModelPicker(data) {
   select.value = active;
 }
 
-function bundledProviderMeta(state) {
-  const installState = state.install_state || 'idle';
-  const keyStatus = state.key_status || 'key-needed';
-
-  if (state.disabled === true) {
-    return {
-      badge: 'Disabled',
-      tone: 'muted',
-      button: 'Enable',
-      action: 'enable',
-      disabled: false,
-    };
-  }
-
-  switch (installState) {
-    case 'idle':
-      return {
-        badge: INSTALL_COPY.INSTALL_PHASE_IDLE,
-        tone: 'muted',
-        button: INSTALL_COPY.INSTALL_BUTTON_INSTALL,
-        action: 'install',
-        disabled: false,
-      };
-    case 'resolving':
-      return {
-        badge: INSTALL_COPY.INSTALL_PHASE_RESOLVING,
-        tone: 'progress',
-        button: INSTALL_COPY.INSTALL_BUTTON_INSTALLING,
-        action: null,
-        disabled: true,
-      };
-    case 'downloading':
-      return {
-        badge: INSTALL_COPY.INSTALL_PHASE_DOWNLOADING,
-        tone: 'progress',
-        button: INSTALL_COPY.INSTALL_BUTTON_INSTALLING,
-        action: null,
-        disabled: true,
-      };
-    case 'verifying':
-      return {
-        badge: INSTALL_COPY.INSTALL_PHASE_VERIFYING,
-        tone: 'progress',
-        button: INSTALL_COPY.INSTALL_BUTTON_INSTALLING,
-        action: null,
-        disabled: true,
-      };
-    case 'installing':
-      return {
-        badge: INSTALL_COPY.INSTALL_PHASE_INSTALLING,
-        tone: 'progress',
-        button: INSTALL_COPY.INSTALL_BUTTON_INSTALLING,
-        action: null,
-        disabled: true,
-      };
-    case 'installed':
-      if (keyStatus === 'not-applicable' || keyStatus === 'valid') {
-        return {
-          badge: INSTALL_COPY.INSTALL_PHASE_INSTALLED,
-          tone: 'ok',
-          button: null,
-          action: null,
-          disabled: true,
-        };
-      }
-      if (keyStatus === 'validating') {
-        return {
-          badge: 'Validating key…',
-          tone: 'progress',
-          button: null,
-          action: null,
-          disabled: true,
-        };
-      }
-      if (keyStatus === 'invalid') {
-        return {
-          badge: 'Invalid key',
-          tone: 'warn',
-          button: 'Re-enter key',
-          action: 'focus-key',
-          disabled: false,
-        };
-      }
-      return {
-        badge: 'Key required',
-        tone: 'warn',
-        button: 'Add key',
-        action: 'focus-key',
-        disabled: false,
-      };
-    case 'failed':
-      return {
-        badge: `${INSTALL_COPY.INSTALL_PHASE_FAILED_PREFIX}${state.install_error || INSTALL_COPY.INSTALL_FAILED_FALLBACK}`,
-        tone: 'error',
-        button: INSTALL_COPY.INSTALL_BUTTON_RETRY,
-        action: 'install',
-        disabled: false,
-      };
-    default:
-      return {
-        badge: INSTALL_COPY.INSTALL_PHASE_IDLE,
-        tone: 'muted',
-        button: INSTALL_COPY.INSTALL_BUTTON_INSTALL,
-        action: 'install',
-        disabled: false,
-      };
-  }
+function providerKind(providerId) {
+  if (providerId === 'openhands') return 'openhands';
+  if (providerId === 'local' || providerId === 'mlx') return 'local-mlx';
+  return 'cloud';
 }
 
-function renderBundledProviders(bundled) {
-  const container = document.getElementById('bundledProviders');
+function providerPanelStates(data) {
+  return {
+    ...(data?.bundled || {}),
+    local: data?.local,
+    mlx: data?.mlx,
+  };
+}
+
+function providerPanelUrl() {
+  const model = encodeURIComponent(getSelectedLocalModel());
+  return `api/providers?local_model=${model}`;
+}
+
+function mergeProviderPanelData(payload) {
+  const previous = providersData || {};
+  providersData = {
+    ...payload,
+    mlx_models: previous.mlx_models || mlxModels,
+    local_models: previous.local_models || localModels,
+    mlx_availability: previous.mlx_availability,
+    local_availability: previous.local_availability,
+  };
+}
+
+function getProviderAvailability(providerId) {
+  if (providerId === 'mlx' && providersData?.mlx_availability) {
+    return { provider: 'mlx', ...providersData.mlx_availability };
+  }
+  if (providerId === 'local' && providersData?.local_availability) {
+    return { provider: 'local', ...providersData.local_availability };
+  }
+  return null;
+}
+
+function providerLabel(providerId, state) {
+  if (state?.label) return state.label;
+  const provider = providersData?.providers?.find(item => item.name === providerId);
+  return provider?.label || providerId;
+}
+
+function renderProvidersPanel(data) {
+  const container = document.getElementById('providersPanel');
   if (!container) return;
   container.innerHTML = '';
-  for (const name of ['anthropic', 'openai', 'openhands']) {
-    const state = bundled[name];
+  const states = providerPanelStates(data);
+  for (const providerId of PROVIDER_NAMES) {
+    const state = states[providerId];
     if (!state) continue;
-    container.appendChild(renderBundledProviderCard(state));
+    container.appendChild(
+      renderProviderCard(providerId, state, providerKind(providerId), getProviderAvailability(providerId))
+    );
   }
 }
 
-function renderBundledProviderCard(state) {
-  const meta = bundledProviderMeta(state);
+function renderProviderCard(providerId, state, kind, availability) {
+  const meta = providerCardMeta(state, kind, availability);
   const card = document.createElement('div');
-  card.className = 'bundled-provider-card';
+  card.className = 'provider-card';
+  card.dataset.provider = providerId;
 
   const header = document.createElement('header');
+  header.className = 'provider-card__header';
   const title = document.createElement('div');
-  title.className = 'bundled-provider-title';
-  title.textContent = state.label || state.name;
+  title.className = 'provider-card__title';
+  title.textContent = providerLabel(providerId, state);
+
+  const pills = document.createElement('div');
+  pills.className = 'provider-card__pills';
   const badge = document.createElement('span');
-  badge.className = 'bundled-provider-badge';
-  badge.dataset.tone = meta.tone;
-  badge.textContent = meta.badge;
-  header.append(title, badge);
+  badge.className = 'provider-card__badge';
+  badge.dataset.tone = meta.badgeTone;
+  badge.textContent = meta.badgeLabel;
+  pills.appendChild(badge);
+  if (meta.showKeyPill) {
+    const keyPill = document.createElement('span');
+    keyPill.className = 'provider-card__key-pill';
+    keyPill.dataset.tone = meta.keyPillTone;
+    keyPill.textContent = meta.keyPillLabel;
+    pills.appendChild(keyPill);
+  }
+  header.append(title, pills);
+  card.appendChild(header);
 
-  const details = document.createElement('div');
-  details.className = 'bundled-provider-meta';
-  details.append(
-    bundledProviderMetaLine('CLI', state.binary_path ? 'installed' : 'not installed')
-  );
-  if (state.key_status !== 'not-applicable') {
-    const keyLabel = state.key_configured ? (state.key_valid ? 'valid' : 'configured') : 'missing';
-    details.append(bundledProviderMetaLine('Key', keyLabel));
+  const metaLine = providerCardMetaLine(state, kind);
+  if (metaLine) {
+    const details = document.createElement('div');
+    details.className = 'provider-card__meta';
+    details.appendChild(metaLine);
+    card.appendChild(details);
   }
 
-  const actions = document.createElement('div');
-  actions.className = 'bundled-provider-actions';
-  if (meta.button) {
-    const primary = document.createElement('button');
-    primary.type = 'button';
-    primary.textContent = meta.button;
-    primary.disabled = meta.disabled;
-    if (meta.action) {
-      primary.addEventListener('click', () => runBundledProviderAction(state.name, meta.action));
-    }
-    actions.appendChild(primary);
+  if (meta.showByteCounter) {
+    const bytes = document.createElement('div');
+    bytes.className = 'provider-card__bytes';
+    bytes.textContent = meta.byteLabel;
+    card.appendChild(bytes);
   }
 
-  const overflow = bundledProviderOverflow(state);
-  if (overflow) actions.appendChild(overflow);
-
-  card.append(header, details, actions);
-
-  if (state.issues && state.issues.length) {
+  if (meta.issueText) {
     const issue = document.createElement('div');
-    issue.className = 'bundled-provider-inline';
-    issue.textContent = state.issues[0];
+    issue.className = 'provider-card__issue';
+    issue.textContent = meta.issueText;
     card.appendChild(issue);
   }
 
+  const actions = document.createElement('div');
+  actions.className = 'provider-card__actions';
+  if (meta.primaryLabel) {
+    const primary = document.createElement('button');
+    primary.type = 'button';
+    primary.textContent = meta.primaryLabel;
+    primary.disabled = meta.primaryDisabled;
+    if (meta.primaryAction) {
+      primary.addEventListener('click', () => runProviderAction(providerId, meta.primaryAction));
+    }
+    actions.appendChild(primary);
+  }
+  const overflow = providerCardOverflow(state, kind);
+  if (overflow) actions.appendChild(overflow);
+  if (actions.children.length) card.appendChild(actions);
   return card;
 }
 
-function bundledProviderMetaLine(label, value) {
+function providerCardMetaLine(state, kind) {
+  if (!['cloud', 'openhands'].includes(kind) || !state?.binary_path) return null;
   const line = document.createElement('span');
-  line.textContent = `${label}: ${value}`;
+  line.textContent = `CLI: installed at ${state.binary_path}`;
   return line;
 }
 
-function bundledProviderOverflow(state) {
+function localMlxBlockedReason(state, availability) {
+  if (!availability || availability.available !== false || !availability.reason) return '';
+  if (availability.provider === 'mlx') {
+    if (availability.model_present || availability.reason === 'model snapshot not present') return '';
+    return availability.reason;
+  }
+  if (availability.provider === 'local') {
+    const installableReasons = [
+      'local runtime is not installed',
+      'local model files are not installed',
+    ];
+    if (installableReasons.includes(availability.reason)) return '';
+    return availability.reason;
+  }
+  return '';
+}
+
+function providerKeyPill(keyStatus) {
+  return {
+    'key-needed': { label: 'Needs API key', tone: 'warn' },
+    validating: { label: 'Validating key…', tone: 'progress' },
+    valid: { label: 'Ready', tone: 'ok' },
+    invalid: { label: 'Invalid key', tone: 'error' },
+  }[keyStatus] || { label: 'Needs API key', tone: 'warn' };
+}
+
+function installBadgeLabel(installState, installError) {
+  return {
+    idle: INSTALL_COPY.INSTALL_PHASE_IDLE,
+    resolving: INSTALL_COPY.INSTALL_PHASE_RESOLVING,
+    downloading: INSTALL_COPY.INSTALL_PHASE_DOWNLOADING,
+    verifying: INSTALL_COPY.INSTALL_PHASE_VERIFYING,
+    installing: INSTALL_COPY.INSTALL_PHASE_INSTALLING,
+    installed: INSTALL_COPY.INSTALL_PHASE_INSTALLED,
+    failed: `${INSTALL_COPY.INSTALL_PHASE_FAILED_PREFIX}${installError || INSTALL_COPY.INSTALL_FAILED_FALLBACK}`,
+  }[installState] || INSTALL_COPY.INSTALL_PHASE_IDLE;
+}
+
+function providerCardMeta(state, kind, availability) {
+  const installState = state?.install_state || 'idle';
+  const keyStatus = state?.key_status || 'key-needed';
+  const blockedReason = kind === 'local-mlx' ? localMlxBlockedReason(state, availability) : '';
+  if (blockedReason) {
+    return {
+      badgeLabel: `${INSTALL_COPY.INSTALL_PHASE_FAILED_PREFIX}${blockedReason}`,
+      badgeTone: 'error',
+      primaryLabel: INSTALL_COPY.INSTALL_BUTTON_INSTALL,
+      primaryAction: 'install',
+      primaryDisabled: true,
+      showKeyPill: false,
+      keyPillLabel: '',
+      keyPillTone: 'muted',
+      showByteCounter: false,
+      byteLabel: '',
+      issueText: '',
+    };
+  }
+
+  if (state?.disabled === true) {
+    return {
+      badgeLabel: 'Disabled',
+      badgeTone: 'muted',
+      primaryLabel: 'Enable',
+      primaryAction: 'enable',
+      primaryDisabled: false,
+      showKeyPill: kind === 'cloud',
+      ...providerCardKeyFields(keyStatus),
+      showByteCounter: false,
+      byteLabel: '',
+      issueText: firstProviderIssue(state),
+    };
+  }
+
+  const badgeLabel = installBadgeLabel(installState, state?.install_error);
+  const tone = providerBadgeTone(installState, keyStatus);
+  const byteLabel = providerByteLabel(kind, installState, badgeLabel, state);
+  const keyFields = providerCardKeyFields(keyStatus);
+  const base = {
+    badgeLabel,
+    badgeTone: tone,
+    showKeyPill: kind === 'cloud',
+    ...keyFields,
+    showByteCounter: !!byteLabel,
+    byteLabel,
+    issueText: firstProviderIssue(state),
+  };
+
+  if (IN_FLIGHT_INSTALL_STATES.includes(installState)) {
+    return {
+      ...base,
+      primaryLabel: INSTALL_COPY.INSTALL_BUTTON_INSTALLING,
+      primaryAction: null,
+      primaryDisabled: true,
+    };
+  }
+  if (installState === 'idle') {
+    return {
+      ...base,
+      primaryLabel: INSTALL_COPY.INSTALL_BUTTON_INSTALL,
+      primaryAction: 'install',
+      primaryDisabled: false,
+    };
+  }
+  if (installState === 'failed') {
+    return {
+      ...base,
+      primaryLabel: INSTALL_COPY.INSTALL_BUTTON_RETRY,
+      primaryAction: 'install',
+      primaryDisabled: false,
+    };
+  }
+  if (installState === 'installed' && kind === 'cloud') {
+    return cloudInstalledMeta(base, state, keyStatus);
+  }
+  return {
+    ...base,
+    primaryLabel: null,
+    primaryAction: null,
+    primaryDisabled: true,
+  };
+}
+
+function providerCardKeyFields(keyStatus) {
+  const keyPill = providerKeyPill(keyStatus);
+  return {
+    keyPillLabel: keyPill.label,
+    keyPillTone: keyPill.tone,
+  };
+}
+
+function providerBadgeTone(installState, keyStatus) {
+  if (installState === 'installed') return 'ok';
+  if (installState === 'failed') return 'error';
+  if (IN_FLIGHT_INSTALL_STATES.includes(installState)) return 'progress';
+  if (keyStatus === 'invalid') return 'warn';
+  return 'muted';
+}
+
+function providerByteLabel(kind, installState, badgeLabel, state) {
+  if (kind !== 'local-mlx' || !['downloading', 'verifying'].includes(installState)) return '';
+  const received = state?.progress_bytes_received;
+  const total = state?.progress_bytes_total;
+  const receivedBytes = Number(received || 0);
+  const totalBytes = Number(total || 0);
+  if ((received == null && total == null) || (receivedBytes === 0 && totalBytes === 0)) return '';
+  return `${badgeLabel} ${formatMlxBytes(receivedBytes)} / ${formatMlxBytes(totalBytes)}`;
+}
+
+function firstProviderIssue(state) {
+  return state?.issues && state.issues.length ? state.issues[0] : '';
+}
+
+function cloudInstalledMeta(base, state, keyStatus) {
+  if (keyStatus === 'key-needed') {
+    return {
+      ...base,
+      primaryLabel: 'Add key',
+      primaryAction: 'focus-key',
+      primaryDisabled: false,
+    };
+  }
+  if (keyStatus === 'invalid') {
+    return {
+      ...base,
+      primaryLabel: 'Re-enter key',
+      primaryAction: 'focus-key',
+      primaryDisabled: false,
+    };
+  }
+  if (keyStatus === 'validating') {
+    return {
+      ...base,
+      primaryLabel: 'Validating key…',
+      primaryAction: null,
+      primaryDisabled: true,
+    };
+  }
+  return {
+    ...base,
+    primaryLabel: state?.key_configured ? 'Validate key' : null,
+    primaryAction: state?.key_configured ? 'validate-key' : null,
+    primaryDisabled: false,
+  };
+}
+
+function providerCardOverflow(state, kind) {
+  if (kind === 'local-mlx') return null;
+  const installState = state?.install_state || 'idle';
+  const inFlight = IN_FLIGHT_INSTALL_STATES.includes(installState);
   const items = [];
-  if (state.install_state === 'installed' || state.install_state === 'failed') {
-    items.push('uninstall');
-  }
-  if (state.install_state === 'installed' && !state.disabled) {
-    items.push('disable');
-  }
-  if (state.disabled === true) {
-    items.push('enable');
+  if (state?.disabled === true) {
+    if (!inFlight) items.push('uninstall');
+  } else if (installState === 'installed') {
+    items.push('uninstall', 'disable');
   }
   if (!items.length) return null;
   const details = document.createElement('details');
-  details.className = 'bundled-provider-menu';
+  details.className = 'provider-card__menu';
   const summary = document.createElement('summary');
   summary.textContent = 'more';
   const body = document.createElement('div');
-  body.className = 'bundled-provider-menu-body';
+  body.className = 'provider-card__menu-body';
   for (const action of items) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.textContent = bundledProviderActionLabel(action);
+    button.textContent = providerCardActionLabel(action);
     button.addEventListener('click', () => {
       details.open = false;
-      runBundledProviderAction(state.name, action);
+      runProviderAction(state.name, action);
     });
     body.appendChild(button);
   }
@@ -5573,7 +5673,7 @@ function bundledProviderOverflow(state) {
   return details;
 }
 
-function bundledProviderActionLabel(action) {
+function providerCardActionLabel(action) {
   return {
     disable: 'Disable',
     enable: 'Enable',
@@ -5581,16 +5681,27 @@ function bundledProviderActionLabel(action) {
   }[action] || action;
 }
 
-function runBundledProviderAction(name, action) {
+function runProviderAction(providerId, action) {
   if (action === 'focus-key') {
-    focusBundledProviderKey(name);
+    focusProviderKey(providerId);
     return;
   }
-  postBundledProviderAction(name, action);
+  providersPanelActionPending = true;
+  syncProvidersPanelPolling();
+  if (providerId === 'local') {
+    startLocalBootstrap();
+    return;
+  }
+  if (providerId === 'mlx') {
+    startMlxBootstrap();
+    return;
+  }
+  postProviderAction(providerId, action);
 }
 
-function focusBundledProviderKey(name) {
-  const envKey = name === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
+function focusProviderKey(providerId) {
+  const state = providersData?.bundled?.[providerId];
+  const envKey = state?.env_key || (providerId === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY');
   switchSection('apikeys');
   window.requestAnimationFrame(() => {
     const input = document.querySelector(`[data-key="${envKey}"]`);
@@ -5601,60 +5712,76 @@ function focusBundledProviderKey(name) {
   });
 }
 
-async function postBundledProviderAction(name, action) {
+async function postProviderAction(providerId, action) {
   try {
-    const response = await fetch(`api/providers/${name}/${action}`, { method: 'POST' });
+    const response = await fetch(`api/providers/${providerId}/${action}`, { method: 'POST' });
     const payload = await response.json();
     if (!response.ok || payload.error) throw new Error(payload.detail || payload.error || 'provider action failed');
     providersData = providersData || {};
     providersData.bundled = providersData.bundled || {};
-    providersData.bundled[name] = payload;
-    renderBundledProviders(providersData.bundled);
-    syncBundledProviderPolling(providersData.bundled);
+    providersData.bundled[providerId] = payload;
+    renderProvidersPanel(providersData);
+    syncProvidersPanelPolling();
   } catch (err) {
+    providersPanelActionPending = false;
+    syncProvidersPanelPolling();
     notifyError('Provider action failed', err.message);
   }
 }
 
-function syncBundledProviderPolling(bundled) {
-  const active = Object.values(bundled || {}).some(
+function syncProvidersPanelPolling(data = providersData) {
+  const states = Object.values(providerPanelStates(data)).filter(Boolean);
+  const active = states.some(
     state => (
       IN_FLIGHT_INSTALL_STATES.includes(state.install_state)
       || state.key_status === 'validating'
     )
   );
-  if (active) {
-    startBundledProviderPolling();
+  if (active || providersPanelActionPending) {
+    startProvidersPanelPolling();
   } else {
-    clearBundledProviderPollTimer();
+    clearProvidersPanelPollTimer();
   }
 }
 
-function startBundledProviderPolling() {
-  if (bundledProviderPollTimer) return;
-  bundledProviderPollTimer = setInterval(pollBundledProviders, 2000);
+function startProvidersPanelPolling() {
+  if (providersPanelPollTimer) return;
+  providersPanelPollTimer = setInterval(pollProvidersPanel, 1000);
 }
 
-function clearBundledProviderPollTimer() {
-  if (bundledProviderPollTimer) {
-    clearInterval(bundledProviderPollTimer);
-    bundledProviderPollTimer = null;
+function clearProvidersPanelPollTimer() {
+  if (providersPanelPollTimer) {
+    clearInterval(providersPanelPollTimer);
+    providersPanelPollTimer = null;
   }
 }
 
-async function pollBundledProviders() {
+async function pollProvidersPanel() {
   try {
-    const response = await fetch('api/providers/bundled');
+    const response = await fetch(providerPanelUrl());
     const payload = await response.json();
     if (!response.ok || payload.error) throw new Error(payload.detail || payload.error || 'provider status failed');
-    providersData = providersData || {};
-    providersData.bundled = payload;
-    renderBundledProviders(payload);
-    syncBundledProviderPolling(payload);
+    mergeProviderPanelData(payload);
+    providersPanelActionPending = false;
+    populateProviderStateOnly(providersData);
+    if (payload?.mlx?.install_state === 'installed') {
+      refreshMlxAvailability();
+    }
+    if (payload?.local?.install_state === 'installed') {
+      refreshLocalAvailability();
+    }
+    syncProvidersPanelPolling(providersData);
   } catch (err) {
-    clearBundledProviderPollTimer();
+    providersPanelActionPending = false;
+    clearProvidersPanelPollTimer();
     notifyError('Provider status failed', err.message);
   }
+}
+
+function populateProviderStateOnly(data) {
+  renderProvidersPanel(data);
+  syncProviderModelRows();
+  renderLocalCogitateStatus();
 }
 
 function getMlxAvailability() {
@@ -5705,11 +5832,6 @@ function formatMlxBytes(value) {
   return `${size.toFixed(digits)} ${units[unitIndex]}`;
 }
 
-function setMlxProgressVisible(visible) {
-  const shell = document.getElementById('mlxBootstrapProgressShell');
-  if (shell) shell.style.display = visible ? '' : 'none';
-}
-
 function updateMlxModelIdentifier() {
   const identifier = document.getElementById('mlxModelIdentifier');
   const scopeCopy = document.getElementById('mlxScopeCopy');
@@ -5729,187 +5851,20 @@ function updateMlxModelIdentifier() {
   }
 }
 
-function syncMlxProgressRegion() {
-  const provider = document.getElementById('field-generate-provider')?.value;
-  const region = document.getElementById('mlxBootstrapRegion');
-  if (!region) return;
-  if (provider !== 'mlx') {
-    unmountMlxProgress();
-    return;
-  }
-  region.style.display = '';
-  updateMlxModelIdentifier();
-  const availability = getMlxAvailability();
-  if (availability?.model_present) {
-    clearMlxBootstrapPollTimer();
-    setMlxProgressVisible(false);
-    return;
-  }
-  if (isMlxBootstrapBlocked(availability)) {
-    clearMlxBootstrapPollTimer();
-    mlxBootstrapPostStarted = false;
-    setMlxProgressVisible(true);
-    handleMlxBootstrapStatus({
-      install_state: 'failed',
-      install_error: availability.reason,
-      bootstrap_disabled: true,
-    });
-    return;
-  }
-  mountMlxProgress();
-}
-
-function isMlxBootstrapBlocked(availability) {
-  return !!(
-    availability &&
-    availability.available === false &&
-    !availability.model_present &&
-    availability.reason &&
-    availability.reason !== 'model snapshot not present'
-  );
-}
-
-function clearMlxBootstrapPollTimer() {
-  if (mlxBootstrapPollTimer) {
-    clearInterval(mlxBootstrapPollTimer);
-    mlxBootstrapPollTimer = null;
-  }
-}
-
-function mountMlxProgress() {
-  const region = document.getElementById('mlxBootstrapRegion');
-  if (!region) return;
-  region.style.display = '';
-  setMlxProgressVisible(true);
-  updateMlxModelIdentifier();
-  const retry = document.getElementById('mlxBootstrapRetry');
-  if (retry) retry.style.display = 'none';
-  if (!mlxBootstrapPostStarted) {
-    mlxBootstrapPostStarted = true;
-    startMlxBootstrap();
-  }
-  startMlxBootstrapPolling();
-}
-
-function unmountMlxProgress() {
-  clearMlxBootstrapPollTimer();
-  mlxBootstrapPostStarted = false;
-  const region = document.getElementById('mlxBootstrapRegion');
-  if (region) region.style.display = 'none';
-  updateMlxModelIdentifier();
-}
-
-async function startMlxBootstrap() {
-  try {
-    const model = encodeURIComponent(getSelectedMlxModel());
-    const response = await fetch(`api/mlx/bootstrap?model=${model}`, { method: 'POST' });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || payload.error || 'MLX bootstrap failed');
-    handleMlxBootstrapStatus({
-      install_state: payload.install_state,
-      install_error: null,
-    });
-  } catch (err) {
-    handleMlxBootstrapStatus({
-      install_state: 'failed',
-      install_error: err.message,
-    });
-  }
-}
-
-function startMlxBootstrapPolling() {
-  if (mlxBootstrapPollTimer) return;
-  pollMlxBootstrap();
-  mlxBootstrapPollTimer = setInterval(pollMlxBootstrap, 1000);
-}
-
-async function pollMlxBootstrap() {
-  try {
-    const model = encodeURIComponent(getSelectedMlxModel());
-    const response = await fetch(`api/mlx/bootstrap/status?model=${model}`);
-    const status = await response.json();
-    if (!response.ok) throw new Error(status.detail || status.error || 'MLX bootstrap status failed');
-    handleMlxBootstrapStatus(status);
-  } catch (err) {
-    handleMlxBootstrapStatus({
-      install_state: 'failed',
-      install_error: err.message,
-    });
-  }
-}
-
 async function refreshMlxAvailability() {
   try {
     const availability = await loadMlxAvailability();
     providersData = providersData || {};
     providersData.mlx_availability = availability;
     updateMlxModelIdentifier();
+    renderProvidersPanel(providersData);
   } catch (err) {
     console.error('Error refreshing MLX availability:', err);
   }
 }
 
-function handleMlxBootstrapStatus(status) {
-  const installState = status?.install_state || 'idle';
-  const received = status?.progress_bytes_received;
-  const total = status?.progress_bytes_total;
-  const receivedBytes = Number(received || 0);
-  const totalBytes = Number(total || 0);
-  const stateEl = document.getElementById('mlxBootstrapState');
-  const bytesEl = document.getElementById('mlxBootstrapBytes');
-  const progressEl = document.getElementById('mlxBootstrapProgress');
-  const retry = document.getElementById('mlxBootstrapRetry');
-  const stateLabels = {
-    idle: INSTALL_COPY.INSTALL_PHASE_IDLE,
-    resolving: INSTALL_COPY.INSTALL_PHASE_RESOLVING,
-    downloading: INSTALL_COPY.INSTALL_PHASE_DOWNLOADING,
-    verifying: INSTALL_COPY.INSTALL_PHASE_VERIFYING,
-    installing: INSTALL_COPY.INSTALL_PHASE_INSTALLING,
-    installed: INSTALL_COPY.INSTALL_PHASE_INSTALLED,
-    failed: `${INSTALL_COPY.INSTALL_PHASE_FAILED_PREFIX}${status?.install_error || INSTALL_COPY.INSTALL_FAILED_FALLBACK}`,
-  };
-  const stateLabel = stateLabels[installState] || installState;
-  const hasByteProgress = (
-    (received != null || total != null)
-    && (receivedBytes !== 0 || totalBytes !== 0)
-  );
-  const byteLabel = hasByteProgress
-    ? `${stateLabel} ${formatMlxBytes(receivedBytes)} / ${formatMlxBytes(totalBytes)}`
-    : stateLabel;
-
-  if (stateEl) stateEl.textContent = stateLabel;
-  if (bytesEl) bytesEl.textContent = byteLabel;
-  if (progressEl) {
-    progressEl.value = totalBytes > 0 ? Math.min(100, Math.round((receivedBytes / totalBytes) * 100)) : 0;
-  }
-  if (retry) {
-    retry.textContent = INSTALL_COPY.INSTALL_BUTTON_RETRY;
-    retry.style.display = installState === 'failed' ? '' : 'none';
-    retry.disabled = !!status?.bootstrap_disabled;
-    retry.onclick = () => {
-      if (retry.disabled) return;
-      mlxBootstrapPostStarted = false;
-      mountMlxProgress();
-    };
-  }
-
-  if (installState === 'installed') {
-    clearMlxBootstrapPollTimer();
-    setMlxProgressVisible(false);
-    refreshMlxAvailability();
-  } else if (installState === 'failed') {
-    clearMlxBootstrapPollTimer();
-    setMlxProgressVisible(true);
-  }
-}
-
 function getLocalAvailability() {
   return providersData?.local_availability || null;
-}
-
-function setLocalProgressVisible(visible) {
-  const shell = document.getElementById('localBootstrapProgressShell');
-  if (shell) shell.style.display = visible ? '' : 'none';
 }
 
 function updateLocalModelIdentifier() {
@@ -5937,114 +5892,90 @@ function isLocalProviderSelected() {
     || document.getElementById('field-cogitate-provider')?.value === 'local';
 }
 
-function syncLocalProgressRegion() {
-  const region = document.getElementById('localBootstrapRegion');
-  if (!region) return;
+function syncProviderModelRows() {
+  const mlxRow = document.getElementById('mlxModelRow');
+  const localRow = document.getElementById('localModelRow');
+  if (mlxRow) {
+    mlxRow.style.display = document.getElementById('field-generate-provider')?.value === 'mlx' ? '' : 'none';
+  }
+  if (localRow) {
+    localRow.style.display = isLocalProviderSelected() ? '' : 'none';
+  }
+  updateMlxModelIdentifier();
+  updateLocalModelIdentifier();
+}
+
+function syncProviderAutoFire() {
+  maybeAutoStartMlxBootstrap();
+  maybeAutoStartLocalBootstrap();
+}
+
+function maybeAutoStartMlxBootstrap() {
+  if (document.getElementById('field-generate-provider')?.value !== 'mlx') {
+    mlxBootstrapPostStarted = false;
+    return;
+  }
+  const state = providersData?.mlx || {};
+  const availability = getProviderAvailability('mlx');
+  if (
+    state.install_state === 'idle'
+    && availability
+    && !availability.model_present
+    && !localMlxBlockedReason(state, availability)
+    && !mlxBootstrapPostStarted
+  ) {
+    mlxBootstrapPostStarted = true;
+    startMlxBootstrap();
+  }
+}
+
+function maybeAutoStartLocalBootstrap() {
   if (!isLocalProviderSelected()) {
-    unmountLocalProgress();
-    return;
-  }
-  region.style.display = '';
-  updateLocalModelIdentifier();
-  const availability = getLocalAvailability();
-  if (availability?.binary_present && availability?.model_present) {
-    clearLocalBootstrapPollTimer();
-    setLocalProgressVisible(false);
-    return;
-  }
-  if (isLocalBootstrapBlocked(availability)) {
-    clearLocalBootstrapPollTimer();
     localBootstrapPostStarted = false;
-    setLocalProgressVisible(true);
-    handleLocalBootstrapStatus({
-      install_state: 'failed',
-      install_error: availability.reason,
-      bootstrap_disabled: true,
-    });
     return;
   }
-  mountLocalProgress();
-}
-
-function isLocalBootstrapBlocked(availability) {
-  const installableReasons = [
-    'local runtime is not installed',
-    'local model files are not installed',
-  ];
-  return !!(
-    availability &&
-    availability.available === false &&
-    availability.reason &&
-    !installableReasons.includes(availability.reason)
-  );
-}
-
-function clearLocalBootstrapPollTimer() {
-  if (localBootstrapPollTimer) {
-    clearInterval(localBootstrapPollTimer);
-    localBootstrapPollTimer = null;
-  }
-}
-
-function mountLocalProgress() {
-  const region = document.getElementById('localBootstrapRegion');
-  if (!region) return;
-  region.style.display = '';
-  setLocalProgressVisible(true);
-  updateLocalModelIdentifier();
-  const retry = document.getElementById('localBootstrapRetry');
-  if (retry) retry.style.display = 'none';
-  if (!localBootstrapPostStarted) {
+  const state = providersData?.local || {};
+  const availability = getProviderAvailability('local');
+  if (
+    state.install_state === 'idle'
+    && availability
+    && !(availability.binary_present && availability.model_present)
+    && !localMlxBlockedReason(state, availability)
+    && !localBootstrapPostStarted
+  ) {
     localBootstrapPostStarted = true;
     startLocalBootstrap();
   }
-  startLocalBootstrapPolling();
 }
 
-function unmountLocalProgress() {
-  clearLocalBootstrapPollTimer();
-  localBootstrapPostStarted = false;
-  const region = document.getElementById('localBootstrapRegion');
-  if (region) region.style.display = 'none';
-  updateLocalModelIdentifier();
-}
-
-async function startLocalBootstrap() {
+async function startMlxBootstrap() {
+  providersPanelActionPending = true;
+  syncProvidersPanelPolling();
   try {
-    const model = encodeURIComponent(getSelectedLocalModel());
-    const response = await fetch(`api/local/bootstrap?model=${model}`, { method: 'POST' });
+    const model = encodeURIComponent(getSelectedMlxModel());
+    const response = await fetch(`api/mlx/bootstrap?model=${model}`, { method: 'POST' });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || payload.error || 'Local bootstrap failed');
-    handleLocalBootstrapStatus({
-      install_state: payload.install_state,
+    if (!response.ok) throw new Error(payload.detail || payload.error || 'MLX bootstrap failed');
+    providersData = providersData || {};
+    providersData.mlx = {
+      ...(providersData.mlx || {}),
+      install_state: payload.install_state || 'resolving',
       install_error: null,
-    });
+    };
+    renderProvidersPanel(providersData);
+    syncProvidersPanelPolling();
   } catch (err) {
-    handleLocalBootstrapStatus({
+    mlxBootstrapPostStarted = false;
+    providersPanelActionPending = false;
+    providersData = providersData || {};
+    providersData.mlx = {
+      ...(providersData.mlx || {}),
       install_state: 'failed',
       install_error: err.message,
-    });
-  }
-}
-
-function startLocalBootstrapPolling() {
-  if (localBootstrapPollTimer) return;
-  pollLocalBootstrap();
-  localBootstrapPollTimer = setInterval(pollLocalBootstrap, 1000);
-}
-
-async function pollLocalBootstrap() {
-  try {
-    const model = encodeURIComponent(getSelectedLocalModel());
-    const response = await fetch(`api/local/bootstrap/status?model=${model}`);
-    const status = await response.json();
-    if (!response.ok) throw new Error(status.detail || status.error || 'Local bootstrap status failed');
-    handleLocalBootstrapStatus(status);
-  } catch (err) {
-    handleLocalBootstrapStatus({
-      install_state: 'failed',
-      install_error: err.message,
-    });
+    };
+    renderProvidersPanel(providersData);
+    syncProvidersPanelPolling();
+    notifyError('MLX bootstrap failed', err.message);
   }
 }
 
@@ -6054,63 +5985,41 @@ async function refreshLocalAvailability() {
     providersData = providersData || {};
     providersData.local_availability = availability;
     updateLocalModelIdentifier();
+    renderProvidersPanel(providersData);
     await recheckLocalStatus();
   } catch (err) {
     console.error('Error refreshing local availability:', err);
   }
 }
 
-function handleLocalBootstrapStatus(status) {
-  const installState = status?.install_state || 'idle';
-  const received = status?.progress_bytes_received;
-  const total = status?.progress_bytes_total;
-  const receivedBytes = Number(received || 0);
-  const totalBytes = Number(total || 0);
-  const stateEl = document.getElementById('localBootstrapState');
-  const bytesEl = document.getElementById('localBootstrapBytes');
-  const progressEl = document.getElementById('localBootstrapProgress');
-  const retry = document.getElementById('localBootstrapRetry');
-  const stateLabels = {
-    idle: INSTALL_COPY.INSTALL_PHASE_IDLE,
-    resolving: INSTALL_COPY.INSTALL_PHASE_RESOLVING,
-    downloading: INSTALL_COPY.INSTALL_PHASE_DOWNLOADING,
-    verifying: INSTALL_COPY.INSTALL_PHASE_VERIFYING,
-    installing: INSTALL_COPY.INSTALL_PHASE_INSTALLING,
-    installed: INSTALL_COPY.INSTALL_PHASE_INSTALLED,
-    failed: `${INSTALL_COPY.INSTALL_PHASE_FAILED_PREFIX}${status?.install_error || INSTALL_COPY.INSTALL_FAILED_FALLBACK}`,
-  };
-  const stateLabel = stateLabels[installState] || installState;
-  const hasByteProgress = (
-    (received != null || total != null)
-    && (receivedBytes !== 0 || totalBytes !== 0)
-  );
-  const byteLabel = hasByteProgress
-    ? `${stateLabel} ${formatMlxBytes(receivedBytes)} / ${formatMlxBytes(totalBytes)}`
-    : stateLabel;
-
-  if (stateEl) stateEl.textContent = stateLabel;
-  if (bytesEl) bytesEl.textContent = byteLabel;
-  if (progressEl) {
-    progressEl.value = totalBytes > 0 ? Math.min(100, Math.round((receivedBytes / totalBytes) * 100)) : 0;
-  }
-  if (retry) {
-    retry.textContent = INSTALL_COPY.INSTALL_BUTTON_RETRY;
-    retry.style.display = installState === 'failed' ? '' : 'none';
-    retry.disabled = !!status?.bootstrap_disabled;
-    retry.onclick = () => {
-      if (retry.disabled) return;
-      localBootstrapPostStarted = false;
-      mountLocalProgress();
+async function startLocalBootstrap() {
+  providersPanelActionPending = true;
+  syncProvidersPanelPolling();
+  try {
+    const model = encodeURIComponent(getSelectedLocalModel());
+    const response = await fetch(`api/local/bootstrap?model=${model}`, { method: 'POST' });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || payload.error || 'Local bootstrap failed');
+    providersData = providersData || {};
+    providersData.local = {
+      ...(providersData.local || {}),
+      install_state: payload.install_state || 'resolving',
+      install_error: null,
     };
-  }
-
-  if (installState === 'installed') {
-    clearLocalBootstrapPollTimer();
-    setLocalProgressVisible(false);
-    refreshLocalAvailability();
-  } else if (installState === 'failed') {
-    clearLocalBootstrapPollTimer();
-    setLocalProgressVisible(true);
+    renderProvidersPanel(providersData);
+    syncProvidersPanelPolling();
+  } catch (err) {
+    localBootstrapPostStarted = false;
+    providersPanelActionPending = false;
+    providersData = providersData || {};
+    providersData.local = {
+      ...(providersData.local || {}),
+      install_state: 'failed',
+      install_error: err.message,
+    };
+    renderProvidersPanel(providersData);
+    syncProvidersPanelPolling();
+    notifyError('Local bootstrap failed', err.message);
   }
 }
 
@@ -6404,12 +6313,18 @@ for (const type of ['generate', 'cogitate']) {
               }
             }
             if (type === 'generate' && (field === 'provider' || field === 'tier')) {
-              syncMlxProgressRegion();
-              refreshMlxAvailability().then(syncMlxProgressRegion);
+              syncProviderModelRows();
+              refreshMlxAvailability().then(() => {
+                syncProviderAutoFire();
+                syncProvidersPanelPolling();
+              });
             }
             if (field === 'provider' || field === 'tier') {
-              syncLocalProgressRegion();
-              refreshLocalAvailability().then(syncLocalProgressRegion);
+              syncProviderModelRows();
+              refreshLocalAvailability().then(() => {
+                syncProviderAutoFire();
+                syncProvidersPanelPolling();
+              });
               renderLocalCogitateStatus();
             }
             showFieldStatus(el, 'saved');
@@ -6425,14 +6340,15 @@ document.getElementById('field-mlx-active-model')?.addEventListener('change', as
   const select = this;
   const model = select.value;
   const errorHost = prepareFieldErrorHost(select);
-  clearMlxBootstrapPollTimer();
+  clearProvidersPanelPollTimer();
   mlxBootstrapPostStarted = false;
   providersData = providersData || {};
   providersData.mlx = providersData.mlx || {};
   providersData.mlx.active_model = model;
   try {
     providersData.mlx_availability = await loadMlxAvailability();
-    syncMlxProgressRegion();
+    syncProviderModelRows();
+    renderProvidersPanel(providersData);
     await window.saveControl({
       el: select,
       errorHost,
@@ -6450,7 +6366,10 @@ document.getElementById('field-mlx-active-model')?.addEventListener('change', as
         if (!providersData.mlx) providersData.mlx = {};
         providersData.mlx.active_model = model;
         populateMlxModelPicker(providersData);
-        syncMlxProgressRegion();
+        syncProviderModelRows();
+        renderProvidersPanel(providersData);
+        syncProviderAutoFire();
+        syncProvidersPanelPolling();
         showFieldStatus(select, 'saved');
       },
     });
@@ -6461,15 +6380,17 @@ document.getElementById('field-mlx-active-model')?.addEventListener('change', as
 
 document.getElementById('field-local-active-model')?.addEventListener('change', async function() {
   const select = this;
-  const model = select.value;
   const errorHost = prepareFieldErrorHost(select);
-  clearLocalBootstrapPollTimer();
+  clearProvidersPanelPollTimer();
   localBootstrapPostStarted = false;
   providersData = providersData || {};
   try {
     providersData.local_availability = await loadLocalAvailability();
     populateLocalModelPicker(providersData);
-    syncLocalProgressRegion();
+    syncProviderModelRows();
+    await pollProvidersPanel();
+    syncProviderAutoFire();
+    syncProvidersPanelPolling();
     renderLocalCogitateStatus();
     showFieldStatus(select, 'saved');
   } catch (err) {
