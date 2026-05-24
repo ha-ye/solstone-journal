@@ -99,7 +99,39 @@ def test_link_join_dispatches_to_join_cli(monkeypatch: pytest.MonkeyPatch) -> No
     assert calls == [("http://receiver", "ABCD-EFGH", "observer", "laptop")]
 
 
-def test_link_help_lists_serve_and_join(capsys: pytest.CaptureFixture[str]) -> None:
+def test_link_list_dispatches_to_list_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    def fake_list(args) -> int:
+        calls.append((args.command, args.observers, args.json))
+        return 0
+
+    monkeypatch.setattr("solstone.think.link.list_cli.main", fake_list)
+
+    assert service.main(["list"]) == 0
+
+    assert calls == [("list", False, False)]
+
+
+def test_link_list_dispatches_flags_to_list_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    def fake_list(args) -> int:
+        calls.append((args.command, args.observers, args.json))
+        return 0
+
+    monkeypatch.setattr("solstone.think.link.list_cli.main", fake_list)
+
+    assert service.main(["list", "--observers", "--json"]) == 0
+
+    assert calls == [("list", True, True)]
+
+
+def test_link_help_lists_serve_join_and_list(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     with pytest.raises(SystemExit) as exc:
         service.main(["--help"])
 
@@ -107,3 +139,4 @@ def test_link_help_lists_serve_and_join(capsys: pytest.CaptureFixture[str]) -> N
     out = capsys.readouterr().out
     assert "serve" in out
     assert "join" in out
+    assert "list" in out

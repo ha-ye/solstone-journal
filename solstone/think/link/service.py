@@ -113,17 +113,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "-d", "--debug", action="store_true", help="Enable debug logging"
     )
     subparsers = parser.add_subparsers(
-        dest="command", metavar="{serve,join}", title="commands"
+        dest="command", metavar="{serve,join,list}", title="commands"
     )
     subparsers.add_parser("serve", help="start the link tunnel service")
 
-    from . import join_cli
+    from . import join_cli, list_cli
 
     join_parser = subparsers.add_parser(
         "join",
         help="join a solstone with a short code or pair link",
     )
     join_cli.add_arguments(join_parser)
+    list_parser = subparsers.add_parser(
+        "list",
+        help="list caller-side link bundles",
+    )
+    list_cli.add_arguments(list_parser)
     return parser
 
 
@@ -160,10 +165,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(parsed_argv)
     if args.command in (None, "serve"):
         return _run_service_command(args)
+    if args.command == "join":
+        from . import join_cli
 
-    from . import join_cli
+        return join_cli.main(args)
+    if args.command == "list":
+        from . import list_cli
 
-    return join_cli.main(args)
+        return list_cli.main(args)
+    return 0
 
 
 if __name__ == "__main__":
