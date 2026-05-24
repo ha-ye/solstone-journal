@@ -148,6 +148,9 @@ def register_ingest_routes(bp) -> None:
         sender_fingerprint = (
             g.journal_source["fingerprint"] if pair_mode == "pl" else None
         )
+        sender_instance_id = (
+            g.journal_source.get("peer_instance_id") if pair_mode == "pl" else None
+        )
 
         copied = 0
         skipped = 0
@@ -268,6 +271,8 @@ def register_ingest_routes(bp) -> None:
                 state_record: dict[str, Any] = {"files": file_records}
                 if sender_fingerprint is not None:
                     state_record["sender_fingerprint"] = sender_fingerprint
+                if sender_instance_id is not None:
+                    state_record["sender_instance_id"] = sender_instance_id
                 new_state.setdefault(day, {})[arc_key] = state_record
                 if action == "deconflicted":
                     original_arc_key = f"{stream}/{original_segment_key}"
@@ -285,6 +290,8 @@ def register_ingest_routes(bp) -> None:
                     entry["original_key"] = original_segment_key
                 if sender_fingerprint is not None:
                     entry["sender_fingerprint"] = sender_fingerprint
+                if sender_instance_id is not None:
+                    entry["sender_instance_id"] = sender_instance_id
                 _append_decision(log_path, entry)
 
                 if action == "copied":

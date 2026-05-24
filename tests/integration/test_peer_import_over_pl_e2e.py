@@ -10,12 +10,14 @@ from pathlib import Path
 import pytest
 import requests
 
+import solstone.think.utils as think_utils
 from solstone.think.link.client import (
     Client,
     ClientIdentity,
     EnrolledDevice,
     _build_csr,
 )
+from solstone.think.link.paths import LinkState
 from tests.link.live_helpers import running_convey_server
 
 pytestmark = pytest.mark.integration
@@ -25,12 +27,19 @@ def test_peer_segment_import_over_pl_roundtrip(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    sender_journal = tmp_path / "sender-journal"
+    sender_journal.mkdir()
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(sender_journal))
+    think_utils._journal_path_cache = None
+    sender_instance_id = LinkState.load_or_create().instance_id
+
     tmp_journal = tmp_path / "journal"
     tmp_journal.mkdir()
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_journal))
+    think_utils._journal_path_cache = None
 
     with running_convey_server(tmp_journal) as base_url:
-        identity = _pair_peer(base_url, "pytest-peer")
+        identity = _pair_peer(base_url, "pytest-peer", sender_instance_id)
         prefix = identity.fingerprint.replace("sha256:", "")[:16]
         body, content_type = _multipart_segment_body()
 
@@ -54,10 +63,15 @@ def test_peer_segment_import_over_pl_roundtrip(
         state_data["20260520"]["pytest-peer/120000_300"]["sender_fingerprint"]
         == identity.fingerprint
     )
+    assert (
+        state_data["20260520"]["pytest-peer/120000_300"]["sender_instance_id"]
+        == sender_instance_id
+    )
     assert log_entry["sender_fingerprint"] == identity.fingerprint
+    assert log_entry["sender_instance_id"] == sender_instance_id
 
 
-def _pair_peer(base_url: str, label: str) -> ClientIdentity:
+def _pair_peer(base_url: str, label: str, sender_instance_id: str) -> ClientIdentity:
     start = requests.post(
         f"{base_url}/app/link/pair-start",
         json={"device_label": label, "role": "peer"},
@@ -67,7 +81,12 @@ def _pair_peer(base_url: str, label: str) -> ClientIdentity:
     private_key_pem, csr_pem = _build_csr(label)
     paired = requests.post(
         f"{base_url}/app/link/pair",
-        json={"nonce": start.json()["nonce"], "csr": csr_pem, "device_label": label},
+        json={
+            "nonce": start.json()["nonce"],
+            "csr": csr_pem,
+            "device_label": label,
+            "sender_instance_id": sender_instance_id,
+        },
         timeout=10,
     )
     paired.raise_for_status()

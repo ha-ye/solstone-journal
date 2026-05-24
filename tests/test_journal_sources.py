@@ -240,6 +240,42 @@ def test_fingerprint_without_pl_pair_mode_rejected(journal_env):
     assert list_journal_sources() == []
 
 
+def test_pl_journal_source_with_peer_instance_id_loads(journal_env):
+    source = _pl_source(peer_instance_id="abc-123")
+
+    assert save_journal_source(source) is True
+
+    loaded = load_journal_source_by_fingerprint(FINGERPRINT)
+    assert loaded is not None
+    assert loaded["peer_instance_id"] == "abc-123"
+
+
+@pytest.mark.parametrize("peer_instance_id", ["", "x" * 257, 123])
+def test_invalid_peer_instance_id_records_rejected(journal_env, peer_instance_id):
+    source = _pl_source(peer_instance_id=peer_instance_id)
+
+    assert save_journal_source(source) is False
+    assert list_journal_sources() == []
+
+
+def test_peer_instance_id_on_dl_record_rejected(journal_env):
+    source = _source("alpha", generate_key(), created_at=123)
+    source["peer_instance_id"] = "abc-123"
+
+    assert save_journal_source(source) is False
+    assert list_journal_sources() == []
+
+
+def test_dl_journal_source_without_peer_instance_id_still_loads(journal_env):
+    source = _source("alpha", generate_key(), created_at=123)
+
+    assert save_journal_source(source) is True
+
+    loaded = load_journal_source(source["key"])
+    assert loaded is not None
+    assert "peer_instance_id" not in loaded
+
+
 def test_list_journal_sources(journal_env):
     first = _source("first", generate_key(), created_at=100)
     second = _source("second", generate_key(), created_at=300)

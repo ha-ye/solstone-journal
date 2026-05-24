@@ -131,7 +131,10 @@ def ingest_env(journal_env):
 
 @pytest.fixture
 def pl_ingest_env(journal_env):
-    source = _pl_source()
+    return _build_pl_ingest_env(journal_env, _pl_source())
+
+
+def _build_pl_ingest_env(journal_env, source: dict):
     save_journal_source(source)
     key_prefix = journal_source_state_prefix(source)
     create_state_directory(journal_env, key_prefix)
@@ -246,8 +249,12 @@ def test_ingest_new_segments(ingest_env):
     assert log_entries[0]["item_type"] == "segment"
     assert log_entries[0]["reason"] == "new segment"
     assert "sender_fingerprint" not in log_entries[0]
+    assert "sender_instance_id" not in log_entries[0]
     assert all(
         "sender_fingerprint" not in record for record in state_data["20260413"].values()
+    )
+    assert all(
+        "sender_instance_id" not in record for record in state_data["20260413"].values()
     )
 
 
@@ -362,9 +369,37 @@ def test_pl_ingest_stamps_sender_fingerprint(pl_ingest_env):
     state_data = _read_state(env["key_prefix"])
     state_record = state_data["20260413"]["laptop/143022_300"]
     assert state_record["sender_fingerprint"] == env["fingerprint"]
+    assert "sender_instance_id" not in state_record
 
     log_entries = _read_log(env["key_prefix"])
     assert log_entries[0]["sender_fingerprint"] == env["fingerprint"]
+    assert "sender_instance_id" not in log_entries[0]
+
+
+def test_pl_ingest_stamps_sender_instance_id(journal_env):
+    env = _build_pl_ingest_env(journal_env, _pl_source(peer_instance_id="abc-123"))
+    segments = [
+        {
+            "day": "20260413",
+            "stream": "laptop",
+            "segment_key": "143022_300",
+            "files": [("audio.flac", b"peer audio")],
+        }
+    ]
+
+    response = _post_pl_ingest(
+        env["client"], env["fingerprint"], env["key_prefix"], segments
+    )
+
+    assert response.status_code == 200
+    state_data = _read_state(env["key_prefix"])
+    state_record = state_data["20260413"]["laptop/143022_300"]
+    assert state_record["sender_fingerprint"] == env["fingerprint"]
+    assert state_record["sender_instance_id"] == "abc-123"
+
+    log_entries = _read_log(env["key_prefix"])
+    assert log_entries[0]["sender_fingerprint"] == env["fingerprint"]
+    assert log_entries[0]["sender_instance_id"] == "abc-123"
 
 
 def test_pl_ingest_deconfliction_stamps_all_arc_records(pl_ingest_env, monkeypatch):
@@ -399,6 +434,41 @@ def test_pl_ingest_deconfliction_stamps_all_arc_records(pl_ingest_env, monkeypat
         == env["fingerprint"]
     )
     assert _read_log(env["key_prefix"])[0]["sender_fingerprint"] == env["fingerprint"]
+
+
+def test_pl_ingest_deconfliction_stamps_all_sender_instance_id_records(
+    journal_env,
+    monkeypatch,
+):
+    env = _build_pl_ingest_env(journal_env, _pl_source(peer_instance_id="abc-123"))
+    target_dir = env["root"] / "chronicle" / "20260413" / "laptop" / "143022_300"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    (target_dir / "audio.flac").write_bytes(b"existing audio")
+    monkeypatch.setattr(
+        ingest, "find_available_segment", lambda _parent, _seg: "143023_300"
+    )
+    segments = [
+        {
+            "day": "20260413",
+            "stream": "laptop",
+            "segment_key": "143022_300",
+            "files": [("audio.flac", b"peer audio")],
+        }
+    ]
+
+    response = _post_pl_ingest(
+        env["client"], env["fingerprint"], env["key_prefix"], segments
+    )
+
+    assert response.status_code == 200
+    state_data = _read_state(env["key_prefix"])
+    assert (
+        state_data["20260413"]["laptop/143022_300"]["sender_instance_id"] == "abc-123"
+    )
+    assert (
+        state_data["20260413"]["laptop/143023_300"]["sender_instance_id"] == "abc-123"
+    )
+    assert _read_log(env["key_prefix"])[0]["sender_instance_id"] == "abc-123"
 
 
 def test_pl_ingest_wrong_url_prefix_returns_403(pl_ingest_env):

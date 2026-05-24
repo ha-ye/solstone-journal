@@ -49,6 +49,7 @@ from cryptography.x509.oid import NameOID
 from solstone.apps.link.copy import PAIR_LINK_HOST, PAIR_LINK_PATH
 from solstone.apps.link.crockford32 import decode as crockford_decode
 from solstone.apps.link.manual_code import normalize as normalize_manual_code
+from solstone.think.link.paths import LinkState
 from solstone.think.utils import get_journal
 
 VALID_ROLES = {"phone", "observer", "peer"}
@@ -108,6 +109,7 @@ def main(args: argparse.Namespace) -> int:
             "csr": csr_pem,
             "device_label": label,
         }
+        body["sender_instance_id"] = LinkState.load_or_create().instance_id
         try:
             response = _post_pair(pair_request.url, body)
         except ValueError as exc:

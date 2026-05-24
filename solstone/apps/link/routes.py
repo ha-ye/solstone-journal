@@ -89,6 +89,7 @@ from solstone.think.utils import get_journal
 
 logger = logging.getLogger(__name__)
 MANUAL_CODE_RE = re.compile(rf"^[0-9A-HJKMNP-TV-Z]{{{MANUAL_CODE_LEN}}}$")
+_SENDER_INSTANCE_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,256}$")
 VALID_ROLES = {"phone", "observer", "peer"}
 journal_sources = import_module("solstone.apps.import.journal_sources")
 create_state_directory = journal_sources.create_state_directory
@@ -311,6 +312,8 @@ def _complete_pairing(
     consumed: Nonce,
     csr_pem: str,
     device_label: str,
+    *,
+    sender_instance_id: str | None = None,
 ) -> tuple[dict[str, Any], str, str]:
     ca = load_or_generate_ca(ca_dir())
     client_cert_pem, fingerprint = sign_csr(ca, csr_pem, device_label)
@@ -339,6 +342,7 @@ def _complete_pairing(
                 fingerprint=fingerprint,
                 device_label=device_label,
                 paired_at=paired_at,
+                peer_instance_id=sender_instance_id,
             )
             create_state_directory(Path(get_journal()), journal_source_record_path.stem)
         if consumed.role == "observer":
@@ -417,6 +421,17 @@ def pair() -> Any:
             MISSING_REQUIRED_FIELD,
             detail="missing fields (nonce + csr required)",
         )
+    raw_sender_instance_id = body.get("sender_instance_id")
+    sender_instance_id: str | None = None
+    if raw_sender_instance_id is not None:
+        if not isinstance(
+            raw_sender_instance_id, str
+        ) or not _SENDER_INSTANCE_ID_RE.fullmatch(raw_sender_instance_id):
+            return error_response(
+                PAIRING_REQUEST_INVALID,
+                detail=f"bad sender_instance_id: {raw_sender_instance_id}",
+            )
+        sender_instance_id = raw_sender_instance_id
 
     consumed = _nonces().consume(nonce_value)
     if consumed is None:
@@ -432,6 +447,7 @@ def pair() -> Any:
             consumed,
             csr_pem,
             effective_label,
+            sender_instance_id=sender_instance_id,
         )
     except ValueError as exc:
         logger.info("pair: bad csr: %s", exc)
@@ -453,6 +469,17 @@ def by_code() -> Any:
             MISSING_REQUIRED_FIELD,
             detail="missing fields (code + csr required)",
         )
+    raw_sender_instance_id = body.get("sender_instance_id")
+    sender_instance_id: str | None = None
+    if raw_sender_instance_id is not None:
+        if not isinstance(
+            raw_sender_instance_id, str
+        ) or not _SENDER_INSTANCE_ID_RE.fullmatch(raw_sender_instance_id):
+            return error_response(
+                PAIRING_REQUEST_INVALID,
+                detail=f"bad sender_instance_id: {raw_sender_instance_id}",
+            )
+        sender_instance_id = raw_sender_instance_id
 
     canonical_code = normalize_manual_code(code)
     if not MANUAL_CODE_RE.fullmatch(canonical_code):
@@ -471,6 +498,7 @@ def by_code() -> Any:
             consumed,
             csr_pem,
             effective_label,
+            sender_instance_id=sender_instance_id,
         )
     except ValueError as exc:
         logger.info("by-code: bad csr: %s", exc)

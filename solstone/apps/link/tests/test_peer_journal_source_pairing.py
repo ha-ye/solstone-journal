@@ -39,11 +39,20 @@ def _start_pair(env, *, role: str, label: str = "Pair Device") -> dict:
     return response.get_json()
 
 
-def _pair(env, *, role: str, label: str = "Pair Device") -> dict:
+def _pair(
+    env,
+    *,
+    role: str,
+    label: str = "Pair Device",
+    sender_instance_id: object = None,
+) -> dict:
     started = _start_pair(env, role=role, label=label)
+    body = {"nonce": started["nonce"], "csr": _make_csr(label)}
+    if sender_instance_id is not None:
+        body["sender_instance_id"] = sender_instance_id
     response = env.client.post(
         "/app/link/pair",
-        json={"nonce": started["nonce"], "csr": _make_csr(label)},
+        json=body,
     )
     assert response.status_code == 200
     return response.get_json()
@@ -94,6 +103,7 @@ def test_peer_role_pairing_mints_journal_source_state_dir_and_authorized(
     assert source["pair_mode"] == "pl"
     assert source["fingerprint"] == response["fingerprint"]
     assert source["device_label"] == "Peer Laptop"
+    assert "peer_instance_id" not in source
     assert "key" not in source
     assert _state_dir(env, response["fingerprint"]).is_dir()
     assert (
@@ -104,6 +114,83 @@ def test_peer_role_pairing_mints_journal_source_state_dir_and_authorized(
     assert len(entries) == 1
     assert entries[0].fingerprint == response["fingerprint"]
     assert entries[0].role == "peer"
+
+
+def test_peer_role_pairing_records_sender_instance_id(link_env) -> None:
+    env = link_env()
+
+    response = _pair(
+        env, role="peer", label="Peer Laptop", sender_instance_id="abc-123"
+    )
+
+    source = journal_sources.load_journal_source_by_fingerprint(response["fingerprint"])
+    assert source is not None
+    assert source["peer_instance_id"] == "abc-123"
+
+
+def test_peer_role_by_code_pairing_records_sender_instance_id(link_env) -> None:
+    env = link_env()
+    started = _start_pair(env, role="peer", label="Peer Laptop")
+
+    response = env.client.post(
+        "/app/link/by-code",
+        json={
+            "code": started["manual_code"],
+            "csr": _make_csr("by-code-peer"),
+            "sender_instance_id": "abc-123",
+        },
+    )
+
+    assert response.status_code == 200
+    source = journal_sources.load_journal_source_by_fingerprint(
+        response.get_json()["fingerprint"]
+    )
+    assert source is not None
+    assert source["peer_instance_id"] == "abc-123"
+
+
+@pytest.mark.parametrize("sender_instance_id", ["", "x" * 257, 123])
+def test_peer_role_pairing_rejects_invalid_sender_instance_id(
+    link_env,
+    sender_instance_id: object,
+) -> None:
+    env = link_env()
+    started = _start_pair(env, role="peer", label="Peer Laptop")
+
+    response = env.client.post(
+        "/app/link/pair",
+        json={
+            "nonce": started["nonce"],
+            "csr": _make_csr("bad-sender-instance"),
+            "sender_instance_id": sender_instance_id,
+        },
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["reason_code"] == "pairing_request_invalid"
+    assert payload["detail"] == f"bad sender_instance_id: {sender_instance_id}"
+    assert _journal_source_paths(env) == []
+
+
+def test_by_code_pairing_rejects_invalid_sender_instance_id(link_env) -> None:
+    env = link_env()
+    started = _start_pair(env, role="peer", label="Peer Laptop")
+
+    response = env.client.post(
+        "/app/link/by-code",
+        json={
+            "code": started["manual_code"],
+            "csr": _make_csr("bad-sender-instance"),
+            "sender_instance_id": "abc/123",
+        },
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["reason_code"] == "pairing_request_invalid"
+    assert payload["detail"] == "bad sender_instance_id: abc/123"
+    assert _journal_source_paths(env) == []
 
 
 def test_phone_role_pairing_does_not_mint_journal_source(link_env) -> None:
@@ -135,6 +222,30 @@ def test_observer_role_pairing_mints_observer_not_journal_source(link_env) -> No
     entries = link_routes._authorized().snapshot()
     assert len(entries) == 1
     assert entries[0].role == "observer"
+
+
+def test_observer_role_pairing_validates_but_ignores_sender_instance_id(
+    link_env,
+) -> None:
+    env = link_env()
+
+    response = _pair(
+        env,
+        role="observer",
+        label="Observer Laptop",
+        sender_instance_id="abc-123",
+    )
+
+    observer = load_observer_by_fingerprint(response["fingerprint"])
+    assert observer is not None
+    assert "peer_instance_id" not in observer
+    assert (
+        journal_sources.load_journal_source_by_fingerprint(response["fingerprint"])
+        is None
+    )
+    entries = link_routes._authorized().snapshot()
+    assert len(entries) == 1
+    assert not hasattr(entries[0], "peer_instance_id")
 
 
 def test_peer_journal_source_mint_failure_does_not_add_authorized(

@@ -116,6 +116,34 @@ def test_observer_role_pairing_mints_observer_record_and_authorized_client(
     assert entries[0].role == "observer"
 
 
+def test_observer_role_pairing_ignores_sender_instance_id(pair_env) -> None:
+    env = pair_env()
+    started = _start_pair(env, role="observer", label="Observer Laptop")
+
+    response = env.client.post(
+        "/app/link/pair",
+        json={
+            "nonce": started["nonce"],
+            "csr": _make_csr("Observer Laptop"),
+            "sender_instance_id": "abc-123",
+        },
+    )
+
+    assert response.status_code == 200
+    fingerprint = response.get_json()["fingerprint"]
+    observer = load_observer_by_fingerprint(fingerprint)
+    assert observer is not None
+    assert "peer_instance_id" not in observer
+    entries = link_routes._authorized().snapshot()
+    assert len(entries) == 1
+    assert not hasattr(entries[0], "peer_instance_id")
+    journal_sources_dir = env.journal / "apps" / "import" / "journal_sources"
+    assert (
+        not journal_sources_dir.exists()
+        or list(journal_sources_dir.glob("*.json")) == []
+    )
+
+
 def test_phone_role_pairing_does_not_mint_observer_record(pair_env) -> None:
     env = pair_env()
 

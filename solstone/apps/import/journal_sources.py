@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 KEY_BYTES = 32
 STATE_AREAS = ("segments", "entities", "facets", "imports", "config")
 FINGERPRINT_RE = re.compile(r"^sha256:([a-f0-9]{64})$")
+_PEER_INSTANCE_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,256}$")
 
 
 def is_valid_journal_source_name(name: str) -> bool:
@@ -86,11 +87,28 @@ def _validate_journal_source_record(record: dict[str, Any], path: Path) -> dict 
     clean = _persistable_source(record)
     key = clean.get("key")
     fingerprint = clean.get("fingerprint")
+    peer_instance_id = clean.get("peer_instance_id")
     has_key = isinstance(key, str) and bool(key)
     has_fingerprint = isinstance(fingerprint, str) and bool(fingerprint)
     if has_key == has_fingerprint:
         logger.warning("Skipping invalid journal source record %s", path)
         return None
+
+    if peer_instance_id is not None:
+        if not isinstance(peer_instance_id, str) or not _PEER_INSTANCE_ID_RE.fullmatch(
+            peer_instance_id
+        ):
+            logger.warning(
+                "Skipping invalid journal source record %s: bad peer_instance_id",
+                path,
+            )
+            return None
+        if clean.get("pair_mode") != "pl":
+            logger.warning(
+                "Skipping invalid journal source record %s: peer_instance_id only valid for pl records",
+                path,
+            )
+            return None
 
     pair_mode = clean.get("pair_mode")
     if has_fingerprint:
@@ -265,7 +283,10 @@ def find_journal_source_by_name(name: str) -> dict | None:
 
 
 def mint_pl_journal_source_record(
-    fingerprint: str, device_label: str, paired_at: str
+    fingerprint: str,
+    device_label: str,
+    paired_at: str,
+    peer_instance_id: str | None = None,
 ) -> Path:
     prefix = _fingerprint_hex(fingerprint)[:16]
     sources_dir = get_journal_sources_dir()
@@ -289,6 +310,8 @@ def mint_pl_journal_source_record(
             "config_received": 0,
         },
     }
+    if peer_instance_id is not None:
+        record["peer_instance_id"] = peer_instance_id
     atomic_write(source_path, json.dumps(record, indent=2))
     os.chmod(source_path, 0o600)
     JournalSourceRegistry.singleton().invalidate()
