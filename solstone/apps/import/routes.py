@@ -48,6 +48,7 @@ from .journal_sources import (
     generate_key,
     get_state_directory,
     is_valid_journal_source_name,
+    journal_source_state_prefix,
     list_journal_sources,
     require_journal_source,
     save_journal_source,
@@ -934,10 +935,12 @@ def api_journal_source_list() -> Any:
     sources = list_journal_sources()
     result = []
     for s in sources:
+        if s.get("pair_mode") == "pl":
+            continue
         result.append(
             {
                 "name": s.get("name", ""),
-                "prefix": s.get("key", "")[:8],
+                "prefix": journal_source_state_prefix(s),
                 "status": "revoked" if s.get("revoked") else "active",
                 "created_at": s.get("created_at"),
             }
@@ -972,9 +975,11 @@ def api_journal_source_revoke(name: str) -> Any:
         app="import",
         facet=None,
         action="journal_source_revoke",
-        params={"name": name, "key_prefix": source["key"][:8]},
+        params={"name": name, "key_prefix": journal_source_state_prefix(source)},
     )
-    return jsonify({"name": name, "prefix": source["key"][:8], "revoked": True})
+    return jsonify(
+        {"name": name, "prefix": journal_source_state_prefix(source), "revoked": True}
+    )
 
 
 @import_bp.route("/api/journal-sources/<name>/status")
@@ -986,11 +991,10 @@ def api_journal_source_status(name: str) -> Any:
             status=404,
             detail=f"Journal source '{name}' not found",
         )
-    key = source.get("key", "")
     return jsonify(
         {
             "name": source.get("name", ""),
-            "prefix": key[:8],
+            "prefix": journal_source_state_prefix(source),
             "status": "revoked" if source.get("revoked") else "active",
             "created_at": source.get("created_at"),
             "revoked": source.get("revoked", False),
@@ -1003,7 +1007,7 @@ def api_journal_source_status(name: str) -> Any:
 @import_bp.route("/journal/<key_prefix>/manifest/<area>")
 @require_journal_source
 def journal_source_manifest(key_prefix: str, area: str) -> Any:
-    if g.journal_source["key"][:8] != key_prefix:
+    if journal_source_state_prefix(g.journal_source) != key_prefix:
         # PROTOCOL-ONLY: journal-source key mismatch from non-owner clients.
         abort(403, description="Key prefix mismatch")
     if area not in STATE_AREAS:

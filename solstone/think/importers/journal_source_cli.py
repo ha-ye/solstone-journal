@@ -36,6 +36,18 @@ def _journal_sources():
     return import_module("solstone.apps.import.journal_sources")
 
 
+def _source_prefix(source: dict) -> str:
+    return str(_journal_sources().journal_source_state_prefix(source))
+
+
+def _dl_journal_sources() -> list[dict]:
+    return [
+        source
+        for source in _journal_sources().list_journal_sources()
+        if source.get("pair_mode") != "pl"
+    ]
+
+
 def cmd_create(args: argparse.Namespace) -> int:
     from solstone.apps.utils import log_app_action
 
@@ -91,8 +103,7 @@ def cmd_create(args: argparse.Namespace) -> int:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
-    journal_sources = _journal_sources()
-    sources = journal_sources.list_journal_sources()
+    sources = _dl_journal_sources()
 
     if args.json_output:
         print(
@@ -100,7 +111,7 @@ def cmd_list(args: argparse.Namespace) -> int:
                 [
                     {
                         "name": source.get("name", ""),
-                        "prefix": source.get("key", "")[:8],
+                        "prefix": _source_prefix(source),
                         "status": "revoked" if source.get("revoked") else "active",
                         "created_at": source.get("created_at"),
                     }
@@ -119,7 +130,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     for source in sources:
         print(
             f"{source.get('name', ''):<24} "
-            f"{source.get('key', '')[:8]:<10} "
+            f"{_source_prefix(source):<10} "
             f"{('revoked' if source.get('revoked') else 'active'):<10} "
             f"{_fmt_time(source.get('created_at')):<18}"
         )
@@ -133,8 +144,7 @@ def _status_single(name: str, *, json_output: bool = False) -> int:
         print(f"Error: journal source '{name}' not found", file=sys.stderr)
         return 1
 
-    key = source.get("key", "")
-    prefix = key[:8]
+    prefix = _source_prefix(source)
     status = "revoked" if source.get("revoked") else "active"
     state_dir = str(Path(get_journal()) / "imports" / prefix)
     stats = source.get("stats", {})
@@ -173,8 +183,7 @@ def _status_single(name: str, *, json_output: bool = False) -> int:
 
 
 def _status_all(*, json_output: bool = False) -> int:
-    journal_sources = _journal_sources()
-    sources = journal_sources.list_journal_sources()
+    sources = _dl_journal_sources()
 
     if json_output:
         print(
@@ -182,12 +191,12 @@ def _status_all(*, json_output: bool = False) -> int:
                 [
                     {
                         "name": source.get("name", ""),
-                        "prefix": source.get("key", "")[:8],
+                        "prefix": _source_prefix(source),
                         "status": "revoked" if source.get("revoked") else "active",
                         "created_at": source.get("created_at"),
                         "stats": source.get("stats", {}),
                         "state_dir": str(
-                            Path(get_journal()) / "imports" / source.get("key", "")[:8]
+                            Path(get_journal()) / "imports" / _source_prefix(source)
                         ),
                     }
                     for source in sources
@@ -239,7 +248,7 @@ def cmd_revoke(args: argparse.Namespace) -> int:
         return 1
 
     name = source.get("name", "")
-    prefix = source.get("key", "")[:8]
+    prefix = _source_prefix(source)
     source["revoked"] = True
     source["revoked_at"] = now_ms()
 

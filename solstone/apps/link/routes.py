@@ -32,6 +32,8 @@ import logging
 import re
 import socket
 from dataclasses import asdict, dataclass
+from importlib import import_module
+from pathlib import Path
 from typing import Any
 
 from cryptography.hazmat.primitives import serialization
@@ -83,10 +85,14 @@ from solstone.think.link.paths import (
     nonces_path,
     relay_url,
 )
+from solstone.think.utils import get_journal
 
 logger = logging.getLogger(__name__)
 MANUAL_CODE_RE = re.compile(rf"^[0-9A-HJKMNP-TV-Z]{{{MANUAL_CODE_LEN}}}$")
 VALID_ROLES = {"phone", "observer", "peer"}
+journal_sources = import_module("solstone.apps.import.journal_sources")
+create_state_directory = journal_sources.create_state_directory
+mint_pl_journal_source_record = journal_sources.mint_pl_journal_source_record
 
 link_bp = Blueprint(
     "app:link",
@@ -326,14 +332,21 @@ def _complete_pairing(
         response["local_endpoints"] = [endpoint_to_dict(ep) for ep in endpoints]
 
     observer_record_path = None
-    if consumed.role == "observer":
-        observer_record_path = mint_pl_observer_record(
-            fingerprint=fingerprint,
-            device_label=device_label,
-            paired_at=paired_at,
-        )
-
+    journal_source_record_path = None
     try:
+        if consumed.role == "peer":
+            journal_source_record_path = mint_pl_journal_source_record(
+                fingerprint=fingerprint,
+                device_label=device_label,
+                paired_at=paired_at,
+            )
+            create_state_directory(Path(get_journal()), journal_source_record_path.stem)
+        if consumed.role == "observer":
+            observer_record_path = mint_pl_observer_record(
+                fingerprint=fingerprint,
+                device_label=device_label,
+                paired_at=paired_at,
+            )
         _authorized().add(
             fingerprint=fingerprint,
             device_label=device_label,
@@ -345,6 +358,11 @@ def _complete_pairing(
         if observer_record_path is not None:
             try:
                 observer_record_path.unlink()
+            except FileNotFoundError:
+                pass
+        if journal_source_record_path is not None:
+            try:
+                journal_source_record_path.unlink()
             except FileNotFoundError:
                 pass
         raise

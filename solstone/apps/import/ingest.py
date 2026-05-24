@@ -42,6 +42,7 @@ from solstone.think.utils import DEFAULT_STREAM, STREAM_RE, day_path
 
 from .journal_sources import (
     get_state_directory,
+    journal_source_state_prefix,
     require_journal_source,
     save_journal_source,
 )
@@ -115,7 +116,7 @@ def register_ingest_routes(bp) -> None:
     @bp.route("/journal/<key_prefix>/ingest/segments", methods=["POST"])
     @require_journal_source
     def ingest_segments(key_prefix: str):
-        if g.journal_source["key"][:8] != key_prefix:
+        if journal_source_state_prefix(g.journal_source) != key_prefix:
             abort(403, description="Key prefix mismatch")
 
         metadata_raw = request.form.get("metadata")
@@ -143,6 +144,10 @@ def register_ingest_routes(bp) -> None:
             )
 
         log_path = get_state_directory(key_prefix) / "segments" / "log.jsonl"
+        pair_mode = g.journal_source.get("pair_mode")
+        sender_fingerprint = (
+            g.journal_source["fingerprint"] if pair_mode == "pl" else None
+        )
 
         copied = 0
         skipped = 0
@@ -260,12 +265,13 @@ def register_ingest_routes(bp) -> None:
                     }
                     for name in expected_names
                 ]
-                new_state.setdefault(day, {})[arc_key] = {"files": file_records}
+                state_record: dict[str, Any] = {"files": file_records}
+                if sender_fingerprint is not None:
+                    state_record["sender_fingerprint"] = sender_fingerprint
+                new_state.setdefault(day, {})[arc_key] = state_record
                 if action == "deconflicted":
                     original_arc_key = f"{stream}/{original_segment_key}"
-                    new_state.setdefault(day, {})[original_arc_key] = {
-                        "files": file_records
-                    }
+                    new_state.setdefault(day, {})[original_arc_key] = dict(state_record)
 
                 entry = {
                     "ts": datetime.now(timezone.utc).isoformat(),
@@ -277,6 +283,8 @@ def register_ingest_routes(bp) -> None:
                 }
                 if action == "deconflicted":
                     entry["original_key"] = original_segment_key
+                if sender_fingerprint is not None:
+                    entry["sender_fingerprint"] = sender_fingerprint
                 _append_decision(log_path, entry)
 
                 if action == "copied":
@@ -333,7 +341,7 @@ def register_ingest_routes(bp) -> None:
     @bp.route("/journal/<key_prefix>/ingest/entities", methods=["POST"])
     @require_journal_source
     def ingest_entities(key_prefix: str):
-        if g.journal_source["key"][:8] != key_prefix:
+        if journal_source_state_prefix(g.journal_source) != key_prefix:
             abort(403, description="Key prefix mismatch")
 
         payload = request.get_json(silent=True)
@@ -640,7 +648,7 @@ def register_ingest_routes(bp) -> None:
     @bp.route("/journal/<key_prefix>/ingest/facets", methods=["POST"])
     @require_journal_source
     def ingest_facets(key_prefix: str):
-        if g.journal_source["key"][:8] != key_prefix:
+        if journal_source_state_prefix(g.journal_source) != key_prefix:
             abort(403, description="Key prefix mismatch")
 
         metadata_raw = request.form.get("metadata")
@@ -794,7 +802,7 @@ def register_ingest_routes(bp) -> None:
     @bp.route("/journal/<key_prefix>/ingest/imports", methods=["POST"])
     @require_journal_source
     def ingest_imports(key_prefix: str):
-        if g.journal_source["key"][:8] != key_prefix:
+        if journal_source_state_prefix(g.journal_source) != key_prefix:
             abort(403, description="Key prefix mismatch")
 
         payload = request.get_json(silent=True)
@@ -958,7 +966,7 @@ def register_ingest_routes(bp) -> None:
     @bp.route("/journal/<key_prefix>/ingest/config", methods=["POST"])
     @require_journal_source
     def ingest_config(key_prefix: str):
-        if g.journal_source["key"][:8] != key_prefix:
+        if journal_source_state_prefix(g.journal_source) != key_prefix:
             abort(403, description="Key prefix mismatch")
 
         payload = request.get_json(silent=True)

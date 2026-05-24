@@ -8,9 +8,10 @@ from importlib import import_module
 from io import BytesIO
 
 import pytest
-from flask import Blueprint, Flask
+from flask import Blueprint, Flask, g, request
 
 import solstone.convey.state as convey_state
+from solstone.convey.secure_listener import ConveyIdentity
 from solstone.observe.utils import compute_bytes_sha256
 
 journal_sources = import_module("solstone.apps.import.journal_sources")
@@ -19,9 +20,12 @@ ingest = import_module("solstone.apps.import.ingest")
 create_state_directory = journal_sources.create_state_directory
 generate_key = journal_sources.generate_key
 get_state_directory = journal_sources.get_state_directory
+journal_source_state_prefix = journal_sources.journal_source_state_prefix
 load_journal_source = journal_sources.load_journal_source
 save_journal_source = journal_sources.save_journal_source
 register_ingest_routes = ingest.register_ingest_routes
+
+FINGERPRINT = "sha256:" + "c" * 64
 
 
 @pytest.fixture
@@ -57,6 +61,54 @@ def _source(name="test-source", key=None, **overrides):
     return source
 
 
+def _pl_source(fingerprint=FINGERPRINT, **overrides):
+    source = {
+        "pair_mode": "pl",
+        "fingerprint": fingerprint,
+        "device_label": "peer laptop",
+        "paired_at": "2026-05-20T00:00:00Z",
+        "created_at": 1000,
+        "enabled": True,
+        "revoked": False,
+        "revoked_at": None,
+        "stats": {
+            "segments_received": 0,
+            "entities_received": 0,
+            "facets_received": 0,
+            "imports_received": 0,
+            "config_received": 0,
+        },
+    }
+    source.update(overrides)
+    return source
+
+
+def _pl_identity(fingerprint=FINGERPRINT) -> ConveyIdentity:
+    return ConveyIdentity(
+        mode="pl-direct",
+        fingerprint=fingerprint,
+        device_label="peer laptop",
+        paired_at="2026-05-20T00:00:00Z",
+        session_id="session-1",
+    )
+
+
+def _register_app() -> Flask:
+    app = Flask(__name__)
+    app.config["TESTING"] = True
+
+    @app.before_request
+    def stamp_identity():
+        stamped = request.environ.get("pl.identity")
+        if stamped is not None:
+            g.identity = stamped
+
+    bp = Blueprint("import-test", __name__, url_prefix="/app/import")
+    register_ingest_routes(bp)
+    app.register_blueprint(bp)
+    return app
+
+
 @pytest.fixture
 def ingest_env(journal_env):
     """Set up a source and create an app with the ingest route."""
@@ -66,15 +118,28 @@ def ingest_env(journal_env):
     key_prefix = key[:8]
     create_state_directory(journal_env, key_prefix)
 
-    app = Flask(__name__)
-    app.config["TESTING"] = True
-    bp = Blueprint("import-test", __name__, url_prefix="/app/import")
-    register_ingest_routes(bp)
-    app.register_blueprint(bp)
+    app = _register_app()
 
     return {
         "root": journal_env,
         "key": key,
+        "key_prefix": key_prefix,
+        "source": source,
+        "client": app.test_client(),
+    }
+
+
+@pytest.fixture
+def pl_ingest_env(journal_env):
+    source = _pl_source()
+    save_journal_source(source)
+    key_prefix = journal_source_state_prefix(source)
+    create_state_directory(journal_env, key_prefix)
+    app = _register_app()
+
+    return {
+        "root": journal_env,
+        "fingerprint": source["fingerprint"],
         "key_prefix": key_prefix,
         "source": source,
         "client": app.test_client(),
@@ -106,6 +171,15 @@ def _post_ingest(client, key, key_prefix, segments):
     return client.post(
         f"/app/import/journal/{key_prefix}/ingest/segments",
         headers={"Authorization": f"Bearer {key}"},
+        data=_build_ingest_payload(segments),
+        content_type="multipart/form-data",
+    )
+
+
+def _post_pl_ingest(client, fingerprint, key_prefix, segments):
+    return client.post(
+        f"/app/import/journal/{key_prefix}/ingest/segments",
+        environ_overrides={"pl.identity": _pl_identity(fingerprint)},
         data=_build_ingest_payload(segments),
         content_type="multipart/form-data",
     )
@@ -171,6 +245,10 @@ def test_ingest_new_segments(ingest_env):
     assert log_entries[0]["item_id"] == "20260413/laptop/143022_300"
     assert log_entries[0]["item_type"] == "segment"
     assert log_entries[0]["reason"] == "new segment"
+    assert "sender_fingerprint" not in log_entries[0]
+    assert all(
+        "sender_fingerprint" not in record for record in state_data["20260413"].values()
+    )
 
 
 def test_ingest_duplicate_detection(ingest_env):
@@ -263,6 +341,80 @@ def test_ingest_deconfliction(ingest_env, monkeypatch):
     assert log_entries[0]["action"] == "deconflicted"
     assert log_entries[0]["original_key"] == "143022_300"
     assert log_entries[0]["item_id"] == "20260413/laptop/143023_300"
+
+
+def test_pl_ingest_stamps_sender_fingerprint(pl_ingest_env):
+    env = pl_ingest_env
+    segments = [
+        {
+            "day": "20260413",
+            "stream": "laptop",
+            "segment_key": "143022_300",
+            "files": [("audio.flac", b"peer audio")],
+        }
+    ]
+
+    response = _post_pl_ingest(
+        env["client"], env["fingerprint"], env["key_prefix"], segments
+    )
+
+    assert response.status_code == 200
+    state_data = _read_state(env["key_prefix"])
+    state_record = state_data["20260413"]["laptop/143022_300"]
+    assert state_record["sender_fingerprint"] == env["fingerprint"]
+
+    log_entries = _read_log(env["key_prefix"])
+    assert log_entries[0]["sender_fingerprint"] == env["fingerprint"]
+
+
+def test_pl_ingest_deconfliction_stamps_all_arc_records(pl_ingest_env, monkeypatch):
+    env = pl_ingest_env
+    target_dir = env["root"] / "chronicle" / "20260413" / "laptop" / "143022_300"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    (target_dir / "audio.flac").write_bytes(b"existing audio")
+    monkeypatch.setattr(
+        ingest, "find_available_segment", lambda _parent, _seg: "143023_300"
+    )
+    segments = [
+        {
+            "day": "20260413",
+            "stream": "laptop",
+            "segment_key": "143022_300",
+            "files": [("audio.flac", b"peer audio")],
+        }
+    ]
+
+    response = _post_pl_ingest(
+        env["client"], env["fingerprint"], env["key_prefix"], segments
+    )
+
+    assert response.status_code == 200
+    state_data = _read_state(env["key_prefix"])
+    assert (
+        state_data["20260413"]["laptop/143022_300"]["sender_fingerprint"]
+        == env["fingerprint"]
+    )
+    assert (
+        state_data["20260413"]["laptop/143023_300"]["sender_fingerprint"]
+        == env["fingerprint"]
+    )
+    assert _read_log(env["key_prefix"])[0]["sender_fingerprint"] == env["fingerprint"]
+
+
+def test_pl_ingest_wrong_url_prefix_returns_403(pl_ingest_env):
+    env = pl_ingest_env
+    segments = [
+        {
+            "day": "20260413",
+            "stream": "laptop",
+            "segment_key": "143022_300",
+            "files": [("audio.flac", b"peer audio")],
+        }
+    ]
+
+    response = _post_pl_ingest(env["client"], env["fingerprint"], "deadbeef", segments)
+
+    assert response.status_code == 403
 
 
 def test_ingest_batch_error_isolation(ingest_env):

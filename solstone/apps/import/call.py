@@ -53,6 +53,7 @@ _categorize_field = ingest._categorize_field
 _write_state_atomic = ingest._write_state_atomic
 find_journal_source_by_name = journal_sources.find_journal_source_by_name
 get_state_directory = journal_sources.get_state_directory
+journal_source_state_prefix = journal_sources.journal_source_state_prefix
 
 
 def _fail(message: str) -> None:
@@ -68,11 +69,10 @@ def _resolve_source(name: str) -> tuple[dict, str, Path]:
             "~/.local/share/solstone/app-storage/import/journal_sources/."
         )
 
-    key = source.get("key")
-    if not isinstance(key, str) or len(key) < 8:
-        _fail(f"Import source '{name}' has an invalid key.")
-
-    key_prefix = key[:8]
+    try:
+        key_prefix = journal_source_state_prefix(source)
+    except ValueError as exc:
+        _fail(f"Import source '{name}' has an invalid state prefix: {exc}")
     state_dir = get_state_directory(key_prefix)
     return source, key_prefix, state_dir
 
