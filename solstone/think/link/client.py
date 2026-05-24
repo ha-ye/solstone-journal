@@ -54,14 +54,11 @@ from solstone.convey.secure_listener.framing import (
     parse_window_credit,
 )
 from solstone.think.link.ca import cert_fingerprint
+from solstone.think.link.tls import TlsError as _TlsError
 
 LOG = logging.getLogger(__name__)
 _CONNECT_TIMEOUT_SECONDS = 15
 _HTTP_TIMEOUT_SECONDS = 30
-
-
-class TlsError(RuntimeError):
-    """Raised when the client-side TLS handshake or tunnel aborts."""
 
 
 class StreamResetError(ConnectionError):
@@ -598,7 +595,7 @@ async def _open_tunnel_session(
                 timeout=_CONNECT_TIMEOUT_SECONDS,
             )
             if inbound is None:
-                raise TlsError("transport closed during TLS handshake")
+                raise _TlsError("transport closed during TLS handshake")
             outbound, plaintext = _drive_tls_client(tls, inbound=inbound)
             if outbound:
                 await transport.send(outbound)
@@ -692,7 +689,7 @@ def _drive_tls_client(
         except SSL.WantReadError:
             pass
         except SSL.Error as exc:
-            raise TlsError(f"send failed: {exc}") from exc
+            raise _TlsError(f"send failed: {exc}") from exc
 
     if not state.handshake_done:
         try:
@@ -701,7 +698,7 @@ def _drive_tls_client(
         except SSL.WantReadError:
             pass
         except SSL.Error as exc:
-            raise TlsError(f"handshake failed: {exc}") from exc
+            raise _TlsError(f"handshake failed: {exc}") from exc
 
     plaintext_in = bytearray()
     if state.handshake_done:
@@ -713,7 +710,7 @@ def _drive_tls_client(
             except SSL.ZeroReturnError:
                 break
             except SSL.Error as exc:
-                raise TlsError(f"recv failed: {exc}") from exc
+                raise _TlsError(f"recv failed: {exc}") from exc
             if not chunk:
                 break
             plaintext_in.extend(chunk)
@@ -871,7 +868,6 @@ __all__ = [
     "EncryptedTransport",
     "EnrolledDevice",
     "StreamResetError",
-    "TlsError",
     "TunnelSession",
     "_http_request_bytes",
 ]

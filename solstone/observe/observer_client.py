@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -20,15 +19,10 @@ import requests
 from urllib3.filepost import encode_multipart_formdata
 
 from solstone.apps.observer.routes import OBSERVER_CALLOSUM_SSE_ROUTE
-from solstone.think.link.ca import cert_fingerprint
-from solstone.think.link.client import (
-    Client,
-    ClientIdentity,
-    EnrolledDevice,
-    StreamResetError,
-    TlsError,
-    TunnelSession,
-)
+from solstone.think.link.bundle import load_client_identity
+from solstone.think.link.client import StreamResetError
+from solstone.think.link.dialer import TunnelClient, TunnelRequestError
+from solstone.think.link.tls import TlsError
 from solstone.think.utils import get_config, get_journal, read_service_port
 
 logger = logging.getLogger(__name__)
@@ -39,13 +33,6 @@ MAX_RETRIES = 3
 UPLOAD_TIMEOUT = 300
 EVENT_TIMEOUT = 30
 CALLOSUM_RECONNECT_BACKOFF = [1, 2, 4, 8, 16, 30]
-PL_BUNDLE_FILES = {
-    "private.pem",
-    "cert.pem",
-    "chain.pem",
-    "home_attestation.jwt",
-    "peer.json",
-}
 
 
 class UploadResult(NamedTuple):
@@ -63,51 +50,6 @@ def _spl_bundle_dir(label: str) -> Path:
     config_home = os.environ.get("XDG_CONFIG_HOME")
     root = Path(config_home) if config_home else Path.home() / ".config"
     return root / "solstone-observer" / "spl" / label
-
-
-def _load_pl_identity(label: str) -> ClientIdentity:
-    bundle_dir = _spl_bundle_dir(label)
-    if not bundle_dir.is_dir():
-        raise ValueError(f"observe.observer.spl_label bundle not found: {bundle_dir}")
-
-    missing = sorted(
-        name for name in PL_BUNDLE_FILES if not (bundle_dir / name).exists()
-    )
-    if missing:
-        raise ValueError(
-            "observe.observer.spl_label bundle missing required file(s): "
-            + ", ".join(missing)
-        )
-
-    private_key_pem = (bundle_dir / "private.pem").read_text(encoding="utf-8")
-    client_cert_pem = (bundle_dir / "cert.pem").read_text(encoding="utf-8")
-    ca_chain_pem = (bundle_dir / "chain.pem").read_text(encoding="utf-8")
-    home_attestation = (bundle_dir / "home_attestation.jwt").read_text(encoding="utf-8")
-    try:
-        peer = json.loads((bundle_dir / "peer.json").read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"invalid peer.json in {bundle_dir}: {exc}") from exc
-
-    local_endpoints = peer.get("local_endpoints") or ()
-    if not isinstance(local_endpoints, list):
-        raise ValueError("peer.json local_endpoints must be a list")
-
-    return ClientIdentity(
-        private_key_pem=private_key_pem,
-        client_cert_pem=client_cert_pem,
-        ca_chain_pem=ca_chain_pem,
-        fingerprint=cert_fingerprint(client_cert_pem),
-        home_instance_id=str(peer.get("instance_id") or ""),
-        home_label=str(peer.get("home_label") or ""),
-        home_attestation=home_attestation,
-        local_endpoints=tuple(local_endpoints),
-    )
-
-
-def _endpoint_label(endpoint: dict[str, object]) -> str:
-    host = str(endpoint.get("ip") or endpoint.get("host") or "?")
-    port = endpoint.get("port") or 7657
-    return f"lan-direct {host}:{port}"
 
 
 def cleanup_draft(draft_dir: str) -> None:
@@ -181,13 +123,9 @@ class ObserverClient:
         self._callosum_stop = threading.Event()
         self._callosum_response: requests.Response | None = None
         self._callosum_error: Exception | None = None
-        self._pl_loop: asyncio.AbstractEventLoop | None = None
-        self._pl_loop_thread: threading.Thread | None = None
-        self._pl_session: TunnelSession | None = None
-        self._pl_session_lock: asyncio.Lock | None = None
-        self._pl_identity: ClientIdentity | None = None
-        self._pl_relay_url: str | None = None
-        self._pl_enrolled: EnrolledDevice | None = None
+        self._tunnel: TunnelClient | None = None
+        self._spl_label: str | None = None
+        self._spl_relay_url: str | None = None
         self._pl_fingerprint_prefix: str | None = None
 
         if self._pair_mode == "pl":
@@ -206,11 +144,8 @@ class ObserverClient:
                 raise ValueError(
                     "observe.observer.spl_relay_url is required when pair_mode=pl"
                 )
-            self._pl_identity = _load_pl_identity(spl_label)
-            self._pl_relay_url = spl_relay_url.rstrip("/")
-            self._pl_fingerprint_prefix = self._pl_identity.fingerprint.replace(
-                "sha256:", ""
-            )[:16]
+            self._spl_label = spl_label
+            self._spl_relay_url = spl_relay_url.rstrip("/")
             self._auto_register = False
 
     def _persist_key(self, key: str) -> None:
@@ -282,53 +217,17 @@ class ObserverClient:
                 time.sleep(delay)
         logger.error(f"Registration failed after {MAX_RETRIES} attempts")
 
-    def _ensure_pl_loop(self) -> asyncio.AbstractEventLoop:
-        if self._pl_loop is not None and self._pl_loop.is_running():
-            return self._pl_loop
+    def _pl_tunnel(self) -> TunnelClient:
+        if self._tunnel is not None:
+            return self._tunnel
+        if self._spl_label is None or self._spl_relay_url is None:
+            raise TlsError("PL identity not configured")
+        identity = load_client_identity(_spl_bundle_dir(self._spl_label))
+        self._pl_fingerprint_prefix = identity.fingerprint.replace("sha256:", "")[:16]
+        self._tunnel = TunnelClient(identity, self._spl_relay_url)
+        return self._tunnel
 
-        loop = asyncio.new_event_loop()
-        ready = threading.Event()
-
-        def run_loop() -> None:
-            asyncio.set_event_loop(loop)
-            self._pl_session_lock = asyncio.Lock()
-            ready.set()
-            loop.run_forever()
-
-        thread = threading.Thread(
-            target=run_loop,
-            name=f"observer-pl-{self._name}",
-            daemon=True,
-        )
-        thread.start()
-        ready.wait()
-        self._pl_loop = loop
-        self._pl_loop_thread = thread
-        return loop
-
-    def _run_pl(self, coro):
-        loop = self._ensure_pl_loop()
-        future = asyncio.run_coroutine_threadsafe(coro, loop)
-        return future.result()
-
-    async def _get_pl_session(self) -> TunnelSession:
-        if self._pl_identity is None:
-            raise TlsError("PL identity not loaded")
-        if self._pl_session_lock is None:
-            self._pl_session_lock = asyncio.Lock()
-        async with self._pl_session_lock:
-            if self._pl_session is not None:
-                return self._pl_session
-            self._pl_session = await self._open_tunnel()
-            return self._pl_session
-
-    async def _close_pl_session(self) -> None:
-        session = self._pl_session
-        self._pl_session = None
-        if session is not None:
-            await session.close()
-
-    async def _pl_request(
+    def _pl_request(
         self,
         method: str,
         path: str,
@@ -336,82 +235,16 @@ class ObserverClient:
         headers: dict[str, str] | None = None,
         body: bytes = b"",
     ) -> PlRequestResult:
-        session = await self._get_pl_session()
         try:
-            status, response_headers, response_body = await session.request(
+            status, response_headers, response_body = self._pl_tunnel().request(
                 method,
                 path,
                 headers=headers,
                 body=body,
             )
             return PlRequestResult(status, response_headers, response_body)
-        except (ConnectionError, OSError, StreamResetError):
-            await self._close_pl_session()
+        except TunnelRequestError:
             raise
-
-    async def _open_tunnel(self) -> TunnelSession:
-        if self._pl_identity is None:
-            raise TlsError("PL identity not loaded")
-
-        attempts: list[tuple[str, Any]] = []
-        for endpoint in self._pl_identity.local_endpoints:
-            label = _endpoint_label(endpoint)
-            attempts.append((label, self._dial_direct_endpoint(endpoint)))
-        if self._pl_relay_url:
-            attempts.append(("spl-relay", self._dial_relay()))
-        if not attempts:
-            raise TlsError("no PL dial attempts configured")
-
-        tasks = {asyncio.create_task(coro): label for label, coro in attempts}
-        pending = set(tasks)
-        failures: dict[str, BaseException] = {}
-
-        while pending:
-            done, pending = await asyncio.wait(
-                pending,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for task in done:
-                label = tasks[task]
-                try:
-                    session = task.result()
-                except BaseException as exc:
-                    failures[label] = exc
-                    continue
-                for loser in pending:
-                    loser.cancel()
-                if pending:
-                    await asyncio.gather(*pending, return_exceptions=True)
-                return session
-
-        detail = "; ".join(
-            f"{label}: {type(exc).__name__}: {exc}" for label, exc in failures.items()
-        )
-        raise TlsError(f"all PL dial attempts failed: {detail}")
-
-    async def _dial_direct_endpoint(self, endpoint: dict[str, object]) -> TunnelSession:
-        if self._pl_identity is None:
-            raise TlsError("PL identity not loaded")
-        host = str(endpoint.get("ip") or endpoint.get("host") or "").strip()
-        if not host:
-            raise TlsError("LAN endpoint missing ip")
-        port_value = endpoint.get("port") or 7657
-        try:
-            port = int(port_value)
-        except (TypeError, ValueError) as exc:
-            raise TlsError(f"LAN endpoint has invalid port: {port_value!r}") from exc
-        enrolled = EnrolledDevice(device_token="", identity=self._pl_identity)
-        return await Client.dial_direct(host, enrolled, port=port)
-
-    async def _dial_relay(self) -> TunnelSession:
-        if self._pl_identity is None or self._pl_relay_url is None:
-            raise TlsError("PL relay is not configured")
-        if self._pl_enrolled is None:
-            self._pl_enrolled = Client.enroll_device(
-                self._pl_relay_url,
-                self._pl_identity,
-            )
-        return await Client.dial(self._pl_relay_url, self._pl_enrolled)
 
     def upload_segment(
         self,
@@ -544,13 +377,11 @@ class ObserverClient:
                     return UploadResult(False)
 
                 body, content_type = encode_multipart_formdata(fields)
-                result = self._run_pl(
-                    self._pl_request(
-                        "POST",
-                        "/app/observer/ingest",
-                        headers={"Content-Type": content_type},
-                        body=body,
-                    )
+                result = self._pl_request(
+                    "POST",
+                    "/app/observer/ingest",
+                    headers={"Content-Type": content_type},
+                    body=body,
                 )
 
                 if result.status == 200:
@@ -568,7 +399,13 @@ class ObserverClient:
                     result.status,
                     result.body.decode("utf-8", errors="replace"),
                 )
-            except (ConnectionError, OSError, StreamResetError, TlsError) as exc:
+            except (
+                ConnectionError,
+                OSError,
+                StreamResetError,
+                TlsError,
+                TunnelRequestError,
+            ) as exc:
                 logger.warning("PL upload attempt %s failed: %s", attempt + 1, exc)
             if attempt < len(RETRY_BACKOFF) - 1:
                 time.sleep(delay)
@@ -607,13 +444,11 @@ class ObserverClient:
         payload = {"tract": tract, "event": event, **fields}
         body = json.dumps(payload).encode("utf-8")
         try:
-            result = self._run_pl(
-                self._pl_request(
-                    "POST",
-                    "/app/observer/ingest/event",
-                    headers={"Content-Type": "application/json"},
-                    body=body,
-                )
+            result = self._pl_request(
+                "POST",
+                "/app/observer/ingest/event",
+                headers={"Content-Type": "application/json"},
+                body=body,
             )
             if result.status == 200:
                 return True
@@ -627,7 +462,13 @@ class ObserverClient:
                 result.body.decode("utf-8", errors="replace"),
             )
             return False
-        except (ConnectionError, OSError, StreamResetError, TlsError) as exc:
+        except (
+            ConnectionError,
+            OSError,
+            StreamResetError,
+            TlsError,
+            TunnelRequestError,
+        ) as exc:
             logger.debug("PL event relay failed: %s", exc)
             return False
 
@@ -720,7 +561,16 @@ class ObserverClient:
                 backoff_index += 1
 
     def _callosum_loop_pl(self, callback: Callable[[dict], None]) -> None:
-        if self._revoked or not self._pl_fingerprint_prefix:
+        if self._revoked:
+            return
+        try:
+            tunnel = self._pl_tunnel()
+        except Exception as exc:
+            self._callosum_error = exc
+            logger.debug("PL callosum tunnel setup failed: %s", exc)
+            return
+        if not self._pl_fingerprint_prefix:
+            self._callosum_error = RuntimeError("PL identity fingerprint not loaded")
             return
 
         path = OBSERVER_CALLOSUM_SSE_ROUTE.replace(
@@ -731,10 +581,11 @@ class ObserverClient:
 
         while not self._callosum_stop.is_set():
             chunks: queue.Queue[bytes | Exception | None] = queue.Queue()
-            loop = self._ensure_pl_loop()
-            future = asyncio.run_coroutine_threadsafe(
-                self._pl_callosum_reader(path, chunks),
-                loop,
+            future = tunnel.stream_request(
+                "GET",
+                path,
+                headers={"Accept": "text/event-stream"},
+                chunks=chunks,
             )
             data_lines: list[str] = []
             text_buffer = ""
@@ -750,6 +601,8 @@ class ObserverClient:
                     break
                 if isinstance(item, Exception):
                     self._callosum_error = item
+                    if isinstance(item, PermissionError):
+                        self._revoked = True
                     if self._revoked:
                         return
                     break
@@ -774,37 +627,6 @@ class ObserverClient:
                 return
             if backoff_index < len(CALLOSUM_RECONNECT_BACKOFF) - 1:
                 backoff_index += 1
-
-    async def _pl_callosum_reader(
-        self,
-        path: str,
-        chunks: queue.Queue[bytes | Exception | None],
-    ) -> None:
-        try:
-            session = await self._get_pl_session()
-            status, _headers, initial_body, stream = await session.stream_request(
-                "GET",
-                path,
-                headers={"Accept": "text/event-stream"},
-            )
-            if status == 200:
-                if initial_body:
-                    chunks.put(initial_body)
-                async for chunk in stream.read():
-                    chunks.put(chunk)
-                return
-            if status in {401, 403}:
-                self._revoked = True
-                chunks.put(RuntimeError(f"Callosum subscription rejected ({status})"))
-                return
-            chunks.put(RuntimeError(f"Callosum subscription failed ({status})"))
-        except (ConnectionError, OSError, StreamResetError, TlsError) as exc:
-            await self._close_pl_session()
-            chunks.put(exc)
-        except Exception as exc:
-            chunks.put(exc)
-        finally:
-            chunks.put(None)
 
     def _consume_callosum_response(
         self,
@@ -900,12 +722,7 @@ class ObserverClient:
             and self._callosum_thread is not threading.current_thread()
         ):
             self._callosum_thread.join(timeout=5.0)
-        if self._pl_loop is not None:
-            try:
-                self._run_pl(self._close_pl_session())
-            except Exception as exc:
-                logger.debug("PL session close failed: %s", exc)
-            self._pl_loop.call_soon_threadsafe(self._pl_loop.stop)
-            if self._pl_loop_thread is not None and self._pl_loop_thread.is_alive():
-                self._pl_loop_thread.join(timeout=5.0)
+        if self._tunnel is not None:
+            self._tunnel.close()
+            self._tunnel = None
         self._session.close()

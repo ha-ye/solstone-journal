@@ -151,8 +151,9 @@ def test_observer_client_pl_requires_bundle(
         }
     }
 
+    client = ObserverClient("main-stream")
     with pytest.raises(ValueError, match="bundle not found"):
-        ObserverClient("main-stream")
+        client.relay_event("tract", "event")
 
 
 def test_auto_registration(mock_session, mock_config, mock_journal, tmp_path):

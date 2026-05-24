@@ -13,7 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.link.client import Client, EnrolledDevice, TlsError
+from solstone.think.link.tls import TlsError
+from tests.link.client import Client, EnrolledDevice
 from tests.link.live_helpers import (
     CONVEY_PASSWORD,
     list_devices,
