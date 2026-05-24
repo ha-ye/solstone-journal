@@ -9,8 +9,10 @@ Auto-discovered by ``think.call`` and mounted as ``sol call link ...``.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import socket
 import time
+from importlib import import_module
 
 import typer
 
@@ -21,6 +23,8 @@ from solstone.apps.link.manual_code import (
 from solstone.apps.link.manual_code import (
     normalize as normalize_manual_code,
 )
+from solstone.apps.observer.utils import revoke_observer_record
+from solstone.apps.utils import log_app_action
 from solstone.convey.utils import relative_time
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.ca import generate_nonce, load_or_generate_ca
@@ -33,7 +37,14 @@ from solstone.think.link.paths import (
     nonces_path,
     relay_url,
 )
-from solstone.think.utils import require_solstone
+from solstone.think.utils import now_ms, require_solstone
+
+journal_sources = import_module("solstone.apps.import.journal_sources")
+load_journal_source_by_fingerprint = journal_sources.load_journal_source_by_fingerprint
+save_journal_source = journal_sources.save_journal_source
+journal_source_state_prefix = journal_sources.journal_source_state_prefix
+
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     help="Link — tunnel service for reaching this solstone from paired phones."
@@ -208,17 +219,79 @@ def unpair(
     """Revoke a paired device. Next reconnect from that device fails at TLS handshake."""
     authorized = _authorized()
     if target.startswith("sha256:"):
-        removed = authorized.remove(target)
-        if not removed:
+        entry = authorized.get(target)
+        fingerprint = target
+        if entry is None:
             typer.echo(f"No paired device with fingerprint {target}")
             raise typer.Exit(1)
-        typer.echo("Unpaired.")
-        return
-    entry = authorized.find_by_label(target)
-    if entry is None:
-        typer.echo(f"No paired device with label {target!r}")
-        raise typer.Exit(1)
-    authorized.remove(entry.fingerprint)
+    else:
+        entry = authorized.find_by_label(target)
+        if entry is None:
+            typer.echo(f"No paired device with label {target!r}")
+            raise typer.Exit(1)
+        fingerprint = entry.fingerprint
+
+    fp_hex = fingerprint.removeprefix("sha256:")
+    short_fp = fp_hex[:16]
+    role = entry.role
+
+    if role == "phone":
+        removed = authorized.remove(fingerprint)
+        if not removed:
+            logger.warning(
+                "unpair: phone entry %s already absent from authorized_clients",
+                short_fp,
+            )
+    elif role == "observer":
+        try:
+            revoke_observer_record(short_fp)
+        except ValueError as exc:
+            msg = str(exc)
+            if "already revoked" in msg:
+                logger.warning("unpair: observer %s already revoked: %s", short_fp, msg)
+            else:
+                logger.warning(
+                    "unpair: observer record missing for %s: %s", short_fp, msg
+                )
+            authorized.remove(fingerprint)
+        except RuntimeError as exc:
+            logger.error(
+                "unpair: failed to save observer record for %s: %s",
+                short_fp,
+                exc,
+            )
+            authorized.remove(fingerprint)
+    elif role == "peer":
+        source = load_journal_source_by_fingerprint(fingerprint)
+        if source is None:
+            logger.warning("unpair: peer journal source missing for %s", short_fp)
+        elif source.get("revoked"):
+            logger.warning("unpair: peer journal source %s already revoked", short_fp)
+        else:
+            source["revoked"] = True
+            source["revoked_at"] = now_ms()
+            if save_journal_source(source):
+                log_app_action(
+                    app="import",
+                    facet=None,
+                    action="journal_source_revoke",
+                    params={
+                        "name": source.get("device_label") or source.get("name"),
+                        "key_prefix": journal_source_state_prefix(source),
+                    },
+                )
+            else:
+                logger.error(
+                    "unpair: failed to save peer journal source for %s", short_fp
+                )
+        authorized.remove(fingerprint)
+    else:
+        logger.warning(
+            "unpair: unexpected role %r for entry %s; treating as phone",
+            role,
+            short_fp,
+        )
+        authorized.remove(fingerprint)
     typer.echo("Unpaired.")
 
 
