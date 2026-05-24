@@ -21,6 +21,8 @@ from solstone.apps.observer.utils import mint_pl_observer_record, save_observer
 from solstone.convey.copy import OBSERVER_CALLOSUM_LIVE_LABEL
 from solstone.convey.secure_listener import ConveyIdentity
 from solstone.convey.sol_initiated.copy import KIND_SOL_CHAT_REQUEST
+from solstone.think.link.auth import AuthorizedClients
+from solstone.think.link.paths import authorized_clients_path
 
 PL_FINGERPRINT = "sha256:" + ("c" * 64)
 PL_FINGERPRINT_2 = "sha256:" + ("d" * 64)
@@ -316,6 +318,61 @@ def test_api_delete_observer(observer_env):
     assert observers[0]["label"] == OBSERVER_STATE_LABELS["revoked"]
     assert observers[0]["elapsed_ms"] is None
     assert observers[0]["clock_skew"] is False
+
+
+def test_api_delete_pl_observer_removes_fingerprint(observer_env):
+    env = observer_env()
+    prefix = PL_FINGERPRINT.removeprefix("sha256:")[:16]
+    mint_pl_observer_record(
+        fingerprint=PL_FINGERPRINT,
+        device_label="pl-delete",
+        paired_at="2026-05-20T00:00:00Z",
+    )
+    AuthorizedClients(authorized_clients_path()).add(
+        PL_FINGERPRINT,
+        "pl-delete",
+        "inst-1",
+        role="observer",
+        paired_at="2026-05-20T00:00:00Z",
+    )
+
+    resp = env.client.delete(f"/app/observer/api/{prefix}")
+
+    assert resp.status_code == 200
+    assert resp.get_json()["status"] == "ok"
+    assert (
+        AuthorizedClients(authorized_clients_path()).is_authorized(PL_FINGERPRINT)
+        is False
+    )
+    observers = _api_list_observers(env)
+    assert observers[0]["name"] == "pl-delete"
+    assert observers[0]["revoked"] is True
+
+
+def test_api_delete_dl_observer_does_not_touch_authorized_clients(observer_env):
+    env = observer_env()
+    resp = env.client.post(
+        "/app/observer/api/create",
+        json={"name": "dl-delete"},
+        content_type="application/json",
+    )
+    key_prefix = resp.get_json()["key_prefix"]
+    fingerprint = "sha256:" + ("e" * 64)
+    AuthorizedClients(authorized_clients_path()).add(
+        fingerprint,
+        "phone",
+        "inst-1",
+        paired_at="2026-05-20T00:00:00Z",
+    )
+    before = authorized_clients_path().read_bytes()
+
+    resp = env.client.delete(f"/app/observer/api/{key_prefix}")
+
+    assert resp.status_code == 200
+    assert authorized_clients_path().read_bytes() == before
+    assert (
+        AuthorizedClients(authorized_clients_path()).is_authorized(fingerprint) is True
+    )
 
 
 def test_api_list_sorts_by_group_and_last_seen(observer_env, monkeypatch):

@@ -22,7 +22,7 @@
   <section class="link-paired-section" aria-labelledby="link-paired-h2">
     <h2 id="link-paired-h2">paired devices</h2>
     <div id="link-devices-list" class="link-devices-list" aria-live="polite">
-      <p class="link-empty-state" id="link-empty-state">No phones paired yet.</p>
+      <p class="link-empty-state" id="link-empty-state">No devices linked yet.</p>
     </div>
   </section>
 
@@ -130,6 +130,7 @@
   .link-lan-nudge code { background: rgba(0,0,0,0.06); padding: 0.1em 0.35em; border-radius: 3px; }
 
   .link-paired-section h2 { font-size: 1.15em; margin-bottom: 0.75em; font-weight: 600; color: #444; }
+  .link-role-heading { font-size: 0.95rem; font-weight: 600; color: var(--text-muted, #555); margin: 1rem 0 0.5rem; text-transform: none; }
   .link-devices-list { display: flex; flex-direction: column; gap: 0.5em; }
   .link-empty-state { color: #888; font-style: italic; }
   .link-device-row { display: flex; align-items: center; justify-content: space-between; background: #f9f8f5; border: 1px solid #ede9e1; border-radius: 8px; padding: 0.75em 1em; }
@@ -327,13 +328,28 @@
 
   function renderDevices(devices) {
     devicesList.innerHTML = '';
-    if (!devices.length) {
+    const roleOrder = ['phone', 'observer', 'peer'];
+    const roleLabels = {
+      phone: 'Phones',
+      observer: 'Observers',
+      peer: 'Peers',
+    };
+    const buckets = {
+      phone: [],
+      observer: [],
+      peer: [],
+    };
+    for (const device of devices) {
+      const role = roleOrder.includes(device.role) ? device.role : 'phone';
+      buckets[role].push(device);
+    }
+    if (!roleOrder.some((role) => buckets[role].length)) {
       devicesList.appendChild(emptyState);
       emptyState.hidden = false;
       return;
     }
     emptyState.hidden = true;
-    for (const d of devices) {
+    function appendDeviceRow(d) {
       const row = document.createElement('div');
       row.className = 'link-device-row';
       const left = document.createElement('div');
@@ -359,6 +375,16 @@
       row.appendChild(left);
       row.appendChild(btn);
       devicesList.appendChild(row);
+    }
+    for (const role of roleOrder) {
+      if (!buckets[role].length) continue;
+      const heading = document.createElement('h3');
+      heading.className = 'link-role-heading';
+      heading.textContent = roleLabels[role];
+      devicesList.appendChild(heading);
+      for (const device of buckets[role]) {
+        appendDeviceRow(device);
+      }
     }
   }
 

@@ -498,6 +498,7 @@ def _entry_to_json(entry: ClientEntry) -> dict[str, Any]:
         "device_label": entry.device_label,
         "paired_at": entry.paired_at,
         "last_seen_at": entry.last_seen_at,
+        "role": entry.role,
     }
 
 

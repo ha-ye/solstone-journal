@@ -67,6 +67,7 @@ from .utils import (
     load_observer,
     observer_filename_prefix,
     resolve_observer_identity,
+    revoke_observer_record,
     save_observer,
 )
 
@@ -196,16 +197,6 @@ def _serialize_observer(observer: dict[str, Any], current_now: int) -> dict[str,
         **freshness,
         "label": OBSERVER_STATE_LABELS[str(freshness["state"])],
     }
-
-
-def _revoke_observer(key: str) -> bool:
-    """Revoke observer by key (soft-delete)."""
-    observer = load_observer(key)
-    if not observer:
-        return False
-    observer["revoked"] = True
-    observer["revoked_at"] = now_ms()
-    return save_observer(observer)
 
 
 # === Management API (session-protected) ===
@@ -375,33 +366,20 @@ def api_create() -> Any:
 @observer_bp.route("/api/<key_prefix>", methods=["DELETE"])
 def api_delete(key_prefix: str) -> Any:
     """Revoke an observer by key prefix (soft-delete)."""
-    # Find observer by prefix
-    observers_dir = get_observers_dir()
-    observer_path = observers_dir / f"{key_prefix}.json"
-    if not observer_path.exists():
-        return error_response(PAIRED_DEVICE_NOT_FOUND, detail="Observer not found")
-
     try:
-        with open(observer_path) as f:
-            data = json.load(f)
-        key = data.get("key", "")
-        name = data.get("name", "")
-    except (json.JSONDecodeError, OSError):
-        return error_response(FILE_READ_FAILED, detail="Failed to read observer")
-
-    if not _revoke_observer(key):
+        revoke_observer_record(key_prefix)
+    except ValueError as exc:
+        message = str(exc)
+        if message.startswith("observer already revoked:"):
+            return error_response(
+                PL_REVOKED, detail="Observer already revoked", status=409
+            )
+        return error_response(PAIRED_DEVICE_NOT_FOUND, detail="Observer not found")
+    except RuntimeError:
         return error_response(
             SETTINGS_OPERATION_FAILED,
             detail="Failed to revoke observer",
         )
-
-    # Log observer revocation (journal-level, no facet)
-    log_app_action(
-        app="observer",
-        facet=None,
-        action="observer_revoke",
-        params={"name": name, "key_prefix": key_prefix},
-    )
 
     return jsonify({"status": "ok"})
 

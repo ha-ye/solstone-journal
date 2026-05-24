@@ -25,13 +25,14 @@ import secrets
 import sys
 
 from solstone.apps.observer.utils import (
+    _find_observer,
     find_observer_by_name,
     get_hist_dir,
-    get_observers_dir,
     list_observers,
     load_history,
     observer_filename_prefix,
     observer_mode,
+    revoke_observer_record,
     save_observer,
 )
 from solstone.apps.utils import log_app_action
@@ -56,26 +57,6 @@ CONNECTED_THRESHOLD_MS = 2 * 60 * 1000
 def _generate_key() -> str:
     """Generate a URL-safe key for observer authentication."""
     return base64.urlsafe_b64encode(secrets.token_bytes(KEY_BYTES)).decode().rstrip("=")
-
-
-def _find_observer(identifier: str) -> dict | None:
-    """Find an observer by name or key prefix."""
-    # Try name first
-    observer = find_observer_by_name(identifier)
-    if observer:
-        return observer
-
-    # Try key prefix (file is named <prefix>.json)
-    observers_dir = get_observers_dir()
-    observer_path = observers_dir / f"{identifier}.json"
-    if observer_path.exists():
-        try:
-            with open(observer_path) as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    return None
 
 
 def _status_label(observer: dict) -> str:
@@ -150,32 +131,6 @@ def create_observer_record(
         params={"name": name, "key_prefix": key[:8]},
     )
     return observer_data, key, False
-
-
-def revoke_observer_record(identifier: str) -> dict:
-    """Revoke an observer registration and return the mutated record."""
-    observer = _find_observer(identifier)
-    if not observer:
-        raise ValueError(f"observer not found: {identifier}")
-
-    if observer.get("revoked", False):
-        raise ValueError(f"observer already revoked: {observer.get('name')}")
-
-    name = observer.get("name", "")
-    key_prefix = observer_filename_prefix(observer)
-    observer["revoked"] = True
-    observer["revoked_at"] = now_ms()
-
-    if not save_observer(observer):
-        raise RuntimeError("failed to save observer")
-
-    log_app_action(
-        app="observer",
-        facet=None,
-        action="observer_revoke",
-        params={"name": name, "key_prefix": key_prefix},
-    )
-    return observer
 
 
 # === Subcommands ===

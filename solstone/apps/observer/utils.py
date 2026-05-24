@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from solstone.apps.utils import get_app_storage_path
+from solstone.apps.utils import get_app_storage_path, log_app_action
 from solstone.convey.reasons import (
     AUTH_KEY_INVALID,
     AUTH_REQUIRED,
@@ -26,6 +26,8 @@ from solstone.convey.reasons import (
 )
 from solstone.convey.utils import error_response
 from solstone.think.entities.core import atomic_write
+from solstone.think.link.auth import AuthorizedClients
+from solstone.think.link.paths import authorized_clients_path
 from solstone.think.utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -281,6 +283,61 @@ def mint_pl_observer_record(
     os.chmod(observer_path, 0o600)
     ObserverRegistry.singleton().invalidate()
     return observer_path
+
+
+def _find_observer(identifier: str) -> dict | None:
+    """Find an observer by name or filename prefix."""
+    observer = find_observer_by_name(identifier)
+    if observer:
+        return observer
+
+    observers_dir = get_observers_dir()
+    observer_path = observers_dir / f"{identifier}.json"
+    if observer_path.exists():
+        try:
+            with open(observer_path, encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    return None
+
+
+def revoke_observer_record(identifier: str) -> dict:
+    """Revoke an observer registration and return the mutated record."""
+    observer = _find_observer(identifier)
+    if not observer:
+        raise ValueError(f"observer not found: {identifier}")
+
+    if observer.get("revoked", False):
+        raise ValueError(f"observer already revoked: {observer.get('name')}")
+
+    name = observer.get("name", "")
+    key_prefix = observer_filename_prefix(observer)
+    observer["revoked"] = True
+    observer["revoked_at"] = now_ms()
+
+    if not save_observer(observer):
+        raise RuntimeError("failed to save observer")
+
+    if observer_mode(observer) == "pl":
+        fingerprint = observer.get("fingerprint")
+        removed = AuthorizedClients(authorized_clients_path()).remove(str(fingerprint))
+        if not removed:
+            logger.warning(
+                "PL observer revoked but fingerprint was not authorized name=%s "
+                "fingerprint=%s",
+                name,
+                fingerprint,
+            )
+
+    log_app_action(
+        app="observer",
+        facet=None,
+        action="observer_revoke",
+        params={"name": name, "key_prefix": key_prefix},
+    )
+    return observer
 
 
 def list_observers() -> list[dict]:

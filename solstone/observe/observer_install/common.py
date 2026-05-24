@@ -157,10 +157,8 @@ def _active_observers_by_name(name: str) -> list[dict]:
 
 def create_or_reuse_registration(name: str, *, force: bool) -> ObserverRecord:
     """Return an active observer registration, creating one when needed."""
-    from solstone.observe.observer_cli import (
-        create_observer_record,
-        revoke_observer_record,
-    )
+    from solstone.apps.observer.utils import revoke_observer_record
+    from solstone.observe.observer_cli import create_observer_record
 
     if force:
         for observer in _active_observers_by_name(name):
