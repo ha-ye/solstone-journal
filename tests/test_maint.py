@@ -4,6 +4,11 @@
 """Tests for the maint (maintenance task) system."""
 
 import json
+import logging
+import signal
+import subprocess
+import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -246,6 +251,29 @@ class TestFormatDuration:
 class TestRunTask:
     """Tests for running individual tasks."""
 
+    def _task(self, name: str) -> MaintTask:
+        return MaintTask(
+            app="test_app",
+            name=name,
+            script_path=Path(f"/dummy/{name}.py"),
+        )
+
+    def _patch_python_subprocess(self, monkeypatch, code: str) -> None:
+        real_popen = subprocess.Popen
+
+        def mock_popen(_cmd, **kwargs):
+            return real_popen([sys.executable, "-c", code], **kwargs)
+
+        monkeypatch.setattr(subprocess, "Popen", mock_popen)
+
+    def _read_events(self, journal: Path, task: MaintTask) -> list[dict]:
+        state_file = get_state_file(journal, task.app, task.name)
+        events = [
+            json.loads(line) for line in state_file.read_text().strip().split("\n")
+        ]
+        assert {event["event"] for event in events} <= {"exec", "line", "exit"}
+        return events
+
     def test_run_successful_task(self, temp_journal, monkeypatch):
         """Test running a successful task creates correct state file."""
         import subprocess
@@ -370,3 +398,276 @@ class TestRunTask:
         assert emitted[1][0] == "convey"
         assert emitted[1][1] == "maint_complete"
         assert emitted[1][2]["success"] is True
+
+    def test_stall_warning_logs_named_task(self, temp_journal, monkeypatch, caplog):
+        task = self._task("warn_task")
+        self._patch_python_subprocess(
+            monkeypatch,
+            "import time; time.sleep(0.8)",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="solstone.think.maint"):
+            success, exit_code = run_task(
+                temp_journal,
+                task,
+                stall_warn_interval_sec=0.5,
+                stall_hard_cap_sec=4.0,
+            )
+
+        assert success is True
+        assert exit_code == 0
+        assert any(
+            "test_app:warn_task" in record.message and "stalled" in record.message
+            for record in caplog.records
+        )
+        events = self._read_events(temp_journal, task)
+        assert events[-1]["exit_code"] == 0
+
+    def test_stall_hard_cap_terminates_silent_task(self, temp_journal, monkeypatch):
+        task = self._task("silent_stall_task")
+        self._patch_python_subprocess(
+            monkeypatch,
+            "import time; time.sleep(30)",
+        )
+
+        success, exit_code = run_task(
+            temp_journal,
+            task,
+            stall_warn_interval_sec=0.2,
+            stall_hard_cap_sec=0.6,
+        )
+
+        assert success is False
+        assert exit_code == -signal.SIGTERM
+        events = self._read_events(temp_journal, task)
+        last_event = events[-1]
+        assert list(last_event.keys()) == [
+            "event",
+            "ts",
+            "exit_code",
+            "duration_ms",
+            "error",
+        ]
+        assert last_event["exit_code"] == -signal.SIGTERM
+        assert last_event["error"] == "stalled"
+
+    def test_stall_hard_cap_kills_sigterm_ignoring_task(
+        self, temp_journal, monkeypatch
+    ):
+        task = self._task("sigkill_stall_task")
+        self._patch_python_subprocess(
+            monkeypatch,
+            (
+                "import signal, time\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "time.sleep(30)\n"
+            ),
+        )
+
+        success, exit_code = run_task(
+            temp_journal,
+            task,
+            stall_warn_interval_sec=2.0,
+            stall_hard_cap_sec=8.0,
+        )
+
+        assert success is False
+        assert exit_code == -signal.SIGKILL
+        events = self._read_events(temp_journal, task)
+        last_event = events[-1]
+        assert last_event["exit_code"] == -signal.SIGKILL
+        assert last_event["error"] == "stalled"
+
+    def test_stalled_task_emits_stalled_complete_event(self, temp_journal, monkeypatch):
+        task = self._task("stalled_emit_task")
+        self._patch_python_subprocess(
+            monkeypatch,
+            "import time; time.sleep(30)",
+        )
+        emitted = []
+
+        def capture_emit(tract, event, **kwargs):
+            emitted.append((tract, event, kwargs))
+
+        success, exit_code = run_task(
+            temp_journal,
+            task,
+            emit_fn=capture_emit,
+            stall_warn_interval_sec=0.2,
+            stall_hard_cap_sec=0.6,
+        )
+
+        assert success is False
+        assert exit_code == -signal.SIGTERM
+        assert emitted[-1] == (
+            "convey",
+            "maint_complete",
+            {
+                "app": "test_app",
+                "task": "stalled_emit_task",
+                "exit_code": -signal.SIGTERM,
+                "success": False,
+                "error": "stalled",
+            },
+        )
+        events = self._read_events(temp_journal, task)
+        assert events[-1]["error"] == "stalled"
+
+    def test_final_stdout_line_is_drained_after_process_exit(
+        self, temp_journal, monkeypatch
+    ):
+        task = self._task("final_line_task")
+        self._patch_python_subprocess(
+            monkeypatch,
+            (
+                "import sys\n"
+                "sys.stdout.write('first\\n')\n"
+                "sys.stdout.flush()\n"
+                "sys.stdout.write('final\\n')\n"
+                "sys.stdout.flush()\n"
+            ),
+        )
+
+        success, exit_code = run_task(
+            temp_journal,
+            task,
+            stall_warn_interval_sec=2.0,
+            stall_hard_cap_sec=4.0,
+        )
+
+        assert success is True
+        assert exit_code == 0
+        events = self._read_events(temp_journal, task)
+        lines = [event["line"] for event in events if event["event"] == "line"]
+        assert lines == ["first", "final"]
+
+    def test_output_activity_resets_idle_timer(self, temp_journal, monkeypatch):
+        task = self._task("idle_reset_task")
+        self._patch_python_subprocess(
+            monkeypatch,
+            (
+                "import sys, time\n"
+                "sys.stdout.write('one\\n'); sys.stdout.flush()\n"
+                "time.sleep(2.0)\n"
+                "sys.stdout.write('two\\n'); sys.stdout.flush()\n"
+            ),
+        )
+
+        success, exit_code = run_task(
+            temp_journal,
+            task,
+            stall_warn_interval_sec=2.0,
+            stall_hard_cap_sec=8.0,
+        )
+
+        assert success is True
+        assert exit_code == 0
+        events = self._read_events(temp_journal, task)
+        assert "error" not in events[-1]
+
+    def test_stalled_task_does_not_wedge_followup_run_task(
+        self, temp_journal, monkeypatch
+    ):
+        stall_task = self._task("stalled_followup_first")
+        fast_task = self._task("stalled_followup_second")
+        real_popen = subprocess.Popen
+        programs = iter(
+            [
+                "import time; time.sleep(30)",
+                "print('done')",
+            ]
+        )
+
+        def mock_popen(_cmd, **kwargs):
+            return real_popen([sys.executable, "-c", next(programs)], **kwargs)
+
+        monkeypatch.setattr(subprocess, "Popen", mock_popen)
+
+        success, exit_code = run_task(
+            temp_journal,
+            stall_task,
+            stall_warn_interval_sec=0.2,
+            stall_hard_cap_sec=0.6,
+        )
+
+        assert success is False
+        assert exit_code < 0
+        stall_events = self._read_events(temp_journal, stall_task)
+        assert stall_events[-1]["error"] == "stalled"
+
+        success, exit_code = run_task(
+            temp_journal,
+            fast_task,
+            stall_warn_interval_sec=0.2,
+            stall_hard_cap_sec=0.6,
+        )
+
+        assert success is True
+        assert exit_code == 0
+        fast_events = self._read_events(temp_journal, fast_task)
+        assert "error" not in fast_events[-1]
+
+    def test_unkillable_stalled_task_records_sigkill_exit(
+        self, temp_journal, monkeypatch, caplog
+    ):
+        task = self._task("unkillable_task")
+        procs = []
+
+        class BlockingStdout:
+            def __init__(self):
+                self.release = threading.Event()
+
+            def __iter__(self):
+                self.release.wait()
+                return self
+
+            def __next__(self):
+                raise StopIteration
+
+        class MockProc:
+            def __init__(self):
+                self.stdout = BlockingStdout()
+                self.terminated = False
+                self.killed = False
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                self.killed = True
+
+            def wait(self, timeout=None):
+                raise subprocess.TimeoutExpired(cmd="fake", timeout=timeout)
+
+        def mock_popen(*args, **kwargs):
+            proc = MockProc()
+            procs.append(proc)
+            return proc
+
+        monkeypatch.setattr(subprocess, "Popen", mock_popen)
+
+        with caplog.at_level(logging.ERROR, logger="solstone.think.maint"):
+            success, exit_code = run_task(
+                temp_journal,
+                task,
+                stall_warn_interval_sec=0.2,
+                stall_hard_cap_sec=0.6,
+            )
+
+        procs[0].stdout.release.set()
+
+        assert success is False
+        assert exit_code == -signal.SIGKILL
+        assert procs[0].terminated is True
+        assert procs[0].killed is True
+        assert any(
+            "Maint task unkillable: test_app:unkillable_task" in record.message
+            for record in caplog.records
+        )
+        events = self._read_events(temp_journal, task)
+        last_event = events[-1]
+        assert last_event["exit_code"] == -signal.SIGKILL
+        assert last_event["error"] == "stalled"

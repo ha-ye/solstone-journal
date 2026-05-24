@@ -26,8 +26,11 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
+import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -217,10 +220,27 @@ def _write_event(f, event: dict) -> None:
     f.flush()
 
 
+def _terminate_with_grace(proc, qualified_name: str) -> int:
+    """Terminate a stalled task, escalating to SIGKILL if needed."""
+    proc.terminate()
+    try:
+        return proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            return proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            logger.error("Maint task unkillable: %s", qualified_name)
+            return -signal.SIGKILL
+
+
 def run_task(
     journal: Path,
     task: MaintTask,
     emit_fn=None,
+    *,
+    stall_warn_interval_sec: float = 30.0,
+    stall_hard_cap_sec: float = 120.0,
 ) -> tuple[bool, int]:
     """Run a maintenance task.
 
@@ -228,6 +248,8 @@ def run_task(
         journal: Path to journal root
         task: MaintTask to run
         emit_fn: Optional function to emit Callosum events
+        stall_warn_interval_sec: Seconds of output silence before warning
+        stall_hard_cap_sec: Seconds of output silence before terminating
 
     Returns:
         Tuple of (success, exit_code)
@@ -268,7 +290,6 @@ def run_task(
                 },
             )
 
-            # Run the task
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -277,34 +298,141 @@ def run_task(
                 bufsize=1,
             )
 
-            # Stream output
-            if proc.stdout:
-                for line in proc.stdout:
-                    line = line.rstrip("\n")
-                    _write_event(
-                        f,
-                        {
-                            "event": "line",
-                            "ts": now_ms(),
-                            "line": line,
-                        },
-                    )
-                    print(f"  {line}")
+            poll_interval = min(0.5, stall_warn_interval_sec / 4)
+            last_output_ts = start_time
+            next_warn_ts = start_time + stall_warn_interval_sec
+            output_queue: queue.Queue[str | None] = queue.Queue()
+            reader_thread = None
+            reader_done = proc.stdout is None
 
-            # Wait for completion
-            exit_code = proc.wait()
+            if proc.stdout:
+
+                def read_stdout() -> None:
+                    try:
+                        for line in proc.stdout:
+                            output_queue.put(line)
+                    except (ValueError, OSError):
+                        pass
+                    output_queue.put(None)
+
+                reader_thread = threading.Thread(target=read_stdout, daemon=True)
+                reader_thread.start()
+
+            exit_code = None
+            stalled = False
+            empty_after_exit = 0
+            poll_fn = getattr(proc, "poll", None)
+
+            while True:
+                process_exited = False
+                if poll_fn is not None:
+                    process_exited = poll_fn() is not None
+
+                if reader_done:
+                    if process_exited or poll_fn is None:
+                        exit_code = proc.wait()
+                        break
+                elif process_exited and reader_thread is None:
+                    exit_code = proc.wait()
+                    break
+
+                if not process_exited:
+                    now = time.time()
+                    idle_sec = now - last_output_ts
+                    if idle_sec >= stall_hard_cap_sec:
+                        logger.error(
+                            "Maint task stalled past hard cap: %s",
+                            task.qualified_name,
+                        )
+                        exit_code = _terminate_with_grace(proc, task.qualified_name)
+                        stalled = True
+                        break
+                    if now >= next_warn_ts:
+                        logger.warning(
+                            "Maint task stalled: %s (no output for %.1fs)",
+                            task.qualified_name,
+                            idle_sec,
+                        )
+                        next_warn_ts += stall_warn_interval_sec
+
+                if reader_thread is None or reader_done:
+                    time.sleep(poll_interval)
+                    continue
+
+                try:
+                    line = output_queue.get(timeout=poll_interval)
+                except queue.Empty:
+                    if process_exited:
+                        empty_after_exit += 1
+                        if empty_after_exit >= 2:
+                            exit_code = proc.wait()
+                            break
+                    else:
+                        empty_after_exit = 0
+                    continue
+
+                empty_after_exit = 0
+                if line is None:
+                    reader_done = True
+                    continue
+
+                last_output_ts = time.time()
+                next_warn_ts = last_output_ts + stall_warn_interval_sec
+                line = line.rstrip("\n")
+                _write_event(
+                    f,
+                    {
+                        "event": "line",
+                        "ts": now_ms(),
+                        "line": line,
+                    },
+                )
+                print(f"  {line}")
+
+            if reader_thread is not None:
+                reader_thread.join(timeout=1.0)
+
             duration_ms = int((time.time() - start_time) * 1000)
 
-            # Write exit event
-            _write_event(
-                f,
-                {
-                    "event": "exit",
-                    "ts": now_ms(),
-                    "exit_code": exit_code,
-                    "duration_ms": duration_ms,
-                },
+            if stalled:
+                _write_event(
+                    f,
+                    {
+                        "event": "exit",
+                        "ts": now_ms(),
+                        "exit_code": exit_code,
+                        "duration_ms": duration_ms,
+                        "error": "stalled",
+                    },
+                )
+            else:
+                if exit_code is None:
+                    exit_code = proc.wait()
+                _write_event(
+                    f,
+                    {
+                        "event": "exit",
+                        "ts": now_ms(),
+                        "exit_code": exit_code,
+                        "duration_ms": duration_ms,
+                    },
+                )
+
+        if stalled:
+            if emit_fn:
+                emit_fn(
+                    "convey",
+                    "maint_complete",
+                    app=task.app,
+                    task=task.name,
+                    exit_code=exit_code,
+                    success=False,
+                    error="stalled",
+                )
+            logger.warning(
+                f"Maint task stalled: {task.qualified_name} (exit code {exit_code})"
             )
+            return False, exit_code
 
         success = exit_code == 0
 
