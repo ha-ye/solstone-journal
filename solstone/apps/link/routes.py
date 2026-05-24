@@ -52,7 +52,8 @@ from solstone.apps.link.manual_code import (
 from solstone.apps.link.manual_code import (
     normalize as normalize_manual_code,
 )
-from solstone.apps.observer.utils import mint_pl_observer_record
+from solstone.apps.observer.utils import mint_pl_observer_record, revoke_observer_record
+from solstone.apps.utils import log_app_action
 from solstone.convey import emit
 from solstone.convey.reasons import (
     MISSING_REQUIRED_FIELD,
@@ -85,7 +86,7 @@ from solstone.think.link.paths import (
     nonces_path,
     relay_url,
 )
-from solstone.think.utils import get_journal
+from solstone.think.utils import get_journal, now_ms
 
 logger = logging.getLogger(__name__)
 MANUAL_CODE_RE = re.compile(rf"^[0-9A-HJKMNP-TV-Z]{{{MANUAL_CODE_LEN}}}$")
@@ -93,6 +94,9 @@ _SENDER_INSTANCE_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,256}$")
 VALID_ROLES = {"phone", "observer", "peer"}
 journal_sources = import_module("solstone.apps.import.journal_sources")
 create_state_directory = journal_sources.create_state_directory
+load_journal_source_by_fingerprint = journal_sources.load_journal_source_by_fingerprint
+save_journal_source = journal_sources.save_journal_source
+journal_source_state_prefix = journal_sources.journal_source_state_prefix
 mint_pl_journal_source_record = journal_sources.mint_pl_journal_source_record
 
 link_bp = Blueprint(
@@ -514,25 +518,100 @@ def unpair() -> Any:
     Body (JSON): {"fingerprint": "sha256:..."} or {"device_label": "..."}
     """
     body = request.get_json(silent=True) or {}
-    fingerprint = body.get("fingerprint")
-    device_label = body.get("device_label")
-    if not isinstance(fingerprint, str):
-        if not isinstance(device_label, str):
-            return error_response(
-                MISSING_REQUIRED_FIELD,
-                detail="fingerprint or device_label required",
-            )
-        entry = _authorized().find_by_label(device_label)
-        if entry is None:
-            return error_response(
-                PAIRED_DEVICE_NOT_FOUND,
-                detail="no paired device with that label",
-            )
-        fingerprint = entry.fingerprint
+    raw_fingerprint = body.get("fingerprint")
+    raw_device_label = body.get("device_label")
+    fingerprint = raw_fingerprint.strip() if isinstance(raw_fingerprint, str) else None
+    device_label = (
+        raw_device_label.strip() if isinstance(raw_device_label, str) else None
+    )
+    fingerprint = fingerprint or None
+    device_label = device_label or None
 
-    removed = _authorized().remove(fingerprint)
-    if not removed:
-        return error_response(PAIRED_DEVICE_NOT_FOUND, detail="fingerprint not paired")
+    authorized = _authorized()
+    if fingerprint is not None:
+        entry = authorized.get(fingerprint)
+    elif device_label is not None:
+        entry = authorized.find_by_label(device_label)
+        if entry is not None:
+            fingerprint = entry.fingerprint
+    else:
+        return error_response(
+            MISSING_REQUIRED_FIELD,
+            detail="fingerprint or device_label required",
+        )
+
+    if entry is None:
+        detail = (
+            "fingerprint not paired"
+            if fingerprint is not None
+            else "no paired device with that label"
+        )
+        return error_response(
+            PAIRED_DEVICE_NOT_FOUND,
+            detail=detail,
+        )
+
+    fp_hex = fingerprint.removeprefix("sha256:")
+    short_fp = fp_hex[:16]
+    role = entry.role
+
+    if role == "phone":
+        removed = authorized.remove(fingerprint)
+        if not removed:
+            logger.warning(
+                "unpair: phone entry %s already absent from authorized_clients",
+                short_fp,
+            )
+    elif role == "observer":
+        try:
+            revoke_observer_record(short_fp)
+        except ValueError as exc:
+            msg = str(exc)
+            if "already revoked" in msg:
+                logger.warning("unpair: observer %s already revoked: %s", short_fp, msg)
+            else:
+                logger.warning(
+                    "unpair: observer record missing for %s: %s", short_fp, msg
+                )
+            authorized.remove(fingerprint)
+        except RuntimeError as exc:
+            logger.error(
+                "unpair: failed to save observer record for %s: %s",
+                short_fp,
+                exc,
+            )
+            authorized.remove(fingerprint)
+    elif role == "peer":
+        source = load_journal_source_by_fingerprint(fingerprint)
+        if source is None:
+            logger.warning("unpair: peer journal source missing for %s", short_fp)
+        elif source.get("revoked"):
+            logger.warning("unpair: peer journal source %s already revoked", short_fp)
+        else:
+            source["revoked"] = True
+            source["revoked_at"] = now_ms()
+            if save_journal_source(source):
+                log_app_action(
+                    app="import",
+                    facet=None,
+                    action="journal_source_revoke",
+                    params={
+                        "name": source.get("device_label") or source.get("name"),
+                        "key_prefix": journal_source_state_prefix(source),
+                    },
+                )
+            else:
+                logger.error(
+                    "unpair: failed to save peer journal source for %s", short_fp
+                )
+        authorized.remove(fingerprint)
+    else:
+        logger.warning(
+            "unpair: unexpected role %r for entry %s; treating as phone",
+            role,
+            short_fp,
+        )
+        authorized.remove(fingerprint)
     return jsonify({"unpaired": fingerprint})
 
 
