@@ -578,8 +578,24 @@
   },
   "google_backend": "auto",
   "key_validation": {},
+  "local": {
+    "install_error": null,
+    "install_state": "idle",
+    "last_progress_at": null,
+    "last_transition_at": null,
+    "name": "local",
+    "progress_bytes_received": null,
+    "progress_bytes_total": null
+  },
   "mlx": {
-    "active_model": "qwen3.5:9b"
+    "active_model": "qwen3.5:9b",
+    "install_error": null,
+    "install_state": "idle",
+    "last_progress_at": null,
+    "last_transition_at": null,
+    "name": "qwen3.5:9b",
+    "progress_bytes_received": null,
+    "progress_bytes_total": null
   },
   "provider_status": {
     "anthropic": {

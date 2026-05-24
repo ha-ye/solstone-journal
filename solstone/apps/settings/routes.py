@@ -873,10 +873,16 @@ def get_providers() -> Any:
             provider: bundled.get_provider_state(provider)
             for provider in ("anthropic", "openai", "openhands")
         }
+        local_model_id = request.args.get("local_model") or LOCAL_FLASH
+        if local_model_id not in LOCAL_MODEL_SPECS:
+            return _local_model_error(local_model_id)
+        local_status = local_bootstrap.get_state(local_model_id)
+
         mlx_config = providers_config.get("mlx", {})
         mlx_active_model = (
             mlx_config.get("active_model") if isinstance(mlx_config, dict) else None
         ) or QWEN_35_9B
+        mlx_status = mlx_bootstrap.get_state(mlx_active_model)
 
         return jsonify(
             {
@@ -890,7 +896,8 @@ def get_providers() -> Any:
                 "auth": auth,
                 "key_validation": key_validation,
                 "bundled": bundled_status,
-                "mlx": {"active_model": mlx_active_model},
+                "local": local_status,
+                "mlx": {"active_model": mlx_active_model, **mlx_status},
                 "google_backend": providers_config.get("google_backend", "auto"),
                 "vertex_credentials_configured": vertex_creds_configured,
                 "vertex_credentials_email": vertex_creds_email,
