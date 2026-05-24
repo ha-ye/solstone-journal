@@ -6,12 +6,21 @@
 Manual short-code form posts to `/app/link/by-code`; v2 pair-link URL form
 decodes the embedded nonce and posts to `/app/link/pair?token=<nonce>`.
 
-The credentials bundle is written under
+Observer credentials are written under
 `$XDG_CONFIG_HOME/solstone-observer/spl/<label>/` when XDG_CONFIG_HOME is set,
-otherwise `~/.config/solstone-observer/spl/<label>/`. The bundle contains
-`private.pem`, `cert.pem`, `chain.pem`, `home_attestation.jwt`, and
-`peer.json`. `peer.json` fields are deterministic: `label`, `paired_at`,
-`instance_id`, `home_label`, `fingerprint`, `local_endpoints`, and `role`.
+otherwise `~/.config/solstone-observer/spl/<label>/`.
+
+Peer credentials are written under `<journal_root>/peers/<instance_id>/`,
+where `instance_id` is the receiver instance_id returned by the pair response,
+not the local `--label`. Label-to-instance_id resolution for
+`sol transfer send --to <label>` is a follow-on lode that will walk
+`peer.json` files.
+
+Both layouts contain `private.pem`, `cert.pem`, `chain.pem`,
+`home_attestation.jwt`, and `peer.json`. `peer.json` fields are deterministic:
+`label`, `paired_at`, `instance_id`, `home_label`, `fingerprint`,
+`local_endpoints`, and `role`; role is `observer` or `peer` for documented join
+storage layouts.
 """
 
 from __future__ import annotations
@@ -40,11 +49,9 @@ from cryptography.x509.oid import NameOID
 from solstone.apps.link.copy import PAIR_LINK_HOST, PAIR_LINK_PATH
 from solstone.apps.link.crockford32 import decode as crockford_decode
 from solstone.apps.link.manual_code import normalize as normalize_manual_code
+from solstone.think.utils import get_journal
 
 VALID_ROLES = {"phone", "observer", "peer"}
-PEER_UNSUPPORTED = (
-    "--as peer is not yet supported; peer storage layout ships in a follow-on lode."
-)
 MANUAL_CODE_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{8}$")
 LABEL_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 BUNDLE_FILES = {
@@ -54,6 +61,7 @@ BUNDLE_FILES = {
     "home_attestation.jwt",
     "peer.json",
 }
+_INSTANCE_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,256}$")
 
 
 @dataclass(frozen=True)
@@ -82,8 +90,6 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 def main(args: argparse.Namespace) -> int:
     if args.as_role not in VALID_ROLES:
         return _fail("invalid role; expected one of: phone, observer, peer", code=2)
-    if args.as_role == "peer":
-        return _fail(PEER_UNSUPPORTED, code=2)
 
     label = str(args.label)
     label_error = _label_error(label)
@@ -95,21 +101,40 @@ def main(args: argparse.Namespace) -> int:
     except ValueError as exc:
         return _fail(str(exc), code=1)
 
-    bundle_dir = _bundle_dir(label)
-    existing_error = _existing_dir_error(bundle_dir)
-    if existing_error is not None:
-        return _fail(existing_error, code=1)
+    if args.as_role == "peer":
+        private_key_pem, csr_pem = _build_csr(label)
+        body = {
+            **pair_request.body_base,
+            "csr": csr_pem,
+            "device_label": label,
+        }
+        try:
+            response = _post_pair(pair_request.url, body)
+        except ValueError as exc:
+            return _fail(str(exc), code=1)
+        instance_id_error = _validate_instance_id(response.instance_id)
+        if instance_id_error is not None:
+            return _fail(instance_id_error, code=1)
+        bundle_dir = _peer_dir(response.instance_id)
+        existing_error = _existing_dir_error(bundle_dir)
+        if existing_error is not None:
+            return _fail(existing_error, code=1)
+    else:
+        bundle_dir = _bundle_dir(label)
+        existing_error = _existing_dir_error(bundle_dir)
+        if existing_error is not None:
+            return _fail(existing_error, code=1)
 
-    private_key_pem, csr_pem = _build_csr(label)
-    body = {
-        **pair_request.body_base,
-        "csr": csr_pem,
-        "device_label": label,
-    }
-    try:
-        response = _post_pair(pair_request.url, body)
-    except ValueError as exc:
-        return _fail(str(exc), code=1)
+        private_key_pem, csr_pem = _build_csr(label)
+        body = {
+            **pair_request.body_base,
+            "csr": csr_pem,
+            "device_label": label,
+        }
+        try:
+            response = _post_pair(pair_request.url, body)
+        except ValueError as exc:
+            return _fail(str(exc), code=1)
 
     chain_pem = _join_chain(response.ca_chain)
     try:
@@ -194,10 +219,20 @@ def _label_error(label: str) -> str | None:
     return None
 
 
+def _validate_instance_id(value: str) -> str | None:
+    if not _INSTANCE_ID_RE.fullmatch(value):
+        return f"bad instance_id from receiver: {value!r}"
+    return None
+
+
 def _bundle_dir(label: str) -> Path:
     config_home = os.environ.get("XDG_CONFIG_HOME")
     base = Path(config_home) if config_home else Path.home() / ".config"
     return base / "solstone-observer" / "spl" / label
+
+
+def _peer_dir(instance_id: str) -> Path:
+    return Path(get_journal()) / "peers" / instance_id
 
 
 def _existing_dir_error(bundle_dir: Path) -> str | None:
