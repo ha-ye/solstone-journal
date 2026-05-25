@@ -33,12 +33,69 @@
   transition: background 0.5s ease;
 }
 
-.status-summary {
+.health-glance {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1em;
   background: #f9fafb;
   border-radius: 12px;
-  padding: 0.75em 1.5em;
+  padding: 0.85em 1.1em;
+  color: #374151;
+}
+
+.glance-sentence {
+  margin: 0;
+  color: #374151;
+  font-size: 1.05em;
+  line-height: 1.4;
+}
+
+.glance-metrics {
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  gap: 0.6em;
+  flex-shrink: 0;
+}
+
+.glance-metric {
+  min-width: 5.75em;
+  padding: 0.35em 0.65em;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  color: #374151;
+  text-align: right;
+  text-decoration: none;
+}
+
+.glance-metric-value {
+  display: block;
   font-size: 1em;
-  font-weight: 400;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.glance-metric-label {
+  display: block;
+  font-size: 13px;
+  color: #6b7280;
+  line-height: 1.2;
+}
+
+.glance-metric-link:hover,
+.glance-metric-cost:hover,
+.glance-metric-errors:hover {
+  border-color: #d1d5db;
+  background: #f3f4f6;
+}
+
+.glance-metric-errors .glance-metric-value {
+  color: #dc2626;
+}
+
+.glance-metric-cost .glance-metric-value {
   color: #374151;
 }
 
@@ -175,6 +232,12 @@
 
 .service-dot.crashed {
   background: rgba(220, 38, 38, 0.15);
+}
+
+.vitals-section .vitals-value,
+.vitals-section .vitals-label,
+.service-dot {
+  font-size: 13px;
 }
 
 .status-indicator {
@@ -1130,9 +1193,20 @@
     font-size: 1.05em;
   }
 
-  .status-summary {
-    font-size: 1em;
+  .health-glance {
+    align-items: flex-start;
+    flex-direction: column;
     padding: 0.8em 1.2em;
+  }
+
+  .glance-metrics {
+    justify-content: flex-start;
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .glance-metric {
+    text-align: left;
   }
 }
 
@@ -1147,6 +1221,24 @@
 </style>
 
 <div class="health-dashboard">
+  <div class="health-glance" id="healthGlance">
+    <p class="glance-sentence" id="healthGlanceSentence" aria-live="polite"></p>
+    <div class="glance-metrics" aria-label="health summary metrics">
+      <a class="glance-metric glance-metric-cost" href="/app/tokens/" id="glanceCost">
+        <span class="glance-metric-value" id="glanceCostValue">—</span>
+        <span class="glance-metric-label">today</span>
+      </a>
+      <div class="glance-metric glance-metric-activity" id="glanceActivity">
+        <span class="glance-metric-value" id="glanceActivityValue">0</span>
+        <span class="glance-metric-label">last hour</span>
+      </div>
+      <a class="glance-metric glance-metric-errors" href="#focus=recent-errors" id="glanceErrors">
+        <span class="glance-metric-value" id="glanceErrorsValue">0</span>
+        <span class="glance-metric-label">errors today</span>
+      </a>
+    </div>
+  </div>
+
   <!-- Vitals Bar -->
   <div class="vitals-bar">
     <div class="vitals-header">
@@ -1160,46 +1252,49 @@
       <button id="vitalsCheckBtn">check now</button>
     </div>
     <div class="vitals-content">
-      <div class="vitals-section">
-        <div class="vitals-label">services</div>
-        <div class="vitals-value">
+      <div class="vitals-section" role="group" aria-label="Services: loading">
+        <div class="vitals-label" aria-hidden="true">services</div>
+        <div class="vitals-value" aria-hidden="true">
           <div class="service-dots" id="serviceDots">
             <span class="skeleton" style="width: 80px; height: 0.9em;">&nbsp;</span>
           </div>
         </div>
       </div>
-      <div class="vitals-section">
-        <div class="vitals-label">agents</div>
-        <div class="vitals-value" id="agentsValue">
+      <div class="vitals-section" role="group" aria-label="Agents: 0 running">
+        <div class="vitals-label" aria-hidden="true">agents</div>
+        <div class="vitals-value" id="agentsValue" aria-hidden="true">
           <span>0 running</span>
         </div>
       </div>
-      <div class="vitals-section">
-        <div class="vitals-label">tasks</div>
-        <div class="vitals-value" id="tasksValue">
+      <div class="vitals-section" role="group" aria-label="Tasks: 0 active">
+        <div class="vitals-label" aria-hidden="true">tasks</div>
+        <div class="vitals-value" id="tasksValue" aria-hidden="true">
           <span>0 active</span>
         </div>
       </div>
-      <div class="vitals-section">
-        <div class="vitals-label">health</div>
-        <div class="vitals-value" id="healthValue">
+      <div class="vitals-section" role="group" aria-label="Health: loading">
+        <div class="vitals-label" aria-hidden="true">health</div>
+        <div class="vitals-value" id="healthValue" aria-hidden="true">
           <span class="skeleton" style="width: 100px; height: 0.9em;">&nbsp;</span>
         </div>
       </div>
-      <div class="vitals-section" id="queuesSection">
-        <div class="vitals-label">queues</div>
-        <div class="vitals-value" id="queuesValue"></div>
+      <div class="vitals-section" id="queuesSection" role="group" aria-label="Queues: none">
+        <div class="vitals-label" aria-hidden="true">queues</div>
+        <div class="vitals-value" id="queuesValue" aria-hidden="true"></div>
       </div>
-      <div class="vitals-section" id="schedulesSection">
-        <div class="vitals-label">schedules</div>
-        <div class="vitals-value" id="schedulesValue"></div>
+      <div class="vitals-section" id="schedulesSection" role="group" aria-label="Schedules: none">
+        <div class="vitals-label" aria-hidden="true">schedules</div>
+        <div class="vitals-value" id="schedulesValue" aria-hidden="true"></div>
       </div>
     </div>
     <div class="trust-indicator" id="trustIndicator">🔒 all data stored locally on this machine</div>
   </div>
 
-  <div class="status-summary">
-    <span id="statusSummaryText"><span class="skeleton-dark" style="width: 160px; height: 1em;">&nbsp;</span></span>
+  <div class="dashboard-card activity-section hidden" id="errorSummary">
+    <div class="activity-section-header error">
+      Recent errors
+    </div>
+    <div id="errorSummaryContent"></div>
   </div>
 
   <!-- Observe Card -->
@@ -1288,13 +1383,6 @@
     </div>
   </div>
 
-  <div class="dashboard-card activity-section hidden" id="errorSummary">
-    <div class="activity-section-header error">
-      Recent errors
-    </div>
-    <div id="errorSummaryContent"></div>
-  </div>
-
   <div class="dashboard-card activity-section hidden" id="allQuietCard">
     <div class="idle-card">
       <div class="idle-card-title">everything is idle</div>
@@ -1364,6 +1452,13 @@
         LOGS_LEVEL_OPTION_INFO: {{ health_copy.LOGS_LEVEL_OPTION_INFO | tojson }},
         LOGS_SERVICE_COLLAPSED: {{ health_copy.LOGS_SERVICE_COLLAPSED | tojson }},
       };
+      window.HEALTH_GLANCE_COPY = {
+        HEALTH_GLANCE_OK: {{ health_copy.HEALTH_GLANCE_OK | tojson }},
+        HEALTH_GLANCE_SERVICES_ATTENTION: {{ health_copy.HEALTH_GLANCE_SERVICES_ATTENTION | tojson }},
+        HEALTH_GLANCE_CATCHING_UP: {{ health_copy.HEALTH_GLANCE_CATCHING_UP | tojson }},
+        HEALTH_GLANCE_OBSERVER_SILENT: {{ health_copy.HEALTH_GLANCE_OBSERVER_SILENT | tojson }},
+        HEALTH_GLANCE_SERVICES_UNREACHABLE: {{ health_copy.HEALTH_GLANCE_SERVICES_UNREACHABLE | tojson }},
+      };
     </script>
   </div>
 </div>
@@ -1375,23 +1470,33 @@
     .then(info => { state.localHost = info.hostname; updateObserve(); })
     .catch(() => {
       if (!state.connected) {
-        elements.statusSummaryText.textContent = '';
-        const errSpan = document.createElement('span');
-        errSpan.style.color = '#dc2626';
-        errSpan.textContent = "couldn't connect to solstone — is it running?";
-        elements.statusSummaryText.appendChild(errSpan);
-
-        elements.vitalsStatus.textContent = '';
-        const indicator = document.createElement('span');
-        indicator.className = 'status-indicator crashed';
-        elements.vitalsStatus.appendChild(indicator);
-        const errText = document.createElement('span');
-        errText.textContent = ' Connection error';
-        elements.vitalsStatus.appendChild(errText);
+        connectError = true;
+        updateStatusSummary();
       }
     });
 
+  fetch('/app/tokens/api/usage?day=' + todayKey())
+    .then(r => {
+      if (!r.ok) throw new Error('token usage unavailable');
+      return r.json();
+    })
+    .then(data => {
+      const cost = Number(data?.total?.cost);
+      if (Number.isFinite(cost)) {
+        state.todayCostUSD = cost;
+      }
+      updateStatusSummary();
+    })
+    .catch(() => {
+      state.todayCostUSD = null;
+      elements.glanceCostValue.textContent = '—';
+      updateStatusSummary();
+    });
+
   // State management
+  let connectError = false;
+  let recentEventTimestamps = [];
+
   const state = {
     services: new Map(),        // Running services
     connected: false,
@@ -1415,12 +1520,13 @@
     logTotalCount: 0,
     lastLogTs: null,
     lastAgentFinishTs: null,
-	    observers: new Map(),       // keyed by stream name
-	    recentErrors: [],
-	    recentErrorsFilter: null,
-	    pendingRecentErrorsFocus: false,
-	    pendingLogAnchor: null,
-	    localHost: null,
+    todayCostUSD: null,
+    observers: new Map(),       // keyed by stream name
+    recentErrors: [],
+    recentErrorsFilter: null,
+    pendingRecentErrorsFocus: false,
+    pendingLogAnchor: null,
+    localHost: null,
     deepLinkMode: false,
     lastLogFilter: null,        // Last rendered filter state for incremental append
     lastEventTs: null,           // Timestamp of last event from WebSocket
@@ -1428,12 +1534,15 @@
 
   // DOM elements
   const elements = {
+    healthGlanceSentence: document.getElementById('healthGlanceSentence'),
+    glanceCostValue: document.getElementById('glanceCostValue'),
+    glanceActivityValue: document.getElementById('glanceActivityValue'),
+    glanceErrorsValue: document.getElementById('glanceErrorsValue'),
     serviceDots: document.getElementById('serviceDots'),
     agentsValue: document.getElementById('agentsValue'),
     tasksValue: document.getElementById('tasksValue'),
     healthValue: document.getElementById('healthValue'),
     vitalsStatus: document.getElementById('vitalsStatus'),
-    statusSummaryText: document.getElementById('statusSummaryText'),
     observeModeBadge: document.getElementById('observeModeBadge'),
     observeModeLabel: document.getElementById('observeModeLabel'),
     screencastStatus: document.getElementById('screencastStatus'),
@@ -1490,6 +1599,8 @@
   };
 
   let timeoutFired = false;
+  const STALE_MS = 30000;
+  const HEALTH_GLANCE_COPY = window.HEALTH_GLANCE_COPY;
 
   // Human-readable service names
   const SERVICE_NAMES = {
@@ -1515,7 +1626,6 @@
       elements.vitalsStatus,
       elements.serviceDots,
       elements.healthValue,
-      elements.statusSummaryText,
     ];
     for (const el of targets) {
       if (el && el.querySelector('.skeleton, .skeleton-dark')) {
@@ -1609,59 +1719,82 @@
     });
   }
 
-  function updateStatusSummary() {
-    const parts = [];
-    const observers = Array.from(state.observers.values());
+  function selectGlanceSentence(state, now) {
     const activeAgents = Array.from(state.agents.values()).filter(agent => agent.event !== 'finish' && agent.event !== 'error').length;
     const activeImports = Array.from(state.imports.values()).filter(imp => imp.event !== 'completed' && imp.event !== 'error').length;
-    const staleCount = state.health?.stale_heartbeats?.length || 0;
-    const servicesKnown = state.services.size > 0 || state.crashed.size > 0;
+    const staleHeartbeats = state.health?.stale_heartbeats || [];
 
-    if (state.observers.size > 0) {
-      const captureDetails = [];
-      if (observers.some(observer => observer.screencast?.recording)) captureDetails.push('screen');
-      if (observers.some(observer => observer.audio && ((observer.audio.threshold_hits || 0) > 0 || observer.audio.will_save))) captureDetails.push('audio');
-      if (observers.some(observer => observer.tmux?.capturing)) captureDetails.push('terminal');
-      parts.push(captureDetails.length > 0 ? `observing (${captureDetails.join(', ')})` : 'observing');
+    if (state.connected === false && connectError === true) {
+      return { key: 'HEALTH_GLANCE_SERVICES_UNREACHABLE', vars: {} };
     }
 
-    const processingDetails = [];
-    if (observers.some(observer => observer.describe?.running?.length)) processingDetails.push('scene analysis');
-    if (observers.some(observer => observer.transcribe?.running?.length)) processingDetails.push('audio transcription');
-    if (processingDetails.length > 0) {
-      parts.push(`Processing (${processingDetails.join(', ')})`);
+    if (state.crashed.size > 0 || staleHeartbeats.length > 0) {
+      const names = Array.from(new Set([
+        ...Array.from(state.crashed.keys()),
+        ...staleHeartbeats,
+      ])).sort();
+      return {
+        key: 'HEALTH_GLANCE_SERVICES_ATTENTION',
+        vars: {
+          n: String(names.length),
+          service_names: names.map(serviceName).join(', '),
+        },
+      };
     }
 
-    if (activeAgents > 0) {
-      parts.push(`${activeAgents} agent${activeAgents === 1 ? '' : 's'} running`);
-    }
-    if (activeImports > 0) {
-      parts.push(`${activeImports} import${activeImports === 1 ? '' : 's'} active`);
-    }
-    if (state.crashed.size > 0) {
-      parts.push(state.crashed.size === 1 ? '1 service needs attention' : `${state.crashed.size} services need attention`);
-    }
-    if (staleCount > 0) {
-      parts.push(`${staleCount} service${staleCount === 1 ? '' : 's'} not responding`);
-    }
-    if (state.recentErrors.length > 0) {
-      parts.push(`${state.recentErrors.length} recent error${state.recentErrors.length === 1 ? '' : 's'}`);
+    const observers = Array.from(state.observers.values());
+    if (observers.length > 0 && observers.every(observer => (now - observer.lastSeen) >= STALE_MS)) {
+      const ageMs = Math.min(...observers.map(observer => now - observer.lastSeen));
+      return {
+        key: 'HEALTH_GLANCE_OBSERVER_SILENT',
+        vars: { age: relativeTime(ageMs) },
+      };
     }
 
-    if (parts.length === 0) {
-      if (servicesKnown) {
-        elements.statusSummaryText.textContent = 'healthy — all quiet';
-      } else if (state.connected) {
-        elements.statusSummaryText.textContent = 'waiting for data...';
-      }
-      return;
+    if (activeAgents > 0 || activeImports > 0) {
+      return {
+        key: 'HEALTH_GLANCE_CATCHING_UP',
+        vars: {
+          n: String(activeAgents + activeImports),
+          age: relativeTime(now - (state.lastEventTs || now)),
+        },
+      };
     }
 
-    if (servicesKnown && state.crashed.size === 0 && staleCount === 0 && state.recentErrors.length === 0) {
-      parts.push('healthy');
+    if (state.services.size > 0 || state.crashed.size > 0) {
+      return {
+        key: 'HEALTH_GLANCE_OK',
+        vars: { age: relativeTime(now - (state.lastEventTs || now)) },
+      };
     }
 
-    elements.statusSummaryText.textContent = parts.join(' · ');
+    return null;
+  }
+
+  function formatGlanceSentence(selection) {
+    if (!selection) return '';
+    let text = HEALTH_GLANCE_COPY[selection.key] || '';
+    for (const [key, value] of Object.entries(selection.vars || {})) {
+      text = text.replaceAll('{' + key + '}', value);
+    }
+    return text;
+  }
+
+  function updateStatusSummary() {
+    const now = Date.now();
+    const selection = selectGlanceSentence(state, now);
+    elements.healthGlanceSentence.textContent = formatGlanceSentence(selection);
+
+    elements.glanceCostValue.textContent = Number.isFinite(state.todayCostUSD)
+      ? '$' + state.todayCostUSD.toFixed(2)
+      : '—';
+
+    const recentActivity = recentEventTimestamps.filter(ts => (now - ts) < 3600000).length;
+    elements.glanceActivityValue.textContent = String(recentActivity);
+
+    const today = todayKey();
+    const errorsToday = state.recentErrors.filter(error => dayKeyFromTimestamp(error.ts) === today).length;
+    elements.glanceErrorsValue.textContent = String(errorsToday);
   }
 
   function updateAllQuiet() {
@@ -2005,8 +2138,59 @@
     elapsedTimer = setInterval(updateElapsed, 1000);
   }
 
+  function updateVitalsA11y() {
+    const sections = document.querySelectorAll('.vitals-content > .vitals-section');
+    const runningCount = state.services.size;
+    const crashedCount = state.crashed.size;
+    const serviceParts = [];
+    if (runningCount > 0) serviceParts.push(runningCount + ' active');
+    if (crashedCount > 0) serviceParts.push(crashedCount + ' needs attention');
+    sections[0]?.setAttribute('aria-label', 'Services: ' + (serviceParts.join(', ') || 'none'));
+
+    sections[1]?.setAttribute('aria-label', 'Agents: ' + state.agentCount + ' running');
+    sections[2]?.setAttribute('aria-label', 'Tasks: ' + state.tasks.length + ' active');
+
+    const staleCount = state.health?.stale_heartbeats?.length || 0;
+    let healthLabel = 'loading';
+    if (staleCount > 0) {
+      healthLabel = 'warning, ' + staleCount + ' service' + (staleCount === 1 ? '' : 's') + ' not responding';
+    } else if (state.crashed.size > 0) {
+      healthLabel = 'error, services need attention';
+    } else if (state.health) {
+      healthLabel = 'OK';
+    }
+    sections[3]?.setAttribute('aria-label', 'Health: ' + healthLabel);
+
+    const queueEntries = Object.entries(state.queues).filter(([, count]) => count > 0);
+    sections[4]?.setAttribute(
+      'aria-label',
+      'Queues: ' + (queueEntries.map(([cmd, count]) => cmd + ' ' + count).join(', ') || 'none')
+    );
+
+    sections[5]?.setAttribute(
+      'aria-label',
+      'Schedules: ' + (state.schedules.map(schedule => {
+        const name = schedule.name || 'unnamed';
+        const next = formatNextRun(schedule.next_run);
+        return next ? name + ' next ' + next : name;
+      }).join(', ') || 'none')
+    );
+  }
+
   // Update vitals bar
   function updateVitals() {
+    if (connectError && !state.connected) {
+      elements.vitalsStatus.textContent = '';
+      const indicator = document.createElement('span');
+      indicator.className = 'status-indicator crashed';
+      elements.vitalsStatus.appendChild(indicator);
+      const errText = document.createElement('span');
+      errText.textContent = ' Connection error';
+      elements.vitalsStatus.appendChild(errText);
+      updateStatusSummary();
+      return;
+    }
+
     // Combine running and crashed services
     const allServices = [];
 
@@ -2174,6 +2358,7 @@
       elements.schedulesValue.textContent = '—';
     }
 
+    updateVitalsA11y();
     updateStatusSummary();
   }
 
@@ -2412,7 +2597,6 @@
     }
 
     const now = Date.now();
-    const STALE_MS = 30000;
 
     elements.observersGrid.innerHTML = '';
     for (const [host, streams] of byHost) {
@@ -3104,6 +3288,7 @@
     if (msg.event === 'status') {
       if (!state.connected) {
         state.connected = true;
+        connectError = false;
       }
 
       // Update running services
@@ -3296,7 +3481,14 @@
 
   // Main event handler
   function handleEvent(msg) {
-    state.lastEventTs = Date.now();
+    const eventTs = Date.now();
+    state.lastEventTs = eventTs;
+    recentEventTimestamps.push(eventTs);
+    const cutoff = eventTs - 3600000;
+    recentEventTimestamps = recentEventTimestamps.filter(ts => ts >= cutoff);
+    if (recentEventTimestamps.length > 500) {
+      recentEventTimestamps.splice(0, recentEventTimestamps.length - 500);
+    }
     const tract = msg.tract;
     if (tract === 'supervisor') handleSupervisorEvent(msg);
     else if (tract === 'cortex') handleCortexEvent(msg);
@@ -3305,6 +3497,7 @@
     else if (tract === 'think') handleThinkEvent(msg);
     else if (tract === 'sync') handleSyncEvent(msg);
     else if (tract === 'logs') handleLogsEvent(msg);
+    updateStatusSummary();
   }
 
   // Log controls
@@ -3463,14 +3656,17 @@
 	    logsCard.scrollIntoView({behavior: 'smooth'});
 	  }
 
-	  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
-	  if (!deepLinkLog && hashParams.get('focus') === 'recent-errors') {
+	  function focusRecentErrors() {
+	    const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+	    if (deepLinkLog || hashParams.get('focus') !== 'recent-errors') return;
 	    const day = hashParams.get('day') || 'today';
 	    const talent = hashParams.get('talent') || '';
 	    state.recentErrorsFilter = { day, talent };
 	    state.pendingRecentErrorsFocus = true;
 	    updateErrorSummary();
 	  }
+	  focusRecentErrors();
+	  window.addEventListener('hashchange', focusRecentErrors);
 
 		  // Listen to all Callosum events
   function initHealthRealtime() {

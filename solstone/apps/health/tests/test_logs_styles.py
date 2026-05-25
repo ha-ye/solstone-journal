@@ -41,6 +41,7 @@ EXPECTED_STATE_KEYS = [
     "logTotalCount",
     "lastLogTs",
     "lastAgentFinishTs",
+    "todayCostUSD",
     "observers",
     "recentErrors",
     "recentErrorsFilter",
@@ -134,7 +135,7 @@ def test_timestamp_gutter_uses_pseudo_element():
     assert "line.dataset.hhmmss = formatLogTime(record.ts);" in source
 
 
-def test_state_keys_are_existing_plus_two():
+def test_state_only_adds_today_cost_usd():
     source = _workspace_source()
     match = re.search(r"const state = \{(?P<body>.*?)\n\s*\};", source, re.DOTALL)
     assert match is not None
@@ -144,7 +145,7 @@ def test_state_keys_are_existing_plus_two():
     )
 
     assert keys == EXPECTED_STATE_KEYS
-    assert len(keys) == 31
+    assert len(keys) == 32
 
 
 def test_filter_handlers_preserve_collapsed_services():
