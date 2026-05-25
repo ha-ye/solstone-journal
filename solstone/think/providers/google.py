@@ -121,6 +121,55 @@ def _get_effective_backend(api_key: str) -> str:
     return _detect_backend(api_key)
 
 
+def _active_backend() -> str | None:
+    """Return the currently-active Google backend ("aistudio" | "vertex"), or None.
+
+    Mirrors the resolution order in :func:`get_or_create_client` so callers can
+    decide backend-specific behavior (e.g. alias remapping) without duplicating
+    config-vs-env-vs-cache logic. Returns ``None`` when no backend can be
+    determined (no config override, no API key) — callers should treat that as
+    "unknown" rather than guessing.
+    """
+    from solstone.think.utils import get_config
+
+    configured = get_config().get("providers", {}).get("google_backend", "auto")
+    if configured in ("aistudio", "vertex"):
+        return configured
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if api_key:
+        return _get_effective_backend(api_key)
+    return None
+
+
+# Google publishes the `gemini-*-latest` aliases on AI Studio
+# (`generativelanguage.googleapis.com`) but Vertex AI's publisher-model registry
+# only honors them for the flash tiers — `gemini-pro-latest` 404s on Vertex.
+# AI Studio is the default path for the vast majority of solstone users, so we
+# keep `-latest` as the canonical model identifier across the codebase (preserves
+# Google's auto-upgrade for those users) and remap only on the Vertex hop.
+# When bumping the Vertex target, list models from a Vertex-backed client and
+# pick the most recent `gemini-<N>.<M>-pro[-preview]` that resolves cleanly —
+# we deliberately track the latest preview here rather than retreating to GA,
+# matching the spirit of the `-latest` rail we're substituting for.
+_VERTEX_MODEL_ALIASES: dict[str, str] = {
+    "gemini-pro-latest": "gemini-3.1-pro-preview",
+}
+
+
+def _resolve_model_for_vertex(model: str) -> str:
+    """Substitute Vertex-resolvable identifiers for AI-Studio-only aliases.
+
+    No-op unless the active backend is Vertex AND the model is a known-broken
+    alias on Vertex. See :data:`_VERTEX_MODEL_ALIASES` for the mapping and the
+    rationale comment above it.
+    """
+    if model not in _VERTEX_MODEL_ALIASES:
+        return model
+    if _active_backend() != "vertex":
+        return model
+    return _VERTEX_MODEL_ALIASES[model]
+
+
 def get_or_create_client(client: genai.Client | None = None) -> genai.Client:
     """Get existing client or create new one.
 
@@ -439,6 +488,7 @@ def run_generate(
     client = kwargs.get("client")
 
     client = get_or_create_client(client)
+    model = _resolve_model_for_vertex(model)
     if isinstance(contents, str):
         contents = [contents]
     elif (
@@ -493,6 +543,7 @@ async def run_agenerate(
     client = kwargs.get("client")
 
     client = get_or_create_client(client)
+    model = _resolve_model_for_vertex(model)
     if isinstance(contents, str):
         contents = [contents]
     elif (
@@ -608,6 +659,8 @@ __all__ = [
     "get_or_create_client",
     "_detect_backend",
     "_get_effective_backend",
+    "_active_backend",
+    "_resolve_model_for_vertex",
     "list_models",
     "validate_key",
     "validate_vertex_credentials",
