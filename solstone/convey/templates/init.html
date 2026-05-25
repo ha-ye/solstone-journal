@@ -130,13 +130,10 @@
     <h1>set up solstone</h1>
     <p class="product-tagline">your private agentic partner — sol</p>
 
-    <!-- L11-stub: portal-unreachable (see Arc A S2 §4g) -->
-    {% if false %}
-    <aside class="portal-unreachable">
+    <aside class="portal-unreachable" hidden>
       <p>can't reach sol pbc right now.</p>
       <p>no problem — finish setting up locally and turn on services whenever you want. nothing here needs sol pbc to work.</p>
     </aside>
-    {% endif %}
 
     <section id="section-machine-card" class="section machine-card">
       <h2 class="machine-card-headline">solstone runs on your machine.</h2>
@@ -167,19 +164,40 @@
       <p class="section-hint">if you're a scout for solstone you can enter the key provided here, or apply to get a key for testing at <a href="https://scouts.solstone.app" target="_blank" rel="noopener noreferrer">scouts.solstone.app</a></p>
       <p class="section-hint">prefer Claude or OpenAI? add a developer key in settings &rarr; API keys: Claude from <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer">console.anthropic.com</a> (not the claude.ai chat signup), OpenAI from <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">platform.openai.com</a> (not chatgpt.com).</p>
       <p class="section-hint">curious what leaves your machine and what doesn't? see <a href="https://github.com/solpbc/solstone/blob/main/DATA-FLOW.md" target="_blank" rel="noopener noreferrer">what solstone sends</a>.</p>
-      <div class="field-group">
-        <label for="gemini-key">Gemini API key</label>
-        <div class="provider-key-row">
-          <div class="password-wrap">
-            <input type="password" id="gemini-key" autocomplete="off"
-                   data-1p-ignore data-lpignore="true" data-bwignore="true">
-            <button type="button" class="password-toggle" data-toggle="gemini-key" title="show key">
-              <span>&#128065;</span>
-            </button>
-          </div>
-          <button type="button" id="gemini-validate" class="settings-preset-btn">validate</button>
+      <div class="scout-primary">
+        <div data-scout-state="idle">
+          <button type="button" id="scout-enable" class="cta-button">enable solstone scout</button>
+          <p class="section-hint">no key to copy. opens your services in a browser — sol pbc sets up a Gemini key on your behalf and sends it back to this machine.</p>
         </div>
-        <small class="field-status">&nbsp;</small>
+        <div data-scout-state="waiting" hidden>
+          <p class="field-status status-saved">opening your services…</p>
+          <p class="section-hint"><a id="scout-manual-link" href="https://services.solstone.app/" target="_blank" rel="noopener noreferrer">open your services to enable scout</a></p>
+        </div>
+        <div data-scout-state="success" hidden>
+          <p class="field-status status-saved">✓  solstone scout enabled</p>
+          <p class="section-hint">sol pbc set up a Gemini key for you and put it on this machine — you never had to touch it, and nothing from your journal crossed to set it up. <a href="https://services.solstone.app/" target="_blank" rel="noopener noreferrer">manage solstone scout anytime in your services</a>.</p>
+        </div>
+        <div data-scout-state="error" data-reason="" hidden>
+          <p class="field-status status-error" id="scout-error-message"></p>
+          <button type="button" id="scout-try-again" class="settings-preset-btn">try again</button>
+        </div>
+      </div>
+      <div class="byo-paste">
+        <p class="section-hint">or</p>
+        <div class="field-group">
+          <label for="gemini-key">Gemini API key</label>
+          <div class="provider-key-row">
+            <div class="password-wrap">
+              <input type="password" id="gemini-key" autocomplete="off"
+                     data-1p-ignore data-lpignore="true" data-bwignore="true">
+              <button type="button" class="password-toggle" data-toggle="gemini-key" title="show key">
+                <span>&#128065;</span>
+              </button>
+            </div>
+            <button type="button" id="gemini-validate" class="settings-preset-btn">validate</button>
+          </div>
+          <small class="field-status">&nbsp;</small>
+        </div>
       </div>
       <p class="trust-note">to maximize privacy with Google, use a key tied to a billing account — <a href="https://ai.google.dev/gemini-api/terms" target="_blank" rel="noopener noreferrer" style="color: #b06a1a;">Google Terms</a></p>
     </section>
@@ -187,10 +205,6 @@
     <section class="init-section" id="section-observed-media">
       <h3>your observed media (raw audio and screencast files)</h3>
       <p class="section-hint">by default, solstone retains your observed media so you can access it again later. you can also expire originals after a number of days, or delete them as soon as they're processed. <a href="https://solpbc.org/privacy#recording-laws" target="_blank" rel="noopener">recording-consent laws</a> may apply in your jurisdiction.</p>
-      <!-- L11-stub: signed-in retention pre-fill (see Arc A S2 §4e) -->
-      {% if false %}
-      <p class="retention-prefill-hint">using your saved preference: 30 days. change it here for this machine, or in your sign-in to change it everywhere.</p>
-      {% endif %}
       <div class="field-group">
         <div class="retention-options">
           <label class="retention-option">
@@ -248,6 +262,22 @@
 
     let detectedTimezone = '';
     const RESULT_DISPLAY_MS = 1200;
+    const SCOUT_RETRY_BACKOFF_MS = [1000, 2000, 4000];
+    const SCOUT_ERROR_COPY = {
+      consent_link_expired: 'the consent link expired. try again.',
+      nonce_invalid: 'the consent session expired. try again.',
+      tls_verification_failed: "couldn't verify the connection to sol pbc. try again.",
+      unexpected_payload: 'sol pbc sent something unexpected back. try again.',
+      journal_not_initialized: "this journal isn't ready yet — refresh the page and try again.",
+      write_failed: "couldn't save the key to your journal. try again.",
+      internal_error: 'something went wrong on this machine. try again.',
+      unknown: 'something went wrong. try again, or finish setup with a pasted Gemini key instead.'
+    };
+    const MANUAL_KEY_PRESENT_COPY = 'a gemini key is already on this machine. to swap it for a scout-provisioned key, use `sol services enable scout --force` from a terminal.';
+    const SCOUT_UNREACHABLE_COPY = "can't reach sol pbc right now.";
+    let scoutStream = null;
+    let scoutSubscribed = false;
+    let scoutRetryTimer = null;
 
     function clearKeyStatus() {
       const input = document.getElementById('gemini-key');
@@ -258,6 +288,166 @@
       if (!small) return;
       small.classList.remove('status-saved', 'status-error', 'status-fade');
       small.textContent = '\u00a0';
+    }
+
+    function portalUnreachableAside() {
+      return document.querySelector('.portal-unreachable');
+    }
+
+    function hidePortalUnreachable() {
+      const aside = portalUnreachableAside();
+      if (aside) aside.hidden = true;
+    }
+
+    function showPortalUnreachable() {
+      const aside = portalUnreachableAside();
+      if (aside) aside.hidden = false;
+    }
+
+    function closeScoutStream() {
+      if (scoutRetryTimer) {
+        clearTimeout(scoutRetryTimer);
+        scoutRetryTimer = null;
+      }
+      if (scoutStream) {
+        scoutStream.close();
+        scoutStream = null;
+      }
+      scoutSubscribed = false;
+    }
+
+    function readScoutEventData(event) {
+      try {
+        return JSON.parse(event.data || '{}');
+      } catch (_err) {
+        return {};
+      }
+    }
+
+    function renderScoutState(state, opts = {}) {
+      document.querySelectorAll('[data-scout-state]').forEach(el => {
+        el.hidden = el.dataset.scoutState !== state;
+      });
+
+      const byoPaste = document.querySelector('.byo-paste');
+      if (byoPaste) byoPaste.hidden = state === 'success';
+
+      if (state === 'success') {
+        const input = document.getElementById('gemini-key');
+        if (input) input.value = '';
+        clearKeyStatus();
+      }
+
+      if (state === 'idle') {
+        const button = document.getElementById('scout-enable');
+        if (button) {
+          button.disabled = false;
+          button.textContent = 'enable solstone scout';
+        }
+      }
+
+      if (state === 'waiting') {
+        const link = document.getElementById('scout-manual-link');
+        if (link && opts.portalUrl) link.href = opts.portalUrl;
+      }
+
+      if (state === 'error') {
+        const reason = opts.reason || 'unknown';
+        const stateEl = document.querySelector('[data-scout-state="error"]');
+        if (stateEl) stateEl.dataset.reason = reason;
+        const messageEl = document.getElementById('scout-error-message');
+        if (messageEl) messageEl.textContent = opts.message || SCOUT_ERROR_COPY[reason] || SCOUT_ERROR_COPY.unknown;
+        const retryButton = document.getElementById('scout-try-again');
+        if (retryButton) retryButton.hidden = opts.retry === false;
+      }
+    }
+
+    async function enableScout() {
+      closeScoutStream();
+      hidePortalUnreachable();
+      renderScoutState('idle');
+      const button = document.getElementById('scout-enable');
+      if (button) {
+        button.disabled = true;
+        button.textContent = 'opening…';
+      }
+      try {
+        const result = await window.apiJson('/init/services/scout/start', {
+          method: 'POST'
+        });
+        if (!result || !result.subscribe_url || !result.portal_url) {
+          throw new Error('missing scout subscription details');
+        }
+        subscribeScoutStream(result.subscribe_url, result.portal_url);
+      } catch (err) {
+        if (err && err.status === 409 && err.serverMessage === 'already_enabled') {
+          renderScoutState('success');
+          return;
+        }
+        if (err && err.status === 409 && err.serverMessage === 'manual_key_present') {
+          renderScoutState('error', {
+            reason: 'manual_key_present',
+            message: MANUAL_KEY_PRESENT_COPY,
+            retry: false
+          });
+          return;
+        }
+        showPortalUnreachable();
+        renderScoutState('idle');
+      }
+    }
+
+    function subscribeScoutStream(subscribeUrl, portalUrl, retryAttempt = 0) {
+      closeScoutStream();
+      scoutStream = new EventSource(subscribeUrl);
+
+      scoutStream.addEventListener('subscribed', event => {
+        const data = readScoutEventData(event);
+        scoutSubscribed = true;
+        renderScoutState('waiting', { portalUrl: data.portal_url || portalUrl });
+      });
+
+      scoutStream.addEventListener('waiting', () => {});
+
+      scoutStream.addEventListener('scout-enabled', () => {
+        closeScoutStream();
+        renderScoutState('success');
+      });
+
+      scoutStream.addEventListener('failed', event => {
+        const data = readScoutEventData(event);
+        const reason = data.reason || 'unknown';
+        closeScoutStream();
+        renderScoutState('error', {
+          reason,
+          message: SCOUT_ERROR_COPY[reason] || SCOUT_ERROR_COPY.unknown
+        });
+      });
+
+      scoutStream.addEventListener('timeout', () => {
+        closeScoutStream();
+        showPortalUnreachable();
+        renderScoutState('error', {
+          reason: 'timeout',
+          message: SCOUT_UNREACHABLE_COPY
+        });
+      });
+
+      scoutStream.onerror = () => {
+        if (scoutSubscribed) return;
+        closeScoutStream();
+        if (retryAttempt < SCOUT_RETRY_BACKOFF_MS.length) {
+          scoutRetryTimer = setTimeout(() => {
+            subscribeScoutStream(subscribeUrl, portalUrl, retryAttempt + 1);
+          }, SCOUT_RETRY_BACKOFF_MS[retryAttempt]);
+          return;
+        }
+        showPortalUnreachable();
+        renderScoutState('error', {
+          reason: 'timeout',
+          message: SCOUT_UNREACHABLE_COPY
+        });
+      };
     }
 
     async function validateProviderKey() {
@@ -332,6 +522,12 @@
 
     document.addEventListener('DOMContentLoaded', () => {
       detectedTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      document.getElementById('scout-enable').addEventListener('click', enableScout);
+      document.getElementById('scout-try-again').addEventListener('click', () => {
+        closeScoutStream();
+        hidePortalUnreachable();
+        renderScoutState('idle');
+      });
 
       ['name', 'preferred'].forEach(field => {
         document.getElementById(field).addEventListener('blur', function() {

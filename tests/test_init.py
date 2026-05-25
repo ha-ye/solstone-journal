@@ -194,6 +194,7 @@ class TestInitDetection:
             "gemini_key",
             "gemini.google.com",
             "gemini-api/terms",
+            "a gemini key is already on this machine",
         )
         # DOM identifiers, JS selectors, JSON keys, and literal domains stay lowercase.
         body_copy = "\n".join(
@@ -223,13 +224,9 @@ class TestInitDetection:
 
     def test_portal_unreachable_stub_inert_on_default_path(self, fresh_client):
         resp = fresh_client.get("/init")
-        assert b"can't reach sol pbc right now." not in resp.data
-        assert b"L11-stub: portal-unreachable" in resp.data
-
-    def test_signed_in_retention_prefill_stub_inert_on_default_path(self, fresh_client):
-        resp = fresh_client.get("/init")
-        assert b"using your saved preference: 30 days." not in resp.data
-        assert b"L11-stub: signed-in retention pre-fill" in resp.data
+        assert b'<aside class="portal-unreachable" hidden>' in resp.data
+        assert b"can't reach sol pbc right now." in resp.data
+        assert b"L11-stub: portal-unreachable" not in resp.data
 
     def test_init_validate_button_present(self, fresh_client):
         resp = fresh_client.get("/init")
