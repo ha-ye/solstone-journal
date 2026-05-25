@@ -17,7 +17,8 @@ CANONICAL_TOKENS = {
     "write_failed",
     "already_enabled",
     "manual_key_present",
-    "headless_no_browser",
+    "rate_limited",
+    "already_disabled",
     "journal_not_initialized",
     "unknown_service",
 }

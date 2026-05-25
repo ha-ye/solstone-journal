@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import stat
 import threading
@@ -12,7 +13,10 @@ import pytest
 from solstone.think import journal_config
 from solstone.think.journal_config import write_journal_config
 from solstone.think.services.scout import (
+    KEY_FINGERPRINT_FIELD,
+    DisableOutcome,
     JournalNotInitializedError,
+    disable_scout,
     is_manual_key_present,
     is_scout_enabled,
     provision_scout_handoff,
@@ -48,9 +52,18 @@ def test_provision_scout_handoff_round_trip_preserves_config(journal_copy) -> No
         assert after["retention"] == before["retention"]
     assert after["convey"] == before["convey"]
     assert after["env"]["GOOGLE_API_KEY"] == "google-one"
-    assert after["services"]["scout"]["account_id"] == "acct-one"
-    assert after["services"]["scout"]["key_created_at"] == _payload()["created_at"]
-    assert after["services"]["scout"]["dispatch_token"] == "dispatch-one"
+    scout = after["services"]["scout"]
+    assert set(scout) == {
+        "enabled_at",
+        "account_id",
+        "key_created_at",
+        "dispatch_token",
+        KEY_FINGERPRINT_FIELD,
+    }
+    assert scout["account_id"] == "acct-one"
+    assert scout["key_created_at"] == _payload()["created_at"]
+    assert scout["dispatch_token"] == "dispatch-one"
+    assert scout[KEY_FINGERPRINT_FIELD] == hashlib.sha256(b"google-one").hexdigest()
     assert scout_provenance() == after["services"]["scout"]
     assert stat.S_IMODE(_config_path(journal_copy).stat().st_mode) == 0o600
 
@@ -139,6 +152,60 @@ def test_provision_preserves_other_env_and_top_level_keys(journal_copy) -> None:
     assert saved["env"]["OPENAI_API_KEY"] == "keep-me-too"
     assert saved["convey"] == {"port": 5015}
     assert saved["custom_block"] == {"survives": True}
+
+
+def test_disable_scout_when_enabled_returns_outcome_clears_block_and_env_key(
+    journal_copy,
+) -> None:
+    provision_scout_handoff(_payload("disable"))
+
+    outcome = disable_scout()
+
+    assert outcome == DisableOutcome(was_enabled=True, env_key_preserved=False)
+    saved = _read_config(journal_copy)
+    assert "GOOGLE_API_KEY" not in saved["env"]
+    assert saved["services"] == {}
+
+
+def test_disable_scout_preserves_env_key_when_fingerprint_mismatches(
+    journal_copy,
+) -> None:
+    provision_scout_handoff(_payload("manual"))
+    config = _read_config(journal_copy)
+    config["env"]["GOOGLE_API_KEY"] = "manual-replacement"
+    write_journal_config(config)
+
+    outcome = disable_scout()
+
+    assert outcome == DisableOutcome(was_enabled=True, env_key_preserved=True)
+    saved = _read_config(journal_copy)
+    assert saved["env"]["GOOGLE_API_KEY"] == "manual-replacement"
+    assert saved["services"] == {}
+
+
+def test_disable_scout_when_not_enabled_returns_was_enabled_false(
+    journal_copy,
+) -> None:
+    config = _read_config(journal_copy)
+    config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
+    config.setdefault("services", {}).pop("scout", None)
+    write_journal_config(config)
+
+    outcome = disable_scout()
+
+    assert outcome == DisableOutcome(was_enabled=False, env_key_preserved=False)
+    saved = _read_config(journal_copy)
+    assert saved["services"] == {}
+
+
+def test_disable_scout_creates_private_lock_file(journal_copy) -> None:
+    provision_scout_handoff(_payload("lock"))
+
+    disable_scout()
+
+    lock_path = journal_copy / "config" / ".journal.json.lock"
+    assert lock_path.exists()
+    assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
 
 
 def test_provision_requires_initialized_journal(tmp_path, monkeypatch) -> None:

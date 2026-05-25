@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import solstone.think.services.constants as constants
 from solstone.think.services.constants import (
+    DEVICE_CODE_PREFIX,
+    DEVICE_CODE_REGEX,
+    DEVICE_CODE_TTL_MS,
     NONCE_ALPHABET,
     NONCE_LENGTH_CHARS,
     NONCE_REGEX,
@@ -26,5 +29,16 @@ def test_minted_nonces_match_regex_and_are_high_cardinality() -> None:
     assert len(set(samples)) >= 990
 
 
-def test_device_code_constants_are_not_defined() -> None:
-    assert not any(name.startswith("DEVICE_CODE_") for name in dir(constants))
+def test_device_code_constants_match_worker_contract() -> None:
+    assert DEVICE_CODE_PREFIX == "SCOUT"
+    assert DEVICE_CODE_REGEX.pattern == (
+        r"^SCOUT-[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{4}-"
+        r"[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{4}$"
+    )
+    assert DEVICE_CODE_TTL_MS == 900_000
+    assert any(name.startswith("DEVICE_CODE_") for name in dir(constants))
+
+
+def test_device_code_regex_rejects_ambiguous_chars() -> None:
+    for char in "ILO01":
+        assert not DEVICE_CODE_REGEX.fullmatch(f"SCOUT-{char}345-6789")

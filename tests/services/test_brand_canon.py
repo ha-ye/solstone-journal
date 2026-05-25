@@ -96,7 +96,14 @@ def _install_urlopen(monkeypatch: pytest.MonkeyPatch, items: list[object]) -> No
         "write_failed",
         "already_enabled",
         "manual_key_present",
-        "headless_no_browser",
+        "device_code_happy",
+        "device_code_rate_limited",
+        "device_code_portal_unreachable",
+        "device_code_unexpected_payload",
+        "disable_happy",
+        "disable_already_disabled",
+        "disable_manual_preserved",
+        "disable_rotated_stale_key",
         "journal_not_initialized",
         "unknown_service",
     ],
@@ -131,7 +138,7 @@ def test_cli_branch_output_avoids_blocked_brand_terms(
     elif branch == "write_failed":
         _install_urlopen(monkeypatch, [FakeResponse(200, _payload_body())])
         monkeypatch.setattr(
-            cli,
+            cli.scout,
             "provision_scout_handoff",
             lambda _payload: (_ for _ in ()).throw(OSError("disk")),
         )
@@ -145,9 +152,96 @@ def test_cli_branch_output_avoids_blocked_brand_terms(
         config.setdefault("env", {})["GOOGLE_API_KEY"] = "manual"
         config.pop("services", None)
         write_journal_config(config)
-    elif branch == "headless_no_browser":
+    elif branch == "device_code_happy":
         monkeypatch.setattr(cli, "_is_headless", lambda: True)
-        monkeypatch.setattr(portal_client, "mint_nonce", lambda: "A" * 52)
+        monkeypatch.setattr(
+            portal_client,
+            "mint_device_code",
+            lambda _base_url: portal_client.DeviceCodeOutcome(
+                kind="success",
+                nonce="A" * 52,
+                code="SCOUT-2345-6789",
+                expires_in=900,
+            ),
+        )
+        monkeypatch.setattr(
+            portal_client,
+            "poll_handoff_once",
+            lambda *_args, **_kwargs: portal_client.PollOutcome(
+                kind="success",
+                payload={
+                    "google_api_key": "google-device",
+                    "dispatch_token": "dispatch-device",
+                    "account_id": "acct-device",
+                    "created_at": "2026-05-24T00:00:00Z",
+                },
+            ),
+        )
+        monkeypatch.setattr(cli.scout, "provision_scout_handoff", lambda _payload: None)
+    elif branch == "device_code_rate_limited":
+        monkeypatch.setattr(cli, "_is_headless", lambda: True)
+        monkeypatch.setattr(
+            portal_client,
+            "mint_device_code",
+            lambda _base_url: portal_client.DeviceCodeOutcome(
+                kind="failed",
+                reason="rate_limited",
+            ),
+        )
+    elif branch == "device_code_portal_unreachable":
+        monkeypatch.setattr(cli, "_is_headless", lambda: True)
+        monkeypatch.setattr(
+            portal_client,
+            "mint_device_code",
+            lambda _base_url: portal_client.DeviceCodeOutcome(
+                kind="failed",
+                reason="portal_unreachable",
+            ),
+        )
+    elif branch == "device_code_unexpected_payload":
+        monkeypatch.setattr(cli, "_is_headless", lambda: True)
+        monkeypatch.setattr(
+            portal_client,
+            "mint_device_code",
+            lambda _base_url: portal_client.DeviceCodeOutcome(
+                kind="failed",
+                reason="unexpected_payload",
+            ),
+        )
+    elif branch == "disable_happy":
+        cli.scout.provision_scout_handoff(
+            {
+                "google_api_key": "google-disable",
+                "dispatch_token": "dispatch-disable",
+                "account_id": "acct-disable",
+                "created_at": "2026-05-24T00:00:00Z",
+            }
+        )
+        argv = ["disable", "scout"]
+    elif branch == "disable_already_disabled":
+        argv = ["disable", "scout"]
+    elif branch == "disable_manual_preserved":
+        cli.scout.provision_scout_handoff(
+            {
+                "google_api_key": "google-manual",
+                "dispatch_token": "dispatch-manual",
+                "account_id": "acct-manual",
+                "created_at": "2026-05-24T00:00:00Z",
+            }
+        )
+        config = json.loads((journal_copy / "config" / "journal.json").read_text())
+        config["env"]["GOOGLE_API_KEY"] = "manual-replacement"
+        write_journal_config(config)
+        argv = ["disable", "scout"]
+    elif branch == "disable_rotated_stale_key":
+        config = json.loads((journal_copy / "config" / "journal.json").read_text())
+        config.setdefault("env", {})["GOOGLE_API_KEY"] = "manual-stale"
+        config.setdefault("services", {})["scout"] = {
+            "account_id": "acct-stale",
+            "key_fingerprint_sha256": "0" * 64,
+        }
+        write_journal_config(config)
+        argv = ["disable", "scout"]
     elif branch == "journal_not_initialized":
         journal = tmp_path / "uninitialized-journal"
         (journal / "config").mkdir(parents=True)

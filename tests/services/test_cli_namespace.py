@@ -72,6 +72,48 @@ def _install_urlopen(monkeypatch, items: list[Any]):
     return calls
 
 
+def test_mint_device_code_posts_empty_body_and_returns_success(monkeypatch) -> None:
+    calls = _install_urlopen(
+        monkeypatch,
+        [
+            FakeResponse(
+                200,
+                json.dumps(
+                    {
+                        "nonce": "A" * 52,
+                        "code": "SCOUT-2345-6789",
+                        "expires_in": 900,
+                    }
+                ).encode("utf-8"),
+            )
+        ],
+    )
+
+    outcome = portal_client.mint_device_code("https://services.example")
+
+    assert outcome == portal_client.DeviceCodeOutcome(
+        kind="success",
+        nonce="A" * 52,
+        code="SCOUT-2345-6789",
+        expires_in=900,
+    )
+    request, timeout = calls[0]
+    assert request.full_url == "https://services.example/enable/scout/code"
+    assert request.data == b""
+    assert request.get_method() == "POST"
+    assert request.headers["User-agent"].startswith("solstone-cli/")
+    assert timeout == portal_client.POLL_TIMEOUT_SECONDS
+
+
+def test_mint_device_code_429_maps_rate_limited(monkeypatch) -> None:
+    _install_urlopen(monkeypatch, [_http_error(429)])
+
+    outcome = portal_client.mint_device_code("https://services.example")
+
+    assert outcome.kind == "failed"
+    assert outcome.reason == "rate_limited"
+
+
 @pytest.fixture
 def browser_ready(monkeypatch):
     opened = []
@@ -187,7 +229,7 @@ def test_write_failure_after_200_maps_to_write_failed(
 ):
     _install_urlopen(monkeypatch, [FakeResponse(200, _payload_body())])
     monkeypatch.setattr(
-        cli,
+        cli.scout,
         "provision_scout_handoff",
         lambda _payload: (_ for _ in ()).throw(OSError("disk full")),
     )
@@ -245,27 +287,152 @@ def test_force_bypasses_manual_key_detection(
     assert saved["env"]["GOOGLE_API_KEY"] == "google-force"
 
 
-def test_headless_prints_url_and_exits_2(journal_copy, monkeypatch, capsys) -> None:
+def test_headless_mints_device_code_and_polls(
+    journal_copy, monkeypatch, capsys
+) -> None:
     monkeypatch.setattr(cli, "_is_headless", lambda: True)
-    monkeypatch.setattr(portal_client, "mint_nonce", lambda: "A" * 52)
+    monkeypatch.setattr(
+        portal_client,
+        "mint_device_code",
+        lambda _base_url: portal_client.DeviceCodeOutcome(
+            kind="success",
+            nonce="A" * 52,
+            code="SCOUT-2345-6789",
+            expires_in=900,
+        ),
+    )
+    monkeypatch.setattr(
+        portal_client,
+        "poll_handoff_once",
+        lambda _base_url, _nonce, *, timeout: portal_client.PollOutcome(
+            kind="success",
+            payload=_payload(),
+        ),
+    )
 
-    assert cli.main(["enable", "scout"]) == 2
+    assert cli.main(["enable", "scout"]) == 0
 
     captured = capsys.readouterr()
-    assert captured.out.strip().endswith("/enable/scout?nonce=" + "A" * 52)
-    assert captured.err.startswith("headless_no_browser: ")
+    assert "https://services.solstone.app/enable/scout" in captured.out
+    assert "?nonce=" not in captured.out
+    assert "SCOUT-2345-6789" in captured.out
+    assert cli.STDOUT_SUCCESS in captured.out
+    assert captured.err == ""
 
 
-def test_open_browser_false_maps_to_headless(journal_copy, monkeypatch, capsys) -> None:
+def test_open_browser_false_falls_back_to_device_code(
+    journal_copy, monkeypatch, capsys
+) -> None:
     monkeypatch.setattr(cli, "_is_headless", lambda: False)
     monkeypatch.setattr(cli, "_open_browser", lambda _url: False)
-    monkeypatch.setattr(portal_client, "mint_nonce", lambda: "B" * 52)
+    monkeypatch.setattr(
+        portal_client,
+        "mint_device_code",
+        lambda _base_url: portal_client.DeviceCodeOutcome(
+            kind="success",
+            nonce="B" * 52,
+            code="SCOUT-9876-ZYXW",
+            expires_in=900,
+        ),
+    )
+    monkeypatch.setattr(
+        portal_client,
+        "poll_handoff_once",
+        lambda _base_url, _nonce, *, timeout: portal_client.PollOutcome(
+            kind="success",
+            payload=_payload("fallback"),
+        ),
+    )
 
-    assert cli.main(["enable", "scout"]) == 2
+    assert cli.main(["enable", "scout"]) == 0
 
     captured = capsys.readouterr()
-    assert "/enable/scout?nonce=" + "B" * 52 in captured.out
-    assert captured.err.startswith("headless_no_browser: ")
+    assert cli.STDOUT_OPENING in captured.out
+    assert "https://services.solstone.app/enable/scout" in captured.out
+    assert "?nonce=" not in captured.out
+    assert "SCOUT-9876-ZYXW" in captured.out
+    assert captured.err == ""
+
+
+def test_mint_device_code_rate_limited(journal_copy, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cli, "_is_headless", lambda: True)
+    monkeypatch.setattr(
+        portal_client,
+        "mint_device_code",
+        lambda _base_url: portal_client.DeviceCodeOutcome(
+            kind="failed",
+            reason="rate_limited",
+        ),
+    )
+
+    assert cli.main(["enable", "scout"]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("rate_limited: ")
+
+
+def test_disable_scout_when_enabled_clears_block_and_env_key(
+    journal_copy, capsys
+) -> None:
+    cli.scout.provision_scout_handoff(_payload("disable"))
+
+    assert cli.main(["disable", "scout"]) == 0
+
+    captured = capsys.readouterr()
+    assert captured.out.strip() == cli.STDOUT_DISABLE_SUCCESS
+    assert captured.err == ""
+    config = json.loads((journal_copy / "config" / "journal.json").read_text())
+    assert "GOOGLE_API_KEY" not in config["env"]
+    assert config["services"] == {}
+
+
+def test_disable_scout_when_manually_keyed_preserves_env_key(
+    journal_copy, capsys
+) -> None:
+    cli.scout.provision_scout_handoff(_payload("manual"))
+    config = json.loads((journal_copy / "config" / "journal.json").read_text())
+    config["env"]["GOOGLE_API_KEY"] = "manual-replacement"
+    write_journal_config(config)
+
+    assert cli.main(["disable", "scout"]) == 0
+
+    captured = capsys.readouterr()
+    assert "preserved" in captured.out
+    assert captured.err == ""
+    saved = json.loads((journal_copy / "config" / "journal.json").read_text())
+    assert saved["env"]["GOOGLE_API_KEY"] == "manual-replacement"
+    assert saved["services"] == {}
+
+
+def test_disable_scout_when_not_enabled_emits_already_disabled(
+    journal_copy, capsys
+) -> None:
+    assert cli.main(["disable", "scout"]) == 0
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("already_disabled: ")
+
+
+def test_disable_scout_when_journal_not_initialized_emits_token(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    journal = tmp_path / "journal"
+    (journal / "config").mkdir(parents=True)
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+
+    assert cli.main(["disable", "scout"]) == 1
+
+    assert capsys.readouterr().err.startswith("journal_not_initialized: ")
+
+
+def test_disable_unknown_service_emits_unknown_service(capsys) -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["disable", "bad"])
+
+    assert exc.value.code == 2
+    assert capsys.readouterr().err.startswith("unknown_service: ")
 
 
 def test_services_portal_url_override(journal_copy, browser_ready, monkeypatch):
