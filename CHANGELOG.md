@@ -4,6 +4,20 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.3.9] - 2026-05-25
+
+### Added
+- solstone now has a "services" layer for the optional cloud-backed extras sol pbc offers alongside your local solstone. today that means solstone scout, the alpha-tester program that provisions a Google Gemini key for you and unlocks scout-only features. services are off by default; you turn them on from `services.solstone.app` or `sol services enable scout`, and solstone itself still runs entirely on your machine.
+- you can now move days or whole journals between your own machines, and connect an observer on one machine to a journal on another, over a direct private link between your devices. `sol link join` pairs them; `sol transfer send --to <peer>` and `sol export --to <peer>` push from one to the other. revoking a paired device at the `/link` dashboard, with `sol observer revoke`, or with `sol call link unpair` cuts the connection at TLS the moment you revoke.
+- a new "Local (on-device)" provider runs sol from a bundled `llama-server` on your own machine with a pinned Qwen model. zero-egress: when sol is set to local, it never falls through to a cloud provider.
+- a new daily `journal/identity/health.md` surface tells you whether solstone is OK at a glance. sol reads its own signals, auto-recovers from things like stuck transcripts, and the home page and morning briefing now read its summary.
+
+### Changed
+- a few of the surfaces you touch most are now more direct. creating a facet lands you on a real detail page that confirms what you just made and offers next steps. clicking a "needs you" item on the home page opens a fresh chat with editable starter text already in the box (not as ghost placeholder), and sol knows which item you came from. each modality on segment-detail pages has its own "analyze now" button so you can re-run analysis on one part of a day without dropping to a terminal. the health, tokens, and service-log pages were rebuilt around a glance row that answers the first question (is solstone OK, is this costing too much, where did the pipeline fail) with the detail kept under progressive disclosure; service log lines now carry severity colors with screen-reader announcements on errors.
+
+### Fixed
+- segments that were already analyzed sometimes painted as still-pending on the day timeline; they now render correctly. audio playback on segment pages now shows the real duration and the right format, transcript lines no longer carry a doubled timestamp, the day view scrolls naturally on short windows, and a cold-load race on transcripts pages is resolved. internal stability improvements across providers install, background tasks, and the convey wizard.
+
 ## [0.3.8] - 2026-05-22
 
 ### Added
