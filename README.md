@@ -1,10 +1,10 @@
 <img src="docs/static/sol-wordmark.svg" alt="solstone" width="300">
 
-# solstone
+# solstone journal
 
 your co-brain — observers experience your day along with you, sol curates your memories, and your journal holds everything.
 
-solstone runs in the background on your computer, experiencing your day along with you. AI agents transcribe, extract entities, detect meetings, build knowledge graphs, and surface daily insights — all without any manual input. everything stays on your machine in daily journal directories. open source, local-first, no cloud required.
+the python core of the solstone product family — the journal layer that the [solstone native apps](https://solstone.app) wrap. it runs in the background on your computer, experiencing your day along with you. AI agents transcribe, extract entities, detect meetings, build knowledge graphs, and surface daily insights — all without any manual input. everything stays on your machine in daily journal directories. open source, local-first, no cloud required.
 
 Python 3.11+, Linux + macOS, AGPL-3.0-only, maintained by [sol pbc](https://solpbc.org).
 
@@ -119,7 +119,7 @@ Use `make dev` to run the full stack against test fixtures and `make ci` for pre
 
 ## feedback
 
-Questions, feedback, or a bug? **Follow and tag [@solstone.app](https://bsky.app/profile/solstone.app) on Bluesky** for discussion and updates, open an issue at [github.com/solpbc/solstone/issues](https://github.com/solpbc/solstone/issues) for bugs, or reach support at [support.solstone.app](https://support.solstone.app). You don't need to know anyone — those are the front doors.
+Questions, feedback, or a bug? **Follow and tag [@solstone.app](https://bsky.app/profile/solstone.app) on Bluesky** for discussion and updates, open an issue at [github.com/solpbc/solstone-journal/issues](https://github.com/solpbc/solstone-journal/issues) for bugs, or reach support at [support.solstone.app](https://support.solstone.app). You don't need to know anyone — those are the front doors.
 
 ## contributing
 

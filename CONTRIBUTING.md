@@ -47,8 +47,8 @@ brew install python git ripgrep ffmpeg uv
 ## Source-checkout install
 
 ```bash
-git clone https://github.com/solpbc/solstone.git
-cd solstone
+git clone https://github.com/solpbc/solstone-journal.git
+cd solstone-journal
 make install
 .venv/bin/sol setup
 ```

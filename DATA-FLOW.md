@@ -47,4 +47,4 @@ this data-flow posture isn't a feature decision that could be reversed next quar
 
 ---
 
-*solstone is open source (AGPL-3.0). every claim in this doc is verifiable in the code at https://github.com/solpbc/solstone — the provider call path is `solstone/think/providers/`.*
+*solstone is open source (AGPL-3.0). every claim in this doc is verifiable in the code at https://github.com/solpbc/solstone-journal — the provider call path is `solstone/think/providers/`.*

@@ -7,7 +7,7 @@ description: >-
   and consumption commands live in the user-wide `using-vit` skill.
   TRIGGER: ship a cap, publish solstone cap, vit ship, after hopper ship,
   final lode ship, capworthy feature, three-word ref, vit beacon,
-  vit:github.com/solpbc/solstone.
+  vit:github.com/solpbc/solstone-journal.
 ---
 
 # Vit Ship Skill
@@ -18,7 +18,7 @@ Publish solstone capabilities as vit caps. Invoke via Bash: `vit ship ...` (othe
 
 vit is a CLI for publishing software capabilities (caps) to a decentralized social network built on ATProto. solstone participates in the vit network — when a capworthy feature ships, the VPE session publishes it as a cap so other projects and agents can discover, vet, and remix it.
 
-**beacon:** `vit:github.com/solpbc/solstone`
+**beacon:** `vit:github.com/solpbc/solstone-journal`
 
 **Scope**: this skill is intentionally narrow — VPE-session ship workflow only. For `vit skim`, `vit follow`, `vit learn`, `vit remix`, `vit vet`, and general vit usage, the `using-vit` skill has full coverage. Don't duplicate that reference here.
 
