@@ -3,13 +3,14 @@
 
 """CLI for observer management.
 
-Provides commands for creating, listing, revoking, and checking status
+Provides commands for creating, listing, renaming, revoking, and checking status
 of observer registrations. Operates directly on the journal
 filesystem — no dependency on the Convey web server.
 
 Usage:
     sol observer create <name>           Create a new observer
     sol observer list                    List all registered observers
+    sol observer rename <old> <new>      Rename an observer
     sol observer revoke <name-or-prefix> Revoke an observer registration
     sol observer status [name-or-prefix] Show observer status details
 """
@@ -254,13 +255,6 @@ def cmd_revoke(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_install(args: argparse.Namespace) -> int:
-    """Install an observer for this host."""
-    from solstone.observe.observer_install import run_install
-
-    return run_install(args)
-
-
 def cmd_rename(args: argparse.Namespace) -> int:
     """Rename an observer (affects future stream names)."""
     identifier = args.identifier
@@ -359,7 +353,6 @@ def _status_single(identifier: str, json_output: bool = False) -> int:
     print(f"  Bytes:      {_fmt_bytes(stats.get('bytes_received', 0))}")
     if stats.get("duplicates_rejected"):
         print(f"  Duplicates: {stats['duplicates_rejected']} rejected")
-    _print_install_status(name)
 
     # Today's sync history
     today = datetime.date.today().strftime("%Y%m%d")
@@ -387,35 +380,6 @@ def _status_single(identifier: str, json_output: bool = False) -> int:
                 print(f"    {day}: {len(day_uploads)} segment(s)")
 
     return 0
-
-
-def _print_install_status(name: str) -> None:
-    """Print install marker details for human status output."""
-    from solstone.observe.observer_install.common import (
-        SERVICE_UNITS,
-        find_marker_for_observer,
-        run_probe,
-    )
-
-    marker = find_marker_for_observer(name)
-    if marker is None:
-        return
-
-    _path, data = marker
-    platform_name = data.get("platform", "unknown")
-    version = data.get("version") or "unknown"
-    short_version = version[:12] if version != "unknown" else version
-    installed_at = data.get("installed_at") or "unknown"
-    print(f"  Installed: {installed_at} ({platform_name}, version {short_version})")
-
-    unit_name = SERVICE_UNITS.get(platform_name)
-    if not unit_name:
-        return
-    process = run_probe(["systemctl", "--user", "is-active", unit_name])
-    service_status = process.stdout.strip()
-    if not service_status:
-        service_status = "missing" if process.returncode == 127 else "inactive"
-    print(f"  Service:   {unit_name} — {service_status}")
 
 
 def _status_all(json_output: bool = False) -> int:
@@ -528,38 +492,6 @@ def main() -> None:
         help="Observer name or key prefix (omit for overview)",
     )
 
-    # install
-    p_install = sub.add_parser("install", help="Install an observer for this host")
-    p_install.add_argument(
-        "name",
-        nargs="?",
-        default=None,
-        help="Observer name (defaults to this host)",
-    )
-    p_install.add_argument(
-        "--platform",
-        choices=["linux", "tmux", "macos"],
-        default=None,
-        help="Observer platform (default: auto-detect)",
-    )
-    p_install.add_argument("--server-url", default=None, help="solstone server URL")
-    p_install.add_argument(
-        "--dry-run", action="store_true", help="Show the install plan without writes"
-    )
-    p_install.add_argument(
-        "--force", action="store_true", help="Recreate registration and rerun install"
-    )
-    p_install.add_argument(
-        "--observer-version",
-        default=None,
-        dest="observer_version",
-        metavar="VERSION",
-        help=(
-            "Override the pinned observer package version "
-            "(developer use; bypasses the version pinned by sol)."
-        ),
-    )
-
     args = setup_cli(parser)
 
     # Keep app helpers aligned with the active CLI journal.
@@ -568,8 +500,7 @@ def main() -> None:
 
     convey_state.journal_root = get_journal()
 
-    if args.command != "install":
-        require_solstone()
+    require_solstone()
 
     if not args.command:
         parser.print_help()
@@ -581,7 +512,10 @@ def main() -> None:
         "rename": cmd_rename,
         "revoke": cmd_revoke,
         "status": cmd_status,
-        "install": cmd_install,
     }
 
     sys.exit(handlers[args.command](args))
+
+
+if __name__ == "__main__":
+    main()

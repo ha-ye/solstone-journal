@@ -1674,7 +1674,10 @@ def print_success_summary(ctx: SetupContext, manifest: dict[str, Any]) -> None:
     if not ctx.skip_service:
         narrate(ctx, f"solstone is running at http://localhost:{ctx.port}")
         narrate(ctx)
-    narrate(ctx, "next: run 'sol observer install' to start observing.")
+    narrate(
+        ctx,
+        "next: install an observer — see INSTALL.md for the macOS app bundle or the pipx path for linux and tmux.",
+    )
 
 
 def artifact_paths(ctx: SetupContext, manifest: dict[str, Any]) -> list[str]:

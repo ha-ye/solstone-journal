@@ -61,17 +61,29 @@ what actually leaves your machine differs sharply between these paths: with a lo
 
 ## install an observer
 
-solstone needs a platform observer alongside your journal.
+solstone needs a platform observer alongside your journal. observers are independent packages — install one for each machine you want to observe along with you.
+
+**macOS:** download the signed app bundle from https://solstone.app/observers and drag it to Applications. it pairs itself with the running journal on first launch.
+
+**linux:**
 
 ```bash
-sol observer install                    # uses hostname as stream name
-sol observer install laptop             # named stream
-sol observer install laptop --platform linux
-sol observer install --platform tmux
-sol observer install --dry-run          # preview only
+pipx install solstone-linux
+solstone-linux install-service
+sol observer create laptop      # mint a key for this observer
 ```
 
-on macOS, `sol observer install --platform macos` directs you to the signed app bundle at https://solstone.app/observers.
+`solstone-linux install-service` walks you through pointing the observer at the key you just minted. swap `laptop` for any name you'd like to identify this machine by.
+
+**tmux terminal sessions:**
+
+```bash
+pipx install solstone-tmux
+solstone-tmux install-service
+sol observer create tmux-laptop
+```
+
+(use `uv tool install` in place of `pipx install` if you prefer uv — they're equivalent.)
 
 ## upgrading
 
