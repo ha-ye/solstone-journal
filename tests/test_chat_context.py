@@ -533,6 +533,58 @@ def test_chat_context_routines_omitted_when_empty(monkeypatch, tmp_path):
     assert "messages" not in result
 
 
+def test_pre_process_exposes_latest_owner_message_source(monkeypatch, tmp_path):
+    monkeypatch.setattr("solstone.think.routines.get_routine_state", lambda: [])
+    monkeypatch.setattr(
+        "solstone.think.routines.get_config",
+        lambda: {"_meta": {"suggestions_enabled": False, "suggestions": {}}},
+    )
+    monkeypatch.setattr("solstone.think.routines.save_config", lambda config: None)
+
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    source = {"kind": "needs_you", "item_text": "Review the launch checklist"}
+    append_chat_event(
+        "owner_message",
+        ts=_ts(10, 0),
+        text="First message",
+        app="home",
+        path="/app/home",
+        facet="work",
+    )
+    append_chat_event(
+        "owner_message",
+        ts=_ts(10, 1),
+        text="let's dig into Review the launch checklist",
+        app="home",
+        path="/app/home",
+        facet="work",
+        source=source,
+    )
+
+    result = _load_chat_context_module().pre_process({"day": "20260420"})
+
+    template_vars = result["template_vars"]
+    assert template_vars["source"] == source
+    assert "Needs You tile" in template_vars["trigger_context"]
+    assert "Review the launch checklist" in template_vars["trigger_context"]
+
+    empty_journal = tmp_path / "empty-journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(empty_journal))
+    append_chat_event(
+        "owner_message",
+        ts=_ts(10, 2),
+        text="No source here",
+        app="home",
+        path="/app/home",
+        facet="work",
+    )
+
+    result_without_source = _load_chat_context_module().pre_process({"day": "20260420"})
+
+    assert "source" not in result_without_source["template_vars"]
+
+
 def test_chat_context_enrichment_errors_are_graceful(monkeypatch, tmp_path):
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))

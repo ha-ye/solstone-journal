@@ -23,6 +23,7 @@ import signal
 import subprocess
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -55,6 +56,34 @@ SCENARIOS: list[dict[str, Any]] = [
             {"do": "navigate", "path": "/app/sol/20260304"},
             {"do": "wait", "ms": 1000},
             {"do": "screenshot"},
+        ],
+    },
+    {
+        "app": "home",
+        "name": "needs-you-chat-prefill",
+        "steps": [
+            {"do": "seed_pulse_need", "text": "Review the launch checklist"},
+            {"do": "navigate", "path": "/app/home/?needs_you_browser=1"},
+            {"do": "assert_text", "text": "Review the launch checklist"},
+            {
+                "do": "wait_for",
+                "expression": "Boolean(document.querySelector('.pulse-needs-item[data-needs-you-item]'))",
+                "timeout_ms": 10000,
+            },
+            {
+                "do": "evaluate",
+                "expression": "document.querySelector('.pulse-needs-item[data-needs-you-item]').click()",
+            },
+            {
+                "do": "wait_for",
+                "expression": "window.location.pathname.indexOf('/app/chat/') === 0",
+                "timeout_ms": 10000,
+            },
+            {
+                "do": "wait_for",
+                "expression": "document.getElementById('chatBarInput') && document.getElementById('chatBarInput').value === \"let's dig into Review the launch checklist\"",
+                "timeout_ms": 10000,
+            },
         ],
     },
     {
@@ -1114,6 +1143,27 @@ def _resolve_redirect_path(base_url: str, path: str) -> str:
     return path
 
 
+def _sandbox_journal_path() -> Path:
+    env_path = os.environ.get("SOLSTONE_JOURNAL")
+    if env_path:
+        return Path(env_path)
+    state_path = Path(".sandbox.journal")
+    if state_path.exists():
+        return Path(state_path.read_text(encoding="utf-8").strip())
+    raise CdpError("sandbox journal path unavailable")
+
+
+def _seed_current_pulse_need(text: str) -> None:
+    journal = _sandbox_journal_path()
+    identity_dir = journal / "identity"
+    identity_dir.mkdir(parents=True, exist_ok=True)
+    updated = datetime.now().astimezone().replace(microsecond=0).isoformat()
+    (identity_dir / "pulse.md").write_text(
+        f"---\nupdated: {json.dumps(updated)}\n---\n\n## needs you\n- {text}\n",
+        encoding="utf-8",
+    )
+
+
 def _derive_app_page_routes() -> list[str]:
     from flask import Flask
 
@@ -1279,6 +1329,9 @@ def run_cdp_scenario(
                 page.set_cookie(
                     base_url, step["name"], step["value"], path=step.get("path", "/")
                 )
+
+            elif action == "seed_pulse_need":
+                _seed_current_pulse_need(str(step["text"]))
 
             elif action == "assert_text":
                 if not page.assert_text(step["text"]):

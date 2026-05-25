@@ -190,6 +190,25 @@ def test_chat_error_preserves_optional_detail_verbatim(tmp_path, monkeypatch):
     assert events[0]["detail"] == detail
 
 
+def test_owner_message_preserves_optional_source(tmp_path, monkeypatch):
+    _setup_journal(tmp_path, monkeypatch)
+    source = {"kind": "needs_you", "item_text": "Review the launch checklist"}
+
+    event = append_chat_event(
+        "owner_message",
+        ts=_ms(2026, 4, 20, 12, 0, 0),
+        text="let's dig into Review the launch checklist",
+        app="home",
+        path="/app/home",
+        facet=None,
+        source=source,
+    )
+
+    events = read_chat_events("20260420")
+    assert events == [event]
+    assert events[0]["source"] == source
+
+
 def test_append_rolls_at_300_seconds(tmp_path, monkeypatch):
     journal = _setup_journal(tmp_path, monkeypatch)
     start = _ms(2026, 4, 20, 12, 0, 0)
