@@ -565,7 +565,6 @@ route/client change depends on stable PL-safe identity and prefix handling.
 ## Out Of Scope
 
 - No `--pair-mode` CLI flag.
-- No `sol observer install --pair-mode pl`.
 - No deprecation of DL.
 - No admin endpoint branching.
 - No dashboard role grouping.
