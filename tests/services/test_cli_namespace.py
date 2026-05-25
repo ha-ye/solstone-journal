@@ -13,7 +13,7 @@ import pytest
 
 from solstone.think import sol_cli
 from solstone.think.journal_config import write_journal_config
-from solstone.think.services import cli
+from solstone.think.services import cli, portal_client
 
 
 class FakeResponse:
@@ -68,7 +68,7 @@ def _install_urlopen(monkeypatch, items: list[Any]):
             raise item
         return item
 
-    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(portal_client.urllib.request, "urlopen", fake_urlopen)
     return calls
 
 
@@ -127,7 +127,7 @@ def test_happy_path_writes_handoff(journal_copy, browser_ready, monkeypatch, cap
     assert request.full_url.startswith("https://services.solstone.app/handoff/scout?")
     assert request.headers["User-agent"].startswith("solstone-cli/")
     assert request.headers["Connection"] == "close"
-    assert timeout == cli.POLL_TIMEOUT_SECONDS
+    assert timeout == portal_client.POLL_TIMEOUT_SECONDS
     config = json.loads((journal_copy / "config" / "journal.json").read_text())
     assert config["env"]["GOOGLE_API_KEY"] == "google-one"
     assert config["services"]["scout"]["account_id"] == "acct-one"
@@ -247,7 +247,7 @@ def test_force_bypasses_manual_key_detection(
 
 def test_headless_prints_url_and_exits_2(journal_copy, monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli, "_is_headless", lambda: True)
-    monkeypatch.setattr(cli, "_mint_nonce", lambda: "A" * 52)
+    monkeypatch.setattr(portal_client, "mint_nonce", lambda: "A" * 52)
 
     assert cli.main(["enable", "scout"]) == 2
 
@@ -259,7 +259,7 @@ def test_headless_prints_url_and_exits_2(journal_copy, monkeypatch, capsys) -> N
 def test_open_browser_false_maps_to_headless(journal_copy, monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli, "_is_headless", lambda: False)
     monkeypatch.setattr(cli, "_open_browser", lambda _url: False)
-    monkeypatch.setattr(cli, "_mint_nonce", lambda: "B" * 52)
+    monkeypatch.setattr(portal_client, "mint_nonce", lambda: "B" * 52)
 
     assert cli.main(["enable", "scout"]) == 2
 

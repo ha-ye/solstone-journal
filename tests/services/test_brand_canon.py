@@ -12,7 +12,7 @@ import urllib.error
 import pytest
 
 from solstone.think.journal_config import write_journal_config
-from solstone.think.services import cli
+from solstone.think.services import cli, portal_client
 
 BLOCKED_COPY_RE = re.compile(
     r"sign(?:ed)?\s+in|signing\s+in|log(?:ged)?\s+in|your\s+account|"
@@ -80,7 +80,7 @@ def _install_urlopen(monkeypatch: pytest.MonkeyPatch, items: list[object]) -> No
             raise item
         return item
 
-    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(portal_client.urllib.request, "urlopen", fake_urlopen)
 
 
 @pytest.mark.parametrize(
@@ -147,7 +147,7 @@ def test_cli_branch_output_avoids_blocked_brand_terms(
         write_journal_config(config)
     elif branch == "headless_no_browser":
         monkeypatch.setattr(cli, "_is_headless", lambda: True)
-        monkeypatch.setattr(cli, "_mint_nonce", lambda: "A" * 52)
+        monkeypatch.setattr(portal_client, "mint_nonce", lambda: "A" * 52)
     elif branch == "journal_not_initialized":
         journal = tmp_path / "uninitialized-journal"
         (journal / "config").mkdir(parents=True)

@@ -24,6 +24,7 @@ from .chat import chat_bp, start_chat_runtime
 from .config import bp as config_bp
 from .request_id import install_request_id_stamper
 from .root import bp as root_bp
+from .services_scout import bp as services_scout_bp
 
 __all__ = [
     "create_app",
@@ -145,6 +146,9 @@ def create_app(journal: str = "") -> Flask:
 
     # Register root blueprint (login, logout, /, favicon)
     app.register_blueprint(root_bp)
+
+    # Register scout service setup backend
+    app.register_blueprint(services_scout_bp)
 
     # Register config API blueprint
     app.register_blueprint(config_bp)

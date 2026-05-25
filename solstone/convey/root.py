@@ -115,6 +115,8 @@ def require_login() -> Any:
         "root.init_validate_provider",
         "root.init_observers",
         "root.init_finalize",
+        "services_scout.start",
+        "services_scout.status",
         "root.login",
         "static",
         "root.static",

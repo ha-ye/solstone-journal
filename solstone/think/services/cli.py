@@ -6,23 +6,14 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import platform
-import secrets
-import socket
-import ssl
 import sys
 import time
-import urllib.error
-import urllib.request
 import webbrowser
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as _pkg_version
-from typing import Any
 
 from solstone.think.journal_config import get_journal_config_path
-from solstone.think.services.constants import NONCE_ALPHABET, NONCE_LENGTH_CHARS
+from solstone.think.services import portal_client
 from solstone.think.services.scout import (
     JournalNotInitializedError,
     is_manual_key_present,
@@ -30,9 +21,6 @@ from solstone.think.services.scout import (
     provision_scout_handoff,
 )
 
-DEFAULT_PORTAL_URL = "https://services.solstone.app"
-POLL_TIMEOUT_SECONDS = 35
-DEFAULT_WAIT_SECONDS = 900
 MIN_WAIT_SECONDS = 60
 MAX_WAIT_SECONDS = 3600
 
@@ -144,7 +132,7 @@ def _build_parser() -> argparse.ArgumentParser:
     scout_parser.add_argument(
         "--wait",
         type=_wait_seconds,
-        default=DEFAULT_WAIT_SECONDS,
+        default=portal_client.DEFAULT_WAIT_SECONDS,
         metavar="SECONDS",
         help=(
             "Owner-patience budget for the browser flow, clamped to 60-3600 seconds."
@@ -164,98 +152,25 @@ def _is_headless() -> bool:
     )
 
 
-def _mint_nonce() -> str:
-    return "".join(secrets.choice(NONCE_ALPHABET) for _ in range(NONCE_LENGTH_CHARS))
-
-
 def _open_browser(url: str) -> bool:
     return webbrowser.open(url, new=2)
 
 
-def _portal_base_url() -> str:
-    return os.environ.get("SERVICES_PORTAL_URL", DEFAULT_PORTAL_URL).rstrip("/")
-
-
-def _package_version() -> str:
-    try:
-        return _pkg_version("solstone")
-    except PackageNotFoundError:
-        return "0.0.0+source"
-
-
-def _request_headers() -> dict[str, str]:
-    return {
-        "User-Agent": f"solstone-cli/{_package_version()}",
-        "Connection": "close",
-    }
-
-
-def _poll_url(base_url: str, nonce: str) -> str:
-    return f"{base_url}/handoff/scout?nonce={nonce}"
-
-
-def _browser_url(base_url: str, nonce: str) -> str:
-    return f"{base_url}/enable/scout?nonce={nonce}"
-
-
-def _is_timeout_error(exc: BaseException) -> bool:
-    if isinstance(exc, (socket.timeout, TimeoutError)):
-        return True
-    if isinstance(exc, urllib.error.URLError):
-        return isinstance(exc.reason, (socket.timeout, TimeoutError))
-    return False
-
-
-def _handle_http_status(status: int) -> None:
-    if status == 400:
-        raise _CliError("nonce_invalid")
-    if status == 410:
-        raise _CliError("consent_link_expired")
-    raise _CliError("unexpected_payload")
-
-
-def _read_handoff_payload(raw_body: bytes) -> dict[str, Any]:
-    try:
-        payload = json.loads(raw_body.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise _CliError("unexpected_payload") from exc
-    if not isinstance(payload, dict):
-        raise _CliError("unexpected_payload")
-    return payload
-
-
-def _poll_handoff(base_url: str, nonce: str, wait_seconds: int) -> dict[str, Any]:
+def _poll_handoff(base_url: str, nonce: str, wait_seconds: int) -> dict:
     deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:
-        request = urllib.request.Request(
-            _poll_url(base_url, nonce),
-            headers=_request_headers(),
-            method="GET",
+        timeout = min(
+            portal_client.POLL_TIMEOUT_SECONDS,
+            max(0.1, deadline - time.monotonic()),
         )
-        timeout = min(POLL_TIMEOUT_SECONDS, max(0.1, deadline - time.monotonic()))
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                status = int(getattr(response, "status", response.getcode()))
-                raw_body = response.read()
-        except urllib.error.HTTPError as exc:
-            _handle_http_status(int(exc.code))
-            raise
-        except ssl.SSLError as exc:
-            raise _CliError("tls_verification_failed") from exc
-        except urllib.error.URLError as exc:
-            if isinstance(exc.reason, ssl.SSLError):
-                raise _CliError("tls_verification_failed") from exc
-            if _is_timeout_error(exc):
-                continue
-            raise _CliError("portal_unreachable") from exc
-        except (socket.timeout, TimeoutError):
+        outcome = portal_client.poll_handoff_once(base_url, nonce, timeout=timeout)
+        if outcome.kind == "success":
+            return outcome.payload or {}
+        if outcome.kind == "continue":
             continue
-
-        if status == 200:
-            return _read_handoff_payload(raw_body)
-        if status == 204:
-            continue
-        _handle_http_status(status)
+        if outcome.kind == "failed" and outcome.reason:
+            raise _CliError(outcome.reason)
+        raise _CliError("unexpected_payload")
 
     raise _CliError("consent_timeout")
 
@@ -273,15 +188,15 @@ def _enable_scout(args: argparse.Namespace) -> int:
         _print_error("manual_key_present")
         return EXIT_CODES["manual_key_present"]
 
-    base_url = _portal_base_url()
+    base_url = portal_client.portal_base_url()
     if _is_headless():
-        nonce = _mint_nonce()
-        print(_browser_url(base_url, nonce))
+        nonce = portal_client.mint_nonce()
+        print(portal_client.browser_url(base_url, nonce))
         _print_error("headless_no_browser")
         return EXIT_CODES["headless_no_browser"]
 
-    nonce = _mint_nonce()
-    browser_url = _browser_url(base_url, nonce)
+    nonce = portal_client.mint_nonce()
+    browser_url = portal_client.browser_url(base_url, nonce)
     print(STDOUT_OPENING)
     if not _open_browser(browser_url):
         print(browser_url)
