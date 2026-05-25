@@ -29,16 +29,16 @@ HEALTH_GLANCE_COPY_KEYS = [
     "HEALTH_GLANCE_SERVICES_UNREACHABLE",
 ]
 HEALTH_GLANCE_LITERALS = {
-    "HEALTH_GLANCE_OK": "everything’s working — last observation {age} ago.",
+    "HEALTH_GLANCE_OK": "everything's working — last observation {age} ago.",
     "HEALTH_GLANCE_SERVICES_ATTENTION": "{n} service(s) need attention — {service_names}.",
     "HEALTH_GLANCE_CATCHING_UP": (
-        "I’m catching up on {n} task(s) in the background — last update {age} ago."
+        "I'm catching up on {n} task(s) in the background — last update {age} ago."
     ),
     "HEALTH_GLANCE_OBSERVER_SILENT": (
-        "I haven’t heard from your observer in {age} — it may have stopped."
+        "I haven't heard from your observer in {age} — it may have stopped."
     ),
     "HEALTH_GLANCE_SERVICES_UNREACHABLE": (
-        "I couldn’t reach my own services — check that solstone is running."
+        "I couldn't reach my own services — check that solstone is running."
     ),
 }
 

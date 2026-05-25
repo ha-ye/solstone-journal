@@ -17,21 +17,17 @@ def test_copy_constants_are_canonical():
     assert copy.TOKENS_TILE_TOP_DRIVER_VALUE == "{provider} · {model} ({pct}% of today)"
     assert (
         copy.TOKENS_DISCLOSURE_PROVIDER
-        == "{count} providers · top: {top_provider} ({top_pct}% of today)"
+        == "by provider — {n} providers, top: {top_name} {pct}%"
     )
     assert (
-        copy.TOKENS_DISCLOSURE_MODEL
-        == "{count} models · top: {top_model} ({top_pct}% of today)"
+        copy.TOKENS_DISCLOSURE_MODEL == "by model — {n} models, top: {top_name} {pct}%"
     )
     assert (
         copy.TOKENS_DISCLOSURE_TOKEN_TYPE
-        == "input {input_pct}% · output {output_pct}% · cached {cached_pct}%"
+        == "by token type — input / output / cached / reasoning"
     )
     assert (
         copy.TOKENS_DISCLOSURE_CONTEXT
-        == "{count} context prefixes · top: {top_context} ({top_pct}% of today)"
+        == "by context — {n} contexts, top: {top_name} {pct}%"
     )
-    assert (
-        copy.TOKENS_DISCLOSURE_SEGMENT
-        == "{count} segments · top: {top_segment} ({top_pct}% of today)"
-    )
+    assert copy.TOKENS_DISCLOSURE_SEGMENT == "by segment — {n} segments"

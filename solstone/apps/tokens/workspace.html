@@ -913,42 +913,33 @@ function populateDisclosureSummaries(data) {
   const providers = data.by_provider || [];
   const topProvider = providers[0];
   setText('summary-provider', formatCopy(copy.TOKENS_DISCLOSURE_PROVIDER, {
-    count: providers.length,
-    top_provider: topProvider?.provider || '—',
-    top_pct: Number(topProvider?.percent || 0).toFixed(1),
+    n: providers.length,
+    top_name: topProvider?.provider || '—',
+    pct: Number(topProvider?.percent || 0).toFixed(1),
   }));
 
   const models = data.by_model || [];
   const topModel = models[0];
   setText('summary-model', formatCopy(copy.TOKENS_DISCLOSURE_MODEL, {
-    count: models.length,
-    top_model: topModel?.model || '—',
-    top_pct: Number(topModel?.percent || 0).toFixed(1),
+    n: models.length,
+    top_name: topModel?.model || '—',
+    pct: Number(topModel?.percent || 0).toFixed(1),
   }));
 
-  const tokenTypes = data.by_token_type || {};
-  const input = tokenTypes.input || {};
-  const output = tokenTypes.output || {};
-  setText('summary-token-type', formatCopy(copy.TOKENS_DISCLOSURE_TOKEN_TYPE, {
-    input_pct: Number(input.percent || 0).toFixed(1),
-    output_pct: Number(output.percent || 0).toFixed(1),
-    cached_pct: Number(input.cached_pct || 0).toFixed(1),
-  }));
+  // TOKENS_DISCLOSURE_TOKEN_TYPE is a static literal — no substitution.
+  setText('summary-token-type', copy.TOKENS_DISCLOSURE_TOKEN_TYPE);
 
   const contexts = data.by_context || [];
   const topContext = contexts[0];
   setText('summary-context', formatCopy(copy.TOKENS_DISCLOSURE_CONTEXT, {
-    count: contexts.length,
-    top_context: topContext?.context || '—',
-    top_pct: Number(topContext?.percent || 0).toFixed(1),
+    n: contexts.length,
+    top_name: topContext?.context || '—',
+    pct: Number(topContext?.percent || 0).toFixed(1),
   }));
 
   const segments = data.by_segment || [];
-  const topSegment = segments[0];
   setText('summary-segment', formatCopy(copy.TOKENS_DISCLOSURE_SEGMENT, {
-    count: segments.length,
-    top_segment: topSegment?.segment || '—',
-    top_pct: Number(topSegment?.percent || 0).toFixed(1),
+    n: segments.length,
   }));
 }
 

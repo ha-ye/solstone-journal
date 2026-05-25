@@ -10,16 +10,8 @@ TOKENS_TILE_RUN_RATE_VALUE = "~${rate:.2f}/day"
 TOKENS_TILE_TOP_DRIVER_LABEL = "today's biggest cost"
 TOKENS_TILE_TOP_DRIVER_VALUE = "{provider} · {model} ({pct}% of today)"
 
-TOKENS_DISCLOSURE_PROVIDER = (
-    "{count} providers · top: {top_provider} ({top_pct}% of today)"
-)
-TOKENS_DISCLOSURE_MODEL = "{count} models · top: {top_model} ({top_pct}% of today)"
-TOKENS_DISCLOSURE_TOKEN_TYPE = (
-    "input {input_pct}% · output {output_pct}% · cached {cached_pct}%"
-)
-TOKENS_DISCLOSURE_CONTEXT = (
-    "{count} context prefixes · top: {top_context} ({top_pct}% of today)"
-)
-TOKENS_DISCLOSURE_SEGMENT = (
-    "{count} segments · top: {top_segment} ({top_pct}% of today)"
-)
+TOKENS_DISCLOSURE_PROVIDER = "by provider — {n} providers, top: {top_name} {pct}%"
+TOKENS_DISCLOSURE_MODEL = "by model — {n} models, top: {top_name} {pct}%"
+TOKENS_DISCLOSURE_TOKEN_TYPE = "by token type — input / output / cached / reasoning"
+TOKENS_DISCLOSURE_CONTEXT = "by context — {n} contexts, top: {top_name} {pct}%"
+TOKENS_DISCLOSURE_SEGMENT = "by segment — {n} segments"
