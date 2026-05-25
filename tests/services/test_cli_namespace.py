@@ -132,7 +132,7 @@ def test_services_help_lists_enable(capsys) -> None:
 
 
 def test_sol_cli_registers_services_command() -> None:
-    assert sol_cli.COMMANDS["services"] == "solstone.think.services"
+    assert sol_cli.COMMANDS["services"].module == "solstone.think.services"
     assert sol_cli.GROUPS["Services"] == ["services"]
 
 

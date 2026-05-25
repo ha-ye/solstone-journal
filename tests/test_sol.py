@@ -6,11 +6,58 @@
 import os
 import subprocess
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import tomllib
 
 from solstone.think import sol_cli as sol
+from solstone.think.sol_cli import JOURNAL_ACCESS_CMD_ERROR
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def service_command_names() -> list[str]:
+    return sorted(
+        name for name, command in sol.COMMANDS.items() if command.surface == "service"
+    )
+
+
+def access_command_names() -> list[str]:
+    return sorted(
+        name for name, command in sol.COMMANDS.items() if command.surface == "access"
+    )
+
+
+def service_alias_names() -> list[str]:
+    return [
+        name
+        for name, command_alias in sol.ALIASES.items()
+        if command_alias.surface == "service"
+    ]
+
+
+def run_dispatch(monkeypatch, binary: str, name: str) -> dict[str, object]:
+    result: dict[str, object] = {}
+
+    def fake_run_command(module_path: str) -> int:
+        result["module"] = module_path
+        result["argv"] = sys.argv[:]
+        return 0
+
+    monkeypatch.setattr(sol, "run_command", fake_run_command)
+    monkeypatch.setattr(sol.setproctitle, "setproctitle", lambda _title: None)
+    monkeypatch.setattr(sys, "argv", [binary, name])
+
+    with pytest.raises(SystemExit) as exc_info:
+        if binary == "journal":
+            sol.journal_main()
+        else:
+            sol.main()
+
+    assert exc_info.value.code == 0
+    return result
 
 
 class TestResolveCommand:
@@ -18,23 +65,28 @@ class TestResolveCommand:
 
     def test_resolve_known_command(self):
         """Test resolving a known command from registry."""
-        module_path, preset_args = sol.resolve_command("import")
+        module_path, preset_args, surface = sol.resolve_command("import")
         assert module_path == "solstone.think.importers.cli"
         assert preset_args == []
+        assert surface == "access"
 
     def test_resolve_direct_module_path(self):
         """Test resolving a direct module path with dot."""
-        module_path, preset_args = sol.resolve_command("solstone.think.importers.cli")
+        module_path, preset_args, surface = sol.resolve_command(
+            "solstone.think.importers.cli"
+        )
         assert module_path == "solstone.think.importers.cli"
         assert preset_args == []
+        assert surface == "service"
 
     def test_resolve_nested_module_path(self):
         """Test resolving a deeply nested module path."""
-        module_path, preset_args = sol.resolve_command(
+        module_path, preset_args, surface = sol.resolve_command(
             "solstone.observe.linux.observer"
         )
         assert module_path == "solstone.observe.linux.observer"
         assert preset_args == []
+        assert surface == "service"
 
     def test_resolve_unknown_command_raises(self):
         """Test that unknown command raises ValueError."""
@@ -45,22 +97,28 @@ class TestResolveCommand:
     def test_resolve_alias_with_preset_args(self):
         """Test resolving an alias that includes preset arguments."""
         # Add a test alias
-        sol.ALIASES["test-alias"] = ("solstone.think.indexer", ["--rescan"])
+        sol.ALIASES["test-alias"] = sol.Alias(
+            "solstone.think.indexer", ["--rescan"], "service"
+        )
         try:
-            module_path, preset_args = sol.resolve_command("test-alias")
+            module_path, preset_args, surface = sol.resolve_command("test-alias")
             assert module_path == "solstone.think.indexer"
             assert preset_args == ["--rescan"]
+            assert surface == "service"
         finally:
             del sol.ALIASES["test-alias"]
 
     def test_alias_takes_precedence_over_command(self):
         """Test that aliases override commands with same name."""
         # Add an alias that shadows a command
-        sol.ALIASES["import"] = ("solstone.think.cluster", ["--force"])
+        sol.ALIASES["import"] = sol.Alias(
+            "solstone.think.cluster", ["--force"], "service"
+        )
         try:
-            module_path, preset_args = sol.resolve_command("import")
+            module_path, preset_args, surface = sol.resolve_command("import")
             assert module_path == "solstone.think.cluster"
             assert preset_args == ["--force"]
+            assert surface == "service"
         finally:
             del sol.ALIASES["import"]
 
@@ -292,8 +350,8 @@ class TestCommandRegistry:
 
     def test_all_commands_have_modules(self):
         """Test that all registered commands point to valid module paths."""
-        for cmd, module_path in sol.COMMANDS.items():
-            assert "." in module_path, f"Command '{cmd}' has invalid module path"
+        for cmd, command in sol.COMMANDS.items():
+            assert "." in command.module, f"Command '{cmd}' has invalid module path"
 
     def test_groups_contain_valid_commands(self):
         """Test that all commands in groups exist in registry."""
@@ -308,3 +366,155 @@ class TestCommandRegistry:
         critical = ["import", "providers", "think", "indexer", "transcribe"]
         for cmd in critical:
             assert cmd in sol.COMMANDS, f"Critical command '{cmd}' not registered"
+
+    def test_pyproject_declares_sol_and_journal_scripts(self):
+        """Project scripts expose both top-level CLI entry points."""
+        pyproject = tomllib.loads(
+            (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        )
+        scripts = pyproject["project"]["scripts"]
+
+        assert scripts["sol"] == "solstone.think.sol_cli:main"
+        assert scripts["journal"] == "solstone.think.sol_cli:journal_main"
+        assert scripts["sol"].startswith("solstone.think.sol_cli:")
+        assert scripts["journal"].startswith("solstone.think.sol_cli:")
+
+    def test_every_registry_entry_has_surface_tag(self):
+        """All commands and aliases declare the CLI surface they belong to."""
+        valid_surfaces = {"access", "service"}
+        for name, command in sol.COMMANDS.items():
+            assert command.surface in valid_surfaces, (
+                f"Command '{name}' has invalid surface '{command.surface}'"
+            )
+        for name, command_alias in sol.ALIASES.items():
+            assert command_alias.surface in valid_surfaces, (
+                f"Alias '{name}' has invalid surface '{command_alias.surface}'"
+            )
+
+    def test_service_entries_dispatch_through_sol_and_journal(self, monkeypatch):
+        """Service commands and aliases preserve module and preset args on both binaries."""
+        for name in service_command_names():
+            sol_result = run_dispatch(monkeypatch, "sol", name)
+            journal_result = run_dispatch(monkeypatch, "journal", name)
+            command = sol.COMMANDS[name]
+
+            assert sol_result["module"] == command.module
+            assert journal_result["module"] == command.module
+            assert sol_result["argv"] == [f"sol {name}"]
+            assert journal_result["argv"] == [f"journal {name}"]
+
+        for name in service_alias_names():
+            sol_result = run_dispatch(monkeypatch, "sol", name)
+            journal_result = run_dispatch(monkeypatch, "journal", name)
+            command_alias = sol.ALIASES[name]
+
+            assert sol_result["module"] == command_alias.module
+            assert journal_result["module"] == command_alias.module
+            assert sol_result["argv"] == [f"sol {name}"] + command_alias.preset_args
+            assert (
+                journal_result["argv"]
+                == [f"journal {name}"] + command_alias.preset_args
+            )
+
+    @pytest.mark.parametrize("name", access_command_names())
+    def test_journal_rejects_access_tagged_commands(self, monkeypatch, capsys, name):
+        """The journal binary exposes only service-tagged registry entries."""
+        monkeypatch.setattr(
+            sol,
+            "run_command",
+            lambda _module_path: pytest.fail("access command should not run"),
+        )
+        monkeypatch.setattr(sys, "argv", ["journal", name])
+
+        with pytest.raises(SystemExit) as exc_info:
+            sol.journal_main()
+
+        captured = capsys.readouterr()
+        assert exc_info.value.code == 2
+        assert JOURNAL_ACCESS_CMD_ERROR.format(cmd=name) in captured.err
+
+    def test_journal_help_lists_only_service_surface(self):
+        """journal --help renders a flat service-only command list."""
+        code = (
+            "from solstone.think.sol_cli import journal_main; "
+            "import sys; "
+            "sys.argv = ['journal', '--help']; "
+            "journal_main()"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT,
+            timeout=60,
+        )
+
+        assert result.returncode == 0, result.stderr
+        for name in service_command_names():
+            assert name in result.stdout
+        for name in access_command_names():
+            assert name not in result.stdout
+        assert "sol call" not in result.stdout
+
+    def test_sol_help_still_lists_registry_groups_and_aliases(self):
+        """sol --help still renders all registered top-level entries."""
+        code = (
+            "from solstone.think.sol_cli import main; "
+            "import sys; "
+            "sys.argv = ['sol', '--help']; "
+            "main()"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT,
+            timeout=60,
+        )
+
+        assert result.returncode == 0, result.stderr
+        lines = result.stdout.splitlines()
+        rendered_commands = {
+            line.strip().split()[0]
+            for line in lines
+            if line.strip().split() and line.strip().split()[0] in sol.COMMANDS
+        }
+        rendered_group_headers = {
+            line[:-1]
+            for line in lines
+            if line.endswith(":") and line[:-1] in sol.GROUPS
+        }
+
+        rendered_aliases = set()
+        in_aliases = False
+        for line in lines:
+            if line == "Aliases:":
+                in_aliases = True
+                continue
+            if in_aliases and not line.strip():
+                break
+            if in_aliases:
+                name = line.strip().split()[0]
+                if name in sol.ALIASES:
+                    rendered_aliases.add(name)
+
+        assert rendered_commands == set(sol.COMMANDS.keys())
+        assert rendered_group_headers == set(sol.GROUPS.keys())
+        assert rendered_aliases == set(sol.ALIASES.keys())
+
+    def test_setproctitle_prefix_uses_active_binary(self, monkeypatch):
+        """The process title identifies whether sol or journal dispatched the command."""
+        titles = []
+        monkeypatch.setattr(sol, "run_command", lambda _module_path: 0)
+        monkeypatch.setattr(sol.setproctitle, "setproctitle", titles.append)
+
+        monkeypatch.setattr(sys, "argv", ["sol", "supervisor"])
+        with pytest.raises(SystemExit):
+            sol.main()
+
+        monkeypatch.setattr(sys, "argv", ["journal", "supervisor"])
+        with pytest.raises(SystemExit):
+            sol.journal_main()
+
+        assert titles[0].startswith("sol:")
+        assert titles[1].startswith("journal:")

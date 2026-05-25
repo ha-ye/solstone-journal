@@ -21,7 +21,7 @@ import os
 import sys
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
-from typing import Any
+from typing import Any, Literal, NamedTuple
 
 import setproctitle
 
@@ -38,48 +38,66 @@ import setproctitle
 # Aliases for compound commands can be added to ALIASES dict below.
 # =============================================================================
 
-COMMANDS: dict[str, str] = {
+
+class Command(NamedTuple):
+    module: str
+    surface: Literal["access", "service"]
+
+
+class Alias(NamedTuple):
+    module: str
+    preset_args: list[str]
+    surface: Literal["access", "service"]
+
+
+JOURNAL_ACCESS_CMD_ERROR = (
+    "'{cmd}' is a journal-access command — run it with 'sol {cmd}' instead.\n"
+    "('journal' surfaces only journal-service commands; see 'journal --help'.)"
+)
+
+
+COMMANDS: dict[str, Command] = {
     # think package - daily processing and analysis
-    "import": "solstone.think.importers.cli",
-    "think": "solstone.think.thinking",
-    "indexer": "solstone.think.indexer",
-    "supervisor": "solstone.think.supervisor",
-    "schedule": "solstone.think.scheduler",
-    "top": "solstone.think.top",
-    "health": "solstone.think.health_cli",
-    "notify": "solstone.think.notify_cli",
-    "doctor": "solstone.think.doctor",
-    "config": "solstone.think.config_cli",
-    "install-models": "solstone.think.install_models",
-    "skills": "solstone.think.skills_cli",
-    "password": "solstone.think.password_cli",
-    "streams": "solstone.think.streams",
-    "segment": "solstone.think.segment",
-    "journal-stats": "solstone.think.journal_stats",
+    "import": Command("solstone.think.importers.cli", "access"),
+    "think": Command("solstone.think.thinking", "service"),
+    "indexer": Command("solstone.think.indexer", "access"),
+    "supervisor": Command("solstone.think.supervisor", "service"),
+    "schedule": Command("solstone.think.scheduler", "service"),
+    "top": Command("solstone.think.top", "access"),
+    "health": Command("solstone.think.health_cli", "access"),
+    "notify": Command("solstone.think.notify_cli", "access"),
+    "doctor": Command("solstone.think.doctor", "access"),
+    "config": Command("solstone.think.config_cli", "service"),
+    "install-models": Command("solstone.think.install_models", "service"),
+    "skills": Command("solstone.think.skills_cli", "access"),
+    "password": Command("solstone.think.password_cli", "service"),
+    "streams": Command("solstone.think.streams", "access"),
+    "segment": Command("solstone.think.segment", "access"),
+    "journal-stats": Command("solstone.think.journal_stats", "access"),
     # observe package - multimodal capture
-    "transcribe": "solstone.observe.transcribe",
-    "describe": "solstone.observe.describe",
-    "sense": "solstone.observe.sense",
-    "transfer": "solstone.observe.transfer",
-    "export": "solstone.observe.export",
-    "grab": "solstone.observe.grab",
-    "observer": "solstone.observe.observer_cli",
+    "transcribe": Command("solstone.observe.transcribe", "service"),
+    "describe": Command("solstone.observe.describe", "service"),
+    "sense": Command("solstone.observe.sense", "service"),
+    "transfer": Command("solstone.observe.transfer", "service"),
+    "export": Command("solstone.observe.export", "service"),
+    "grab": Command("solstone.observe.grab", "service"),
+    "observer": Command("solstone.observe.observer_cli", "access"),
     # AI providers and talent execution
-    "providers": "solstone.think.providers_cli",
-    "cortex": "solstone.think.cortex",
-    "talent": "solstone.think.talent_cli",
-    "link": "solstone.think.link",
-    "call": "solstone.think.call",
-    "engage": "solstone.think.engage",
-    "chat": "solstone.think.chat_cli",
-    "heartbeat": "solstone.think.heartbeat",
+    "providers": Command("solstone.think.providers_cli", "access"),
+    "cortex": Command("solstone.think.cortex", "service"),
+    "talent": Command("solstone.think.talent_cli", "service"),
+    "link": Command("solstone.think.link", "access"),
+    "call": Command("solstone.think.call", "access"),
+    "engage": Command("solstone.think.engage", "access"),
+    "chat": Command("solstone.think.chat_cli", "access"),
+    "heartbeat": Command("solstone.think.heartbeat", "service"),
     # convey package - web UI
-    "convey": "solstone.convey.cli",
-    "restart-convey": "solstone.convey.restart",
-    "maint": "solstone.convey.maint_cli",
-    "service": "solstone.think.service",
-    "services": "solstone.think.services",
-    "setup": "solstone.think.setup",
+    "convey": Command("solstone.convey.cli", "service"),
+    "restart-convey": Command("solstone.convey.restart", "access"),
+    "maint": Command("solstone.convey.maint_cli", "service"),
+    "service": Command("solstone.think.service", "service"),
+    "services": Command("solstone.think.services", "service"),
+    "setup": Command("solstone.think.setup", "service"),
 }
 
 # =============================================================================
@@ -92,10 +110,10 @@ COMMANDS: dict[str, str] = {
 #   Running "sol reindex" is equivalent to "sol indexer --rescan"
 # =============================================================================
 
-ALIASES: dict[str, tuple[str, list[str]]] = {
-    "start": ("solstone.think.supervisor", []),
-    "up": ("solstone.think.service", ["up"]),
-    "down": ("solstone.think.service", ["down"]),
+ALIASES: dict[str, Alias] = {
+    "start": Alias("solstone.think.supervisor", [], "service"),
+    "up": Alias("solstone.think.service", ["up"], "service"),
+    "down": Alias("solstone.think.service", ["down"], "service"),
 }
 
 # Command groupings for help display
@@ -190,7 +208,7 @@ def print_help() -> None:
         print(f"{group_name}:")
         for cmd in commands:
             if cmd in COMMANDS:
-                module = COMMANDS[cmd]
+                module = COMMANDS[cmd].module
                 print(f"  {cmd:16} {module}")
         print()
 
@@ -212,8 +230,11 @@ def print_help() -> None:
     # Print aliases if any
     if ALIASES:
         print("Aliases:")
-        for alias, (module, args) in ALIASES.items():
-            args_str = " ".join(args) if args else ""
+        for alias, command_alias in ALIASES.items():
+            args_str = (
+                " ".join(command_alias.preset_args) if command_alias.preset_args else ""
+            )
+            module = command_alias.module
             print(f"  {alias:16} → {module} {args_str}")
         print()
 
@@ -221,30 +242,68 @@ def print_help() -> None:
     print("Example: sol solstone.think.importers.cli --help")
 
 
-def resolve_command(name: str) -> tuple[str, list[str]]:
+def print_journal_help() -> None:
+    """Print help for the journal service command surface."""
+    print("journal - solstone journal service CLI\n")
+    print_status()
+
+    print("Usage: journal <command> [options]\n")
+
+    print("Commands:")
+    for name, command in sorted(COMMANDS.items()):
+        if command.surface == "service":
+            print(f"  {name:16} {command.module}")
+    print()
+
+    service_aliases = [
+        (name, command_alias)
+        for name, command_alias in ALIASES.items()
+        if command_alias.surface == "service"
+    ]
+    if service_aliases:
+        print("Aliases:")
+        for name, command_alias in service_aliases:
+            args_str = (
+                " ".join(command_alias.preset_args) if command_alias.preset_args else ""
+            )
+            print(f"  {name:16} → {command_alias.module} {args_str}")
+        print()
+
+    print("Options:")
+    print("  --help, -h        Show this help")
+    print("  --version, -V     Show version")
+    print("  --path            Print resolved journal path")
+    print("  root              Print project root")
+    print()
+    print("Direct module syntax: journal <module.path> [args]")
+    print("Example: journal solstone.think.supervisor --help")
+
+
+def resolve_command(name: str) -> tuple[str, list[str], str]:
     """Resolve command name to module path and any preset args.
 
     Args:
         name: Command name, alias, or module path
 
     Returns:
-        Tuple of (module_path, preset_args)
+        Tuple of (module_path, preset_args, surface)
 
     Raises:
         ValueError: If command not found
     """
     # Check aliases first (they override commands)
     if name in ALIASES:
-        module, preset_args = ALIASES[name]
-        return module, preset_args
+        command_alias = ALIASES[name]
+        return command_alias.module, command_alias.preset_args, command_alias.surface
 
     # Check command registry
     if name in COMMANDS:
-        return COMMANDS[name], []
+        command = COMMANDS[name]
+        return command.module, [], command.surface
 
     # Check if it looks like a module path (contains ".")
     if "." in name:
-        return name, []
+        return name, [], "service"
 
     # Not found
     available = sorted(set(COMMANDS.keys()) | set(ALIASES.keys()))
@@ -288,21 +347,30 @@ def run_command(module_path: str) -> int:
             return 0 if not e.code else 1
 
 
-def main() -> None:
-    """Main entry point for sol CLI."""
+def _dispatch(binary: str, allowed_surfaces: frozenset[str] | None) -> None:
+    """Dispatch a top-level CLI binary to a registered command."""
     # No arguments - show status and help
     if len(sys.argv) < 2:
-        print_help()
+        if binary == "journal":
+            print_journal_help()
+        else:
+            print_help()
         return
 
     cmd = sys.argv[1]
 
     # Help flags
     if cmd in ("--help", "-h"):
-        print_help()
+        if binary == "journal":
+            print_journal_help()
+        else:
+            print_help()
         return
     if cmd == "help" and len(sys.argv) <= 2:
-        print_help()
+        if binary == "journal":
+            print_journal_help()
+        else:
+            print_help()
         return
 
     # Version flag
@@ -311,7 +379,7 @@ def main() -> None:
             _v = _pkg_version("solstone")
         except PackageNotFoundError:
             _v = "0.0.0+source"
-        print(f"sol (solstone) {_v}")
+        print(f"{binary} (solstone) {_v}")
         return
 
     # Path flag
@@ -331,24 +399,38 @@ def main() -> None:
 
     # Resolve command to module path
     try:
-        module_path, preset_args = resolve_command(cmd)
+        module_path, preset_args, surface = resolve_command(cmd)
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
+    if allowed_surfaces is not None and surface not in allowed_surfaces:
+        sys.stderr.write(JOURNAL_ACCESS_CMD_ERROR.format(cmd=cmd) + "\n")
+        sys.exit(2)
+
     # Set process title for ps/top visibility
-    setproctitle.setproctitle(f"sol:{cmd}")
+    setproctitle.setproctitle(f"{binary}:{cmd}")
 
     # Adjust sys.argv for the subcommand
     # Original: ["sol", "import", "--day", "20250101"]
     # Becomes:  ["sol import", "--day", "20250101"]
-    # This makes argparse show "usage: sol import ..." in help
+    # This makes argparse show "usage: <binary> <command> ..." in help.
     remaining_args = sys.argv[2:]
-    sys.argv = [f"sol {cmd}"] + preset_args + remaining_args
+    sys.argv = [f"{binary} {cmd}"] + preset_args + remaining_args
 
     # Run the command
     exit_code = run_command(module_path)
     sys.exit(exit_code)
+
+
+def main() -> None:
+    """Main entry point for sol CLI."""
+    _dispatch("sol", allowed_surfaces=None)
+
+
+def journal_main() -> None:
+    """Main entry point for journal service CLI."""
+    _dispatch("journal", allowed_surfaces=frozenset({"service"}))
 
 
 if __name__ == "__main__":

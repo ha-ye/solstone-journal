@@ -36,7 +36,7 @@ def test_heartbeat_command_mapping():
     """heartbeat key in COMMANDS maps to solstone.think.heartbeat module."""
     from solstone.think.sol_cli import COMMANDS
 
-    assert COMMANDS["heartbeat"] == "solstone.think.heartbeat"
+    assert COMMANDS["heartbeat"].module == "solstone.think.heartbeat"
 
 
 def test_heartbeat_main_is_callable():

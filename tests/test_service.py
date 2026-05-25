@@ -598,19 +598,21 @@ class TestRegistry:
         from solstone.think import sol_cli as sol
 
         assert "service" in sol.COMMANDS
-        assert sol.COMMANDS["service"] == "solstone.think.service"
+        assert sol.COMMANDS["service"].module == "solstone.think.service"
 
     def test_up_alias(self):
         from solstone.think import sol_cli as sol
 
         assert "up" in sol.ALIASES
-        assert sol.ALIASES["up"] == ("solstone.think.service", ["up"])
+        alias = sol.ALIASES["up"]
+        assert (alias.module, alias.preset_args) == ("solstone.think.service", ["up"])
 
     def test_down_alias(self):
         from solstone.think import sol_cli as sol
 
         assert "down" in sol.ALIASES
-        assert sol.ALIASES["down"] == ("solstone.think.service", ["down"])
+        alias = sol.ALIASES["down"]
+        assert (alias.module, alias.preset_args) == ("solstone.think.service", ["down"])
 
     def test_service_group_exists(self):
         from solstone.think import sol_cli as sol

@@ -85,7 +85,7 @@ def service_run_mock(*, returncodes: list[int] | None = None):
 def test_config_command_registered():
     from solstone.think import sol_cli as sol
 
-    assert sol.COMMANDS["config"] == "solstone.think.config_cli"
+    assert sol.COMMANDS["config"].module == "solstone.think.config_cli"
     assert "config" in sol.GROUPS["Specialized tools"]
 
 
