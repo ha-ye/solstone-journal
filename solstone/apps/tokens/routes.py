@@ -6,12 +6,13 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, abort, jsonify, render_template, request
 
+from solstone.apps.tokens import copy as tokens_copy
 from solstone.convey import state
 from solstone.convey.reasons import INVALID_DAY, INVALID_MONTH
 from solstone.convey.utils import DATE_RE, error_response
@@ -22,6 +23,11 @@ tokens_bp = Blueprint(
     __name__,
     url_prefix="/app/tokens",
 )
+
+
+@tokens_bp.app_context_processor
+def _inject_tokens_copy() -> dict:
+    return {"tokens_copy": tokens_copy}
 
 
 def _aggregate_token_data(day: str) -> Dict[str, Any]:
@@ -340,6 +346,42 @@ def api_usage():
 
     data = _aggregate_token_data(day)
     return jsonify(data)
+
+
+@tokens_bp.route("/api/daily")
+def api_daily():
+    """Return daily token cost and volume for a recent window."""
+    raw_days = request.args.get("days", "14")
+    try:
+        days = int(raw_days)
+    except (TypeError, ValueError):
+        abort(400)
+
+    if days < 1 or days > 90:
+        abort(400)
+
+    today = date.today()
+    rows = []
+    for offset in range(days - 1, -1, -1):
+        day = (today - timedelta(days=offset)).strftime("%Y%m%d")
+        cost = 0.0
+        tokens = 0
+
+        for entry in iter_token_log(day):
+            model = entry.get("model", "unknown")
+            if get_model_provider(model) == "unknown":
+                continue
+
+            usage = entry.get("usage", {})
+            tokens += usage.get("total_tokens", 0) or 0
+
+            cost_data = calc_token_cost(entry)
+            if cost_data:
+                cost += cost_data["total_cost"]
+
+        rows.append({"day": day, "cost": round(cost, 4), "tokens": tokens})
+
+    return jsonify(rows)
 
 
 @tokens_bp.route("/api/stats/<month>")

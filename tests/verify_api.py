@@ -360,6 +360,13 @@ ENDPOINTS = [
         "params": {},
         "status": 200,
     },
+    {
+        "app": "tokens",
+        "name": "daily",
+        "path": "/app/tokens/api/daily",
+        "params": {"days": "14"},
+        "status": 200,
+    },
     # apps/transcripts/routes.py
     {
         "app": "transcripts",
