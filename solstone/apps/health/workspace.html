@@ -688,6 +688,11 @@
   gap: 0.75em;
 }
 
+.logs-controls label {
+  color: #6b7280;
+  font-size: 0.75em;
+}
+
 .logs-controls select {
   padding: 0.3em 0.5em;
   border: 1px solid #d1d5db;
@@ -765,7 +770,7 @@
   height: 40vh;
   overflow-y: auto;
   font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
-  font-size: 12px;
+  font-size: 13px;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   padding: 0.75em 1em;
@@ -787,6 +792,21 @@
   letter-spacing: 0.5px;
 }
 
+.logs-service-header[role="button"] {
+  cursor: pointer;
+  user-select: none;
+}
+
+.logs-service-header[role="button"]:focus-visible {
+  outline: 2px solid var(--facet-color, #b06a1a);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.logs-service-header[aria-expanded="false"] {
+  color: #d1d5db;
+}
+
 .logs-service-header:first-child {
   padding-top: 0;
 }
@@ -794,21 +814,55 @@
 .logs-line {
   white-space: pre-wrap;
   word-break: break-all;
-  padding: 1px 0;
-  line-height: 1.5;
+  padding: 3px;
+  line-height: 1.6;
 }
 
-.logs-line.stderr {
-  color: #f87171;
+.logs-line.logs-level-error {
+  color: #fca5a5;
+  border-left: 3px solid #dc2626;
 }
 
-.logs-line.log {
-  color: #a78bfa;
+.logs-line.logs-level-warning {
+  color: #fcd34d;
+  border-left: 2px solid #d97706;
+}
+
+.logs-line.logs-level-info {
+  color: #d1d5db;
+}
+
+.logs-line.logs-level-debug {
+  color: #9ca3af;
+}
+
+.logs-line.logs-svc-collapsed {
+  display: none;
+}
+
+.logs-line[data-hhmmss]::before {
+  content: attr(data-hhmmss) " ";
+  color: #6b7280;
+  font-family: inherit;
+  margin-right: 8px;
+  user-select: none;
 }
 
 .logs-line.log-row-anchored {
   background: rgba(250, 204, 21, 0.24);
   transition: background 1.2s ease;
+}
+
+.logs-announcer {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* Think Card */
@@ -1274,9 +1328,18 @@
       <span class="logs-error-badge hidden" id="logErrorBadge"></span>
       <span class="logs-collapse-indicator" id="logsCollapseIndicator">▶ show</span>
       <div class="logs-controls">
+        <label for="logServiceFilter">{{ health_copy.LOGS_SERVICE_FILTER_LABEL }}</label>
         <select id="logServiceFilter">
           <option value="all">all services</option>
         </select>
+        <label for="logLevelFilter">{{ health_copy.LOGS_LEVEL_FILTER_LABEL }}</label>
+        <select id="logLevelFilter">
+          <option value="all">{{ health_copy.LOGS_LEVEL_OPTION_ALL }}</option>
+          <option value="error">{{ health_copy.LOGS_LEVEL_OPTION_ERROR }}</option>
+          <option value="warning">{{ health_copy.LOGS_LEVEL_OPTION_WARNING }}</option>
+          <option value="info">{{ health_copy.LOGS_LEVEL_OPTION_INFO }}</option>
+        </select>
+        <label for="logStreamFilter">{{ health_copy.LOGS_STREAM_FILTER_LABEL }}</label>
         <select id="logStreamFilter">
           <option value="all">All Streams</option>
           <option value="stdout">stdout</option>
@@ -1289,6 +1352,19 @@
       </div>
     </div>
     <div class="logs-viewport" id="logsViewport" role="log"></div>
+    <div id="logsAnnouncer" class="logs-announcer" role="status" aria-live="polite"></div>
+    <script>
+      window.HEALTH_LOGS_COPY = {
+        LOGS_SERVICE_FILTER_LABEL: {{ health_copy.LOGS_SERVICE_FILTER_LABEL | tojson }},
+        LOGS_STREAM_FILTER_LABEL: {{ health_copy.LOGS_STREAM_FILTER_LABEL | tojson }},
+        LOGS_LEVEL_FILTER_LABEL: {{ health_copy.LOGS_LEVEL_FILTER_LABEL | tojson }},
+        LOGS_LEVEL_OPTION_ALL: {{ health_copy.LOGS_LEVEL_OPTION_ALL | tojson }},
+        LOGS_LEVEL_OPTION_ERROR: {{ health_copy.LOGS_LEVEL_OPTION_ERROR | tojson }},
+        LOGS_LEVEL_OPTION_WARNING: {{ health_copy.LOGS_LEVEL_OPTION_WARNING | tojson }},
+        LOGS_LEVEL_OPTION_INFO: {{ health_copy.LOGS_LEVEL_OPTION_INFO | tojson }},
+        LOGS_SERVICE_COLLAPSED: {{ health_copy.LOGS_SERVICE_COLLAPSED | tojson }},
+      };
+    </script>
   </div>
 </div>
 
@@ -1333,6 +1409,8 @@
     serviceLogs: new Map(),     // service name -> array of {ts, stream, line}
     logFollow: true,            // Auto-scroll log viewport
     logsCollapsed: true,
+    logLevelFilter: 'all',
+    logCollapsedServices: new Map(),
     logErrorCount: 0,
     logTotalCount: 0,
     lastLogTs: null,
@@ -1396,11 +1474,13 @@
     schedulesValue: document.getElementById('schedulesValue'),
     logsViewport: document.getElementById('logsViewport'),
     logServiceFilter: document.getElementById('logServiceFilter'),
+    logLevelFilter: document.getElementById('logLevelFilter'),
     logStreamFilter: document.getElementById('logStreamFilter'),
     logFollowBtn: document.getElementById('logFollowBtn'),
     logClearBtn: document.getElementById('logClearBtn'),
     logErrorBadge: document.getElementById('logErrorBadge'),
     logsSummaryBadge: document.getElementById('logsSummaryBadge'),
+    logsAnnouncer: document.getElementById('logsAnnouncer'),
     logsCollapseIndicator: document.getElementById('logsCollapseIndicator'),
     connectionIndicator: document.getElementById('connectionIndicator'),
     trustIndicator: document.getElementById('trustIndicator'),
@@ -2777,29 +2857,141 @@
     updateStatusSummary();
   }
 
-	  const LOG_BUFFER_SIZE = 50;
+  const LOG_BUFFER_SIZE = 50;
+  const HEALTH_LOGS_COPY = window.HEALTH_LOGS_COPY;
 
-	  function applyPendingLogAnchor() {
-	    const anchor = state.pendingLogAnchor;
-	    if (!anchor) return;
-	    state.pendingLogAnchor = null;
-	    const lines = Array.from(elements.logsViewport.querySelectorAll('.logs-line[data-ts]'));
-	    if (lines.length === 0) return;
-	    let best = lines[0];
-	    let bestDelta = Math.abs(Number(best.dataset.ts) - anchor);
-	    for (const line of lines.slice(1)) {
-	      const delta = Math.abs(Number(line.dataset.ts) - anchor);
-	      if (delta < bestDelta) {
-	        best = line;
-	        bestDelta = delta;
-	      }
-	    }
-	    best.classList.add('log-row-anchored');
-	    best.scrollIntoView({ behavior: 'smooth', block: 'center' });
-	    setTimeout(() => best.classList.remove('log-row-anchored'), 1600);
-	  }
+  // mirror of solstone/apps/health/log_classifier.py — keep in sync
+  function classifyLogLevel(stream, line) {
+    const normalizedStream = (stream || '').trim().toLowerCase();
+    const text = line || '';
 
-	  function handleLogsEvent(msg) {
+    if (normalizedStream === 'stderr' && /\b(?:ERROR|CRITICAL|FATAL)\b/.test(text)) return 'error';
+    if (/^Traceback \(most recent call last\):/.test(text)) return 'error';
+    if (/: error while loading shared libraries:/.test(text)) return 'error';
+    if (/\bsolstone isn't running\b/.test(text)) return 'error';
+    if (/\b(?:ERROR|CRITICAL|FATAL)\b/.test(text)) return 'error';
+
+    if (/\b(?:WARNING|WARN)\b/.test(text)) return 'warning';
+    if (/\bUserWarning\b/.test(text)) return 'warning';
+    if (/^\S+\s+W\s+/.test(text)) return 'warning';
+    if (/\b(?:not reachable|Connection refused)\b/.test(text)) return 'warning';
+
+    if (/\bDEBUG\b/.test(text)) return 'debug';
+
+    if (/\bINFO\b/.test(text)) return 'info';
+    if (/^\S+\s+I\s+/.test(text)) return 'info';
+
+    return 'info';
+  }
+
+  function formatTemplate(template, values) {
+    return template.replace(/\{(service|n|errors)\}/g, (_, key) => String(values[key]));
+  }
+
+  function stripLogPrefix(line) {
+    return line.replace(/^\S+\s+\[[^\]]+\]\s+/, '');
+  }
+
+  function logLevelMatchesFilter(level) {
+    if (state.logLevelFilter === 'error') return level === 'error';
+    if (state.logLevelFilter === 'warning') return level === 'error' || level === 'warning';
+    if (state.logLevelFilter === 'info') return level === 'error' || level === 'warning' || level === 'info';
+    return true;
+  }
+
+  function formatLogTime(ts) {
+    const date = new Date(ts);
+    if (Number.isNaN(date.getTime())) return '';
+    return [date.getHours(), date.getMinutes(), date.getSeconds()]
+      .map(part => String(part).padStart(2, '0'))
+      .join(':');
+  }
+
+  function filteredLogRecords(records) {
+    const streamFilter = elements.logStreamFilter.value;
+    return records.filter((record) => {
+      const streamMatch = streamFilter === 'all' || streamFilter === record.stream;
+      if (!streamMatch) return false;
+      return logLevelMatchesFilter(classifyLogLevel(record.stream, record.line));
+    });
+  }
+
+  function countErrorRecords(records) {
+    return records.filter(record => classifyLogLevel(record.stream, record.line) === 'error').length;
+  }
+
+  function toggleLogServiceCollapse(service) {
+    const collapsed = state.logCollapsedServices.get(service) === true;
+    state.logCollapsedServices.set(service, !collapsed);
+    renderLogs();
+  }
+
+  function makeLogServiceHeader(service, records) {
+    const collapsed = state.logCollapsedServices.get(service) === true;
+    const header = document.createElement('div');
+    header.className = 'logs-service-header';
+    header.setAttribute('data-svc', service);
+    header.setAttribute('role', 'button');
+    header.setAttribute('tabindex', '0');
+    header.setAttribute('aria-expanded', String(!collapsed));
+    if (collapsed) {
+      header.textContent = formatTemplate(HEALTH_LOGS_COPY.LOGS_SERVICE_COLLAPSED, {
+        service: serviceName(service),
+        n: records.length,
+        errors: countErrorRecords(records),
+      });
+    } else {
+      header.textContent = '── ' + serviceName(service) + ' ──';
+    }
+    header.addEventListener('click', () => toggleLogServiceCollapse(service));
+    header.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        toggleLogServiceCollapse(service);
+      }
+    });
+    return header;
+  }
+
+  function appendLogLine(parent, service, record) {
+    const level = classifyLogLevel(record.stream, record.line);
+    if (!logLevelMatchesFilter(level)) return false;
+
+    const line = document.createElement('div');
+    line.className = 'logs-line logs-level-' + level;
+    if (state.logCollapsedServices.get(service) === true) {
+      line.classList.add('logs-svc-collapsed');
+    }
+    if (record.ts) {
+      line.dataset.ts = String(record.ts);
+      line.dataset.hhmmss = formatLogTime(record.ts);
+    }
+    line.appendChild(document.createTextNode(record.line));
+    parent.appendChild(line);
+    return true;
+  }
+
+  function applyPendingLogAnchor() {
+    const anchor = state.pendingLogAnchor;
+    if (!anchor) return;
+    state.pendingLogAnchor = null;
+    const lines = Array.from(elements.logsViewport.querySelectorAll('.logs-line[data-ts]'));
+    if (lines.length === 0) return;
+    let best = lines[0];
+    let bestDelta = Math.abs(Number(best.dataset.ts) - anchor);
+    for (const line of lines.slice(1)) {
+      const delta = Math.abs(Number(line.dataset.ts) - anchor);
+      if (delta < bestDelta) {
+        best = line;
+        bestDelta = delta;
+      }
+    }
+    best.classList.add('log-row-anchored');
+    best.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setTimeout(() => best.classList.remove('log-row-anchored'), 1600);
+  }
+
+  function handleLogsEvent(msg) {
     if (msg.event !== 'line') return;
 
     const name = msg.name || 'unknown';
@@ -2818,12 +3010,13 @@
     buf.push(record);
     if (buf.length > LOG_BUFFER_SIZE) buf.shift();
 
-    if (record.stream === 'stderr' && /\bERROR\b/.test(record.line)) {
+    if (classifyLogLevel(record.stream, record.line) === 'error') {
       window.AppServices?.quietNotifs?.add({
         source: name,
-        message: record.line.replace(/^\S+\s+\[\S+\]\s+/, '').slice(0, 120),
+        message: stripLogPrefix(record.line).slice(0, 120),
         ts: record.ts
       });
+      elements.logsAnnouncer.textContent = stripLogPrefix(record.line);
       state.logErrorCount++;
       elements.logErrorBadge.textContent = state.logErrorCount + ' error' + (state.logErrorCount > 1 ? 's' : '');
       elements.logErrorBadge.classList.remove('hidden');
@@ -2852,27 +3045,23 @@
   function renderLogs(newService, newRecord) {
     if (state.deepLinkMode) return;
     const serviceFilter = elements.logServiceFilter.value;
-    const streamFilter = elements.logStreamFilter.value;
     const viewport = elements.logsViewport;
-    const filterKey = serviceFilter + ':' + streamFilter;
+    const filterKey = serviceFilter + ':' + elements.logStreamFilter.value + ':' + state.logLevelFilter;
 
     // Incremental append: when following, filters unchanged, and we have a new record
     if (newRecord && state.logFollow && state.lastLogFilter === filterKey && viewport.children.length > 0) {
       const serviceMatch = serviceFilter === 'all' || serviceFilter === newService;
-      const streamMatch = streamFilter === 'all' || streamFilter === newRecord.stream;
-      if (serviceMatch && streamMatch) {
-        if (serviceFilter === 'all' && !viewport.querySelector(`[data-svc="${CSS.escape(newService)}"]`)) {
-          const header = document.createElement('div');
-          header.className = 'logs-service-header';
-          header.setAttribute('data-svc', newService);
-          header.textContent = '── ' + serviceName(newService) + ' ──';
-          viewport.appendChild(header);
+      const streamMatch = elements.logStreamFilter.value === 'all' || elements.logStreamFilter.value === newRecord.stream;
+      const levelMatch = logLevelMatchesFilter(classifyLogLevel(newRecord.stream, newRecord.line));
+      if (serviceMatch && streamMatch && levelMatch) {
+        if (state.logCollapsedServices.get(newService) === true) {
+          renderLogs();
+          return;
         }
-	        const line = document.createElement('div');
-	        line.className = newRecord.stream === 'stderr' ? 'logs-line stderr' : newRecord.stream === 'log' ? 'logs-line log' : 'logs-line';
-	        line.dataset.ts = String(newRecord.ts);
-	        line.textContent = newRecord.line;
-        viewport.appendChild(line);
+        if (serviceFilter === 'all' && !viewport.querySelector(`[data-svc="${CSS.escape(newService)}"]`)) {
+          viewport.appendChild(makeLogServiceHeader(newService, filteredLogRecords(state.serviceLogs.get(newService) || [])));
+        }
+        appendLogLine(viewport, newService, newRecord);
         viewport.scrollTop = viewport.scrollHeight;
         return;
       }
@@ -2890,33 +3079,25 @@
 
     for (const svc of services) {
       const lines = state.serviceLogs.get(svc) || [];
-      const filtered = streamFilter === 'all' ? lines : lines.filter(l => l.stream === streamFilter);
+      const filtered = filteredLogRecords(lines);
       if (filtered.length === 0) continue;
 
-      const header = document.createElement('div');
-      header.className = 'logs-service-header';
-      header.setAttribute('data-svc', svc);
-      header.textContent = '── ' + serviceName(svc) + ' ──';
-      fragment.appendChild(header);
+      fragment.appendChild(makeLogServiceHeader(svc, filtered));
 
-	      for (const rec of filtered) {
-	        const line = document.createElement('div');
-	        line.className = rec.stream === 'stderr' ? 'logs-line stderr' : rec.stream === 'log' ? 'logs-line log' : 'logs-line';
-	        line.dataset.ts = String(rec.ts);
-	        line.textContent = rec.line;
-	        fragment.appendChild(line);
-	      }
+      for (const rec of filtered) {
+        appendLogLine(fragment, svc, rec);
+      }
     }
 
     viewport.textContent = '';
     viewport.appendChild(fragment);
 
     // Auto-scroll if following
-	    if (wasAtBottom || state.logFollow) {
-	      viewport.scrollTop = viewport.scrollHeight;
-	    }
-	    applyPendingLogAnchor();
-	  }
+    if (wasAtBottom || state.logFollow) {
+      viewport.scrollTop = viewport.scrollHeight;
+    }
+    applyPendingLogAnchor();
+  }
 
   // Event handlers by tract
   function handleSupervisorEvent(msg) {
@@ -3127,8 +3308,16 @@
   }
 
   // Log controls
-  elements.logServiceFilter.addEventListener('change', renderLogs);
-  elements.logStreamFilter.addEventListener('change', renderLogs);
+  elements.logServiceFilter.addEventListener('change', () => {
+    renderLogs();
+  });
+  elements.logLevelFilter.addEventListener('change', () => {
+    state.logLevelFilter = elements.logLevelFilter.value;
+    renderLogs();
+  });
+  elements.logStreamFilter.addEventListener('change', () => {
+    renderLogs();
+  });
   function toggleLogsCollapse() {
     state.logsCollapsed = !state.logsCollapsed;
     const card = document.querySelector('.logs-card');
@@ -3162,6 +3351,7 @@
     state.logErrorCount = 0;
     state.lastLogTs = null;
     state.lastLogFilter = null;
+    state.logCollapsedServices.clear();
     elements.logErrorBadge.textContent = '';
     elements.logErrorBadge.classList.add('hidden');
     elements.logServiceFilter.innerHTML = '<option value="all">all services</option>';
@@ -3218,26 +3408,49 @@
     // Replace header with log file context
     logsTitle.textContent = 'log file';
     logsControls.innerHTML = '<button id="logBackBtn">← back to dashboard</button>';
-    viewport.innerHTML = '<div class="logs-line log">loading...</div>';
+    function parseDeepLinkLogLine(rawLine) {
+      const prefixed = rawLine.match(/^\S+\s+\[([^\]]+)\]\s?(.*)$/) || rawLine.match(/^\[([^\]]+)\]\s?(.*)$/);
+      if (!prefixed) return { stream: 'log', classifierLine: rawLine };
+      const label = prefixed[1];
+      const splitAt = label.lastIndexOf(':');
+      if (splitAt === -1) return { stream: 'log', classifierLine: rawLine };
+      return { stream: label.slice(splitAt + 1), classifierLine: prefixed[2] || '' };
+    }
+
+    function appendDeepLinkLogLine(parent, rawLine, streamOverride, classifierOverride) {
+      const parsed = parseDeepLinkLogLine(rawLine);
+      const stream = streamOverride || parsed.stream;
+      const classifierLine = classifierOverride || (streamOverride ? rawLine : parsed.classifierLine);
+      const level = classifyLogLevel(stream, classifierLine);
+      const line = document.createElement('div');
+      line.className = 'logs-line logs-level-' + level;
+      line.textContent = rawLine;
+      parent.appendChild(line);
+    }
+
+    viewport.textContent = '';
+    appendDeepLinkLogLine(viewport, 'loading...', 'stdout');
 
     fetch('/app/health/api/log?path=' + encodeURIComponent(deepLinkLog))
       .then(r => r.json().then(data => ({ok: r.ok, data})))
       .then(({ok, data}) => {
+        viewport.textContent = '';
         if (!ok) {
-          viewport.innerHTML = '<div class="logs-line stderr">' +
-            (data.error || 'Failed to load log file').replace(/&/g, '&amp;').replace(/</g, '&lt;') +
-            '</div>';
+          const message = data.error || 'Failed to load log file';
+          appendDeepLinkLogLine(viewport, message, 'stderr', 'ERROR: ' + message);
           return;
         }
-        const escaped = data.content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        const pathHeader = '<div class="logs-service-header">── ' +
-          data.path.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') +
-          ' ──</div>';
-        viewport.innerHTML = pathHeader + '<div class="logs-line">' +
-          escaped.replace(/\n/g, '</div><div class="logs-line">') + '</div>';
+        const pathHeader = document.createElement('div');
+        pathHeader.className = 'logs-service-header';
+        pathHeader.textContent = '── ' + data.path + ' ──';
+        viewport.appendChild(pathHeader);
+        data.content.split('\n').forEach((rawLine) => {
+          appendDeepLinkLogLine(viewport, rawLine);
+        });
       })
       .catch(() => {
-        viewport.innerHTML = '<div class="logs-line stderr">network error loading log file</div>';
+        viewport.textContent = '';
+        appendDeepLinkLogLine(viewport, 'network error loading log file', 'stderr', 'ERROR: network error loading log file');
       });
 
     document.addEventListener('click', function(e) {

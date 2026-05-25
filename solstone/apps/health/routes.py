@@ -7,6 +7,7 @@ from pathlib import Path
 
 from flask import Blueprint, jsonify, request
 
+from solstone.apps.health import copy as health_copy
 from solstone.convey import state
 from solstone.convey.reasons import (
     FILE_NOT_FOUND,
@@ -21,6 +22,12 @@ from solstone.think.callosum import callosum_send
 from solstone.think.streams import stream_name
 
 health_bp = Blueprint("app:health", __name__, url_prefix="/app/health")
+
+
+@health_bp.app_context_processor
+def _inject_health_copy() -> dict:
+    return {"health_copy": health_copy}
+
 
 # Supervisor currently registers one observer-facing processing service: "sense".
 # Observer rows are per registration key, but reconnect restarts this shared worker.
