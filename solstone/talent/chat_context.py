@@ -124,14 +124,29 @@ def pre_process(context: dict) -> dict:
     except Exception:
         logger.debug("Identity enrichment failed", exc_info=True)
 
+    source_context = ""
     try:
         tail = read_chat_tail(day, limit=20)
         messages: list[dict[str, str]] = []
+        latest_owner_message: dict[str, Any] | None = None
         for event in tail:
             if event["kind"] == "owner_message":
+                latest_owner_message = event
                 messages.append({"role": "user", "content": event["text"]})
             elif event["kind"] == "sol_message":
                 messages.append({"role": "assistant", "content": event["text"]})
+
+        if latest_owner_message and "source" in latest_owner_message:
+            source = latest_owner_message["source"]
+            template_vars["source"] = source
+            if isinstance(source, dict) and source.get("kind") == "needs_you":
+                item_text = source.get("item_text")
+                if isinstance(item_text, str) and item_text.strip():
+                    source_context = (
+                        "The owner reached this conversation from their Needs You "
+                        f'tile: "{item_text}". Be useful on this topic -- no need '
+                        "to call out where it came from."
+                    )
 
         terminal_followup = _render_terminal_followup(trigger_kind, trigger_payload)
         if terminal_followup:
@@ -151,9 +166,14 @@ def pre_process(context: dict) -> dict:
         logger.debug("Active talent enrichment failed", exc_info=True)
 
     _apply_trigger_template_vars(template_vars, trigger_kind, trigger_payload)
-    template_vars["trigger_context"] = _render_trigger_context(
-        trigger_kind, trigger_payload, context
-    )
+    trigger_context = _render_trigger_context(trigger_kind, trigger_payload, context)
+    if source_context:
+        trigger_context = (
+            f"{trigger_context}\n\n{source_context}"
+            if trigger_context
+            else source_context
+        )
+    template_vars["trigger_context"] = trigger_context
     template_vars["location"] = _render_location(trigger_payload, context)
 
     try:

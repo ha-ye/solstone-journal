@@ -1275,7 +1275,7 @@
   {% endif %}
 
   <!-- Needs You -->
-  {% if attention or pulse_needs or todos %}
+  {% if needs_you_items %}
   <div class="pulse-needs" id="pulse-needs" data-section-collapsed="false">
     <div class="pulse-section-toggle" role="button" tabindex="0" aria-expanded="true" onclick="toggleSection(this.parentElement)">
       <h2 class="pulse-section-header">needs you</h2>
@@ -1283,14 +1283,8 @@
     </div>
     <div class="pulse-section-body">
     <div class="pulse-needs-list">
-      {% if attention %}
-      <div class="pulse-needs-item pulse-needs-attention" role="button" tabindex="0" data-conversation="What happened with {{ attention.placeholder_text }}?">{{ attention.placeholder_text }}</div>
-      {% endif %}
-      {% for item in pulse_needs %}
-      <div class="pulse-needs-item" role="button" tabindex="0" data-conversation="What happened with {{ item }}?">{{ item }}</div>
-      {% endfor %}
-      {% for todo in todos[:7] %}
-      <div class="pulse-needs-item" role="button" tabindex="0" data-conversation="What's the context on: {{ todo.get('text', '') }}">{{ todo.get('text', '') }}{% if todo.get('facet') %} <span style="color:#94a3b8;font-size:0.75rem">({{ todo['facet'] }})</span>{% endif %}</div>
+      {% for item in needs_you_items %}
+      <div class="pulse-needs-item" role="button" tabindex="0" data-needs-you-item='{{ item|tojson }}'>{{ item.text }}</div>
       {% endfor %}
     </div>
     {% if todos|length > 7 %}
@@ -1299,7 +1293,7 @@
     </div>
   </div>
   {% endif %}
-  {% if not attention and not pulse_needs and not todos and not show_welcome %}
+  {% if not needs_you_items and not show_welcome %}
   <div class="pulse-empty-state">
     <h2 class="pulse-section-header">needs you</h2>
     <div class="pulse-empty-message">nothing needs your attention right now.</div>
@@ -1315,6 +1309,7 @@
   var briefingSections = {{ briefing_sections|tojson|safe }};
   var skillContent = {{ skills_content|default({})|tojson|safe }};
   var sectionOrder = ['your_day', 'yesterday', 'forward_look', 'reading'];
+  const NEEDS_YOU_PENDING_KEY = 'solstone:needs-you-pending-prompt';
 
   function renderBriefingSections(sections) {
     sectionOrder.forEach(function(key) {
@@ -1376,15 +1371,60 @@
   }
 
   function toggleSkillDetail(skillId) {
-      var detail = document.getElementById('skill-detail-' + skillId);
-      if (!detail) return;
-      if (detail.style.display === 'none') {
-        if (skillContent[skillId]) {
-          detail.innerHTML = window.AppServices.renderMarkdown(skillContent[skillId]);
-        }
-        detail.style.display = 'block';
-      } else {
+    var detail = document.getElementById('skill-detail-' + skillId);
+    if (!detail) return;
+    if (detail.style.display === 'none') {
+      if (skillContent[skillId]) {
+        detail.innerHTML = window.AppServices.renderMarkdown(skillContent[skillId]);
+      }
+      detail.style.display = 'block';
+    } else {
       detail.style.display = 'none';
+    }
+  }
+
+  function needsYouItemHtml(item) {
+    var encoded = esc(JSON.stringify(item || {}));
+    var text = item && typeof item.text === 'string' ? item.text : '';
+    return '<div class="pulse-needs-item" role="button" tabindex="0" data-needs-you-item="' + encoded + '">' + esc(text) + '</div>';
+  }
+
+  function renderNeedsYouFromPulse(data) {
+    if (!Array.isArray(data.needs_you_items)) return;
+    var section = document.getElementById('pulse-needs');
+    if (!section) return;
+    var list = section.querySelector('.pulse-needs-list');
+    if (!list) return;
+    list.innerHTML = data.needs_you_items.map(needsYouItemHtml).join('');
+    var summaryEl = section.querySelector('.pulse-section-summary');
+    if (summaryEl) summaryEl.textContent = data.needs_summary || '';
+  }
+
+  function dispatchNeedsYouItem(item) {
+    if (!item || typeof item !== 'object') return;
+    var payload = item.payload || {};
+    if (item.kind === 'chat') {
+      if (typeof payload.prompt !== 'string' || !payload.prompt) return;
+      try {
+        sessionStorage.setItem(NEEDS_YOU_PENDING_KEY, JSON.stringify({
+          prompt: payload.prompt,
+          item_text: item.text || ''
+        }));
+      } catch (_err) {
+        return;
+      }
+      window.location.href = '/app/chat/';
+      return;
+    }
+    if (item.kind === 'route') {
+      var href = payload.href;
+      if (typeof href === 'string' && href.startsWith('/') && !href.startsWith('//')) {
+        window.location.href = href;
+      }
+      return;
+    }
+    if (item.kind === 'confirm') {
+      if (window.logError) window.logError(new Error('unsupported confirm needs-you item'), { context: 'home: needs-you dispatch' });
     }
   }
 
@@ -1403,11 +1443,7 @@
         if (el.closest('[data-routine-click]') || el.hasAttribute('data-routine-click')) {
           fetch('/app/home/api/routines/seen', {method: 'POST'});
         }
-        if (el.classList.contains('pulse-needs-item')) {
-          window.suggestChat(el.dataset.conversation);
-        } else {
-          window.fillChat(el.dataset.conversation);
-        }
+        window.fillChat(el.dataset.conversation);
       }
 
       dashboard.addEventListener('click', function(e) {
@@ -1417,6 +1453,16 @@
           e.preventDefault();
           toggleSkillDetail(skillEl.dataset.skillId);
           fetch('/app/home/api/skills/seen', {method: 'POST'});
+          return;
+        }
+        var needsYouEl = e.target.closest('[data-needs-you-item]');
+        if (needsYouEl) {
+          e.preventDefault();
+          try {
+            dispatchNeedsYouItem(JSON.parse(needsYouEl.dataset.needsYouItem || '{}'));
+          } catch (err) {
+            if (window.logError) window.logError(err, { context: 'home: needs-you parse' });
+          }
           return;
         }
         var plainLink = e.target.closest('a[href]');
@@ -1440,6 +1486,16 @@
           e.preventDefault();
           toggleSkillDetail(skillEl.dataset.skillId);
           fetch('/app/home/api/skills/seen', {method: 'POST'});
+          return;
+        }
+        var needsYouEl = e.target.closest('[data-needs-you-item]');
+        if (needsYouEl) {
+          e.preventDefault();
+          try {
+            dispatchNeedsYouItem(JSON.parse(needsYouEl.dataset.needsYouItem || '{}'));
+          } catch (err) {
+            if (window.logError) window.logError(err, { context: 'home: needs-you parse' });
+          }
           return;
         }
         var plainLink = e.target.closest('a[href]');
@@ -1571,36 +1627,37 @@
     }
   }
 
-	  function refreshVitals() {
-	    window.apiJson('/app/home/api/pulse')
-	      .then(data => {
+  function refreshVitals() {
+    window.apiJson('/app/home/api/pulse')
+      .then(data => {
         const el = document.getElementById('pulse-vitals');
         if (!el) return;
         if (typeof data.capture_status !== 'string') {
           throw malformedHomeResponse('/app/home/api/pulse', 'Malformed pulse response');
         }
-	        clearPulseRefreshError('pulse-vitals');
-	        let dotClass = data.capture_status === 'active' ? 'active' : (data.capture_status === 'stale' ? 'stale' : (data.capture_status === 'offline' ? 'offline' : 'unknown'));
-	        let displayStatus = data.capture_status === 'no_observers' ? 'no observers' : data.capture_status;
-	        let captureText = data.capture_display_text || ('observer ' + displayStatus);
-	        let html = '<div class="pulse-vitals-item"><span class="pulse-vitals-dot ' + dotClass + '" aria-hidden="true"></span><span>' + esc(captureText) + '</span></div>';
-	        if (data.segment_count > 0) {
-	          html += '<div class="pulse-vitals-sep"></div><div class="pulse-vitals-item">' + data.segment_count + ' segment' + (data.segment_count !== 1 ? 's' : '');
-	          if (data.duration_minutes > 0) html += ' · ' + data.duration_minutes + 'm';
+        renderNeedsYouFromPulse(data);
+        clearPulseRefreshError('pulse-vitals');
+        let dotClass = data.capture_status === 'active' ? 'active' : (data.capture_status === 'stale' ? 'stale' : (data.capture_status === 'offline' ? 'offline' : 'unknown'));
+        let displayStatus = data.capture_status === 'no_observers' ? 'no observers' : data.capture_status;
+        let captureText = data.capture_display_text || ('observer ' + displayStatus);
+        let html = '<div class="pulse-vitals-item"><span class="pulse-vitals-dot ' + dotClass + '" aria-hidden="true"></span><span>' + esc(captureText) + '</span></div>';
+        if (data.segment_count > 0) {
+          html += '<div class="pulse-vitals-sep"></div><div class="pulse-vitals-item">' + data.segment_count + ' segment' + (data.segment_count !== 1 ? 's' : '');
+          if (data.duration_minutes > 0) html += ' · ' + data.duration_minutes + 'm';
           html += '</div>';
         }
         if (data.last_observe_relative) {
           html += '<div class="pulse-vitals-sep"></div><div class="pulse-vitals-item">last observation ' + esc(data.last_observe_relative) + '</div>';
-	        }
-	        if (data.attention) {
-	          html += '<div class="pulse-vitals-sep"></div><div class="pulse-vitals-action" role="button" tabindex="0" data-conversation="explain the current attention items."><div class="pulse-vitals-item pulse-vitals-attention">' + esc(data.attention.placeholder_text) + '</div><a class="pulse-vitals-action-link" href="/app/health#focus=recent-errors&day=today">view details →</a></div>';
-	        }
-	        if (data.pipeline_status) {
-	          html += '<div class="pulse-vitals-sep"></div><div class="pulse-vitals-action" role="button" tabindex="0" data-conversation="explain pipeline health for today."><div class="pulse-vitals-item pulse-vitals-attention">' + esc(data.pipeline_status.message) + '</div><a class="pulse-vitals-action-link" href="/app/health#focus=recent-errors&day=today">view details →</a></div>';
-	        }
-	        html += '<a class="pulse-vitals-health-link" href="/app/health">health →</a>';
-	        el.innerHTML = html;
-	      })
+        }
+        if (data.attention) {
+          html += '<div class="pulse-vitals-sep"></div><div class="pulse-vitals-action" role="button" tabindex="0" data-conversation="explain the current attention items."><div class="pulse-vitals-item pulse-vitals-attention">' + esc(data.attention.placeholder_text) + '</div><a class="pulse-vitals-action-link" href="/app/health#focus=recent-errors&day=today">view details →</a></div>';
+        }
+        if (data.pipeline_status) {
+          html += '<div class="pulse-vitals-sep"></div><div class="pulse-vitals-action" role="button" tabindex="0" data-conversation="explain pipeline health for today."><div class="pulse-vitals-item pulse-vitals-attention">' + esc(data.pipeline_status.message) + '</div><a class="pulse-vitals-action-link" href="/app/health#focus=recent-errors&day=today">view details →</a></div>';
+        }
+        html += '<a class="pulse-vitals-health-link" href="/app/health">health →</a>';
+        el.innerHTML = html;
+      })
       .catch(function(err) {
         window.logError(err, { context: 'home: refreshVitals failed' });
         window.SurfaceState.replaceLoading('pulse-vitals', window.SurfaceState.error({
@@ -1618,6 +1675,7 @@
         if (!data || typeof data !== 'object' || !Object.prototype.hasOwnProperty.call(data, 'narrative_content')) {
           throw malformedHomeResponse('/app/home/api/pulse', 'Malformed pulse response');
         }
+        renderNeedsYouFromPulse(data);
         clearPulseRefreshError('pulse-narrative');
         const el = document.getElementById('pulse-narrative-content');
         if (el && data.narrative_content) {

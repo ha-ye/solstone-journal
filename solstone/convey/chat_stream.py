@@ -30,6 +30,7 @@ _CHAT_LOCK = threading.Lock()
 _CHAT_STREAM = "chat"
 _SEGMENT_WINDOW_MS = 300_000
 _APPENDED_CHAT_PATHS: dict[int, Path] = {}
+# owner_message may carry optional `source`; extras flow through unchanged.
 _VALID_KINDS = {
     "owner_message": ("text", "app", "path", "facet"),
     "sol_message": (

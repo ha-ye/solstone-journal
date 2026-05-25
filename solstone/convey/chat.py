@@ -110,13 +110,19 @@ def post_chat() -> Any:
         payload.get("path"),
         payload.get("facet"),
     )
-    append_chat_event(
-        "owner_message",
-        text=message,
-        app=location["app"],
-        path=location["path"],
-        facet=location["facet"],
-    )
+    source = payload.get("source")
+    if source is not None and not isinstance(source, dict):
+        logger.warning("dropping malformed chat source: %r", source)
+        source = None
+    event_fields: dict[str, Any] = {
+        "text": message,
+        "app": location["app"],
+        "path": location["path"],
+        "facet": location["facet"],
+    }
+    if source is not None:
+        event_fields["source"] = source
+    append_chat_event("owner_message", **event_fields)
     trigger = {
         "type": "owner_message",
         "message": message,
