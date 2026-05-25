@@ -4,15 +4,18 @@
 from __future__ import annotations
 
 import json
+import re
+import socket
 from datetime import datetime
 from pathlib import Path
+from urllib.error import HTTPError
 
 from solstone.convey.sol_initiated.copy import (
     KIND_OWNER_CHAT_DISMISSED,
     KIND_OWNER_CHAT_OPEN,
     KIND_SOL_CHAT_REQUEST,
 )
-from solstone.think.push import triggers
+from solstone.think.push import portal_dispatch, triggers
 
 
 def _log_path(tmp_path: Path) -> Path:
@@ -552,6 +555,7 @@ def test_handle_sol_chat_request_dispatches_and_logs(monkeypatch, tmp_path):
             "dedupe_key": "req-1",
             "category": "notice",
             "outcome": "dispatched",
+            "via": "local",
         }
     ]
 
@@ -674,3 +678,333 @@ def test_handle_chat_lifecycle_filters_other_events(monkeypatch, tmp_path):
 
     assert send_calls == []
     assert not _log_path(tmp_path).exists()
+
+
+class _PortalResponse:
+    def __init__(self, body: bytes, status: int = 200):
+        self._body = body
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self) -> bytes:
+        return self._body
+
+    def getcode(self) -> int:
+        return self.status
+
+
+def test_dispatch_via_portal_happy_path(monkeypatch):
+    monkeypatch.setattr(
+        portal_dispatch,
+        "scout_provenance",
+        lambda: {"dispatch_token": "dispatch-token", "account_id": "acct-1"},
+    )
+    monkeypatch.setattr(
+        portal_dispatch, "portal_base_url", lambda: "https://portal.test"
+    )
+
+    def fake_urlopen(request, timeout):
+        assert timeout == 10
+        assert request.full_url == "https://portal.test/push/dispatch"
+        assert request.get_method() == "POST"
+        assert request.get_header("Authorization") == "Bearer dispatch-token"
+        assert json.loads(request.data.decode("utf-8")) == {
+            "summary": "Needs a reply",
+            "category": "notice",
+            "request_id": "req-1",
+        }
+        return _PortalResponse(b'{"ok": true, "sent": 2}')
+
+    monkeypatch.setattr(portal_dispatch.urllib_request, "urlopen", fake_urlopen)
+
+    assert portal_dispatch.dispatch_via_portal(
+        request_id="req-1",
+        summary="Needs a reply",
+        category="notice",
+    ) == {"ok": True, "sent": 2}
+
+
+def test_dispatch_via_portal_4xx_returns_none(monkeypatch, caplog):
+    token = "dispatch-token"
+    monkeypatch.setattr(
+        portal_dispatch,
+        "scout_provenance",
+        lambda: {"dispatch_token": token, "account_id": "acct-1"},
+    )
+    caplog.set_level("WARNING", logger=portal_dispatch.logger.name)
+
+    def fake_urlopen(request, timeout):
+        raise HTTPError(request.full_url, 400, "bad request", hdrs=None, fp=None)
+
+    monkeypatch.setattr(portal_dispatch.urllib_request, "urlopen", fake_urlopen)
+
+    assert (
+        portal_dispatch.dispatch_via_portal(
+            request_id="req-1",
+            summary="Needs a reply",
+            category="notice",
+        )
+        is None
+    )
+    assert "portal dispatch rejected" in caplog.text
+    assert token not in caplog.text
+
+
+def test_dispatch_via_portal_5xx_returns_none(monkeypatch):
+    monkeypatch.setattr(
+        portal_dispatch,
+        "scout_provenance",
+        lambda: {"dispatch_token": "dispatch-token", "account_id": "acct-1"},
+    )
+
+    def fake_urlopen(request, timeout):
+        raise HTTPError(request.full_url, 500, "server error", hdrs=None, fp=None)
+
+    monkeypatch.setattr(portal_dispatch.urllib_request, "urlopen", fake_urlopen)
+
+    assert (
+        portal_dispatch.dispatch_via_portal(
+            request_id="req-1",
+            summary="Needs a reply",
+            category="notice",
+        )
+        is None
+    )
+
+
+def test_dispatch_via_portal_timeout_returns_none(monkeypatch):
+    monkeypatch.setattr(
+        portal_dispatch,
+        "scout_provenance",
+        lambda: {"dispatch_token": "dispatch-token", "account_id": "acct-1"},
+    )
+    monkeypatch.setattr(
+        portal_dispatch.urllib_request,
+        "urlopen",
+        lambda request, timeout: (_ for _ in ()).throw(socket.timeout("timed out")),
+    )
+
+    assert (
+        portal_dispatch.dispatch_via_portal(
+            request_id="req-1",
+            summary="Needs a reply",
+            category="notice",
+        )
+        is None
+    )
+
+
+def test_dispatch_via_portal_no_scout_returns_none(monkeypatch):
+    urlopen_called = False
+    monkeypatch.setattr(portal_dispatch, "scout_provenance", lambda: None)
+
+    def fake_urlopen(request, timeout):
+        nonlocal urlopen_called
+        urlopen_called = True
+        return _PortalResponse(b"{}")
+
+    monkeypatch.setattr(portal_dispatch.urllib_request, "urlopen", fake_urlopen)
+
+    assert (
+        portal_dispatch.dispatch_via_portal(
+            request_id="req-1",
+            summary="Needs a reply",
+            category="notice",
+        )
+        is None
+    )
+    assert not urlopen_called
+
+
+def test_handle_sol_chat_request_routes_via_portal_when_scout_enabled(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(
+        triggers,
+        "scout_provenance",
+        lambda: {"dispatch_token": "dispatch-token", "account_id": "acct-1"},
+    )
+    monkeypatch.setattr(triggers.time, "time", lambda: 123.0)
+    send_calls: list[dict[str, object]] = []
+    portal_calls: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        triggers,
+        "send_many",
+        lambda *args, **kwargs: send_calls.append(kwargs) or (1, 0),
+    )
+
+    def fake_dispatch_via_portal(*, request_id, summary, category):
+        portal_calls.append(
+            {"request_id": request_id, "summary": summary, "category": category}
+        )
+        return {"ok": True, "sent": 1}
+
+    monkeypatch.setattr(triggers, "dispatch_via_portal", fake_dispatch_via_portal)
+
+    triggers.handle_sol_chat_request(
+        {
+            "tract": "chat",
+            "event": KIND_SOL_CHAT_REQUEST,
+            "request_id": "req-1",
+            "summary": "Needs a reply",
+            "category": "notice",
+        }
+    )
+
+    assert portal_calls == [
+        {"request_id": "req-1", "summary": "Needs a reply", "category": "notice"}
+    ]
+    assert send_calls == []
+    assert _read_log(tmp_path) == [
+        {
+            "ts": 123,
+            "kind": f"{KIND_SOL_CHAT_REQUEST}_push",
+            "dedupe_key": "req-1",
+            "category": "notice",
+            "outcome": "dispatched",
+            "via": "portal",
+        }
+    ]
+
+
+def test_handle_sol_chat_request_falls_back_to_local_when_portal_fails(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(
+        triggers,
+        "scout_provenance",
+        lambda: {"dispatch_token": "dispatch-token", "account_id": "acct-1"},
+    )
+    monkeypatch.setattr(triggers, "dispatch_via_portal", lambda **kwargs: None)
+    monkeypatch.setattr(triggers, "is_configured", lambda: True)
+    devices = [{"token": "a" * 64}]
+    monkeypatch.setattr(triggers, "_eligible_devices", lambda: devices)
+    monkeypatch.setattr(triggers.time, "time", lambda: 123.0)
+    sent_calls: list[list[dict[str, object]]] = []
+    monkeypatch.setattr(
+        triggers,
+        "send_many",
+        lambda push_devices, *args, **kwargs: sent_calls.append(push_devices) or (1, 0),
+    )
+
+    triggers.handle_sol_chat_request(
+        {
+            "tract": "chat",
+            "event": KIND_SOL_CHAT_REQUEST,
+            "request_id": "req-1",
+            "summary": "Needs a reply",
+            "category": "notice",
+        }
+    )
+
+    assert sent_calls == [devices]
+    assert _read_log(tmp_path)[0]["via"] == "local"
+
+
+def test_handle_sol_chat_request_falls_back_to_local_when_scout_missing_token(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(triggers, "scout_provenance", lambda: {"account_id": "acct-1"})
+    monkeypatch.setattr(
+        triggers,
+        "dispatch_via_portal",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("portal should not run")),
+    )
+    monkeypatch.setattr(triggers, "is_configured", lambda: True)
+    devices = [{"token": "a" * 64}]
+    monkeypatch.setattr(triggers, "_eligible_devices", lambda: devices)
+    sent_calls: list[list[dict[str, object]]] = []
+    monkeypatch.setattr(
+        triggers,
+        "send_many",
+        lambda push_devices, *args, **kwargs: sent_calls.append(push_devices) or (1, 0),
+    )
+
+    triggers.handle_sol_chat_request(
+        {
+            "tract": "chat",
+            "event": KIND_SOL_CHAT_REQUEST,
+            "request_id": "req-1",
+            "summary": "Needs a reply",
+            "category": "notice",
+        }
+    )
+
+    assert sent_calls == [devices]
+
+
+def test_handle_sol_chat_request_no_scout_unchanged(monkeypatch, tmp_path):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(triggers, "scout_provenance", lambda: None)
+    monkeypatch.setattr(
+        triggers,
+        "dispatch_via_portal",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("portal should not run")),
+    )
+    monkeypatch.setattr(triggers, "is_configured", lambda: True)
+    devices = [{"token": "a" * 64}]
+    monkeypatch.setattr(triggers, "_eligible_devices", lambda: devices)
+    sent_calls: list[list[dict[str, object]]] = []
+    monkeypatch.setattr(
+        triggers,
+        "send_many",
+        lambda push_devices, *args, **kwargs: sent_calls.append(push_devices) or (1, 0),
+    )
+
+    triggers.handle_sol_chat_request(
+        {
+            "tract": "chat",
+            "event": KIND_SOL_CHAT_REQUEST,
+            "request_id": "req-1",
+            "summary": "Needs a reply",
+            "category": "notice",
+        }
+    )
+
+    assert sent_calls == [devices]
+
+
+def test_dispatch_via_portal_does_not_log_token_plaintext(monkeypatch, caplog):
+    token = "TEST_TOKEN_SHOULD_NEVER_APPEAR"
+    monkeypatch.setattr(
+        portal_dispatch,
+        "scout_provenance",
+        lambda: {"dispatch_token": token, "account_id": "acct-1"},
+    )
+    caplog.set_level("WARNING", logger=portal_dispatch.logger.name)
+
+    def fake_urlopen(request, timeout):
+        raise HTTPError(request.full_url, 400, "bad request", hdrs=None, fp=None)
+
+    monkeypatch.setattr(portal_dispatch.urllib_request, "urlopen", fake_urlopen)
+
+    assert (
+        portal_dispatch.dispatch_via_portal(
+            request_id="req-1",
+            summary="Needs a reply",
+            category="notice",
+        )
+        is None
+    )
+    assert token not in caplog.text
+
+
+def test_dispatch_via_portal_module_has_no_brand_canon_violations():
+    text = Path(portal_dispatch.__file__).read_text(encoding="utf-8")
+
+    for pattern in (
+        r"\bsign in\b",
+        r"\byour account\b",
+        r"\blinked\b",
+        r"\bauthenticate\b",
+        r"\blog[ -]?in\b",
+    ):
+        assert re.search(pattern, text, re.IGNORECASE) is None

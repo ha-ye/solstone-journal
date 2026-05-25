@@ -39,6 +39,8 @@ from solstone.think.push.dispatch import (
     build_sol_chat_request_payload,
     send_many,
 )
+from solstone.think.push.portal_dispatch import dispatch_via_portal
+from solstone.think.services.scout import scout_provenance
 from solstone.think.utils import get_journal
 
 logger = logging.getLogger("solstone.push.triggers")
@@ -304,17 +306,37 @@ def handle_weekly_reflection_finish(message: dict[str, Any]) -> None:
 def handle_sol_chat_request(message: dict[str, Any]) -> None:
     if message.get("tract") != "chat" or message.get("event") != KIND_SOL_CHAT_REQUEST:
         return
-    if not is_configured():
-        return
-    eligible_devices = _eligible_devices()
-    if not eligible_devices:
-        return
-
     request_id = str(message.get("request_id") or "").strip()
     if not request_id:
         return
     summary = str(message.get("summary") or "")
     category = str(message.get("category") or "")
+
+    scout = scout_provenance()
+    if scout and scout.get("dispatch_token"):
+        portal_result = dispatch_via_portal(
+            request_id=request_id,
+            summary=summary,
+            category=category,
+        )
+        if portal_result is not None:
+            _append_nudge_log(
+                {
+                    "ts": int(time.time()),
+                    "kind": f"{KIND_SOL_CHAT_REQUEST}_push",
+                    "dedupe_key": request_id,
+                    "category": category,
+                    "outcome": "dispatched",
+                    "via": "portal",
+                }
+            )
+            return
+
+    if not is_configured():
+        return
+    eligible_devices = _eligible_devices()
+    if not eligible_devices:
+        return
 
     outcome = "dispatched"
     try:
@@ -347,6 +369,7 @@ def handle_sol_chat_request(message: dict[str, Any]) -> None:
             "dedupe_key": request_id,
             "category": category,
             "outcome": outcome,
+            "via": "local",
         }
     )
 
