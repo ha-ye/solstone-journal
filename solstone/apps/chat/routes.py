@@ -11,6 +11,7 @@ from typing import Any
 from flask import Blueprint, abort, jsonify, redirect, render_template, url_for
 
 from solstone.apps.chat import copy as chat_copy
+from solstone.apps.chat.config import load_chat_config
 from solstone.convey.chat_stream import read_chat_events
 from solstone.convey.reasons import INVALID_MONTH
 from solstone.convey.sol_initiated import copy as sol_voice_copy
@@ -46,6 +47,7 @@ def day(day: str) -> str:
     today_day = date.today().strftime("%Y%m%d")
     owner_name, agent_name = _resolve_identity()
     events = read_chat_events(day)
+    chat_config = load_chat_config()
     if day == today_day:
         # Page loads are engagement signals in Lode 2, so prior open facts do not
         # suppress another page-load open. Dismiss and supersede facts still do.
@@ -76,6 +78,7 @@ def day(day: str) -> str:
         owner_name=owner_name,
         agent_name=agent_name,
         sol_message_origins=sol_message_origins,
+        thinking_surfaces=chat_config["thinking_surfaces"],
         chat_copy=chat_copy,
         sol_voice_copy=sol_voice_copy,
     )

@@ -16,6 +16,12 @@ from typing import Any
 
 from flask import Blueprint, abort, jsonify, render_template, request
 
+from solstone.apps.chat import copy as chat_copy
+from solstone.apps.chat.config import (
+    THINKING_SURFACES_VALUES,
+    load_chat_config,
+    save_chat_config,
+)
 from solstone.apps.settings import copy as settings_copy
 from solstone.apps.settings import install_copy, local_bootstrap, mlx_bootstrap
 from solstone.apps.settings.copy import (
@@ -154,6 +160,8 @@ def _inject_settings_copy() -> dict[str, Any]:
         "install_copy": {
             name: getattr(install_copy, name) for name in install_copy.__all__
         },
+        "chat_config": load_chat_config(),
+        "chat_copy": chat_copy,
         "settings_copy": settings_copy,
         "sol_voice_copy": sol_voice_copy,
     }
@@ -563,6 +571,55 @@ def update_sol_voice() -> Any:
         return error_response(
             SETTINGS_OPERATION_FAILED,
             detail="unable to save sol voice settings",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Chat API
+# ---------------------------------------------------------------------------
+
+
+@settings_bp.route("/api/chat")
+def get_chat() -> Any:
+    """Return chat display settings."""
+    try:
+        return jsonify(load_chat_config())
+    except Exception:
+        logger.exception("error loading chat settings")
+        return error_response(
+            SETTINGS_OPERATION_FAILED,
+            detail="unable to load chat settings",
+        )
+
+
+@settings_bp.route("/api/chat", methods=["PUT"])
+def update_chat() -> Any:
+    """Persist partial chat display settings."""
+    try:
+        updates = request.get_json()
+        if not isinstance(updates, dict):
+            return error_response(
+                INVALID_CONFIG_VALUE,
+                detail="chat update must be an object",
+            )
+        thinking_surfaces = updates.get("thinking_surfaces")
+        if (
+            "thinking_surfaces" in updates
+            and thinking_surfaces not in THINKING_SURFACES_VALUES
+        ):
+            logger.warning(
+                "invalid chat thinking_surfaces value: %r", thinking_surfaces
+            )
+            return error_response(
+                INVALID_CONFIG_VALUE,
+                detail="invalid thinking_surfaces",
+            )
+        return jsonify(save_chat_config(updates))
+    except Exception:
+        logger.exception("error saving chat settings")
+        return error_response(
+            SETTINGS_OPERATION_FAILED,
+            detail="unable to save chat settings",
         )
 
 

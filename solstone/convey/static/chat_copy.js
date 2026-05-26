@@ -44,6 +44,13 @@
     CHAT_CLOSER_DIFFERENT_ANGLE_SUFFIX: "Want me to try a different angle?",
     CHAT_CLOSER_TALENT_ERRORED_FORMAT: "I couldn't finish that lookup — {reason}. Want to try a different angle, or rephrase the question?",
     CHAT_CLOSER_TALENT_ERRORED_GENERIC: "I couldn't finish that lookup. Want to try a different angle, or rephrase the question?",
+    CHAT_THINKING_EXPANDER_LABEL: "Show thinking",
+    CHAT_THINKING_COLLAPSER_LABEL: "Hide thinking",
+    CHAT_THINKING_SETTING_LABEL: "Thinking surfaces",
+    CHAT_THINKING_OPT_ON_TAP: "Show on tap",
+    CHAT_THINKING_OPT_ALWAYS: "Always show",
+    CHAT_THINKING_OPT_NEVER: "Never show",
+    CHAT_THINKING_SETTING_HELP: "Sol does some thinking before replying. Choose how much you want to see.",
     chatErrorRetryExcerpt
   };
 })();

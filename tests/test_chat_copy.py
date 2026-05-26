@@ -76,6 +76,31 @@ def test_chat_error_retry_excerpt():
     assert chat_copy.chat_error_retry_excerpt("a" * 61) == ("a" * 60) + "…"
 
 
+def test_thinking_copy_bytes():
+    expected = """CHAT_THINKING_EXPANDER_LABEL = "Show thinking"
+CHAT_THINKING_COLLAPSER_LABEL = "Hide thinking"
+CHAT_THINKING_SETTING_LABEL = "Thinking surfaces"
+CHAT_THINKING_OPT_ON_TAP = "Show on tap"
+CHAT_THINKING_OPT_ALWAYS = "Always show"
+CHAT_THINKING_OPT_NEVER = "Never show"
+CHAT_THINKING_SETTING_HELP = "Sol does some thinking before replying. Choose how much you want to see."
+"""
+    actual = "\n".join(
+        [
+            f'CHAT_THINKING_EXPANDER_LABEL = "{chat_copy.CHAT_THINKING_EXPANDER_LABEL}"',
+            f'CHAT_THINKING_COLLAPSER_LABEL = "{chat_copy.CHAT_THINKING_COLLAPSER_LABEL}"',
+            f'CHAT_THINKING_SETTING_LABEL = "{chat_copy.CHAT_THINKING_SETTING_LABEL}"',
+            f'CHAT_THINKING_OPT_ON_TAP = "{chat_copy.CHAT_THINKING_OPT_ON_TAP}"',
+            f'CHAT_THINKING_OPT_ALWAYS = "{chat_copy.CHAT_THINKING_OPT_ALWAYS}"',
+            f'CHAT_THINKING_OPT_NEVER = "{chat_copy.CHAT_THINKING_OPT_NEVER}"',
+            f'CHAT_THINKING_SETTING_HELP = "{chat_copy.CHAT_THINKING_SETTING_HELP}"',
+            "",
+        ]
+    )
+
+    assert actual == expected
+
+
 def test_js_parity():
     js_path = Path("solstone/convey/static/chat_copy.js")
     text = js_path.read_text(encoding="utf-8")
@@ -111,6 +136,16 @@ def test_js_parity():
     assert (
         f'CHAT_ERROR_RETRY_ARIA_FORMAT: "{chat_copy.CHAT_ERROR_RETRY_ARIA_FORMAT}"'
     ) in text
+    expected_js_thinking = """CHAT_THINKING_EXPANDER_LABEL: "Show thinking",
+CHAT_THINKING_COLLAPSER_LABEL: "Hide thinking",
+CHAT_THINKING_SETTING_LABEL: "Thinking surfaces",
+CHAT_THINKING_OPT_ON_TAP: "Show on tap",
+CHAT_THINKING_OPT_ALWAYS: "Always show",
+CHAT_THINKING_OPT_NEVER: "Never show",
+CHAT_THINKING_SETTING_HELP: "Sol does some thinking before replying. Choose how much you want to see.",
+"""
+    for expected_line in expected_js_thinking.splitlines():
+        assert expected_line in text
     assert "function chatErrorRetryExcerpt(text)" in text
 
 

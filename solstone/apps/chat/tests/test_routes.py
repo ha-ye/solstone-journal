@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -107,6 +108,15 @@ def _append_sol_request(day: str, request_id: str = "req") -> None:
         dedupe_window="24h",
         since_ts=1,
         trigger_talent="reflection",
+    )
+
+
+def _write_chat_config(journal: Path, thinking_surfaces: str) -> None:
+    config_path = journal / "config" / "chat.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps({"thinking_surfaces": thinking_surfaces}) + "\n",
+        encoding="utf-8",
     )
 
 
@@ -425,6 +435,137 @@ def test_chat_time_separator_is_inserted_client_side(journal_copy, monkeypatch):
     assert "early" in html
     assert "later" in html
     assert "insertTimeSeparators(transcript);" in html
+
+
+def test_chat_thinking_renders_expander_on_tap(journal_copy, monkeypatch):
+    day = "20990102"
+    _set_today(monkeypatch, "20990103")
+    _write_chat_config(journal_copy, "on_tap")
+    env = _make_env(journal_copy, monkeypatch)
+    reasoning = "X reasoning <text>"
+    talent_reasoning = "Talent reasoning text"
+    append_chat_event(
+        "sol_message",
+        ts=_ms(2099, 1, 2, 9, 1),
+        use_id="use-thinking-sol",
+        text="sol reply",
+        notes="",
+        requested_target=None,
+        requested_task=None,
+        thinking={
+            "content": reasoning,
+            "provider": "openai",
+            "model": "gpt",
+            "tokens": 10,
+        },
+    )
+    append_chat_event(
+        "talent_finished",
+        ts=_ms(2099, 1, 2, 9, 2),
+        use_id="use-thinking-talent",
+        name="exec",
+        summary="done",
+        thinking={
+            "content": talent_reasoning,
+            "provider": "openai",
+            "model": "gpt",
+            "tokens": 10,
+        },
+    )
+
+    html = env.client.get(f"/app/chat/{day}").get_data(as_text=True)
+
+    assert html.count('class="chat-thinking-expander"') == 2
+    assert 'aria-expanded="false"' in html
+    assert 'data-thinking-id="chat-thinking-0"' in html
+    assert f">{chat_copy.CHAT_THINKING_EXPANDER_LABEL}</button>" in html
+    expected_content = (
+        '<div class="chat-thinking-content" id="chat-thinking-0" hidden>'
+        f"{markupsafe_escape(reasoning)}</div>"
+    )
+    assert expected_content in html
+    assert markupsafe_escape(talent_reasoning) in html
+
+
+def test_chat_thinking_always_show_renders_inline_without_button(
+    journal_copy, monkeypatch
+):
+    day = "20990102"
+    _set_today(monkeypatch, "20990103")
+    _write_chat_config(journal_copy, "always")
+    env = _make_env(journal_copy, monkeypatch)
+    reasoning = "Always visible reasoning"
+    append_chat_event(
+        "sol_message",
+        ts=_ms(2099, 1, 2, 9, 1),
+        use_id="use-thinking-always",
+        text="sol reply",
+        notes="",
+        requested_target=None,
+        requested_task=None,
+        thinking={
+            "content": reasoning,
+            "provider": "openai",
+            "model": "gpt",
+            "tokens": 10,
+        },
+    )
+
+    html = env.client.get(f"/app/chat/{day}").get_data(as_text=True)
+
+    assert 'class="chat-thinking-expander"' not in html
+    assert (
+        f'<div class="chat-thinking-content" id="chat-thinking-0">{reasoning}</div>'
+        in html
+    )
+
+
+def test_chat_thinking_never_show_hides_reasoning(journal_copy, monkeypatch):
+    day = "20990102"
+    _set_today(monkeypatch, "20990103")
+    _write_chat_config(journal_copy, "never")
+    env = _make_env(journal_copy, monkeypatch)
+    reasoning = "Hidden reasoning"
+    append_chat_event(
+        "sol_message",
+        ts=_ms(2099, 1, 2, 9, 1),
+        use_id="use-thinking-never",
+        text="sol reply",
+        notes="",
+        requested_target=None,
+        requested_task=None,
+        thinking={
+            "content": reasoning,
+            "provider": "openai",
+            "model": "gpt",
+            "tokens": 10,
+        },
+    )
+
+    html = env.client.get(f"/app/chat/{day}").get_data(as_text=True)
+
+    assert 'class="chat-thinking-expander"' not in html
+    assert '<div class="chat-thinking-content" id="chat-thinking-0"' not in html
+    assert reasoning not in html
+
+
+def test_chat_thinking_css_selector_is_wired():
+    css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
+
+    assert ".chat-thinking-content" in css
+    assert "opacity: 0.7" in css
+    assert "font-style: italic" in css
+    assert "white-space: pre-wrap" in css
+
+
+def test_chat_thinking_live_js_handler_is_wired():
+    source = Path("solstone/apps/chat/workspace.html").read_text(encoding="utf-8")
+
+    assert "button.chat-thinking-expander" in source
+    assert "toggleThinkingSurface(thinkingExpander)" in source
+    assert "button.dataset.thinkingId" in source
+    assert "content.textContent = contentText" in source
+    assert "innerHTML = contentText" not in source
 
 
 def test_chat_invalid_days_return_404(journal_copy, monkeypatch):

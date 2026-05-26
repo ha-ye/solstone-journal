@@ -66,6 +66,8 @@ _current_chat_state: dict[str, Any] | None = None
 _queued_triggers: deque[dict[str, Any]] = deque()
 _active_talents: dict[str, dict[str, Any]] = {}
 _reserved_use_ids: dict[str, None] = {}
+_thinking_buffers: dict[str, list[str]] = {}
+_thinking_providers: dict[str, str] = {}
 _watchdog_timers: dict[str, threading.Timer] = {}
 _last_use_id = 0
 _runtime: "ChatRuntimeState | None" = None
@@ -264,6 +266,8 @@ def stop_all_chat_runtime() -> None:
             timer.cancel()
         _watchdog_timers.clear()
         _reserved_use_ids.clear()
+        _thinking_buffers.clear()
+        _thinking_providers.clear()
 
     with _runtime_lock:
         runtime = _runtime
@@ -285,6 +289,16 @@ def _handle_callosum_message(message: dict[str, Any]) -> None:
         return
 
     event_type = message.get("event")
+    if event_type == "thinking":
+        with _state_lock:
+            _capture_thinking_locked(message)
+        _proxy_progress(message)
+        return
+    if event_type == "start":
+        with _state_lock:
+            _capture_thinking_provider_locked(message)
+        _proxy_progress(message)
+        return
     if event_type == "finish":
         _on_cortex_finish(message)
         return
@@ -366,6 +380,7 @@ def _on_cortex_finish(message: dict[str, Any]) -> None:
                     )
                     next_info = _build_spawn_info_locked(logical_use_id)
                 else:
+                    _evict_thinking_locked(use_id)
                     append_chat_event(
                         "chat_error",
                         reason="provider_response_invalid",
@@ -406,13 +421,19 @@ def _on_cortex_finish(message: dict[str, Any]) -> None:
                     )
                     requested_target = None
                     requested_task = None
+                thinking = _drain_thinking_locked(use_id, message)
+                sol_message_fields: dict[str, Any] = {
+                    "use_id": logical_use_id,
+                    "text": message_text,
+                    "notes": parsed["notes"],
+                    "requested_target": requested_target,
+                    "requested_task": requested_task,
+                }
+                if thinking is not None:
+                    sol_message_fields["thinking"] = thinking
                 append_chat_event(
                     "sol_message",
-                    use_id=logical_use_id,
-                    text=message_text,
-                    notes=parsed["notes"],
-                    requested_target=requested_target,
-                    requested_task=requested_task,
+                    **sol_message_fields,
                 )
                 _current_chat_state["retry_count"] = 0
                 _set_current_raw_use_locked(logical_use_id, None)
@@ -469,6 +490,8 @@ def _on_cortex_finish(message: dict[str, Any]) -> None:
                             "use_id": logical_use_id,
                             "message": message_text,
                         }
+                    if not message_text:
+                        _evict_thinking_locked(use_id)
                     next_info = _clear_current_locked()
 
         elif use_id in _active_talents:
@@ -478,6 +501,7 @@ def _on_cortex_finish(message: dict[str, Any]) -> None:
                 "talent_finished",
                 "summary",
                 summary,
+                terminal_message=message,
             )
         elif _is_superseded_raw_use_id_locked(use_id):
             logger.debug(
@@ -519,6 +543,7 @@ def _on_cortex_error(message: dict[str, Any]) -> None:
             provider = str(message.get("provider") or "")
             detail = _normalize_chat_error_detail(message.get("error"))
             _cancel_watchdog_locked(use_id)
+            _evict_thinking_locked(use_id)
             append_chat_event(
                 "chat_error",
                 reason=reason_code,
@@ -535,6 +560,7 @@ def _on_cortex_error(message: dict[str, Any]) -> None:
             next_info = _clear_current_locked()
         elif use_id in _active_talents:
             reason = str(message.get("error") or "unknown")
+            _evict_thinking_locked(use_id)
             next_info = _handle_talent_terminal_locked(
                 use_id,
                 "talent_errored",
@@ -572,6 +598,8 @@ def _handle_talent_terminal_locked(
     kind: str,
     result_field_name: str,
     result_value: str,
+    *,
+    terminal_message: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     _cancel_watchdog_locked(use_id)
     talent_state = _active_talents.pop(use_id)
@@ -584,12 +612,16 @@ def _handle_talent_terminal_locked(
         result_field_name,
         result_value,
     )
-    append_chat_event(
-        kind,
-        use_id=use_id,
-        name=talent_name,
-        **{result_field_name: result_value},
-    )
+    event_fields: dict[str, Any] = {
+        "use_id": use_id,
+        "name": talent_name,
+        result_field_name: result_value,
+    }
+    if kind == "talent_finished" and terminal_message is not None:
+        thinking = _drain_thinking_locked(use_id, terminal_message)
+        if thinking is not None:
+            event_fields["thinking"] = thinking
+    append_chat_event(kind, **event_fields)
     if _current_chat_use_id != logical_use_id or _current_chat_state is None:
         return None
 
@@ -738,6 +770,7 @@ def _handle_chat_failure(
         )
         if _current_chat_use_id == logical_use_id:
             if _current_chat_state is not None:
+                _evict_thinking_locked(str(_current_chat_state.get("raw_use_id") or ""))
                 _cancel_watchdog_locked(
                     str(_current_chat_state.get("raw_use_id") or "")
                 )
@@ -929,7 +962,10 @@ def _refresh_watchdog_locked(use_id: str, kind: str, logical_use_id: str) -> Non
 
 def _set_current_raw_use_locked(logical_use_id: str, raw_use_id: str | None) -> None:
     assert _current_chat_state is not None
-    _cancel_watchdog_locked(str(_current_chat_state.get("raw_use_id") or ""))
+    old_raw_use_id = str(_current_chat_state.get("raw_use_id") or "")
+    _cancel_watchdog_locked(old_raw_use_id)
+    if old_raw_use_id and old_raw_use_id != str(raw_use_id or ""):
+        _evict_thinking_locked(old_raw_use_id)
     if raw_use_id is not None:
         _current_chat_state["raw_use_ids_seen"].add(str(raw_use_id))
     _current_chat_state["raw_use_id"] = raw_use_id
@@ -944,6 +980,71 @@ def _is_superseded_raw_use_id_locked(use_id: str) -> bool:
     if use_id == raw_chat_use_id:
         return False
     return use_id in _current_chat_state["raw_use_ids_seen"]
+
+
+def _capture_thinking_locked(message: dict[str, Any]) -> None:
+    use_id = str(message.get("use_id") or "")
+    summary = message.get("summary")
+    if not use_id or not isinstance(summary, str) or not summary.strip():
+        return
+    if not _is_routeable_cortex_use_id_locked(use_id):
+        reason = (
+            "raw rotated"
+            if _is_superseded_raw_use_id_locked(use_id)
+            else "no matching active chat-generate or talent"
+        )
+        logger.debug(
+            "dropping late thinking event use_id=%s reason=%s",
+            use_id,
+            reason,
+        )
+        return
+    _thinking_buffers.setdefault(use_id, []).append(summary)
+
+
+def _capture_thinking_provider_locked(message: dict[str, Any]) -> None:
+    use_id = str(message.get("use_id") or "")
+    provider = str(message.get("provider") or "")
+    if not use_id or not provider:
+        return
+    if not _is_routeable_cortex_use_id_locked(use_id):
+        return
+    _thinking_providers[use_id] = provider
+
+
+def _drain_thinking_locked(
+    use_id: str,
+    terminal_message: dict[str, Any],
+) -> dict[str, Any] | None:
+    parts = _thinking_buffers.pop(use_id, [])
+    provider = _thinking_providers.pop(use_id, "")
+    if not parts:
+        return None
+    usage = terminal_message.get("usage")
+    reasoning_tokens = (
+        int(usage.get("reasoning_tokens") or 0) if isinstance(usage, dict) else 0
+    )
+    return {
+        "content": "\n\n".join(parts),
+        "provider": provider or str(terminal_message.get("provider") or ""),
+        "model": str(terminal_message.get("model") or ""),
+        "tokens": reasoning_tokens or None,
+    }
+
+
+def _evict_thinking_locked(use_id: str | None) -> None:
+    if not use_id:
+        return
+    _thinking_buffers.pop(str(use_id), None)
+    _thinking_providers.pop(str(use_id), None)
+
+
+def _is_routeable_cortex_use_id_locked(use_id: str) -> bool:
+    if _current_chat_state is not None:
+        raw_chat_use_id = str(_current_chat_state.get("raw_use_id") or "")
+        if use_id == raw_chat_use_id:
+            return True
+    return use_id in _active_talents
 
 
 def _on_watchdog_timeout(use_id: str, kind: str, logical_use_id: str) -> None:
@@ -964,6 +1065,7 @@ def _on_watchdog_timeout(use_id: str, kind: str, logical_use_id: str) -> None:
                 kind,
                 logical_use_id,
             )
+            _evict_thinking_locked(use_id)
             append_chat_event(
                 "chat_error",
                 reason="chat_timeout",
@@ -986,6 +1088,7 @@ def _on_watchdog_timeout(use_id: str, kind: str, logical_use_id: str) -> None:
                 kind,
                 logical_use_id,
             )
+            _evict_thinking_locked(use_id)
             append_chat_event(
                 "talent_errored",
                 use_id=use_id,

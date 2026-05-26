@@ -24,12 +24,21 @@
       </div>
     </div>
   {% endif %}
-  <article class="chat-bubble chat-bubble--sol"
-           {% if ev.notes %}title="{{ ev.notes }}"{% endif %}
-           aria-label="{{ agent_name }}: {{ ev.text }}">
-    <span class="chat-bubble-author">{{ agent_name }}</span>
-    <span class="chat-bubble-text">{{ ev.text }}</span>
-  </article>
+	  <article class="chat-bubble chat-bubble--sol"
+	           {% if ev.notes %}title="{{ ev.notes }}"{% endif %}
+	           aria-label="{{ agent_name }}: {{ ev.text }}">
+	    <span class="chat-bubble-author">{{ agent_name }}</span>
+	    <span class="chat-bubble-text">{{ ev.text }}</span>
+	  </article>
+	  {% if ev.thinking is defined and ev.thinking and ev.thinking.content and thinking_surfaces != "never" %}
+	    {% set thinking_id = "chat-thinking-" ~ loop.index0 %}
+	    {% if thinking_surfaces == "always" %}
+	      <div class="chat-thinking-content" id="{{ thinking_id }}">{{ ev.thinking.content }}</div>
+	    {% else %}
+	      <button type="button" class="chat-thinking-expander" aria-expanded="false" data-thinking-id="{{ thinking_id }}">{{ chat_copy.CHAT_THINKING_EXPANDER_LABEL }}</button>
+	      <div class="chat-thinking-content" id="{{ thinking_id }}" hidden>{{ ev.thinking.content }}</div>
+	    {% endif %}
+	  {% endif %}
 {% elif ev.kind == "talent_spawned" %}
   <button type="button"
 	          class="chat-talent-card chat-talent-card--spawned"
@@ -43,10 +52,19 @@
 	          class="chat-talent-card chat-talent-card--finished"
 	          data-talent-use-id="{{ ev.use_id }}"
 	          data-talent-status="finished">
-	    <span class="chat-talent-card-label">{{ chat_copy.talent_label_for(status="finished", target=ev.name) }}</span>
-	    {% if ev.summary %}<div class="chat-talent-card-detail chat-talent-card-detail--markdown" data-markdown="1">{{ ev.summary }}</div>{% endif %}
-	  </button>
-	{% elif ev.kind == "talent_errored" %}
+		    <span class="chat-talent-card-label">{{ chat_copy.talent_label_for(status="finished", target=ev.name) }}</span>
+		    {% if ev.summary %}<div class="chat-talent-card-detail chat-talent-card-detail--markdown" data-markdown="1">{{ ev.summary }}</div>{% endif %}
+		  </button>
+		  {% if ev.thinking is defined and ev.thinking and ev.thinking.content and thinking_surfaces != "never" %}
+		    {% set thinking_id = "chat-thinking-" ~ loop.index0 %}
+		    {% if thinking_surfaces == "always" %}
+		      <div class="chat-thinking-content" id="{{ thinking_id }}">{{ ev.thinking.content }}</div>
+		    {% else %}
+		      <button type="button" class="chat-thinking-expander" aria-expanded="false" data-thinking-id="{{ thinking_id }}">{{ chat_copy.CHAT_THINKING_EXPANDER_LABEL }}</button>
+		      <div class="chat-thinking-content" id="{{ thinking_id }}" hidden>{{ ev.thinking.content }}</div>
+		    {% endif %}
+		  {% endif %}
+		{% elif ev.kind == "talent_errored" %}
   <button type="button"
 	          class="chat-talent-card chat-talent-card--errored"
 	          data-talent-use-id="{{ ev.use_id }}"

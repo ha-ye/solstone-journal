@@ -2241,6 +2241,9 @@ button:focus:not(:focus-visible) {
       <optgroup label="voice">
         <option value="sol-voice">{{ sol_voice_copy.SOL_VOICE_SETTINGS_HEADING }}</option>
       </optgroup>
+      <optgroup label="chat">
+        <option value="chat">chat</option>
+      </optgroup>
       <optgroup label="data">
         <option value="security">security</option>
         <option value="sync">sync</option>
@@ -2280,6 +2283,10 @@ button:focus:not(:focus-visible) {
     <div class="settings-nav-group">
       <div class="settings-nav-label">voice</div>
       <button class="settings-nav-item" data-section="sol-voice" id="tab-sol-voice" role="tab" aria-selected="false" aria-controls="section-sol-voice" tabindex="-1">{{ sol_voice_copy.SOL_VOICE_SETTINGS_HEADING }}</button>
+    </div>
+    <div class="settings-nav-group">
+      <div class="settings-nav-label">chat</div>
+      <button class="settings-nav-item" data-section="chat" id="tab-chat" role="tab" aria-selected="false" aria-controls="section-chat" tabindex="-1">chat</button>
     </div>
     <div class="settings-nav-group">
       <div class="settings-nav-label">data</div>
@@ -2967,6 +2974,31 @@ button:focus:not(:focus-visible) {
       </form>
     </section>
 
+    <!-- Chat Section -->
+    <section class="settings-section" id="section-chat" role="tabpanel" aria-labelledby="tab-chat">
+      <h2>chat</h2>
+      <form class="settings-form" id="chatSettingsForm" onsubmit="return false;">
+        <div class="settings-field">
+          <label>{{ chat_copy.CHAT_THINKING_SETTING_LABEL }}</label>
+          <div style="display:grid; gap:0.65em;">
+            <label class="toggle-container" for="field-chat-thinking-on-tap" style="justify-content:flex-start; gap:0.75em;">
+              <input type="radio" id="field-chat-thinking-on-tap" name="thinking_surfaces" value="on_tap"{% if chat_config.thinking_surfaces == "on_tap" %} checked{% endif %}>
+              <span>{{ chat_copy.CHAT_THINKING_OPT_ON_TAP }}</span>
+            </label>
+            <label class="toggle-container" for="field-chat-thinking-always" style="justify-content:flex-start; gap:0.75em;">
+              <input type="radio" id="field-chat-thinking-always" name="thinking_surfaces" value="always"{% if chat_config.thinking_surfaces == "always" %} checked{% endif %}>
+              <span>{{ chat_copy.CHAT_THINKING_OPT_ALWAYS }}</span>
+            </label>
+            <label class="toggle-container" for="field-chat-thinking-never" style="justify-content:flex-start; gap:0.75em;">
+              <input type="radio" id="field-chat-thinking-never" name="thinking_surfaces" value="never"{% if chat_config.thinking_surfaces == "never" %} checked{% endif %}>
+              <span>{{ chat_copy.CHAT_THINKING_OPT_NEVER }}</span>
+            </label>
+          </div>
+          <small>{{ chat_copy.CHAT_THINKING_SETTING_HELP }}</small>
+        </div>
+      </form>
+    </section>
+
     <!-- Security Section -->
     <section class="settings-section" id="section-security" role="tabpanel" aria-labelledby="tab-security">
       <h2>security</h2>
@@ -3557,7 +3589,7 @@ setupModalAccessibility('customActivityModal');
 setupModalAccessibility('cleanupModal');
 
 // ========== NAVIGATION ==========
-const VALID_SECTIONS = ['profile', 'agent', 'providers', 'apikeys', 'transcription', 'observer', 'vision', 'insights', 'sol-voice', 'security', 'sync', 'storage', 'support', 'facets', 'facet-appearance', 'facet-activities', 'facet-activity'];
+const VALID_SECTIONS = ['profile', 'agent', 'providers', 'apikeys', 'transcription', 'observer', 'vision', 'insights', 'sol-voice', 'chat', 'security', 'sync', 'storage', 'support', 'facets', 'facet-appearance', 'facet-activities', 'facet-activity'];
 
 function switchSection(sectionId, updateHash = true) {
   // Validate section exists
@@ -4217,6 +4249,32 @@ function setupSolVoiceListeners() {
       clearSolVoiceCategoryMarker(button.dataset.solVoiceClear, button);
     });
   }
+}
+
+async function saveChatSettings(el) {
+  try {
+    const result = await window.apiJson('api/chat', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ thinking_surfaces: el.value }),
+    });
+    const selected = result.thinking_surfaces || el.value;
+    document.querySelectorAll('input[name="thinking_surfaces"]').forEach((input) => {
+      input.checked = input.value === selected;
+    });
+    showFieldStatus(el, 'saved');
+  } catch (err) {
+    showFieldStatus(el, 'error', err?.serverMessage || err?.message || 'Save failed');
+    window.logError(err, { context: 'settings: saveChatSettings failed' });
+  }
+}
+
+function setupChatSettingsListeners() {
+  document.querySelectorAll('input[name="thinking_surfaces"]').forEach((el) => {
+    el.addEventListener('change', () => {
+      if (el.checked) saveChatSettings(el);
+    });
+  });
 }
 
 function updateSolVoiceThrottledState() {
@@ -8274,6 +8332,7 @@ function initSettings() {
   loadStorage();
   setupAutoSave();
   setupSolVoiceListeners();
+  setupChatSettingsListeners();
   setupStorageListeners();
 
   // Enter-to-save for auto-save text inputs inside forms
