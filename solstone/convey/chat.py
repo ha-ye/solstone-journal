@@ -1050,18 +1050,14 @@ def _parse_chat_result(result: Any) -> dict[str, Any]:
         if not stripped:
             context = {}
         else:
-            # Wrap json.loads so invalid provider context propagates as a plain ValueError.
+            # Provider-shaped non-dict context used to raise; now absorbed so a single odd
+            # response doesn't fail the turn. Strictness rollback is deliberate.
             try:
                 decoded = json.loads(stripped)
-            except ValueError as exc:
-                raise ValueError(
-                    "chat talent_request.context must be a JSON object string"
-                ) from exc
-            if not isinstance(decoded, dict):
-                raise ValueError(
-                    "chat talent_request.context must be a JSON object string"
-                )
-            context = decoded
+            except ValueError:
+                context = {"_raw": stripped}
+            else:
+                context = decoded if isinstance(decoded, dict) else {"_raw": stripped}
     elif isinstance(raw_context, dict):
         # Scope-mandated defensive shim; no confirmed live replay/cache path sends dict context.
         context = raw_context

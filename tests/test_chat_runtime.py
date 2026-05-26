@@ -802,7 +802,7 @@ def test_chat_generate_schema_violation_retries_once_then_chat_errors(
     assert errors[-1]["use_id"] == "1713625000000"
 
 
-def test_chat_generate_invalid_context_retries_once_then_chat_errors(
+def test_chat_generate_absorbs_prose_context_and_dispatches_talent(
     tmp_path, monkeypatch
 ):
     import solstone.convey.chat as chat
@@ -833,7 +833,7 @@ def test_chat_generate_invalid_context_retries_once_then_chat_errors(
             "retry_count": 0,
         }
 
-    invalid_context_result = json.dumps(
+    prose_context_result = json.dumps(
         {
             "message": "I am looking into that.",
             "notes": "need exec",
@@ -844,25 +844,16 @@ def test_chat_generate_invalid_context_retries_once_then_chat_errors(
             },
         }
     )
-    chat._on_cortex_finish(
-        {"use_id": "1713625050001", "result": invalid_context_result}
-    )
+    chat._on_cortex_finish({"use_id": "1713625050001", "result": prose_context_result})
 
-    assert actions and actions[-1]["kind"] == "chat"
+    assert actions and actions[-1]["kind"] == "talent"
     assert actions[-1]["logical_use_id"] == "1713625050000"
+    assert actions[-1]["context"] == {"_raw": "not json{"}
     assert emitted_errors == []
-
-    with chat._state_lock:
-        retry_use_id = chat._current_chat_state["raw_use_id"]
-
-    chat._on_cortex_finish({"use_id": retry_use_id, "result": invalid_context_result})
-
-    assert emitted_errors == [("1713625050000", "provider_response_invalid")]
-    errors = [
-        e for e in read_chat_events(chat._today_day()) if e["kind"] == "chat_error"
+    spawned_events = [
+        e for e in read_chat_events(chat._today_day()) if e["kind"] == "talent_spawned"
     ]
-    assert errors[-1]["use_id"] == "1713625050000"
-    assert errors[-1]["reason"] == "provider_response_invalid"
+    assert spawned_events[-1]["use_id"] == actions[-1]["use_id"]
 
 
 def test_superseded_raw_finish_after_retry_is_dropped_without_warning(
@@ -1672,44 +1663,42 @@ def test_parse_chat_result_decodes_json_string_context():
     assert parsed["talent_request"]["context"] == {"window": "14d"}
 
 
-@pytest.mark.parametrize("raw_context", ['["a","b"]', "42"])
-def test_parse_chat_result_rejects_non_object_context_string(raw_context):
+@pytest.mark.parametrize(
+    ("raw_context", "expected"),
+    [
+        (None, {}),
+        ("", {}),
+        ("   ", {}),
+        ('{"foo": 1}', {"foo": 1}),
+        ("123", {"_raw": "123"}),
+        ("true", {"_raw": "true"}),
+        ("[1, 2]", {"_raw": "[1, 2]"}),
+        ('"hi"', {"_raw": '"hi"'}),
+        ("not json at all{", {"_raw": "not json at all{"}),
+        ({"foo": 1}, {"foo": 1}),
+        (42, ValueError),
+    ],
+)
+def test_parse_chat_result_context_absorbs_non_dict_shapes(raw_context, expected):
     import solstone.convey.chat as chat
 
-    with pytest.raises(ValueError) as excinfo:
-        chat._parse_chat_result(
-            {
-                "message": "I am looking into that.",
-                "notes": "need exec",
-                "talent_request": {
-                    "target": "exec",
-                    "task": "Research it",
-                    "context": raw_context,
-                },
-            }
-        )
+    payload = {
+        "message": "I am looking into that.",
+        "notes": "need exec",
+        "talent_request": {
+            "target": "exec",
+            "task": "Research it",
+            "context": raw_context,
+        },
+    }
 
-    assert type(excinfo.value) is ValueError
+    if expected is ValueError:
+        with pytest.raises(ValueError):
+            chat._parse_chat_result(payload)
+        return
 
-
-def test_parse_chat_result_rejects_non_json_context_string():
-    import solstone.convey.chat as chat
-
-    with pytest.raises(ValueError) as excinfo:
-        chat._parse_chat_result(
-            {
-                "message": "I am looking into that.",
-                "notes": "need exec",
-                "talent_request": {
-                    "target": "exec",
-                    "task": "Research it",
-                    "context": "not json{",
-                },
-            }
-        )
-
-    assert type(excinfo.value) is ValueError
-    assert not isinstance(excinfo.value, json.JSONDecodeError)
+    parsed = chat._parse_chat_result(payload)
+    assert parsed["talent_request"]["context"] == expected
 
 
 def test_parse_chat_result_accepts_null_talent_request():
