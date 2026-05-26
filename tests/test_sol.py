@@ -183,17 +183,16 @@ class TestRunCommand:
             assert exit_code == 1
 
     def test_main_propagates_integer_return_code_via_real_subprocess(self, tmp_path):
-        """Would fail on the parent commit because cmd_journal() returned 1 but sol exited 0."""
+        """Would fail on the parent commit because cmd_journal() returned 1 but journal exited 0."""
         env = {**os.environ, "SOLSTONE_JOURNAL": str(tmp_path)}
+        code = (
+            "from solstone.think.sol_cli import journal_main; "
+            "import sys; "
+            "sys.argv = ['journal', 'config', 'journal', '/tmp/with$dollar']; "
+            "journal_main()"
+        )
         result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "solstone.think.sol_cli",
-                "config",
-                "journal",
-                "/tmp/with$dollar",
-            ],
+            [sys.executable, "-c", code],
             capture_output=True,
             text=True,
             env=env,
@@ -391,26 +390,20 @@ class TestCommandRegistry:
                 f"Alias '{name}' has invalid surface '{command_alias.surface}'"
             )
 
-    def test_service_entries_dispatch_through_sol_and_journal(self, monkeypatch):
-        """Service commands and aliases preserve module and preset args on both binaries."""
+    def test_service_entries_dispatch_through_journal(self, monkeypatch):
+        """Service commands and aliases preserve module and preset args on journal."""
         for name in service_command_names():
-            sol_result = run_dispatch(monkeypatch, "sol", name)
             journal_result = run_dispatch(monkeypatch, "journal", name)
             command = sol.COMMANDS[name]
 
-            assert sol_result["module"] == command.module
             assert journal_result["module"] == command.module
-            assert sol_result["argv"] == [f"sol {name}"]
             assert journal_result["argv"] == [f"journal {name}"]
 
         for name in service_alias_names():
-            sol_result = run_dispatch(monkeypatch, "sol", name)
             journal_result = run_dispatch(monkeypatch, "journal", name)
             command_alias = sol.ALIASES[name]
 
-            assert sol_result["module"] == command_alias.module
             assert journal_result["module"] == command_alias.module
-            assert sol_result["argv"] == [f"sol {name}"] + command_alias.preset_args
             assert (
                 journal_result["argv"]
                 == [f"journal {name}"] + command_alias.preset_args
@@ -456,8 +449,8 @@ class TestCommandRegistry:
             assert name not in result.stdout
         assert "sol call" not in result.stdout
 
-    def test_sol_help_still_lists_registry_groups_and_aliases(self):
-        """sol --help still renders all registered top-level entries."""
+    def test_sol_help_lists_access_groups_only(self):
+        """sol --help renders only access top-level entries."""
         code = (
             "from solstone.think.sol_cli import main; "
             "import sys; "
@@ -497,9 +490,9 @@ class TestCommandRegistry:
                 if name in sol.ALIASES:
                     rendered_aliases.add(name)
 
-        assert rendered_commands == set(sol.COMMANDS.keys())
+        assert rendered_commands == set(access_command_names())
         assert rendered_group_headers == expected_group_headers
-        assert rendered_aliases == set(sol.ALIASES.keys())
+        assert rendered_aliases == set()
 
     def test_setproctitle_prefix_uses_active_binary(self, monkeypatch):
         """The process title identifies whether sol or journal dispatched the command."""
@@ -507,7 +500,7 @@ class TestCommandRegistry:
         monkeypatch.setattr(sol, "run_command", lambda _module_path: 0)
         monkeypatch.setattr(sol.setproctitle, "setproctitle", titles.append)
 
-        monkeypatch.setattr(sys, "argv", ["sol", "supervisor"])
+        monkeypatch.setattr(sys, "argv", ["sol", "health"])
         with pytest.raises(SystemExit):
             sol.main()
 

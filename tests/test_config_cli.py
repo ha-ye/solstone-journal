@@ -193,7 +193,7 @@ def test_journal_noops_when_path_already_embedded(
 
     assert rc == 0
     assert captured.err == ""
-    assert captured.out == f"sol config: journal already set to {target_path}\n"
+    assert captured.out == f"journal config: journal already set to {target_path}\n"
     assert alias.read_text(encoding="utf-8") == original
     run_mock.assert_not_called()
 
@@ -264,7 +264,7 @@ def test_journal_rewrite_mid_failure_rolls_back_both_wrappers(
 
     assert rc == 1
     assert captured.out == ""
-    assert "sol config: refused: cannot rewrite" in captured.err
+    assert "journal config: refused: cannot rewrite" in captured.err
     for binary, alias in aliases.items():
         assert alias.read_bytes() == before[binary]
 

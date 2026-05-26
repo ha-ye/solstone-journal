@@ -59,6 +59,11 @@ JOURNAL_ACCESS_CMD_ERROR = (
     "'{cmd}' is a journal-access command — run it with 'sol {cmd}' instead.\n"
     "('journal' surfaces only journal-service commands; see 'journal --help'.)"
 )
+SOL_SERVICE_CMD_REMOVED_ERROR = (
+    "'{cmd}' moved to 'journal {cmd}' in solstone 0.4.0 — run that instead.\n"
+    "('sol' is the journal-access surface; 'journal' surfaces journal-service "
+    "commands; see 'journal --help'.)"
+)
 
 SOL_HELP_GROUP_CONVERSATION = "Conversation"
 SOL_HELP_GROUP_YOUR_JOURNAL = "Your journal"
@@ -73,6 +78,7 @@ COMMANDS: dict[str, Command] = {
     "import": Command("solstone.think.importers.cli", "access"),
     "think": Command("solstone.think.thinking", "service"),
     "indexer": Command("solstone.think.indexer", "access"),
+    "start": Command("solstone.think.start", "service"),
     "supervisor": Command("solstone.think.supervisor", "service"),
     "schedule": Command("solstone.think.scheduler", "service"),
     "top": Command("solstone.think.top", "access"),
@@ -123,7 +129,6 @@ COMMANDS: dict[str, Command] = {
 # =============================================================================
 
 ALIASES: dict[str, Alias] = {
-    "start": Alias("solstone.think.supervisor", [], "service"),
     "up": Alias("solstone.think.service", ["up"], "service"),
     "down": Alias("solstone.think.service", ["down"], "service"),
 }
@@ -131,9 +136,7 @@ ALIASES: dict[str, Alias] = {
 # Owner-facing command groupings for `sol --help`.
 #
 # Access-tagged commands are assigned to one of the four intent groups below.
-# Service-tagged commands are rendered in the Journal service group derived from
-# COMMANDS, preserving registry order. Future access commands must be assigned
-# here deliberately; future service commands join Journal service by tag.
+# Future access commands must be assigned here deliberately.
 ACCESS_HELP_GROUPS: tuple[HelpGroup, ...] = (
     HelpGroup(SOL_HELP_GROUP_CONVERSATION, ("chat", "engage")),
     HelpGroup(
@@ -190,7 +193,7 @@ def service_help_group() -> HelpGroup:
 
 def help_groups() -> tuple[HelpGroup, ...]:
     """Return all owner-facing help groups in display order."""
-    return ACCESS_HELP_GROUPS + (service_help_group(),)
+    return ACCESS_HELP_GROUPS
 
 
 def _print_help_group(group: HelpGroup) -> None:
@@ -235,13 +238,6 @@ def print_help() -> None:
         print()
     except Exception:
         pass
-
-    # Print aliases if any
-    if ALIASES:
-        print(SOL_HELP_GROUP_ALIASES)
-        for alias, command_alias in ALIASES.items():
-            print(f"  {alias:16} (= {_alias_target_label(command_alias)})")
-        print()
 
 
 def print_journal_help() -> None:
@@ -400,11 +396,26 @@ def _dispatch(binary: str, allowed_surfaces: frozenset[str] | None) -> None:
         return
 
     # Resolve command to module path
+    rest = sys.argv[2:]
     try:
         module_path, preset_args, surface = resolve_command(cmd)
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+
+    if binary == "sol" and surface == "service":
+        from solstone.think.service import _managed_wrapper, reconcile_installed_unit
+
+        reconciled = reconcile_installed_unit()
+        if (
+            reconciled.was_stale
+            and reconciled.stale_binary == "sol"
+            and reconciled.stale_verb == cmd
+        ):
+            journal_wrapper = _managed_wrapper("journal")
+            os.execv(str(journal_wrapper), [str(journal_wrapper), cmd, *rest])
+        print(SOL_SERVICE_CMD_REMOVED_ERROR.format(cmd=cmd), file=sys.stderr)
+        sys.exit(2)
 
     if allowed_surfaces is not None and surface not in allowed_surfaces:
         sys.stderr.write(JOURNAL_ACCESS_CMD_ERROR.format(cmd=cmd) + "\n")
@@ -417,8 +428,7 @@ def _dispatch(binary: str, allowed_surfaces: frozenset[str] | None) -> None:
     # Original: ["sol", "import", "--day", "20250101"]
     # Becomes:  ["sol import", "--day", "20250101"]
     # This makes argparse show "usage: <binary> <command> ..." in help.
-    remaining_args = sys.argv[2:]
-    sys.argv = [f"{binary} {cmd}"] + preset_args + remaining_args
+    sys.argv = [f"{binary} {cmd}"] + preset_args + rest
 
     # Run the command
     exit_code = run_command(module_path)

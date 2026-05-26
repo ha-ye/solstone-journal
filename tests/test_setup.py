@@ -183,9 +183,7 @@ def expected_doctor_command(port: int = 5015) -> list[str]:
 
 def expected_install_models_command() -> list[str]:
     return [
-        sys.executable,
-        "-m",
-        "solstone.think.sol_cli",
+        str(Path(sys.executable).parent / "journal"),
         "install-models",
         "--variant",
         "auto",
@@ -224,9 +222,7 @@ def expected_wrapper_command() -> list[str]:
 
 def expected_service_install_command(port: int = 5015) -> list[str]:
     return [
-        sys.executable,
-        "-m",
-        "solstone.think.sol_cli",
+        str(Path(sys.executable).parent / "journal"),
         "service",
         "install",
         "--port",
@@ -235,7 +231,7 @@ def expected_service_install_command(port: int = 5015) -> list[str]:
 
 
 def expected_service_restart_command() -> list[str]:
-    return [sys.executable, "-m", "solstone.think.sol_cli", "service", "restart"]
+    return [str(Path(sys.executable).parent / "journal"), "service", "restart"]
 
 
 def assert_command(
@@ -1475,19 +1471,7 @@ def test_packaged_install_runs_service_step(
     assert unsupported_message not in out
     assert "solstone is running at http://localhost:5015" in out
     assert_command(calls, 0, expected_doctor_command())
-    assert_command(
-        calls,
-        1,
-        [
-            sys.executable,
-            "-m",
-            "solstone.think.sol_cli",
-            "service",
-            "install",
-            "--port",
-            "5015",
-        ],
-    )
+    assert_command(calls, 1, expected_service_install_command())
     assert len(calls) == 2
     steps = read_manifest(journal)["steps"]
     assert steps[-2]["status"] == "skipped"

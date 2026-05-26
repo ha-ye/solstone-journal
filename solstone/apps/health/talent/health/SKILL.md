@@ -3,18 +3,18 @@ name: health
 description: >
   Monitor solstone uptime, troubleshoot capture/processing failures, review
   agent run costs and errors, pipeline health. CLIs: sol health (service),
-  sol talent (agent runs), sol call health pipeline (per-day summary).
+  journal talent (agent runs), sol call health pipeline (per-day summary).
   TRIGGER: health, status, is it running, service down, errors, agent runs,
-  logs, pipeline, sol health, sol talent logs.
+  logs, pipeline, sol health, journal talent logs.
 ---
 
 # Health CLI Skill
 
-Monitor solstone service uptime, troubleshoot failures, and inspect agent runs. Invoke via Bash: `sol health ...`, `sol talent ...`, or `sol call health <command>`.
+Monitor solstone service uptime, troubleshoot failures, and inspect agent runs. Invoke via Bash: `sol health ...`, `journal talent ...`, or `sol call health <command>`.
 
-**Scope note**: Three CLI surfaces live here: `sol health*` (supervisor/service level), `sol talent*` (agent run level), and `sol call health <command>` (app-level pipeline health). They're grouped together because health troubleshooting routinely crosses the three levels.
+**Scope note**: Three CLI surfaces live here: `sol health*` (supervisor/service level), `journal talent*` (agent run level), and `sol call health <command>` (app-level pipeline health). They're grouped together because health troubleshooting routinely crosses the three levels.
 
-**Typical workflow**: `sol health` → `sol health logs` → `sol talent logs` → `sol talent log <ID>` for agent-run detail → `sol call health pipeline` for a day-level pipeline summary.
+**Typical workflow**: `sol health` → `sol health logs` → `journal talent logs` → `journal talent log <ID>` for agent-run detail → `sol call health pipeline` for a day-level pipeline summary.
 
 ## status
 
@@ -65,7 +65,7 @@ sol health logs -f
 ## agent runs
 
 ```bash
-sol talent logs [AGENT] [-c COUNT] [--day YYYYMMDD] [--daily] [--errors] [--summary]
+journal talent logs [AGENT] [-c COUNT] [--day YYYYMMDD] [--daily] [--errors] [--summary]
 ```
 
 List recent agent runs.
@@ -84,23 +84,23 @@ Output columns: use_id, time, name, status, runtime, cost, events, tools, output
 Examples:
 
 ```bash
-sol talent logs
-sol talent logs activity -c 10
-sol talent logs --daily
-sol talent logs --daily --summary
-sol talent logs --day 20260228
-sol talent logs --daily --errors
+journal talent logs
+journal talent logs activity -c 10
+journal talent logs --daily
+journal talent logs --daily --summary
+journal talent logs --day 20260228
+journal talent logs --daily --errors
 ```
 
 ## agent run detail
 
 ```bash
-sol talent log <ID> [--json] [--full]
+journal talent log <ID> [--json] [--full]
 ```
 
 Show events for a single agent run.
 
-- `ID`: agent run ID (from `sol talent logs` output).
+- `ID`: agent run ID (from `journal talent logs` output).
 - `--json`: raw JSONL events.
 - `--full`: expanded event detail (no truncation).
 
@@ -109,9 +109,9 @@ Without flags, shows a one-line-per-event timeline: timestamp, event type, detai
 Examples:
 
 ```bash
-sol talent log 1700000000001
-sol talent log 1700000000001 --json
-sol talent log 1700000000001 --full
+journal talent log 1700000000001
+journal talent log 1700000000001 --json
+journal talent log 1700000000001 --full
 ```
 
 ## pipeline summary
@@ -125,7 +125,7 @@ Summarize think-pipeline health for one day — anomalies, performance metrics, 
 - `--day YYYYMMDD`: target day. Defaults to today.
 - `--yesterday`: shortcut for yesterday. Mutually exclusive with `--day`.
 
-Use this when you want a day-level view after daily processing completes, rather than a per-run drilldown via `sol talent log`.
+Use this when you want a day-level view after daily processing completes, rather than a per-run drilldown via `journal talent log`.
 
 Examples:
 
@@ -188,10 +188,10 @@ Which services write where:
 ## Troubleshooting
 
 ### `sol health` returns "Connection refused" or times out
-The supervisor is not running. Check if `sol supervisor` is active. The owner may need to start solstone with `sol start` or `make dev`.
+The supervisor is not running. Check if `journal supervisor` is active. The owner may need to start solstone with `journal start` or `make dev`.
 
-### Agent run shows "error" status in `sol talent logs`
-Run `sol talent log <ID> --full` to see the complete event timeline including the error. Common causes:
+### Agent run shows "error" status in `journal talent logs`
+Run `journal talent log <ID> --full` to see the complete event timeline including the error. Common causes:
 - API key issues (rate limits, expired keys)
 - Prompt too large (context overflow)
 - Network connectivity
@@ -202,10 +202,10 @@ Run `sol talent log <ID> --full` to see the complete event timeline including th
 3. Check if the stream is active: `sol streams`
 
 ### High agent costs
-Run `sol talent logs --summary` for aggregated cost view. Filter by agent: `sol talent logs <agent-name> --summary`.
+Run `journal talent logs --summary` for aggregated cost view. Filter by agent: `journal talent logs <agent-name> --summary`.
 
 ## Gotchas
 
-- **`sol health` times out at 10 seconds.** If the supervisor is slow or hung, you'll hit the timeout before seeing results. Confirm the supervisor process is alive (`ps` / `sol supervisor` status) before assuming the service is down.
-- **Talent log IDs are millisecond timestamps.** `sol talent log 1700000000001` expects the full ID from `sol talent logs`, not a seconds-precision value.
+- **`sol health` times out at 10 seconds.** If the supervisor is slow or hung, you'll hit the timeout before seeing results. Confirm the supervisor process is alive (`ps` / `journal supervisor` status) before assuming the service is down.
+- **Talent log IDs are millisecond timestamps.** `journal talent log 1700000000001` expects the full ID from `journal talent logs`, not a seconds-precision value.
 - **`sol call health pipeline` needs today's processing to have run.** Running it at 6am before the daily pipeline has executed will return sparse results for today; use `--yesterday` instead.

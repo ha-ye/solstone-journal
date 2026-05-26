@@ -48,7 +48,7 @@ class TestPlistGeneration:
         assert plist["ProgramArguments"][0] == str(
             Path.home() / ".local" / "bin" / "journal"
         )
-        assert plist["ProgramArguments"][1] == "supervisor"
+        assert plist["ProgramArguments"][1] == "start"
         assert plist["EnvironmentVariables"] == env
         assert plist["EnvironmentVariables"]["PYTHONUNBUFFERED"] == "1"
         assert plist["KeepAlive"] == {"SuccessfulExit": False}
@@ -99,10 +99,9 @@ class TestSystemdUnit:
         assert f"StandardOutput=append:{service_log}" in unit
         assert "StandardError=inherit" in unit
         assert (
-            f"ExecStart={Path.home() / '.local' / 'bin' / 'journal'} supervisor 5015"
-            in unit
+            f"ExecStart={Path.home() / '.local' / 'bin' / 'journal'} start 5015" in unit
         )
-        assert "supervisor" in unit
+        assert "start" in unit
         assert "Environment=HOME=/home/test" in unit
         assert "Environment=PATH=/usr/bin" in unit
         assert "Environment=PYTHONUNBUFFERED=1" in unit

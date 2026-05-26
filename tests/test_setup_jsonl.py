@@ -489,20 +489,18 @@ def test_setup_jsonl_end_to_end_first_line_setup_started(tmp_path: Path) -> None
     home.mkdir()
     journal = tmp_path / "journal"
     env = {**os.environ, "HOME": str(home)}
+    code = (
+        "from solstone.think.sol_cli import journal_main; "
+        "import sys; "
+        "sys.argv = ["
+        "'journal', 'setup', '--jsonl', '--yes', '--journal', "
+        f"{str(journal)!r}, "
+        "'--skip-models', '--skip-skills', '--skip-service'"
+        "]; "
+        "journal_main()"
+    )
     proc = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "solstone.think.sol_cli",
-            "setup",
-            "--jsonl",
-            "--yes",
-            "--journal",
-            str(journal),
-            "--skip-models",
-            "--skip-skills",
-            "--skip-service",
-        ],
+        [sys.executable, "-c", code],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

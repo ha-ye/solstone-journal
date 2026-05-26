@@ -12,8 +12,6 @@ HELP_HEADINGS = [
     sol_cli.SOL_HELP_GROUP_YOUR_JOURNAL,
     sol_cli.SOL_HELP_GROUP_DIAGNOSE,
     sol_cli.SOL_HELP_GROUP_TOOLS,
-    sol_cli.SOL_HELP_GROUP_SERVICE_HEADING,
-    sol_cli.SOL_HELP_GROUP_ALIASES,
 ]
 
 
@@ -25,10 +23,31 @@ def _assigned_groups(command_name: str) -> list[str]:
     ]
 
 
-@pytest.mark.parametrize("command_name", sorted(sol_cli.COMMANDS))
+def _access_command_names() -> list[str]:
+    return sorted(
+        name
+        for name, command in sol_cli.COMMANDS.items()
+        if command.surface == "access"
+    )
+
+
+def _service_command_names() -> list[str]:
+    return sorted(
+        name
+        for name, command in sol_cli.COMMANDS.items()
+        if command.surface == "service"
+    )
+
+
+@pytest.mark.parametrize("command_name", _access_command_names())
 def test_sol_help_group_assignment_is_exact_partition(command_name: str) -> None:
     assigned = _assigned_groups(command_name)
     assert len(assigned) == 1, f"{command_name!r} appears in {assigned!r}"
+
+
+@pytest.mark.parametrize("command_name", _service_command_names())
+def test_sol_help_group_excludes_service_commands(command_name: str) -> None:
+    assert _assigned_groups(command_name) == []
 
 
 def test_sol_help_groups_reference_only_registered_commands() -> None:
@@ -38,7 +57,7 @@ def test_sol_help_groups_reference_only_registered_commands() -> None:
         for command_name in group.commands:
             assert command_name in sol_cli.COMMANDS
 
-    assert set(grouped) == set(sol_cli.COMMANDS)
+    assert set(grouped) == set(_access_command_names())
     assert len(grouped) == len(set(grouped))
 
 
@@ -55,8 +74,9 @@ def test_sol_help_heading_order_and_apps_position(monkeypatch, capsys) -> None:
     )
 
     apps_position = lines.index("Apps (sol call <app>):")
-    assert heading_positions[sol_cli.SOL_HELP_GROUP_SERVICE_HEADING] < apps_position
-    assert apps_position < heading_positions[sol_cli.SOL_HELP_GROUP_ALIASES]
+    assert heading_positions[sol_cli.SOL_HELP_GROUP_TOOLS] < apps_position
+    assert sol_cli.SOL_HELP_GROUP_SERVICE_HEADING not in lines
+    assert sol_cli.SOL_HELP_GROUP_ALIASES not in lines
     assert "Direct module syntax: sol <module.path> [args]" not in lines
 
 

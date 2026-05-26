@@ -31,7 +31,7 @@ from solstone.think.utils import (
 
 MERGE_INSTRUCTIONS = "\n".join(
     [
-        "sol config: --merge is not handled here.",
+        "journal config: --merge is not handled here.",
         "use 'sol call journal merge <source> --dry-run' to preview the merge.",
         "use 'sol call journal merge <source>' to perform the merge.",
     ]
@@ -105,7 +105,7 @@ def _read_wrapper_status() -> tuple[str, str | None]:
 
 def _wrapper_refusal(alias: Path) -> str:
     return (
-        "sol config: refused: "
+        "journal config: refused: "
         f"{alias} is not a managed wrapper (run 'journal setup' from the solstone "
         "source checkout to install the wrapper first)"
     )
@@ -123,27 +123,27 @@ def _valid_flags(change: JournalChange) -> str:
 
 def _refusal_message(change: JournalChange) -> str:
     return (
-        "sol config: refused: "
+        "journal config: refused: "
         f"current is {_state_label(change.current_active)} and target is "
         f"{_state_label(change.target_active)}; valid flags: {_valid_flags(change)}"
     )
 
 
 def _move_target_exists_message(change: JournalChange) -> str:
-    return f"sol config: refused: move target already exists: {change.target_path}"
+    return f"journal config: refused: move target already exists: {change.target_path}"
 
 
 def _move_missing_current_message(change: JournalChange) -> str:
-    return f"sol config: refused: move source does not exist: {change.current_path}"
+    return f"journal config: refused: move source does not exist: {change.current_path}"
 
 
 def _move_missing_parent_message(change: JournalChange) -> str:
-    return f"sol config: refused: move target parent does not exist: {change.target_path.parent}"
+    return f"journal config: refused: move target parent does not exist: {change.target_path.parent}"
 
 
 def _move_cross_filesystem_message(change: JournalChange) -> str:
     return (
-        "sol config: refused: cannot move across filesystems "
+        "journal config: refused: cannot move across filesystems "
         f"(current device={change.current_device}, target parent device={change.target_parent_device}); "
         "use 'sol call journal merge <source>' instead"
     )
@@ -151,7 +151,7 @@ def _move_cross_filesystem_message(change: JournalChange) -> str:
 
 def _move_requires_inactive_target_message(change: JournalChange) -> str:
     return (
-        "sol config: refused: "
+        "journal config: refused: "
         f"--move requires a not active target; current is {_state_label(change.current_active)} "
         f"and target is {_state_label(change.target_active)}; valid flags: --switch, --merge, --force"
     )
@@ -224,7 +224,7 @@ def _rewrite_wrapper(change: JournalChange) -> str | None:
             current_content = alias.read_text(encoding="utf-8")
         except OSError as exc:
             print(
-                f"sol config: refused: cannot read {alias}: {exc}",
+                f"journal config: refused: cannot read {alias}: {exc}",
                 file=sys.stderr,
             )
             return None
@@ -254,7 +254,7 @@ def _maybe_restart_current_service(change: JournalChange) -> None:
         _service_command(change.service_bin, "start")
     except FileNotFoundError as exc:
         print(
-            f"sol config: rollback warning: could not restart service ({exc})",
+            f"journal config: rollback warning: could not restart service ({exc})",
             file=sys.stderr,
         )
 
@@ -264,7 +264,7 @@ def _run_switch(change: JournalChange) -> int:
         change.target_path.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         print(
-            f"sol config: refused: cannot create {change.target_path}: {exc}",
+            f"journal config: refused: cannot create {change.target_path}: {exc}",
             file=sys.stderr,
         )
         return 1
@@ -273,7 +273,7 @@ def _run_switch(change: JournalChange) -> int:
         restart_sol = _rewrite_wrapper(change)
     except OSError as exc:
         print(
-            f"sol config: refused: cannot rewrite {change.alias}: {exc}",
+            f"journal config: refused: cannot rewrite {change.alias}: {exc}",
             file=sys.stderr,
         )
         return 1
@@ -296,14 +296,14 @@ def _run_switch(change: JournalChange) -> int:
         )
     except FileNotFoundError as exc:
         print(
-            f"sol config: wrapper rewritten to {change.target_path} but journal service restart could not run ({exc}); restart manually",
+            f"journal config: wrapper rewritten to {change.target_path} but journal service restart could not run ({exc}); restart manually",
             file=sys.stderr,
         )
         return 2
 
     if result.returncode != 0:
         print(
-            "sol config: wrapper rewritten to "
+            "journal config: wrapper rewritten to "
             f"{change.target_path} but 'journal service restart --if-installed' exited "
             f"{result.returncode}; investigate and restart manually",
             file=sys.stderr,
@@ -336,13 +336,13 @@ def _run_move(change: JournalChange) -> int:
             stop_result = _service_command(change.service_bin, "stop")
         except FileNotFoundError as exc:
             print(
-                f"sol config: could not stop service before move ({exc})",
+                f"journal config: could not stop service before move ({exc})",
                 file=sys.stderr,
             )
             return 2
         if stop_result.returncode != 0:
             print(
-                "sol config: could not stop service before move",
+                "journal config: could not stop service before move",
                 file=sys.stderr,
             )
             return 2
@@ -351,7 +351,7 @@ def _run_move(change: JournalChange) -> int:
         os.rename(current, target)
     except OSError as exc:
         _maybe_restart_current_service(change)
-        print(f"sol config: move failed: {exc}", file=sys.stderr)
+        print(f"journal config: move failed: {exc}", file=sys.stderr)
         return 1
 
     try:
@@ -364,11 +364,11 @@ def _run_move(change: JournalChange) -> int:
         except OSError as rollback_exc:
             rollback_ok = False
             print(
-                f"sol config: rollback failed after wrapper write error: {rollback_exc}",
+                f"journal config: rollback failed after wrapper write error: {rollback_exc}",
                 file=sys.stderr,
             )
         _maybe_restart_current_service(change)
-        message = f"sol config: move failed during wrapper update: {exc}"
+        message = f"journal config: move failed during wrapper update: {exc}"
         if rollback_ok:
             message += "; restored original journal"
         print(message, file=sys.stderr)
@@ -379,7 +379,7 @@ def _run_move(change: JournalChange) -> int:
             os.rename(target, current)
         except OSError as rollback_exc:
             print(
-                f"sol config: rollback failed after wrapper validation error: {rollback_exc}",
+                f"journal config: rollback failed after wrapper validation error: {rollback_exc}",
                 file=sys.stderr,
             )
         _maybe_restart_current_service(change)
@@ -414,7 +414,7 @@ def _run_move(change: JournalChange) -> int:
 
 
 def _run_noop(change: JournalChange, _decision: Decision) -> int:
-    print(f"sol config: journal already set to {change.target_path}")
+    print(f"journal config: journal already set to {change.target_path}")
     return 0
 
 
@@ -471,7 +471,7 @@ def decide(change: JournalChange) -> Decision:
 def execute(change: JournalChange, decision: Decision) -> int:
     if change.action is RequestedAction.FORCE:
         print(
-            "sol config: warning: --force bypasses confirmation and target activity checks",
+            "journal config: warning: --force bypasses confirmation and target activity checks",
             file=sys.stderr,
         )
 
@@ -548,7 +548,7 @@ def cmd_show() -> int:
     try:
         path, info_source = get_journal_info()
     except SolstoneNotConfigured as exc:
-        print(f"sol config: {exc}", file=sys.stderr)
+        print(f"journal config: {exc}", file=sys.stderr)
         return 1
 
     if info_source == "env":
@@ -585,14 +585,14 @@ def cmd_journal(
     try:
         validate_journal_path_for_wrapper(target_str)
     except ValueError as exc:
-        print(f"sol config: refused: {exc}", file=sys.stderr)
+        print(f"journal config: refused: {exc}", file=sys.stderr)
         return 1
 
     project_root = Path(get_project_root())
     source_tree_journal = (project_root / "journal").resolve()
     if target == source_tree_journal and not is_source_checkout():
         print(
-            "sol config: refused: "
+            "journal config: refused: "
             f"{target_str} is the source-tree fallback path but this is not a "
             "source checkout",
             file=sys.stderr,
@@ -601,7 +601,7 @@ def cmd_journal(
 
     if action is RequestedAction.MOVE and not target.parent.exists():
         print(
-            f"sol config: refused: move target parent does not exist: {target.parent}",
+            f"journal config: refused: move target parent does not exist: {target.parent}",
             file=sys.stderr,
         )
         return 1
@@ -614,7 +614,7 @@ def cmd_journal(
     try:
         content = alias.read_text(encoding="utf-8")
     except OSError as exc:
-        print(f"sol config: refused: cannot read {alias}: {exc}", file=sys.stderr)
+        print(f"journal config: refused: cannot read {alias}: {exc}", file=sys.stderr)
         return 1
 
     parsed = parse_wrapper(content)

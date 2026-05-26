@@ -741,11 +741,13 @@ def doctor_command(ctx: SetupContext, *, jsonl: bool = False) -> list[str]:
     ]
 
 
+def journal_console_command() -> list[str]:
+    return [str(Path(sys.executable).parent / "journal")]
+
+
 def install_models_command(ctx: SetupContext) -> list[str]:
     return [
-        sys.executable,
-        "-m",
-        "solstone.think.sol_cli",
+        *journal_console_command(),
         "install-models",
         "--variant",
         ctx.variant,
@@ -784,9 +786,7 @@ def wrapper_command() -> list[str]:
 
 def service_install_command(ctx: SetupContext) -> list[str]:
     return [
-        sys.executable,
-        "-m",
-        "solstone.think.sol_cli",
+        *journal_console_command(),
         "service",
         "install",
         "--port",
@@ -1766,7 +1766,7 @@ def _resume_service(
     )
     run_step_subprocess(
         ctx,
-        [sys.executable, "-m", "solstone.think.sol_cli", "service", "restart"],
+        [*journal_console_command(), "service", "restart"],
         timeout=None,
     )
     if health_check() == 0:

@@ -21,11 +21,8 @@ def _console_script(binary: str) -> Path:
 @pytest.mark.parametrize(
     ("binary", "args", "usage"),
     [
-        ("sol", ["heartbeat", "--help"], "usage: sol heartbeat"),
         ("journal", ["heartbeat", "--help"], "usage: journal heartbeat"),
-        ("sol", ["setup", "--help"], "usage: sol setup"),
         ("journal", ["setup", "--help"], "usage: journal setup"),
-        ("sol", ["config", "journal", "--help"], "usage: sol config journal"),
         (
             "journal",
             ["config", "journal", "--help"],

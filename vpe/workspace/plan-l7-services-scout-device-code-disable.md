@@ -1,6 +1,6 @@
 # L7 Plan: scout device-code enable + disable
 
-Ship a headless device-code enable flow for `sol services enable scout`, add `sol services disable scout`, and remove the `headless_no_browser` token.
+Ship a headless device-code enable flow for `journal services enable scout`, add `journal services disable scout`, and remove the `headless_no_browser` token.
 
 ## D1 - Disable-verification fingerprint
 
@@ -222,5 +222,5 @@ Ship a headless device-code enable flow for `sol services enable scout`, add `so
 ## Risks / open questions
 
 - Worker-contract exact values for `DEVICE_CODE_PREFIX`, `DEVICE_CODE_REGEX.pattern`, device-code POST path, and device-code entry URL are not present in this repo; implement from the L7 scope/portal contract, not from local inference.
-- `unknown_service` copy currently says `Use sol services enable scout.`; acceptable for current token but may read oddly for `disable foo`. Keep unless product copy explicitly changes.
+- `unknown_service` copy currently says `Use journal services enable scout.`; acceptable for current token but may read oddly for `disable foo`. Keep unless product copy explicitly changes.
 - Preserve empty `env` / `services` sections conservatively unless tests or existing config conventions require cleanup.

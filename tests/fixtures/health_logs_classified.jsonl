@@ -41,7 +41,7 @@
 {"service":"llama-server","stream":"stderr","line":"0.00.006.766 I log_info: verbosity = 3 (adjust with the `-lv N` CLI arg)","level":"info"}
 {"service":"llama-server","stream":"stderr","line":"0.00.301.436 W load: control-looking token: 128247 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden","level":"warning"}
 {"service":"llama-server","stream":"stderr","line":"0.13.987.953 W common_speculative_init: no implementations specified for speculative decoding","level":"warning"}
-{"service":"daily_dream","stream":"stderr","line":"sol: solstone isn't running. Start it with 'sol up' and retry.","level":"error"}
-{"service":"segment_dream","stream":"stderr","line":"sol: solstone isn't running. Start it with 'sol up' and retry.","level":"error"}
+{"service":"daily_dream","stream":"stderr","line":"sol: solstone isn't running. Start it with 'journal up' and retry.","level":"error"}
+{"service":"segment_dream","stream":"stderr","line":"sol: solstone isn't running. Start it with 'journal up' and retry.","level":"error"}
 {"service":"heartbeat","stream":"log","line":"duration=549s outcome=success","level":"info"}
 {"service":"observe-transcribe","stream":"stderr","line":"DEBUG:speechbrain.utils.checkpoints:Registered checkpoint save hook for _speechbrain_save","level":"debug"}

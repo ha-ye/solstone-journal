@@ -42,7 +42,7 @@ ACCESS_POSITIVE_EXPECTATIONS = {
 def _is_text_surface(path: Path) -> bool:
     if any(part in EXCLUDED_DIRS for part in path.parts):
         return False
-    if path.name == "CHANGELOG.md" or path.name == "SKILL.md":
+    if path.name == "CHANGELOG.md":
         return False
     if path.name in ROOT_TEXT_FILES:
         return True
@@ -58,8 +58,6 @@ def _candidate_files() -> list[Path]:
 
 
 def _skip_line(path: Path, line: str) -> bool:
-    if "sol config:" in line:
-        return True
     if path in {
         Path("tests/test_cli_prog_fidelity.py"),
         Path("tests/test_journal_cli_migration.py"),
