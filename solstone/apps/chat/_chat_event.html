@@ -67,5 +67,11 @@
     {% if ev.detail %}
       <div class="chat-error-detail"><code>{{ ev.detail }}</code></div>
     {% endif %}
+    {% if ev.retry_text is defined and ev.retry_text %}
+      <button type="button"
+              class="chat-error-retry"
+              data-retry-text="{{ ev.retry_text }}"
+              aria-label="{{ chat_copy.CHAT_ERROR_RETRY_ARIA_FORMAT.format(excerpt=chat_copy.chat_error_retry_excerpt(ev.retry_text)) }}">{{ chat_copy.CHAT_ERROR_RETRY_LABEL }}</button>
+    {% endif %}
   </div>
 {% endif %}

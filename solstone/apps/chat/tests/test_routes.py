@@ -204,6 +204,84 @@ def test_chat_day_renders_all_event_kinds(journal_copy, monkeypatch):
     assert "I couldn&#39;t reach the network" in html
 
 
+def test_chat_error_retry_backfills_owner_text(journal_copy, monkeypatch):
+    day = "20990102"
+    _set_today(monkeypatch, "20990103")
+    env = _make_env(journal_copy, monkeypatch)
+    owner_text = "retry <this> & that"
+    append_chat_event(
+        "owner_message",
+        ts=_ms(2099, 1, 2, 9, 0),
+        text=owner_text,
+        app="chat",
+        path=f"/app/chat/{day}",
+        facet="work",
+    )
+    append_chat_event(
+        "chat_error",
+        ts=_ms(2099, 1, 2, 9, 1),
+        reason="network_unreachable",
+        use_id="use-retry-1",
+        detail="provider detail",
+    )
+
+    response = env.client.get(f"/app/chat/{day}")
+    html = response.get_data(as_text=True)
+    retry_aria = chat_copy.CHAT_ERROR_RETRY_ARIA_FORMAT.format(
+        excerpt=chat_copy.chat_error_retry_excerpt(owner_text)
+    )
+
+    assert response.status_code == 200
+    assert 'class="chat-error-retry"' in html
+    assert f'data-retry-text="{markupsafe_escape(owner_text)}"' in html
+    assert f'aria-label="{markupsafe_escape(retry_aria)}"' in html
+    assert f">{chat_copy.CHAT_ERROR_RETRY_LABEL}</button>" in html
+    assert html.index("chat-error-detail") < html.index("chat-error-retry")
+    events = read_chat_events(day)
+    assert all("retry_text" not in event for event in events)
+
+
+def test_chat_error_retry_backfill_uses_fifo(journal_copy, monkeypatch):
+    day = "20990102"
+    _set_today(monkeypatch, "20990103")
+    env = _make_env(journal_copy, monkeypatch)
+    for index, text in enumerate(("first turn", "second turn")):
+        append_chat_event(
+            "owner_message",
+            ts=_ms(2099, 1, 2, 9, index),
+            text=text,
+            app="chat",
+            path=f"/app/chat/{day}",
+            facet="work",
+        )
+    append_chat_event(
+        "chat_error",
+        ts=_ms(2099, 1, 2, 9, 3),
+        reason="unknown",
+        use_id="use-retry-fifo",
+    )
+
+    response = env.client.get(f"/app/chat/{day}")
+    html = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert 'data-retry-text="first turn"' in html
+    assert 'data-retry-text="second turn"' not in html
+
+
+def test_build_chat_error_retry_texts_consumes_on_terminals():
+    from solstone.apps.chat.routes import _build_chat_error_retry_texts
+
+    events = [
+        {"kind": "owner_message", "text": "answered"},
+        {"kind": "sol_message", "text": "done"},
+        {"kind": "owner_message", "text": "failed"},
+        {"kind": "chat_error", "reason": "unknown"},
+    ]
+
+    assert _build_chat_error_retry_texts(events) == {3: "failed"}
+
+
 def test_chat_day_renders_owner_language_talent_labels(journal_copy, monkeypatch):
     day = "20990102"
     _set_today(monkeypatch, "20990103")

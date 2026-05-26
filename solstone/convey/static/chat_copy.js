@@ -23,10 +23,23 @@
     return row[status];
   }
 
+  const CHAT_ERROR_RETRY_EXCERPT_LIMIT = 60;
+
+  function chatErrorRetryExcerpt(text) {
+    const source = String(text == null ? "" : text);
+    if (source.length <= CHAT_ERROR_RETRY_EXCERPT_LIMIT) return source;
+    return source.slice(0, CHAT_ERROR_RETRY_EXCERPT_LIMIT) + "…";
+  }
+
   window.solChatCopy = {
     talentLabel,
     CHAT_QUEUE_INDICATOR_SINGULAR: "1 message waiting",
     CHAT_QUEUE_INDICATOR_PLURAL_FORMAT: "{count} messages waiting",
-    CHAT_QUEUE_DEPTH_CAP_MESSAGE: "Give sol a moment to catch up — you have 10 messages waiting."
+    CHAT_QUEUE_DEPTH_CAP_MESSAGE: "Give sol a moment to catch up — you have 10 messages waiting.",
+    CHAT_LIVENESS_THINKING: "Sol is thinking…",
+    CHAT_LIVENESS_TASK_FORMAT: "{label} {task}",
+    CHAT_ERROR_RETRY_LABEL: "Try again",
+    CHAT_ERROR_RETRY_ARIA_FORMAT: "Try again — re-send: {excerpt}",
+    chatErrorRetryExcerpt
   };
 })();

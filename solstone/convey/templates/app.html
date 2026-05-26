@@ -186,6 +186,7 @@
   let modalChatCleanup = null;
   let modalTrigger = null;
   let solRequestState = null;
+  const chatBarPendingPlaceholders = [];
   let solPingPulseTimer = null;
   let solPingDisconnectedAt = null;
   let solPingOfflineTimer = null;
@@ -881,6 +882,10 @@
     }
     if (eventName === 'owner_message') {
       setPendingState(false);
+      if (!solRequestState) {
+        chatBarPendingPlaceholders.push({ ownerText: msg.text || '', ts: msg.ts || Date.now() });
+        setStatus(window.solChatCopy.CHAT_LIVENESS_THINKING, window.solChatCopy.CHAT_LIVENESS_THINKING);
+      }
       return;
     }
     if (eventName === 'chat_queue_depth') {
@@ -889,6 +894,7 @@
     }
     if (eventName === 'sol_message') {
       if (solRequestState) return;
+      if (chatBarPendingPlaceholders.length > 0) chatBarPendingPlaceholders.shift();
       setStatus(msg.text || '', msg.notes || msg.text || '');
       return;
     }
@@ -900,6 +906,20 @@
         status: 'running',
         updatedAt: msg.started_at || msg.ts || Date.now()
       });
+      if (!solRequestState && chatBarPendingPlaceholders.length > 0) {
+        const task = String(msg.task || '').trim();
+        if (task) {
+          try {
+            const label = window.solChatCopy.talentLabel(String(msg.name || ''), 'running');
+            const composed = window.solChatCopy.CHAT_LIVENESS_TASK_FORMAT
+              .replace('{label}', label)
+              .replace('{task}', task);
+            setStatus(composed, composed);
+          } catch (_err) {
+            /* unknown target — leave phase-1 text in place */
+          }
+        }
+      }
       return;
     }
     if (eventName === 'talent_finished') {
@@ -928,6 +948,7 @@
     }
     if (eventName === 'chat_error') {
       if (solRequestState) return;
+      if (chatBarPendingPlaceholders.length > 0) chatBarPendingPlaceholders.shift();
       var renderedReason = window.renderChatReason(msg.reason, msg.provider || '');
       var detail = (msg.reason === 'unknown' && typeof msg.detail === 'string' && msg.detail.length > 0)
         ? msg.detail

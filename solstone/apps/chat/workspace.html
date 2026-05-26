@@ -76,6 +76,7 @@
   let searchTimer = null;
   let chatEventsCleanup = null;
   let pendingSolChatRequest = null;
+  const pendingPlaceholders = [];
 
   insertTimeSeparators(transcript);
   decorateBubbles(transcript);
@@ -104,6 +105,30 @@
   }
 
   transcript.addEventListener('click', (event) => {
+    const retryButton = event.target.closest('button.chat-error-retry');
+    if (retryButton) {
+      event.preventDefault();
+      if (retryButton.disabled) return;
+      const text = retryButton.dataset.retryText || '';
+      if (!text) return;
+      retryButton.disabled = true;
+      fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: text,
+          app: 'chat',
+          path: window.location.pathname,
+          facet: window.selectedFacet || null,
+        }),
+      }).then((response) => {
+        if (!response.ok) retryButton.disabled = false;
+      }).catch(() => {
+        retryButton.disabled = false;
+      });
+      return;
+    }
+
     const originToggle = event.target.closest('[data-origin-toggle]');
     if (originToggle) {
       event.preventDefault();
@@ -135,7 +160,7 @@
 
   function insertTimeSeparators(list) {
     Array.from(list.querySelectorAll('.chat-time-sep')).forEach((node) => node.remove());
-    const items = Array.from(list.children).filter((node) => node.classList.contains('chat-event'));
+    const items = Array.from(list.querySelectorAll('.chat-event:not([data-kind="sol_placeholder"])'));
     let previousTs = null;
 
     items.forEach((item) => {
@@ -151,7 +176,7 @@
   }
 
   function decorateBubbles(list) {
-    const items = Array.from(list.children).filter((node) => node.classList.contains('chat-event'));
+    const items = Array.from(list.querySelectorAll('.chat-event:not([data-kind="sol_placeholder"])'));
     items.forEach((item) => {
       item.classList.remove(
         'chat-event--owner',
@@ -310,6 +335,16 @@
       return;
     }
 
+    if ((kind === 'sol_message' || kind === 'chat_error') && pendingPlaceholders.length > 0) {
+      const placeholder = pendingPlaceholders.shift();
+      if (placeholder.element && placeholder.element.parentNode) {
+        placeholder.element.parentNode.removeChild(placeholder.element);
+      }
+      if (kind === 'chat_error') {
+        msg._retryText = placeholder.ownerText;
+      }
+    }
+
     const origin = kind === 'sol_message' && pendingSolChatRequest
       ? pendingSolChatRequest
       : null;
@@ -329,12 +364,43 @@
       reason: msg.reason || '',
       day: msg.day || '',
       url: msg.url || '',
-      origin: origin
+      origin: origin,
+      _retryText: msg._retryText || ''
     });
     if (!item) return;
 
     list.querySelector('.chat-empty')?.remove();
     list.appendChild(item);
+    if (kind === 'owner_message') {
+      const placeholder = document.createElement('li');
+      placeholder.className = 'chat-event chat-event--sol chat-event--placeholder';
+      placeholder.dataset.kind = 'sol_placeholder';
+      placeholder.dataset.ts = String(ts || Date.now());
+      const article = document.createElement('article');
+      article.className = 'chat-bubble chat-bubble--sol chat-bubble--placeholder';
+      const span = document.createElement('span');
+      span.className = 'chat-bubble-text';
+      span.textContent = window.solChatCopy.CHAT_LIVENESS_THINKING;
+      article.appendChild(span);
+      placeholder.appendChild(article);
+      list.appendChild(placeholder);
+      pendingPlaceholders.push({ element: placeholder, ownerText: String(msg.text || ''), ts: ts });
+    }
+    if (kind === 'talent_spawned' && pendingPlaceholders.length > 0) {
+      const head = pendingPlaceholders[0];
+      const task = String(msg.task || '').trim();
+      if (task) {
+        try {
+          const label = window.solChatCopy.talentLabel(String(msg.name || ''), 'running');
+          const format = window.solChatCopy.CHAT_LIVENESS_TASK_FORMAT;
+          const composed = format.replace('{label}', label).replace('{task}', task);
+          const span = head.element.querySelector('.chat-bubble-text');
+          if (span) span.textContent = composed;
+        } catch (_err) {
+          /* unknown talent target — keep phase-1 text */
+        }
+      }
+    }
     if (kind === 'talent_spawned' && msg.use_id) {
       chatEventsCleanup?.pending?.track(msg.use_id);
     }
@@ -370,7 +436,7 @@
     }
 
     const item = document.createElement('li');
-    item.id = 'event-' + transcript.querySelectorAll('.chat-event').length;
+    item.id = 'event-' + transcript.querySelectorAll('.chat-event:not([data-kind="sol_placeholder"])').length;
     item.className = 'chat-event';
     item.dataset.kind = event.kind;
     item.dataset.ts = String(event.ts);
@@ -426,6 +492,21 @@
       code.textContent = event.detail;
       detail.appendChild(code);
       block.appendChild(detail);
+    }
+    if (event._retryText) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'chat-error-retry';
+      button.dataset.retryText = event._retryText;
+      const excerpt = (window.solChatCopy && window.solChatCopy.chatErrorRetryExcerpt)
+        ? window.solChatCopy.chatErrorRetryExcerpt(event._retryText)
+        : event._retryText.slice(0, 60);
+      const ariaFormat = (window.solChatCopy && window.solChatCopy.CHAT_ERROR_RETRY_ARIA_FORMAT)
+        ? window.solChatCopy.CHAT_ERROR_RETRY_ARIA_FORMAT
+        : 'Try again — re-send: {excerpt}';
+      button.setAttribute('aria-label', ariaFormat.replace('{excerpt}', excerpt));
+      button.textContent = (window.solChatCopy && window.solChatCopy.CHAT_ERROR_RETRY_LABEL) || 'Try again';
+      block.appendChild(button);
     }
     return block;
   }

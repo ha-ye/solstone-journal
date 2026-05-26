@@ -57,6 +57,17 @@
     function runTests() {
       assert('exec running label', window.solChatCopy.talentLabel('exec', 'running') === 'Looking in your journal…');
       assert('reflection errored label', window.solChatCopy.talentLabel('reflection', 'errored') === "Couldn't finish reflecting");
+      assert('liveness thinking copy', window.solChatCopy.CHAT_LIVENESS_THINKING === 'Sol is thinking…');
+      assert('retry label copy', window.solChatCopy.CHAT_ERROR_RETRY_LABEL === 'Try again');
+      assert('retry aria format copy', window.solChatCopy.CHAT_ERROR_RETRY_ARIA_FORMAT === 'Try again — re-send: {excerpt}');
+      assert('liveness task format copy', window.solChatCopy.CHAT_LIVENESS_TASK_FORMAT === '{label} {task}');
+      const phaseTwo = window.solChatCopy.CHAT_LIVENESS_TASK_FORMAT
+        .replace('{label}', window.solChatCopy.talentLabel('exec', 'running'))
+        .replace('{task}', 'Retrieve the history for Adrian Kunzle and Bill Putsis from this week');
+      assert('liveness phase two composition', phaseTwo === 'Looking in your journal… Retrieve the history for Adrian Kunzle and Bill Putsis from this week');
+      assert('retry excerpt short', window.solChatCopy.chatErrorRetryExcerpt('hi') === 'hi');
+      assert('retry excerpt boundary', window.solChatCopy.chatErrorRetryExcerpt('a'.repeat(60)) === 'a'.repeat(60));
+      assert('retry excerpt truncates', window.solChatCopy.chatErrorRetryExcerpt('a'.repeat(61)) === 'a'.repeat(60) + '…');
 
       setQueueDepth(0);
       assert('zero depth hides queue', queueStatus.hidden && queueStatus.textContent === '');

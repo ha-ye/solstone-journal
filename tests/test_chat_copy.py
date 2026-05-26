@@ -63,6 +63,19 @@ def test_talent_label_for_unknown_values_raise():
         chat_copy.talent_label_for("exec", "queued")
 
 
+def test_liveness_and_retry_copy_bytes():
+    assert chat_copy.CHAT_LIVENESS_THINKING == "Sol is thinking…"
+    assert chat_copy.CHAT_LIVENESS_TASK_FORMAT == "{label} {task}"
+    assert chat_copy.CHAT_ERROR_RETRY_LABEL == "Try again"
+    assert chat_copy.CHAT_ERROR_RETRY_ARIA_FORMAT == "Try again — re-send: {excerpt}"
+
+
+def test_chat_error_retry_excerpt():
+    assert chat_copy.chat_error_retry_excerpt("hi") == "hi"
+    assert chat_copy.chat_error_retry_excerpt("a" * 60) == "a" * 60
+    assert chat_copy.chat_error_retry_excerpt("a" * 61) == ("a" * 60) + "…"
+
+
 def test_js_parity():
     js_path = Path("solstone/convey/static/chat_copy.js")
     text = js_path.read_text(encoding="utf-8")
@@ -92,3 +105,18 @@ def test_js_parity():
         f'CHAT_QUEUE_DEPTH_CAP_MESSAGE: "{chat_copy.CHAT_QUEUE_DEPTH_CAP_MESSAGE}"'
         in text
     )
+    assert f'CHAT_LIVENESS_THINKING: "{chat_copy.CHAT_LIVENESS_THINKING}"' in text
+    assert f'CHAT_LIVENESS_TASK_FORMAT: "{chat_copy.CHAT_LIVENESS_TASK_FORMAT}"' in text
+    assert f'CHAT_ERROR_RETRY_LABEL: "{chat_copy.CHAT_ERROR_RETRY_LABEL}"' in text
+    assert (
+        f'CHAT_ERROR_RETRY_ARIA_FORMAT: "{chat_copy.CHAT_ERROR_RETRY_ARIA_FORMAT}"'
+    ) in text
+    assert "function chatErrorRetryExcerpt(text)" in text
+
+
+def test_chat_placeholder_css_present():
+    css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
+
+    assert ".chat-bubble--placeholder" in css
+    assert "opacity: 0.65" in css
+    assert "font-style: italic" in css

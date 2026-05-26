@@ -2832,6 +2832,8 @@ body.has-date-nav .chat-app {
   border-bottom-left-radius: 6px;
 }
 
+.chat-bubble--placeholder { opacity: 0.65; font-style: italic; }
+
 .chat-origin-tag {
   max-width: 70%;
   color: #6b7280;
