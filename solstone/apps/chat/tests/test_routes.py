@@ -12,7 +12,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from markupsafe import escape as markupsafe_escape
 
+from solstone.apps.chat import copy as chat_copy
 from solstone.convey import create_app
 from solstone.convey.chat_stream import append_chat_event, read_chat_events
 from solstone.convey.sol_initiated.copy import (
@@ -157,7 +159,7 @@ def test_chat_day_renders_all_event_kinds(journal_copy, monkeypatch):
         "talent_spawned",
         ts=_ms(2099, 1, 2, 9, 2),
         use_id="use-2",
-        name="search",
+        name="exec",
         task="find updates",
         started_at=_ms(2099, 1, 2, 9, 2),
     )
@@ -165,7 +167,7 @@ def test_chat_day_renders_all_event_kinds(journal_copy, monkeypatch):
         "talent_finished",
         ts=_ms(2099, 1, 2, 9, 3),
         use_id="use-2",
-        name="search",
+        name="exec",
         summary="done",
     )
     append_chat_event(
@@ -202,6 +204,47 @@ def test_chat_day_renders_all_event_kinds(journal_copy, monkeypatch):
     assert "I couldn&#39;t reach the network" in html
 
 
+def test_chat_day_renders_owner_language_talent_labels(journal_copy, monkeypatch):
+    day = "20990102"
+    _set_today(monkeypatch, "20990103")
+    env = _make_env(journal_copy, monkeypatch)
+
+    for index, target in enumerate(("exec", "reflection")):
+        append_chat_event(
+            "talent_spawned",
+            ts=_ms(2099, 1, 2, 10 + index, 0),
+            use_id=f"use-{target}-running",
+            name=target,
+            task=f"{target} task",
+            started_at=_ms(2099, 1, 2, 10 + index, 0),
+        )
+        append_chat_event(
+            "talent_finished",
+            ts=_ms(2099, 1, 2, 10 + index, 1),
+            use_id=f"use-{target}-finished",
+            name=target,
+            summary=f"{target} summary",
+        )
+        append_chat_event(
+            "talent_errored",
+            ts=_ms(2099, 1, 2, 10 + index, 2),
+            use_id=f"use-{target}-errored",
+            name=target,
+            reason=f"{target} reason",
+        )
+
+    response = env.client.get(f"/app/chat/{day}")
+    html = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    for target in ("exec", "reflection"):
+        for status in ("running", "finished", "errored"):
+            label = chat_copy.talent_label_for(target, status)
+            assert str(markupsafe_escape(label)) in html
+        for raw in ("started", "finished", "errored"):
+            assert f"{target} {raw}" not in html
+
+
 def test_chat_day_emits_raw_talent_markdown_source_for_bootstrap(
     journal_copy, monkeypatch
 ):
@@ -212,7 +255,7 @@ def test_chat_day_emits_raw_talent_markdown_source_for_bootstrap(
         "talent_finished",
         ts=_ms(2099, 1, 2, 9, 3),
         use_id="use-md-1",
-        name="search",
+        name="exec",
         summary="**done**",
     )
     append_chat_event(

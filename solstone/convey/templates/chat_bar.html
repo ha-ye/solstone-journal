@@ -21,6 +21,7 @@
     ></textarea>
     <button id="chatBarSend" type="submit" class="chat-bar-send" aria-label="send">send</button>
   </form>
+  <div id="chatBarQueue" class="chat-bar-queue" aria-live="polite" hidden></div>
 </div>
 <script>
   window.solChatBarSeed = {{ chat_bar_sol_request | tojson | safe }};

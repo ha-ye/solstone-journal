@@ -1722,6 +1722,19 @@ body.menu-all .menu-bar {
   line-height: 1.4;
 }
 
+.chat-bar-queue {
+  flex: 1 0 100%;
+  min-width: 0;
+  color: #888;
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+.chat-bar-queue[hidden] {
+  display: none;
+}
+
 .chat-bar-status-action {
   flex: 0 0 auto;
   margin-left: 8px;
@@ -1856,11 +1869,11 @@ body.menu-all .menu-bar {
   background: currentColor;
 }
 
-.chat-bar-talent[data-status="active"] {
+.chat-bar-talent[data-status="running"] {
   color: var(--facet-color, #b06a1a);
 }
 
-.chat-bar-talent[data-status="active"] .chat-bar-talent-dot {
+.chat-bar-talent[data-status="running"] .chat-bar-talent-dot {
   animation: chat-bar-talent-pulse 1.2s ease-in-out infinite;
 }
 
@@ -2619,7 +2632,7 @@ button.close {
     animation-iteration-count: 1 !important;
   }
 
-  .chat-bar-talent[data-status="active"] .chat-bar-talent-dot {
+  .chat-bar-talent[data-status="running"] .chat-bar-talent-dot {
     animation: none;
   }
 

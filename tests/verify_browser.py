@@ -48,6 +48,15 @@ SCENARIOS: list[dict[str, Any]] = [
             {"do": "assert_text", "text": "PASS chat bar reasons: 0 failure(s)"},
         ],
     },
+    {
+        "app": "chat",
+        "name": "bar-copy",
+        "steps": [
+            {"do": "navigate", "path": "/static/tests/chat-bar-copy.html"},
+            {"do": "wait", "ms": 500},
+            {"do": "assert_text", "text": "PASS chat bar copy: 0 failure(s)"},
+        ],
+    },
     # smoke scenarios
     {
         "app": "sol",

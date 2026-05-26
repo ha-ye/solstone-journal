@@ -23,6 +23,7 @@
   <script src="{{ url_for('root.static', filename='convey_copy.js') }}" defer></script>
   <script src="{{ url_for('root.static', filename='diagnostic-console.js') }}" defer></script>
   <script src="{{ url_for('root.static', filename='chat_reasons.js') }}" defer></script>
+  <script src="{{ url_for('root.static', filename='chat_copy.js') }}" defer></script>
 
   <!-- Embed facets data for immediate client-side access -->
   <script>
@@ -162,6 +163,7 @@
   const statusWrap = document.getElementById('chatBarStatus');
   const solPingDot = document.getElementById('chatBarSolPingDot');
   const statusText = document.getElementById('chatBarStatusText');
+  const queueStatus = document.getElementById('chatBarQueue');
   const solPingDismiss = document.getElementById('chatBarSolPingDismiss');
   const talentsTray = document.getElementById('chatBarTalents');
   const form = document.getElementById('chatBarForm');
@@ -253,6 +255,27 @@
     }
   }
 
+  function setQueueDepth(count) {
+    if (!queueStatus) return;
+    var depth = Number(count || 0);
+    if (!Number.isFinite(depth) || depth < 1) {
+      queueStatus.textContent = '';
+      queueStatus.hidden = true;
+      return;
+    }
+    depth = Math.floor(depth);
+    queueStatus.textContent = depth === 1
+      ? window.solChatCopy.CHAT_QUEUE_INDICATOR_SINGULAR
+      : window.solChatCopy.CHAT_QUEUE_INDICATOR_PLURAL_FORMAT.replace('{count}', String(depth));
+    queueStatus.hidden = false;
+  }
+
+  function showQueueCapMessage() {
+    if (!queueStatus) return;
+    queueStatus.textContent = window.solChatCopy.CHAT_QUEUE_DEPTH_CAP_MESSAGE;
+    queueStatus.hidden = false;
+  }
+
   function setPendingState(active) {
     pendingSend = !!active;
     if (input) input.disabled = pendingSend;
@@ -261,8 +284,8 @@
 
   function getTalentEntries() {
     return Array.from(talentState.values()).sort(function(a, b) {
-      var aActive = a.status === 'active' ? 1 : 0;
-      var bActive = b.status === 'active' ? 1 : 0;
+      var aActive = a.status === 'running' ? 1 : 0;
+      var bActive = b.status === 'running' ? 1 : 0;
       if (aActive !== bActive) return bActive - aActive;
       return (b.updatedAt || 0) - (a.updatedAt || 0);
     });
@@ -275,7 +298,7 @@
       useId: entry.useId,
       name: entry.name || current.name || '',
       task: entry.task || current.task || '',
-      status: entry.status || current.status || 'active',
+      status: entry.status || current.status || 'running',
       updatedAt: entry.updatedAt || Date.now()
     });
     renderTalentTray();
@@ -283,7 +306,9 @@
 
   function renderTalentChip(entry) {
     var button = document.createElement('button');
-    var label = clipTitle(entry.task || entry.name || entry.useId);
+    var talentLabel = window.solChatCopy.talentLabel(entry.name, entry.status);
+    var taskLabel = clipTitle(entry.task || '');
+    var label = taskLabel ? talentLabel + ': ' + taskLabel : talentLabel;
     button.type = 'button';
     button.className = 'chat-bar-talent';
     button.dataset.useId = entry.useId;
@@ -292,7 +317,7 @@
     button.setAttribute('aria-label', 'talent: ' + (label || entry.useId) + '; status: ' + entry.status);
     button.innerHTML = '<span class="chat-bar-talent-dot" aria-hidden="true"></span>';
     button.addEventListener('click', function() {
-      window.openTalentView(entry.useId, { live: entry.status === 'active' });
+      window.openTalentView(entry.useId, { live: entry.status === 'running' });
     });
     return button;
   }
@@ -858,6 +883,10 @@
       setPendingState(false);
       return;
     }
+    if (eventName === 'chat_queue_depth') {
+      setQueueDepth(msg.depth);
+      return;
+    }
     if (eventName === 'sol_message') {
       if (solRequestState) return;
       setStatus(msg.text || '', msg.notes || msg.text || '');
@@ -868,7 +897,7 @@
         useId: String(msg.use_id || ''),
         name: msg.name || '',
         task: msg.task || '',
-        status: 'active',
+        status: 'running',
         updatedAt: msg.started_at || msg.ts || Date.now()
       });
       return;
@@ -877,7 +906,7 @@
       upsertTalent({
         useId: String(msg.use_id || ''),
         name: msg.name || '',
-        status: 'completed',
+        status: 'finished',
         updatedAt: msg.ts || Date.now()
       });
       if (modalUseId && modalUseId === String(msg.use_id || '')) {
@@ -927,7 +956,7 @@
           useId: String(talent.use_id || ''),
           name: talent.name || '',
           task: talent.task || '',
-          status: 'active',
+          status: 'running',
           updatedAt: talent.started_at || Date.now()
         });
       });
@@ -936,10 +965,11 @@
           useId: String(talent.use_id || ''),
           name: talent.name || '',
           task: talent.task || '',
-          status: 'completed',
+          status: 'finished',
           updatedAt: talent.finished_at
         });
       });
+      setQueueDepth(data.queue_depth);
     } catch (err) {
       setPendingState(true);
       var hydrateError = `Couldn't load recent chat session. ${window.CONVEY_COPY.RELOAD_HINT}`;
@@ -976,9 +1006,20 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       });
-      if (!response.ok) throw new Error('request failed');
+      if (!response.ok) {
+        var errorBody = {};
+        try {
+          errorBody = await response.json();
+        } catch (_jsonErr) {}
+        if (response.status === 429 && errorBody.reason_code === 'chat_queue_full') {
+          showQueueCapMessage();
+          return;
+        }
+        throw new Error('request failed');
+      }
       window.__needsYouPendingSource = null;
       window.__needsYouPendingPrompt = null;
+      setQueueDepth(0);
       input.value = '';
       resizeComposer();
     } catch (_err) {

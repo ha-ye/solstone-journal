@@ -154,6 +154,20 @@ def test_append_rejects_missing_required_fields(tmp_path, monkeypatch):
         )
 
 
+def test_chat_queue_depth_event_validates_depth(tmp_path, monkeypatch):
+    _setup_journal(tmp_path, monkeypatch)
+    ts = _ms(2026, 4, 20, 12, 0, 0)
+
+    event = append_chat_event("chat_queue_depth", ts=ts, depth=3)
+
+    assert event["kind"] == "chat_queue_depth"
+    assert read_chat_events("20260420") == [event]
+    with pytest.raises(ValueError, match="chat_queue_depth requires fields: depth"):
+        append_chat_event("chat_queue_depth", ts=ts + 1)
+    with pytest.raises(ValueError, match="chat_queue_depth depth must be an int"):
+        append_chat_event("chat_queue_depth", ts=ts + 2, depth="3")
+
+
 def test_chat_error_preserves_optional_provider(tmp_path, monkeypatch):
     _setup_journal(tmp_path, monkeypatch)
     ts = _ms(2026, 4, 20, 12, 0, 0)
@@ -424,6 +438,20 @@ def test_reduce_chat_state_extracts_latest_sol_and_active_talents(
             "finished_at": start + 3_000,
         }
     ]
+    assert reduced["queue_depth"] == 0
+
+
+def test_reduce_chat_state_returns_last_queue_depth(tmp_path, monkeypatch):
+    _setup_journal(tmp_path, monkeypatch)
+    start = _ms(2026, 4, 20, 12, 0, 0)
+
+    assert reduce_chat_state("20260420")["queue_depth"] == 0
+
+    append_chat_event("chat_queue_depth", ts=start, depth=2)
+    append_chat_event("chat_queue_depth", ts=start + 1_000, depth=5)
+    append_chat_event("chat_queue_depth", ts=start + 2_000, depth=1)
+
+    assert reduce_chat_state("20260420")["queue_depth"] == 1
 
 
 def test_append_reflection_ready_event(tmp_path, monkeypatch):

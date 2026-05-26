@@ -178,6 +178,7 @@ AGENT_UNAVAILABLE = Reason(
     "I couldn't reach the agent service.",
     503,
 )
+CHAT_QUEUE_FULL = Reason("chat_queue_full", "Chat queue full", 429)
 TALENT_RUN_PENDING = Reason(
     "talent_run_pending",
     "I'm still working on that talent run.",

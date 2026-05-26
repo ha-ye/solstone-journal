@@ -26,8 +26,12 @@ def _reset_chat_state(chat_module) -> None:
     with chat_module._state_lock:
         chat_module._current_chat_use_id = None
         chat_module._current_chat_state = None
-        chat_module._queued_trigger = None
+        chat_module._queued_triggers.clear()
         chat_module._active_talents.clear()
+        chat_module._reserved_use_ids.clear()
+        for timer in chat_module._watchdog_timers.values():
+            timer.cancel()
+        chat_module._watchdog_timers.clear()
         chat_module._last_use_id = 0
 
 
@@ -44,6 +48,18 @@ def _write_talent_log(
     log_path.write_text(
         "\n".join(json.dumps(event) for event in events) + "\n",
         encoding="utf-8",
+    )
+
+
+def _post_chat_message(client, message: str):
+    return client.post(
+        "/api/chat",
+        json={
+            "message": message,
+            "app": "sol",
+            "path": "/app/sol",
+            "facet": "work",
+        },
     )
 
 
@@ -87,6 +103,176 @@ def test_post_chat_appends_owner_message_and_returns_reserved_use_id(
     assert payload["queued"] is False
     assert payload["use_id"].isdigit()
     assert starts and starts[-1]["logical_use_id"] == payload["use_id"]
+
+
+def test_post_chat_dispatches_queued_messages_fifo(chat_client, monkeypatch):
+    import solstone.convey.chat as chat
+
+    starts: list[dict] = []
+    monkeypatch.setattr(
+        "solstone.think.identity.ensure_identity_directory", lambda: None
+    )
+    monkeypatch.setattr(
+        "solstone.convey.chat._spawn_chat_generate",
+        lambda action: starts.append(action) or ChatSpawnResult(ok=True),
+    )
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_cortex_event", lambda *_args, **_kwargs: None
+    )
+
+    responses = [_post_chat_message(chat_client, f"msg {idx}") for idx in range(5)]
+
+    assert [response.status_code for response in responses] == [200] * 5
+    assert [response.get_json()["queued"] for response in responses] == [
+        False,
+        True,
+        True,
+        True,
+        True,
+    ]
+    assert len(starts) == 1
+
+    index = 0
+    while index < len(starts):
+        action = starts[index]
+        message = action["trigger"]["message"]
+        chat._on_cortex_finish(
+            {
+                "use_id": action["raw_use_id"],
+                "result": json.dumps(
+                    {
+                        "message": f"reply {message}",
+                        "notes": "ok",
+                        "talent_request": None,
+                    }
+                ),
+            }
+        )
+        index += 1
+
+    assert [action["trigger"]["message"] for action in starts] == [
+        "msg 0",
+        "msg 1",
+        "msg 2",
+        "msg 3",
+        "msg 4",
+    ]
+    events = read_chat_events(date.today().strftime("%Y%m%d"))
+    replies = [event["text"] for event in events if event["kind"] == "sol_message"]
+    assert replies == [
+        "reply msg 0",
+        "reply msg 1",
+        "reply msg 2",
+        "reply msg 3",
+        "reply msg 4",
+    ]
+
+
+def test_post_chat_rejects_when_queue_depth_cap_reached(chat_client, monkeypatch):
+    import solstone.convey.chat as chat
+
+    monkeypatch.setattr(
+        "solstone.think.identity.ensure_identity_directory", lambda: None
+    )
+    with chat._state_lock:
+        chat._current_chat_use_id = "current"
+        chat._current_chat_state = {
+            "raw_use_id": "raw-current",
+            "raw_use_ids_seen": {"raw-current"},
+            "trigger": {"type": "owner_message", "message": "busy"},
+            "location": {"app": "sol", "path": "/app/sol", "facet": "work"},
+            "retry_count": 0,
+        }
+        for index in range(10):
+            chat._queued_triggers.append(
+                {
+                    "use_id": str(index + 1),
+                    "trigger": {"type": "owner_message", "message": f"queued {index}"},
+                    "location": {"app": "sol", "path": "/app/sol", "facet": "work"},
+                }
+            )
+
+    response = _post_chat_message(chat_client, "one too many")
+
+    assert response.status_code == 429
+    assert response.get_json() == {
+        "error": "Chat queue full",
+        "reason_code": "chat_queue_full",
+        "detail": "",
+    }
+    events = read_chat_events(date.today().strftime("%Y%m%d"))
+    assert [event for event in events if event["kind"] == "owner_message"] == []
+    assert [event for event in events if event["kind"] == "chat_queue_depth"] == []
+
+
+def test_chat_error_starts_next_queued_message(chat_client, monkeypatch):
+    import solstone.convey.chat as chat
+
+    starts: list[dict] = []
+    monkeypatch.setattr(
+        "solstone.think.identity.ensure_identity_directory", lambda: None
+    )
+    monkeypatch.setattr(
+        "solstone.convey.chat._spawn_chat_generate",
+        lambda action: starts.append(action) or ChatSpawnResult(ok=True),
+    )
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_cortex_event", lambda *_args, **_kwargs: None
+    )
+
+    assert _post_chat_message(chat_client, "first").status_code == 200
+    assert _post_chat_message(chat_client, "second").status_code == 200
+    assert len(starts) == 1
+
+    chat._handle_chat_failure(starts[0]["logical_use_id"], "unknown")
+
+    assert [action["trigger"]["message"] for action in starts] == [
+        "first",
+        "second",
+    ]
+    errors = [
+        event
+        for event in read_chat_events(date.today().strftime("%Y%m%d"))
+        if event["kind"] == "chat_error"
+    ]
+    assert errors[-1]["use_id"] == starts[0]["logical_use_id"]
+    assert errors[-1]["reason"] == "unknown"
+
+
+def test_queue_depth_events_emit_on_enqueue_and_dequeue(chat_client, monkeypatch):
+    import solstone.convey.chat as chat
+
+    starts: list[dict] = []
+    monkeypatch.setattr(
+        "solstone.think.identity.ensure_identity_directory", lambda: None
+    )
+    monkeypatch.setattr(
+        "solstone.convey.chat._spawn_chat_generate",
+        lambda action: starts.append(action) or ChatSpawnResult(ok=True),
+    )
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_cortex_event", lambda *_args, **_kwargs: None
+    )
+
+    for message in ("first", "second", "third"):
+        assert _post_chat_message(chat_client, message).status_code == 200
+
+    for index in range(2):
+        action = starts[index]
+        chat._on_cortex_finish(
+            {
+                "use_id": action["raw_use_id"],
+                "result": {
+                    "message": f"reply {action['trigger']['message']}",
+                    "notes": "ok",
+                    "talent_request": None,
+                },
+            }
+        )
+
+    events = read_chat_events(date.today().strftime("%Y%m%d"))
+    depths = [event["depth"] for event in events if event["kind"] == "chat_queue_depth"]
+    assert depths == [1, 2, 1, 0]
 
 
 def test_handle_chat_failure_threads_pipeline_unavailable(chat_client, monkeypatch):

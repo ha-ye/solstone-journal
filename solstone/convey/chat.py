@@ -12,6 +12,7 @@ import logging
 import os
 import pprint
 import threading
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +28,7 @@ from solstone.convey.chat_stream import (
 )
 from solstone.convey.reasons import (
     AGENT_UNAVAILABLE,
+    CHAT_QUEUE_FULL,
     MISSING_REQUIRED_FIELD,
     TALENT_NOT_FOUND,
 )
@@ -55,7 +57,7 @@ _state_lock = threading.Lock()
 _runtime_lock = threading.Lock()
 _current_chat_use_id: str | None = None
 _current_chat_state: dict[str, Any] | None = None
-_queued_trigger: dict[str, Any] | None = None
+_queued_triggers: deque[dict[str, Any]] = deque()
 _active_talents: dict[str, dict[str, Any]] = {}
 _reserved_use_ids: dict[str, None] = {}
 _watchdog_timers: dict[str, threading.Timer] = {}
@@ -123,11 +125,16 @@ def post_chat() -> Any:
     }
     if source is not None:
         event_fields["source"] = source
-    append_chat_event("owner_message", **event_fields)
     trigger = {
         "type": "owner_message",
         "message": message,
     }
+
+    with _state_lock:
+        if _current_chat_use_id is not None and len(_queued_triggers) >= 10:
+            return error_response(CHAT_QUEUE_FULL)
+
+    append_chat_event("owner_message", **event_fields)
 
     start_info: dict[str, Any] | None = None
     with _state_lock:
@@ -137,7 +144,7 @@ def post_chat() -> Any:
             queued = False
             response_use_id = logical_use_id
         else:
-            response_use_id = _queue_trigger_locked(trigger, location)
+            response_use_id = _enqueue_trigger_locked(trigger, location)
             queued = True
 
     if start_info is not None:
@@ -852,27 +859,33 @@ def _build_spawn_info_locked(logical_use_id: str) -> dict[str, Any]:
     }
 
 
-def _queue_trigger_locked(trigger: dict[str, Any], location: dict[str, str]) -> str:
-    global _queued_trigger
-    if _queued_trigger is None:
-        _queued_trigger = {
-            "use_id": _reserve_use_id_locked(),
-            "trigger": dict(trigger),
-            "location": dict(location),
-        }
-    return str(_queued_trigger["use_id"])
+def _enqueue_trigger_locked(trigger: dict[str, Any], location: dict[str, str]) -> str:
+    queued = {
+        "use_id": _reserve_use_id_locked(),
+        "trigger": dict(trigger),
+        "location": dict(location),
+    }
+    _queued_triggers.append(queued)
+    append_chat_event("chat_queue_depth", depth=len(_queued_triggers))
+    return str(queued["use_id"])
+
+
+def _pop_next_trigger_locked() -> dict[str, Any] | None:
+    if not _queued_triggers:
+        return None
+    return _queued_triggers.popleft()
 
 
 def _clear_current_locked() -> dict[str, Any] | None:
-    global _current_chat_use_id, _current_chat_state, _queued_trigger
+    global _current_chat_use_id, _current_chat_state
 
     _current_chat_use_id = None
     _current_chat_state = None
-    if _queued_trigger is None:
+    queued = _pop_next_trigger_locked()
+    if queued is None:
         return None
 
-    queued = _queued_trigger
-    _queued_trigger = None
+    append_chat_event("chat_queue_depth", depth=len(_queued_triggers))
     return _activate_current_locked(
         str(queued["use_id"]),
         dict(queued["trigger"]),

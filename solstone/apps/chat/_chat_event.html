@@ -32,28 +32,28 @@
   </article>
 {% elif ev.kind == "talent_spawned" %}
   <button type="button"
-          class="chat-talent-card chat-talent-card--spawned"
-          data-talent-use-id="{{ ev.use_id }}"
-          data-talent-status="active">
-    <span class="chat-talent-card-label">{{ ev.name }} started</span>
-    {% if ev.task %}<span class="chat-talent-card-task">{{ ev.task }}</span>{% endif %}
-  </button>
-{% elif ev.kind == "talent_finished" %}
+	          class="chat-talent-card chat-talent-card--spawned"
+	          data-talent-use-id="{{ ev.use_id }}"
+	          data-talent-status="active">
+	    <span class="chat-talent-card-label">{{ chat_copy.talent_label_for(status="running", target=ev.name) }}</span>
+	    {% if ev.task %}<span class="chat-talent-card-task">{{ ev.task }}</span>{% endif %}
+	  </button>
+	{% elif ev.kind == "talent_finished" %}
   <button type="button"
-          class="chat-talent-card chat-talent-card--finished"
-          data-talent-use-id="{{ ev.use_id }}"
-          data-talent-status="finished">
-    <span class="chat-talent-card-label">{{ ev.name }} finished</span>
-    {% if ev.summary %}<div class="chat-talent-card-detail chat-talent-card-detail--markdown" data-markdown="1">{{ ev.summary }}</div>{% endif %}
-  </button>
-{% elif ev.kind == "talent_errored" %}
+	          class="chat-talent-card chat-talent-card--finished"
+	          data-talent-use-id="{{ ev.use_id }}"
+	          data-talent-status="finished">
+	    <span class="chat-talent-card-label">{{ chat_copy.talent_label_for(status="finished", target=ev.name) }}</span>
+	    {% if ev.summary %}<div class="chat-talent-card-detail chat-talent-card-detail--markdown" data-markdown="1">{{ ev.summary }}</div>{% endif %}
+	  </button>
+	{% elif ev.kind == "talent_errored" %}
   <button type="button"
-          class="chat-talent-card chat-talent-card--errored"
-          data-talent-use-id="{{ ev.use_id }}"
-          data-talent-status="errored">
-    <span class="chat-talent-card-label">{{ ev.name }} errored</span>
-    {% if ev.reason %}<div class="chat-talent-card-detail chat-talent-card-detail--markdown" data-markdown="1">{{ ev.reason }}</div>{% endif %}
-  </button>
+	          class="chat-talent-card chat-talent-card--errored"
+	          data-talent-use-id="{{ ev.use_id }}"
+	          data-talent-status="errored">
+	    <span class="chat-talent-card-label">{{ chat_copy.talent_label_for(status="errored", target=ev.name) }}</span>
+	    {% if ev.reason %}<div class="chat-talent-card-detail chat-talent-card-detail--markdown" data-markdown="1">{{ ev.reason }}</div>{% endif %}
+	  </button>
 {% elif ev.kind == "reflection_ready" %}
   <article class="chat-reflection-card">
     <span class="chat-reflection-card-label">weekly reflection ready</span>

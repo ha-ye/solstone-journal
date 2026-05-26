@@ -399,13 +399,13 @@
       return fragment;
     }
     if (event.kind === 'talent_spawned') {
-      return buildTalentCard(event.name + ' started', event.task || '', event.use_id, 'active', 'chat-talent-card--spawned');
+      return buildTalentCard(window.solChatCopy.talentLabel(event.name, 'running'), event.task || '', event.use_id, 'active', 'chat-talent-card--spawned');
     }
     if (event.kind === 'talent_finished') {
-      return buildTalentCard(event.name + ' finished', event.summary || '', event.use_id, 'finished', 'chat-talent-card--finished');
+      return buildTalentCard(window.solChatCopy.talentLabel(event.name, 'finished'), event.summary || '', event.use_id, 'finished', 'chat-talent-card--finished');
     }
     if (event.kind === 'talent_errored') {
-      return buildTalentCard(event.name + ' errored', event.reason || '', event.use_id, 'errored', 'chat-talent-card--errored');
+      return buildTalentCard(window.solChatCopy.talentLabel(event.name, 'errored'), event.reason || '', event.use_id, 'errored', 'chat-talent-card--errored');
     }
     if (event.kind === 'reflection_ready') {
       return buildReflectionCard(event.day || '', event.url || '');

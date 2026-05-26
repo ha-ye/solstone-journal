@@ -1,0 +1,88 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- Copyright (c) 2026 sol pbc -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>chat bar copy test</title>
+  <style>
+    body { font-family: sans-serif; margin: 2rem; }
+    .pass { color: #0a7a2f; }
+    .fail { color: #b00020; }
+  </style>
+  <script src="../chat_copy.js"></script>
+</head>
+<body>
+  <div id="chatBarQueue" hidden></div>
+  <div id="test-results">RUNNING chat bar copy</div>
+  <ol id="results"></ol>
+
+  <script>
+    const queueStatus = document.getElementById('chatBarQueue');
+    const summary = document.getElementById('test-results');
+    const results = document.getElementById('results');
+    let failures = 0;
+
+    function report(name, ok, detail) {
+      const item = document.createElement('li');
+      item.className = ok ? 'pass' : 'fail';
+      item.textContent = `${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}`;
+      results.appendChild(item);
+      if (!ok) failures += 1;
+    }
+
+    function assert(name, condition) {
+      report(name, !!condition);
+    }
+
+    function setQueueDepth(count) {
+      const depthValue = Number(count || 0);
+      if (!Number.isFinite(depthValue) || depthValue < 1) {
+        queueStatus.textContent = '';
+        queueStatus.hidden = true;
+        return;
+      }
+      const depth = Math.floor(depthValue);
+      queueStatus.textContent = depth === 1
+        ? window.solChatCopy.CHAT_QUEUE_INDICATOR_SINGULAR
+        : window.solChatCopy.CHAT_QUEUE_INDICATOR_PLURAL_FORMAT.replace('{count}', String(depth));
+      queueStatus.hidden = false;
+    }
+
+    function showQueueCapMessage() {
+      queueStatus.textContent = window.solChatCopy.CHAT_QUEUE_DEPTH_CAP_MESSAGE;
+      queueStatus.hidden = false;
+    }
+
+    function runTests() {
+      assert('exec running label', window.solChatCopy.talentLabel('exec', 'running') === 'Looking in your journal…');
+      assert('reflection errored label', window.solChatCopy.talentLabel('reflection', 'errored') === "Couldn't finish reflecting");
+
+      setQueueDepth(0);
+      assert('zero depth hides queue', queueStatus.hidden && queueStatus.textContent === '');
+      setQueueDepth(1);
+      assert('singular depth text', !queueStatus.hidden && queueStatus.textContent === '1 message waiting');
+      setQueueDepth(4);
+      assert('plural depth text', !queueStatus.hidden && queueStatus.textContent === '4 messages waiting');
+      showQueueCapMessage();
+      assert('cap message text', queueStatus.textContent === 'Give sol a moment to catch up — you have 10 messages waiting.');
+      setQueueDepth(9);
+      assert('depth clears cap message', queueStatus.textContent === '9 messages waiting');
+
+      summary.className = failures ? 'fail' : 'pass';
+      summary.textContent = failures
+        ? `FAIL chat bar copy: ${failures} failure(s)`
+        : 'PASS chat bar copy: 0 failure(s)';
+    }
+
+    try {
+      runTests();
+    } catch (error) {
+      failures += 1;
+      report('uncaught exception', false, error && error.message ? error.message : String(error));
+      summary.className = 'fail';
+      summary.textContent = `FAIL chat bar copy: ${failures} failure(s)`;
+    }
+  </script>
+</body>
+</html>

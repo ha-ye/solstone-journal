@@ -28,7 +28,7 @@ def _reset_chat_state(chat_module) -> None:
     with chat_module._state_lock:
         chat_module._current_chat_use_id = None
         chat_module._current_chat_state = None
-        chat_module._queued_trigger = None
+        chat_module._queued_triggers.clear()
         chat_module._active_talents.clear()
         chat_module._reserved_use_ids.clear()
         for timer in chat_module._watchdog_timers.values():

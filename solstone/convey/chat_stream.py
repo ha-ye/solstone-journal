@@ -44,6 +44,7 @@ _VALID_KINDS = {
     "talent_finished": ("use_id", "name", "summary"),
     "talent_errored": ("use_id", "name", "reason"),
     "reflection_ready": ("day", "url"),
+    "chat_queue_depth": ("depth",),
     # chat_error also accepts optional `provider` (provider slug or "") and `detail`
     # (normalized raw provider error text, "" when absent); neither is validated.
     "chat_error": ("reason", "use_id"),
@@ -210,9 +211,14 @@ def reduce_chat_state(day: str) -> dict[str, Any]:
     latest_sol_message: dict[str, Any] | None = None
     active_talents: dict[str, dict[str, Any]] = {}
     completed_talents: list[dict[str, Any]] = []
+    queue_depth = 0
 
     for event in read_chat_events(day):
         kind = event.get("kind")
+        if kind == "chat_queue_depth":
+            queue_depth = int(event["depth"])
+            continue
+
         if kind == "sol_message":
             latest_sol_message = {
                 "ts": event["ts"],
@@ -263,6 +269,7 @@ def reduce_chat_state(day: str) -> dict[str, Any]:
             ),
         ),
         "completed_talents": completed_talents,
+        "queue_depth": queue_depth,
     }
 
 
@@ -286,6 +293,9 @@ def _validate_event(kind: str, event: dict[str, Any]) -> None:
     if missing:
         required = ", ".join(missing)
         raise ValueError(f"{kind} requires fields: {required}")
+
+    if kind == "chat_queue_depth" and not isinstance(event["depth"], int):
+        raise ValueError("chat_queue_depth depth must be an int")
 
 
 def _broadcast_chat_event(stored_event: dict[str, Any]) -> None:
