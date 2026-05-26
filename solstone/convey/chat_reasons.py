@@ -45,7 +45,7 @@ CHAT_REASONS: dict[str, ChatReason] = {
     ),
     "provider_response_invalid": ChatReason(
         code="provider_response_invalid",
-        template="{provider} sent something I couldn't read — try again",
+        template="{provider}'s response didn't match the expected shape — try rephrasing or asking something more specific.",
         action=None,
     ),
     "provider_unavailable": ChatReason(
