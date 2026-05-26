@@ -270,7 +270,7 @@
   }
 
   function ownerNotReady(data) {
-    const count = Number(data.manual_tags_count || data.embeddings_available || 0);
+    const count = Number(data.manual_tags_count || 0);
     const streams = Number(data.streams_represented || 0);
     const progress = Math.min(100, Math.round((count / OWNER_MIN) * 100));
     const diagnostic = data.low_quality_reason
