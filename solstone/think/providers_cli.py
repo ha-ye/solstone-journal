@@ -9,15 +9,12 @@ import argparse
 import asyncio
 import json
 import os
-import shutil
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from solstone.think.utils import get_journal, require_solstone, setup_cli
-
-_OPENHANDS_BACKED_PROVIDERS = {"anthropic", "openai", "google", "local"}
 
 
 def _local_readiness_message(status: dict[str, object] | None = None) -> str:
@@ -108,40 +105,22 @@ async def _check_cogitate(
     from solstone.think.providers import PROVIDER_METADATA, get_provider_module
 
     env_key = PROVIDER_METADATA[provider_name]["env_key"]
+    label = PROVIDER_METADATA[provider_name]["label"]
     if provider_name == "local":
         status = _provider_status(provider_name)
         if not status.get("cogitate_ready"):
             if not status.get("cogitate_cli_found"):
-                from solstone.think.providers import bundled
+                from solstone.think.providers import local_install
 
                 return (
                     "skip",
-                    f"not installed; run `{bundled._install_hint('openhands')}`",
+                    f"not installed; run `{local_install.install_hint()}`",
                 )
             return "skip", _local_readiness_message(status)
-    elif provider_name in _OPENHANDS_BACKED_PROVIDERS:
-        label = PROVIDER_METADATA[provider_name]["label"]
-        status = _provider_status(provider_name)
-        if not status.get("configured"):
+    elif provider_name in {"anthropic", "openai", "google"}:
+        if env_key and not os.getenv(env_key):
             return "skip", f"{label} not configured (no {env_key})"
-        if not status.get("cogitate_cli_found"):
-            from solstone.think.providers import bundled
-
-            install_target = (
-                provider_name
-                if provider_name in bundled.SUPPORTED_PROVIDERS
-                else "openhands"
-            )
-            return (
-                "skip",
-                f"not installed; run `{bundled._install_hint(install_target)}`",
-            )
-        if not status.get("cogitate_ready"):
-            issues = status.get("issues") or []
-            message = "; ".join(str(issue) for issue in issues) or "cogitate not ready"
-            return "skip", message
     elif env_key and not os.getenv(env_key):
-        label = PROVIDER_METADATA[provider_name]["label"]
         return "skip", f"{label} not configured (no {env_key})"
 
     if not env_key:
@@ -159,10 +138,6 @@ async def _check_cogitate(
                 f"{PROVIDER_METADATA[provider_name]['label']} not reachable "
                 f"({result.get('error', 'unreachable')})",
             )
-
-    binary = PROVIDER_METADATA[provider_name].get("cogitate_cli", "")
-    if binary and not shutil.which(binary):
-        return "skip", f"{binary} CLI not installed"
 
     try:
         module = get_provider_module(provider_name)

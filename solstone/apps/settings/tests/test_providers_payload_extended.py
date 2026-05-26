@@ -49,8 +49,30 @@ def test_get_providers_includes_local_and_mlx_install_state(settings_client):
 
     assert response.status_code == 200
     payload = response.get_json()
+    assert "bundled" not in payload
     assert isinstance(payload["local"], dict)
     assert isinstance(payload["mlx"], dict)
+    assert "active_model" in payload["mlx"]
+    _assert_install_status(payload["local"])
+    _assert_install_status(payload["mlx"])
+
+
+def test_providers_payload_omits_bundled_block(settings_client):
+    response = settings_client.get("/app/settings/api/providers")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert "bundled" not in payload
+    provider_status = payload["provider_status"]
+    for name in ("google", "openai", "anthropic"):
+        assert set(provider_status[name]) == {
+            "provider",
+            "configured",
+            "generate_ready",
+            "cogitate_ready",
+            "issues",
+        }
+    assert provider_status["local"]["cogitate_cli"] == "llama-server"
     assert "active_model" in payload["mlx"]
     _assert_install_status(payload["local"])
     _assert_install_status(payload["mlx"])

@@ -32,6 +32,10 @@ def _local_slot() -> dict:
     return read_journal_config()["providers"]["bundled"]["local"]
 
 
+def test_install_hint_literal() -> None:
+    assert local_install.install_hint() == "sol call settings providers install local"
+
+
 def test_install_llama_server_writes_canonical_sequence(tmp_path, monkeypatch):
     _init_journal(tmp_path, monkeypatch)
     pin = {

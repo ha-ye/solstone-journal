@@ -40,19 +40,24 @@ def test_providers_panel_static_render(live_settings_server, page):
     page.goto(f"{live_settings_server}/app/settings/")
     page.locator("#tab-providers").click()
     page.wait_for_selector("#providersPanel", state="visible")
-    page.wait_for_function("document.querySelectorAll('.provider-card').length === 5")
+    page.wait_for_function("document.querySelectorAll('.provider-card').length === 4")
 
     cards = page.locator(".provider-card")
-    assert cards.count() == 5
-    for provider in ("anthropic", "openai", "openhands", "local", "mlx"):
+    assert cards.count() == 4
+    for provider in ("anthropic", "openai", "local", "mlx"):
         assert page.locator(f'.provider-card[data-provider="{provider}"]').count() == 1
 
     install_copy_values = {getattr(install_copy, name) for name in install_copy.__all__}
+    cloud_badges = {"Cogitate ready", "Cogitate not ready"}
     failed_prefix = install_copy.INSTALL_PHASE_FAILED_PREFIX
     badges = page.locator(".provider-card__badge")
     for index in range(badges.count()):
         text = badges.nth(index).inner_text()
-        assert text in install_copy_values or text.startswith(failed_prefix)
+        assert (
+            text in install_copy_values
+            or text in cloud_badges
+            or text.startswith(failed_prefix)
+        )
 
     assert page.locator("#bundledProviders").count() == 0
     assert page.locator("#mlxBootstrapRegion").count() == 0

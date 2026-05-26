@@ -455,7 +455,18 @@ def normalize(data: Any, journal_path: str) -> Any:
                 for item_key, item_value in value.items()
             }
             if key == "provider_status":
+                env_keys = {
+                    "anthropic": "ANTHROPIC_API_KEY",
+                    "google": "GOOGLE_API_KEY",
+                    "openai": "OPENAI_API_KEY",
+                }
                 for _name, status in result.items():
+                    if _name in env_keys and isinstance(status, dict):
+                        status["configured"] = False
+                        status["generate_ready"] = False
+                        status["cogitate_ready"] = False
+                        status["issues"] = [f"{env_keys[_name]} not set"]
+                        continue
                     if isinstance(status, dict) and "cogitate_cli" in status:
                         status["cogitate_cli_found"] = False
                         status["cogitate_ready"] = False
@@ -484,28 +495,14 @@ def normalize(data: Any, journal_path: str) -> Any:
                             for local_issue in ("binary_missing", "model_missing"):
                                 if local_issue not in local_issues:
                                     local_issues.append(local_issue)
+                            local_issues.append(
+                                "run `sol call settings providers install local`"
+                            )
                             status["issues"] = sorted(local_issues)
                             continue
                         if cli and _name not in {"anthropic", "openai", "google"}:
                             issues.append(f"{cli} CLI not found on PATH")
-                        # Re-add generic key-not-set issues per provider
-                        env_keys = {
-                            "anthropic": "ANTHROPIC_API_KEY",
-                            "google": "GOOGLE_API_KEY",
-                            "openai": "OPENAI_API_KEY",
-                        }
-                        if _name in env_keys:
-                            issues.append(f"{env_keys[_name]} not set")
                         status["issues"] = sorted(issues)
-            if key == "bundled":
-                for _name, status in result.items():
-                    if isinstance(status, dict):
-                        if "last_transition_at" in status:
-                            status["last_transition_at"] = "<TIMESTAMP>"
-                        if "binary_path" in status and status["binary_path"]:
-                            status["binary_path"] = "<PATH>"
-                        if "binary_exists" in status:
-                            status["binary_exists"] = False
             # Normalize env-dependent API key presence
             if key in ("api_keys", "runtime_env"):
                 for k in result:

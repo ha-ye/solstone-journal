@@ -51,8 +51,8 @@ if the service fails to start, check `sol service logs`.
 
 the sol agent is powered by an AI model, and you choose which. the choice has real privacy and hardware trade-offs worth understanding before you invest time in a path.
 
-- **a hosted provider key is the recommended way to start.** point solstone at Google (Gemini), OpenAI, or Anthropic with **your own developer API key**, created in that provider's developer console — *not* the consumer chat product (gemini.google.com / chatgpt.com / claude.ai). this is the fastest path to a working co-brain and what the first-run wizard sets up.
-- **a local model via Ollama is a real, supported goal, but not the default daily experience yet.** running the sol agent fully locally means nothing leaves your machine. it's the maximum-privacy path, but it needs capable hardware and a local model with strong "thinking" support; smaller models on constrained machines (for example a base Mac mini) struggle on the reasoning-heavy work. treat local as a goal to grow into, not the recommended starting point.
+- **a hosted provider key is the recommended way to start.** point solstone at Google (Gemini), OpenAI, or Anthropic with **your own developer API key**, created in that provider's developer console — *not* the consumer chat product (gemini.google.com / chatgpt.com / claude.ai). this is the fastest path to a working co-brain and what the first-run wizard sets up. cogitate (sol's tool-calling agent loop, used by chat/digest/morning_briefing/etc.) works out of the box as soon as you set a provider key — no extra install step.
+- **a local model via the local provider is a real, supported goal, but not the default daily experience yet.** running the sol agent fully locally means nothing leaves your machine. it's the maximum-privacy path, but it needs capable hardware and a local model with strong "thinking" support; smaller models on constrained machines (for example a base Mac mini) struggle on the reasoning-heavy work. treat local as a goal to grow into, not the recommended starting point.
 - **on Apple Silicon, you can run sol's screen analysis on-device today.** macs with Apple Silicon and at least 16 GB of memory can turn on "MLX (Local, Apple Silicon)" in settings → providers; sol downloads a local model once, then does the work of making sense of your screen entirely on your machine, with nothing sent to a cloud provider. it's opt-in and covers screen analysis for now; the rest of sol stays on whichever provider you chose above.
 
 a hardware heads-up: local transcription alone installs a ~2.5 GB model, and a capable local *thinking* model needs meaningfully more memory and compute on top of that. if your machine is constrained, start with a hosted key and revisit local later; you can switch any time in settings → providers.
@@ -97,16 +97,15 @@ uv tool upgrade solstone && sol setup
 
 1. remove setup-managed runtime files: `sol setup --clean-uninstall`
    this removes the user service, managed `~/.local/bin/sol` wrapper, user config, and setup manifest. it does not remove your journal.
-2. optional: uninstall bundled providers you installed: `sol call settings providers uninstall <name>`.
-3. optional: remove agentic-tooling skills: `sol skills uninstall`.
-4. uninstall the python package: `uv tool uninstall solstone` (or `pipx uninstall solstone`).
-5. macOS only: drag `/Applications/solstone.app` to Trash.
-6. macOS only, optional: remove observer app data and the parakeet model cache:
+2. optional: remove agentic-tooling skills: `sol skills uninstall`.
+3. uninstall the python package: `uv tool uninstall solstone` (or `pipx uninstall solstone`).
+4. macOS only: drag `/Applications/solstone.app` to Trash.
+5. macOS only, optional: remove observer app data and the parakeet model cache:
    ```bash
    rm -rf ~/Library/Application\ Support/solstone/
    ```
    this evicts the ~2.5 GB parakeet cache; reinstall will re-download it.
-7. macOS only, optional: reset privacy permissions:
+6. macOS only, optional: reset privacy permissions:
    ```bash
    tccutil reset Microphone app.solstone.observer && tccutil reset ScreenCapture app.solstone.observer
    ```

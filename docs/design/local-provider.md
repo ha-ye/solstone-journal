@@ -2,7 +2,7 @@
 
 ## D1 Provider identity and registry
 
-Decision: use the literal provider key `local`, registered as `PROVIDER_REGISTRY["local"] = "solstone.think.providers.local"`. Replace the current `ollama` provider entry; do not keep an alias. Use `PROVIDER_METADATA["local"] = {"label": "Local (on-device)", "env_key": "", "cogitate_runtime": "openhands"}` with no `cogitate_cli` or install-command metadata.
+Decision: use the literal provider key `local`, registered as `PROVIDER_REGISTRY["local"] = "solstone.think.providers.local"`. Replace the current `ollama` provider entry; do not keep an alias. Use `PROVIDER_METADATA["local"] = {"label": "Local (on-device)", "env_key": ""}` with no `cogitate_runtime`, `cogitate_cli`, or install-command metadata.
 
 Justification: `local` is the owner-facing backend identity. The old `ollama` implementation depended on an external daemon and an OpenCode CLI; the new provider is a bundled llama-server loopback provider and should be selected through the same provider registry without compatibility shims.
 

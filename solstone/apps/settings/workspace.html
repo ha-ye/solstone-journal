@@ -5100,7 +5100,7 @@ let localModels = [];
 let localStatusLoading = false;
 let localStatusError = '';
 
-const PROVIDER_NAMES = ['anthropic', 'openai', 'openhands', 'local', 'mlx'];
+const PROVIDER_NAMES = ['anthropic', 'openai', 'local', 'mlx'];
 const MLX_COGITATE_UNSUPPORTED_TITLE = 'MLX provider does not support cogitate in v1 — it is vision/generate-only. Configure a cloud provider for cogitate agents.';
 const MLX_SCOPE_COPY = 'vision and text on your device. tool-calling agents continue to use your configured cogitate provider.';
 const MLX_MODEL_LABELS = {
@@ -5394,14 +5394,15 @@ function populateLocalModelPicker(data) {
 }
 
 function providerKind(providerId) {
-  if (providerId === 'openhands') return 'openhands';
   if (providerId === 'local' || providerId === 'mlx') return 'local-mlx';
   return 'cloud';
 }
 
 function providerPanelStates(data) {
+  const providerStatus = data?.provider_status || {};
   return {
-    ...(data?.bundled || {}),
+    anthropic: providerStatus.anthropic,
+    openai: providerStatus.openai,
     local: data?.local,
     mlx: data?.mlx,
   };
@@ -5523,10 +5524,7 @@ function renderProviderCard(providerId, state, kind, availability) {
 }
 
 function providerCardMetaLine(state, kind) {
-  if (!['cloud', 'openhands'].includes(kind) || !state?.binary_path) return null;
-  const line = document.createElement('span');
-  line.textContent = `CLI: installed at ${state.binary_path}`;
-  return line;
+  return null;
 }
 
 function localMlxBlockedReason(state, availability) {
@@ -5568,6 +5566,24 @@ function installBadgeLabel(installState, installError) {
 }
 
 function providerCardMeta(state, kind, availability) {
+  if (kind === 'cloud') {
+    const configured = !!state?.configured;
+    const cogitateReady = !!state?.cogitate_ready;
+    return {
+      badgeLabel: cogitateReady ? 'Cogitate ready' : 'Cogitate not ready',
+      badgeTone: cogitateReady ? 'ok' : 'muted',
+      primaryLabel: null,
+      primaryAction: null,
+      primaryDisabled: true,
+      showKeyPill: true,
+      keyPillLabel: configured ? 'Key set' : 'Needs API key',
+      keyPillTone: configured ? 'ok' : 'warn',
+      showByteCounter: false,
+      byteLabel: '',
+      issueText: firstProviderIssue(state),
+    };
+  }
+
   const installState = state?.install_state || 'idle';
   const keyStatus = state?.key_status || 'key-needed';
   const blockedReason = kind === 'local-mlx' ? localMlxBlockedReason(state, availability) : '';
@@ -5640,9 +5656,6 @@ function providerCardMeta(state, kind, availability) {
       primaryDisabled: false,
     };
   }
-  if (installState === 'installed' && kind === 'cloud') {
-    return cloudInstalledMeta(base, state, keyStatus);
-  }
   return {
     ...base,
     primaryLabel: null,
@@ -5681,83 +5694,11 @@ function firstProviderIssue(state) {
   return state?.issues && state.issues.length ? state.issues[0] : '';
 }
 
-function cloudInstalledMeta(base, state, keyStatus) {
-  if (keyStatus === 'key-needed') {
-    return {
-      ...base,
-      primaryLabel: 'Add key',
-      primaryAction: 'focus-key',
-      primaryDisabled: false,
-    };
-  }
-  if (keyStatus === 'invalid') {
-    return {
-      ...base,
-      primaryLabel: 'Re-enter key',
-      primaryAction: 'focus-key',
-      primaryDisabled: false,
-    };
-  }
-  if (keyStatus === 'validating') {
-    return {
-      ...base,
-      primaryLabel: 'Validating key…',
-      primaryAction: null,
-      primaryDisabled: true,
-    };
-  }
-  return {
-    ...base,
-    primaryLabel: state?.key_configured ? 'Validate key' : null,
-    primaryAction: state?.key_configured ? 'validate-key' : null,
-    primaryDisabled: false,
-  };
-}
-
 function providerCardOverflow(state, kind) {
-  if (kind === 'local-mlx') return null;
-  const installState = state?.install_state || 'idle';
-  const inFlight = IN_FLIGHT_INSTALL_STATES.includes(installState);
-  const items = [];
-  if (state?.disabled === true) {
-    if (!inFlight) items.push('uninstall');
-  } else if (installState === 'installed') {
-    items.push('uninstall', 'disable');
-  }
-  if (!items.length) return null;
-  const details = document.createElement('details');
-  details.className = 'provider-card__menu';
-  const summary = document.createElement('summary');
-  summary.textContent = 'more';
-  const body = document.createElement('div');
-  body.className = 'provider-card__menu-body';
-  for (const action of items) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.textContent = providerCardActionLabel(action);
-    button.addEventListener('click', () => {
-      details.open = false;
-      runProviderAction(state.name, action);
-    });
-    body.appendChild(button);
-  }
-  details.append(summary, body);
-  return details;
-}
-
-function providerCardActionLabel(action) {
-  return {
-    disable: 'Disable',
-    enable: 'Enable',
-    uninstall: 'Uninstall',
-  }[action] || action;
+  return null;
 }
 
 function runProviderAction(providerId, action) {
-  if (action === 'focus-key') {
-    focusProviderKey(providerId);
-    return;
-  }
   providersPanelActionPending = true;
   syncProvidersPanelPolling();
   if (providerId === 'local') {
@@ -5768,37 +5709,8 @@ function runProviderAction(providerId, action) {
     startMlxBootstrap();
     return;
   }
-  postProviderAction(providerId, action);
-}
-
-function focusProviderKey(providerId) {
-  const state = providersData?.bundled?.[providerId];
-  const envKey = state?.env_key || (providerId === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY');
-  switchSection('apikeys');
-  window.requestAnimationFrame(() => {
-    const input = document.querySelector(`[data-key="${envKey}"]`);
-    if (input) {
-      input.focus();
-      input.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-  });
-}
-
-async function postProviderAction(providerId, action) {
-  try {
-    const response = await fetch(`api/providers/${providerId}/${action}`, { method: 'POST' });
-    const payload = await response.json();
-    if (!response.ok || payload.error) throw new Error(payload.detail || payload.error || 'provider action failed');
-    providersData = providersData || {};
-    providersData.bundled = providersData.bundled || {};
-    providersData.bundled[providerId] = payload;
-    renderProvidersPanel(providersData);
-    syncProvidersPanelPolling();
-  } catch (err) {
-    providersPanelActionPending = false;
-    syncProvidersPanelPolling();
-    notifyError('Provider action failed', err.message);
-  }
+  providersPanelActionPending = false;
+  syncProvidersPanelPolling();
 }
 
 function syncProvidersPanelPolling(data = providersData) {
@@ -5806,7 +5718,6 @@ function syncProvidersPanelPolling(data = providersData) {
   const active = states.some(
     state => (
       IN_FLIGHT_INSTALL_STATES.includes(state.install_state)
-      || state.key_status === 'validating'
     )
   );
   if (active || providersPanelActionPending) {

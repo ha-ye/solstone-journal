@@ -6,8 +6,13 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 
 ## [Unreleased]
 
+### Changed
+- cogitate is now baseline — the openhands-sdk runtime that powers sol's tool-calling agents ships in the wheel, so a fresh install with a hosted provider key runs cogitate immediately with no extra install step. wheel size grows by about 337 MB on install to carry openhands-sdk, litellm, and their transitive dependencies.
+- minimum python is now 3.12 (was 3.11) — required by the openhands-sdk runtime that ships baseline. if you installed solstone with a 3.11 interpreter, reinstall under 3.12+ before updating.
+
 ### Removed
 - the built-in `sol observer install` command is gone. linux and tmux observers now install from their own published packages: `pipx install solstone-linux` (or `solstone-tmux`), `solstone-linux install-service` (or `solstone-tmux install-service`), then `sol observer create <name>` mints a key you give the observer. the macOS observer continues to come from the signed app bundle at solstone.app/observers.
+- the bundled per-provider install commands are gone — `sol call settings providers install` now accepts `local` only (cogitate runs out of the box for hosted providers with a key set), and `uninstall`/`disable`/`enable`/`validate-key` are removed entirely. local install continues to work via `sol call settings providers install local`.
 
 ## [0.3.9] - 2026-05-25
 

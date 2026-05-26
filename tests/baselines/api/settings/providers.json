@@ -13,108 +13,6 @@
     "mlx": "platform",
     "openai": "platform"
   },
-  "bundled": {
-    "anthropic": {
-      "actions": [
-        "install"
-      ],
-      "auth_mode": "platform",
-      "binary_exists": false,
-      "binary_name": "claude",
-      "binary_path": null,
-      "codex_artifact": null,
-      "codex_sha256": null,
-      "codex_version": null,
-      "disabled": false,
-      "env_key": "ANTHROPIC_API_KEY",
-      "install_error": null,
-      "install_state": "idle",
-      "issues": [
-        "bundled CLI not installed — run `sol call settings providers install anthropic`"
-      ],
-      "key_configured": false,
-      "key_status": "key-needed",
-      "key_valid": false,
-      "key_validation": {},
-      "label": "Anthropic (Claude)",
-      "last_progress_at": null,
-      "last_transition_at": "<TIMESTAMP>",
-      "name": "anthropic",
-      "progress_bytes_received": null,
-      "progress_bytes_total": null,
-      "sdk_spec": "claude-agent-sdk==0.2.82",
-      "sdk_specs": [
-        "claude-agent-sdk==0.2.82"
-      ]
-    },
-    "openai": {
-      "actions": [
-        "install"
-      ],
-      "auth_mode": "platform",
-      "binary_exists": false,
-      "binary_name": "codex",
-      "binary_path": null,
-      "codex_artifact": null,
-      "codex_sha256": null,
-      "codex_version": null,
-      "disabled": false,
-      "env_key": "OPENAI_API_KEY",
-      "install_error": null,
-      "install_state": "idle",
-      "issues": [
-        "bundled CLI not installed — run `sol call settings providers install openai`"
-      ],
-      "key_configured": false,
-      "key_status": "key-needed",
-      "key_valid": false,
-      "key_validation": {},
-      "label": "OpenAI (GPT)",
-      "last_progress_at": null,
-      "last_transition_at": "<TIMESTAMP>",
-      "name": "openai",
-      "progress_bytes_received": null,
-      "progress_bytes_total": null,
-      "sdk_spec": "openai-codex-sdk==0.1.11",
-      "sdk_specs": [
-        "openai-codex-sdk==0.1.11"
-      ]
-    },
-    "openhands": {
-      "actions": [
-        "install"
-      ],
-      "auth_mode": "runtime",
-      "binary_exists": false,
-      "binary_name": "openhands-sdk",
-      "binary_path": null,
-      "codex_artifact": null,
-      "codex_sha256": null,
-      "codex_version": null,
-      "disabled": false,
-      "env_key": "",
-      "install_error": null,
-      "install_state": "idle",
-      "issues": [
-        "bundled runtime not installed — run `sol call settings providers install openhands` missing: openhands.sdk, litellm"
-      ],
-      "key_configured": false,
-      "key_status": "not-applicable",
-      "key_valid": false,
-      "key_validation": {},
-      "label": "OpenHands SDK",
-      "last_progress_at": null,
-      "last_transition_at": "<TIMESTAMP>",
-      "name": "openhands",
-      "progress_bytes_received": null,
-      "progress_bytes_total": null,
-      "runtime": "python",
-      "sdk_spec": "openhands-sdk==1.23.*",
-      "sdk_specs": [
-        "openhands-sdk==1.23.*"
-      ]
-    }
-  },
   "cogitate": {
     "backup": "anthropic",
     "provider": "openai",
@@ -607,26 +505,22 @@
   },
   "provider_status": {
     "anthropic": {
-      "cogitate_cli": "openhands-sdk",
-      "cogitate_cli_found": false,
       "cogitate_ready": false,
       "configured": false,
       "generate_ready": false,
       "issues": [
-        "ANTHROPIC_API_KEY not set",
-        "bundled runtime not installed — run `sol call settings providers install openhands` missing: openhands.sdk, litellm"
-      ]
+        "ANTHROPIC_API_KEY not set"
+      ],
+      "provider": "anthropic"
     },
     "google": {
-      "cogitate_cli": "openhands-sdk",
-      "cogitate_cli_found": false,
       "cogitate_ready": false,
       "configured": false,
       "generate_ready": false,
       "issues": [
-        "GOOGLE_API_KEY not set",
-        "bundled runtime not installed — run `sol call settings providers install openhands` missing: openhands.sdk, litellm"
-      ]
+        "GOOGLE_API_KEY not set"
+      ],
+      "provider": "google"
     },
     "local": {
       "cogitate_cli": "llama-server",
@@ -636,7 +530,8 @@
       "generate_ready": false,
       "issues": [
         "binary_missing",
-        "model_missing"
+        "model_missing",
+        "run `sol call settings providers install local`"
       ]
     },
     "mlx": {
@@ -648,15 +543,13 @@
       "issues": []
     },
     "openai": {
-      "cogitate_cli": "openhands-sdk",
-      "cogitate_cli_found": false,
       "cogitate_ready": false,
       "configured": false,
       "generate_ready": false,
       "issues": [
-        "OPENAI_API_KEY not set",
-        "bundled runtime not installed — run `sol call settings providers install openhands` missing: openhands.sdk, litellm"
-      ]
+        "OPENAI_API_KEY not set"
+      ],
+      "provider": "openai"
     }
   },
   "providers": [

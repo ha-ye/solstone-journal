@@ -30,7 +30,7 @@ def test_real_openhands_agent_accepts_facade_tools_wiring(tmp_path):
     """Façade's register_tool + Tool(name=) wiring must satisfy real Agent schema."""
     sdk = pytest.importorskip(
         "openhands.sdk",
-        reason="openhands-sdk not installed; run bundled.install_provider('openhands')",
+        reason="openhands-sdk baseline dependency is not installed",
     )
     registry = pytest.importorskip("openhands.sdk.tool.registry")
     spec = pytest.importorskip("openhands.sdk.tool.spec")

@@ -505,149 +505,19 @@ def providers_show(
     typer.echo(json.dumps(result, indent=2))
 
 
-def _bundled_status_payload(name: str | None) -> dict:
-    from solstone.think.providers import bundled
-
-    if name:
-        return bundled.get_provider_state(name)
-    return {
-        provider: bundled.get_provider_state(provider)
-        for provider in ("anthropic", "openai", "openhands")
-    }
-
-
-def _echo_bundled_result(payload: dict, *, human: bool = False) -> None:
-    if not human:
-        typer.echo(json.dumps(payload, indent=2))
-        return
-
-    def _render_binary_path(value: str | None) -> str:
-        if not value:
-            return "-"
-        return value if len(value) <= 32 else "..." + value[-29:]
-
-    rows = payload.values() if "install_state" not in payload else [payload]
-    headers = ("provider", "install", "key", "binary", "issues")
-    rendered = []
-    for row in rows:
-        rendered.append(
-            (
-                row["name"],
-                row["install_state"],
-                row["key_status"],
-                _render_binary_path(row["binary_path"]),
-                ", ".join(row.get("issues", [])),
-            )
-        )
-    widths = [
-        max(len(str(value)) for value in (header, *(row[idx] for row in rendered)))
-        for idx, header in enumerate(headers)
-    ]
-    typer.echo(
-        "  ".join(header.ljust(widths[idx]) for idx, header in enumerate(headers))
-    )
-    typer.echo("  ".join("-" * width for width in widths))
-    for row in rendered:
-        typer.echo(
-            "  ".join(str(value).ljust(widths[idx]) for idx, value in enumerate(row))
-        )
-
-
-def _bundled_error_exit(exc: Exception) -> None:
-    typer.echo(
-        json.dumps(
-            {
-                "error": str(exc),
-                "type": exc.__class__.__name__,
-            },
-            indent=2,
-        ),
-        err=True,
-    )
-    raise typer.Exit(1)
-
-
-@providers_app.command("status")
-def providers_bundled_status(
-    name: str | None = typer.Argument(None, help="Bundled provider name."),
-    json_flag: bool = typer.Option(False, "--json", help="Print JSON output."),
-    human: bool = typer.Option(False, "--human", help="Print a compact table."),
-) -> None:
-    """Show bundled cogitate provider status."""
-    from solstone.think.providers import bundled
-
-    if json_flag and human:
-        typer.echo("--json and --human cannot be used together.", err=True)
-        raise typer.Exit(1)
-    try:
-        _echo_bundled_result(_bundled_status_payload(name), human=human)
-    except bundled.BundledProviderError as exc:
-        _bundled_error_exit(exc)
-
-
 @providers_app.command("install")
-def providers_bundled_install(
-    name: str = typer.Argument(..., help="Bundled provider name."),
+def providers_install(
+    name: str = typer.Argument(..., help="Provider name."),
 ) -> None:
-    """Install or retry a bundled cogitate provider."""
-    from solstone.think.providers import bundled
+    """Install or retry the local provider runtime."""
+    from solstone.think.providers import local_install
 
-    try:
-        typer.echo(json.dumps(bundled.install_provider(name, wait=True), indent=2))
-    except bundled.BundledProviderError as exc:
-        _bundled_error_exit(exc)
-
-
-@providers_app.command("uninstall")
-def providers_bundled_uninstall(
-    name: str = typer.Argument(..., help="Bundled provider name."),
-) -> None:
-    """Uninstall a bundled cogitate provider."""
-    from solstone.think.providers import bundled
-
-    try:
-        typer.echo(json.dumps(bundled.uninstall_provider(name), indent=2))
-    except bundled.BundledProviderError as exc:
-        _bundled_error_exit(exc)
-
-
-@providers_app.command("disable")
-def providers_bundled_disable(
-    name: str = typer.Argument(..., help="Bundled provider name."),
-) -> None:
-    """Disable a bundled cogitate provider."""
-    from solstone.think.providers import bundled
-
-    try:
-        typer.echo(json.dumps(bundled.disable_provider(name), indent=2))
-    except bundled.BundledProviderError as exc:
-        _bundled_error_exit(exc)
-
-
-@providers_app.command("enable")
-def providers_bundled_enable(
-    name: str = typer.Argument(..., help="Bundled provider name."),
-) -> None:
-    """Enable a bundled cogitate provider."""
-    from solstone.think.providers import bundled
-
-    try:
-        typer.echo(json.dumps(bundled.enable_provider(name), indent=2))
-    except bundled.BundledProviderError as exc:
-        _bundled_error_exit(exc)
-
-
-@providers_app.command("validate-key")
-def providers_bundled_validate_key(
-    name: str = typer.Argument(..., help="Bundled provider name."),
-) -> None:
-    """Validate a bundled provider API key."""
-    from solstone.think.providers import bundled
-
-    try:
-        typer.echo(json.dumps(bundled.validate_key(name), indent=2))
-    except bundled.BundledProviderError as exc:
-        _bundled_error_exit(exc)
+    if name != "local":
+        raise typer.BadParameter(
+            f"unsupported provider {name!r}; only 'local' is supported; "
+            "cogitate runs baseline for hosted providers"
+        )
+    typer.echo(json.dumps(local_install.install_local(), indent=2))
 
 
 @providers_app.command("migrate-ollama-to-local")

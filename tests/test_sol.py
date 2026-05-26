@@ -6,11 +6,11 @@
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-import tomllib
 
 from solstone.think import sol_cli as sol
 from solstone.think.sol_cli import JOURNAL_ACCESS_CMD_ERROR

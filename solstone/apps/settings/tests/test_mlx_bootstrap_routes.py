@@ -9,12 +9,12 @@ import json
 import sys
 import threading
 import time
+import tomllib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import huggingface_hub
 import pytest
-import tomllib
 
 from solstone.apps.settings import mlx_bootstrap
 from solstone.apps.settings.install_copy import INSTALL_FAILED_NO_PROGRESS

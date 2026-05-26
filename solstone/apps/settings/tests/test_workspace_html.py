@@ -119,10 +119,7 @@ def test_workspace_unified_provider_panel_replaces_install_regions():
     assert "function runProviderAction(providerId, action)" in text
     assert "async function pollProvidersPanel()" in text
     assert "function providerCardOverflow(state, kind)" in text
-    assert (
-        "const PROVIDER_NAMES = ['anthropic', 'openai', 'openhands', 'local', 'mlx']"
-        in text
-    )
+    assert "const PROVIDER_NAMES = ['anthropic', 'openai', 'local', 'mlx']" in text
 
 
 def test_workspace_unified_provider_panel_keeps_bootstrap_endpoints_and_polling():
@@ -138,8 +135,23 @@ def test_workspace_unified_provider_panel_keeps_bootstrap_endpoints_and_polling(
     assert "setInterval(pollProvidersPanel, 1000)" in text
     assert "clearInterval(providersPanelPollTimer)" in text
     assert "IN_FLIGHT_INSTALL_STATES.includes(state.install_state)" in text
-    assert "state.key_status === 'validating'" in text
     assert "providersPanelActionPending" in text
+
+
+def test_workspace_provider_names_excludes_openhands():
+    text = _workspace_text()
+
+    assert "const PROVIDER_NAMES = ['anthropic', 'openai', 'local', 'mlx']" in text
+    assert "'openhands'" not in text
+
+
+def test_workspace_cloud_cards_have_no_install_affordances():
+    text = _workspace_text()
+
+    assert "postProviderAction" not in text
+    assert "api/providers/${providerId}" not in text
+    assert "cloudInstalledMeta" not in text
+    assert "CLI: installed at" not in text
 
 
 def test_workspace_unified_provider_panel_has_byte_and_blocked_state_paths():

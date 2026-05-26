@@ -56,7 +56,6 @@ PROVIDER_METADATA: Dict[str, Dict[str, Any]] = {
     "google": {
         "label": "Google (Gemini)",
         "env_key": "GOOGLE_API_KEY",
-        "cogitate_runtime": "openhands",
         "vertex_env_keys": [
             "GOOGLE_GENAI_USE_VERTEXAI",
             "GOOGLE_APPLICATION_CREDENTIALS",
@@ -65,17 +64,14 @@ PROVIDER_METADATA: Dict[str, Dict[str, Any]] = {
     "openai": {
         "label": "OpenAI (GPT)",
         "env_key": "OPENAI_API_KEY",
-        "cogitate_runtime": "openhands",
     },
     "anthropic": {
         "label": "Anthropic (Claude)",
         "env_key": "ANTHROPIC_API_KEY",
-        "cogitate_runtime": "openhands",
     },
     "local": {
         "label": "Local (on-device)",
         "env_key": "",
-        "cogitate_runtime": "openhands",
     },
     "mlx": {
         "label": "MLX (Local, Apple Silicon)",
@@ -164,7 +160,7 @@ def build_provider_status(
     -------
     Dict[str, Dict[str, Any]]
         Keyed by provider name. Each entry has readiness fields and issues.
-        CLI-backed providers also include cogitate_cli and cogitate_cli_found.
+        Local readiness also includes cogitate_cli and cogitate_cli_found.
     """
     if providers_list is None:
         providers_list = get_provider_list()
@@ -195,6 +191,8 @@ def build_provider_status(
                 issues.append("ram_insufficient")
             if configured and not server_healthy:
                 issues.append("server_unhealthy")
+            if "binary_missing" in issues or "model_missing" in issues:
+                issues.append(f"run `{local_install.install_hint()}`")
 
             ready = configured and server_healthy
             status[name] = {
@@ -207,44 +205,13 @@ def build_provider_status(
             }
             continue
         elif name in {"google", "anthropic", "openai"}:
-            from solstone.think.providers import bundled
-
-            runtime_state = bundled.get_provider_state(
-                meta.get("cogitate_runtime", "openhands")
-            )
-            runtime_install_state = runtime_state["install_state"]
-            runtime_key_status = runtime_state["key_status"]
-            cogitate_cli = "openhands-sdk"
-            cogitate_cli_found = (
-                runtime_install_state == "installed"
-                and runtime_key_status == "not-applicable"
-                and runtime_state["disabled"] is False
-            )
-
-            if name == "google":
-                has_key = _env_key_configured(env_key)
-                configured = has_key or vertex_creds_configured
-                cogitate_key_configured = has_key
-                if not configured:
-                    issues.append(f"{env_key} not set")
-                elif not has_key:
-                    issues.append(f"{env_key} not set for cogitate")
-            else:
-                configured = _env_key_configured(env_key)
-                cogitate_key_configured = configured
-                if not configured and env_key:
-                    issues.append(f"{env_key} not set")
-
-            if not cogitate_cli_found:
-                issues.extend(runtime_state.get("issues", []))
-
+            configured = _env_key_configured(env_key)
             status[name] = {
+                "provider": name,
                 "configured": configured,
                 "generate_ready": configured,
-                "cogitate_ready": cogitate_key_configured and cogitate_cli_found,
-                "cogitate_cli": cogitate_cli,
-                "cogitate_cli_found": cogitate_cli_found,
-                "issues": issues,
+                "cogitate_ready": configured,
+                "issues": [] if configured else [f"{env_key} not set"],
             }
             continue
         else:

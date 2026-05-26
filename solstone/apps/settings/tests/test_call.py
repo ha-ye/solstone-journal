@@ -14,7 +14,6 @@ import pytest
 from typer.testing import CliRunner
 
 from solstone.think.call import call_app
-from solstone.think.providers import bundled
 
 runner = CliRunner()
 
@@ -193,47 +192,26 @@ class TestProvidersShow:
         assert payload["generate"]["provider"] == "google"
         assert payload["cogitate"]["provider"] == "openai"
 
-    def test_provider_status_key_set_cli_found(self, settings_env):
-        """Provider with key set and OpenHands runtime installed."""
+    def test_provider_status_key_set_baseline_ready(self, settings_env):
         tmp_path, config = settings_env()
-        config["providers"]["bundled"] = {
-            "openhands": {
-                "install_state": "installed",
-                "last_transition_at": "2026-05-20T00:00:00+00:00",
-                "last_progress_at": None,
-                "install_error": None,
-                "key_state": "not-applicable",
-                "disabled": False,
-                "sdk_specs": ["openhands-sdk==1.23.*"],
-                "binary_path": "/tmp/openhands/sdk/__init__.py",
-            }
-        }
+        config["env"]["OPENAI_API_KEY"] = "test-key"
         (tmp_path / "config" / "journal.json").write_text(
             json.dumps(config, indent=2) + "\n",
             encoding="utf-8",
         )
 
-        with patch.object(
-            bundled,
-            "get_provider_state",
-            return_value={
-                "install_state": "installed",
-                "key_status": "not-applicable",
-                "disabled": False,
-                "issues": [],
-            },
-        ):
-            result = runner.invoke(call_app, ["settings", "providers", "show"])
+        result = runner.invoke(call_app, ["settings", "providers", "show"])
 
         assert result.exit_code == 0
         payload = json.loads(result.output)
         status = payload["provider_status"]["openai"]
-        assert status["configured"] is True
-        assert status["generate_ready"] is True
-        assert status["cogitate_ready"] is True
-        assert status["cogitate_cli"] == "openhands-sdk"
-        assert status["cogitate_cli_found"] is True
-        assert status["issues"] == []
+        assert status == {
+            "provider": "openai",
+            "configured": True,
+            "generate_ready": True,
+            "cogitate_ready": True,
+            "issues": [],
+        }
 
     def test_provider_status_key_missing(self, settings_env):
         """Provider with key not set."""
@@ -249,13 +227,15 @@ class TestProvidersShow:
         assert result.exit_code == 0
         payload = json.loads(result.output)
         status = payload["provider_status"]["openai"]
-        assert status["configured"] is False
-        assert status["generate_ready"] is False
-        assert status["cogitate_ready"] is False
-        assert "OPENAI_API_KEY not set" in status["issues"]
+        assert status == {
+            "provider": "openai",
+            "configured": False,
+            "generate_ready": False,
+            "cogitate_ready": False,
+            "issues": ["OPENAI_API_KEY not set"],
+        }
 
-    def test_provider_status_key_set_cli_missing(self, settings_env):
-        """Provider with key set but OpenHands runtime not installed."""
+    def test_provider_status_key_set_has_no_install_gate(self, settings_env):
         tmp_path, config = settings_env()
         config["env"]["ANTHROPIC_API_KEY"] = "test-key"
         (tmp_path / "config" / "journal.json").write_text(
@@ -270,31 +250,27 @@ class TestProvidersShow:
         status = payload["provider_status"]["anthropic"]
         assert status["configured"] is True
         assert status["generate_ready"] is True
-        assert status["cogitate_ready"] is False
-        assert status["cogitate_cli_found"] is False
-        assert (
-            "bundled runtime not installed — run `sol call settings providers install openhands` missing: openhands.sdk, litellm"
-            in status["issues"]
-        )
+        assert status["cogitate_ready"] is True
+        assert "cogitate_cli" not in status
+        assert "cogitate_cli_found" not in status
+        assert status["issues"] == []
 
     def test_providers_show_human_mode(self, settings_env):
         settings_env()
         provider_status = {
             "anthropic": {
+                "provider": "anthropic",
                 "configured": False,
                 "generate_ready": False,
                 "cogitate_ready": False,
-                "cogitate_cli": "openhands-sdk",
-                "cogitate_cli_found": False,
                 "issues": ["ANTHROPIC_API_KEY not set"],
             },
             "google": {
+                "provider": "google",
                 "configured": True,
                 "generate_ready": True,
-                "cogitate_ready": False,
-                "cogitate_cli": "openhands-sdk",
-                "cogitate_cli_found": False,
-                "issues": ["GOOGLE_API_KEY not set for cogitate"],
+                "cogitate_ready": True,
+                "issues": [],
             },
             "mlx": {
                 "configured": False,
@@ -313,11 +289,10 @@ class TestProvidersShow:
                 "issues": ["binary_missing"],
             },
             "openai": {
+                "provider": "openai",
                 "configured": True,
                 "generate_ready": True,
                 "cogitate_ready": True,
-                "cogitate_cli": "openhands-sdk",
-                "cogitate_cli_found": True,
                 "issues": [],
             },
         }
@@ -335,177 +310,48 @@ class TestProvidersShow:
         assert not result.output.lstrip().startswith("{")
 
 
-class TestProvidersBundled:
-    def test_status_single_json(self, settings_env):
-        tmp_path, config = settings_env()
-        config["providers"]["bundled"] = {
-            "anthropic": {
-                "install_state": "installed",
-                "last_transition_at": "2026-05-20T00:00:00+00:00",
-                "last_progress_at": None,
-                "install_error": None,
-                "key_state": "valid",
-                "disabled": False,
-                "sdk_spec": "claude-agent-sdk==0.2.82",
-                "binary_path": "/tmp/claude",
-            }
-        }
-        config["env"]["ANTHROPIC_API_KEY"] = "test-key"
-        config["providers"]["key_validation"]["anthropic"] = {"valid": True}
-        (tmp_path / "config" / "journal.json").write_text(
-            json.dumps(config, indent=2) + "\n",
-            encoding="utf-8",
-        )
-
-        result = runner.invoke(
-            call_app, ["settings", "providers", "status", "anthropic"]
-        )
-
-        assert result.exit_code == 0
-        payload = json.loads(result.output)
-        assert payload["name"] == "anthropic"
-        assert payload["install_state"] == "installed"
-        assert payload["key_status"] == "valid"
-
-    def test_status_all_json(self, settings_env):
-        settings_env()
-
-        result = runner.invoke(call_app, ["settings", "providers", "status"])
-
-        assert result.exit_code == 0
-        payload = json.loads(result.output)
-        assert set(payload) == {"anthropic", "openai", "openhands"}
-
-    def test_status_human(self, settings_env):
-        settings_env()
-
-        result = runner.invoke(
-            call_app,
-            ["settings", "providers", "status", "--human"],
-        )
-
-        assert result.exit_code == 0
-        assert "provider" in result.output
-        assert "install" in result.output
-        assert "key" in result.output
-        assert "binary" in result.output
-        assert "anthropic" in result.output
-
-    def test_status_human_renders_install_and_key_columns(self, settings_env):
-        tmp_path, config = settings_env()
-        now = datetime.now(timezone.utc).isoformat()
-        config["providers"]["bundled"] = {
-            "anthropic": {
-                "install_state": "installed",
-                "last_transition_at": "2026-05-20T00:00:00+00:00",
-                "last_progress_at": None,
-                "install_error": None,
-                "key_state": "valid",
-                "disabled": False,
-                "sdk_spec": "claude-agent-sdk==0.2.82",
-                "binary_path": "/tmp/claude",
-            },
-            "openai": {
-                "install_state": "installing",
-                "last_transition_at": now,
-                "last_progress_at": now,
-                "install_error": None,
-                "key_state": "key-needed",
-                "disabled": False,
-                "sdk_spec": "openai-codex-sdk==0.1.11",
-                "binary_path": None,
-            },
-        }
-        config["env"]["ANTHROPIC_API_KEY"] = "test-key"
-        config["providers"]["key_validation"]["anthropic"] = {"valid": True}
-        (tmp_path / "config" / "journal.json").write_text(
-            json.dumps(config, indent=2) + "\n",
-            encoding="utf-8",
-        )
-
-        result = runner.invoke(
-            call_app,
-            ["settings", "providers", "status", "--human"],
-        )
-
-        assert result.exit_code == 0
-        assert "provider" in result.output
-        assert "install" in result.output
-        assert "key" in result.output
-        assert "binary" in result.output
-        assert "issues" in result.output
-        lines = result.output.splitlines()
-        anthropic = next(line for line in lines if line.startswith("anthropic"))
-        openai = next(line for line in lines if line.startswith("openai"))
-        assert "installed" in anthropic
-        assert "valid" in anthropic
-        assert "installing" in openai
-        assert "key-needed" in openai
-
-    def test_status_json_human_conflict(self, settings_env):
-        settings_env()
-
-        result = runner.invoke(
-            call_app,
-            ["settings", "providers", "status", "--json", "--human"],
-        )
-
-        assert result.exit_code == 1
-        assert "--json and --human cannot be used together" in result.output
-
-    @pytest.mark.parametrize(
-        ("command", "function_name"),
-        [
-            ("install", "install_provider"),
-            ("uninstall", "uninstall_provider"),
-            ("disable", "disable_provider"),
-            ("enable", "enable_provider"),
-            ("validate-key", "validate_key"),
-        ],
-    )
-    def test_write_verbs_emit_json(
-        self, settings_env, monkeypatch, command, function_name
-    ):
-        settings_env()
-        payload = {"name": "openai", "install_state": "installed"}
-        monkeypatch.setattr(bundled, function_name, lambda name, **_kw: payload)
-
-        result = runner.invoke(call_app, ["settings", "providers", command, "openai"])
-
-        assert result.exit_code == 0
-        assert json.loads(result.output) == payload
-
-    def test_providers_install_passes_wait_true(self, settings_env, monkeypatch):
+class TestProvidersInstall:
+    def test_install_local_dispatches_to_local_install(self, settings_env, monkeypatch):
         settings_env()
         calls = []
 
-        def recorder(name, **kwargs):
-            calls.append((name, kwargs))
-            return {"name": name, "install_state": "installed"}
+        def install_local():
+            calls.append(True)
+            return {"name": "local", "install_state": "installed"}
 
-        monkeypatch.setattr(bundled, "install_provider", recorder)
-
-        result = runner.invoke(
-            call_app, ["settings", "providers", "install", "anthropic"]
+        monkeypatch.setattr(
+            "solstone.think.providers.local_install.install_local", install_local
         )
 
-        assert result.exit_code == 0
-        assert calls == [("anthropic", {"wait": True})]
+        result = runner.invoke(call_app, ["settings", "providers", "install", "local"])
 
-    def test_write_verb_error_exits_nonzero(self, settings_env, monkeypatch):
+        assert result.exit_code == 0
+        assert calls == [True]
+        assert json.loads(result.output) == {
+            "name": "local",
+            "install_state": "installed",
+        }
+
+    @pytest.mark.parametrize("name", ["anthropic", "openai", "openhands"])
+    def test_install_non_local_raises_bad_parameter(self, settings_env, name):
         settings_env()
 
-        def fail(_name, **_kwargs):
-            raise bundled.UnsupportedBundledProvider("bad provider")
+        result = runner.invoke(call_app, ["settings", "providers", "install", name])
 
-        monkeypatch.setattr(bundled, "install_provider", fail)
+        assert result.exit_code != 0
+        combined = result.output + result.stderr
+        assert name in combined
+        assert "only 'local' is supported" in combined
 
-        result = runner.invoke(call_app, ["settings", "providers", "install", "google"])
+    @pytest.mark.parametrize("verb", ["uninstall", "disable", "enable", "validate-key"])
+    @pytest.mark.parametrize("name", ["anthropic", "openai", "openhands"])
+    def test_retired_verbs_return_no_such_command(self, settings_env, verb, name):
+        settings_env()
 
-        assert result.exit_code == 1
-        payload = json.loads(result.stderr)
-        assert payload["error"] == "bad provider"
-        assert payload["type"] == "UnsupportedBundledProvider"
+        result = runner.invoke(call_app, ["settings", "providers", verb, name])
+
+        assert result.exit_code != 0
+        assert "No such command" in (result.output + result.stderr)
 
 
 class TestProvidersSetGenerate:

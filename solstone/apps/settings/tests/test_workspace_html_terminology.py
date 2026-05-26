@@ -56,15 +56,13 @@ def test_workspace_has_no_legacy_install_state_terms():
 
 def test_workspace_provider_iteration_has_single_source_of_truth():
     text = _workspace_text()
-    provider_names = (
-        "const PROVIDER_NAMES = ['anthropic', 'openai', 'openhands', 'local', 'mlx']"
-    )
+    provider_names = "const PROVIDER_NAMES = ['anthropic', 'openai', 'local', 'mlx']"
 
     assert provider_names in text
     assert text.count(provider_names) == 1
 
 
-def test_provider_card_overflow_keeps_expected_actions():
+def test_provider_card_overflow_has_no_hosted_install_actions():
     text = _workspace_text()
     match = re.search(
         r"function providerCardOverflow\(state, kind\) \{(?P<body>.*?)"
@@ -75,9 +73,9 @@ def test_provider_card_overflow_keeps_expected_actions():
 
     assert match is not None
     body = match.group("body")
-    assert "'Uninstall'" in body
-    assert "'Disable'" in body
-    assert "'Enable'" in body
+    assert "'Uninstall'" not in body
+    assert "'Disable'" not in body
+    assert "'Enable'" not in body
 
 
 def test_workspace_does_not_duplicate_install_copy_strings():

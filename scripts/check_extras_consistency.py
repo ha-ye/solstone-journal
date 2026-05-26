@@ -4,9 +4,8 @@
 """Lint: [all] extra must equal union of [pdf] + [whisper]."""
 
 import sys
-from pathlib import Path
-
 import tomllib
+from pathlib import Path
 
 
 def main() -> int:

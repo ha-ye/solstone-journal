@@ -468,40 +468,26 @@ def test_missing_env_key_returns_skip(monkeypatch):
     assert "FAKE_API_KEY" in msg
 
 
-def test_cogitate_missing_binary_returns_skip(monkeypatch):
-    """_check_cogitate returns skip when CLI binary is not installed."""
-    import solstone.think.providers as providers
+def test_check_cogitate_cloud_configured_runs_without_install_skip(monkeypatch):
     import solstone.think.providers_cli as providers_cli
 
-    monkeypatch.setitem(
-        providers.PROVIDER_METADATA,
-        "fake",
-        {
-            "env_key": "FAKE_API_KEY",
-            "label": "Fake Provider",
-            "cogitate_cli": "nonexistent-binary-xyz",
-        },
+    class FakeModule:
+        @staticmethod
+        async def run_cogitate(*_args, **_kwargs):
+            return "OK"
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "solstone.think.providers.get_provider_module",
+        lambda _provider: FakeModule,
     )
-    monkeypatch.setenv("FAKE_API_KEY", "test-key")
-    monkeypatch.setattr("shutil.which", lambda _: None)
 
-    status, msg = asyncio.run(providers_cli._check_cogitate("fake", 2, 30))
-    assert status == "skip"
-    assert "nonexistent-binary-xyz CLI not installed" in msg
+    status, msg = asyncio.run(providers_cli._check_cogitate("anthropic", 2, 30))
+
+    assert (status, msg) == ("ok", "OK")
 
 
-@pytest.mark.parametrize(
-    ("provider_name", "install_target"),
-    [
-        ("anthropic", "anthropic"),
-        ("openai", "openai"),
-        ("google", "openhands"),
-        ("local", "openhands"),
-    ],
-)
-def test_check_cogitate_skip_names_install_command(
-    monkeypatch, provider_name, install_target
-):
+def test_check_cogitate_local_missing_runtime_names_local_install_hint(monkeypatch):
     import solstone.think.providers_cli as providers_cli
 
     monkeypatch.setattr(
@@ -513,10 +499,10 @@ def test_check_cogitate_skip_names_install_command(
         },
     )
 
-    status, msg = asyncio.run(providers_cli._check_cogitate(provider_name, 2, 30))
+    status, msg = asyncio.run(providers_cli._check_cogitate("local", 2, 30))
 
     assert status == "skip"
-    assert f"sol call settings providers install {install_target}" in msg
+    assert "sol call settings providers install local" in msg
 
 
 def test_all_skip_exits_zero(tmp_path, monkeypatch):

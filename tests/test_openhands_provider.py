@@ -31,6 +31,16 @@ def _translator(fake_openhands, events: list[dict]) -> openhands._OpenHandsTrans
     )
 
 
+def test_fake_openhands_replaces_installed_sdk_modules(fake_openhands):
+    from openhands.sdk import LLM
+    from openhands.sdk.tool import ToolDefinition
+
+    openhands._SOL_TYPES.clear()
+
+    assert LLM is fake_openhands.LLM
+    assert issubclass(openhands._ensure_sol_types()["SolTool"], ToolDefinition)
+
+
 def test_translator_maps_thinking_sources(fake_openhands, fixed_time):
     events: list[dict] = []
     translator = _translator(fake_openhands, events)

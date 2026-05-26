@@ -6,7 +6,7 @@ Settings -> Providers will move from three install renderers (`bundledProviders`
 
 Decision: keep the existing `bundled` map and add peer top-level `local` and extended `mlx` card-state dicts. Do not fold all five into a new server-side `install` or `providers_install` dict.
 
-Rationale: `routes.py:872-895` already returns `bundled = {provider: bundled.get_provider_state(provider)}` for `anthropic`, `openai`, and `openhands`, and `workspace.html:5138-5139` already consumes that field. Keeping `bundled` avoids changing the locked bundled contract shape while allowing the unified renderer to build one client-side map:
+Rationale: before the cogitate-baseline lode, `routes.py:872-895` returned bundled provider state for `anthropic`, `openai`, and `openhands`, and `workspace.html:5138-5139` consumed that field. Keeping `bundled` avoided changing the then-locked bundled contract shape while allowing the unified renderer to build one client-side map:
 
 - `anthropic`, `openai`, `openhands` from `data.bundled`.
 - `local` from `data.local`.
@@ -181,7 +181,7 @@ Do not add persisted local active-model state in this lode. That would be a sele
 | Endpoint payload | New `solstone/apps/settings/tests/test_providers_payload_extended.py` | Use the `settings_client` pattern from `test_workspace_install_copy_template.py:15-26`; `GET /api/providers`; assert top-level `local` and `mlx` dicts exist; each includes the 7 `InstallStatus` fields and `install_state` is in the canonical vocabulary from `InstallState` (`install_state.py:11-19`). |
 | Visual smoke | New `solstone/apps/settings/tests/test_providers_panel_visual.py` | Mirror the werkzeug + pytest-playwright pattern in `test_workspace_qr_size.py:22-52`; navigate to `/app/settings/`; assert one panel renders five cards for `anthropic`, `openai`, `openhands`, `local`, `mlx`; assert each card badge text is from `INSTALL_COPY`; assert retired DOM ids are absent. Mark `@pytest.mark.integration`. |
 
-Visual smoke data source: use a clean temporary settings journal with `setup.completed_at` and `convey.trust_localhost`, following `settings_client` (`test_workspace_install_copy_template.py:15-26`) rather than monkeypatching `bundled.get_provider_state`. Clean fixture is preferred because it exercises the real route and template path.
+Visual smoke data source: use a clean temporary settings journal with `setup.completed_at` and `convey.trust_localhost`, following `settings_client` (`test_workspace_install_copy_template.py:15-26`) rather than monkeypatching provider state. Clean fixture is preferred because it exercises the real route and template path.
 
 Playwright precondition: `pytest-playwright` is already in dev dependencies (`pyproject.toml:181-189`), and `make install` installs Chromium (`Makefile:54-58`). Running the visual smoke outside the installed dev env requires the same `playwright install chromium` precondition.
 

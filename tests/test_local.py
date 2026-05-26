@@ -65,7 +65,6 @@ def test_local_provider_defaults_and_registry():
     assert PROVIDER_METADATA["local"] == {
         "label": "Local (on-device)",
         "env_key": "",
-        "cogitate_runtime": "openhands",
     }
 
 
@@ -227,7 +226,7 @@ def test_build_provider_status_local_readiness(monkeypatch):
     assert status["issues"] == []
 
 
-def test_build_provider_status_local_issues(monkeypatch):
+def test_local_provider_status_carries_install_hint_substring(monkeypatch):
     from solstone.think.providers import build_provider_status
 
     monkeypatch.setattr(
@@ -249,11 +248,18 @@ def test_build_provider_status_local_issues(monkeypatch):
     assert status["configured"] is False
     assert status["generate_ready"] is False
     assert status["cogitate_ready"] is False
+    assert status["cogitate_cli"] == "llama-server"
+    assert status["cogitate_cli_found"] is False
     assert status["issues"] == [
         "binary_missing",
         "model_missing",
         "ram_insufficient",
+        "run `sol call settings providers install local`",
     ]
+    assert any(
+        "sol call settings providers install local" in issue
+        for issue in status["issues"]
+    )
 
 
 def test_local_server_spawn_binds_loopback(monkeypatch):

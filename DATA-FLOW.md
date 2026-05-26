@@ -4,9 +4,9 @@ solstone is local-first. your observers, your audio and screen, and your journal
 
 short version: with a local model, nothing leaves. with a hosted provider, only the specific task's text goes — straight from your machine to that provider, under your own key and your own account. sol pbc is never in that path and never sees it.
 
-## with a local model (Ollama): nothing leaves your machine
+## with a local model: nothing leaves your machine
 
-if you point solstone at a local model through Ollama, model calls go to Ollama on your own machine (`localhost`) and stay there. no API key, no network call to any provider, nothing to sol pbc. this is the maximum-privacy path: the model runs where your data already is.
+if you point solstone at a local model through the local provider, model calls go to the local model running on your own machine (`localhost`) and stay there. no API key, no network call to any provider, nothing to sol pbc. this is the maximum-privacy path: the model runs where your data already is.
 
 (transcription is also local — solstone installs a local transcription model during setup, so your audio is turned into text on your machine, not sent out to be transcribed.)
 
