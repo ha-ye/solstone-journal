@@ -248,9 +248,9 @@ class TaskQueue:
     def get_command_name(cmd: list[str]) -> str:
         """Extract command name from cmd array for queue serialization.
 
-        For 'sol X' commands, returns X. Otherwise returns cmd[0] basename.
+        For 'sol X' or 'journal X' commands, returns X. Otherwise returns cmd[0] basename.
         """
-        if cmd and cmd[0] == "sol" and len(cmd) > 1:
+        if cmd and cmd[0] in ("sol", "journal") and len(cmd) > 1:
             return cmd[1]
         return Path(cmd[0]).name if cmd else "unknown"
 
@@ -1169,7 +1169,7 @@ def collect_status(procs: list[RunnerManagedProcess]) -> dict:
 
 def start_sense() -> RunnerManagedProcess:
     """Launch journal sense with output logging."""
-    return _launch_process("sense", ["sol", "sense", "-v"], restart=True)
+    return _launch_process("sense", ["journal", "sense", "-v"], restart=True)
 
 
 def start_callosum_in_process() -> CallosumServer:
@@ -1254,7 +1254,7 @@ def stop_callosum_in_process() -> None:
 
 def start_cortex_server() -> RunnerManagedProcess:
     """Launch the Cortex WebSocket API server."""
-    cmd = ["sol", "cortex", "-v"]
+    cmd = ["journal", "cortex", "-v"]
     return _launch_process("cortex", cmd, restart=True)
 
 
@@ -1276,7 +1276,7 @@ def start_convey_server(
     # Resolve port 0 to an available port before launching
     resolved_port = port if port != 0 else find_available_port()
 
-    cmd = ["sol", "convey", "--port", str(resolved_port)]
+    cmd = ["journal", "convey", "--port", str(resolved_port)]
     if debug:
         cmd.append("-d")
     elif verbose:
@@ -1443,7 +1443,7 @@ def handle_daily_tasks() -> None:
 
         # Submit oldest-first so yesterday is processed last
         for day_str in days_to_process:
-            cmd = ["sol", "think", "-v", "--day", day_str]
+            cmd = ["journal", "think", "-v", "--day", day_str]
             if _task_queue:
                 _task_queue.submit(cmd, day=day_str)
                 logging.debug("Submitted daily think for %s", day_str)
@@ -1482,7 +1482,7 @@ def _handle_segment_observed(message: dict) -> None:
     logging.info(f"Segment observed: {day}/{segment}, submitting processing...")
 
     # Submit via task queue — serializes with other think invocations
-    cmd = ["sol", "think", "-v", "--day", day, "--segment", segment]
+    cmd = ["journal", "think", "-v", "--day", day, "--segment", segment]
     if stream:
         cmd.extend(["--stream", stream])
     if _task_queue:
@@ -1524,7 +1524,7 @@ def _check_segment_flush(force: bool = False) -> None:
     _flush_state["flushed"] = True
 
     stream = _flush_state.get("stream")
-    cmd = ["sol", "think", "-v", "--day", day, "--segment", segment, "--flush"]
+    cmd = ["journal", "think", "-v", "--day", day, "--segment", segment, "--flush"]
     if stream:
         cmd.extend(["--stream", stream])
     if _task_queue:
@@ -1590,7 +1590,7 @@ def _handle_activity_recorded(message: dict) -> None:
         logging.warning("activity.recorded event missing required fields")
         return
 
-    cmd = ["sol", "think", "--activity", record_id, "--facet", facet, "--day", day]
+    cmd = ["journal", "think", "--activity", record_id, "--facet", facet, "--day", day]
 
     if _task_queue:
         _task_queue.submit(cmd, day=day)
@@ -1626,7 +1626,7 @@ def _handle_think_daily_complete(message: dict) -> None:
         except ValueError:
             pass  # Corrupt PID file, proceed
 
-    cmd = ["sol", "heartbeat"]
+    cmd = ["journal", "heartbeat"]
     if _task_queue:
         _task_queue.submit(cmd)
         logging.info("Queued heartbeat after daily think completion")
@@ -2122,7 +2122,7 @@ def main() -> None:
             )
 
             for day_str in days_to_process:
-                cmd = ["sol", "think", "-v", "--day", day_str]
+                cmd = ["journal", "think", "-v", "--day", day_str]
                 if _task_queue:
                     _task_queue.submit(cmd, day=day_str)
                     logging.debug("Startup catchup: submitted think for %s", day_str)

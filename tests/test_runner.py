@@ -502,15 +502,15 @@ def test_run_task_day_override(journal_path, mock_callosum):
 @pytest.mark.parametrize(
     ("cmd", "expected_name"),
     [
-        (["sol", "think", "--day", "20240115"], "daily"),
+        (["journal", "think", "--day", "20240115"], "daily"),
         (
-            ["sol", "think", "--day", "20240115", "--segment", "120000_300"],
+            ["journal", "think", "--day", "20240115", "--segment", "120000_300"],
             "segment",
         ),
-        (["sol", "think", "--weekly"], "weekly"),
+        (["journal", "think", "--weekly"], "weekly"),
         (
             [
-                "sol",
+                "journal",
                 "think",
                 "--activity",
                 "id",
@@ -522,16 +522,25 @@ def test_run_task_day_override(journal_path, mock_callosum):
             "activity",
         ),
         (
-            ["sol", "think", "--day", "20240115", "--segment", "120000_300", "--flush"],
+            [
+                "journal",
+                "think",
+                "--day",
+                "20240115",
+                "--segment",
+                "120000_300",
+                "--flush",
+            ],
             "flush",
         ),
-        (["sol", "think", "--day", "20240115", "--segments"], "segment"),
+        (["journal", "think", "--day", "20240115", "--segments"], "segment"),
+        (["sol", "indexer", "--rescan"], "indexer"),
     ],
 )
-def test_think_mode_name_derivation(
+def test_command_name_derivation(
     journal_path, mock_callosum, monkeypatch, cmd, expected_name
 ):
-    """Think commands produce mode-aware log names."""
+    """Commands produce mode-aware log names."""
 
     class FakePopen:
         def __init__(self, *args, **kwargs):

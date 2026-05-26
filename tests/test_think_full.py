@@ -37,7 +37,7 @@ def test_main_runs_with_mocked_prompts(journal_copy, monkeypatch):
     mod.main()
 
     # Verify pre-phase: sense ran
-    assert any(c[0] == "sol" and c[1] == "sense" for c in commands_run)
+    assert any(c[0] == "journal" and c[1] == "sense" for c in commands_run)
 
     # Verify main phase: prompts ran
     assert prompts_run, "run_daily_prompts should have been called"

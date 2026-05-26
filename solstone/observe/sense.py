@@ -207,7 +207,9 @@ class FileSensor:
                 rel_file = file_path
 
             handler_name = (
-                cmd[1] if cmd[0] == "sol" and len(cmd) > 1 else Path(cmd[0]).name
+                cmd[1]
+                if cmd[0] in ("sol", "journal") and len(cmd) > 1
+                else Path(cmd[0]).name
             )
             event_fields = {
                 "file": str(rel_file),
@@ -1112,11 +1114,11 @@ def main():
     # Register handlers - match by extension
     # Audio files in segment directories
     for ext in AUDIO_EXTENSIONS:
-        sensor.register(f"*{ext}", "transcribe", ["sol", "transcribe", "{file}"])
+        sensor.register(f"*{ext}", "transcribe", ["journal", "transcribe", "{file}"])
 
     # Video files in segment directories
     for ext in VIDEO_EXTENSIONS:
-        sensor.register(f"*{ext}", "describe", ["sol", "describe", "{file}"])
+        sensor.register(f"*{ext}", "describe", ["journal", "describe", "{file}"])
 
     if args.day:
         day_dir = day_path(args.day)

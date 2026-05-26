@@ -1723,7 +1723,7 @@ class TestHandleActivityRecorded:
 
             mock_queue.submit.assert_called_once_with(
                 [
-                    "sol",
+                    "journal",
                     "think",
                     "--activity",
                     "coding_100000_300",
@@ -2061,7 +2061,7 @@ class TestCheckSegmentFlush:
 
         mock_queue.submit.assert_called_once_with(
             [
-                "sol",
+                "journal",
                 "think",
                 "-v",
                 "--day",

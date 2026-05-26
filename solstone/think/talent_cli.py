@@ -593,7 +593,7 @@ def show_prompt_context(
     config_json = json.dumps(config)
     try:
         result = subprocess.run(
-            ["sol", "solstone.think.talents", "--dry-run"],
+            ["journal", "solstone.think.talents", "--dry-run"],
             input=config_json + "\n",
             capture_output=True,
             text=True,

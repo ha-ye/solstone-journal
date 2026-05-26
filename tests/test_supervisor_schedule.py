@@ -93,7 +93,7 @@ def test_handle_daily_tasks_submits_think_runs_on_day_change(
     mod.handle_daily_tasks()
 
     assert submit_mock.call_args_list == [
-        call(["sol", "think", "-v", "--day", day], day=day) for day in expected_days
+        call(["journal", "think", "-v", "--day", day], day=day) for day in expected_days
     ]
     assert mod._daily_state["last_day"] == today
 
@@ -151,7 +151,7 @@ def test_handle_think_daily_complete_submits_heartbeat(
 
     mod._handle_think_daily_complete(daily_complete_message())
 
-    submit_mock.assert_called_once_with(["sol", "heartbeat"])
+    submit_mock.assert_called_once_with(["journal", "heartbeat"])
 
 
 @pytest.mark.parametrize(
@@ -194,4 +194,4 @@ def test_proceeds_on_dead_pid(mock_callosum, tmp_path, monkeypatch, submit_mock)
 
     mod._handle_think_daily_complete(daily_complete_message())
 
-    submit_mock.assert_called_once_with(["sol", "heartbeat"])
+    submit_mock.assert_called_once_with(["journal", "heartbeat"])

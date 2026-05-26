@@ -369,7 +369,7 @@ def register_defaults() -> None:
 
     if need_heartbeat and "heartbeat" not in raw:
         raw["heartbeat"] = {
-            "cmd": ["sol", "heartbeat"],
+            "cmd": ["journal", "heartbeat"],
             "every": "daily",
             "enabled": True,
             "max_runtime": "10m",
@@ -378,7 +378,7 @@ def register_defaults() -> None:
 
     if need_weekly and "weekly-agents" not in raw:
         raw["weekly-agents"] = {
-            "cmd": ["sol", "think", "--weekly", "-v"],
+            "cmd": ["journal", "think", "--weekly", "-v"],
             "every": "weekly",
             "enabled": True,
             "max_runtime": "30m",

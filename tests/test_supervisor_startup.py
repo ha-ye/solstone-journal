@@ -52,7 +52,7 @@ def test_task_queue_set_ready_drains_in_submission_order(monkeypatch):
 
     queue.submit(["sol", "indexer", "--rescan"], ref="ref-1")
     queue.submit(["sol", "insight", "20260418"], ref="ref-2")
-    queue.submit(["sol", "heartbeat"], ref="ref-3")
+    queue.submit(["journal", "heartbeat"], ref="ref-3")
 
     queue.set_ready()
 
@@ -60,7 +60,7 @@ def test_task_queue_set_ready_drains_in_submission_order(monkeypatch):
     assert [args[1] for args in started] == [
         ["sol", "indexer", "--rescan"],
         ["sol", "insight", "20260418"],
-        ["sol", "heartbeat"],
+        ["journal", "heartbeat"],
     ]
     assert queue._pending == []
 

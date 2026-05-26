@@ -281,8 +281,7 @@ class ManagedProcess:
             this call. Use a long-lived worker thread that blocks in
             process.wait() for the lifetime of the child.
         """
-        # Derive name from command - use subcommand if invoked via sol
-        if cmd[0] == "sol" and len(cmd) > 1:
+        if cmd[0] in ("sol", "journal") and len(cmd) > 1:
             name = cmd[1]
             if name == "think":
                 for flag, mode in [

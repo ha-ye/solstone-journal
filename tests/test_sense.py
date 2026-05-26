@@ -326,9 +326,9 @@ def test_standalone_dry_run(tmp_path, monkeypatch):
     sensor = FileSensor(journal_dir=tmp_path)
 
     for ext in AUDIO_EXTENSIONS:
-        sensor.register(f"*{ext}", "transcribe", ["sol", "transcribe", "{file}"])
+        sensor.register(f"*{ext}", "transcribe", ["journal", "transcribe", "{file}"])
     for ext in VIDEO_EXTENSIONS:
-        sensor.register(f"*{ext}", "describe", ["sol", "describe", "{file}"])
+        sensor.register(f"*{ext}", "describe", ["journal", "describe", "{file}"])
 
     to_process, _ = sensor.scan_unprocessed("20250101")
 
@@ -356,9 +356,9 @@ def test_standalone_dry_run_with_segment_filter(tmp_path, monkeypatch):
     sensor = FileSensor(journal_dir=tmp_path)
 
     for ext in AUDIO_EXTENSIONS:
-        sensor.register(f"*{ext}", "transcribe", ["sol", "transcribe", "{file}"])
+        sensor.register(f"*{ext}", "transcribe", ["journal", "transcribe", "{file}"])
     for ext in VIDEO_EXTENSIONS:
-        sensor.register(f"*{ext}", "describe", ["sol", "describe", "{file}"])
+        sensor.register(f"*{ext}", "describe", ["journal", "describe", "{file}"])
 
     to_process, _ = sensor.scan_unprocessed("20250101", segment_filter="143022_300")
 
@@ -385,9 +385,9 @@ def test_scan_unprocessed_filters_stream_and_modality(tmp_path, monkeypatch):
 
     sensor = FileSensor(journal_dir=tmp_path)
     for ext in AUDIO_EXTENSIONS:
-        sensor.register(f"*{ext}", "transcribe", ["sol", "transcribe", "{file}"])
+        sensor.register(f"*{ext}", "transcribe", ["journal", "transcribe", "{file}"])
     for ext in VIDEO_EXTENSIONS:
-        sensor.register(f"*{ext}", "describe", ["sol", "describe", "{file}"])
+        sensor.register(f"*{ext}", "describe", ["journal", "describe", "{file}"])
 
     to_process, _ = sensor.scan_unprocessed(
         "20250101",
@@ -426,8 +426,8 @@ def test_process_day_filters_stream_and_modality(tmp_path, monkeypatch):
     )
 
     sensor = FileSensor(tmp_path)
-    sensor.register("*.flac", "transcribe", ["sol", "transcribe", "{file}"])
-    sensor.register("*.webm", "describe", ["sol", "describe", "{file}"])
+    sensor.register("*.flac", "transcribe", ["journal", "transcribe", "{file}"])
+    sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
     processed = []
 
     def fake_run(queued_item, *_args):
@@ -855,7 +855,7 @@ def test_file_sensor_pdeathsig_regression_uses_long_lived_worker(
     second.write_text("video")
 
     sensor = FileSensor(tmp_path)
-    sensor.register("*.webm", "describe", ["sol", "describe", "{file}"])
+    sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
     emitted_events = []
     sensor.callosum = CallosumConnection()
     sensor.callosum.start(callback=lambda msg: emitted_events.append(msg))
@@ -946,7 +946,7 @@ def test_run_handler_uses_handler_thread_name_prefix(tmp_path, monkeypatch):
     """Handler spawn happens in the long-lived handler worker thread."""
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     sensor = FileSensor(tmp_path)
-    sensor.register("*.webm", "describe", ["sol", "describe", "{file}"])
+    sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
     test_file = make_segment_file(tmp_path, "screen.webm")
     thread_names = []
 
@@ -967,7 +967,7 @@ def test_file_sensor_stop_during_spawn_gap_drains_worker(tmp_path, monkeypatch):
     """stop() handles a worker between spawn return and running append."""
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     sensor = FileSensor(tmp_path)
-    sensor.register("*.webm", "describe", ["sol", "describe", "{file}"])
+    sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
     test_file = make_segment_file(tmp_path, "screen.webm")
     spawn_started = threading.Event()
     release_spawn = threading.Event()
@@ -1003,7 +1003,7 @@ def test_process_day_survives_one_batch_worker_failure(tmp_path, monkeypatch, ca
         (segment_dir / name).write_text("video")
 
     sensor = FileSensor(tmp_path)
-    sensor.register("*.webm", "describe", ["sol", "describe", "{file}"])
+    sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
     processed = []
 
     def fake_run(queued_item, *_args):
@@ -1120,7 +1120,7 @@ def test_transcribe_cpu_fallback_stays_in_same_worker_thread(tmp_path, monkeypat
     """The exit-134 retry is spawned by the same worker thread."""
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     sensor = FileSensor(tmp_path)
-    sensor.register("*.flac", "transcribe", ["sol", "transcribe", "{file}"])
+    sensor.register("*.flac", "transcribe", ["journal", "transcribe", "{file}"])
     test_file = make_segment_file(tmp_path, "audio.flac")
     first_started = threading.Event()
     first_release = threading.Event()

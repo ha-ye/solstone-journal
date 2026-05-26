@@ -67,6 +67,7 @@ def run_migration(journal_path: Path, *, dry_run: bool) -> MigrationSummary:
         if _is_dream_schedule_cmd(value):
             old_cmd = value["cmd"][:]
             new_cmd = old_cmd[:]
+            new_cmd[0] = "journal"
             new_cmd[1] = "think"
             value["cmd"] = new_cmd
             summary.discovered += 1

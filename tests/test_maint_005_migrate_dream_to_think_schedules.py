@@ -37,7 +37,7 @@ def test_happy_path_rewrites_weekly_agents(tmp_path):
     assert summary.errors == 0
     data = json.loads(schedules_path.read_text(encoding="utf-8"))
     assert data["daily_time"] == "03:17"
-    assert data["weekly-agents"]["cmd"] == ["sol", "think", "--weekly", "-v"]
+    assert data["weekly-agents"]["cmd"] == ["journal", "think", "--weekly", "-v"]
     assert data["weekly-agents"]["every"] == "weekly"
     assert data["weekly-agents"]["enabled"] is True
 
@@ -62,7 +62,7 @@ def test_custom_dream_entry_is_rewritten(tmp_path):
     assert summary.errors == 0
     data = json.loads(schedules_path.read_text(encoding="utf-8"))
     assert data["my-custom"] == {
-        "cmd": ["sol", "think", "--segments"],
+        "cmd": ["journal", "think", "--segments"],
         "every": "daily",
         "enabled": True,
     }
@@ -77,7 +77,7 @@ def test_non_dream_entries_preserved_byte_for_byte(tmp_path):
             "enabled": True,
         },
         "heartbeat": {
-            "cmd": ["sol", "heartbeat"],
+            "cmd": ["journal", "heartbeat"],
             "every": "daily",
             "enabled": True,
         },
@@ -99,13 +99,13 @@ def test_non_dream_entries_preserved_byte_for_byte(tmp_path):
     assert data["daily_time"] == initial["daily_time"]
     assert data["sync:plaud"] == initial["sync:plaud"]
     assert data["heartbeat"] == initial["heartbeat"]
-    assert data["weekly-agents"]["cmd"] == ["sol", "think", "--weekly", "-v"]
+    assert data["weekly-agents"]["cmd"] == ["journal", "think", "--weekly", "-v"]
 
 
 def test_idempotent_rerun(tmp_path):
     initial = {
         "weekly-agents": {
-            "cmd": ["sol", "think", "--weekly", "-v"],
+            "cmd": ["journal", "think", "--weekly", "-v"],
             "every": "weekly",
             "enabled": True,
         }
