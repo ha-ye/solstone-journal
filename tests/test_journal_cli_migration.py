@@ -13,6 +13,8 @@ from solstone.think.sol_cli import ALIASES, COMMANDS
 EXCLUDED_DIRS = {
     ".git",
     ".venv",
+    "build",
+    "dist",
     "htmlcov",
     "journal",
     "logs",
