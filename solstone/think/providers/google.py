@@ -463,6 +463,77 @@ def _format_completion_message(finish_reason: str | None, had_tool_calls: bool) 
         return f"Completed ({reason.lower()})."
 
 
+def _summarize_contents(contents: Any) -> str:
+    """One-line, PII-free fingerprint of the contents passed to generate_content.
+
+    Captures part count, types, and image sizes — enough to correlate a 400 with
+    the call shape without leaking text bodies. Used only by error logging.
+    """
+    if isinstance(contents, str):
+        return f"str(len={len(contents)})"
+    if not isinstance(contents, list):
+        return f"other({type(contents).__name__})"
+    parts: list[str] = []
+    for item in contents:
+        if isinstance(item, str):
+            parts.append(f"s{len(item)}")
+        elif isinstance(item, dict) and "role" in item:
+            parts.append(f"d({item.get('role')})")
+        elif isinstance(item, types.Part):
+            mime = getattr(getattr(item, "inline_data", None), "mime_type", None)
+            parts.append(f"p({mime or '?'})")
+        elif isinstance(item, types.Content):
+            parts.append(f"c({item.role})")
+        else:
+            size = getattr(item, "size", None)
+            if size is not None:
+                parts.append(f"i({size[0]}x{size[1]})")
+            else:
+                parts.append(type(item).__name__[:6])
+    return f"list[{len(parts)}]={','.join(parts)}"
+
+
+def _log_provider_error(
+    exc: BaseException,
+    *,
+    model: str,
+    contents: Any,
+    config: types.GenerateContentConfig,
+) -> None:
+    """Emit a structured log line when generate_content raises a ClientError.
+
+    Captures the SDK-returned error body (which Cloud Monitoring does not surface)
+    so we can categorize 400s offline. WARNING level so the line lands in
+    solstone's normal log streams without changing existing exception propagation.
+    """
+    from google.genai import errors as _genai_errors
+
+    if not isinstance(exc, _genai_errors.APIError):
+        return
+
+    status_code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    json_schema_present = getattr(config, "response_json_schema", None) is not None
+    thinking_cfg = getattr(config, "thinking_config", None)
+    thinking_budget = (
+        getattr(thinking_cfg, "thinking_budget", None) if thinking_cfg else None
+    )
+
+    logging.getLogger(__name__).warning(
+        "google_provider_error status=%s model=%s backend=%s "
+        "contents=%s json=%s schema=%s thinking_budget=%s max_output_tokens=%s "
+        "body=%s",
+        status_code,
+        model,
+        _active_backend() or "unknown",
+        _summarize_contents(contents),
+        bool(getattr(config, "response_mime_type", "")),
+        json_schema_present,
+        thinking_budget,
+        getattr(config, "max_output_tokens", None),
+        str(exc)[:2000],
+    )
+
+
 # ---------------------------------------------------------------------------
 # run_generate / run_agenerate functions
 # ---------------------------------------------------------------------------
@@ -508,11 +579,15 @@ def run_generate(
         timeout_s=timeout_s,
     )
 
-    response = client.models.generate_content(
-        model=model,
-        contents=contents,
-        config=config,
-    )
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=contents,
+            config=config,
+        )
+    except Exception as exc:
+        _log_provider_error(exc, model=model, contents=contents, config=config)
+        raise
 
     return GenerateResult(
         text=_extract_response_text(response),
@@ -563,11 +638,15 @@ async def run_agenerate(
         timeout_s=timeout_s,
     )
 
-    response = await client.aio.models.generate_content(
-        model=model,
-        contents=contents,
-        config=config,
-    )
+    try:
+        response = await client.aio.models.generate_content(
+            model=model,
+            contents=contents,
+            config=config,
+        )
+    except Exception as exc:
+        _log_provider_error(exc, model=model, contents=contents, config=config)
+        raise
 
     return GenerateResult(
         text=_extract_response_text(response),
