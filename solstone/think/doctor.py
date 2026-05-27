@@ -523,6 +523,122 @@ def import_install_guard() -> tuple[object, object]:
     return module.AliasState, module.check_alias
 
 
+def _recognized_legacy_target(target: Path) -> str | None:
+    resolved = target.resolve(strict=False)
+    home = Path.home()
+    legacy_prefixes = (
+        (home / ".local" / "share" / "uv" / "tools" / "solstone", "uv-tool"),
+        (home / ".local" / "share" / "pipx" / "venvs" / "solstone", "pipx-xdg"),
+        (home / ".local" / "pipx" / "venvs" / "solstone", "pipx-legacy"),
+    )
+    for prefix, tag in legacy_prefixes:
+        if resolved.is_relative_to(prefix):
+            return tag
+    return None
+
+
+def _legacy_backup_dir() -> Path:
+    return Path("/tmp")
+
+
+def _legacy_backup_path(binary: str) -> Path:
+    timestamp = time.strftime("%Y%m%d%H%M%S", time.gmtime())
+    base = _legacy_backup_dir() / f"{binary}.old-symlink-{timestamp}"
+    for index in range(100):
+        candidate = base if index == 0 else base.with_name(f"{base.name}-{index}")
+        if not candidate.exists() and not candidate.is_symlink():
+            return candidate
+    raise RuntimeError(
+        "could not find unique backup path under /tmp after 100 attempts"
+    )
+
+
+def _latest_legacy_backup(binary: str) -> Path | None:
+    matches = list(_legacy_backup_dir().glob(f"{binary}.old-symlink-*"))
+    if not matches:
+        return None
+
+    def sort_key(path: Path) -> int:
+        try:
+            return path.lstat().st_mtime_ns
+        except OSError:
+            return -1
+
+    return max(matches, key=sort_key)
+
+
+def _partial_migration_detail(binary: str, backup: Path) -> str:
+    return (
+        f"partial migration detected; backup at {backup} — restore with "
+        f"`mv {backup} ~/.local/bin/{binary}` or re-run from a fresh shell"
+    )
+
+
+def _legacy_target_from_symlink(alias: Path) -> tuple[Path, str] | None:
+    if not alias.is_symlink():
+        return None
+    target = Path(os.readlink(alias))
+    if not target.is_absolute():
+        target = alias.parent / target
+    resolved = target.resolve(strict=False)
+    tag = _recognized_legacy_target(resolved)
+    if tag is None:
+        return None
+    return resolved, tag
+
+
+def _auto_migrate_legacy_aliases(check: Check, install_guard: object) -> CheckResult:
+    try:
+        journal = install_guard._current_journal_for_alias()
+    except Exception as exc:
+        return make_result(
+            check,
+            "fail",
+            f"legacy alias detected but journal resolution failed: {type(exc).__name__}: {exc} — run from venv to auto-migrate",
+            "run `journal setup` from the repo that owns the wrapper, or remove `~/.local/bin/sol` manually if the repo is gone",
+        )
+
+    migrated: list[tuple[str, str, Path]] = []
+    aliases = install_guard.alias_paths()
+    try:
+        for binary, alias in aliases.items():
+            legacy = _legacy_target_from_symlink(alias)
+            if legacy is None:
+                continue
+            _target, tag = legacy
+            backup = _legacy_backup_path(binary)
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            alias.replace(backup)
+            migrated.append((binary, tag, backup))
+
+        sol_bin_dir = Path(sys.executable).parent
+        sol_bins = {binary: str(sol_bin_dir / binary) for binary in aliases}
+        install_guard.install_wrappers(str(journal), sol_bins)
+    except Exception as exc:
+        return make_result(
+            check,
+            "fail",
+            f"legacy alias auto-migration failed: {type(exc).__name__}: {exc}",
+        )
+
+    tags = {tag for _binary, tag, _backup in migrated}
+    tag = next(iter(tags)) if len(tags) == 1 else "mixed"
+    if tag == "uv-tool":
+        migration_phrase = "migrated legacy uv-tool symlink"
+    elif tag.startswith("pipx"):
+        migration_phrase = "migrated legacy pipx symlink"
+    else:
+        migration_phrase = "migrated legacy mixed symlink"
+    backup_detail = " and ".join(
+        f"{binary} → {backup}" for binary, _tag, backup in migrated
+    )
+    return make_result(
+        check,
+        "ok",
+        f"auto-migrated legacy {tag} install ({migration_phrase}): backed up {backup_detail}; installed managed wrappers at ~/.local/bin/{{sol,journal}}",
+    )
+
+
 def stale_alias_symlink_check(args: Args) -> CheckResult:
     del args
     check = CHECK_MAP["stale_alias_symlink"]
@@ -534,37 +650,61 @@ def stale_alias_symlink_check(args: Args) -> CheckResult:
             "skip",
             f"could not import solstone.think.install_guard: {type(exc).__name__}: {exc}",
         )
-    state, other = check_alias(ROOT)
+    install_guard = importlib.import_module(check_alias.__module__)
     worktree = alias_state_cls.WORKTREE
     absent = alias_state_cls.ABSENT
     owned = alias_state_cls.OWNED
     cross_repo = alias_state_cls.CROSS_REPO
     dangling = alias_state_cls.DANGLING
     foreign = alias_state_cls.FOREIGN
-    if state is worktree:
-        return make_result(
-            check,
-            "skip",
-            "git worktree; run doctor from the primary clone",
-        )
-    if state in {absent, owned}:
+    fail_detail: str | None = None
+
+    for binary, alias in install_guard.alias_paths().items():
+        if not alias.exists() and not alias.is_symlink():
+            backup = _latest_legacy_backup(binary)
+            if backup is not None:
+                return make_result(
+                    check,
+                    "fail",
+                    _partial_migration_detail(binary, backup),
+                    "restore the backup or re-run from a fresh shell",
+                )
+
+        state, other = check_alias(ROOT, binary)
+        if state is worktree:
+            return make_result(
+                check,
+                "skip",
+                "git worktree; run doctor from the primary clone",
+            )
+        if state in {absent, owned}:
+            continue
+
+        if state in {cross_repo, dangling, foreign} and other is not None:
+            tag = _recognized_legacy_target(other)
+            if tag is not None:
+                return _auto_migrate_legacy_aliases(check, install_guard)
+
+        if state is cross_repo:
+            fail_detail = f"~/.local/bin/{binary} points at another repo ({other})"
+        elif state is dangling:
+            fail_detail = f"~/.local/bin/{binary} is dangling ({other})"
+        elif state is foreign:
+            fail_detail = f"~/.local/bin/{binary} exists but is not a symlink"
+        else:
+            fail_detail = f"unexpected alias state for {binary}: {state}"
+        break
+
+    if fail_detail is None:
         return make_result(
             check,
             "ok",
-            "sol alias absent or owned by this repo",
+            "sol and journal aliases absent or owned by this repo",
         )
-    if state is cross_repo:
-        detail = f"~/.local/bin/sol points at another repo ({other})"
-    elif state is dangling:
-        detail = f"~/.local/bin/sol is dangling ({other})"
-    elif state is foreign:
-        detail = "~/.local/bin/sol exists but is not a symlink"
-    else:
-        detail = f"unexpected alias state: {state}"
     return make_result(
         check,
         "fail",
-        detail,
+        fail_detail,
         "run `journal setup` from the repo that owns the wrapper, or remove `~/.local/bin/sol` manually if the repo is gone",
     )
 

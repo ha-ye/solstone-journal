@@ -364,12 +364,46 @@ class TestConfigDirReadable:
 
 
 class TestStaleAliasSymlink:
+    @pytest.fixture(autouse=True)
+    def isolated_legacy_backups(self, doctor, monkeypatch, tmp_path):
+        backup_dir = tmp_path / "legacy-backups"
+        backup_dir.mkdir()
+        monkeypatch.setattr(doctor, "_legacy_backup_dir", lambda: backup_dir)
+        self.backup_dir = backup_dir
+
     def setup_import(self, doctor, monkeypatch):
         monkeypatch.setattr(
             doctor,
             "import_install_guard",
             lambda: (install_guard.AliasState, install_guard.check_alias),
         )
+
+    def setup_auto_migration(self, doctor, monkeypatch, tmp_path):
+        self.setup_import(doctor, monkeypatch)
+        fake_bin = tmp_path / "fakevenv" / "bin"
+        fake_bin.mkdir(parents=True)
+        journal = tmp_path / "journal"
+        monkeypatch.setattr(sys, "executable", str(fake_bin / "python"))
+        monkeypatch.setattr(
+            "solstone.think.install_guard._current_journal_for_alias",
+            lambda: journal,
+        )
+        return fake_bin, journal
+
+    @staticmethod
+    def make_existing_target(path: Path) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+        return path
+
+    @staticmethod
+    def assert_managed_wrapper(home_root, binary, journal, fake_bin):
+        alias = home_root / ".local" / "bin" / binary
+        assert alias.exists()
+        parsed = install_guard.parse_wrapper(alias.read_text(encoding="utf-8"))
+        assert parsed is not None
+        assert parsed["journal"] == str(journal)
+        assert parsed["sol_bin"] == str(fake_bin / binary)
 
     def test_absent_ok(self, doctor, monkeypatch, home_root, tmp_path):
         self.setup_import(doctor, monkeypatch)
@@ -429,6 +463,167 @@ class TestStaleAliasSymlink:
         result = doctor.stale_alias_symlink_check(args(doctor))
         assert result.status == "skip"
         assert "could not import solstone.think.install_guard" in result.detail
+
+    def test_uv_tool_auto_migrates(self, doctor, monkeypatch, home_root, tmp_path):
+        fake_bin, journal = self.setup_auto_migration(doctor, monkeypatch, tmp_path)
+        repo = make_repo(tmp_path)
+        target = self.make_existing_target(
+            home_root / ".local" / "share" / "uv" / "tools" / "solstone" / "bin" / "sol"
+        )
+        make_alias(home_root, target)
+        monkeypatch.setattr(doctor, "ROOT", repo)
+
+        result = doctor.stale_alias_symlink_check(args(doctor))
+
+        assert result.status == "ok"
+        assert "auto-migrated" in result.detail
+        assert "uv-tool" in result.detail
+        self.assert_managed_wrapper(home_root, "sol", journal, fake_bin)
+        self.assert_managed_wrapper(home_root, "journal", journal, fake_bin)
+        backups = list(self.backup_dir.glob("sol.old-symlink-*"))
+        assert len(backups) == 1
+        assert backups[0].exists()
+
+    def test_pipx_xdg_auto_migrates(self, doctor, monkeypatch, home_root, tmp_path):
+        fake_bin, journal = self.setup_auto_migration(doctor, monkeypatch, tmp_path)
+        repo = make_repo(tmp_path)
+        target = self.make_existing_target(
+            home_root
+            / ".local"
+            / "share"
+            / "pipx"
+            / "venvs"
+            / "solstone"
+            / "bin"
+            / "sol"
+        )
+        make_alias(home_root, target)
+        monkeypatch.setattr(doctor, "ROOT", repo)
+
+        result = doctor.stale_alias_symlink_check(args(doctor))
+
+        assert result.status == "ok"
+        assert "pipx-xdg" in result.detail
+        self.assert_managed_wrapper(home_root, "sol", journal, fake_bin)
+        self.assert_managed_wrapper(home_root, "journal", journal, fake_bin)
+
+    def test_pipx_legacy_auto_migrates(self, doctor, monkeypatch, home_root, tmp_path):
+        fake_bin, journal = self.setup_auto_migration(doctor, monkeypatch, tmp_path)
+        repo = make_repo(tmp_path)
+        target = self.make_existing_target(
+            home_root / ".local" / "pipx" / "venvs" / "solstone" / "bin" / "sol"
+        )
+        make_alias(home_root, target)
+        monkeypatch.setattr(doctor, "ROOT", repo)
+
+        result = doctor.stale_alias_symlink_check(args(doctor))
+
+        assert result.status == "ok"
+        assert "pipx-legacy" in result.detail
+        self.assert_managed_wrapper(home_root, "sol", journal, fake_bin)
+        self.assert_managed_wrapper(home_root, "journal", journal, fake_bin)
+
+    def test_uv_tool_dangling_auto_migrates(
+        self, doctor, monkeypatch, home_root, tmp_path
+    ):
+        fake_bin, journal = self.setup_auto_migration(doctor, monkeypatch, tmp_path)
+        repo = make_repo(tmp_path)
+        target = (
+            home_root / ".local" / "share" / "uv" / "tools" / "solstone" / "bin" / "sol"
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        make_alias(home_root, target)
+        monkeypatch.setattr(doctor, "ROOT", repo)
+
+        result = doctor.stale_alias_symlink_check(args(doctor))
+
+        assert result.status == "ok"
+        assert "migrated legacy uv-tool symlink" in result.detail
+        self.assert_managed_wrapper(home_root, "sol", journal, fake_bin)
+        self.assert_managed_wrapper(home_root, "journal", journal, fake_bin)
+        backups = list(self.backup_dir.glob("sol.old-symlink-*"))
+        assert len(backups) == 1
+        assert backups[0].is_symlink()
+
+    def test_pipx_xdg_dangling_auto_migrates(
+        self, doctor, monkeypatch, home_root, tmp_path
+    ):
+        fake_bin, journal = self.setup_auto_migration(doctor, monkeypatch, tmp_path)
+        repo = make_repo(tmp_path)
+        target = (
+            home_root
+            / ".local"
+            / "share"
+            / "pipx"
+            / "venvs"
+            / "solstone"
+            / "bin"
+            / "sol"
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        make_alias(home_root, target)
+        monkeypatch.setattr(doctor, "ROOT", repo)
+
+        result = doctor.stale_alias_symlink_check(args(doctor))
+
+        assert result.status == "ok"
+        assert "migrated legacy pipx symlink" in result.detail
+        self.assert_managed_wrapper(home_root, "sol", journal, fake_bin)
+        self.assert_managed_wrapper(home_root, "journal", journal, fake_bin)
+        backups = list(self.backup_dir.glob("sol.old-symlink-*"))
+        assert len(backups) == 1
+        assert backups[0].is_symlink()
+
+    def test_non_legacy_target_still_fails(
+        self, doctor, monkeypatch, home_root, tmp_path
+    ):
+        self.setup_auto_migration(doctor, monkeypatch, tmp_path)
+        repo = make_repo(tmp_path)
+        target = self.make_existing_target(
+            tmp_path / "opt" / "random" / "foo" / "bin" / "sol"
+        )
+        make_alias(home_root, target)
+        monkeypatch.setattr(doctor, "ROOT", repo)
+
+        result = doctor.stale_alias_symlink_check(args(doctor))
+
+        assert result.status == "fail"
+        assert list(self.backup_dir.glob("sol.old-symlink-*")) == []
+
+    def test_idempotent_after_migration(self, doctor, monkeypatch, home_root, tmp_path):
+        self.setup_auto_migration(doctor, monkeypatch, tmp_path)
+        repo = make_repo(tmp_path)
+        target = self.make_existing_target(
+            home_root / ".local" / "share" / "uv" / "tools" / "solstone" / "bin" / "sol"
+        )
+        make_alias(home_root, target)
+        monkeypatch.setattr(doctor, "ROOT", repo)
+
+        first = doctor.stale_alias_symlink_check(args(doctor))
+        backups_after_first = sorted(self.backup_dir.glob("*.old-symlink-*"))
+        second = doctor.stale_alias_symlink_check(args(doctor))
+        backups_after_second = sorted(self.backup_dir.glob("*.old-symlink-*"))
+
+        assert first.status == "ok"
+        assert second.status == "ok"
+        assert backups_after_second == backups_after_first
+        assert len(list(self.backup_dir.glob("sol.old-symlink-*"))) == 1
+        assert list(self.backup_dir.glob("journal.old-symlink-*")) == []
+
+    def test_partial_migration_recovery_detail(
+        self, doctor, monkeypatch, home_root, tmp_path
+    ):
+        self.setup_import(doctor, monkeypatch)
+        repo = make_repo(tmp_path)
+        backup = self.backup_dir / "sol.old-symlink-20260101000000"
+        backup.write_text("", encoding="utf-8")
+        monkeypatch.setattr(doctor, "ROOT", repo)
+
+        result = doctor.stale_alias_symlink_check(args(doctor))
+
+        assert result.status == "fail"
+        assert "partial migration detected" in result.detail
+        assert str(backup) in result.detail
 
 
 class TestLaunchdStalePlist:

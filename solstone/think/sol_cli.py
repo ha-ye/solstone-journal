@@ -170,14 +170,9 @@ def print_status() -> None:
 
     print(f"Journal: {status['journal_path']}")
     if status["journal_exists"]:
-        # Count day directories
-        journal = status["journal_path"]
-        days = [
-            d
-            for d in os.listdir(journal)
-            if os.path.isdir(os.path.join(journal, d)) and d.isdigit() and len(d) == 8
-        ]
-        print(f"Days: {len(days)}")
+        from solstone.think.utils import day_dirs
+
+        print(f"Days: {len(day_dirs())}")
     print()
 
 

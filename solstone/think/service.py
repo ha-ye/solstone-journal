@@ -504,8 +504,9 @@ def _install(port: int = DEFAULT_SERVICE_PORT) -> int:
 
         uid = os.getuid()
         subprocess.run(
-            ["launchctl", "bootout", f"gui/{uid}", str(path)],
+            ["launchctl", "bootout", f"gui/{uid}/{SERVICE_LABEL}"],
             capture_output=True,
+            check=False,
         )
 
         path.write_bytes(plist_data)
@@ -547,8 +548,9 @@ def _uninstall() -> int:
         path = _plist_path()
         uid = os.getuid()
         subprocess.run(
-            ["launchctl", "bootout", f"gui/{uid}", str(path)],
+            ["launchctl", "bootout", f"gui/{uid}/{SERVICE_LABEL}"],
             capture_output=True,
+            check=False,
         )
         if path.exists():
             path.unlink()

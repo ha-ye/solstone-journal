@@ -521,6 +521,7 @@ class TestUp:
 class TestInstall:
     def test_darwin_clears_readiness_before_bootstrap(self, monkeypatch, tmp_path):
         monkeypatch.setattr(service, "_platform", lambda: "darwin")
+        monkeypatch.setattr(service.os, "getuid", lambda: 501)
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
         monkeypatch.setattr(
             service,
@@ -529,12 +530,13 @@ class TestInstall:
         )
         monkeypatch.setattr(service, "remove_stale_plists", MagicMock())
         calls = []
+        commands = []
 
         def clear_ready():
             calls.append("clear_ready")
 
         def run(command, **kwargs):
-            del kwargs
+            commands.append((command, kwargs))
             if command[:2] == ["launchctl", "bootstrap"]:
                 calls.append("bootstrap")
             return subprocess.CompletedProcess(
@@ -546,6 +548,10 @@ class TestInstall:
 
         assert service._install() == 0
         assert calls.index("clear_ready") < calls.index("bootstrap")
+        assert commands[0] == (
+            ["launchctl", "bootout", f"gui/501/{service.SERVICE_LABEL}"],
+            {"capture_output": True, "check": False},
+        )
 
     def test_linux_idempotent(self, monkeypatch, tmp_path, capsys):
         monkeypatch.setattr(sys, "platform", "linux")
@@ -566,6 +572,33 @@ class TestInstall:
             assert unit_path.exists()
 
         assert "Wrote" in capsys.readouterr().out
+
+
+class TestUninstall:
+    def test_darwin_bootout_uses_label_form(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(service, "_platform", lambda: "darwin")
+        monkeypatch.setattr(service.os, "getuid", lambda: 501)
+        plist_path = tmp_path / "LaunchAgents" / "org.solpbc.solstone.plist"
+        plist_path.parent.mkdir(parents=True)
+        plist_path.write_text("", encoding="utf-8")
+        monkeypatch.setattr(service, "_plist_path", lambda: plist_path)
+        commands = []
+
+        def run(command, **kwargs):
+            commands.append((command, kwargs))
+            return subprocess.CompletedProcess(
+                args=command, returncode=0, stdout="", stderr=""
+            )
+
+        monkeypatch.setattr("subprocess.run", run)
+
+        assert service._uninstall() == 0
+        assert commands == [
+            (
+                ["launchctl", "bootout", f"gui/501/{service.SERVICE_LABEL}"],
+                {"capture_output": True, "check": False},
+            )
+        ]
 
 
 class TestLingerCheck:

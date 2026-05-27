@@ -95,3 +95,41 @@ def test_access_help_groups_match_canonical_membership() -> None:
             ("providers", "observer", "skills", "restart-convey", "link"),
         ),
     )
+
+
+class TestPrintStatusDays:
+    def test_chronicle_with_day_dirs(self, monkeypatch, tmp_path, capsys) -> None:
+        for day in ("20260101", "20260102", "20260103"):
+            (tmp_path / "chronicle" / day).mkdir(parents=True)
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+        sol_cli.print_status()
+
+        assert "Days: 3" in capsys.readouterr().out
+
+    def test_chronicle_with_mixed_names(self, monkeypatch, tmp_path, capsys) -> None:
+        for name in ("20260101", "notaday", "12345"):
+            (tmp_path / "chronicle" / name).mkdir(parents=True)
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+        sol_cli.print_status()
+
+        assert "Days: 1" in capsys.readouterr().out
+
+    def test_chronicle_absent(self, monkeypatch, tmp_path, capsys) -> None:
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+        sol_cli.print_status()
+
+        assert "Days: 0" in capsys.readouterr().out
+
+    def test_legacy_root_level_days_not_counted(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        # AC23 intentionally ignores legacy root-level day directories.
+        (tmp_path / "20260101").mkdir()
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+        sol_cli.print_status()
+
+        assert "Days: 0" in capsys.readouterr().out
