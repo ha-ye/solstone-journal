@@ -108,9 +108,10 @@ def test_stale_sol_unit_execs_journal(monkeypatch):
     with pytest.raises(RuntimeError, match="execv called"):
         sol_cli.main()
 
-    execv.assert_called_once_with(
-        "/tmp/journal", ["/tmp/journal", "supervisor", "5015"]
-    )
+    # Shim routes through `journal start` (the canonical refresh-doing entry),
+    # not `journal supervisor`, so the version-marker / wrapper / skill refresh
+    # fires on this boot rather than waiting for the next restart.
+    execv.assert_called_once_with("/tmp/journal", ["/tmp/journal", "start", "5015"])
 
 
 def test_mismatched_stale_unit_does_not_unlock_human_sol_service(monkeypatch, capsys):

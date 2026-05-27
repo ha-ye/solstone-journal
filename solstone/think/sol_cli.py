@@ -413,7 +413,12 @@ def _dispatch(binary: str, allowed_surfaces: frozenset[str] | None) -> None:
             and reconciled.stale_verb == cmd
         ):
             journal_wrapper = _managed_wrapper("journal")
-            os.execv(str(journal_wrapper), [str(journal_wrapper), cmd, *rest])
+            # Route through `journal start` (the canonical entry that runs the
+            # version-marker / wrapper / skill refresh), not `journal {cmd}`.
+            # The unit was just rewritten to `journal start <rest>`; the shim
+            # exec should match so the upgrade-time refresh fires on this
+            # boot rather than waiting for the next restart.
+            os.execv(str(journal_wrapper), [str(journal_wrapper), "start", *rest])
         print(SOL_SERVICE_CMD_REMOVED_ERROR.format(cmd=cmd), file=sys.stderr)
         sys.exit(2)
 
