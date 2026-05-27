@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-MAX_TURNS = 30
+MAX_TURNS = 60
 DEFAULT_READ_CALL_BUDGET = 200
 
 _SOL_INVOCATION_RE = re.compile(r"(^sol\s|\bsol call\b)")
