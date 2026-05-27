@@ -1257,6 +1257,10 @@ body:not(.menu-full) .menu-bar .menu-item.current {
   flex-shrink: 0;
 }
 
+body.menu-full .menu-bar .menu-item .icon { width: 36px; }
+body.menu-full .menu-bar .menu-item .star-toggle,
+body.menu-full .menu-bar .menu-item .drag-handle { min-width: 28px; }
+
 .menu-bar .menu-item .label {
   font-size: 14px;
   font-weight: 500;
