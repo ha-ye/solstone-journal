@@ -161,20 +161,9 @@ def test_reflections_sample_raw_returns_markdown(journal_copy):
     assert "boardroom balcony inflection" in text
 
 
-def test_reflections_sample_missing_fixture_returns_plain_text_404(
-    monkeypatch, tmp_path, journal_copy
-):
-    monkeypatch.setattr(
-        "solstone.apps.reflections.routes.SAMPLE_FIXTURE_PATH",
-        tmp_path / "missing.md",
-    )
-    client = _make_client(journal_copy)
-
-    response = client.get("/app/reflections/sample")
-
-    assert response.status_code == 404
-    assert response.mimetype == "text/plain"
-    assert "Sample reflection unavailable." in response.get_data(as_text=True)
+def test_reflections_sample_content_matches_fixture_on_disk():
+    fixture_text = REFLECTION_FIXTURE.read_text(encoding="utf-8")
+    assert reflections_copy.SAMPLE_CONTENT == fixture_text
 
 
 def test_reflections_no_uppercase_transform_on_title(journal_copy):

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import logging
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -19,18 +18,6 @@ from solstone.convey.reasons import INVALID_MONTH
 from solstone.convey.utils import DATE_RE, error_response, format_date
 from solstone.think.features import require_extra
 from solstone.think.utils import get_journal, get_owner_timezone, sunday_of_week
-
-logger = logging.getLogger(__name__)
-
-SAMPLE_FIXTURE_PATH = (
-    Path(__file__).parent.parent.parent.parent
-    / "tests"
-    / "fixtures"
-    / "journal"
-    / "reflections"
-    / "weekly"
-    / "20260308.md"
-)
 
 reflections_bp = Blueprint(
     "app:reflections",
@@ -250,11 +237,7 @@ def week_pdf(day: str) -> Any:
 
 @reflections_bp.route("/sample")
 def sample() -> Any:
-    if not SAMPLE_FIXTURE_PATH.exists():
-        # Source-only: fixture is excluded from packaged installs (pyproject.toml).
-        logger.warning("sample reflection fixture not found at %s", SAMPLE_FIXTURE_PATH)
-        return _plain_not_found("Sample reflection unavailable.")
-    post = frontmatter.loads(SAMPLE_FIXTURE_PATH.read_text(encoding="utf-8"))
+    post = frontmatter.loads(reflections_copy.SAMPLE_CONTENT)
     return render_template(
         "app.html",
         app="reflections",
@@ -267,10 +250,8 @@ def sample() -> Any:
 
 @reflections_bp.route("/sample/raw")
 def sample_raw() -> Any:
-    if not SAMPLE_FIXTURE_PATH.exists():
-        return _plain_not_found("Sample reflection unavailable.")
     return (
-        SAMPLE_FIXTURE_PATH.read_text(encoding="utf-8"),
+        reflections_copy.SAMPLE_CONTENT,
         200,
         {"Content-Type": "text/markdown; charset=utf-8"},
     )
