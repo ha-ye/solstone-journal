@@ -5,7 +5,8 @@
   "schedule": "weekly",
   "priority": 90,
   "output": "md",
-  "read_scope_span": 7
+  "read_scope_span": 7,
+  "max_turns": 100
 }
 
 $facets
@@ -55,7 +56,7 @@ Before writing, audit your coverage:
 
 ## Output
 
-Return only markdown in this structure:
+Call `emit_output(content=<markdown body>)` with the markdown in this structure as the `content` argument:
 
 ```markdown
 ---

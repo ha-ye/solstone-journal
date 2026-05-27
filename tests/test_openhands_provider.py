@@ -3,11 +3,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
-from solstone.think.cogitate_policy import MAX_TURNS
+from solstone.think.cogitate_policy import MAX_TURNS, MaxTurnsExhausted
 from solstone.think.providers import openhands
 from solstone.think.providers.shared import USAGE_KEYS, JSONEventCallback
 from tests.openhands_fakes import install_fake_openhands
@@ -31,6 +32,21 @@ def _translator(fake_openhands, events: list[dict]) -> openhands._OpenHandsTrans
     )
 
 
+def _run_config(monkeypatch, tmp_path, **overrides):
+    monkeypatch.setattr(openhands, "get_journal", lambda: tmp_path)
+    monkeypatch.setattr(openhands, "get_project_root", lambda: tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    config = {
+        "provider": "openai",
+        "model": "gpt-5",
+        "prompt": "Do the work.",
+        "session_id": "11111111-1111-1111-1111-111111111111",
+        "day": "20260522",
+    }
+    config.update(overrides)
+    return config
+
+
 def test_fake_openhands_replaces_installed_sdk_modules(fake_openhands):
     from openhands.sdk import LLM
     from openhands.sdk.tool import ToolDefinition
@@ -39,6 +55,20 @@ def test_fake_openhands_replaces_installed_sdk_modules(fake_openhands):
 
     assert LLM is fake_openhands.LLM
     assert issubclass(openhands._ensure_sol_types()["SolTool"], ToolDefinition)
+
+
+def test_emit_output_tool_description_contract(fake_openhands):
+    from solstone.think.providers import emit_output_tool
+
+    emit_output_tool._EMIT_OUTPUT_TYPES.clear()
+
+    tools = emit_output_tool.build_emit_output_tools()
+
+    assert len(tools) == 1
+    assert tools[0].name == "emit_output"
+    assert "content argument is the artifact body itself" in tools[0].description
+    assert "Do NOT summarize" in tools[0].description
+    assert "Do NOT include phrases like" in tools[0].description
 
 
 def test_translator_maps_thinking_sources(fake_openhands, fixed_time):
@@ -170,6 +200,91 @@ def test_translator_records_finish_action_without_tool_start(
     assert translator.result() == "done"
 
 
+def test_translator_records_emit_output_action_without_tool_start(
+    fake_openhands,
+    fixed_time,
+):
+    events: list[dict] = []
+    translator = _translator(fake_openhands, events)
+    translator.expects_emit_output = True
+
+    translator.on_event(
+        fake_openhands.ActionEvent(
+            reasoning_content=None,
+            thinking_blocks=[],
+            responses_reasoning_item=None,
+            tool_name="emit_output",
+            tool_call=SimpleNamespace(arguments='{"content":"# Done"}'),
+            tool_call_id="emit-1",
+            action=SimpleNamespace(content="# Done"),
+        )
+    )
+
+    assert events == []
+    assert translator.emit_output_content == "# Done"
+    assert translator.result() == "# Done"
+
+
+def test_translator_result_prefers_emit_output_content(fake_openhands, fixed_time):
+    events: list[dict] = []
+    translator = _translator(fake_openhands, events)
+    translator.expects_emit_output = True
+
+    translator.on_event(
+        fake_openhands.MessageEvent(
+            source="agent",
+            llm_message=SimpleNamespace(
+                content=[SimpleNamespace(text="message result")]
+            ),
+        )
+    )
+    translator.on_event(
+        fake_openhands.ActionEvent(
+            reasoning_content=None,
+            thinking_blocks=[],
+            responses_reasoning_item=None,
+            tool_name="finish",
+            tool_call=SimpleNamespace(arguments='{"message":"finish result"}'),
+            tool_call_id="finish-1",
+            action=SimpleNamespace(message="finish result"),
+        )
+    )
+    translator.on_event(
+        fake_openhands.ActionEvent(
+            reasoning_content=None,
+            thinking_blocks=[],
+            responses_reasoning_item=None,
+            tool_name="emit_output",
+            tool_call=SimpleNamespace(arguments='{"content":"emit result"}'),
+            tool_call_id="emit-1",
+            action=SimpleNamespace(content="emit result"),
+        )
+    )
+
+    assert translator.result() == "emit result"
+
+
+def test_translator_returns_none_when_emit_output_branch_skipped(
+    fake_openhands,
+    fixed_time,
+):
+    events: list[dict] = []
+    translator = _translator(fake_openhands, events)
+    translator.expects_emit_output = True
+
+    translator.on_event(
+        fake_openhands.MessageEvent(
+            source="agent",
+            llm_message=SimpleNamespace(
+                content=[SimpleNamespace(text="message result")]
+            ),
+        )
+    )
+
+    assert translator.final_message == "message result"
+    assert translator.result() is None
+
+
 def test_translator_maps_text_delta_tokens(fake_openhands, fixed_time):
     events: list[dict] = []
     translator = _translator(fake_openhands, events)
@@ -245,6 +360,70 @@ def test_translator_maps_max_turns_once(fake_openhands, fixed_time):
         {
             "event": "max_turns_exhausted",
             "max_turns": MAX_TURNS,
+            "ts": 123456,
+        }
+    ]
+
+
+def test_run_cogitate_uses_emit_output_branch_for_output_path(
+    fake_openhands,
+    monkeypatch,
+    tmp_path,
+):
+    config = _run_config(monkeypatch, tmp_path, output_path=str(tmp_path / "out.md"))
+    events: list[dict] = []
+
+    result = asyncio.run(openhands.run_cogitate(config, events.append))
+
+    conversation = fake_openhands.Conversation.instances[0]
+    assert result is None
+    assert [tool.name for tool in conversation.agent.tools] == ["sol", "emit_output"]
+    assert conversation.agent.include_default_tools == []
+
+
+def test_run_cogitate_keeps_finish_branch_without_output_path(
+    fake_openhands,
+    monkeypatch,
+    tmp_path,
+):
+    config = _run_config(monkeypatch, tmp_path)
+    events: list[dict] = []
+
+    asyncio.run(openhands.run_cogitate(config, events.append))
+
+    conversation = fake_openhands.Conversation.instances[0]
+    assert [tool.name for tool in conversation.agent.tools] == ["sol"]
+    assert conversation.agent.include_default_tools == ["FinishTool"]
+
+
+def test_run_cogitate_threads_configured_max_turns(
+    fake_openhands,
+    fixed_time,
+    monkeypatch,
+    tmp_path,
+):
+    async def exhaust(conversation):
+        for callback in conversation.callbacks:
+            callback(
+                fake_openhands.ConversationErrorEvent(
+                    code="MaxIterationsReached",
+                    detail="limit",
+                )
+            )
+
+    fake_openhands.Conversation.arun_impl = exhaust
+    config = _run_config(monkeypatch, tmp_path, max_turns=100)
+    events: list[dict] = []
+
+    with pytest.raises(MaxTurnsExhausted, match="100 turns"):
+        asyncio.run(openhands.run_cogitate(config, events.append))
+
+    conversation = fake_openhands.Conversation.instances[0]
+    assert conversation.max_iteration_per_run == 100
+    assert events == [
+        {
+            "event": "max_turns_exhausted",
+            "max_turns": 100,
             "ts": 123456,
         }
     ]

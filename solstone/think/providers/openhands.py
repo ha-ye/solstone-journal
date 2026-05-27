@@ -355,6 +355,8 @@ class _OpenHandsTranslator:
         callback: JSONEventCallback,
         provider: str,
         model: str,
+        max_turns: int = MAX_TURNS,
+        expects_emit_output: bool = False,
     ) -> None:
         from openhands.sdk.event import (
             ActionEvent,
@@ -367,12 +369,15 @@ class _OpenHandsTranslator:
         self.callback = callback
         self.provider = provider
         self.model = model
+        self.max_turns = max_turns
+        self.expects_emit_output = expects_emit_output
         self.ActionEvent = ActionEvent
         self.AgentErrorEvent = AgentErrorEvent
         self.ConversationErrorEvent = ConversationErrorEvent
         self.MessageEvent = MessageEvent
         self.ObservationEvent = ObservationEvent
         self.tool_calls: dict[str, dict[str, Any]] = {}
+        self.emit_output_content: str | None = None
         self.finish_message: str | None = None
         self.final_message: str | None = None
         self.max_turns_exhausted = False
@@ -417,6 +422,9 @@ class _OpenHandsTranslator:
 
         args = _tool_arguments(event)
         call_id = str(getattr(event, "tool_call_id", "") or "")
+        if _is_emit_output_action(tool_name, event, args):
+            self.emit_output_content = _emit_output_content(event, args)
+            return
         if _is_finish_action(tool_name, event, args):
             self.finish_message = _finish_message(event, args)
             return
@@ -533,14 +541,16 @@ class _OpenHandsTranslator:
         self.callback.emit(
             {
                 "event": "max_turns_exhausted",
-                "max_turns": MAX_TURNS,
+                "max_turns": self.max_turns,
                 "ts": now_ms(),
             }
         )
         self._max_turns_event_emitted = True
 
-    def result(self) -> str:
-        return (self.finish_message or self.final_message or "").strip()
+    def result(self) -> str | None:
+        if self.expects_emit_output:
+            return self.emit_output_content
+        return self.finish_message or self.final_message
 
 
 def _raw_event(event: Any) -> list[dict[str, Any]]:
@@ -582,12 +592,30 @@ def _is_finish_action(tool_name: str, event: Any, args: dict[str, Any]) -> bool:
     return "message" in args and tool_name.endswith("finish")
 
 
+def _is_emit_output_action(tool_name: str, event: Any, args: dict[str, Any]) -> bool:
+    if tool_name == "emit_output":
+        return True
+    action = getattr(event, "action", None)
+    if action is not None and action.__class__.__name__ == "EmitOutputAction":
+        return True
+    return "content" in args and tool_name.endswith("emit_output")
+
+
 def _finish_message(event: Any, args: dict[str, Any]) -> str:
     action = getattr(event, "action", None)
     message = getattr(action, "message", None)
     if isinstance(message, str):
         return message
     value = args.get("message")
+    return value if isinstance(value, str) else ""
+
+
+def _emit_output_content(event: Any, args: dict[str, Any]) -> str:
+    action = getattr(event, "action", None)
+    content = getattr(action, "content", None)
+    if isinstance(content, str):
+        return content
+    value = args.get("content")
     return value if isinstance(value, str) else ""
 
 
@@ -745,7 +773,7 @@ def _suppress_litellm_cost_warnings() -> Any:
 async def run_cogitate(
     config: dict[str, Any],
     on_event: Callable[[dict], None] | None = None,
-) -> str:
+) -> str | None:
     """Run a cogitate prompt through OpenHands SDK."""
     callback = JSONEventCallback(on_event)
     provider = str(config["provider"])
@@ -757,6 +785,8 @@ async def run_cogitate(
         from openhands.sdk.tool.spec import Tool
 
         write = bool(config.get("write"))
+        expects_emit_output = bool(config.get("output_path"))
+        max_turns = int(config.get("max_turns", MAX_TURNS) or MAX_TURNS)
         session_id, conversation_id = _session_identity(config.get("session_id"))
         prompt_body, system_instruction = assemble_prompt(
             config,
@@ -779,12 +809,24 @@ async def run_cogitate(
         # registry; passing ToolDefinition instances directly fails pydantic
         # validation. Re-register the per-run SolTool instance (its executor
         # closure captures this run's policy / callback / budget) and
-        # reference it by name. FinishTool comes from the built-in registry.
+        # reference it by name.
         register_tool("sol", sol_tools[0])
+        tool_specs = [Tool(name="sol")]
+        default_tools = ["FinishTool"]
+        if expects_emit_output:
+            from solstone.think.providers.emit_output_tool import (
+                build_emit_output_tools,
+            )
+
+            emit_output_tools = build_emit_output_tools()
+            register_tool("emit_output", emit_output_tools[0])
+            tool_specs.append(Tool(name="emit_output"))
+            default_tools = []
+
         agent = Agent(
             llm=llm,
-            tools=[Tool(name="sol")],
-            include_default_tools=["FinishTool"],
+            tools=tool_specs,
+            include_default_tools=default_tools,
             system_prompt=system_instruction,
         )
 
@@ -795,6 +837,8 @@ async def run_cogitate(
             callback=callback,
             provider=provider,
             model=_prefixed_model(provider, model),
+            max_turns=max_turns,
+            expects_emit_output=expects_emit_output,
         )
         conversation = Conversation(
             agent=agent,
@@ -803,7 +847,7 @@ async def run_cogitate(
             conversation_id=conversation_id,
             callbacks=[translator.on_event],
             token_callbacks=[translator.on_token],
-            max_iteration_per_run=MAX_TURNS,
+            max_iteration_per_run=max_turns,
             stuck_detection=True,
             visualizer=None,
         )
@@ -813,7 +857,7 @@ async def run_cogitate(
 
         if translator.max_turns_exhausted:
             raise MaxTurnsExhausted(
-                f"max_turns_exhausted: OpenHands cogitate exceeded {MAX_TURNS} turns"
+                f"max_turns_exhausted: OpenHands cogitate exceeded {max_turns} turns"
             )
 
         result = translator.result()
