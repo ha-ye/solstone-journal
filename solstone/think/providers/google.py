@@ -42,7 +42,11 @@ from solstone.think.models import GEMINI_FLASH
 
 from .shared import GenerateResult
 
-GEMINI_MAX_OUTPUT_TOKENS = 65536
+# Vertex's `maxOutputTokens` accepts 1..65535 inclusive — exactly 65536 returns
+# 400 INVALID_ARGUMENT ("supported range is from 1 (inclusive) to 65536
+# (exclusive)"). The clamp logic in _build_generate_config sums max_output_tokens
+# + thinking_budget into this single field, so the bound applies to the total.
+GEMINI_MAX_OUTPUT_TOKENS = 65535
 _DEFAULT_MAX_TOKENS = 8192
 _DEFAULT_MODEL = GEMINI_FLASH
 
