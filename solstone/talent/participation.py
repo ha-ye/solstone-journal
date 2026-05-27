@@ -34,6 +34,44 @@ def _any_activity_segment_meeting_detected(day: str, segments: list[str]) -> boo
     return any(_segment_meeting_detected(day, segment) for segment in segments)
 
 
+def _segment_attributed_entity_ids(day: str, segment: str) -> set[str]:
+    """Return entity_ids attributed to any sentence in a segment's speaker_labels.json."""
+    seg_dir = _find_segment_dir(day, segment, stream=None)
+    if seg_dir is None:
+        return set()
+    path = seg_dir / "talents" / "speaker_labels.json"
+    try:
+        data = json.loads(path.read_text())
+    except (FileNotFoundError, OSError, ValueError):
+        return set()
+    labels = data.get("labels") if isinstance(data, dict) else None
+    if not isinstance(labels, list):
+        return set()
+    out: set[str] = set()
+    for label in labels:
+        if not isinstance(label, dict):
+            continue
+        speaker = label.get("speaker")
+        if isinstance(speaker, str) and speaker:
+            out.add(speaker)
+    return out
+
+
+def _segment_named_speakers(day: str, segment: str) -> list[str]:
+    """Return non-empty speaker names from a segment's speakers.json."""
+    seg_dir = _find_segment_dir(day, segment, stream=None)
+    if seg_dir is None:
+        return []
+    path = seg_dir / "talents" / "speakers.json"
+    try:
+        data = json.loads(path.read_text())
+    except (FileNotFoundError, OSError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [s for s in data if isinstance(s, str) and s.strip()]
+
+
 def post_process(result: str, context: dict) -> str | None:
     """Resolve participation entries and merge them onto an activity record."""
     try:
@@ -95,6 +133,48 @@ def post_process(result: str, context: dict) -> str | None:
                 facet,
                 day,
             )
+
+    attributed_ids: set[str] = set()
+    named_speakers: list[str] = []
+    for seg in segments:
+        attributed_ids |= _segment_attributed_entity_ids(day, seg)
+        named_speakers.extend(_segment_named_speakers(day, seg))
+
+    def _name_resolves_to(entity_id: str | None, entry_name: str) -> bool:
+        if not named_speakers:
+            return False
+        for name in named_speakers:
+            if entity_id:
+                match = find_matching_entity(name, entities_list)
+                if match and match.get("id") == entity_id:
+                    return True
+            if entry_name and name.casefold() == entry_name.casefold():
+                return True
+        return False
+
+    uncorroborated = 0
+    for entry in resolved_entries:
+        if entry.get("role") != "attendee":
+            continue
+        if entry.get("source") not in {"voice", "speaker_label"}:
+            continue
+        entity_id = entry.get("entity_id")
+        entry_name = entry.get("name") or ""
+        corroborated = (entity_id and entity_id in attributed_ids) or _name_resolves_to(
+            entity_id, entry_name
+        )
+        if not corroborated:
+            entry["role"] = "mentioned"
+            uncorroborated += 1
+
+    if uncorroborated:
+        logger.warning(
+            "participation hook: demoted %d attendee entries to mentioned on activity %s (facet=%s day=%s); no corroborating speaker evidence across activity segments",
+            uncorroborated,
+            record_id,
+            facet,
+            day,
+        )
 
     payload = {"participation": resolved_entries}
     participation_confidence = data.get("participation_confidence")

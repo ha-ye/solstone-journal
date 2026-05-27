@@ -179,6 +179,15 @@ def test_participation_preserves_attendees_when_any_segment_is_meeting(
     _write_sense_json(
         tmp_path, day, stream, segments[1], _sense_payload(meeting_detected=True)
     )
+    (
+        tmp_path
+        / "chronicle"
+        / day
+        / stream
+        / segments[1]
+        / "talents"
+        / "speakers.json"
+    ).write_text(json.dumps(["Guest Speaker"]), encoding="utf-8")
 
     activity = _activity_record(segments)
     append_activity_record(facet, day, activity)
