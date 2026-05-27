@@ -57,6 +57,21 @@ SCENARIOS: list[dict[str, Any]] = [
             {"do": "assert_text", "text": "PASS chat bar copy: 0 failure(s)"},
         ],
     },
+    {
+        "app": "activities",
+        "name": "participation-render",
+        "steps": [
+            {
+                "do": "navigate",
+                "path": "/static/tests/activities-participation-render.html",
+            },
+            {"do": "wait", "ms": 500},
+            {
+                "do": "assert_text",
+                "text": "PASS activities participation render: 0 failure(s)",
+            },
+        ],
+    },
     # smoke scenarios
     {
         "app": "sol",

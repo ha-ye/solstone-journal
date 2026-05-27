@@ -313,6 +313,71 @@ h1 {
   padding: 1em 0;
 }
 
+.ad-participation {
+  display: grid;
+  gap: 1.25em;
+}
+
+.ad-participation-section {
+  display: grid;
+  gap: 0.6em;
+}
+
+.ad-participation-section-header {
+  margin: 0;
+  font-size: 0.95em;
+  font-weight: 600;
+  color: #333;
+}
+
+.ad-participation-cards {
+  display: grid;
+  gap: 0.55em;
+}
+
+.ad-participation-card {
+  padding: 0.65em 0.75em;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.ad-participation-card--muted {
+  opacity: 0.55;
+}
+
+.ad-participation-name {
+  font-weight: 600;
+}
+
+.ad-participation-less-certain {
+  margin-left: 0.55em;
+  color: #777;
+  font-size: 0.85em;
+  font-style: italic;
+}
+
+.ad-participation-provenance {
+  margin-top: 0.2em;
+  color: #555;
+  font-size: 0.88em;
+}
+
+.ad-participation-context {
+  margin-top: 0.35em;
+  color: #777;
+  font-size: 0.85em;
+  font-style: italic;
+  line-height: 1.4;
+}
+
+.ad-participation-empty,
+.ad-participation-unavailable {
+  color: #888;
+  font-style: italic;
+  padding: 1em 0;
+}
+
 .rendered-markdown {
   line-height: 1.6;
 }
@@ -865,9 +930,13 @@ button.activity-detail-back {
       if (data.format === 'md') {
         rendered = `<div class="rendered-markdown">${window.AppServices.renderMarkdown(data.content)}</div>`;
       } else if (data.format === 'json') {
-        let pretty;
-        try { pretty = JSON.stringify(JSON.parse(data.content), null, 2); } catch (e) { pretty = data.content; }
-        rendered = `<pre>${escapeHtml(pretty)}</pre>`;
+        if (out.filename === 'participation.json') {
+          rendered = window.solActivitiesParticipation.render(data.content);
+        } else {
+          let pretty;
+          try { pretty = JSON.stringify(JSON.parse(data.content), null, 2); } catch (e) { pretty = data.content; }
+          rendered = `<pre>${escapeHtml(pretty)}</pre>`;
+        }
       } else {
         rendered = `<pre>${escapeHtml(data.content)}</pre>`;
       }
