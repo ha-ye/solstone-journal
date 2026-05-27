@@ -1,0 +1,316 @@
+<style>
+.news-shell {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 2rem 2rem 5rem;
+  color: #1f2937;
+}
+
+.news-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+  margin-bottom: 1.5rem;
+}
+
+.news-kicker {
+  margin: 0 0 0.35rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #1d4ed8;
+}
+
+.news-title {
+  margin: 0;
+  font-size: clamp(1.8rem, 4vw, 2.7rem);
+  line-height: 1.1;
+  color: #111827;
+}
+
+.news-subtitle {
+  margin: 0.35rem 0 0;
+  font-size: 1rem;
+  color: #6b7280;
+}
+
+.news-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.news-button,
+.news-link-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0 1rem;
+  border-radius: 999px;
+  border: 1px solid #d6d3d1;
+  background: #f8fafc;
+  color: #1f2937;
+  font: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.news-button:hover,
+.news-link-button:hover {
+  background: #dbeafe;
+  border-color: #2563eb;
+}
+
+.news-body,
+.news-index {
+  background: #fff;
+  border: 1px solid #e7e5e4;
+  border-radius: 18px;
+  padding: 1.5rem;
+  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.04);
+}
+
+.news-body h1,
+.news-body h2,
+.news-body h3 {
+  color: #111827;
+}
+
+.news-body p,
+.news-body li,
+.news-index p,
+.news-index li {
+  line-height: 1.7;
+}
+
+.news-body blockquote {
+  margin: 1.5rem 0;
+  padding-left: 1rem;
+  border-left: 3px solid #2563eb;
+  color: #6b7280;
+}
+
+.news-body a,
+.news-index a {
+  color: #1d4ed8;
+}
+
+.news-body a:hover,
+.news-index a:hover {
+  color: #1e3a8a;
+}
+
+.news-populated-framing {
+  margin: 0.25rem 0 1rem;
+  font-size: 0.95rem;
+  color: #4b5563;
+}
+
+.news-index-list {
+  list-style: none;
+  margin: 1.25rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.news-index-link {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  padding: 1rem 1.1rem;
+  border-radius: 14px;
+  background: #eff6ff;
+  border: 1px solid #93c5fd;
+  text-decoration: none;
+  color: #1f2937;
+}
+
+.news-index-link:hover {
+  background: #dbeafe;
+}
+
+.news-index-facet {
+  font-weight: 600;
+}
+
+.news-index-day {
+  color: #4b5563;
+  font-size: 0.95rem;
+}
+
+.news-index-token {
+  color: #78716c;
+  font-size: 0.85rem;
+}
+
+.news-next-footer {
+  margin: 1.25rem 0 0;
+  font-size: 0.9rem;
+  color: #6b7280;
+}
+
+.news-debug-link {
+  margin: 1.5rem 0 0;
+  font-size: 0.9rem;
+  color: #6b7280;
+}
+
+.news-sample-banner {
+  display: block;
+  padding: 0.5rem 0.875rem;
+  margin: 0 0 1rem;
+  border-radius: 0.5rem;
+  background: #eff6ff;
+  border: 1px solid #93c5fd;
+  color: #1e3a8a;
+  font-size: 0.9rem;
+  font-style: italic;
+}
+
+@media (max-width: 720px) {
+  .news-shell {
+    padding: 1.25rem 1rem 4rem;
+  }
+
+  .news-header {
+    flex-direction: column;
+  }
+
+  .news-actions {
+    width: 100%;
+  }
+}
+</style>
+
+<div class="news-shell">
+  {# view_mode ∈ {"index", "detail", "sample"} #}
+  {% if view_mode == "index" %}
+    <header class="news-header">
+      <div>
+        <p class="news-kicker">{{ kicker }}</p>
+        <h2 class="news-title">{{ index_h1 }}</h2>
+        <p class="news-subtitle">{{ subtitle }}</p>
+      </div>
+    </header>
+    <section class="news-index">
+      {% if not newsletters %}
+        <div class="news-empty-state">
+          <p class="news-empty-body">{{ empty_body }}</p>
+          <p class="news-empty-next">{{ empty_next }}</p>
+          <p class="news-empty-until-then">{{ empty_until_then }}</p>
+          <p class="news-empty-sample"><a href="{{ sample_url }}">{{ sample_link_label }}</a></p>
+        </div>
+      {% else %}
+        <div class="news-populated-framing">
+          <p>{{ populated_framing }} <a href="{{ sample_url }}">{{ populated_sample_link }}</a></p>
+        </div>
+        <ul class="news-index-list">
+          {% for item in newsletters %}
+            <li>
+              <a class="news-index-link" href="{{ item.url }}">
+                <span class="news-index-facet">{{ item.facet }}</span>
+                <span class="news-index-day">{{ item.label }}</span>
+                <span class="news-index-token">{{ item.day }}</span>
+              </a>
+            </li>
+          {% endfor %}
+        </ul>
+        {% if populated_next_footer %}
+          <p class="news-next-footer">{{ populated_next_footer }}</p>
+        {% endif %}
+      {% endif %}
+    </section>
+  {% elif view_mode == "detail" %}
+    <header class="news-header">
+      <div>
+        <p class="news-kicker">{{ kicker }}</p>
+        <h2 class="news-title">{{ detail_facet }} · {{ detail_date_label }}</h2>
+        <p class="news-subtitle">{{ detail_subtitle }}</p>
+      </div>
+      <div class="news-actions">
+        <button type="button" class="news-button" id="copyNewsletterButton">copy</button>
+        <a class="news-link-button" href="{{ pdf_url }}">download PDF</a>
+      </div>
+    </header>
+
+    <section class="news-body" id="newsletterBody"></section>
+
+    <p class="news-debug-link"><a href="{{ debug_link_url }}">{{ debug_link_label }}</a></p>
+  {% elif view_mode == "sample" %}
+    <header class="news-header">
+      <div>
+        <p class="news-kicker">{{ kicker }}</p>
+        <h2 class="news-title">{{ sample_h1 }}</h2>
+      </div>
+      <div class="news-actions">
+        <button type="button" class="news-button" id="copyNewsletterButton">copy</button>
+      </div>
+    </header>
+
+    <div class="news-sample-banner">{{ sample_banner }}</div>
+    <section class="news-body" id="newsletterBody"></section>
+  {% endif %}
+</div>
+
+{% if view_mode in ("detail", "sample") %}
+<script>
+(() => {
+  const markdownSource = {{ newsletter_markdown|tojson|safe }};
+  const newsletterBody = document.getElementById('newsletterBody');
+  const copyButton = document.getElementById('copyNewsletterButton');
+  const rawUrl = {{ raw_url|tojson|safe }};
+
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    document.execCommand('copy');
+    document.body.removeChild(area);
+    return Promise.resolve();
+  }
+
+  function initNewsletterDetail() {
+    if (newsletterBody) {
+      newsletterBody.innerHTML = window.AppServices.renderMarkdown(markdownSource);
+    }
+  }
+
+  if (copyButton) {
+    copyButton.addEventListener('click', async () => {
+      const originalLabel = copyButton.textContent;
+      try {
+        const response = await fetch(rawUrl, { credentials: 'same-origin' });
+        if (!response.ok) throw new Error('copy failed');
+        await copyText(await response.text());
+        copyButton.textContent = 'copied';
+      } catch (_error) {
+        copyButton.textContent = 'failed';
+      } finally {
+        window.setTimeout(() => {
+          copyButton.textContent = originalLabel;
+        }, 2000);
+      }
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initNewsletterDetail);
+  } else {
+    initNewsletterDetail();
+  }
+})();
+</script>
+{% endif %}

@@ -6,7 +6,9 @@
         "activities",
         "todos",
         "entities",
-        "search"
+        "search",
+        "reflections",
+        "news"
       ],
       "starred": [
         "home",

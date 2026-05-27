@@ -36,6 +36,12 @@ DEFAULT_RAIL_APPS = [
     "import",
 ]
 
+# Default order for the convey sidebar. Includes the starred rail apps in the
+# same order they appear in DEFAULT_RAIL_APPS, then pins reflections + news
+# adjacent at the top of the unstarred drawer (sol's proactive journal
+# artifacts — they belong together).
+DEFAULT_APP_ORDER = list(DEFAULT_RAIL_APPS) + ["reflections", "news"]
+
 
 def _get_config_path() -> Path:
     """Get path to config/convey.json in journal root."""
@@ -94,7 +100,7 @@ def seed_default_app_navigation(config: dict[str, Any]) -> bool:
         apps_config["starred"] = list(DEFAULT_RAIL_APPS)
         changed = True
     if "order" not in apps_config:
-        apps_config["order"] = list(DEFAULT_RAIL_APPS)
+        apps_config["order"] = list(DEFAULT_APP_ORDER)
         changed = True
     return changed
 

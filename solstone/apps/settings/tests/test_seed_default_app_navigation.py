@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from solstone.convey.config import DEFAULT_RAIL_APPS
+from solstone.convey.config import DEFAULT_APP_ORDER, DEFAULT_RAIL_APPS
 from solstone.think.maint import MaintTask, get_state_file, run_pending_tasks
 
 TASK_NAME = "003_seed_default_app_navigation"
@@ -60,7 +60,7 @@ def test_seed_task_writes_resolved_journal_not_cwd(tmp_path):
     assert result.returncode == 0, result.stderr
     config = _read_convey_config(journal)
     assert config["apps"]["starred"] == DEFAULT_RAIL_APPS
-    assert config["apps"]["order"] == DEFAULT_RAIL_APPS
+    assert config["apps"]["order"] == DEFAULT_APP_ORDER
     assert not (cwd / "config" / "convey.json").exists()
 
 

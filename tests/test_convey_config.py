@@ -38,6 +38,7 @@ def test_reporting_enabled_defaults_true_when_absent(monkeypatch, tmp_path):
 
 def test_seed_default_app_navigation_seeds_absent_apps():
     from solstone.convey.config import (
+        DEFAULT_APP_ORDER,
         DEFAULT_RAIL_APPS,
         seed_default_app_navigation,
     )
@@ -48,7 +49,7 @@ def test_seed_default_app_navigation_seeds_absent_apps():
 
     assert changed is True
     assert config["apps"]["starred"] == DEFAULT_RAIL_APPS
-    assert config["apps"]["order"] == DEFAULT_RAIL_APPS
+    assert config["apps"]["order"] == DEFAULT_APP_ORDER
 
 
 def test_seed_default_app_navigation_preserves_present_empty_lists():
@@ -65,7 +66,7 @@ def test_seed_default_app_navigation_preserves_present_empty_lists():
 
 def test_seed_default_app_navigation_preserves_curated_starred():
     from solstone.convey.config import (
-        DEFAULT_RAIL_APPS,
+        DEFAULT_APP_ORDER,
         seed_default_app_navigation,
     )
 
@@ -75,7 +76,7 @@ def test_seed_default_app_navigation_preserves_curated_starred():
 
     assert changed is True
     assert config["apps"]["starred"] == ["chat"]
-    assert config["apps"]["order"] == DEFAULT_RAIL_APPS
+    assert config["apps"]["order"] == DEFAULT_APP_ORDER
 
 
 def test_seed_default_app_navigation_preserves_curated_order():
@@ -95,6 +96,7 @@ def test_seed_default_app_navigation_preserves_curated_order():
 
 def test_seed_default_app_navigation_is_idempotent():
     from solstone.convey.config import (
+        DEFAULT_APP_ORDER,
         DEFAULT_RAIL_APPS,
         seed_default_app_navigation,
     )
@@ -109,12 +111,12 @@ def test_seed_default_app_navigation_is_idempotent():
     assert second_changed is False
     assert config == first_config
     assert config["apps"]["starred"] == DEFAULT_RAIL_APPS
-    assert config["apps"]["order"] == DEFAULT_RAIL_APPS
+    assert config["apps"]["order"] == DEFAULT_APP_ORDER
 
 
 def test_init_finalize_seeds_default_app_navigation(journal_copy):
     from solstone.convey import create_app
-    from solstone.convey.config import DEFAULT_RAIL_APPS
+    from solstone.convey.config import DEFAULT_APP_ORDER, DEFAULT_RAIL_APPS
 
     (journal_copy / "config" / "convey.json").unlink()
     app = create_app(str(journal_copy))
@@ -133,7 +135,7 @@ def test_init_finalize_seeds_default_app_navigation(journal_copy):
 
     config = _read_convey_config(journal_copy)
     assert config["apps"]["starred"] == DEFAULT_RAIL_APPS
-    assert config["apps"]["order"] == DEFAULT_RAIL_APPS
+    assert config["apps"]["order"] == DEFAULT_APP_ORDER
 
 
 def test_init_finalize_logs_convey_seed_persist_failure(
