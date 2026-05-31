@@ -7,9 +7,12 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import logging
 import os
 import re
+import shutil
 import sys
+import time
 from contextlib import contextmanager
 from enum import Enum
 from pathlib import Path
@@ -89,6 +92,36 @@ def alias_path() -> Path:
 
 def journal_alias_path() -> Path:
     return alias_paths()["journal"]
+
+
+def _legacy_backup_dir() -> Path:
+    return Path("/tmp")
+
+
+def _legacy_backup_path(binary: str) -> Path:
+    timestamp = time.strftime("%Y%m%d%H%M%S", time.gmtime())
+    base = _legacy_backup_dir() / f"{binary}.old-symlink-{timestamp}"
+    for index in range(100):
+        candidate = base if index == 0 else base.with_name(f"{base.name}-{index}")
+        if not candidate.exists() and not candidate.is_symlink():
+            return candidate
+    raise RuntimeError(
+        "could not find unique backup path under /tmp after 100 attempts"
+    )
+
+
+def _backup_alias_to_tmp(alias: Path, binary: str) -> Path | None:
+    try:
+        backup = _legacy_backup_path(binary)
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        if alias.is_symlink():
+            os.symlink(os.readlink(alias), backup)
+            return backup
+        shutil.copy2(alias, backup)
+        return backup
+    except Exception as exc:
+        logging.warning("could not back up %s before overwrite: %s", alias, exc)
+        return None
 
 
 def expected_target(curdir: Path, binary: str = "sol") -> Path:
@@ -225,6 +258,26 @@ def _install_wrappers_unlocked(
         for binary in paths
     }
     write_wrappers_atomically(contents)
+
+
+def provision_wrappers(curdir: Path, journal: str) -> None:
+    """Provision/repair both managed wrappers, backing up a non-owned alias first."""
+    validate_journal_path_for_wrapper(journal)
+    aliases = alias_paths()
+    sol_bins = {binary: str(Path(sys.executable).parent / binary) for binary in aliases}
+    blocked_states = {
+        AliasState.CROSS_REPO,
+        AliasState.DANGLING,
+        AliasState.FOREIGN,
+    }
+    with wrapper_lock():
+        for binary, alias in aliases.items():
+            state, _other = check_alias(curdir, binary)
+            if state is AliasState.WORKTREE:
+                return
+            if state in blocked_states:
+                _backup_alias_to_tmp(alias, binary)
+        _install_wrappers_unlocked(journal, sol_bins, paths=aliases)
 
 
 @contextmanager
@@ -427,34 +480,31 @@ def _print_error(
     )
 
 
-def _ensure_user_bin_on_path(user_bin: Path) -> None:
+def _ensure_user_bin_on_path(user_bin: Path) -> list[str]:
     # `userpath` is imported at module top with an ImportError guard, so this
     # module is importable from system python (where doctor runs) even when
-    # `userpath` is not installed. This code path is only reached via
-    # `cmd_install`, which only runs from inside the venv where `userpath` is
-    # present; if somehow reached without `userpath`, we want a hard failure.
+    # `userpath` is not installed. Manual install and setup normally run inside
+    # the venv/runtime where `userpath` is present; if absent, setup degrades
+    # the raised error to a non-fatal wrapper warning.
     if userpath is None:
         raise RuntimeError("userpath is not available; run `make install` first")
     user_bin_str = str(user_bin)
     try:
         if userpath.in_current_path(user_bin_str):
-            print("path: ~/.local/bin already on PATH")
-            return
+            return ["path: ~/.local/bin already on PATH"]
         if userpath.append(user_bin_str, app_name="solstone", all_shells=True):
             if userpath.need_shell_restart(user_bin_str):
-                print(
+                return [
                     "path: added ~/.local/bin to shell PATH — restart your shell or run 'exec $SHELL -l' to pick it up"
-                )
-            else:
-                print("path: added ~/.local/bin to shell PATH")
-            return
-        print(
+                ]
+            return ["path: added ~/.local/bin to shell PATH"]
+        return [
             'path: could not auto-add ~/.local/bin to PATH — add this line to your shell rc manually: export PATH="$HOME/.local/bin:$PATH"'
-        )
+        ]
     except Exception as exc:
-        print(
+        return [
             f'path: could not auto-add ~/.local/bin to PATH ({type(exc).__name__}: {exc}) — add this line to your shell rc manually: export PATH="$HOME/.local/bin:$PATH"'
-        )
+        ]
 
 
 def cmd_check(curdir: Path) -> int:
@@ -548,7 +598,8 @@ def cmd_install(curdir: Path, *, force: bool = False) -> int:
             return 1
 
     print("installed")
-    _ensure_user_bin_on_path(aliases["sol"].parent)
+    for message in _ensure_user_bin_on_path(aliases["sol"].parent):
+        print(message)
     return 0
 
 

@@ -345,6 +345,26 @@ def write_executable_script(path: Path, content: str) -> Path:
     return path
 
 
+def patch_runtime_bin(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    bin_dir = tmp_path / "runtime" / "bin"
+    bin_dir.mkdir(parents=True)
+    for binary in ("python", "sol", "journal"):
+        write_executable_script(bin_dir / binary, "#!/bin/sh\n")
+    monkeypatch.setattr(sys, "executable", str(bin_dir / "python"))
+    return bin_dir
+
+
+def assert_provisioned_wrapper(alias: Path, binary: str, journal: Path, bin_dir: Path):
+    assert alias.exists()
+    assert os.access(alias, os.X_OK)
+    parsed = install_guard.parse_wrapper(alias.read_text(encoding="utf-8"))
+    assert parsed == {
+        "journal": str(journal),
+        "sol_bin": str(bin_dir / binary),
+        "version": 7,
+    }
+
+
 class TestWrapperHelpers:
     def test_current_journal_for_alias_falls_back_to_home_journal(
         self, home_root, monkeypatch
@@ -647,6 +667,105 @@ class TestCheckAlias:
 
         assert state is install_guard.AliasState.WORKTREE
         assert other is None
+
+
+class TestProvisionWrappers:
+    @pytest.fixture(autouse=True)
+    def isolated_legacy_backups(self, monkeypatch, tmp_path):
+        backup_dir = tmp_path / "legacy-backups"
+        backup_dir.mkdir()
+        monkeypatch.setattr(install_guard, "_legacy_backup_dir", lambda: backup_dir)
+        self.backup_dir = backup_dir
+
+    def test_absent_writes_both_wrappers(self, home_root, tmp_path, monkeypatch):
+        curdir = tmp_path / "site-packages" / "solstone"
+        curdir.mkdir(parents=True)
+        bin_dir = patch_runtime_bin(monkeypatch, tmp_path)
+        journal = tmp_path / "journal"
+
+        install_guard.provision_wrappers(curdir, str(journal))
+
+        for binary, alias in install_guard.alias_paths().items():
+            assert_provisioned_wrapper(alias, binary, journal, bin_dir)
+
+    @pytest.mark.parametrize("state", ["foreign", "cross_repo", "dangling"])
+    def test_non_owned_alias_backed_up_then_replaced(
+        self, state, home_root, tmp_path, monkeypatch
+    ):
+        curdir = tmp_path / "site-packages" / "solstone"
+        curdir.mkdir(parents=True)
+        bin_dir = patch_runtime_bin(monkeypatch, tmp_path)
+        journal = tmp_path / "journal"
+        alias = install_guard.alias_path()
+        alias.parent.mkdir(parents=True, exist_ok=True)
+        if state == "foreign":
+            alias.write_text("foreign", encoding="utf-8")
+        elif state == "cross_repo":
+            target = other_target(tmp_path)
+            alias.symlink_to(target)
+        else:
+            target = tmp_path / "missing" / ".venv" / "bin" / "sol"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            alias.symlink_to(target)
+
+        install_guard.provision_wrappers(curdir, str(journal))
+
+        backups = list(self.backup_dir.glob("sol.old-symlink-*"))
+        assert len(backups) == 1
+        if state == "foreign":
+            assert backups[0].read_text(encoding="utf-8") == "foreign"
+        else:
+            assert backups[0].is_symlink()
+        for binary, wrapper in install_guard.alias_paths().items():
+            assert_provisioned_wrapper(wrapper, binary, journal, bin_dir)
+            assert (
+                install_guard.check_alias(curdir, binary)[0]
+                is install_guard.AliasState.OWNED
+            )
+
+    def test_owned_current_is_idempotent_with_no_backup(
+        self, home_root, tmp_path, monkeypatch
+    ):
+        curdir = tmp_path / "site-packages" / "solstone"
+        curdir.mkdir(parents=True)
+        bin_dir = patch_runtime_bin(monkeypatch, tmp_path)
+        journal = tmp_path / "journal"
+        for binary in install_guard.alias_paths():
+            make_managed_wrapper(
+                home_root,
+                journal=str(journal),
+                sol_bin=str(bin_dir / binary),
+                binary=binary,
+            )
+        before = {
+            binary: alias.read_text(encoding="utf-8")
+            for binary, alias in install_guard.alias_paths().items()
+        }
+
+        install_guard.provision_wrappers(curdir, str(journal))
+
+        assert list(self.backup_dir.glob("*.old-symlink-*")) == []
+        for binary, alias in install_guard.alias_paths().items():
+            assert alias.read_text(encoding="utf-8") == before[binary]
+            assert_provisioned_wrapper(alias, binary, journal, bin_dir)
+
+    def test_round_trip_closure_owns_existing_runtime_bins(
+        self, home_root, tmp_path, monkeypatch
+    ):
+        curdir = tmp_path / "site-packages" / "solstone"
+        curdir.mkdir(parents=True)
+        bin_dir = patch_runtime_bin(monkeypatch, tmp_path)
+        journal = tmp_path / "journal"
+
+        install_guard.provision_wrappers(curdir, str(journal))
+
+        for binary, alias in install_guard.alias_paths().items():
+            parsed = install_guard.parse_wrapper(alias.read_text(encoding="utf-8"))
+            assert parsed is not None
+            assert Path(parsed["sol_bin"]).exists()
+            assert parsed["sol_bin"] == str(bin_dir / binary)
+            state, _other = install_guard.check_alias(curdir, binary)
+            assert state is install_guard.AliasState.OWNED
 
 
 class TestCheckCommand:

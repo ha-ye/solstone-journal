@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from solstone.think import setup
+from solstone.think import install_guard, setup
 from solstone.think.setup_events import (
     ERROR_CODES,
     EVENT_TYPES,
@@ -23,13 +23,21 @@ from tests.test_setup import (
     expected_service_install_command,
     expected_skills_journal_command,
     expected_skills_user_command,
-    expected_wrapper_command,
     patch_home,
     patch_service_health,
     patch_source_checkout,
     patch_subprocess,
     patch_tty,
 )
+
+
+@pytest.fixture(autouse=True)
+def no_user_path_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        install_guard,
+        "_ensure_user_bin_on_path",
+        lambda _path: ["path: ~/.local/bin already on PATH"],
+    )
 
 
 def parse_jsonl(text: str) -> list[dict]:
@@ -376,7 +384,6 @@ def test_setup_jsonl_skills_failure_continues_and_completes_once(
     assert rc == 1
     assert expected_skills_user_command() in commands
     assert expected_skills_journal_command(journal) in commands
-    assert expected_wrapper_command() in commands
     assert expected_service_install_command() in commands
     started_steps = [
         event["step"] for event in events if event["event"] == "step.started"
@@ -394,6 +401,47 @@ def test_setup_jsonl_skills_failure_continues_and_completes_once(
     assert completed[0] == events[-1]
     assert completed[0]["status"] == "failed"
     assert completed[0]["failed_step"] == "skills_user"
+
+
+def test_setup_jsonl_wrapper_warning_is_non_fatal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    patch_subprocess(monkeypatch, doctor_jsonl_lines=doctor_ok_lines())
+
+    def fail_write(_contents: dict[Path, str]) -> None:
+        raise OSError("permission denied: ~/.local/bin/sol")
+
+    monkeypatch.setattr(install_guard, "write_wrappers_atomically", fail_write)
+
+    rc = setup.main(
+        [
+            "--jsonl",
+            "--yes",
+            "--journal",
+            str(tmp_path / "journal"),
+            "--skip-models",
+            "--skip-skills",
+            "--skip-service",
+        ]
+    )
+    events = parse_jsonl(capsys.readouterr().out)
+
+    warnings = [
+        event
+        for event in events
+        if event["event"] == "step.warning" and event["step"] == "wrapper"
+    ]
+    assert rc == 0
+    assert warnings
+    assert warnings[-1]["text"]
+    assert warnings[-1]["fix_hint"]
+    assert events[-1]["event"] == "setup.completed"
+    assert events[-1]["status"] == "ok"
 
 
 def test_setup_jsonl_does_not_call_input(

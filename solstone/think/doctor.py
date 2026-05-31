@@ -352,24 +352,8 @@ def _recognized_legacy_target(target: Path) -> str | None:
     return None
 
 
-def _legacy_backup_dir() -> Path:
-    return Path("/tmp")
-
-
-def _legacy_backup_path(binary: str) -> Path:
-    timestamp = time.strftime("%Y%m%d%H%M%S", time.gmtime())
-    base = _legacy_backup_dir() / f"{binary}.old-symlink-{timestamp}"
-    for index in range(100):
-        candidate = base if index == 0 else base.with_name(f"{base.name}-{index}")
-        if not candidate.exists() and not candidate.is_symlink():
-            return candidate
-    raise RuntimeError(
-        "could not find unique backup path under /tmp after 100 attempts"
-    )
-
-
-def _latest_legacy_backup(binary: str) -> Path | None:
-    matches = list(_legacy_backup_dir().glob(f"{binary}.old-symlink-*"))
+def _latest_legacy_backup(install_guard: object, binary: str) -> Path | None:
+    matches = list(install_guard._legacy_backup_dir().glob(f"{binary}.old-symlink-*"))
     if not matches:
         return None
 
@@ -428,7 +412,7 @@ def _auto_migrate_legacy_aliases(
     _target, tag = legacy
 
     try:
-        backup = _legacy_backup_path(binary)
+        backup = install_guard._legacy_backup_path(binary)
         backup.parent.mkdir(parents=True, exist_ok=True)
         alias.replace(backup)
 
@@ -472,11 +456,11 @@ def stale_alias_symlink_check(args: Args, binary: str) -> CheckResult:
     install_guard = importlib.import_module(check_alias.__module__)
     alias = install_guard.alias_paths()[binary]
     if not alias.exists() and not alias.is_symlink():
-        backup = _latest_legacy_backup(binary)
+        backup = _latest_legacy_backup(install_guard, binary)
         if backup is not None:
             return make_result(
                 check,
-                "fail",
+                "warn",
                 _partial_migration_detail(binary, backup),
                 "restore the backup or re-run from a fresh shell",
             )
@@ -517,9 +501,9 @@ def stale_alias_symlink_check(args: Args, binary: str) -> CheckResult:
         fail_detail = f"unexpected alias state for {binary}: {state}"
     return make_result(
         check,
-        "fail",
+        "warn",
         fail_detail,
-        f"run `journal setup` from the repo that owns the wrapper, or remove `~/.local/bin/{binary}` manually if the repo is gone",
+        f"another sol/journal CLI is installed at ~/.local/bin/{binary}; run `journal setup` to repair",
     )
 
 

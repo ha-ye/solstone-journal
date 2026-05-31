@@ -260,7 +260,8 @@ journal-less or repo-less machine. Its default battery has four checks:
   `pyproject.toml` required.
 - `sol_importable` — blocker.
 - `local_bin_sol_reachable` — advisory.
-- `stale_alias_symlink` — blocker; checks only the `sol` wrapper.
+- `stale_alias_symlink` — blocker; checks only the `sol` wrapper. Stale
+  aliases warn, never block, and `journal setup` repairs them.
 
 `journal doctor` diagnoses journal-host health. It is role-aware: on a machine
 without a local journal directory or installed journal service, folder and
@@ -270,6 +271,7 @@ instead of false failures. Its battery is:
 - `disk_space` — advisory.
 - `config_dir_readable`, `journal_dir_writable`, `service_identity`,
   `service_running`, `journal_sync`, `stale_alias_symlink` — blockers.
+  Stale `journal` aliases warn, never block, and `journal setup` repairs them.
 - `launchd_stale_plist` — advisory on macOS; skipped on Linux.
 - `feature:pdf`, `feature:whisper` — advisories with the exact extra-install
   command when missing.
@@ -294,7 +296,7 @@ Use `--jsonl` when another process needs progress events as they happen. The con
 | `step.started` | `journal setup --jsonl` | A setup step starts. |
 | `step.completed` | `journal setup --jsonl` | A setup step finishes with `outcome: "ok"` or `outcome: "skipped"`. |
 | `step.failed` | `journal setup --jsonl` | A setup step fails or reaches a dead end. |
-| `step.warning` | `journal setup --jsonl` | Setup translates advisory diagnostics or dropped doctor lines. |
+| `step.warning` | `journal setup --jsonl` | Setup translates advisory diagnostics, dropped doctor lines, or non-fatal wrapper-provisioning failures. |
 | `doctor.started` | doctor `--jsonl` | Doctor diagnostics begin. |
 | `check.completed` | doctor `--jsonl` | One diagnostic check finishes. Status is long form: `ok`, `warning`, `failed`, or `skipped`. |
 | `doctor.completed` | doctor `--jsonl` | Doctor diagnostics finish with `status: "ok"`, `"warning"`, or `"failed"`. |
@@ -313,7 +315,12 @@ Use `--jsonl` when another process needs progress events as they happen. The con
 
 Step names are fixed and ordered: `doctor`, `journal`, `install_models`, `skills_user`, `skills_journal`, `wrapper`, `service`.
 
-Skipped or resumed reasons are fixed: `--skip-models`, `--skip-skills`, `--skip-service`, `packaged_install`, `prior_run_ok`, `resumed_after_restart`.
+Skipped or resumed reasons are fixed: `--skip-models`, `--skip-skills`, `--skip-service`, `prior_run_ok`, `resumed_after_restart`.
+
+The `wrapper` setup step provisions both managed wrappers in-process for source
+and packaged installs. It backs up a non-owned alias under `/tmp` before
+overwriting it; provisioning failures emit `step.warning` and setup still exits
+successfully so the next run can repair the wrappers.
 
 ### Doctor pass-through
 

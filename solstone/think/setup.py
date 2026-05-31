@@ -41,7 +41,7 @@ DOCTOR_JSONL_EVENTS = frozenset(
     {"doctor.started", "check.completed", "doctor.completed"}
 )
 
-StepStatus = Literal["ok", "skipped", "failed"]
+StepStatus = Literal["ok", "skipped", "failed", "warning"]
 CleanUninstallState = Literal["removed", "already-absent", "skipped", "failed"]
 
 
@@ -705,7 +705,7 @@ def emit_step_result(
         return
     emitter = require_emitter(ctx)
     duration_ms = elapsed_ms(step_started)
-    if result.status in ("ok", "skipped"):
+    if result.status in ("ok", "skipped", "warning"):
         fields: dict[str, object] = {
             "step": result.name,
             "outcome": "skipped" if result.status == "skipped" else "ok",
@@ -714,6 +714,14 @@ def emit_step_result(
         if result.reason:
             fields["reason"] = result.reason
         emitter.emit("step.completed", **fields)
+        if result.status == "warning":
+            error = result.error or {}
+            emitter.emit(
+                "step.warning",
+                step=result.name,
+                text=str(error.get("message", "step warning"))[:512],
+                fix_hint=str(error.get("fix_hint", "")),
+            )
         return
     error = result.error or {}
     emitter.emit(
@@ -779,10 +787,6 @@ def skills_journal_command(ctx: SetupContext) -> list[str]:
         "--agent",
         "all",
     ]
-
-
-def wrapper_command() -> list[str]:
-    return [sys.executable, "-m", "solstone.think.install_guard", "install"]
 
 
 def service_install_command(ctx: SetupContext) -> list[str]:
@@ -1234,32 +1238,31 @@ def step_wrapper(ctx: SetupContext, step_index: int) -> StepResult:
     from solstone.think import install_guard
 
     started_at = utc_now()
-    wrapper_paths = list(install_guard.alias_paths().values())
-    if not ctx.is_source_checkout:
-        print_step_skipped(ctx, step_index, "wrapper", "packaged install")
-        return step_result(
-            "wrapper", "skipped", [], started_at, reason="packaged_install"
+    aliases = install_guard.alias_paths()
+    wrapper_paths = list(aliases.values())
+    print_step_header(ctx, step_index, "wrapper")
+    try:
+        install_guard.provision_wrappers(Path(ctx.project_root), str(ctx.journal_path))
+        for message in install_guard._ensure_user_bin_on_path(aliases["sol"].parent):
+            narrate(ctx, message)
+        return step_result("wrapper", "ok", wrapper_paths, started_at)
+    except Exception as exc:
+        message = (
+            "could not provision the sol/journal wrappers at "
+            f"{aliases['sol'].parent} ({type(exc).__name__}: {exc})"
         )
-    command = wrapper_command()
-    print_step_header(ctx, step_index, "wrapper", command)
-    result = run_step_subprocess(ctx, command, timeout=ctx.step_timeout_seconds)
-    if result.timed_out:
+        fix_hint = (
+            "fix permissions on ~/.local/bin and re-run `journal setup`, "
+            "or invoke sol/journal directly from the runtime"
+        )
+        narrate(ctx, f"warning: {message} — {fix_hint}", file=sys.stderr)
         return step_result(
             "wrapper",
-            "failed",
+            "warning",
             wrapper_paths,
             started_at,
-            subprocess_error("wrapper", result, timeout=ctx.step_timeout_seconds),
+            {"message": message, "fix_hint": fix_hint},
         )
-    if result.returncode != 0:
-        return step_result(
-            "wrapper",
-            "failed",
-            wrapper_paths,
-            started_at,
-            subprocess_error("wrapper", result),
-        )
-    return step_result("wrapper", "ok", wrapper_paths, started_at)
 
 
 def service_artifact_path() -> Path | None:
@@ -1643,10 +1646,7 @@ def print_plan(ctx: SetupContext, *, dry_run: bool) -> None:
     else:
         narrate(ctx, f"  would run: {format_command(skills_journal_command(ctx))}")
     narrate(ctx, f"[step 6/7] {_STEP_NAME[step_wrapper]}")
-    if not ctx.is_source_checkout:
-        narrate(ctx, "  skipped: packaged install")
-    else:
-        narrate(ctx, f"  would run: {format_command(wrapper_command())}")
+    narrate(ctx, "  would provision managed sol and journal wrappers in-process")
     narrate(ctx, f"[step 7/7] {_STEP_NAME[step_service]}")
     if ctx.skip_service:
         narrate(ctx, "  skipped: --skip-service")
@@ -1692,6 +1692,18 @@ def print_success_summary(ctx: SetupContext, manifest: dict[str, Any]) -> None:
     else:
         narrate(ctx, "advisories from doctor: none")
     narrate(ctx)
+    warning_steps = [step for step in steps if step.get("status") == "warning"]
+    if warning_steps:
+        narrate(ctx, "warnings:")
+        for step in warning_steps:
+            error = step.get("error") or {}
+            message = error.get("message")
+            fix_hint = error.get("fix_hint")
+            if message and fix_hint:
+                narrate(ctx, f"  - {message} — {fix_hint}")
+            elif message:
+                narrate(ctx, f"  - {message}")
+        narrate(ctx)
     if not ctx.skip_service:
         narrate(ctx, f"solstone is running at http://localhost:{ctx.port}")
         narrate(ctx)
@@ -1816,8 +1828,6 @@ def command_for_step(
         return skills_user_command()
     if step is step_skills_journal:
         return skills_journal_command(ctx)
-    if step is step_wrapper:
-        return wrapper_command()
     if step is step_service:
         return service_install_command(ctx)
     return None

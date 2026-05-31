@@ -17,6 +17,15 @@ from solstone.think import health_cli, install_guard, service, setup
 from solstone.think.user_config import write_user_config
 
 
+@pytest.fixture(autouse=True)
+def no_user_path_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        install_guard,
+        "_ensure_user_bin_on_path",
+        lambda _path: ["path: ~/.local/bin already on PATH"],
+    )
+
+
 def patch_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     home = tmp_path / "home"
     home.mkdir()
@@ -217,10 +226,6 @@ def expected_skills_journal_command(journal: Path) -> list[str]:
     ]
 
 
-def expected_wrapper_command() -> list[str]:
-    return [sys.executable, "-m", "solstone.think.install_guard", "install"]
-
-
 def expected_service_install_command(port: int = 5015) -> list[str]:
     return [
         str(Path(sys.executable).parent / "journal"),
@@ -262,6 +267,32 @@ def read_manifest(journal: Path) -> dict[str, Any]:
 def touch_file(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch()
+
+
+def write_executable_script(path: Path, content: str = "#!/bin/sh\n") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def patch_runtime_bin(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    bin_dir = tmp_path / "runtime" / "bin"
+    for binary in ("python", "sol", "journal"):
+        write_executable_script(bin_dir / binary)
+    monkeypatch.setattr(sys, "executable", str(bin_dir / "python"))
+    return bin_dir
+
+
+def assert_setup_wrapper(
+    alias: Path, binary: str, journal: Path, bin_dir: Path
+) -> None:
+    parsed = install_guard.parse_wrapper(alias.read_text(encoding="utf-8"))
+    assert parsed == {
+        "journal": str(journal),
+        "sol_bin": str(bin_dir / binary),
+        "version": 7,
+    }
 
 
 def write_owned_wrapper(home: Path, repo: Path, journal: Path) -> Path:
@@ -401,9 +432,8 @@ def test_interactive_happy_path_default_journal(
     assert_command(calls, 1, expected_install_models_command())
     assert_command(calls, 2, expected_skills_user_command())
     assert_command(calls, 3, expected_skills_journal_command(journal))
-    assert_command(calls, 4, expected_wrapper_command())
-    assert_command(calls, 5, expected_service_install_command())
-    assert len(calls) == 6
+    assert_command(calls, 4, expected_service_install_command())
+    assert len(calls) == 5
 
 
 def test_resolve_journal_path_precedence_chain(
@@ -462,8 +492,8 @@ def test_interactive_happy_path_journal_override(
         encoding="utf-8"
     ) == f'journal = "{journal}"\n'
     assert read_manifest(journal)["args_resolved"]["journal"]["source"] == "cli"
-    assert_command(calls, 4, expected_wrapper_command())
-    assert len(calls) == 6
+    assert_command(calls, 4, expected_service_install_command())
+    assert len(calls) == 5
 
 
 def test_non_interactive_happy_path(
@@ -484,8 +514,8 @@ def test_non_interactive_happy_path(
     manifest = read_manifest(journal)
     assert manifest["completed_at"] is not None
     assert_step_names_and_statuses(manifest, ["ok", "ok", "ok", "ok", "ok", "ok", "ok"])
-    assert_command(calls, 5, expected_service_install_command())
-    assert len(calls) == 6
+    assert_command(calls, 4, expected_service_install_command())
+    assert len(calls) == 5
 
 
 @pytest.mark.parametrize("use_journal_flag", [False, True])
@@ -635,7 +665,12 @@ def test_manifest_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     assert all(
         Path(path).is_absolute() for step in manifest["steps"] for path in step["paths"]
     )
-    assert {step["status"] for step in manifest["steps"]} <= {"ok", "skipped", "failed"}
+    assert {step["status"] for step in manifest["steps"]} <= {
+        "ok",
+        "skipped",
+        "failed",
+        "warning",
+    }
 
 
 def test_persisted_journal_skips_existing_journal_check_non_interactive(
@@ -926,9 +961,8 @@ def test_partial_completion_runs_remaining_steps(
     assert_command(calls, 0, expected_install_models_command())
     assert_command(calls, 1, expected_skills_user_command())
     assert_command(calls, 2, expected_skills_journal_command(journal))
-    assert_command(calls, 3, expected_wrapper_command())
-    assert_command(calls, 4, expected_service_install_command())
-    assert len(calls) == 5
+    assert_command(calls, 3, expected_service_install_command())
+    assert len(calls) == 4
 
 
 def test_non_interactive_setup_has_no_port_preflight_dead_end(
@@ -963,8 +997,8 @@ def test_non_interactive_setup_has_no_port_preflight_dead_end(
     assert "port 5015 is already in use" not in captured.out
     assert "port_in_use_non_interactive" not in captured.out
     assert_command(calls, 0, expected_doctor_command())
-    assert_command(calls, 5, expected_service_install_command())
-    assert len(calls) == 6
+    assert_command(calls, 4, expected_service_install_command())
+    assert len(calls) == 5
 
 
 def test_doctor_timeout_records_failure(
@@ -1453,8 +1487,9 @@ def test_packaged_install_runs_service_step(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    patch_home(monkeypatch, tmp_path)
+    home = patch_home(monkeypatch, tmp_path)
     patch_packaged_install(monkeypatch, tmp_path)
+    bin_dir = patch_runtime_bin(monkeypatch, tmp_path)
     monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
     calls = patch_subprocess(monkeypatch)
     patch_service_health(monkeypatch)
@@ -1475,10 +1510,196 @@ def test_packaged_install_runs_service_step(
     assert_command(calls, 1, expected_service_install_command())
     assert len(calls) == 2
     steps = read_manifest(journal)["steps"]
-    assert steps[-2]["status"] == "skipped"
-    assert steps[-2]["reason"] == "packaged_install"
+    assert steps[-2]["status"] == "ok"
+    for binary, alias in install_guard.alias_paths().items():
+        assert alias == home / ".local" / "bin" / binary
+        assert_setup_wrapper(alias, binary, journal, bin_dir)
     assert steps[-1]["name"] == "service"
     assert steps[-1]["status"] == "ok"
+
+
+def test_packaged_install_absent_provisions_wrappers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_home(monkeypatch, tmp_path)
+    patch_packaged_install(monkeypatch, tmp_path)
+    bin_dir = patch_runtime_bin(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    patch_subprocess(monkeypatch)
+    journal = tmp_path / "journal"
+
+    rc = setup.main(
+        [
+            "--yes",
+            "--journal",
+            str(journal),
+            "--skip-models",
+            "--skip-skills",
+            "--skip-service",
+        ]
+    )
+
+    assert rc == 0
+    for binary, alias in install_guard.alias_paths().items():
+        assert_setup_wrapper(alias, binary, journal, bin_dir)
+
+
+@pytest.mark.parametrize("state", ["foreign", "cross_repo", "dangling"])
+def test_packaged_install_non_owned_alias_is_backed_up_and_repaired(
+    state: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_home(monkeypatch, tmp_path)
+    patch_packaged_install(monkeypatch, tmp_path)
+    bin_dir = patch_runtime_bin(monkeypatch, tmp_path)
+    backup_dir = tmp_path / "legacy-backups"
+    backup_dir.mkdir()
+    monkeypatch.setattr(install_guard, "_legacy_backup_dir", lambda: backup_dir)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    aliases = install_guard.alias_paths()
+    aliases["sol"].parent.mkdir(parents=True, exist_ok=True)
+    if state == "foreign":
+        aliases["sol"].write_text("foreign", encoding="utf-8")
+    elif state == "cross_repo":
+        target = tmp_path / "other" / ".venv" / "bin" / "sol"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("", encoding="utf-8")
+        aliases["sol"].symlink_to(target)
+    else:
+        target = tmp_path / "missing" / ".venv" / "bin" / "sol"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        aliases["sol"].symlink_to(target)
+    journal_target = tmp_path / "missing" / ".venv" / "bin" / "journal"
+    journal_target.parent.mkdir(parents=True, exist_ok=True)
+    aliases["journal"].symlink_to(journal_target)
+    patch_subprocess(monkeypatch)
+    journal = tmp_path / "journal"
+
+    rc = setup.main(
+        [
+            "--yes",
+            "--journal",
+            str(journal),
+            "--skip-models",
+            "--skip-skills",
+            "--skip-service",
+        ]
+    )
+
+    assert rc == 0
+    assert len(list(backup_dir.glob("sol.old-symlink-*"))) == 1
+    assert len(list(backup_dir.glob("journal.old-symlink-*"))) == 1
+    for binary, alias in aliases.items():
+        assert not alias.is_symlink()
+        assert_setup_wrapper(alias, binary, journal, bin_dir)
+
+
+def test_wrapper_provisioning_failure_is_non_fatal_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    patch_home(monkeypatch, tmp_path)
+    patch_packaged_install(monkeypatch, tmp_path)
+    patch_runtime_bin(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    patch_subprocess(monkeypatch)
+    journal = tmp_path / "journal"
+
+    def fail_write(_contents: dict[Path, str]) -> None:
+        raise OSError("permission denied: ~/.local/bin/sol")
+
+    monkeypatch.setattr(install_guard, "write_wrappers_atomically", fail_write)
+
+    rc = setup.main(
+        [
+            "--yes",
+            "--journal",
+            str(journal),
+            "--skip-models",
+            "--skip-skills",
+            "--skip-service",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    manifest = read_manifest(journal)
+    wrapper_step = manifest["steps"][-2]
+    assert rc == 0
+    assert wrapper_step["status"] == "warning"
+    assert "~/.local/bin" in wrapper_step["error"]["fix_hint"]
+    assert "could not provision the sol/journal wrappers at" in captured.out
+    assert "fix permissions on ~/.local/bin" in captured.out
+
+
+def test_owned_current_wrapper_setup_creates_no_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    patch_packaged_install(monkeypatch, tmp_path)
+    bin_dir = patch_runtime_bin(monkeypatch, tmp_path)
+    backup_dir = tmp_path / "legacy-backups"
+    backup_dir.mkdir()
+    monkeypatch.setattr(install_guard, "_legacy_backup_dir", lambda: backup_dir)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    journal = tmp_path / "journal"
+    for binary in install_guard.alias_paths():
+        alias = home / ".local" / "bin" / binary
+        alias.parent.mkdir(parents=True, exist_ok=True)
+        alias.write_text(
+            install_guard.render_wrapper(str(journal), str(bin_dir / binary), binary),
+            encoding="utf-8",
+        )
+        alias.chmod(0o755)
+    patch_subprocess(monkeypatch)
+
+    rc = setup.main(
+        [
+            "--yes",
+            "--journal",
+            str(journal),
+            "--skip-models",
+            "--skip-skills",
+            "--skip-service",
+        ]
+    )
+
+    assert rc == 0
+    assert list(backup_dir.glob("*.old-symlink-*")) == []
+
+
+def test_setup_wrapper_round_trip_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_home(monkeypatch, tmp_path)
+    curdir = patch_packaged_install(monkeypatch, tmp_path)
+    patch_runtime_bin(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    patch_subprocess(monkeypatch)
+    journal = tmp_path / "journal"
+
+    rc = setup.main(
+        [
+            "--yes",
+            "--journal",
+            str(journal),
+            "--skip-models",
+            "--skip-skills",
+            "--skip-service",
+        ]
+    )
+
+    assert rc == 0
+    for binary, alias in install_guard.alias_paths().items():
+        parsed = install_guard.parse_wrapper(alias.read_text(encoding="utf-8"))
+        assert parsed is not None
+        assert Path(parsed["sol_bin"]).exists()
+        state, _other = install_guard.check_alias(curdir, binary)
+        assert state is install_guard.AliasState.OWNED
 
 
 def test_step_skills_user_installs_solstone_bundle_for_all_agents(
@@ -1611,10 +1832,7 @@ def test_step_skills_journal_failure_does_not_block_subsequent_steps(
     rc = setup.main(["--yes", "--journal", str(journal), "--skip-models"])
 
     assert rc == 4
-    assert commands[-2:] == [
-        expected_wrapper_command(),
-        expected_service_install_command(),
-    ]
+    assert commands[-1] == expected_service_install_command()
     manifest = read_manifest(journal)
     assert_step_names_and_statuses(
         manifest, ["ok", "ok", "skipped", "ok", "failed", "ok", "ok"]
@@ -1694,14 +1912,20 @@ def test_resumption_runs_step_when_artifact_missing(
     journal = tmp_path / "journal"
     paths_by_name = write_clean_prior_manifest(journal)
     paths_by_name["wrapper"][0].unlink()
+    backup_dir = tmp_path / "legacy-backups"
+    backup_dir.mkdir()
+    monkeypatch.setattr(install_guard, "_legacy_backup_dir", lambda: backup_dir)
     calls = patch_subprocess(monkeypatch)
     patch_service_health(monkeypatch)
 
     rc = setup.main(["--yes", "--journal", str(journal)])
 
     assert rc == 0
-    assert_command(calls, 0, expected_wrapper_command())
-    assert len(calls) == 1
+    assert len(calls) == 0
+    for alias in install_guard.alias_paths().values():
+        assert (
+            install_guard.parse_wrapper(alias.read_text(encoding="utf-8")) is not None
+        )
     manifest = read_manifest(journal)
     assert_step_names_and_statuses(
         manifest,
@@ -1789,6 +2013,9 @@ def test_force_skips_resumption(
     monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
     journal = tmp_path / "journal"
     write_clean_prior_manifest(journal)
+    backup_dir = tmp_path / "legacy-backups"
+    backup_dir.mkdir()
+    monkeypatch.setattr(install_guard, "_legacy_backup_dir", lambda: backup_dir)
     calls = patch_subprocess(monkeypatch)
     patch_service_health(monkeypatch)
 
@@ -1799,9 +2026,8 @@ def test_force_skips_resumption(
     assert_command(calls, 1, expected_install_models_command())
     assert_command(calls, 2, expected_skills_user_command())
     assert_command(calls, 3, expected_skills_journal_command(journal))
-    assert_command(calls, 4, expected_wrapper_command())
-    assert_command(calls, 5, expected_service_install_command())
-    assert len(calls) == 6
+    assert_command(calls, 4, expected_service_install_command())
+    assert len(calls) == 5
     manifest = read_manifest(journal)
     assert_step_names_and_statuses(manifest, ["ok", "ok", "ok", "ok", "ok", "ok", "ok"])
     assert all(step["reason"] is None for step in manifest["steps"])
@@ -1950,9 +2176,8 @@ def test_invalid_manifest_treated_as_no_prior(
     assert_command(calls, 1, expected_install_models_command())
     assert_command(calls, 2, expected_skills_user_command())
     assert_command(calls, 3, expected_skills_journal_command(journal))
-    assert_command(calls, 4, expected_wrapper_command())
-    assert_command(calls, 5, expected_service_install_command())
-    assert len(calls) == 6
+    assert_command(calls, 4, expected_service_install_command())
+    assert len(calls) == 5
 
 
 def test_port_propagates_to_subprocess_argv(
@@ -1971,5 +2196,5 @@ def test_port_propagates_to_subprocess_argv(
 
     assert rc == 0
     assert_command(calls, 0, expected_doctor_command(port=8080))
-    assert_command(calls, 5, expected_service_install_command(port=8080))
-    assert len(calls) == 6
+    assert_command(calls, 4, expected_service_install_command(port=8080))
+    assert len(calls) == 5

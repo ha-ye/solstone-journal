@@ -42,7 +42,7 @@ Use the diagnostic command that matches the question:
 | `python_version` | blocker | Light package-metadata Requires-Python floor; does not require `pyproject.toml`. |
 | `sol_importable` | blocker | Verifies the installed/source CLI import path. |
 | `local_bin_sol_reachable` | advisory | Checks the expected `~/.local/bin/sol` PATH shape. |
-| `stale_alias_symlink` | blocker | Checks only the `sol` wrapper and can migrate recognized legacy aliases. |
+| `stale_alias_symlink` | blocker | Checks only the `sol` wrapper; stale aliases warn, never block, and `journal setup` repairs them. Recognized legacy aliases can still migrate automatically. |
 
 `journal doctor` runs the journal-host battery:
 
@@ -54,7 +54,7 @@ Use the diagnostic command that matches the question:
 | `service_identity` | blocker | Installed service points at this install. |
 | `service_running` | blocker | Service installed/running/crash-loop diagnosis. |
 | `journal_sync` | blocker | Concurrent-writer conflict check. |
-| `stale_alias_symlink` | blocker | Checks only the `journal` wrapper. |
+| `stale_alias_symlink` | blocker | Checks only the `journal` wrapper; stale aliases warn, never block, and `journal setup` repairs them. |
 | `launchd_stale_plist` | advisory | macOS only; Linux skips it. |
 | `feature:pdf`, `feature:whisper` | advisory | Optional extras with exact install commands. |
 

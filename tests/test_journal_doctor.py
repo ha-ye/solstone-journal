@@ -223,7 +223,7 @@ class TestJournalAlias:
     def isolated_legacy_backups(self, doctor, monkeypatch, tmp_path):
         backup_dir = tmp_path / "legacy-backups"
         backup_dir.mkdir()
-        monkeypatch.setattr(doctor, "_legacy_backup_dir", lambda: backup_dir)
+        monkeypatch.setattr(install_guard, "_legacy_backup_dir", lambda: backup_dir)
         self.backup_dir = backup_dir
 
     def setup_auto_migration(self, doctor, monkeypatch, tmp_path):

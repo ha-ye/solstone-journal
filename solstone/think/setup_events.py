@@ -52,7 +52,6 @@ SKIPPED_REASONS: frozenset[str] = frozenset(
         "--skip-models",
         "--skip-skills",
         "--skip-service",
-        "packaged_install",
         "prior_run_ok",
         "resumed_after_restart",
     }

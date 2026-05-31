@@ -54,8 +54,8 @@ def ensure_expected_target(repo: Path) -> Path:
     return target
 
 
-def make_alias(home_root: Path, target: Path | str) -> Path:
-    alias = home_root / ".local" / "bin" / "sol"
+def make_alias(home_root: Path, target: Path | str, binary: str = "sol") -> Path:
+    alias = home_root / ".local" / "bin" / binary
     alias.parent.mkdir(parents=True, exist_ok=True)
     alias.symlink_to(target)
     return alias
@@ -372,7 +372,7 @@ class TestStaleAliasSymlink:
     def isolated_legacy_backups(self, doctor, monkeypatch, tmp_path):
         backup_dir = tmp_path / "legacy-backups"
         backup_dir.mkdir()
-        monkeypatch.setattr(doctor, "_legacy_backup_dir", lambda: backup_dir)
+        monkeypatch.setattr(install_guard, "_legacy_backup_dir", lambda: backup_dir)
         self.backup_dir = backup_dir
 
     def setup_import(self, doctor, monkeypatch):
@@ -424,24 +424,26 @@ class TestStaleAliasSymlink:
         result = doctor.stale_alias_symlink_check(args(doctor), binary="sol")
         assert result.status == "ok"
 
-    def test_cross_repo_fail(self, doctor, monkeypatch, home_root, tmp_path):
+    def test_cross_repo_warns(self, doctor, monkeypatch, home_root, tmp_path):
         self.setup_import(doctor, monkeypatch)
         repo = make_repo(tmp_path)
         make_alias(home_root, other_target(tmp_path))
         monkeypatch.setattr(doctor, "ROOT", repo)
         result = doctor.stale_alias_symlink_check(args(doctor), binary="sol")
-        assert result.status == "fail"
+        assert result.status == "warn"
+        assert list(self.backup_dir.glob("sol.old-symlink-*")) == []
 
-    def test_dangling_fail(self, doctor, monkeypatch, home_root, tmp_path):
+    def test_dangling_warns(self, doctor, monkeypatch, home_root, tmp_path):
         self.setup_import(doctor, monkeypatch)
         repo = make_repo(tmp_path)
         missing = tmp_path / "missing" / ".venv" / "bin" / "sol"
         make_alias(home_root, missing)
         monkeypatch.setattr(doctor, "ROOT", repo)
         result = doctor.stale_alias_symlink_check(args(doctor), binary="sol")
-        assert result.status == "fail"
+        assert result.status == "warn"
+        assert (home_root / ".local" / "bin" / "sol").is_symlink()
 
-    def test_not_symlink_fail(self, doctor, monkeypatch, home_root, tmp_path):
+    def test_not_symlink_warns(self, doctor, monkeypatch, home_root, tmp_path):
         self.setup_import(doctor, monkeypatch)
         repo = make_repo(tmp_path)
         alias = home_root / ".local" / "bin" / "sol"
@@ -449,7 +451,8 @@ class TestStaleAliasSymlink:
         alias.write_text("not a symlink", encoding="utf-8")
         monkeypatch.setattr(doctor, "ROOT", repo)
         result = doctor.stale_alias_symlink_check(args(doctor), binary="sol")
-        assert result.status == "fail"
+        assert result.status == "warn"
+        assert list(self.backup_dir.glob("sol.old-symlink-*")) == []
 
     def test_worktree_skip(self, doctor, monkeypatch, home_root, tmp_path):
         self.setup_import(doctor, monkeypatch)
@@ -578,9 +581,7 @@ class TestStaleAliasSymlink:
         assert len(backups) == 1
         assert backups[0].is_symlink()
 
-    def test_non_legacy_target_still_fails(
-        self, doctor, monkeypatch, home_root, tmp_path
-    ):
+    def test_non_legacy_target_warns(self, doctor, monkeypatch, home_root, tmp_path):
         self.setup_auto_migration(doctor, monkeypatch, tmp_path)
         repo = make_repo(tmp_path)
         target = self.make_existing_target(
@@ -591,7 +592,7 @@ class TestStaleAliasSymlink:
 
         result = doctor.stale_alias_symlink_check(args(doctor), binary="sol")
 
-        assert result.status == "fail"
+        assert result.status == "warn"
         assert list(self.backup_dir.glob("sol.old-symlink-*")) == []
 
     def test_idempotent_after_migration(self, doctor, monkeypatch, home_root, tmp_path):
@@ -625,9 +626,47 @@ class TestStaleAliasSymlink:
 
         result = doctor.stale_alias_symlink_check(args(doctor), binary="sol")
 
-        assert result.status == "fail"
+        assert result.status == "warn"
         assert "partial migration detected" in result.detail
         assert str(backup) in result.detail
+
+    def test_journal_binary_not_owned_warns(
+        self, doctor, monkeypatch, home_root, tmp_path
+    ):
+        self.setup_import(doctor, monkeypatch)
+        repo = make_repo(tmp_path)
+        target = tmp_path / "other" / ".venv" / "bin" / "journal"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("", encoding="utf-8")
+        make_alias(home_root, target, binary="journal")
+        monkeypatch.setattr(doctor, "ROOT", repo)
+
+        result = doctor.stale_alias_symlink_check(args(doctor), binary="journal")
+
+        assert result.status == "warn"
+
+    def test_journal_battery_warn_does_not_fail_exit(
+        self, doctor, monkeypatch, home_root, tmp_path, capsys
+    ):
+        self.setup_import(doctor, monkeypatch)
+        repo = make_repo(tmp_path)
+        target = tmp_path / "other" / ".venv" / "bin" / "journal"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("", encoding="utf-8")
+        make_alias(home_root, target, binary="journal")
+        monkeypatch.setattr(doctor, "ROOT", repo)
+
+        def journal_stale_check(check_args):
+            return doctor.stale_alias_symlink_check(check_args, binary="journal")
+
+        monkeypatch.setattr(
+            doctor,
+            "select_battery",
+            lambda _args: [(doctor.STALE_ALIAS_CHECK, journal_stale_check)],
+        )
+
+        assert doctor.main([]) == 0
+        assert "1 warnings" in capsys.readouterr().out
 
 
 class TestJsonAndExitCodes:
