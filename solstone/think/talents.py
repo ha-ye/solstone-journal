@@ -46,7 +46,6 @@ from solstone.think.utils import (
     format_day,
     format_segment_times,
     get_journal,
-    get_project_root,
     now_ms,
     require_solstone,
     segment_parse,
@@ -521,8 +520,6 @@ def prepare_config(request: dict) -> dict:
                 f"Cannot resolve cwd for talent '{name}' — journal path unavailable"
             )
         config["cwd"] = str(journal_path)
-    elif cwd_value == "repo":
-        config["cwd"] = get_project_root()
 
     # Populate stream from env if not already in config (think passes it as
     # SOL_STREAM env var but not as a top-level request key — hooks need it)

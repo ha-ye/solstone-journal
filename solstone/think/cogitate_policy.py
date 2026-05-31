@@ -23,16 +23,12 @@ class MaxTurnsExhausted(RuntimeError):
 class CogitatePolicy:
     """In-process policy gate for cogitate tool calls."""
 
-    def __init__(self, *, write: bool, allowed_roots: list[Path]) -> None:
-        self.write = write
+    def __init__(self, *, allowed_roots: list[Path]) -> None:
         self.allowed_roots = [
             Path(root).expanduser().resolve() for root in allowed_roots
         ]
 
     def check(self, tool: str, args: dict[str, Any]) -> tuple[bool, str]:
-        if self.write:
-            return True, "ok"
-
         if tool in _WRITE_TOOLS:
             return False, f"policy_deny: {tool} not allowed for read-only talents"
 

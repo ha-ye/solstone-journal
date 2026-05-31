@@ -68,7 +68,7 @@ def _engage(
 
 @engage_app.command()
 def engage(
-    name: str = typer.Argument(help="Agent name to delegate to (e.g. coder)."),
+    name: str = typer.Argument(help="Agent name to delegate to (e.g. partner)."),
     wait: bool = typer.Option(
         False,
         "--wait",
@@ -88,8 +88,8 @@ def engage(
 
     Example::
 
-        echo 'Fix the matching bug' | journal engage coder
-        echo 'Fix the matching bug' | journal engage coder --wait
+        echo 'Review my priorities this week' | journal engage partner
+        echo 'Review my priorities this week' | journal engage partner --wait
     """
     prompt = sys.stdin.read()
     if not prompt.strip():

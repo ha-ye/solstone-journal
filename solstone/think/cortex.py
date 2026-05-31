@@ -33,7 +33,7 @@ from solstone.think.models import calc_agent_cost
 from solstone.think.runner import _atomic_symlink
 from solstone.think.talent import get_output_path
 from solstone.think.talents import TALENT_EXECUTION_MODULE
-from solstone.think.utils import get_journal, get_project_root, get_rev, now_ms
+from solstone.think.utils import get_journal, get_rev, now_ms
 
 
 class TalentProcess:
@@ -327,12 +327,6 @@ class CortexService:
                             raise RuntimeError(
                                 f"Cannot resolve cwd for talent '{talent_key}'"
                             ) from exc
-                    elif cwd_value == "repo":
-                        subprocess_cwd = get_project_root()
-                    else:
-                        raise RuntimeError(
-                            f"Cannot resolve cwd for talent '{talent_key}'"
-                        )
 
             process = subprocess.Popen(
                 cmd,

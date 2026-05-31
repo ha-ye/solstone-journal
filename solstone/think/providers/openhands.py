@@ -175,12 +175,10 @@ def _ensure_sol_types() -> dict[str, Any]:
             *,
             policy: CogitatePolicy,
             callback: JSONEventCallback,
-            write: bool,
             read_call_budget: int,
         ) -> None:
             self.policy = policy
             self.callback = callback
-            self.write = write
             self.read_call_budget = read_call_budget
             self.read_call_count = 0
             self._budget_exhausted_emitted = False
@@ -196,24 +194,23 @@ def _ensure_sol_types() -> dict[str, Any]:
             if not ok:
                 return SolObservation.from_text(reason, is_error=True)
 
-            if not self.write:
-                self.read_call_count += 1
-                if self.read_call_count > self.read_call_budget:
-                    if not self._budget_exhausted_emitted:
-                        self.callback.emit(
-                            {
-                                "event": "tool_budget_exhausted",
-                                "tool": "sol",
-                                "budget": self.read_call_budget,
-                                "count": self.read_call_count,
-                                "ts": now_ms(),
-                            }
-                        )
-                        self._budget_exhausted_emitted = True
-                    return SolObservation.from_text(
-                        "tool_budget_exhausted: read-call budget exceeded",
-                        is_error=True,
+            self.read_call_count += 1
+            if self.read_call_count > self.read_call_budget:
+                if not self._budget_exhausted_emitted:
+                    self.callback.emit(
+                        {
+                            "event": "tool_budget_exhausted",
+                            "tool": "sol",
+                            "budget": self.read_call_budget,
+                            "count": self.read_call_count,
+                            "ts": now_ms(),
+                        }
                     )
+                    self._budget_exhausted_emitted = True
+                return SolObservation.from_text(
+                    "tool_budget_exhausted: read-call budget exceeded",
+                    is_error=True,
+                )
 
             result = _run_shell_command(command)
             return SolObservation.from_text(result["text"], is_error=result["is_error"])
@@ -251,7 +248,6 @@ def _build_sol_tools(
     *,
     policy: CogitatePolicy,
     callback: JSONEventCallback,
-    write: bool,
     read_call_budget: int,
 ) -> tuple[list[Any], Any]:
     types = _ensure_sol_types()
@@ -264,7 +260,6 @@ def _build_sol_tools(
     executor = sol_executor_cls(
         policy=policy,
         callback=callback,
-        write=write,
         read_call_budget=read_call_budget,
     )
     tool = sol_tool_cls(
@@ -274,9 +269,9 @@ def _build_sol_tools(
         executor=executor,
         annotations=tool_annotations(
             title="sol",
-            readOnlyHint=not write,
-            destructiveHint=write,
-            idempotentHint=not write,
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
             openWorldHint=False,
         ),
     )
@@ -783,7 +778,6 @@ async def run_cogitate(
         from openhands.sdk.tool.registry import register_tool
         from openhands.sdk.tool.spec import Tool
 
-        write = bool(config.get("write"))
         expects_emit_final = bool(config.get("output_path")) or config.get(
             "schedule"
         ) in {"daily", "weekly", "activity"}
@@ -791,10 +785,10 @@ async def run_cogitate(
         session_id, conversation_id = _session_identity(config.get("session_id"))
         prompt_body, system_instruction = assemble_prompt(
             config,
-            sol_tool_name="sol" if not write else None,
+            sol_tool_name="sol",
         )
         allowed_roots = _resolve_allowed_roots(config)
-        policy = CogitatePolicy(write=write, allowed_roots=allowed_roots)
+        policy = CogitatePolicy(allowed_roots=allowed_roots)
         read_call_budget = int(
             config.get("read_call_budget", DEFAULT_READ_CALL_BUDGET) or 0
         )
@@ -803,7 +797,6 @@ async def run_cogitate(
         sol_tools, _executor = _build_sol_tools(
             policy=policy,
             callback=callback,
-            write=write,
             read_call_budget=read_call_budget,
         )
         # openhands-sdk v1.23 resolves Agent.tools by spec name via the

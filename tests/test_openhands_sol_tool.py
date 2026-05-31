@@ -25,14 +25,12 @@ def _sol_tool_and_executor(
     *,
     tmp_path,
     events: list[dict],
-    write: bool,
     read_call_budget: int = 200,
 ):
-    policy = CogitatePolicy(write=write, allowed_roots=[tmp_path])
+    policy = CogitatePolicy(allowed_roots=[tmp_path])
     tools, executor = openhands._build_sol_tools(
         policy=policy,
         callback=JSONEventCallback(events.append),
-        write=write,
         read_call_budget=read_call_budget,
     )
     assert len(tools) == 1
@@ -50,7 +48,6 @@ def test_read_only_allowed_sol_call_returns_non_error_observation(
     tool, executor = _sol_tool_and_executor(
         tmp_path=tmp_path,
         events=events,
-        write=False,
     )
     monkeypatch.setattr(
         openhands,
@@ -78,7 +75,6 @@ def test_read_only_policy_deny_is_recoverable_observation(
     tool, executor = _sol_tool_and_executor(
         tmp_path=tmp_path,
         events=events,
-        write=False,
     )
     monkeypatch.setattr(
         openhands,
@@ -94,32 +90,6 @@ def test_read_only_policy_deny_is_recoverable_observation(
     assert events == []
 
 
-def test_write_mode_allows_non_sol_shell_command(
-    fake_openhands,
-    fixed_time,
-    tmp_path,
-    monkeypatch,
-):
-    events: list[dict] = []
-    tool, executor = _sol_tool_and_executor(
-        tmp_path=tmp_path,
-        events=events,
-        write=True,
-    )
-    monkeypatch.setattr(
-        openhands,
-        "_run_shell_command",
-        lambda command: {"text": f"write ran: {command}", "is_error": False},
-    )
-
-    observation = tool(tool.action_from_arguments({"command": "python -V"}))
-
-    assert observation.text == "write ran: python -V"
-    assert observation.is_error is False
-    assert executor.read_call_count == 0
-    assert events == []
-
-
 def test_read_call_budget_overflow_emits_once_and_denies_recoverably(
     fake_openhands,
     fixed_time,
@@ -130,7 +100,6 @@ def test_read_call_budget_overflow_emits_once_and_denies_recoverably(
     tool, executor = _sol_tool_and_executor(
         tmp_path=tmp_path,
         events=events,
-        write=False,
         read_call_budget=1,
     )
     monkeypatch.setattr(

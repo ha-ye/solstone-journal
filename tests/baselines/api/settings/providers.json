@@ -208,13 +208,6 @@
       "tier": 2,
       "type": "generate"
     },
-    "talent.system.coder": {
-      "disabled": false,
-      "group": "Think",
-      "label": "Coder",
-      "tier": 2,
-      "type": "cogitate"
-    },
     "talent.system.conversation": {
       "disabled": false,
       "group": "Think",

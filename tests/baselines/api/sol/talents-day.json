@@ -71,17 +71,6 @@
       "title": "Chat",
       "type": "generate"
     },
-    "coder": {
-      "app": null,
-      "color": "#6c757d",
-      "description": "Developer agent with full repo read/write access",
-      "multi_facet": false,
-      "output_format": null,
-      "schedule": null,
-      "source": "system",
-      "title": "Coder",
-      "type": "cogitate"
-    },
     "conversation": {
       "app": null,
       "color": "#00796b",

@@ -77,8 +77,12 @@ def test_validate_cwd_defaults_cogitate_to_journal():
     assert _validate_cwd(None, "cogitate", "test-agent") == "journal"
 
 
-def test_validate_cwd_accepts_repo():
-    assert _validate_cwd("repo", "cogitate", "test-agent") == "repo"
+def test_validate_cwd_rejects_repo():
+    with pytest.raises(
+        ValueError,
+        match="Prompt 'test-agent' has invalid 'cwd' value 'repo'",
+    ):
+        _validate_cwd("repo", "cogitate", "test-agent")
 
 
 def test_validate_cwd_accepts_journal():
@@ -107,9 +111,19 @@ def test_get_agent_normalizes_cwd_for_cogitate():
     assert "cwd" not in config
 
 
-def test_get_agent_preserves_repo_cwd_for_coder():
-    config = get_talent("coder")
-    assert config["cwd"] == "repo"
+def test_get_agent_rejects_cogitate_write_true(tmp_path, monkeypatch):
+    monkeypatch.setattr(talent_module, "TALENT_DIR", tmp_path)
+    _write_talent_file(
+        tmp_path,
+        "writer",
+        {"type": "cogitate", "write": True},
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Prompt 'writer' declares unsupported 'write: true'",
+    ):
+        get_talent("writer")
 
 
 def test_get_talent_defaults_to_chat():

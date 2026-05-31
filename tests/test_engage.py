@@ -25,14 +25,16 @@ class TestEngage:
         with patch(
             "solstone.think.cortex_client.cortex_request", return_value="agent-123"
         ) as mock_cr:
-            result = _invoke_engage("coder", input_text="fix the bug\n")
+            result = _invoke_engage("partner", input_text="fix the bug\n")
 
         assert result.exit_code == 0
         assert "agent-123" in result.output
-        mock_cr.assert_called_once_with(prompt="fix the bug", name="coder", config=None)
+        mock_cr.assert_called_once_with(
+            prompt="fix the bug", name="partner", config=None
+        )
 
     def test_empty_stdin(self):
-        result = _invoke_engage("coder", input_text="")
+        result = _invoke_engage("partner", input_text="")
 
         assert result.exit_code == 1
         assert (
@@ -42,7 +44,7 @@ class TestEngage:
 
     def test_cortex_failure(self):
         with patch("solstone.think.cortex_client.cortex_request", return_value=None):
-            result = _invoke_engage("coder", input_text="fix the bug\n")
+            result = _invoke_engage("partner", input_text="fix the bug\n")
 
         assert result.exit_code == 1
 
@@ -60,7 +62,7 @@ class TestEngage:
                 return_value=[{"event": "finish", "result": "All fixed!"}],
             ),
         ):
-            result = _invoke_engage("coder", "--wait", input_text="fix the bug\n")
+            result = _invoke_engage("partner", "--wait", input_text="fix the bug\n")
 
         assert result.exit_code == 0
         assert "All fixed!" in result.output
@@ -75,7 +77,7 @@ class TestEngage:
                 return_value=({"agent-123": "error"}, []),
             ),
         ):
-            result = _invoke_engage("coder", "--wait", input_text="fix the bug\n")
+            result = _invoke_engage("partner", "--wait", input_text="fix the bug\n")
 
         assert result.exit_code == 1
 
@@ -89,7 +91,7 @@ class TestEngage:
                 return_value=({}, ["agent-123"]),
             ),
         ):
-            result = _invoke_engage("coder", "--wait", input_text="fix the bug\n")
+            result = _invoke_engage("partner", "--wait", input_text="fix the bug\n")
 
         assert result.exit_code == 1
         combined_output = result.output
@@ -102,7 +104,7 @@ class TestEngage:
             "solstone.think.cortex_client.cortex_request", return_value="agent-123"
         ) as mock_cr:
             result = _invoke_engage(
-                "coder",
+                "partner",
                 "--facet",
                 "work",
                 "--day",
@@ -113,7 +115,7 @@ class TestEngage:
         assert result.exit_code == 0
         mock_cr.assert_called_once_with(
             prompt="do stuff",
-            name="coder",
+            name="partner",
             config={"facet": "work", "day": "20260404"},
         )
 
@@ -121,11 +123,13 @@ class TestEngage:
         with patch(
             "solstone.think.cortex_client.cortex_request", return_value="agent-123"
         ) as mock_cr:
-            result = _invoke_engage("coder", "--facet", "work", input_text="do stuff\n")
+            result = _invoke_engage(
+                "partner", "--facet", "work", input_text="do stuff\n"
+            )
 
         assert result.exit_code == 0
         mock_cr.assert_called_once_with(
-            prompt="do stuff", name="coder", config={"facet": "work"}
+            prompt="do stuff", name="partner", config={"facet": "work"}
         )
 
     def test_day_only(self):
@@ -133,10 +137,10 @@ class TestEngage:
             "solstone.think.cortex_client.cortex_request", return_value="agent-123"
         ) as mock_cr:
             result = _invoke_engage(
-                "coder", "--day", "20260404", input_text="do stuff\n"
+                "partner", "--day", "20260404", input_text="do stuff\n"
             )
 
         assert result.exit_code == 0
         mock_cr.assert_called_once_with(
-            prompt="do stuff", name="coder", config={"day": "20260404"}
+            prompt="do stuff", name="partner", config={"day": "20260404"}
         )

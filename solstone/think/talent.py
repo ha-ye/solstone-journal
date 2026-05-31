@@ -55,11 +55,10 @@ def _validate_cwd(raw_cwd: Any, talent_type: Any, key: str) -> str | None:
     if talent_type == "cogitate":
         if raw_cwd is None:
             return "journal"
-        if raw_cwd in {"journal", "repo"}:
+        if raw_cwd == "journal":
             return raw_cwd
         raise ValueError(
-            f"Prompt '{key}' has invalid 'cwd' value '{raw_cwd}' "
-            "(must be 'journal' or 'repo')"
+            f"Prompt '{key}' has invalid 'cwd' value '{raw_cwd}' (must be 'journal')"
         )
 
     if talent_type == "generate":
@@ -73,9 +72,17 @@ def _validate_cwd(raw_cwd: Any, talent_type: Any, key: str) -> str | None:
         return None
 
     raise ValueError(
-        f"Prompt '{key}' has invalid 'cwd' value '{raw_cwd}' "
-        "(must be 'journal' or 'repo')"
+        f"Prompt '{key}' has invalid 'cwd' value '{raw_cwd}' (must be 'journal')"
     )
+
+
+def _validate_write(raw_write: Any, talent_type: Any, key: str) -> None:
+    """Reject legacy writer cogitate sessions."""
+    if talent_type == "cogitate" and raw_write:
+        raise ValueError(
+            f"Prompt '{key}' declares unsupported 'write: true' "
+            "(cogitate runs are read-only)"
+        )
 
 
 def key_to_context(key: str) -> str:
@@ -328,6 +335,7 @@ def get_talent_configs(
 
     # Validate: cwd is only valid for cogitate prompts and defaults there
     for key, info in configs.items():
+        _validate_write(info.get("write"), info.get("type"), key)
         normalized_cwd = _validate_cwd(info.get("cwd"), info.get("type"), key)
         if normalized_cwd is None:
             info.pop("cwd", None)
@@ -586,6 +594,7 @@ def get_talent(
     # Load config from frontmatter - preserve all fields
     post = frontmatter.load(md_path)
     config = dict(post.metadata) if post.metadata else {}
+    _validate_write(config.get("write"), config.get("type"), name)
     normalized_cwd = _validate_cwd(config.get("cwd"), config.get("type"), name)
     if normalized_cwd is None:
         config.pop("cwd", None)

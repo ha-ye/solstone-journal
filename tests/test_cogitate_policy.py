@@ -28,6 +28,15 @@ def test_resolve_read_scope_span_is_inclusive():
     ) == ["chronicle/20260425", "chronicle/20260426", "chronicle/20260427"]
 
 
+def test_policy_denies_write_tools(tmp_path):
+    policy = cogitate_policy.CogitatePolicy(allowed_roots=[tmp_path])
+
+    allowed, reason = policy.check("write_file", {"file_path": "x"})
+
+    assert allowed is False
+    assert reason.startswith("policy_deny:")
+
+
 def test_cogitate_toml_removed_and_build_policy_import_fails():
     # AC 19: TOML policy generation is removed.
     policy_path = (

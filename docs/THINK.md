@@ -260,7 +260,7 @@ Providers implement `run_generate()`, `run_agenerate()`, and `run_cogitate()` fu
 
 System prompts in `solstone/talent/*.md` (markdown with JSON frontmatter). Apps can add custom agents in `solstone/apps/{app}/talent/`.
 
-JSON metadata supports `title`, `provider`, `model`, `tools`, `schedule`, `priority`, `multi_facet`, and `load` keys. Cogitate prompts may also set `cwd: "journal"` or `cwd: "repo"`; when omitted they default to `journal`, while repo-root agents such as `coder` should set `repo`. Generators reject `cwd`.
+JSON metadata supports `title`, `provider`, `model`, `tools`, `schedule`, `priority`, `multi_facet`, and `load` keys. Cogitate prompts may set `cwd: "journal"`; when omitted they default to `journal`, and `repo` is rejected. Generators reject `cwd`.
 
 **Important:** The `priority` field is **required** for all prompts with a `schedule`. Prompts without explicit priority will fail validation. See the [Unified Priority Execution](#unified-priority-execution) section for priority bands.
 
