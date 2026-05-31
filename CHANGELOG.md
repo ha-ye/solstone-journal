@@ -4,12 +4,19 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
-## [Unreleased]
+## [0.4.6] - 2026-05-31
+
+### Added
+- you can now re-run sol's thinking on any day from the page, either "process now" to pick up where it left off or "redo from scratch" to start the day over. the same is available in the terminal with `sol reprocess <day>`.
 
 ### Changed
-- local journal tools now live with the journal service. Navigation, routines, identity hydration, and local provider install moved from `sol call navigate`, `sol call routines`, `sol call identity`, and `sol call settings providers install local` to `journal navigate`, `journal routines`, `journal identity`, and `journal install-provider local`; the old paths now point you to the new form.
-- more local journal commands now run on the journal service. `engage`, `health`, `top`, `indexer`, `segment`, `streams`, `journal-stats`, `reprocess`, `restart-convey`, `observer`, and `providers` moved from `sol <cmd>` to `journal <cmd>`; the old `sol` forms now point you to the new form.
-- on linux, the default on-device transcription now works out of the box — its runtime ships with the install and `journal setup` downloads the model, so there's no separate extra to add. NVIDIA GPU owners can still opt into `solstone[parakeet-onnx-cuda]` for GPU acceleration, and `sol doctor` now reports whether the default transcription backend's runtime and model are ready.
+- your journal now tells you plainly whether it's caught up. the stats and health pages show an honest "is my journal caught up?" answer plus a "days that need a hand" list for any day it can't finish on its own, like one with corrupted data or a step that keeps failing. catch-up runs on its own in the background, never leaves older days behind, and `journal doctor` reports the same answer from the terminal.
+- the on-device option is now a single "Local (on-device)" choice on both macOS and linux. on a Mac it now runs entirely on your machine, including sol's thinking, so the local-only path covers more of your journal without anything leaving your machine.
+- on linux, the default on-device transcription now works the moment you install, with no extra to add. the runtime ships with the install and `journal setup` fetches the model. owners with an NVIDIA GPU can still opt into a GPU-accelerated build, and `journal doctor` now reports whether the default transcription runtime and model are ready.
+- local journal commands now live with the journal service. things like navigating, routines, identity, on-device provider install, health, and stats moved from `sol` to `journal` (for example `journal navigate`, `journal health`, `journal reprocess`). the old `sol` forms now point you to the new one.
+
+### Fixed
+- your journal no longer shows finished work as still pending. days that had an earlier error but later completed were being counted as outstanding, so the backlog looked larger than it was. the count now reflects what's actually still incomplete.
 
 ## [0.4.5] - 2026-05-30
 
