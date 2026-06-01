@@ -4,6 +4,11 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.4.8] - 2026-06-01
+
+### Fixed
+- macos setup now tolerates a launchd race where the journal service starts and becomes healthy even though `launchctl kickstart` reports a transient error. setup trusts the supervisor readiness marker, so an upgrade can continue to observer registration instead of stopping at "service up failed".
+
 ## [0.4.7] - 2026-05-31
 
 ### Fixed

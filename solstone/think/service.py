@@ -909,7 +909,10 @@ def _up(port: int = DEFAULT_SERVICE_PORT) -> int:
         clear_ready()
         rc = _start()
         if rc != 0:
-            return rc
+            if wait_ready(timeout=READY_TIMEOUT_SECONDS) is None:
+                return rc
+            _status()
+            return 0
 
     if wait_ready(timeout=READY_TIMEOUT_SECONDS) is None:
         print(_ready_timeout_message(), file=sys.stderr)

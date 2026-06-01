@@ -501,6 +501,44 @@ class TestUp:
         wait_ready.assert_called_once_with(timeout=service.READY_TIMEOUT_SECONDS)
         status.assert_called_once_with()
 
+    def test_up_accepts_readiness_when_start_reports_race(self, monkeypatch):
+        monkeypatch.setattr(service, "_platform", lambda: "darwin")
+        monkeypatch.setattr(service, "service_is_installed", lambda: True)
+        monkeypatch.setattr(service, "service_is_running", lambda: False)
+        start = MagicMock(return_value=1)
+        clear_ready = MagicMock()
+        wait_ready = MagicMock(return_value={"pid": 123})
+        status = MagicMock(return_value=0)
+        monkeypatch.setattr(service, "_start", start)
+        monkeypatch.setattr(service, "clear_ready", clear_ready)
+        monkeypatch.setattr(service, "wait_ready", wait_ready)
+        monkeypatch.setattr(service, "_status", status)
+
+        assert service._up(port=5015) == 0
+        start.assert_called_once_with()
+        clear_ready.assert_called_once_with()
+        wait_ready.assert_called_once_with(timeout=service.READY_TIMEOUT_SECONDS)
+        status.assert_called_once_with()
+
+    def test_up_preserves_start_failure_without_readiness(self, monkeypatch):
+        monkeypatch.setattr(service, "_platform", lambda: "darwin")
+        monkeypatch.setattr(service, "service_is_installed", lambda: True)
+        monkeypatch.setattr(service, "service_is_running", lambda: False)
+        start = MagicMock(return_value=7)
+        clear_ready = MagicMock()
+        wait_ready = MagicMock(return_value=None)
+        status = MagicMock(return_value=0)
+        monkeypatch.setattr(service, "_start", start)
+        monkeypatch.setattr(service, "clear_ready", clear_ready)
+        monkeypatch.setattr(service, "wait_ready", wait_ready)
+        monkeypatch.setattr(service, "_status", status)
+
+        assert service._up(port=5015) == 7
+        start.assert_called_once_with()
+        clear_ready.assert_called_once_with()
+        wait_ready.assert_called_once_with(timeout=service.READY_TIMEOUT_SECONDS)
+        status.assert_not_called()
+
     def test_up_already_running_waits_for_readiness(self, monkeypatch):
         monkeypatch.setattr(service, "_platform", lambda: "linux")
         monkeypatch.setattr(service, "service_is_installed", lambda: True)
