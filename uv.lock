@@ -4214,7 +4214,7 @@ wheels = [
 
 [[package]]
 name = "solstone"
-version = "0.4.6"
+version = "0.4.7"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -4240,6 +4240,13 @@ dependencies = [
     { name = "openai" },
     { name = "opencv-python-headless" },
     { name = "openhands-sdk" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc" },
+    { name = "opentelemetry-exporter-otlp-proto-http" },
+    { name = "opentelemetry-instrumentation" },
+    { name = "opentelemetry-instrumentation-threading" },
+    { name = "opentelemetry-sdk" },
+    { name = "opentelemetry-semantic-conventions" },
     { name = "pillow" },
     { name = "psutil" },
     { name = "pyjwt" },
@@ -4345,6 +4352,13 @@ requires-dist = [
     { name = "openai", specifier = ">=1.2.0" },
     { name = "opencv-python-headless" },
     { name = "openhands-sdk", specifier = "==1.23.*" },
+    { name = "opentelemetry-api", specifier = "==1.39.1" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = "==1.39.1" },
+    { name = "opentelemetry-exporter-otlp-proto-http", specifier = "==1.39.1" },
+    { name = "opentelemetry-instrumentation", specifier = "==0.60b1" },
+    { name = "opentelemetry-instrumentation-threading", specifier = "==0.60b1" },
+    { name = "opentelemetry-sdk", specifier = "==1.39.1" },
+    { name = "opentelemetry-semantic-conventions", specifier = "==0.60b1" },
     { name = "pdf2image", marker = "extra == 'all'", specifier = ">=1.16.0" },
     { name = "pdf2image", marker = "extra == 'pdf'", specifier = ">=1.16.0" },
     { name = "pillow" },

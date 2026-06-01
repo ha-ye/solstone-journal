@@ -4,6 +4,13 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.4.7] - 2026-05-31
+
+### Fixed
+- upgrading over an older install no longer stops because the `sol` or `journal` shortcut in your shell points somewhere stale. setup now repairs the shortcuts it owns and keeps going, whether solstone came from the macos app or from the terminal.
+- sol's background thinking can ask the journal for identity, routines, health, and talent context again. those approved journal tools were being turned away before sol could use them; now they work without widening what sol is allowed to run.
+- fresh installs from PyPI resolve cleanly when pip chooses the dependencies. solstone now pins the matching telemetry packages used by sol's thinking runtime, so install no longer lands on an incompatible mix.
+
 ## [0.4.6] - 2026-05-31
 
 ### Added
