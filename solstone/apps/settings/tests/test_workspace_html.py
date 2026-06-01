@@ -31,6 +31,15 @@ def test_apikeys_inputs_are_masked_by_default():
         assert 'type="text"' not in tag, f"{key} input still has type=text"
 
 
+def test_password_toggle_does_not_steal_focus():
+    text = _workspace_text()
+    # Anchor on the querySelectorAll forEach, not the class="password-toggle" buttons.
+    idx = text.index(".password-toggle')")
+    block = text[idx : idx + 800]
+    assert "mousedown" in block
+    assert "preventDefault()" in block
+
+
 def test_workspace_has_diagnostic_reports_toggle():
     text = _workspace_text()
 

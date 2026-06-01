@@ -24,6 +24,14 @@ def test_gemini_key_input_is_masked_by_default():
     assert 'type="text"' not in tag
 
 
+def test_password_toggle_does_not_steal_focus():
+    text = _init_text()
+    idx = text.index(".password-toggle')")
+    block = text[idx : idx + 800]
+    assert "mousedown" in block
+    assert "preventDefault()" in block
+
+
 def test_gemini_key_wrapped_with_password_toggle():
     text = _init_text()
 
