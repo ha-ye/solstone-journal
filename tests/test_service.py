@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import plistlib
 import subprocess
 import sys
@@ -15,6 +16,17 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from solstone.think import service
+
+
+def _install_fake_launchd_clock(monkeypatch):
+    fake = [0.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: fake[0])
+    monkeypatch.setattr(
+        service.time,
+        "sleep",
+        lambda seconds: fake.__setitem__(0, fake[0] + seconds),
+    )
+    return fake
 
 
 class TestPlatform:
@@ -575,6 +587,10 @@ class TestInstall:
 
         def run(command, **kwargs):
             commands.append((command, kwargs))
+            if command[:2] == ["launchctl", "print"]:
+                return subprocess.CompletedProcess(
+                    args=command, returncode=1, stdout="", stderr=""
+                )
             if command[:2] == ["launchctl", "bootstrap"]:
                 calls.append("bootstrap")
             return subprocess.CompletedProcess(
@@ -590,6 +606,114 @@ class TestInstall:
             ["launchctl", "bootout", f"gui/501/{service.SERVICE_LABEL}"],
             {"capture_output": True, "check": False},
         )
+
+    def test_darwin_waits_for_label_unload_before_bootstrap(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(service, "_platform", lambda: "darwin")
+        monkeypatch.setattr(service.os, "getuid", lambda: 501)
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+        monkeypatch.setattr(
+            service,
+            "_plist_path",
+            lambda: tmp_path / "LaunchAgents" / "org.solpbc.solstone.plist",
+        )
+        monkeypatch.setattr(service, "remove_stale_plists", MagicMock())
+        _install_fake_launchd_clock(monkeypatch)
+        events = []
+        poll_count = 0
+
+        def run(command, **kwargs):
+            nonlocal poll_count
+            if command[:2] == ["launchctl", "bootout"]:
+                events.append("bootout")
+                return subprocess.CompletedProcess(
+                    args=command, returncode=0, stdout="", stderr=""
+                )
+            if command[:2] == ["launchctl", "print"]:
+                poll_count += 1
+                if poll_count == 1:
+                    events.append("print-present")
+                    return subprocess.CompletedProcess(
+                        args=command, returncode=0, stdout="", stderr=""
+                    )
+                events.append("print-absent")
+                return subprocess.CompletedProcess(
+                    args=command, returncode=1, stdout="", stderr=""
+                )
+            if command[:2] == ["launchctl", "bootstrap"]:
+                events.append("bootstrap")
+            return subprocess.CompletedProcess(
+                args=command, returncode=0, stdout="", stderr=""
+            )
+
+        monkeypatch.setattr("subprocess.run", run)
+
+        assert service._install() == 0
+        assert events.index("bootout") < events.index("print-present")
+        assert events.index("print-present") < events.index("print-absent")
+        assert events.index("print-absent") < events.index("bootstrap")
+
+    def test_darwin_bootstrap_proceeds_when_label_never_unloads(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        monkeypatch.setattr(service, "_platform", lambda: "darwin")
+        monkeypatch.setattr(service.os, "getuid", lambda: 501)
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+        monkeypatch.setattr(
+            service,
+            "_plist_path",
+            lambda: tmp_path / "LaunchAgents" / "org.solpbc.solstone.plist",
+        )
+        monkeypatch.setattr(service, "remove_stale_plists", MagicMock())
+        _install_fake_launchd_clock(monkeypatch)
+        events = []
+
+        def run(command, **kwargs):
+            if command[:2] == ["launchctl", "print"]:
+                events.append("print")
+                return subprocess.CompletedProcess(
+                    args=command, returncode=0, stdout="", stderr=""
+                )
+            if command[:2] == ["launchctl", "bootstrap"]:
+                events.append("bootstrap")
+            return subprocess.CompletedProcess(
+                args=command, returncode=0, stdout="", stderr=""
+            )
+
+        monkeypatch.setattr("subprocess.run", run)
+
+        with caplog.at_level(logging.WARNING):
+            assert service._install() == 0
+
+        assert "Timed out waiting for launchd label" in caplog.text
+        assert "bootstrap" in events
+
+    def test_darwin_bootstrap_proceeds_when_probe_raises(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(service, "_platform", lambda: "darwin")
+        monkeypatch.setattr(service.os, "getuid", lambda: 501)
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+        monkeypatch.setattr(
+            service,
+            "_plist_path",
+            lambda: tmp_path / "LaunchAgents" / "org.solpbc.solstone.plist",
+        )
+        monkeypatch.setattr(service, "remove_stale_plists", MagicMock())
+        events = []
+
+        def run(command, **kwargs):
+            if command[:2] == ["launchctl", "print"]:
+                raise subprocess.TimeoutExpired(cmd=command, timeout=1.0)
+            if command[:2] == ["launchctl", "bootstrap"]:
+                events.append("bootstrap")
+            return subprocess.CompletedProcess(
+                args=command, returncode=0, stdout="", stderr=""
+            )
+
+        monkeypatch.setattr("subprocess.run", run)
+
+        assert service._install() == 0
+        assert "bootstrap" in events
 
     def test_linux_idempotent(self, monkeypatch, tmp_path, capsys):
         monkeypatch.setattr(sys, "platform", "linux")
