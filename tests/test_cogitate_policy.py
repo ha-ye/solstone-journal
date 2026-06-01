@@ -37,6 +37,47 @@ def test_policy_denies_write_tools(tmp_path):
     assert reason.startswith("policy_deny:")
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "journal identity pulse",
+        "journal identity awareness --write --value update",
+        "journal routines list",
+        "journal routines output morning",
+        "journal health logs --since 1h",
+        "journal talent logs --daily -c 10",
+        "journal identity pulse --write --value 'a; quoted value'",
+    ],
+)
+def test_policy_allows_approved_journal_invocations(tmp_path, command):
+    policy = cogitate_policy.CogitatePolicy(allowed_roots=[tmp_path])
+
+    allowed, reason = policy.check("run_shell_command", {"command": command})
+
+    assert allowed is True
+    assert reason == "ok"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "journal think --segment",
+        "journal navigate --path /app/support",
+        "journal supervisor status",
+        "journal indexer --rescan-full",
+        "journal identity ; rm -rf journal",
+        "journal identity pulse --value $(rm -rf journal)",
+    ],
+)
+def test_policy_denies_unapproved_journal_invocations(tmp_path, command):
+    policy = cogitate_policy.CogitatePolicy(allowed_roots=[tmp_path])
+
+    allowed, reason = policy.check("run_shell_command", {"command": command})
+
+    assert allowed is False
+    assert reason.startswith("policy_deny:")
+
+
 def test_cogitate_toml_removed_and_build_policy_import_fails():
     # AC 19: TOML policy generation is removed.
     policy_path = (

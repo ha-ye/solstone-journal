@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -12,8 +13,26 @@ MAX_TURNS = 60
 DEFAULT_READ_CALL_BUDGET = 200
 
 _SOL_INVOCATION_RE = re.compile(r"(^sol\s|\bsol call\b)")
+_JOURNAL_COMMANDS = {"identity", "routines", "health", "talent"}
+_SHELL_CONTROL_TOKENS = {";", "&&", "||", "|", ">", ">>", "<", "<<"}
 _WRITE_TOOLS = {"write_file", "replace"}
 _READ_TOOLS = {"read_file", "glob", "list_directory", "grep_search"}
+
+
+def _is_approved_journal_invocation(command: str) -> bool:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+
+    if len(tokens) < 2 or tokens[0] != "journal" or tokens[1] not in _JOURNAL_COMMANDS:
+        return False
+
+    for token in tokens:
+        if token in _SHELL_CONTROL_TOKENS or "$(" in token or "`" in token:
+            return False
+
+    return True
 
 
 class MaxTurnsExhausted(RuntimeError):
@@ -34,10 +53,14 @@ class CogitatePolicy:
 
         if tool == "run_shell_command":
             command = str(args.get("command", ""))
-            if not _SOL_INVOCATION_RE.search(command):
+            if not (
+                _SOL_INVOCATION_RE.search(command)
+                or _is_approved_journal_invocation(command)
+            ):
                 return (
                     False,
-                    "policy_deny: run_shell_command restricted to sol invocations",
+                    "policy_deny: run_shell_command restricted to sol"
+                    " or approved journal invocations",
                 )
             return True, "ok"
 
