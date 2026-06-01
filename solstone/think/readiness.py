@@ -18,7 +18,7 @@ from solstone.think.utils import get_journal
 MARKER_RELATIVE_PATH = Path("health") / "supervisor.ready"
 _PID_RELATIVE_PATH = Path("health") / "supervisor.pid"
 _START_TIME_RELATIVE_PATH = Path("health") / "supervisor.start_time"
-_START_TIME_TOLERANCE_S = 1.5
+START_TIME_TOLERANCE_S = 1.5
 _POLL_INTERVAL_S = 0.5
 
 logger = logging.getLogger(__name__)
@@ -164,7 +164,7 @@ def _valid_marker() -> dict[str, Any] | None:
         logger.warning("Could not validate supervisor process readiness: %s", exc)
         return None
 
-    if abs(recorded_start - create_time) > _START_TIME_TOLERANCE_S:
+    if abs(recorded_start - create_time) > START_TIME_TOLERANCE_S:
         logger.debug(
             "Supervisor start time mismatch for readiness marker: recorded=%s process=%s",
             recorded_start,

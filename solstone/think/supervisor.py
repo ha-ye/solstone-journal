@@ -30,7 +30,7 @@ from solstone.think.maint import run_pending_tasks
 from solstone.think.models import LOCAL_MODEL, is_local_provider_needed
 from solstone.think.pipeline_health import read_day_stuck
 from solstone.think.providers.mlx_server import MLX_SERVER_PROCESS_NAME
-from solstone.think.readiness import clear_ready, signal_ready
+from solstone.think.readiness import START_TIME_TOLERANCE_S, clear_ready, signal_ready
 from solstone.think.runner import ManagedProcess as RunnerManagedProcess
 from solstone.think.runner import _command_partition
 from solstone.think.sync_check import (
@@ -822,8 +822,7 @@ def is_supervisor_up() -> bool:
     except psutil.Error:
         return False
 
-    tolerance = 1.5  # drift between time.time() and psutil create_time()
-    return abs(recorded_start - create_time) <= tolerance
+    return abs(recorded_start - create_time) <= START_TIME_TOLERANCE_S
 
 
 class RestartPolicy:
@@ -2180,8 +2179,10 @@ def main() -> None:
 
     pid_path.write_text(str(os.getpid()))
     start_time_path = health_dir / "supervisor.start_time"
-    # Written here, not at _supervisor_start, to minimize drift from psutil create_time().
-    start_time_path.write_text(str(time.time()))
+    # Stamp THIS process's kernel create_time() so the recorded value equals what
+    # is_supervisor_up()/_valid_marker() later read via psutil for this pid —
+    # eliminating (not minimizing) drift from a wall-clock time.time() stamp.
+    start_time_path.write_text(str(psutil.Process().create_time()))
     logging.info("Singleton lock acquired (PID %d)", os.getpid())
     _sweep_orphaned_sol_processes(journal_path)
 

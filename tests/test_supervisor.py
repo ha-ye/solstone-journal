@@ -1862,7 +1862,8 @@ def test_supervisor_singleton_lock_acquired(tmp_path, monkeypatch):
     start_time = float(
         (tmp_path / "health" / "supervisor.start_time").read_text().strip()
     )
-    assert start_time > 0
+    assert start_time == psutil.Process(os.getpid()).create_time()
+    assert mod.is_supervisor_up() is True
 
 
 def test_supervisor_singleton_lock_blocked(tmp_path, monkeypatch, capsys):
@@ -2060,3 +2061,21 @@ def test_is_supervisor_up_with_matching_process_identity(tmp_path, monkeypatch):
     )
 
     assert mod.is_supervisor_up() is True
+
+
+def test_is_supervisor_up_boundary_at_shared_tolerance(tmp_path, monkeypatch):
+    mod = importlib.reload(importlib.import_module("solstone.think.supervisor"))
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    health_dir = tmp_path / "health"
+    health_dir.mkdir(parents=True, exist_ok=True)
+    (health_dir / "supervisor.pid").write_text(str(os.getpid()))
+    create_time = psutil.Process(os.getpid()).create_time()
+    within = create_time + mod.START_TIME_TOLERANCE_S - 0.1
+    beyond = create_time + mod.START_TIME_TOLERANCE_S + 0.1
+
+    (health_dir / "supervisor.start_time").write_text(str(within))
+    assert mod.is_supervisor_up() is True
+
+    (health_dir / "supervisor.start_time").write_text(str(beyond))
+    assert mod.is_supervisor_up() is False
