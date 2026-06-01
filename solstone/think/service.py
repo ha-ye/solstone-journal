@@ -43,6 +43,7 @@ SERVICE_LABEL = "org.solpbc.solstone"
 SYSTEMD_UNIT = "solstone"
 DEFAULT_SERVICE_PORT = 5015
 READY_TIMEOUT_SECONDS = 60.0
+SERVICE_FILE_DESCRIPTOR_LIMIT = 4096
 _LAUNCHD_UNLOAD_POLL_INTERVAL_S = 0.1
 _LAUNCHD_UNLOAD_TIMEOUT_S = 2.0
 
@@ -204,6 +205,7 @@ def _generate_plist(
         "StandardErrorPath": service_log,
         "RunAtLoad": True,
         "KeepAlive": {"SuccessfulExit": False},
+        "SoftResourceLimits": {"NumberOfFiles": SERVICE_FILE_DESCRIPTOR_LIMIT},
     }
     return plistlib.dumps(plist)
 
@@ -611,6 +613,7 @@ def _generate_systemd_unit(
         f"RestartSec=5\n"
         f"KillMode=control-group\n"
         f"TimeoutStopSec=30\n"
+        f"LimitNOFILE={SERVICE_FILE_DESCRIPTOR_LIMIT}\n"
         f"StandardOutput=append:{service_log}\n"
         f"StandardError=inherit\n"
         f"{env_lines}\n"

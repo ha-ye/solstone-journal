@@ -64,6 +64,7 @@ class TestPlistGeneration:
         assert plist["EnvironmentVariables"] == env
         assert plist["EnvironmentVariables"]["PYTHONUNBUFFERED"] == "1"
         assert plist["KeepAlive"] == {"SuccessfulExit": False}
+        assert plist["SoftResourceLimits"] == {"NumberOfFiles": 4096}
         assert plist["RunAtLoad"] is True
         assert plist["StandardOutPath"] == service_log
         assert plist["StandardErrorPath"] == service_log
@@ -108,6 +109,7 @@ class TestSystemdUnit:
         assert "StartLimitBurst=10" in unit
         assert "KillMode=control-group" in unit
         assert "TimeoutStopSec=30" in unit
+        assert "LimitNOFILE=4096" in unit
         assert f"StandardOutput=append:{service_log}" in unit
         assert "StandardError=inherit" in unit
         assert (
