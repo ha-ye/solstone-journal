@@ -23,7 +23,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from solstone.observe.utils import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
+from solstone.observe.utils import (
+    AUDIO_EXTENSIONS,
+    IMAGE_EXTENSIONS,
+    PDF_EXTENSIONS,
+    VIDEO_EXTENSIONS,
+)
 from solstone.think.callosum import CallosumConnection
 from solstone.think.runner import ManagedProcess as RunnerManagedProcess
 from solstone.think.utils import (
@@ -45,7 +50,7 @@ from solstone.think.utils import (
 logger = logging.getLogger(__name__)
 
 # Handlers with serialized worker pools. Add a new entry here when registering one in main().
-HANDLER_NAMES = ("describe", "transcribe")
+HANDLER_NAMES = ("describe", "transcribe", "extract", "depict")
 
 
 class QueuedItem:
@@ -1121,6 +1126,12 @@ def main():
     # Video files in segment directories
     for ext in VIDEO_EXTENSIONS:
         sensor.register(f"*{ext}", "describe", ["journal", "describe", "{file}"])
+
+    for ext in PDF_EXTENSIONS:
+        sensor.register(f"*{ext}", "extract", ["journal", "extract", "{file}"])
+
+    for ext in IMAGE_EXTENSIONS:
+        sensor.register(f"*{ext}", "depict", ["journal", "depict", "{file}"])
 
     if args.day:
         day_dir = day_path(args.day)

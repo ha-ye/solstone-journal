@@ -69,6 +69,84 @@ def test_preview_single_pdf(tmp_path, monkeypatch):
     assert preview.summary == "1 PDF documents, 2 total pages"
 
 
+def test_extract_pdf_text_digital(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.importers.documents")
+    pdf = tmp_path / "digital.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    monkeypatch.setattr("pypdf.PdfReader", MockPdfReader)
+
+    text, meta = mod.extract_pdf_text(pdf)
+
+    assert "Page text content here" in text
+    assert meta == {
+        "page_count": 2,
+        "is_scanned": False,
+        "extraction_method": "pypdf",
+        "vision_error": None,
+    }
+
+
+def test_extract_pdf_text_scanned_vision_success(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.importers.documents")
+
+    class ScannedReader(MockPdfReader):
+        def __init__(self, path):
+            self.path = str(path)
+            self.pages = [MockPage("x"), MockPage("y")]
+            self.metadata = {"/CreationDate": "D:20260115120000"}
+
+    pdf = tmp_path / "scan.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    monkeypatch.setattr("pypdf.PdfReader", ScannedReader)
+    calls = []
+
+    def fake_vision(pdf_path, page_count):
+        calls.append((pdf_path.name, page_count))
+        return "Vision extracted text"
+
+    monkeypatch.setattr(mod, "_extract_text_vision", fake_vision)
+
+    text, meta = mod.extract_pdf_text(pdf)
+
+    assert calls == [("scan.pdf", 2)]
+    assert text == "Vision extracted text"
+    assert meta["page_count"] == 2
+    assert meta["is_scanned"] is True
+    assert meta["extraction_method"] == "vision"
+    assert meta["vision_error"] is None
+
+
+def test_extract_pdf_text_scanned_vision_failure_returns_sparse_text(
+    tmp_path, monkeypatch
+):
+    mod = importlib.import_module("solstone.think.importers.documents")
+
+    class ScannedReader(MockPdfReader):
+        def __init__(self, path):
+            self.path = str(path)
+            self.pages = [MockPage("x")]
+            self.metadata = {"/CreationDate": "D:20260115120000"}
+
+    pdf = tmp_path / "scan.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    monkeypatch.setattr("pypdf.PdfReader", ScannedReader)
+    monkeypatch.setattr(
+        mod,
+        "_extract_text_vision",
+        lambda pdf_path, page_count: (_ for _ in ()).throw(
+            RuntimeError("vision failed")
+        ),
+    )
+
+    text, meta = mod.extract_pdf_text(pdf)
+
+    assert text == "x"
+    assert meta["page_count"] == 1
+    assert meta["is_scanned"] is True
+    assert meta["extraction_method"] == "pypdf"
+    assert meta["vision_error"] == "vision failed"
+
+
 def test_process_text_pdf(tmp_path, monkeypatch):
     mod = importlib.import_module("solstone.think.importers.documents")
     pdf = tmp_path / "contract.pdf"

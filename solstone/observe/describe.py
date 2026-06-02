@@ -34,7 +34,7 @@ from solstone.observe.extract import (
     DEFAULT_MAX_EXTRACTIONS,
     select_frames_for_extraction,
 )
-from solstone.observe.utils import get_segment_key
+from solstone.observe.utils import get_segment_key, resize_for_vlm
 from solstone.think.callosum import callosum_send
 from solstone.think.markdown import bound_extraction_markdown
 from solstone.think.prompts import load_prompt
@@ -186,20 +186,6 @@ CATEGORIZATION_PROMPT = _build_categorization_prompt()
 _SCHEMA = json.loads(
     (Path(__file__).parent / "describe.schema.json").read_text(encoding="utf-8")
 )
-
-# Pre-resize frames to this max longest-side before VLM analysis. ~3× categorize
-# speedup on ultrawide sources with no quality loss on well-defined scenes;
-# bills fewer image tokens on cloud providers. Frames already at or below this
-# dimension pass through unchanged (PIL Image.thumbnail only shrinks).
-_MAX_VLM_DIM = 1920
-
-
-def _resize_for_vlm(img: Image.Image) -> Image.Image:
-    if max(img.size) <= _MAX_VLM_DIM:
-        return img
-    resized = img.copy()
-    resized.thumbnail((_MAX_VLM_DIM, _MAX_VLM_DIM))
-    return resized
 
 
 class VideoProcessor:
@@ -494,7 +480,7 @@ class VideoProcessor:
             for frame_data in qualified_frames:
                 # Load frame image from bytes - keep it open until request completes
                 frame_img = Image.open(io.BytesIO(frame_data["frame_bytes"]))
-                frame_img = _resize_for_vlm(frame_img)
+                frame_img = resize_for_vlm(frame_img)
 
                 req = batch.create(
                     contents=self._user_contents(
@@ -730,7 +716,7 @@ class VideoProcessor:
 
                 # Queue extraction request(s)
                 full_img = Image.open(io.BytesIO(req.frame_bytes))
-                full_img = _resize_for_vlm(full_img)
+                full_img = resize_for_vlm(full_img)
                 frame_images[frame_id] = full_img
 
                 # Store result for merging when extractions complete

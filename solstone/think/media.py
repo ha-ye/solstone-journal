@@ -23,3 +23,7 @@ VIDEO_EXTENSIONS: frozenset[str] = frozenset(
 )
 MEDIA_EXTENSIONS: frozenset[str] = frozenset(ext for ext, _, _ in FORMATS)
 MIME_TYPES: dict[str, str] = {ext: mime for ext, mime, _ in FORMATS}
+IMAGE_EXTENSIONS: frozenset[str] = frozenset(
+    {".png", ".jpg", ".jpeg", ".heic", ".heif", ".gif", ".webp", ".tiff"}
+)
+PDF_EXTENSIONS: frozenset[str] = frozenset({".pdf"})

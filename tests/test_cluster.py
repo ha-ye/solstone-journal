@@ -39,6 +39,31 @@ def test_cluster(tmp_path, monkeypatch):
     assert "screen summary" in result
 
 
+def test_process_segment_consumes_kind_tagged_document_jsonl(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day_dir = day_path("20240101")
+    segment = day_dir / "default" / "123456_300"
+    segment.mkdir(parents=True)
+    (segment / "report.jsonl").write_text(
+        json.dumps({"raw": "report.pdf", "kind": "document"})
+        + "\n"
+        + json.dumps({"start": "00:00:00", "text": "hello doc"})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    mod = importlib.import_module("solstone.think.cluster")
+
+    entries = mod._process_segment(
+        segment, "20240101", transcripts=True, percepts=False, agents=False
+    )
+
+    assert len(entries) == 1
+    assert entries[0]["prefix"] == "transcript"
+    assert entries[0]["name"] == "123456_300/report.jsonl"
+    assert "hello doc" in entries[0]["content"]
+
+
 def test_cluster_range(tmp_path, monkeypatch):
     """Test cluster_range with transcripts and agents sources."""
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))

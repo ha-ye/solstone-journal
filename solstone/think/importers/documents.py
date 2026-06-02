@@ -104,6 +104,36 @@ def _extract_text_vision(pdf_path: Path, page_count: int) -> str:
     return "\n\n".join(pages).strip()
 
 
+def extract_pdf_text(pdf_path: Path) -> tuple[str, dict]:
+    """Extract text from a PDF, using vision fallback for scanned PDFs.
+
+    Returns (text, meta). meta keys: page_count (int), is_scanned (bool),
+    extraction_method ("pypdf"|"vision"), vision_error (str|None). On a scanned
+    PDF whose vision extraction fails, returns the sparse pypdf text with
+    vision_error set (does NOT raise). Hard failures (unreadable PDF, missing
+    deps) propagate.
+    """
+    require_extra("pdf")
+    from pypdf import PdfReader
+
+    reader = PdfReader(str(pdf_path))
+    text, page_count, is_scanned = _extract_text_pypdf(reader)
+    meta = {
+        "page_count": page_count,
+        "is_scanned": is_scanned,
+        "extraction_method": "pypdf",
+        "vision_error": None,
+    }
+    if is_scanned:
+        try:
+            text = _extract_text_vision(pdf_path, page_count)
+            meta["extraction_method"] = "vision"
+        except Exception as vision_exc:
+            logger.warning("Vision extraction failed for %s: %s", pdf_path, vision_exc)
+            meta["vision_error"] = str(vision_exc)
+    return text, meta
+
+
 def _render_document_markdown(title: str, text: str, metadata: dict) -> str:
     """Render extracted document text as markdown."""
     lines = [f"# {title}", "", "**Type:** Document"]
@@ -220,20 +250,13 @@ class DocumentImporter:
             try:
                 reader = PdfReader(str(pdf_path))
                 ts = _get_pdf_timestamp(reader, pdf_path)
-                text, page_count, is_scanned = _extract_text_pypdf(reader)
-                extraction_method = "pypdf"
-
-                if is_scanned:
-                    try:
-                        text = _extract_text_vision(pdf_path, page_count)
-                        extraction_method = "vision"
-                    except Exception as vision_exc:
-                        logger.warning(
-                            "Vision extraction failed for %s: %s", pdf_path, vision_exc
-                        )
-                        errors.append(
-                            f"{pdf_path.name}: scanned PDF — vision failed ({vision_exc}); using sparse pypdf text"
-                        )
+                text, meta = extract_pdf_text(pdf_path)
+                page_count = meta["page_count"]
+                extraction_method = meta["extraction_method"]
+                if meta["vision_error"]:
+                    errors.append(
+                        f"{pdf_path.name}: scanned PDF — vision failed ({meta['vision_error']}); using sparse pypdf text"
+                    )
 
                 seg_dt = dt.datetime.fromtimestamp(ts)
                 day = seg_dt.strftime("%Y%m%d")

@@ -190,6 +190,45 @@ def _process_segment(
                     file=sys.stderr,
                 )
 
+        # Process document/image extractions (kind-tagged JSONL from pdf/image handlers)
+        for extraction_jsonl in sorted(segment_path.glob("*.jsonl")):
+            if not extraction_jsonl.is_file():
+                continue
+            try:
+                with open(extraction_jsonl, encoding="utf-8") as fh:
+                    first_line = fh.readline()
+                header = json.loads(first_line) if first_line.strip() else {}
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(header, dict) or header.get("kind") not in (
+                "document",
+                "image",
+            ):
+                continue
+            from solstone.observe.hear import load_transcript
+
+            metadata, extraction_entries, formatted_text = load_transcript(
+                str(extraction_jsonl)
+            )
+            if extraction_entries is None:
+                print(
+                    f"Warning: Could not load extraction {extraction_jsonl.name}: {metadata.get('error')}",
+                    file=sys.stderr,
+                )
+                continue
+            entries.append(
+                {
+                    "timestamp": segment_start,
+                    "segment_key": segment_key,
+                    "segment_start": segment_start,
+                    "segment_end": segment_end,
+                    "prefix": "transcript",
+                    "content": formatted_text,
+                    "name": f"{segment_path.name}/{extraction_jsonl.name}",
+                    "stream": stream,
+                }
+            )
+
     # Process raw screen data from screen.jsonl and *_screen.jsonl
     if percepts:
         screen_files = list(segment_path.glob("*screen.jsonl"))

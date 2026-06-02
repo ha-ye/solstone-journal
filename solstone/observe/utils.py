@@ -12,13 +12,19 @@ import random
 import re
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import soundfile as sf
 
 from solstone.think.media import AUDIO_EXTENSIONS as _AUDIO_EXTENSIONS
+from solstone.think.media import IMAGE_EXTENSIONS as _IMAGE_EXTENSIONS
+from solstone.think.media import PDF_EXTENSIONS as _PDF_EXTENSIONS
 from solstone.think.media import VIDEO_EXTENSIONS as _VIDEO_EXTENSIONS
 from solstone.think.utils import day_path
+
+if TYPE_CHECKING:
+    from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +33,20 @@ SAMPLE_RATE = 16000
 
 VIDEO_EXTENSIONS = tuple(_VIDEO_EXTENSIONS)
 AUDIO_EXTENSIONS = tuple(_AUDIO_EXTENSIONS)
+IMAGE_EXTENSIONS = tuple(_IMAGE_EXTENSIONS)
+PDF_EXTENSIONS = tuple(_PDF_EXTENSIONS)
+
+# Pre-resize images to this max longest-side before VLM analysis. Images already
+# at or below this dimension pass through unchanged.
+_MAX_VLM_DIM = 1920
+
+
+def resize_for_vlm(img: "Image.Image") -> "Image.Image":
+    if max(img.size) <= _MAX_VLM_DIM:
+        return img
+    resized = img.copy()
+    resized.thumbnail((_MAX_VLM_DIM, _MAX_VLM_DIM))
+    return resized
 
 
 def audio_to_flac_bytes(audio: np.ndarray, sample_rate: int) -> bytes:

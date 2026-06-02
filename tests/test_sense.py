@@ -258,11 +258,17 @@ def test_file_sensor_register():
 
         sensor.register("*.webm", "describe", ["echo", "{file}"])
         sensor.register("*.flac", "transcribe", ["cat", "{file}"])
+        sensor.register("*.pdf", "extract", ["journal", "extract", "{file}"])
+        sensor.register("*.png", "depict", ["journal", "depict", "{file}"])
 
         assert "*.webm" in sensor.handlers
         assert "*.flac" in sensor.handlers
+        assert "*.pdf" in sensor.handlers
+        assert "*.png" in sensor.handlers
         assert sensor.handlers["*.webm"][0] == "describe"
         assert sensor.handlers["*.flac"][0] == "transcribe"
+        assert sensor.handlers["*.pdf"][0] == "extract"
+        assert sensor.handlers["*.png"][0] == "depict"
 
 
 def test_file_sensor_match_pattern():
@@ -271,6 +277,13 @@ def test_file_sensor_match_pattern():
     Files are expected to be in segment directories: journal/YYYYMMDD/stream/HHMMSS_LEN/file.ext
     """
     with tempfile.TemporaryDirectory() as tmpdir:
+        from solstone.observe.utils import (
+            AUDIO_EXTENSIONS,
+            IMAGE_EXTENSIONS,
+            PDF_EXTENSIONS,
+            VIDEO_EXTENSIONS,
+        )
+
         # Create journal/day/stream/segment structure
         journal_dir = Path(tmpdir)
         day_dir = journal_dir / "chronicle" / "20250101"
@@ -278,9 +291,14 @@ def test_file_sensor_match_pattern():
         segment_dir.mkdir(parents=True)
 
         sensor = FileSensor(journal_dir)
-        sensor.register("*.webm", "describe", ["echo", "{file}"])
-        sensor.register("*.flac", "transcribe", ["cat", "{file}"])
-        sensor.register("*.mp3", "transcribe", ["cat", "{file}"])
+        for ext in AUDIO_EXTENSIONS:
+            sensor.register(f"*{ext}", "transcribe", ["cat", "{file}"])
+        for ext in VIDEO_EXTENSIONS:
+            sensor.register(f"*{ext}", "describe", ["echo", "{file}"])
+        for ext in PDF_EXTENSIONS:
+            sensor.register(f"*{ext}", "extract", ["journal", "extract", "{file}"])
+        for ext in IMAGE_EXTENSIONS:
+            sensor.register(f"*{ext}", "depict", ["journal", "depict", "{file}"])
 
         # Should match - files in segment directory
         webm_file = segment_dir / "center_DP-3_screen.webm"
@@ -294,6 +312,21 @@ def test_file_sensor_match_pattern():
         mp3_file = segment_dir / "imported_audio.mp3"
         assert sensor._match_pattern(mp3_file) is not None
         assert sensor._match_pattern(mp3_file)[0] == "transcribe"
+
+        pdf_file = segment_dir / "report.pdf"
+        assert sensor._match_pattern(pdf_file) is not None
+        assert sensor._match_pattern(pdf_file)[0] == "extract"
+
+        for filename in (
+            "image.png",
+            "photo.jpg",
+            "camera.heic",
+            "snapshot.webp",
+            "scan.tiff",
+        ):
+            image_file = segment_dir / filename
+            assert sensor._match_pattern(image_file) is not None
+            assert sensor._match_pattern(image_file)[0] == "depict"
 
         # Should not match - wrong extension
         txt_file = segment_dir / "test.txt"
