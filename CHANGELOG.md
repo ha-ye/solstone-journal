@@ -4,6 +4,15 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.4.10] - 2026-06-02
+
+### Added
+- pdfs and still images that come in with your day are now read into your journal and made searchable, the same way a transcript is. sol can find what a document or an image actually contains, not just that one was there. on a scanned pdf with no selectable text, sol reads the page itself. nothing new leaves your machine, and what's kept on disk is unchanged.
+
+### Fixed
+- if you run the on-device option on a Mac, it works again. on apple silicon, on-device thinking and vision had started turning away every request, so the day's processing stalled; this resolves it. and if the on-device engine ever restarts, your journal now catches up on anything it missed while it was down.
+- solstone no longer tells you an update is available when there isn't one. if you were already on the latest build, or running a pre-release or development build that's ahead of it, the check could nudge you for nothing. it now points to an update only when a genuinely newer published version exists.
+
 ## [0.4.9] - 2026-06-02
 
 ### Fixed
