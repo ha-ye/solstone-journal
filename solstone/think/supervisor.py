@@ -127,15 +127,22 @@ def _candidate_journal(proc: "psutil.Process") -> Path | None:
 # name (no colon prefix) and is included here so the sweep reaps it too.
 # The mlx-vlm server is a Python process, but our launcher sets the same
 # managed proctitle so proc.name() is stable for orphan sweeping.
-_MANAGED_SERVICE_PROCTITLES = frozenset(
+_LOCAL_SERVER_PROCTITLES = frozenset(
     {
-        "journal:sense",
-        "journal:cortex",
-        "journal:convey",
-        "journal:spl",
         LOCAL_SERVER_PROCESS_NAME,
         MLX_SERVER_PROCESS_NAME,
     }
+)
+_MANAGED_SERVICE_PROCTITLES = (
+    frozenset(
+        {
+            "journal:sense",
+            "journal:cortex",
+            "journal:convey",
+            "journal:spl",
+        }
+    )
+    | _LOCAL_SERVER_PROCTITLES
 )
 
 
@@ -768,7 +775,7 @@ _daily_state = {
 
 # State for local provider recovery nudges
 _recovery_state = {
-    "llama_server_down": False,
+    "local_server_down": False,
 }
 
 # Timeout before flushing stale segments (seconds)
@@ -1548,8 +1555,8 @@ async def handle_runner_exits(procs: list[RunnerManagedProcess]) -> None:
                 continue
 
             procs.append(new_proc)
-            if managed.name == LOCAL_SERVER_PROCESS_NAME:
-                _recovery_state["llama_server_down"] = True
+            if managed.name in _LOCAL_SERVER_PROCTITLES:
+                _recovery_state["local_server_down"] = True
             logging.info("Restarted %s after exit code %s", managed.name, returncode)
         else:
             logging.info("Not restarting %s", managed.name)
@@ -1569,7 +1576,7 @@ def _nudge_catchup_drain() -> None:
 
 async def _check_local_server_recovery() -> None:
     """Detect a recovered local server after supervisor-managed relaunch."""
-    if _is_remote_mode or not _recovery_state["llama_server_down"]:
+    if _is_remote_mode or not _recovery_state["local_server_down"]:
         return
 
     port = read_service_port("local")
@@ -1582,7 +1589,7 @@ async def _check_local_server_recovery() -> None:
     if state != local_server.STATE_READY:
         return
 
-    _recovery_state["llama_server_down"] = False
+    _recovery_state["local_server_down"] = False
     _nudge_catchup_drain()
 
 
