@@ -4,6 +4,13 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.4.9] - 2026-06-02
+
+### Fixed
+- upgrading on macos is steadier when the journal service is already running. setup waits for the old service to finish unloading and uses the service's real start time, so a healthy upgrade does not stall at readiness.
+- solstone raises the file limit for the installed journal service, giving long-running journals more room for observers, local providers, and background work.
+- revealing a provider key in settings is now only visual. clicking the eye button no longer triggers an unwanted save, validation, or clear.
+
 ## [0.4.8] - 2026-06-01
 
 ### Fixed

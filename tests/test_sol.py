@@ -233,6 +233,7 @@ class TestGetStatus:
     def test_status_without_override(self, monkeypatch):
         """Test status when no journal env is set uses source-tree fallback."""
         monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+        monkeypatch.setattr("solstone.think.user_config.read_user_config", lambda: {})
         status = sol.get_status()
         assert status["journal_path"].endswith("/journal")
         assert status["journal_source"] == "source"
