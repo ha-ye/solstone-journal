@@ -145,6 +145,19 @@ def get_stream_state(name: str) -> dict | None:
         return None
 
 
+def delete_stream_state(name: str) -> bool:
+    """Remove a stream's identity record.
+
+    Returns True if journal/streams/{name}.json existed and was removed,
+    False if it was already absent.
+    """
+    path = _streams_dir() / f"{name}.json"
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
+
+
 def update_stream(
     name: str,
     day: str,

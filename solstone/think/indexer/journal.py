@@ -149,6 +149,32 @@ def reset_journal_index(journal: str) -> None:
         pass
 
 
+def prune_chunks_by_stream(stream: str, journal: str | None = None) -> dict:
+    """Remove all index chunks for a stream and their files rows.
+
+    Returns ``{"chunks": <removed chunk rows>, "files": <removed files rows>}``.
+    This is index maintenance, not domain processing.
+    """
+    conn, _ = get_journal_index(journal)
+    count = conn.execute(
+        "SELECT count(*) FROM chunks WHERE stream=?",
+        (stream,),
+    ).fetchone()[0]
+    paths = [
+        row[0]
+        for row in conn.execute(
+            "SELECT DISTINCT path FROM chunks WHERE stream=?",
+            (stream,),
+        ).fetchall()
+    ]
+    conn.execute("DELETE FROM chunks WHERE stream=?", (stream,))
+    for path in paths:
+        conn.execute("DELETE FROM files WHERE path=?", (path,))
+    conn.commit()
+    conn.close()
+    return {"chunks": count, "files": len(paths)}
+
+
 def index_file(journal: str, file_path: str, verbose: bool = False) -> bool:
     """Index a single file into the journal index.
 

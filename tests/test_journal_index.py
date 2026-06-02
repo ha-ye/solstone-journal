@@ -1164,6 +1164,90 @@ def test_search_tool_stream_filter(monkeypatch):
     assert result["query"]["filters"]["stream"] == "default"
 
 
+def test_prune_chunks_by_stream(monkeypatch, tmp_path):
+    """prune_chunks_by_stream removes only the target stream's chunks."""
+    from solstone.think.indexer.journal import (
+        get_journal_index,
+        prune_chunks_by_stream,
+        scan_journal,
+    )
+    from solstone.think.streams import write_segment_stream
+
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+
+    share_seg = journal / "chronicle" / "20240101" / "import.share" / "100000_300"
+    share_talents = share_seg / "talents"
+    share_talents.mkdir(parents=True)
+    (share_talents / "screen.md").write_text(
+        "# Share\n\nImported share source content.\n",
+        encoding="utf-8",
+    )
+    write_segment_stream(share_seg, "import.share", None, None, 1)
+
+    other_seg = journal / "chronicle" / "20240101" / "import.apple" / "101000_300"
+    other_talents = other_seg / "talents"
+    other_talents.mkdir(parents=True)
+    (other_talents / "screen.md").write_text(
+        "# Apple\n\nImported apple source content.\n",
+        encoding="utf-8",
+    )
+    write_segment_stream(other_seg, "import.apple", None, None, 1)
+
+    scan_journal(str(journal), full=True)
+    conn, _ = get_journal_index(str(journal))
+    share_count = conn.execute(
+        "SELECT count(*) FROM chunks WHERE stream=?",
+        ("import.share",),
+    ).fetchone()[0]
+    other_count = conn.execute(
+        "SELECT count(*) FROM chunks WHERE stream=?",
+        ("import.apple",),
+    ).fetchone()[0]
+    share_paths = [
+        row[0]
+        for row in conn.execute(
+            "SELECT DISTINCT path FROM chunks WHERE stream=?",
+            ("import.share",),
+        ).fetchall()
+    ]
+    conn.close()
+
+    assert share_count > 0
+    assert other_count > 0
+    assert share_paths
+
+    result = prune_chunks_by_stream("import.share", str(journal))
+
+    assert result["chunks"] == share_count
+    assert result["files"] == len(share_paths)
+
+    conn, _ = get_journal_index(str(journal))
+    assert (
+        conn.execute(
+            "SELECT count(*) FROM chunks WHERE stream=?",
+            ("import.share",),
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        conn.execute(
+            "SELECT count(*) FROM chunks WHERE stream=?",
+            ("import.apple",),
+        ).fetchone()[0]
+        == other_count
+    )
+    for path in share_paths:
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM files WHERE path=?",
+                (path,),
+            ).fetchone()[0]
+            == 0
+        )
+    conn.close()
+
+
 def test_entity_search_chunks_indexed(monkeypatch):
     """Entity search chunks are generated from identity + relationship data."""
     from solstone.think.indexer.journal import scan_journal

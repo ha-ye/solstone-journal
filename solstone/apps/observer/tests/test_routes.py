@@ -23,6 +23,7 @@ from solstone.convey.secure_listener import ConveyIdentity
 from solstone.convey.sol_initiated.copy import KIND_SOL_CHAT_REQUEST
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.paths import authorized_clients_path
+from solstone.think.streams import update_stream, write_segment_stream
 
 PL_FINGERPRINT = "sha256:" + ("c" * 64)
 PL_FINGERPRINT_2 = "sha256:" + ("d" * 64)
@@ -50,6 +51,29 @@ def _api_list_observers(env):
 
 def _day_dir(env, day: str = "20250103"):
     return env.journal / "chronicle" / day
+
+
+def _plant_source_segment(
+    env,
+    *,
+    day: str = "20250103",
+    stream: str = "import.share",
+    segment: str = "120000_300",
+):
+    seg_dir = _day_dir(env, day) / stream / segment
+    seg_dir.mkdir(parents=True)
+    (seg_dir / "doc.pdf").write_bytes(b"pdf")
+    (seg_dir / "doc.jsonl").write_text('{"text": "derived"}\n', encoding="utf-8")
+    (seg_dir / "item.json").write_text("{}\n", encoding="utf-8")
+    state = update_stream(stream, day, segment, type="import")
+    write_segment_stream(
+        seg_dir,
+        stream,
+        state["prev_day"],
+        state["prev_segment"],
+        state["seq"],
+    )
+    return seg_dir
 
 
 def _save_test_observer(
@@ -553,6 +577,89 @@ def test_ingest_invalid_key(observer_env):
     )
     assert resp.status_code == 401
     assert "Invalid key" in resp.get_json()["detail"]
+
+
+def test_delete_source_requires_auth(observer_env):
+    """Deleting the share source requires observer auth."""
+    env = observer_env()
+    seg_dir = _plant_source_segment(env)
+
+    resp = env.client.delete("/app/observer/source/import.share")
+    assert resp.status_code == 401
+    assert resp.get_json()["reason_code"] == "auth_required"
+    assert seg_dir.exists()
+
+    resp = env.client.delete(
+        "/app/observer/source/import.share",
+        headers={"Authorization": "Bearer invalid-key-12345"},
+    )
+    assert resp.status_code == 401
+    assert "Invalid key" in resp.get_json()["detail"]
+    assert seg_dir.exists()
+
+
+def test_delete_source_hard_pin_rejects_other_stream(observer_env):
+    """A valid observer key can only delete import.share."""
+    env = observer_env()
+    create_resp = env.client.post(
+        "/app/observer/api/create",
+        json={"name": "test-observer"},
+        content_type="application/json",
+    )
+    key = create_resp.get_json()["key"]
+
+    other_seg = _plant_source_segment(
+        env,
+        stream="import.audio",
+        segment="130000_300",
+    )
+    resp = env.client.delete(f"/app/observer/source/import.audio/{key}")
+    assert resp.status_code == 400
+    assert resp.get_json()["detail"] == "Only the import.share source can be deleted"
+    assert other_seg.exists()
+
+    share_seg = _plant_source_segment(
+        env,
+        day="20250104",
+        segment="140000_300",
+    )
+    resp = env.client.delete(
+        f"/app/observer/source/import.share/{key}",
+        data={"stream": "import.audio"},
+    )
+    assert resp.status_code == 400
+    assert resp.get_json()["detail"] == "Only the import.share source can be deleted"
+    assert share_seg.exists()
+
+    resp = env.client.delete(
+        f"/app/observer/source/import.share/{key}",
+        data={"meta": json.dumps({"stream": "import.audio"})},
+    )
+    assert resp.status_code == 400
+    assert resp.get_json()["detail"] == "Only the import.share source can be deleted"
+    assert share_seg.exists()
+
+
+def test_delete_source_happy_path(observer_env):
+    """A valid observer key deletes the import.share source."""
+    env = observer_env()
+    create_resp = env.client.post(
+        "/app/observer/api/create",
+        json={"name": "test-observer"},
+        content_type="application/json",
+    )
+    key = create_resp.get_json()["key"]
+    seg_dir = _plant_source_segment(env)
+
+    resp = env.client.delete(f"/app/observer/source/import.share/{key}")
+
+    assert resp.status_code == 200
+    receipt = resp.get_json()
+    assert receipt["target"]["stream"] == "import.share"
+    assert receipt["removed"]["segments"] == 1
+    assert receipt["removed"]["originals"] == 1
+    assert receipt["removed"]["in_segment_derived"] == 1
+    assert not seg_dir.exists()
 
 
 def test_ingest_missing_segment(observer_env):

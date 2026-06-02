@@ -8,6 +8,7 @@ import threading
 import pytest
 
 from solstone.think.streams import (
+    delete_stream_state,
     get_stream_state,
     list_streams,
     read_segment_stream,
@@ -134,6 +135,17 @@ def test_update_stream_cross_day(tmp_path, monkeypatch):
     assert result["prev_day"] == "20250119"
     assert result["prev_segment"] == "235500_300"
     assert result["seq"] == 2
+
+
+def test_delete_stream_state(tmp_path, monkeypatch):
+    """Deleting stream state is idempotent."""
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    update_stream("import.share", "20250119", "142500_300", type="import")
+
+    assert delete_stream_state("import.share") is True
+    assert get_stream_state("import.share") is None
+    assert delete_stream_state("import.share") is False
 
 
 # --- write/read segment stream tests ---

@@ -458,6 +458,44 @@ def load_history(key_prefix: str, day: str) -> list[dict]:
     return records
 
 
+def prune_history_by_stream(stream: str) -> int:
+    """Remove observer sync-history rows for a stream across all prefixes.
+
+    Returns the total number of rows removed. Idempotent.
+    """
+    total = 0
+    for observer in list_observers():
+        prefix = observer["filename_prefix"]
+        hist_dir = get_hist_dir(prefix, ensure_exists=False)
+        if not hist_dir.exists():
+            continue
+
+        for hist_path in sorted(hist_dir.glob("*.jsonl")):
+            rows = []
+            try:
+                with open(hist_path, encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            rows.append(json.loads(line))
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.warning("Failed to load sync history %s: %s", hist_path, exc)
+                continue
+
+            keep = [row for row in rows if row.get("stream") != stream]
+            removed = len(rows) - len(keep)
+            if not removed:
+                continue
+
+            total += removed
+            content = "".join(
+                json.dumps(row, ensure_ascii=False) + "\n" for row in keep
+            )
+            atomic_write(hist_path, content)
+
+    return total
+
+
 def increment_stat(key_prefix: str, stat_name: str) -> None:
     """Increment a stat counter for an observer.
 
