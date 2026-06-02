@@ -10,6 +10,7 @@ import time
 from typing import Any
 
 from flask import Blueprint, jsonify
+from packaging.version import InvalidVersion, Version
 
 from solstone.think.capture_health import get_capture_health
 
@@ -49,6 +50,18 @@ def _check_latest_version() -> dict[str, Any] | None:
         return None
 
 
+def _is_newer(latest: str, current: str) -> bool:
+    """Return True only if `latest` is a strictly newer version than `current`.
+
+    Uses PEP 440 ordering. Returns False conservatively when either string is
+    not a parseable version (including the `"unknown"` sentinel for current).
+    """
+    try:
+        return Version(latest) > Version(current)
+    except InvalidVersion:
+        return False
+
+
 def _get_version_info() -> dict[str, Any]:
     """Get version info with cached GitHub check."""
     from solstone.think.awareness import get_current, update_state
@@ -81,7 +94,7 @@ def _get_version_info() -> dict[str, Any]:
             result["latest"] = cached["latest"]
 
     if "latest" in result:
-        result["update_available"] = result["latest"] != current
+        result["update_available"] = _is_newer(result["latest"], current)
 
     return result
 

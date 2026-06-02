@@ -35,6 +35,7 @@ dependencies = [
     "Markdown",
     "mistune",
     "python-frontmatter",
+    "packaging",
 
     # Natural language time parsing
     "timefhuman",

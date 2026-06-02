@@ -167,6 +167,133 @@ class TestSystemStatusEndpoint:
         assert data["version"]["latest"] == "99.0.0"
         assert data["version"]["update_available"] is True
 
+    def test_version_update_available_tight(self, client):
+        with (
+            patch.object(
+                system_mod,
+                "get_capture_health",
+                return_value={"status": "no_observers", "observers": []},
+            ),
+            patch.object(
+                system_mod, "_check_latest_version", return_value={"latest": "0.4.9"}
+            ),
+            patch.object(system_mod, "collect_version", return_value="0.4.8"),
+        ):
+            data = client.get("/api/system/status").get_json()
+        assert data["version"]["update_available"] is True
+
+    def test_version_current_newer_than_latest(self, client):
+        with (
+            patch.object(
+                system_mod,
+                "get_capture_health",
+                return_value={"status": "no_observers", "observers": []},
+            ),
+            patch.object(
+                system_mod, "_check_latest_version", return_value={"latest": "0.4.8"}
+            ),
+            patch.object(system_mod, "collect_version", return_value="0.4.9"),
+        ):
+            data = client.get("/api/system/status").get_json()
+        assert data["version"]["update_available"] is False
+
+    def test_version_equal_no_update(self, client):
+        with (
+            patch.object(
+                system_mod,
+                "get_capture_health",
+                return_value={"status": "no_observers", "observers": []},
+            ),
+            patch.object(
+                system_mod, "_check_latest_version", return_value={"latest": "0.4.9"}
+            ),
+            patch.object(system_mod, "collect_version", return_value="0.4.9"),
+        ):
+            data = client.get("/api/system/status").get_json()
+        assert data["version"]["update_available"] is False
+
+    def test_version_unknown_current_no_update(self, client):
+        with (
+            patch.object(
+                system_mod,
+                "get_capture_health",
+                return_value={"status": "no_observers", "observers": []},
+            ),
+            patch.object(
+                system_mod, "_check_latest_version", return_value={"latest": "0.4.9"}
+            ),
+            patch.object(system_mod, "collect_version", return_value=None),
+        ):
+            data = client.get("/api/system/status").get_json()
+        assert "update_available" in data["version"]
+        assert data["version"]["update_available"] is False
+
+    def test_version_prerelease_latest_is_newer(self, client):
+        with (
+            patch.object(
+                system_mod,
+                "get_capture_health",
+                return_value={"status": "no_observers", "observers": []},
+            ),
+            patch.object(
+                system_mod, "_check_latest_version", return_value={"latest": "0.5.0rc1"}
+            ),
+            patch.object(system_mod, "collect_version", return_value="0.4.9"),
+        ):
+            data = client.get("/api/system/status").get_json()
+        assert data["version"]["update_available"] is True
+
+    def test_version_dev_current_ahead_of_latest(self, client):
+        with (
+            patch.object(
+                system_mod,
+                "get_capture_health",
+                return_value={"status": "no_observers", "observers": []},
+            ),
+            patch.object(
+                system_mod, "_check_latest_version", return_value={"latest": "0.4.8"}
+            ),
+            patch.object(system_mod, "collect_version", return_value="0.4.9.dev1"),
+        ):
+            data = client.get("/api/system/status").get_json()
+        assert data["version"]["update_available"] is False
+
+    def test_version_unparseable_latest_no_update(self, client):
+        with (
+            patch.object(
+                system_mod,
+                "get_capture_health",
+                return_value={"status": "no_observers", "observers": []},
+            ),
+            patch.object(
+                system_mod, "_check_latest_version", return_value={"latest": "nightly"}
+            ),
+            patch.object(system_mod, "collect_version", return_value="0.4.9"),
+        ):
+            data = client.get("/api/system/status").get_json()
+        assert "update_available" in data["version"]
+        assert data["version"]["update_available"] is False
+
+    def test_version_stale_cache_degraded(self, client, tmp_path):
+        awareness = tmp_path / "awareness"
+        awareness.mkdir(parents=True, exist_ok=True)
+        (awareness / "current.json").write_text(
+            json.dumps({"version": {"latest": "0.4.8", "checked_at": 0}})
+        )
+
+        with (
+            patch.object(
+                system_mod,
+                "get_capture_health",
+                return_value={"status": "no_observers", "observers": []},
+            ),
+            patch.object(system_mod, "_check_latest_version", return_value=None),
+            patch.object(system_mod, "collect_version", return_value="0.4.9"),
+        ):
+            data = client.get("/api/system/status").get_json()
+        assert data["version"]["latest"] == "0.4.8"
+        assert data["version"]["update_available"] is False
+
     def test_unknown_status_is_not_ok(self, client):
         with patch.object(
             system_mod,
