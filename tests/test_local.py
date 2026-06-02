@@ -87,9 +87,17 @@ def test_validate_key_uses_tiny_generate(monkeypatch):
 
 def test_run_generate_posts_to_loopback(monkeypatch):
     provider = _provider()
+    served_model_id = (
+        "/Users/sol/.cache/huggingface/hub/"
+        "models--mlx-community--Qwen3.5-9B/snapshots/abc123"
+    )
     monkeypatch.setattr(
         "solstone.think.providers.local_server.connect",
-        lambda: SimpleNamespace(port=4321, base_url="http://127.0.0.1:4321"),
+        lambda: SimpleNamespace(
+            port=4321,
+            base_url="http://127.0.0.1:4321",
+            served_model_id=served_model_id,
+        ),
     )
     captured = {}
 
@@ -99,7 +107,7 @@ def test_run_generate_posts_to_loopback(monkeypatch):
 
         def json(self):
             return {
-                "model": LOCAL_MODEL,
+                "model": served_model_id,
                 "choices": [
                     {
                         "message": {"content": "hello"},
@@ -124,11 +132,12 @@ def test_run_generate_posts_to_loopback(monkeypatch):
     result = provider.run_generate("hello", model=LOCAL_MODEL, max_output_tokens=16)
 
     assert captured["url"] == "http://127.0.0.1:4321/v1/chat/completions"
-    assert captured["json"]["model"] == LOCAL_MODEL
+    assert captured["json"]["model"] == served_model_id
     assert captured["json"]["messages"] == [{"role": "user", "content": "hello"}]
     assert captured["json"]["max_tokens"] == 16
     assert captured["json"]["chat_template_kwargs"] == {"enable_thinking": False}
     assert result["text"] == "hello"
+    assert result["model"] == LOCAL_MODEL
     assert result["usage"] == {
         "input_tokens": 3,
         "output_tokens": 2,
@@ -140,7 +149,11 @@ def test_run_generate_emits_chat_completions_image_url(monkeypatch):
     provider = _provider()
     monkeypatch.setattr(
         "solstone.think.providers.local_server.connect",
-        lambda: SimpleNamespace(port=4321, base_url="http://127.0.0.1:4321"),
+        lambda: SimpleNamespace(
+            port=4321,
+            base_url="http://127.0.0.1:4321",
+            served_model_id=LOCAL_MODEL,
+        ),
     )
     png = b"\x89PNG\r\n\x1a\npayload"
     captured = {}
@@ -191,6 +204,10 @@ def test_openhands_local_llm_kwargs(monkeypatch):
     from solstone.think.providers import openhands
 
     captured = {}
+    served_model_id = (
+        "/Users/sol/.cache/huggingface/hub/"
+        "models--mlx-community--Qwen3.5-9B/snapshots/abc123"
+    )
 
     class FakeLLM:
         def __init__(self, **kwargs):
@@ -201,18 +218,19 @@ def test_openhands_local_llm_kwargs(monkeypatch):
     monkeypatch.setitem(sys.modules, "openhands.sdk", sdk_module)
     monkeypatch.setattr(
         "solstone.think.providers.local_server.connect",
-        lambda: SimpleNamespace(port=9876),
+        lambda: SimpleNamespace(port=9876, served_model_id=served_model_id),
     )
 
     llm = openhands._build_llm("local", LOCAL_MODEL)
 
     assert isinstance(llm, FakeLLM)
     assert captured == {
-        "model": f"openai/{LOCAL_MODEL}",
+        "model": f"openai/{served_model_id}",
         "base_url": "http://127.0.0.1:9876/v1",
         "api_key": "EMPTY",
         "native_tool_calling": False,
         "input_cost_per_token": 0,
+        "output_cost_per_token": 0,
         "litellm_extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
     }
     assert "chat_template_kwargs" not in captured
@@ -443,13 +461,49 @@ def test_local_server_connect_returns_healthy_service(monkeypatch):
     from solstone.think.providers import local_server
 
     monkeypatch.setattr(local_server, "read_service_port", lambda service: 2468)
-    monkeypatch.setattr(local_server, "_probe_health", lambda port: ("ready", None))
+    monkeypatch.setattr(
+        local_server,
+        "_fetch_health",
+        lambda port: ("ready", None, {"loaded_model": "/path/to/snapshot"}),
+    )
 
     info = local_server.connect()
 
     assert info.model_id == LOCAL_MODEL
+    assert info.served_model_id == "/path/to/snapshot"
     assert info.base_url == "http://127.0.0.1:2468"
     assert info.state == local_server.STATE_READY
+
+
+def test_resolve_served_model_id_returns_valid_loaded_model_verbatim():
+    from solstone.think.providers import local_server
+
+    assert (
+        local_server._resolve_served_model_id({"loaded_model": "/snap/dir"})
+        == "/snap/dir"
+    )
+
+
+def test_resolve_served_model_id_falls_back_when_loaded_model_absent():
+    from solstone.think.providers import local_server
+
+    assert local_server._resolve_served_model_id({}) == LOCAL_MODEL
+    assert local_server._resolve_served_model_id(None) == LOCAL_MODEL
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"loaded_model": None},
+        {"loaded_model": ""},
+        {"loaded_model": "   "},
+        {"loaded_model": 123},
+    ],
+)
+def test_resolve_served_model_id_rejects_invalid_loaded_model(body):
+    from solstone.think.providers import local_server
+
+    assert local_server._resolve_served_model_id(body) is None
 
 
 def test_local_server_connect_missing_port_raises_named_copy(monkeypatch):
@@ -468,10 +522,50 @@ def test_local_server_connect_failed_health_raises_named_copy(monkeypatch):
     from solstone.think.providers import local_server
 
     monkeypatch.setattr(local_server, "read_service_port", lambda service: 2468)
-    monkeypatch.setattr(local_server, "_probe_health", lambda port: ("starting", None))
+    monkeypatch.setattr(
+        local_server, "_fetch_health", lambda port: ("starting", None, None)
+    )
 
     with pytest.raises(local_server.LocalProviderError) as exc:
         local_server.connect()
 
     assert exc.value.reason_code == "local_model_not_ready"
     assert str(exc.value) == local_server.LOCAL_MODEL_NOT_READY_COPY
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"loaded_model": None},
+        {"loaded_model": ""},
+    ],
+)
+def test_local_server_connect_invalid_loaded_model_raises_named_copy(monkeypatch, body):
+    from solstone.think.providers import local_server
+
+    monkeypatch.setattr(local_server, "read_service_port", lambda service: 2468)
+    monkeypatch.setattr(
+        local_server, "_fetch_health", lambda port: ("ready", None, body)
+    )
+
+    with pytest.raises(local_server.LocalProviderError) as exc:
+        local_server.connect()
+
+    assert exc.value.reason_code == "local_model_not_ready"
+    assert str(exc.value) == local_server.LOCAL_MODEL_NOT_READY_COPY
+
+
+def test_local_server_connect_linux_health_shape_uses_logical_model(monkeypatch):
+    from solstone.think.providers import local_server
+
+    monkeypatch.setattr(local_server, "read_service_port", lambda service: 2468)
+    monkeypatch.setattr(
+        local_server,
+        "_fetch_health",
+        lambda port: ("ready", None, {"status": "ok"}),
+    )
+
+    info = local_server.connect()
+
+    assert info.model_id == LOCAL_MODEL
+    assert info.served_model_id == LOCAL_MODEL

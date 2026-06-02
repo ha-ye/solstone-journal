@@ -184,7 +184,7 @@ def _extract_usage(data: dict[str, Any]) -> dict[str, int] | None:
     }
 
 
-def _parse_response(data: dict[str, Any], requested_model: str) -> GenerateResult:
+def _parse_response(data: dict[str, Any]) -> GenerateResult:
     choices = data.get("choices")
     if not isinstance(choices, list) or not choices:
         raise LocalProviderError("provider_response_invalid", "No response from model.")
@@ -200,9 +200,7 @@ def _parse_response(data: dict[str, Any], requested_model: str) -> GenerateResul
         text = content if isinstance(content, str) else ""
     return GenerateResult(
         text=text,
-        model=data.get("model")
-        if isinstance(data.get("model"), str)
-        else requested_model,
+        model=LOCAL_MODEL,
         usage=_extract_usage(data),
         finish_reason=choice.get("finish_reason"),
         thinking=None,
@@ -224,11 +222,12 @@ def run_generate(
     del thinking_budget, kwargs
     from solstone.think.providers import local_server
 
-    model_id = normalize_model_id(model)
+    # Validate the requested logical id; served id comes from the server.
+    normalize_model_id(model)
     messages = _build_messages(contents, system_instruction)
     server = local_server.connect()
     body = _build_request_body(
-        model_id,
+        server.served_model_id,
         messages,
         temperature,
         max_output_tokens,
@@ -244,7 +243,7 @@ def run_generate(
         timeout=timeout_s or _DEFAULT_TIMEOUT,
     )
     response.raise_for_status()
-    return _parse_response(response.json(), model_id)
+    return _parse_response(response.json())
 
 
 async def run_agenerate(

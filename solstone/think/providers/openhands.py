@@ -113,16 +113,15 @@ def _build_llm(provider: str, model: str) -> Any:
 
     if provider == "local":
         from solstone.think.providers import local_server
-        from solstone.think.providers.local import normalize_model_id
 
-        model_id = normalize_model_id(str(model))
         server = local_server.connect()
         return LLM(
-            model=f"openai/{model_id}",
+            model=f"openai/{server.served_model_id}",
             base_url=f"http://127.0.0.1:{server.port}/v1",
             api_key="EMPTY",
             native_tool_calling=False,
             input_cost_per_token=0,
+            output_cost_per_token=0,
             litellm_extra_body={"chat_template_kwargs": {"enable_thinking": False}},
         )
 
