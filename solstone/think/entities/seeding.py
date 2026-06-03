@@ -54,6 +54,7 @@ def seed_entities(
     entity_list = list(all_entities.values())
 
     resolved: list[EntityDict] = []
+    facet_ensured = False
 
     for ent in entities:
         name = ent.get("name", "").strip()
@@ -103,6 +104,11 @@ def seed_entities(
             existing_contents = {o["content"] for o in existing_obs}
             for obs_content in observations:
                 if obs_content not in existing_contents:
+                    if not facet_ensured:
+                        from solstone.think.facets import ensure_facet
+
+                        ensure_facet(facet)
+                        facet_ensured = True
                     add_observation(facet, resolved_name, obs_content, source_day=day)
                     existing_contents.add(obs_content)
 

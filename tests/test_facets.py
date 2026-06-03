@@ -4,6 +4,7 @@
 """Tests for think.facets module."""
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -13,8 +14,10 @@ from solstone.think.facets import (
     _format_principal_role,
     _get_principal_display_name,
     _rank_entities_by_signal,
+    ensure_facet,
     facet_summaries,
     facet_summary,
+    find_orphan_facets,
     get_active_facets,
     get_facets,
 )
@@ -293,6 +296,77 @@ def test_get_facets_empty_entities(monkeypatch):
 
         entity_names = load_entity_names(facet="minimal-facet")
         assert entity_names is None
+
+
+def test_find_orphan_facets_detects_content_bearing_dirs_only(tmp_path, monkeypatch):
+    """Orphan detection promotes only real content-bearing facet dirs."""
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    facets_dir = tmp_path / "facets"
+
+    orphan_a = facets_dir / "orphan-a" / "todos"
+    orphan_a.mkdir(parents=True)
+    (orphan_a / "20260101.jsonl").write_text(
+        json.dumps({"text": "Review"}) + "\n", encoding="utf-8"
+    )
+
+    orphan_b = facets_dir / "orphan-b" / "entities" / "alice"
+    orphan_b.mkdir(parents=True)
+    (orphan_b / "observations.jsonl").write_text(
+        json.dumps({"content": "Met Alice"}) + "\n", encoding="utf-8"
+    )
+
+    junk = facets_dir / "junk"
+    junk.mkdir(parents=True)
+    (junk / ".gitkeep").write_text("", encoding="utf-8")
+
+    lock_only = facets_dir / "lock-only" / "entities" / "x"
+    lock_only.mkdir(parents=True)
+    (lock_only / "observations.jsonl.lock").write_text("", encoding="utf-8")
+
+    has_json = facets_dir / "has-json"
+    (has_json / "news").mkdir(parents=True)
+    (has_json / "facet.json").write_text(
+        json.dumps({"title": "Has Json"}), encoding="utf-8"
+    )
+    (has_json / "news" / "20260101.md").write_text("news\n", encoding="utf-8")
+
+    assert find_orphan_facets() == ["orphan-a", "orphan-b"]
+
+
+def test_find_orphan_facets_fixture_excludes_broken_facet(monkeypatch):
+    """The .gitkeep-only broken fixture is not promoted as an orphan."""
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(FIXTURES_PATH))
+
+    assert "broken-facet" not in find_orphan_facets()
+
+
+def test_ensure_facet_repairs_orphan_visible_in_get_facets(tmp_path, monkeypatch):
+    """ensure_facet writes default metadata once and makes the facet visible."""
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    todos_dir = tmp_path / "facets" / "orphan" / "todos"
+    todos_dir.mkdir(parents=True)
+    (todos_dir / "20260101.jsonl").write_text(
+        json.dumps({"text": "Review"}) + "\n", encoding="utf-8"
+    )
+
+    assert "orphan" not in get_facets()
+    assert ensure_facet("orphan") is True
+
+    facets = get_facets()
+    assert "orphan" in facets
+    assert facets["orphan"]["title"] == "Orphan"
+    assert facets["orphan"]["color"] == "#667eea"
+    assert facets["orphan"]["emoji"] == "📦"
+    assert ensure_facet("orphan") is False
+
+    today = datetime.now().strftime("%Y%m%d")
+    log_path = tmp_path / "facets" / "orphan" / "logs" / f"{today}.jsonl"
+    entries = [
+        json.loads(line)
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert [entry["action"] for entry in entries] == ["facet_heal"]
 
 
 def test_facet_summaries(monkeypatch):

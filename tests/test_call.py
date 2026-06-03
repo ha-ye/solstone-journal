@@ -282,6 +282,58 @@ class TestFacetCRUD:
         result = runner.invoke(call_app, ["journal", "facet", "show", "nonexistent"])
         assert result.exit_code == 1
 
+    def test_facet_doctor_lists_orphans_without_fix(self, facet_journal):
+        """Facet doctor reports orphans without writing facet metadata."""
+        strays_dir = facet_journal / "facets" / "strays" / "news"
+        strays_dir.mkdir(parents=True)
+        (strays_dir / "20260101.md").write_text("news\n", encoding="utf-8")
+
+        result = runner.invoke(call_app, ["journal", "facet", "doctor"])
+
+        assert result.exit_code == 0
+        assert "Orphan facets:" in result.output
+        assert "- strays" in result.output
+        assert "Run with --fix" in result.output
+        assert not (facet_journal / "facets" / "strays" / "facet.json").exists()
+
+    def test_facet_doctor_fix_repairs_orphans(self, facet_journal):
+        """Facet doctor --fix writes missing facet metadata."""
+        from solstone.think.facets import get_facets
+
+        strays_dir = facet_journal / "facets" / "strays" / "news"
+        strays_dir.mkdir(parents=True)
+        (strays_dir / "20260101.md").write_text("news\n", encoding="utf-8")
+
+        result = runner.invoke(call_app, ["journal", "facet", "doctor", "--fix"])
+
+        assert result.exit_code == 0
+        assert "Repaired orphan facets:" in result.output
+        assert "- strays" in result.output
+        assert "journal indexer --rescan" in result.output
+        assert (facet_journal / "facets" / "strays" / "facet.json").exists()
+        assert "strays" in get_facets()
+
+    def test_facet_doctor_bypasses_require_solstone_but_siblings_do_not(
+        self, facet_journal, monkeypatch
+    ):
+        """Facet doctor skips supervisor gating while sibling commands keep it."""
+        import solstone.think.tools.call as call_module
+
+        calls = []
+
+        def record_require_solstone():
+            calls.append("called")
+
+        monkeypatch.setattr(call_module, "require_solstone", record_require_solstone)
+
+        result = runner.invoke(call_app, ["journal", "facet", "doctor"])
+        assert result.exit_code == 0
+        assert calls == []
+
+        result = runner.invoke(call_app, ["journal", "facet", "show", "test-facet"])
+        assert result.exit_code == 0
+        assert calls == ["called"]
+
     def test_facet_create(self, facet_journal):
         """Create creates a new facet with defaults."""
         result = runner.invoke(call_app, ["journal", "facet", "create", "My Project"])

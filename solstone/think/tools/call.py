@@ -26,7 +26,9 @@ from solstone.think.entities import scan_facet_relationships
 from solstone.think.facets import (
     create_facet,
     delete_facet,
+    ensure_facet,
     facet_summary,
+    find_orphan_facets,
     get_enabled_facets,
     get_facet_news,
     get_facets,
@@ -60,14 +62,24 @@ facet_app = typer.Typer(help="Facet management.")
 
 @app.callback()
 def _require_up(ctx: typer.Context) -> None:
-    if (
-        ctx.invoked_subcommand == "export"
-    ):  # export is read-only and must work when supervisor is down (scope §6)
+    if ctx.invoked_subcommand in {
+        "export",
+        "facet",
+    }:  # export is read-only; facet delegates supervisor gating downward
         return
     require_solstone()
 
 
 app.add_typer(facet_app, name="facet")
+
+
+@facet_app.callback()
+def _require_up_for_facet(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand == "doctor":
+        return  # doctor scans the filesystem and works when the supervisor is down
+    require_solstone()
+
+
 retention_app = typer.Typer(help="Media retention management.")
 app.add_typer(retention_app, name="retention")
 
@@ -151,6 +163,38 @@ def show(
         typer.echo(f"Facet '{name}' not found.", err=True)
         raise typer.Exit(1)
     typer.echo(summary)
+
+
+@facet_app.command()
+def doctor(
+    fix: bool = typer.Option(
+        False, "--fix", help="Write the missing facet.json for each orphan facet."
+    ),
+) -> None:
+    """Report facet directories that hold observations but aren't registered as facets."""
+    orphans = find_orphan_facets()
+    if not orphans:
+        typer.echo("No orphan facets found.")
+        return
+    if not fix:
+        typer.echo("Orphan facets:")
+        for slug in orphans:
+            typer.echo(f"- {slug}")
+        typer.echo(
+            f"{len(orphans)} orphan facet(s) found. Run with --fix to register them."
+        )
+        return
+    repaired = [slug for slug in orphans if ensure_facet(slug)]
+    if not repaired:
+        typer.echo("No orphan facets repaired.")
+        return
+    typer.echo("Repaired orphan facets:")
+    for slug in repaired:
+        typer.echo(f"- {slug}")
+    typer.echo(
+        f"{len(repaired)} orphan facet(s) repaired. "
+        "Run 'journal indexer --rescan' to refresh the index."
+    )
 
 
 @app.command()

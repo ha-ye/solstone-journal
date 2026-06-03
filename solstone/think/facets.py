@@ -242,6 +242,72 @@ def log_call_action(
     )
 
 
+def _write_facet_json(path: Path, data: dict[str, Any]) -> None:
+    """Write facet metadata atomically."""
+    import tempfile
+
+    temp_fd, temp_path = tempfile.mkstemp(dir=path.parent, suffix=".json", text=True)
+    try:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        os.replace(temp_path, path)
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except Exception:
+            pass
+        raise
+
+
+def ensure_facet(slug: str) -> bool:
+    """Ensure a facet directory has facet metadata."""
+    facet_path = Path(get_journal()) / "facets" / slug
+    facet_json_path = facet_path / "facet.json"
+    if facet_json_path.exists():
+        return False
+
+    facet_path.mkdir(parents=True, exist_ok=True)
+    title = slug.replace("-", " ").replace("_", " ").title() or slug
+    facet_data = {
+        "title": title,
+        "description": "",
+        "color": "#667eea",
+        "emoji": "📦",
+    }
+    _write_facet_json(facet_json_path, facet_data)
+    log_call_action(facet=slug, action="facet_heal", params={"title": title})
+    return True
+
+
+def find_orphan_facets() -> list[str]:
+    """Return content-bearing facet dirs missing facet.json."""
+    facets_dir = Path(get_journal()) / "facets"
+    if not facets_dir.exists():
+        return []
+
+    orphans: list[str] = []
+    content_subdirs = ("entities", "todos", "activities", "news", "logs")
+    for facet_path in sorted(facets_dir.iterdir()):
+        if not facet_path.is_dir() or (facet_path / "facet.json").exists():
+            continue
+
+        for subdir_name in content_subdirs:
+            subdir = facet_path / subdir_name
+            if not subdir.is_dir():
+                continue
+            if any(
+                item.is_file()
+                and item.name != ".gitkeep"
+                and not item.name.endswith(".lock")
+                for item in subdir.rglob("*")
+            ):
+                orphans.append(facet_path.name)
+                break
+
+    return orphans
+
+
 def get_facets() -> dict[str, dict[str, object]]:
     """Return available facets with metadata.
 
@@ -758,22 +824,7 @@ def create_facet(
         "emoji": emoji,
     }
 
-    import tempfile
-
-    temp_fd, temp_path = tempfile.mkstemp(
-        dir=facet_json_path.parent, suffix=".json", text=True
-    )
-    try:
-        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
-            json.dump(facet_data, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-        os.replace(temp_path, facet_json_path)
-    except Exception:
-        try:
-            os.unlink(temp_path)
-        except Exception:
-            pass
-        raise
+    _write_facet_json(facet_json_path, facet_data)
 
     log_params: dict = {
         "title": title,

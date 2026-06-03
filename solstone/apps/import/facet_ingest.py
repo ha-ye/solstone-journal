@@ -15,6 +15,7 @@ from solstone.think.entities.relationships import (
     load_facet_relationship,
     save_facet_relationship,
 )
+from solstone.think.facets import ensure_facet
 
 from .ingest import _append_decision
 
@@ -744,6 +745,9 @@ def process_facet(
                     "error": str(exc),
                 }
             )
+
+    if result["wrote_files"]:
+        ensure_facet(facet_name)
 
     return result
 

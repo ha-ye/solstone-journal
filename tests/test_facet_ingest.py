@@ -294,6 +294,75 @@ def test_unsafe_facet_name(ingest_env):
         assert payload["detail"] == "Invalid facet name"
 
 
+def test_new_facet_without_facet_json_writes_default_metadata(ingest_env):
+    env = ingest_env
+    facets = [
+        {
+            "name": "fieldwork",
+            "files": [
+                {
+                    "path": "todos/20260305.jsonl",
+                    "type": "todos",
+                    "content": _jsonl_bytes(
+                        [{"text": "Prepare kit", "created_at": 10}]
+                    ),
+                },
+                {
+                    "path": "news/20260305.md",
+                    "type": "news",
+                    "content": b"# Field notes\n",
+                },
+            ],
+        }
+    ]
+    metadata, file_map = _build_request(facets)
+
+    response = _post_facets(
+        env["client"], env["key"], env["key_prefix"], metadata, file_map
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "created": 2,
+        "merged": 0,
+        "skipped": 0,
+        "staged": 0,
+        "errors": [],
+    }
+    facet_json = env["root"] / "facets" / "fieldwork" / "facet.json"
+    expected_metadata = {
+        "title": "Fieldwork",
+        "description": "",
+        "color": "#667eea",
+        "emoji": "📦",
+    }
+    assert _read_json(facet_json) == expected_metadata
+
+    from solstone.think.facets import get_facets
+
+    facets_listing = get_facets()
+    assert "fieldwork" in facets_listing
+    assert list(facets_listing).count("fieldwork") == 1
+
+    metadata, file_map = _build_request(facets)
+    second = _post_facets(
+        env["client"], env["key"], env["key_prefix"], metadata, file_map
+    )
+
+    assert second.status_code == 200
+    assert second.get_json() == {
+        "created": 0,
+        "merged": 0,
+        "skipped": 2,
+        "staged": 0,
+        "errors": [],
+    }
+    assert _read_json(facet_json) == expected_metadata
+    facets_listing = get_facets()
+    assert "fieldwork" in facets_listing
+    assert list(facets_listing).count("fieldwork") == 1
+
+
 def test_new_facet_all_types(ingest_env):
     env = ingest_env
     facets = [
