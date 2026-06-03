@@ -11,7 +11,9 @@ import pytest
 
 import solstone.think.facet_review_candidates as mod
 from solstone.think.facet_review_candidates import (
+    accept_candidate,
     candidate_key,
+    dismiss_candidate,
     facet_review_candidates_dir,
     facet_review_candidates_lock_path,
     facet_review_candidates_path,
@@ -123,6 +125,61 @@ def test_touch_updated_sets_updated_at(candidate_journal):
     touch_updated(row)
 
     assert row["updated_at"].endswith("Z")
+
+
+def test_accept_candidate_sets_status_and_updated_at(candidate_journal, monkeypatch):
+    monkeypatch.setattr(mod, "utc_now_iso", lambda: "2026-06-03T17:30:00Z")
+    save_candidates(
+        [
+            {
+                "name": "Home Reno",
+                "name_key": "home reno",
+                "status": "open",
+                "count": 3,
+                "updated_at": "2026-06-02T17:30:00Z",
+            }
+        ]
+    )
+
+    row = accept_candidate("home reno")
+
+    assert row is not None
+    assert row["status"] == "accepted"
+    assert row["updated_at"] == "2026-06-03T17:30:00Z"
+    assert load_candidates()[0]["status"] == "accepted"
+
+
+def test_accept_candidate_missing_returns_none(candidate_journal):
+    assert accept_candidate("missing") is None
+
+
+def test_dismiss_candidate_sets_status_watermark_and_updated_at(
+    candidate_journal, monkeypatch
+):
+    monkeypatch.setattr(mod, "utc_now_iso", lambda: "2026-06-03T17:30:00Z")
+    save_candidates(
+        [
+            {
+                "name": "Home Reno",
+                "name_key": "home reno",
+                "status": "open",
+                "count": 4,
+                "updated_at": "2026-06-02T17:30:00Z",
+            }
+        ]
+    )
+
+    row = dismiss_candidate("home reno")
+
+    assert row is not None
+    assert row["status"] == "dismissed"
+    assert row["dismissed_count"] == 4
+    assert row["updated_at"] == "2026-06-03T17:30:00Z"
+    assert load_candidates()[0]["dismissed_count"] == 4
+
+
+def test_dismiss_candidate_missing_returns_none(candidate_journal):
+    assert dismiss_candidate("missing") is None
 
 
 def test_locked_modify_candidates_applies_fn_and_persists(candidate_journal):

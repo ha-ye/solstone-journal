@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from solstone.think.call import call_app
 from solstone.think.entities.core import entity_slug
+from solstone.think.entities.journal import save_journal_entity
 from solstone.think.entities.review_candidates import save_candidates
 
 runner = CliRunner()
@@ -601,6 +602,44 @@ class TestEntitiesMergeCandidates:
             if line.strip()
         ]
 
+    def _seed_merge_entities(self) -> None:
+        save_journal_entity(
+            {
+                "id": "kognova_inc",
+                "name": "Kognova Inc",
+                "type": "Company",
+                "aka": ["Kognova Incorporated"],
+            }
+        )
+        save_journal_entity(
+            {
+                "id": "kognova",
+                "name": "Kognova",
+                "type": "Company",
+                "aka": [],
+            }
+        )
+
+    def _seed_merge_candidate(self) -> None:
+        save_candidates(
+            [
+                {
+                    "facet": "work",
+                    "source": "Kognova Inc",
+                    "source_slug": "kognova_inc",
+                    "target": "Kognova",
+                    "target_slug": "kognova",
+                    "status": "open",
+                    "evidence": {
+                        "basis": "name-variant",
+                        "summary": "Kognova Inc / Kognova",
+                        "detection_count": 4,
+                        "needs": 0,
+                    },
+                }
+            ]
+        )
+
     def test_record_merge_candidate_creates_one_row(self, entity_env):
         journal = entity_env()
 
@@ -797,3 +836,105 @@ class TestEntitiesMergeCandidates:
 
         assert result.exit_code == 0
         assert "No merge candidates found." in result.output
+
+    def test_accept_merge_candidate_preview_does_not_change_status(self, entity_env):
+        journal = entity_env()
+        self._seed_merge_entities()
+        self._seed_merge_candidate()
+
+        result = runner.invoke(
+            call_app,
+            [
+                "entities",
+                "accept-merge-candidate",
+                "kognova_inc",
+                "kognova",
+                "--facet",
+                "work",
+            ],
+        )
+
+        rows = self._candidate_rows(journal)
+        assert result.exit_code == 0
+        assert "Merge preview:" in result.output
+        assert "aliases added:" in result.output
+        assert rows[0]["status"] == "open"
+
+    def test_accept_merge_candidate_commit_marks_accepted(self, entity_env):
+        journal = entity_env()
+        self._seed_merge_entities()
+        self._seed_merge_candidate()
+
+        result = runner.invoke(
+            call_app,
+            [
+                "entities",
+                "accept-merge-candidate",
+                "kognova_inc",
+                "kognova",
+                "--facet",
+                "work",
+                "--commit",
+            ],
+        )
+
+        rows = self._candidate_rows(journal)
+        assert result.exit_code == 0
+        assert "Accepted merge candidate" in result.output
+        assert rows[0]["status"] == "accepted"
+
+    def test_dismiss_merge_candidate_sets_watermark(self, entity_env):
+        journal = entity_env()
+        self._seed_merge_candidate()
+
+        result = runner.invoke(
+            call_app,
+            [
+                "entities",
+                "dismiss-merge-candidate",
+                "kognova_inc",
+                "kognova",
+                "--facet",
+                "work",
+            ],
+        )
+
+        rows = self._candidate_rows(journal)
+        assert result.exit_code == 0
+        assert "Dismissed merge candidate" in result.output
+        assert rows[0]["status"] == "dismissed"
+        assert rows[0]["dismissed_detection_count"] == 4
+
+    def test_accept_merge_candidate_commit_is_idempotent(self, entity_env):
+        entity_env()
+        self._seed_merge_entities()
+        self._seed_merge_candidate()
+
+        first = runner.invoke(
+            call_app,
+            [
+                "entities",
+                "accept-merge-candidate",
+                "kognova_inc",
+                "kognova",
+                "--facet",
+                "work",
+                "--commit",
+            ],
+        )
+        second = runner.invoke(
+            call_app,
+            [
+                "entities",
+                "accept-merge-candidate",
+                "kognova_inc",
+                "kognova",
+                "--facet",
+                "work",
+                "--commit",
+            ],
+        )
+
+        assert first.exit_code == 0
+        assert second.exit_code == 0
+        assert "already accepted" in second.output

@@ -133,6 +133,44 @@ def touch_updated(row: dict[str, Any]) -> None:
     row["updated_at"] = utc_now_iso()
 
 
+def accept_candidate(name_key: str) -> dict[str, Any] | None:
+    """Mark one facet review candidate accepted."""
+    row: dict[str, Any] | None = None
+
+    def mutate(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        nonlocal row
+        existing = find_candidate(rows, name_key)
+        if existing is None:
+            return rows
+        existing["status"] = "accepted"
+        touch_updated(existing)
+        row = existing
+        return rows
+
+    locked_modify_candidates(mutate)
+    return row
+
+
+def dismiss_candidate(name_key: str) -> dict[str, Any] | None:
+    """Mark one facet review candidate dismissed and store its strength watermark."""
+    row: dict[str, Any] | None = None
+
+    def mutate(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        nonlocal row
+        existing = find_candidate(rows, name_key)
+        if existing is None:
+            return rows
+        existing["status"] = "dismissed"
+        # Preserved today; a future re-open lode compares stronger evidence here.
+        existing["dismissed_count"] = existing.get("count")
+        touch_updated(existing)
+        row = existing
+        return rows
+
+    locked_modify_candidates(mutate)
+    return row
+
+
 def record_facet_candidate(
     name: str,
     name_key: str,

@@ -135,3 +135,52 @@ def utc_now_iso() -> str:
 def touch_updated(row: dict[str, Any]) -> None:
     """Update a candidate row's updated_at timestamp in place."""
     row["updated_at"] = utc_now_iso()
+
+
+def accept_candidate(
+    facet: str,
+    source_slug: str,
+    target_slug: str,
+) -> dict[str, Any] | None:
+    """Mark one entity merge candidate accepted."""
+    row: dict[str, Any] | None = None
+
+    def mutate(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        nonlocal row
+        existing = find_candidate(rows, facet, source_slug, target_slug)
+        if existing is None:
+            return rows
+        existing["status"] = "accepted"
+        touch_updated(existing)
+        row = existing
+        return rows
+
+    locked_modify_candidates(mutate)
+    return row
+
+
+def dismiss_candidate(
+    facet: str,
+    source_slug: str,
+    target_slug: str,
+) -> dict[str, Any] | None:
+    """Mark one entity merge candidate dismissed and store its strength watermark."""
+    row: dict[str, Any] | None = None
+
+    def mutate(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        nonlocal row
+        existing = find_candidate(rows, facet, source_slug, target_slug)
+        if existing is None:
+            return rows
+        evidence = existing.get("evidence", {})
+        existing["status"] = "dismissed"
+        # Preserved today; a future re-open lode compares stronger evidence here.
+        existing["dismissed_detection_count"] = (
+            evidence.get("detection_count") if isinstance(evidence, dict) else None
+        )
+        touch_updated(existing)
+        row = existing
+        return rows
+
+    locked_modify_candidates(mutate)
+    return row

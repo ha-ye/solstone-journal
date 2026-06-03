@@ -1,0 +1,361 @@
+<style>
+.curation-shell {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 1.5em;
+  display: flex;
+  flex-direction: column;
+  gap: 1em;
+}
+
+.curation-header {
+  margin: 0;
+  color: #111827;
+  font-size: 1.6em;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.curation-empty {
+  margin: 0;
+  color: #6b7280;
+  line-height: 1.45;
+}
+
+.curation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85em;
+}
+
+.curation-item {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  padding: 1em;
+}
+
+.curation-item[data-removing="true"] {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.curation-body {
+  margin: 0;
+  color: #1f2937;
+  line-height: 1.45;
+}
+
+.curation-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.55em;
+  margin-top: 0.85em;
+}
+
+.curation-button {
+  min-height: 2.25em;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  color: #111827;
+  padding: 0.45em 0.75em;
+  font: inherit;
+  cursor: pointer;
+}
+
+.curation-button:hover:not(:disabled) {
+  background: #f9fafb;
+}
+
+.curation-button-primary {
+  border-color: #2563eb;
+  background: #2563eb;
+  color: #fff;
+}
+
+.curation-button-primary:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.curation-button-link {
+  border-color: transparent;
+  background: transparent;
+  color: #2563eb;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.curation-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.curation-evidence,
+.curation-preview {
+  margin-top: 0.85em;
+  border-top: 1px solid #f3f4f6;
+  padding-top: 0.85em;
+}
+
+.curation-evidence[hidden],
+.curation-preview[hidden] {
+  display: none;
+}
+
+.curation-evidence-list,
+.curation-preview-list {
+  margin: 0;
+  padding-left: 1.2em;
+  color: #4b5563;
+  line-height: 1.45;
+}
+
+.curation-preview-lead {
+  margin: 0 0 0.55em;
+  color: #374151;
+  font-weight: 600;
+}
+
+.curation-preview-error {
+  color: #b91c1c;
+}
+
+.curation-item-error {
+  margin: 0.75em 0 0;
+  color: #b91c1c;
+  line-height: 1.4;
+}
+
+@media (max-width: 640px) {
+  .curation-shell {
+    padding: 1em;
+  }
+
+  .curation-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .curation-button {
+    width: 100%;
+  }
+}
+</style>
+
+<section class="curation-shell" data-curation-root>
+  <h1 class="curation-header">{{ curation_copy.CUR_HEADING }}</h1>
+
+  {% if not curation_facet_items and not curation_entity_items %}
+    <p class="curation-empty">{{ curation_copy.CUR_EMPTY_STATE }}</p>
+  {% endif %}
+
+  <div class="curation-list" data-curation-list>
+    {% for item in curation_facet_items %}
+      <article class="curation-item" data-curation-item data-kind="facet_candidate" data-name-key="{{ item.key }}">
+        <p class="curation-body">{{ curation_copy.CUR_FACET_BODY.format(name=item.name) }}</p>
+        <div class="curation-actions">
+          <button class="curation-button curation-button-primary" type="button" data-action="facet-accept" data-name-key="{{ item.key }}">{{ curation_copy.CUR_FACET_CREATE_ACTION }}</button>
+          <button class="curation-button" type="button" data-action="facet-dismiss" data-name-key="{{ item.key }}">{{ curation_copy.CUR_FACET_DISMISS_ACTION }}</button>
+          <button class="curation-button curation-button-link" type="button" data-action="toggle-evidence">{{ curation_copy.CUR_FACET_EVIDENCE_ACTION }}</button>
+        </div>
+        <div class="curation-evidence" hidden>
+          <ol class="curation-evidence-list">
+            {% for sample in item.evidence.samples or [] %}
+              <li>
+                <span>{{ sample.day }}</span>
+                {% if sample.stream %}<span> · {{ sample.stream }}</span>{% endif %}
+                {% if sample.segment %}<span> · {{ sample.segment }}</span>{% endif %}
+              </li>
+            {% endfor %}
+          </ol>
+        </div>
+        <p class="curation-item-error" hidden></p>
+      </article>
+    {% endfor %}
+
+    {% for item in curation_entity_items %}
+      <article class="curation-item" data-curation-item data-kind="entity_merge" data-facet="{{ item.facet }}" data-source-slug="{{ item.source_slug }}" data-target-slug="{{ item.target_slug }}">
+        <p class="curation-body">{{ curation_copy.CUR_ENTITY_BODY.format(a=item.source, b=item.target) }}</p>
+        <div class="curation-actions">
+          <button class="curation-button curation-button-primary" type="button" data-action="entity-preview" data-facet="{{ item.facet }}" data-source-slug="{{ item.source_slug }}" data-target-slug="{{ item.target_slug }}">{{ curation_copy.CUR_ENTITY_MERGE_ACTION }}</button>
+          <button class="curation-button" type="button" data-action="entity-dismiss" data-facet="{{ item.facet }}" data-source-slug="{{ item.source_slug }}" data-target-slug="{{ item.target_slug }}">{{ curation_copy.CUR_ENTITY_DISMISS_ACTION }}</button>
+        </div>
+        <div class="curation-preview" hidden></div>
+        <p class="curation-item-error" hidden></p>
+      </article>
+    {% endfor %}
+  </div>
+</section>
+
+<script>
+const CUR_COPY = {{ curation_copy_payload|tojson|safe }};
+
+(function() {
+  const root = document.querySelector('[data-curation-root]');
+  if (!root) return;
+
+  function setBusy(button, busy) {
+    if (!button) return;
+    button.disabled = busy;
+  }
+
+  function itemFor(node) {
+    return node ? node.closest('[data-curation-item]') : null;
+  }
+
+  function showError(item, message) {
+    const errorNode = item?.querySelector('.curation-item-error');
+    if (!errorNode) return;
+    errorNode.textContent = message || '';
+    errorNode.hidden = !message;
+  }
+
+  function postJson(path, payload) {
+    return window.apiJson(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+  }
+
+  function escapeHtml(value) {
+    const holder = document.createElement('div');
+    holder.textContent = value == null ? '' : String(value);
+    return holder.innerHTML;
+  }
+
+  function removeItem(item) {
+    if (!item) return;
+    item.dataset.removing = 'true';
+    item.remove();
+    const list = root.querySelector('[data-curation-list]');
+    if (list && !list.querySelector('[data-curation-item]')) {
+      window.location.reload();
+    }
+  }
+
+  function entityPayload(button) {
+    return {
+      facet: button.dataset.facet,
+      source_slug: button.dataset.sourceSlug,
+      target_slug: button.dataset.targetSlug
+    };
+  }
+
+  function previewRows(preview) {
+    const rows = [];
+    const aliases = preview.akas_added || [];
+    if (aliases.length) {
+      rows.push(`${CUR_COPY.CUR_PREVIEW_AKAS_LABEL}: ${aliases.join(', ')}`);
+    }
+    if (preview.emails_added_count) {
+      rows.push(`${CUR_COPY.CUR_PREVIEW_EMAILS_LABEL}: ${preview.emails_added_count}`);
+    }
+    if (preview.facet_moved_count || preview.facet_merged_count) {
+      rows.push(`${CUR_COPY.CUR_PREVIEW_FACETS_LABEL}: ${preview.facet_moved_count || 0} moved, ${preview.facet_merged_count || 0} merged`);
+    }
+    if (preview.observations_appended) {
+      rows.push(`${CUR_COPY.CUR_PREVIEW_OBSERVATIONS_LABEL}: ${preview.observations_appended}`);
+    }
+    if (preview.labels_rewritten || preview.corrections_rewritten) {
+      rows.push(`${CUR_COPY.CUR_PREVIEW_SEGMENTS_LABEL}: ${preview.labels_rewritten || 0} labels, ${preview.corrections_rewritten || 0} corrections`);
+    }
+    if (preview.voiceprints_added || preview.voiceprints_target_total) {
+      rows.push(`${CUR_COPY.CUR_PREVIEW_VOICEPRINTS_LABEL}: ${preview.voiceprints_added || 0} added, ${preview.voiceprints_target_total || 0} total`);
+    }
+    return rows;
+  }
+
+  function renderPreview(item, payload, result) {
+    const previewNode = item.querySelector('.curation-preview');
+    if (!previewNode) return;
+    const preview = result.preview || {};
+    const rows = previewRows(preview);
+    const errors = preview.segment_errors || [];
+    const listHtml = rows.length
+      ? `<ul class="curation-preview-list">${rows.map((row) => `<li>${escapeHtml(row)}</li>`).join('')}</ul>`
+      : `<p class="curation-empty">${CUR_COPY.CUR_ENTITY_PREVIEW_EMPTY}</p>`;
+    const errorHtml = errors.length
+      ? `<p class="curation-preview-error">${CUR_COPY.CUR_ENTITY_PREVIEW_ERRORS}</p>`
+      : '';
+    previewNode.innerHTML = `
+      <p class="curation-preview-lead">${CUR_COPY.CUR_ENTITY_PREVIEW_LEAD}</p>
+      ${listHtml}
+      ${errorHtml}
+      <div class="curation-actions">
+        <button class="curation-button curation-button-primary" type="button" data-action="entity-accept" data-facet="${escapeHtml(payload.facet)}" data-source-slug="${escapeHtml(payload.source_slug)}" data-target-slug="${escapeHtml(payload.target_slug)}">${CUR_COPY.CUR_ENTITY_CONFIRM_ACTION}</button>
+        <button class="curation-button" type="button" data-action="entity-cancel">${CUR_COPY.CUR_ENTITY_CANCEL_ACTION}</button>
+      </div>
+    `;
+    previewNode.hidden = false;
+  }
+
+  root.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-action]');
+    if (!button) return;
+    const item = itemFor(button);
+    const action = button.dataset.action;
+
+    if (action === 'toggle-evidence') {
+      const evidence = item?.querySelector('.curation-evidence');
+      if (evidence) evidence.hidden = !evidence.hidden;
+      return;
+    }
+
+    if (action === 'entity-cancel') {
+      const preview = item?.querySelector('.curation-preview');
+      if (preview) {
+        preview.hidden = true;
+        preview.innerHTML = '';
+      }
+      return;
+    }
+
+    if (action === 'facet-accept' || action === 'facet-dismiss') {
+      const nameKey = button.dataset.nameKey;
+      const path = action === 'facet-accept'
+        ? '/app/curation/api/facet/accept'
+        : '/app/curation/api/facet/dismiss';
+      setBusy(button, true);
+      postJson(path, { name_key: nameKey })
+        .then(() => removeItem(item))
+        .catch((err) => {
+          setBusy(button, false);
+          showError(item, err.serverMessage || err.message);
+        });
+      return;
+    }
+
+    if (action === 'entity-preview') {
+      const payload = entityPayload(button);
+      setBusy(button, true);
+      postJson('/app/curation/api/entity/preview', payload)
+        .then((result) => {
+          setBusy(button, false);
+          renderPreview(item, payload, result);
+        })
+        .catch((err) => {
+          setBusy(button, false);
+          showError(item, err.serverMessage || err.message);
+        });
+      return;
+    }
+
+    if (action === 'entity-accept' || action === 'entity-dismiss') {
+      const payload = entityPayload(button);
+      const path = action === 'entity-accept'
+        ? '/app/curation/api/entity/accept'
+        : '/app/curation/api/entity/dismiss';
+      setBusy(button, true);
+      postJson(path, payload)
+        .then(() => removeItem(item))
+        .catch((err) => {
+          setBusy(button, false);
+          showError(item, err.serverMessage || err.message);
+        });
+    }
+  });
+})();
+</script>

@@ -10,7 +10,9 @@ from pathlib import Path
 import pytest
 
 from solstone.think.entities.review_candidates import (
+    accept_candidate,
     candidate_key,
+    dismiss_candidate,
     find_candidate,
     load_candidates,
     locked_modify_candidates,
@@ -127,6 +129,66 @@ def test_touch_updated_sets_updated_at(candidate_journal):
     touch_updated(row)
 
     assert row["updated_at"].endswith("Z")
+
+
+def test_accept_candidate_sets_status_and_updated_at(candidate_journal, monkeypatch):
+    import solstone.think.entities.review_candidates as mod
+
+    monkeypatch.setattr(mod, "utc_now_iso", lambda: "2026-06-03T17:30:00Z")
+    save_candidates(
+        [
+            {
+                "facet": "work",
+                "source_slug": "kognova_inc",
+                "target_slug": "kognova",
+                "status": "open",
+                "updated_at": "2026-06-02T17:30:00Z",
+            }
+        ]
+    )
+
+    row = accept_candidate("work", "kognova_inc", "kognova")
+
+    assert row is not None
+    assert row["status"] == "accepted"
+    assert row["updated_at"] == "2026-06-03T17:30:00Z"
+    assert load_candidates()[0]["status"] == "accepted"
+
+
+def test_accept_candidate_missing_returns_none(candidate_journal):
+    assert accept_candidate("work", "missing", "kognova") is None
+
+
+def test_dismiss_candidate_sets_status_watermark_and_updated_at(
+    candidate_journal, monkeypatch
+):
+    import solstone.think.entities.review_candidates as mod
+
+    monkeypatch.setattr(mod, "utc_now_iso", lambda: "2026-06-03T17:30:00Z")
+    save_candidates(
+        [
+            {
+                "facet": "work",
+                "source_slug": "kognova_inc",
+                "target_slug": "kognova",
+                "status": "open",
+                "evidence": {"detection_count": 4},
+                "updated_at": "2026-06-02T17:30:00Z",
+            }
+        ]
+    )
+
+    row = dismiss_candidate("work", "kognova_inc", "kognova")
+
+    assert row is not None
+    assert row["status"] == "dismissed"
+    assert row["dismissed_detection_count"] == 4
+    assert row["updated_at"] == "2026-06-03T17:30:00Z"
+    assert load_candidates()[0]["dismissed_detection_count"] == 4
+
+
+def test_dismiss_candidate_missing_returns_none(candidate_journal):
+    assert dismiss_candidate("work", "missing", "kognova") is None
 
 
 def test_locked_modify_candidates_applies_fn_and_persists(candidate_journal):
