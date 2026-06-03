@@ -93,11 +93,6 @@ def main() -> None:
         required=True,
         help="Port to serve on",
     )
-    parser.add_argument(
-        "--skip-maint",
-        action="store_true",
-        help="Skip running pending maintenance tasks",
-    )
     args = setup_cli(parser)
     journal = get_journal()
 
