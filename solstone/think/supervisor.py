@@ -856,6 +856,17 @@ class RestartPolicy:
 _RESTART_POLICIES: dict[str, RestartPolicy] = {}
 
 
+def describe_exit(returncode: int) -> str:
+    """Render a process return code, decoding signals for negative codes."""
+    if returncode >= 0:
+        return f"exit {returncode}"
+    try:
+        name = signal.Signals(-returncode).name
+    except ValueError:
+        return f"exit {returncode} / signal {-returncode}"
+    return f"exit {returncode} / {name}"
+
+
 def _get_restart_policy(name: str) -> RestartPolicy:
     return _RESTART_POLICIES.setdefault(name, RestartPolicy())
 
@@ -1494,7 +1505,15 @@ async def handle_runner_exits(procs: list[RunnerManagedProcess]) -> None:
     if all_tempfail:
         logging.info("Runner waiting for session: %s", ", ".join(sorted(exited_names)))
     else:
-        msg = f"Runner process exited: {', '.join(sorted(exited_names))}"
+        parts = []
+        for m in sorted(exited, key=lambda managed: managed.name):
+            policy = _get_restart_policy(m.name)
+            if policy.last_start:
+                uptime = f"up {time.time() - policy.last_start:.1f}s"
+            else:
+                uptime = "up unknown"
+            parts.append(f"{m.name} ({describe_exit(m.process.returncode)}, {uptime})")
+        msg = f"Runner process exited: {', '.join(parts)}"
         logging.error(msg)
 
     for managed in exited:
