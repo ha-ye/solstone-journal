@@ -8,12 +8,12 @@ import logging
 import os
 import re
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from solstone.think.entities import get_identity_names
-from solstone.think.utils import DATE_RE, day_path, get_journal, iter_segments
+from solstone.think.utils import day_dirs, day_path, get_journal, iter_segments
 
 
 def _get_principal_display_name() -> str | None:
@@ -636,80 +636,87 @@ def get_active_facets(day: str) -> set[str]:
     return active
 
 
-def aggregate_speculative_facets(days: list[str] | None = None) -> list[dict]:
-    """Aggregate speculative facet outputs from segment classifiers across days.
+# speculative_facet is sparse, so use a recent rolling window before surfacing.
+FACET_CANDIDATE_WINDOW_DAYS = 14
+# Prefer one strong recurring candidate over several weak early ones.
+FACET_CANDIDATE_MIN_SEGMENTS = 3
 
-    Scans per-segment agents/facets.json files produced by the facets classifier
-    and counts facet name frequency. Useful during onboarding to suggest journal
-    organization to the user.
 
-    Args:
-        days: Optional list of days in YYYYMMDD format. If None, scans all days.
+def _normalize_speculative_name(name: str) -> tuple[str, str]:
+    """Return display and normalized key for one speculative facet name."""
+    display = " ".join(name.split())
+    return display, display.casefold()
 
-    Returns:
-        List of dicts with keys:
-            - "facet": facet name (str)
-            - "count": number of segments where this facet appeared (int)
-            - "sample_activities": up to 3 activity descriptions for this facet (list[str])
-        Sorted by count descending, capped at 8 entries.
+
+def aggregate_speculative_facets(
+    days: list[str] | None = None,
+    min_count: int = FACET_CANDIDATE_MIN_SEGMENTS,
+) -> list[dict[str, Any]]:
+    """Aggregate recurring speculative facet proposals from segment sense output.
+
+    Scans per-segment ``talents/sense.json`` files over a rolling recent-day
+    window and returns proposed-name candidates at or above ``min_count``.
+    Side-effect-free.
     """
-    journal_path = Path(get_journal())
-
-    if days is not None:
-        scan_days = days
+    if days is None:
+        cutoff = (
+            datetime.now() - timedelta(days=FACET_CANDIDATE_WINDOW_DAYS)
+        ).strftime("%Y%m%d")
+        scan_days = [day for day in day_dirs() if day >= cutoff]
     else:
-        scan_days = []
-        if journal_path.exists():
-            for entry in sorted(journal_path.iterdir()):
-                if entry.is_dir() and DATE_RE.fullmatch(entry.name):
-                    scan_days.append(entry.name)
+        scan_days = days
+    scan_days = sorted(scan_days)
 
-    facet_counts: dict[str, int] = {}
-    facet_activities: dict[str, list[str]] = {}
+    groups: dict[str, dict[str, Any]] = {}
 
     for day in scan_days:
-        for _stream, _seg_key, seg_path in iter_segments(day):
-            facets_file = seg_path / "talents" / "facets.json"
-            if not facets_file.exists():
+        for stream, seg_key, seg_path in iter_segments(day):
+            sense_file = seg_path / "talents" / "sense.json"
+            if not sense_file.exists():
                 continue
 
             try:
-                content = facets_file.read_text().strip()
-                if not content:
-                    continue
-
-                data = json.loads(content)
-                if not isinstance(data, list):
-                    continue
-
-                for item in data:
-                    if not isinstance(item, dict):
-                        continue
-                    facet_name = item.get("facet")
-                    if not facet_name:
-                        continue
-                    facet_counts[facet_name] = facet_counts.get(facet_name, 0) + 1
-
-                    activity = item.get("activity", "")
-                    if activity:
-                        samples = facet_activities.setdefault(facet_name, [])
-                        if len(samples) < 3:
-                            samples.append(activity)
-
+                data = json.loads(sense_file.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
                 continue
+            if not isinstance(data, dict):
+                continue
+
+            raw_name = data.get("speculative_facet")
+            if not isinstance(raw_name, str):
+                continue
+
+            display, name_key = _normalize_speculative_name(raw_name)
+            if not display:
+                continue
+
+            group = groups.setdefault(
+                name_key,
+                {
+                    "name": display,
+                    "name_key": name_key,
+                    "count": 0,
+                    "samples": [],
+                },
+            )
+            group["count"] += 1
+            samples = group["samples"]
+            if len(samples) < 3:
+                samples.append({"day": day, "stream": stream, "segment": seg_key})
 
     result = [
         {
-            "facet": facet_name,
-            "count": count,
-            "sample_activities": facet_activities.get(facet_name, []),
+            "name": row["name"],
+            "name_key": row["name_key"],
+            "count": row["count"],
+            "window_days": FACET_CANDIDATE_WINDOW_DAYS,
+            "samples": row["samples"],
         }
-        for facet_name, count in sorted(
-            facet_counts.items(), key=lambda x: x[1], reverse=True
-        )
+        for row in groups.values()
+        if row["count"] >= min_count
     ]
-    return result[:8]
+    result.sort(key=lambda row: (-row["count"], row["name_key"]))
+    return result
 
 
 def set_facet_muted(facet: str, muted: bool) -> None:

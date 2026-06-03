@@ -4,16 +4,18 @@
 """Tests for think.facets module."""
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 from slugify import slugify
 
 from solstone.think.facets import (
+    FACET_CANDIDATE_WINDOW_DAYS,
     _format_principal_role,
     _get_principal_display_name,
     _rank_entities_by_signal,
+    aggregate_speculative_facets,
     ensure_facet,
     facet_summaries,
     facet_summary,
@@ -581,6 +583,108 @@ def test_get_active_facets_malformed_json(monkeypatch, tmp_path):
     active = get_active_facets("20240115")
 
     assert active == {"work"}
+
+
+_MISSING = object()
+
+
+def _write_segment_sense(
+    journal: Path,
+    day: str,
+    segment: str,
+    speculative_facet: object = _MISSING,
+    *,
+    stream: str = "archon",
+) -> None:
+    talents_dir = journal / "chronicle" / day / stream / segment / "talents"
+    talents_dir.mkdir(parents=True, exist_ok=True)
+    payload = {}
+    if speculative_facet is not _MISSING:
+        payload["speculative_facet"] = speculative_facet
+    (talents_dir / "sense.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_aggregate_speculative_facets_surfaces_above_threshold(monkeypatch, tmp_path):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day = "20260602"
+    for segment in ("090000_300", "093000_300", "100000_300"):
+        _write_segment_sense(tmp_path, day, segment, "Home Reno")
+
+    result = aggregate_speculative_facets(days=[day])
+
+    assert result == [
+        {
+            "name": "Home Reno",
+            "name_key": "home reno",
+            "count": 3,
+            "window_days": FACET_CANDIDATE_WINDOW_DAYS,
+            "samples": [
+                {"day": day, "stream": "archon", "segment": "090000_300"},
+                {"day": day, "stream": "archon", "segment": "093000_300"},
+                {"day": day, "stream": "archon", "segment": "100000_300"},
+            ],
+        }
+    ]
+
+
+def test_aggregate_speculative_facets_skips_one_off(monkeypatch, tmp_path):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day = "20260602"
+    _write_segment_sense(tmp_path, day, "090000_300", "Home Reno")
+    _write_segment_sense(tmp_path, day, "093000_300", None)
+    _write_segment_sense(tmp_path, day, "100000_300", None)
+
+    assert aggregate_speculative_facets(days=[day]) == []
+
+
+def test_aggregate_speculative_facets_skips_invalid_values(monkeypatch, tmp_path):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day = "20260602"
+    _write_segment_sense(tmp_path, day, "090000_300", None)
+    _write_segment_sense(tmp_path, day, "093000_300")
+    _write_segment_sense(tmp_path, day, "100000_300", 123)
+    _write_segment_sense(tmp_path, day, "103000_300", "")
+    _write_segment_sense(tmp_path, day, "110000_300", "Home Reno")
+
+    result = aggregate_speculative_facets(days=[day], min_count=1)
+
+    assert len(result) == 1
+    assert result[0]["name_key"] == "home reno"
+    assert result[0]["count"] == 1
+
+
+def test_aggregate_speculative_facets_uses_rolling_window(monkeypatch, tmp_path):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    now = datetime.now()
+    today = now.strftime("%Y%m%d")
+    two_days_ago = (now - timedelta(days=2)).strftime("%Y%m%d")
+    old_day = (now - timedelta(days=FACET_CANDIDATE_WINDOW_DAYS + 5)).strftime("%Y%m%d")
+    _write_segment_sense(tmp_path, today, "090000_300", "Home Reno")
+    _write_segment_sense(tmp_path, today, "093000_300", "Home Reno")
+    _write_segment_sense(tmp_path, two_days_ago, "100000_300", "Home Reno")
+    _write_segment_sense(tmp_path, old_day, "090000_300", "Home Reno")
+    _write_segment_sense(tmp_path, old_day, "093000_300", "Home Reno")
+
+    result = aggregate_speculative_facets()
+
+    assert len(result) == 1
+    assert result[0]["name_key"] == "home reno"
+    assert result[0]["count"] == 3
+
+
+def test_aggregate_speculative_facets_groups_case_and_whitespace(monkeypatch, tmp_path):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day = "20260602"
+    _write_segment_sense(tmp_path, day, "090000_300", "Home Reno")
+    _write_segment_sense(tmp_path, day, "093000_300", "  home   reno ")
+    _write_segment_sense(tmp_path, day, "100000_300", "HOME RENO")
+
+    result = aggregate_speculative_facets(days=[day])
+
+    assert len(result) == 1
+    assert result[0]["name"] == "Home Reno"
+    assert result[0]["name_key"] == "home reno"
+    assert result[0]["count"] == 3
 
 
 # ============================================================================

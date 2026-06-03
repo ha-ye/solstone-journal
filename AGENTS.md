@@ -182,6 +182,7 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 |--------|------------------------|
 | Entities (`entities/*/entity.json`, `entities/*/*.npz`) | `solstone/think/entities/journal.py` + `solstone/think/entities/consolidation.py` + `solstone/think/entities/saving.py` + `solstone/think/entities/merge.py` + `solstone/apps/entities/call.py` |
 | Entity merge candidates (`entities/review-candidates.jsonl`) | `solstone/think/entities/review_candidates.py` + `solstone/apps/entities/call.py` |
+| Facet review candidates (`facets/review-candidates.jsonl`) | `solstone/think/facet_review_candidates.py` |
 | Facets (`facets/*/facet.json`, `facets/*/relationships/`) | `solstone/think/facets.py` + `solstone/apps/facets/*` (if/when created) |
 | Observations (`observations.jsonl`) | `solstone/think/entities/observations.py` |
 | Activities (`facets/*/activities/*.jsonl`) | `solstone/think/activities.py` |

@@ -1265,6 +1265,26 @@ class TestHeartbeatSchedule:
         }
         assert mod._entries["providers"]["max_runtime"] == 300
 
+    def test_register_defaults_creates_facet_candidates(self, journal_path):
+        """register_defaults() creates a facet candidates entry."""
+        import solstone.think.scheduler as mod
+
+        mock_cal = Mock()
+        mod.init(mock_cal)
+        mod.register_defaults()
+
+        config_path = journal_path / "config" / "schedules.json"
+        with open(config_path) as f:
+            raw = json.load(f)
+
+        assert raw["facet-candidates"] == {
+            "cmd": ["journal", "facet-candidates"],
+            "every": "weekly",
+            "enabled": True,
+            "max_runtime": "10m",
+        }
+        assert mod._entries["facet-candidates"]["max_runtime"] == 600
+
     def test_register_defaults_idempotent(self, journal_path):
         """register_defaults() does not overwrite existing heartbeat config."""
         import solstone.think.scheduler as mod

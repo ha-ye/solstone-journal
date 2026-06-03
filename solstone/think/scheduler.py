@@ -345,8 +345,14 @@ def register_defaults() -> None:
     need_heartbeat = "heartbeat" not in _entries
     need_weekly = "weekly-agents" not in _entries
     need_providers = "providers" not in _entries
+    need_facet_candidates = "facet-candidates" not in _entries
 
-    if not need_heartbeat and not need_weekly and not need_providers:
+    if (
+        not need_heartbeat
+        and not need_weekly
+        and not need_providers
+        and not need_facet_candidates
+    ):
         return
 
     # Read raw config (preserving daily_time and other entries)
@@ -391,6 +397,15 @@ def register_defaults() -> None:
             "every": "daily",
             "enabled": True,
             "max_runtime": "5m",
+        }
+        changed = True
+
+    if need_facet_candidates and "facet-candidates" not in raw:
+        raw["facet-candidates"] = {
+            "cmd": ["journal", "facet-candidates"],
+            "every": "weekly",
+            "enabled": True,
+            "max_runtime": "10m",
         }
         changed = True
 
