@@ -6,7 +6,8 @@
   "schedule": "daily",
   "priority": 30,
   "multi_facet": true,
-  "group": "Activities"
+  "group": "Activities",
+  "hook": {"pre": "activities:activities_review"}
 }
 
 You are the activities tender for $day ($facet facet). Your job: find key,
@@ -15,26 +16,24 @@ activity records. Add them.
 
 ## Inputs
 
-1. Existing activities — run `sol call activities list --facet $facet
-   --day $day --json` to see what's already recorded.
+Activity evidence for the day is provided below. It lists the existing
+activity records first, then the per-span narratives describing what
+happened during each captured span.
 
-2. Per-span narratives — the directory $activity_md_dir contains per-span
-   subdirectories with .md files (meetings.md, decisions.md, followups.md,
-   messaging.md) describing what happened during each captured span. Read these
-   to understand the day's narrative.
+$activity_evidence
 
 ## Your task
 
-Compare. If the per-span narratives describe an activity that doesn't have its
-own record — typically an in-person meeting, a phone call, a brief interaction
-not captured by desktop recording — add it.
+Compare the per-span narratives against the existing activity records. If a
+narrative describes an activity that doesn't have its own record — typically
+an in-person meeting, a phone call, a brief interaction not captured by
+desktop recording — add it.
 
-Use `sol call activities create` to add a record. Include:
+Use `sol call activities create --source cogitate` to add a record. Include:
 - activity type (meeting, call, etc.)
 - a starting segment (the closest real captured segment in time)
 - description (one-sentence prose summary)
 - participation (array of {name, role, source, confidence, context})
-- source: "cogitate"
 
 JSON payload note: `title` is required; `details` is optional.
 
