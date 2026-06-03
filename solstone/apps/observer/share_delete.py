@@ -195,19 +195,25 @@ def delete_source_stream(stream: str) -> dict:
         )
 
     not_confirmed = _not_confirmed_entries(journal, days_with_segments)
+    removed = {
+        "originals": originals,
+        "segments": segments,
+        "in_segment_derived": in_segment_derived,
+        "index_chunks": index_chunks,
+        "stream_identity": stream_identity,
+        "history_rows": history_rows,
+    }
+    # The location source's owner-facing delete receipt counts distinct days
+    # ("removed ... across {N} days"); surface the day count the op already
+    # computed. import.share's receipt shape is left unchanged.
+    if stream == LOCATION_STREAM:
+        removed["days"] = len(days_with_segments)
     receipt = {
         "target": {
             "stream": stream,
             "journal": journal,
         },
-        "removed": {
-            "originals": originals,
-            "segments": segments,
-            "in_segment_derived": in_segment_derived,
-            "index_chunks": index_chunks,
-            "stream_identity": stream_identity,
-            "history_rows": history_rows,
-        },
+        "removed": removed,
         "not_confirmed": not_confirmed,
         "not_removed": not_removed,
         "backup_hosted": "not confirmed",

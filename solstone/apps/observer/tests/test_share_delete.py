@@ -313,6 +313,7 @@ def test_removes_location_across_two_days_leaves_other_streams(tmp_path, monkeyp
         "index_chunks": 0,
         "stream_identity": 1,
         "history_rows": 2,
+        "days": 2,
     }
     assert receipt["target"]["stream"] == LOCATION_STREAM
 
@@ -382,6 +383,7 @@ def test_location_idempotent_zero_count(tmp_path, monkeypatch):
         "index_chunks": 0,
         "stream_identity": 0,
         "history_rows": 0,
+        "days": 0,
     }
 
     absent = delete_source_stream(LOCATION_STREAM)
