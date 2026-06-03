@@ -572,10 +572,102 @@ def test_missing_talent_day_indexes_emit_info(tmp_path, monkeypatch):
     report = health_surface.summary("20260410")
 
     assert report.synthesis_health.talent_run_failures_24h is None
+    assert report.synthesis_health.talent_degraded_outputs_24h is None
     assert any(
         note.category == "synthesis"
         and note.severity == "info"
         and "talent day-index logs missing" in note.message
+        for note in report.notes
+    )
+
+
+def test_degraded_talent_outputs_count_and_warn_without_failure(tmp_path, monkeypatch):
+    _configure_env(tmp_path, monkeypatch)
+    _set_now(monkeypatch, _utc_dt("20260410"))
+    _minimal_facet_tree(tmp_path)
+    _write_talent_day(
+        tmp_path,
+        "20260410",
+        {
+            "use_id": "1",
+            "name": "morning_briefing",
+            "day": "20260410",
+            "facet": None,
+            "ts": _utc_ms("20260410", 9),
+            "status": "completed",
+            "provider": "openai",
+            "model": "gpt-5",
+            "degraded": {"reason": "near_empty", "output_tokens": 12},
+        },
+    )
+    _write_talent_day(
+        tmp_path,
+        "20260409",
+        {
+            "use_id": "2",
+            "name": "weekly_reflection",
+            "day": "20260409",
+            "facet": None,
+            "ts": _utc_ms("20260409", 15),
+            "status": "completed",
+            "provider": "anthropic",
+            "model": "claude-haiku-4-5",
+        },
+    )
+
+    report = health_surface.summary("20260410")
+
+    assert report.synthesis_health.talent_degraded_outputs_24h == 1
+    assert report.synthesis_health.talent_run_failures_24h == 0
+    assert any(
+        note.category == "synthesis"
+        and note.severity == "warn"
+        and "morning_briefing" in note.message
+        and "12" in note.message
+        for note in report.notes
+    )
+
+
+def test_healthy_talent_outputs_do_not_emit_degraded_notes(tmp_path, monkeypatch):
+    _configure_env(tmp_path, monkeypatch)
+    _set_now(monkeypatch, _utc_dt("20260410"))
+    _minimal_facet_tree(tmp_path)
+    _write_talent_day(
+        tmp_path,
+        "20260410",
+        {
+            "use_id": "1",
+            "name": "morning_briefing",
+            "day": "20260410",
+            "facet": None,
+            "ts": _utc_ms("20260410", 9),
+            "status": "completed",
+            "provider": "openai",
+            "model": "gpt-5",
+        },
+    )
+    _write_talent_day(
+        tmp_path,
+        "20260409",
+        {
+            "use_id": "2",
+            "name": "weekly_reflection",
+            "day": "20260409",
+            "facet": None,
+            "ts": _utc_ms("20260409", 15),
+            "status": "completed",
+            "provider": "anthropic",
+            "model": "claude-haiku-4-5",
+        },
+    )
+
+    report = health_surface.summary("20260410")
+
+    assert report.synthesis_health.talent_degraded_outputs_24h == 0
+    assert not any(
+        note.category == "synthesis"
+        and note.severity == "warn"
+        and "finished near-empty" in note.message
         for note in report.notes
     )
 

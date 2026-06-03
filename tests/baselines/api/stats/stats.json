@@ -25,6 +25,7 @@
         "email"
       ],
       "color": "#00796b",
+      "degradation_check": true,
       "description": "Generates a conversation story, topics, and structured commitments, closures, and decisions to merge onto the activity record.",
       "hook": {
         "post": "story"
@@ -70,6 +71,7 @@
     },
     "documents": {
       "color": "#5c6bc0",
+      "degradation_check": true,
       "description": "Extracts structured intelligence from imported documents",
       "hook": {
         "pre": "documents"
@@ -150,6 +152,7 @@
         "reminder"
       ],
       "color": "#ff7043",
+      "degradation_check": true,
       "description": "Generates an event story, topics, and structured commitments, closures, and decisions to merge onto the activity record.",
       "hook": {
         "post": "story"
@@ -332,6 +335,7 @@
         "reading"
       ],
       "color": "#6d4c41",
+      "degradation_check": true,
       "description": "Generates a work story, topics, and structured commitments, closures, and decisions to merge onto the activity record.",
       "hook": {
         "post": "story"

@@ -676,6 +676,50 @@ def test_complete_use_file_no_name(cortex_service, mock_journal):
     assert not any(path.is_symlink() for path in (mock_journal / "talents").iterdir())
 
 
+def test_append_day_index_preserves_degraded_marker(cortex_service, mock_journal):
+    """Test day-index summaries carry degraded finish markers."""
+    use_id = "1234567890000"
+    completed_path = mock_journal / "talents" / f"{use_id}.jsonl"
+    completed_path.write_text(
+        json.dumps(
+            {
+                "event": "start",
+                "ts": 1000,
+                "model": "claude-haiku-4-5",
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "event": "finish",
+                "ts": 2000,
+                "result": "x",
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 7,
+                    "total_tokens": 17,
+                },
+                "degraded": {"reason": "near_empty", "output_tokens": 7},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    request = {
+        "name": "morning_briefing",
+        "day": "20260410",
+        "ts": 1000,
+        "provider": "anthropic",
+        "model": "claude-haiku-4-5",
+    }
+
+    cortex_service._append_day_index(use_id, request, completed_path)
+
+    day_index_path = mock_journal / "talents" / "20260410.jsonl"
+    row = json.loads(day_index_path.read_text(encoding="utf-8").strip())
+    assert row["degraded"] == {"reason": "near_empty", "output_tokens": 7}
+
+
 def test_write_error_and_complete(cortex_service, mock_journal):
     """Test writing error and completing file."""
     use_id = "123456789"

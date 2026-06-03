@@ -66,6 +66,10 @@ def _render_summary(report: HealthReport) -> None:
         + str(report.synthesis_health.talent_run_failures_24h)
     )
     typer.echo(
+        "  talent_degraded_outputs_24h: "
+        + str(report.synthesis_health.talent_degraded_outputs_24h)
+    )
+    typer.echo(
         "  indexer_last_rebuild_at: "
         + str(report.synthesis_health.indexer_last_rebuild_at)
     )

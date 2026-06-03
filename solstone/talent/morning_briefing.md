@@ -7,6 +7,7 @@
   "schedule": "daily",
   "priority": 50,
   "output": "md",
+  "degradation_check": true,
   "read_scope": ["chronicle/<day>", "facets", "entities", "imports", "health", "identity"]
 }
 

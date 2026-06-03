@@ -9,6 +9,7 @@
   "output": "json",
   "schema": "story.schema.json",
   "hook": {"post": "story"},
+  "degradation_check": true,
   "load": {
     "transcripts": true,
     "percepts": true,

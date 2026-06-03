@@ -97,6 +97,7 @@ class SynthesisHealth:
     activities_user_edited: int
     activities_anticipated_unfilled: int
     talent_run_failures_24h: int | None
+    talent_degraded_outputs_24h: int | None
     indexer_last_rebuild_at: int | None
 
 

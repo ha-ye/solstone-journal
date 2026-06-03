@@ -43,6 +43,7 @@ LEDGER_STALE_DAYS = 14
 # 14d mirrors the consumer-signal stale-item threshold so the health surface stays aligned with ledger backlog review.
 USER_EDIT_ACTOR_PREFIXES = ("cli:", "owner", "user")
 # These prefixes identify operator- or user-authored corrections without trying to enumerate every internal automation actor string.
+DEGRADED_OUTPUT_NOTE_CAP = 10
 _DAY_MS = 86_400_000
 _HOUR_MS = 3_600_000
 _SPEC_POINTER = "cpo/specs/in-flight/consumer-surface-health.md"
@@ -370,8 +371,10 @@ def _build_synthesis_health(
                     talent_rows.append(payload)
 
     talent_run_failures_24h: int | None
+    talent_degraded_outputs_24h: int | None
     if missing_talent_days:
         talent_run_failures_24h = None
+        talent_degraded_outputs_24h = None
         notes.append(
             HealthNote(
                 severity="info",
@@ -387,6 +390,8 @@ def _build_synthesis_health(
         )
     else:
         talent_run_failures_24h = 0
+        talent_degraded_outputs_24h = 0
+        degraded_rows: list[tuple[int, dict[str, Any]]] = []
         cutoff = generated_at - _DAY_MS
         for row in talent_rows:
             try:
@@ -398,6 +403,35 @@ def _build_synthesis_health(
             status = row.get("status")
             if row.get("error") or status not in ("ok", "completed", None):
                 talent_run_failures_24h += 1
+            if row.get("degraded"):
+                talent_degraded_outputs_24h += 1
+                degraded_rows.append((timestamp, row))
+
+        for _timestamp, row in sorted(
+            degraded_rows,
+            key=lambda item: item[0],
+            reverse=True,
+        )[:DEGRADED_OUTPUT_NOTE_CAP]:
+            degraded = row.get("degraded")
+            if not isinstance(degraded, dict):
+                continue
+            output_tokens = degraded.get("output_tokens")
+            name = row.get("name")
+            provider = row.get("provider")
+            model = row.get("model")
+            day = row.get("day")
+            notes.append(
+                HealthNote(
+                    severity="warn",
+                    category="synthesis",
+                    message=(
+                        f"talent '{name}' finished near-empty: {output_tokens} "
+                        f"output tokens ({provider}/{model}) on {day}"
+                    ),
+                    detected_at=generated_at,
+                    detail_pointer=None,
+                )
+            )
 
     indexer_path = Path(get_journal()) / "indexer" / "journal.sqlite"
     if not indexer_path.exists():
@@ -436,6 +470,7 @@ def _build_synthesis_health(
             activities_user_edited=aggregate.activities_user_edited,
             activities_anticipated_unfilled=aggregate.activities_anticipated_unfilled,
             talent_run_failures_24h=talent_run_failures_24h,
+            talent_degraded_outputs_24h=talent_degraded_outputs_24h,
             indexer_last_rebuild_at=indexer_last_rebuild_at,
         ),
         notes,

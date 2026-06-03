@@ -58,6 +58,8 @@ LOG = logging.getLogger("solstone.think.talents")
 
 # Minimum content length for transcript-based generation
 MIN_INPUT_CHARS = 50
+# Minimum model output tokens before a degradation-checked talent run is flagged near-empty
+MIN_OUTPUT_TOKENS = 300
 
 
 def setup_logging(verbose: bool = False) -> logging.Logger:
@@ -839,6 +841,25 @@ def _should_fallback(exc: Exception) -> bool:
     return _is_retryable_error(exc) or isinstance(exc, QuotaExhaustedError)
 
 
+def _classify_degraded(usage: dict | None, config: dict) -> dict | None:
+    """Flag an opted-in talent run whose model produced near-zero output.
+
+    Opt-in via the talent's `degradation_check` frontmatter flag. Returns a
+    marker dict for the finish event, or None when not degraded / not checked /
+    output-token count unknown (never alarm without a numeric count).
+    """
+    if not config.get("degradation_check"):
+        return None
+    if not usage:
+        return None
+    tokens = usage.get("output_tokens")
+    if isinstance(tokens, bool) or not isinstance(tokens, (int, float)):
+        return None
+    if tokens < MIN_OUTPUT_TOKENS:
+        return {"reason": "near_empty", "output_tokens": int(tokens)}
+    return None
+
+
 async def _execute_with_tools(
     config: dict,
     emit_event: Callable[[dict], None],
@@ -865,8 +886,18 @@ async def _execute_with_tools(
         if data.get("event") == "finish":
             result = data.get("result", "")
             result = _run_post_hooks(result, config)
+
+            updates: dict[str, Any] = {}
             if result != data.get("result", ""):
-                data = {**data, "result": result}
+                updates["result"] = result
+
+            degraded = _classify_degraded(data.get("usage"), config)
+            if degraded:
+                updates["degraded"] = degraded
+
+            if updates:
+                data = {**data, **updates}
+
             if output_path and result:
                 _write_output(output_path, result)
 
@@ -1108,6 +1139,9 @@ async def _execute_generate(
         finish_event["usage"] = usage_data
     if "schema_validation" in gen_result:
         finish_event["schema_validation"] = gen_result["schema_validation"]
+    degraded = _classify_degraded(usage_data, config)
+    if degraded:
+        finish_event["degraded"] = degraded
     emit_event(finish_event)
 
 

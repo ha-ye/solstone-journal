@@ -10,6 +10,7 @@
   "thinking_budget": 8192,
   "max_output_tokens": 8192,
   "output": "md",
+  "degradation_check": true,
   "load": {"transcripts": true, "percepts": false, "talents": false}
 
 }

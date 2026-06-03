@@ -5,6 +5,7 @@
   "schedule": "weekly",
   "priority": 90,
   "output": "md",
+  "degradation_check": true,
   "read_scope_span": 7,
   "max_turns": 100
 }
