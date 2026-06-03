@@ -26,15 +26,20 @@ VENV_PY := $(VENV_BIN)/python
 PYTHON := $(VENV_PY)
 PARAKEET_ONNX_VARIANT ?= $(shell if nvidia-smi -L >/dev/null 2>&1; then echo cuda; else echo cpu; fi)
 
-# Dev install extras: Darwin lacks arm64 wheels for parakeet-onnx-cuda's
-# nvidia-* deps, so on Darwin we sync only the platform-agnostic extras and
-# skip the full extras sync (which would otherwise force resolution of
-# parakeet variants and fail). All other hosts (Linux primary) keep it.
-ifeq ($(shell uname -s),Darwin)
-EXTRAS_ARGS := --extra pdf --extra whisper
-else
-EXTRAS_ARGS := --all-extras
-endif
+# Dev install extras: NEVER use --all-extras. It enables BOTH parakeet-onnx-cpu
+# and parakeet-onnx-cuda, which are mutually-exclusive hardware backends:
+#   - cpu pulls onnxruntime; cuda pulls onnxruntime-gpu. Both packages own the
+#     SAME onnxruntime/ import dir. The dedicated per-host parakeet step below
+#     (uv sync --extra all --extra parakeet-onnx-$(PARAKEET_ONNX_VARIANT)) then
+#     uninstalls the non-selected variant, and that uninstall deletes the shared
+#     onnxruntime/ files -> `import onnxruntime` fails (ModuleNotFoundError) even
+#     though uv still lists it installed. Surfaces as `journal install-models`
+#     dying with "No module named 'onnxruntime'" on a non-NVIDIA Linux box.
+#   - on Darwin, --all-extras also forces resolution of cuda's nvidia-* wheels,
+#     which have no arm64 builds, so `uv sync` errors out outright.
+# Sync ONLY the platform-agnostic bundle here (`all` = pdf + whisper); the
+# dedicated parakeet step installs exactly one variant for the host.
+EXTRAS_ARGS := --extra all
 
 # Require uv only for goals that actually use it. `preflight` is a pure
 # stdlib readiness battery and `install` runs preflight as its own fail-fast
