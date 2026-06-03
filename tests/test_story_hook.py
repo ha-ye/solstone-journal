@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -463,3 +464,81 @@ def test_story_hook_no_json_file_written(tmp_path, monkeypatch):
 
     assert returned == ""
     assert not output_path.exists()
+
+
+def test_generate_seam_story_hook_writes_no_output_file(tmp_path, monkeypatch):
+    from solstone.think.activities import append_activity_record
+    from solstone.think.talents import _execute_generate
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    append_activity_record("work", "20260418", _activity_record())
+
+    output_path = (
+        tmp_path
+        / "facets"
+        / "work"
+        / "activities"
+        / "20260418"
+        / "meeting_090000_300"
+        / "conversation.json"
+    )
+    config = {
+        **_context(tmp_path),
+        "output": "json",
+        "output_path": str(output_path),
+        "hook": {"post": "story"},
+        "prompt": "x",
+    }
+    monkeypatch.setattr(
+        "solstone.think.models.generate_with_result",
+        lambda **kwargs: {"text": _valid_result()},
+    )
+
+    # Exercises the talents.py write-seam gate removed from cortex in 56b5a121.
+    asyncio.run(_execute_generate(config, lambda e: None))
+
+    assert not output_path.exists()
+    record = _load_record("work", "20260418")
+    assert (
+        record["story"]["body"] == "Aligned on launch work and assigned the follow-up."
+    )
+    assert record["edits"][-1]["actor"] == "story"
+
+
+def test_generate_seam_participation_writes_json(tmp_path, monkeypatch):
+    from solstone.think.activities import append_activity_record
+    from solstone.think.talents import _execute_generate
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    append_activity_record("work", "20260418", _activity_record())
+
+    output_path = (
+        tmp_path
+        / "facets"
+        / "work"
+        / "activities"
+        / "20260418"
+        / "meeting_090000_300"
+        / "participation.json"
+    )
+    payload = {
+        "participation": [{"name": "Mina", "role": "mentioned", "source": "text"}]
+    }
+    config = {
+        **_context(tmp_path, name="participation"),
+        "output": "json",
+        "output_path": str(output_path),
+        "hook": {"post": "participation"},
+        "prompt": "x",
+    }
+    monkeypatch.setattr(
+        "solstone.think.models.generate_with_result",
+        lambda **kwargs: {"text": json.dumps(payload)},
+    )
+
+    # Exercises the talents.py write-seam gate removed from cortex in 56b5a121.
+    asyncio.run(_execute_generate(config, lambda e: None))
+
+    assert output_path.exists()
+    assert output_path.stat().st_size > 0
+    assert json.loads(output_path.read_text()) == payload
