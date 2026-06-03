@@ -4,11 +4,13 @@
 """Tests for entities CLI commands (sol call entities ...)."""
 
 import json
+from pathlib import Path
 
 from typer.testing import CliRunner
 
 from solstone.think.call import call_app
 from solstone.think.entities.core import entity_slug
+from solstone.think.entities.review_candidates import save_candidates
 
 runner = CliRunner()
 
@@ -588,3 +590,210 @@ class TestSolEnvResolution:
         )
         assert result.exit_code == 0
         assert "detected" in result.output
+
+
+class TestEntitiesMergeCandidates:
+    def _candidate_rows(self, journal: Path) -> list[dict]:
+        path = journal / "entities" / "review-candidates.jsonl"
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    def test_record_merge_candidate_creates_one_row(self, entity_env):
+        journal = entity_env()
+
+        result = runner.invoke(
+            call_app,
+            [
+                "entities",
+                "record-merge-candidate",
+                "Kognova Inc",
+                "Kognova",
+                "--facet",
+                "work",
+                "--day",
+                "20260602",
+                "--evidence",
+                "Kognova Inc / Kognova — needs 1 more",
+                "--detections",
+                "3",
+                "--needs",
+                "1",
+            ],
+        )
+
+        rows = self._candidate_rows(journal)
+        assert result.exit_code == 0
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["source"] == "Kognova Inc"
+        assert row["source_slug"] == entity_slug("Kognova Inc")
+        assert row["target"] == "Kognova"
+        assert row["target_slug"] == entity_slug("Kognova")
+        assert row["status"] == "open"
+        assert row["evidence"] == {
+            "basis": "name-variant",
+            "summary": "Kognova Inc / Kognova — needs 1 more",
+            "detection_count": 3,
+            "needs": 1,
+        }
+        assert row["first_surfaced"] == "20260602"
+        assert row["last_surfaced"] == "20260602"
+
+    def test_record_merge_candidate_upserts_idempotently(self, entity_env):
+        journal = entity_env()
+        base_args = [
+            "entities",
+            "record-merge-candidate",
+            "Kognova Inc",
+            "Kognova",
+            "--facet",
+            "work",
+            "--evidence",
+            "Kognova Inc / Kognova — needs 1 more",
+        ]
+
+        first = runner.invoke(
+            call_app,
+            [*base_args, "--day", "20260602", "--detections", "3"],
+        )
+        second = runner.invoke(
+            call_app,
+            [*base_args, "--day", "20260603", "--detections", "4"],
+        )
+
+        rows = self._candidate_rows(journal)
+        assert first.exit_code == 0
+        assert second.exit_code == 0
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["status"] == "open"
+        assert row["first_surfaced"] == "20260602"
+        assert row["last_surfaced"] == "20260603"
+        assert row["evidence"]["detection_count"] == 4
+
+    def test_record_merge_candidate_preserves_status_and_unknown_keys(self, entity_env):
+        journal = entity_env()
+        save_candidates(
+            [
+                {
+                    "facet": "work",
+                    "source": "Kognova Inc",
+                    "source_slug": entity_slug("Kognova Inc"),
+                    "target": "Kognova",
+                    "target_slug": entity_slug("Kognova"),
+                    "status": "dismissed",
+                    "evidence": {
+                        "basis": "name-variant",
+                        "summary": "old summary",
+                        "detection_count": 2,
+                        "needs": 1,
+                        "review_note": "preserve",
+                    },
+                    "first_surfaced": "20260602",
+                    "last_surfaced": "20260602",
+                    "created_at": "2026-06-02T17:30:00Z",
+                    "updated_at": "2026-06-02T17:30:00Z",
+                    "dismissed_detection_count": 2,
+                }
+            ]
+        )
+
+        result = runner.invoke(
+            call_app,
+            [
+                "entities",
+                "record-merge-candidate",
+                "Kognova Inc",
+                "Kognova",
+                "--facet",
+                "work",
+                "--day",
+                "20260603",
+                "--evidence",
+                "new summary",
+                "--detections",
+                "4",
+            ],
+        )
+
+        rows = self._candidate_rows(journal)
+        row = rows[0]
+        assert result.exit_code == 0
+        assert row["status"] == "dismissed"
+        assert row["dismissed_detection_count"] == 2
+        assert row["evidence"]["summary"] == "new summary"
+        assert row["evidence"]["detection_count"] == 4
+        assert row["evidence"]["needs"] == 1
+        assert row["evidence"]["review_note"] == "preserve"
+
+    def test_record_merge_candidate_same_slug_errors(self, entity_env):
+        entity_env()
+
+        result = runner.invoke(
+            call_app,
+            [
+                "entities",
+                "record-merge-candidate",
+                "Kognova",
+                "kognova",
+                "--facet",
+                "work",
+                "--day",
+                "20260602",
+                "--evidence",
+                "same",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "same entity" in result.output
+
+    def test_merge_candidates_json_and_filters(self, entity_env):
+        entity_env()
+        record = runner.invoke(
+            call_app,
+            [
+                "entities",
+                "record-merge-candidate",
+                "Kognova Inc",
+                "Kognova",
+                "--facet",
+                "work",
+                "--day",
+                "20260602",
+                "--evidence",
+                "Kognova Inc / Kognova",
+            ],
+        )
+
+        all_result = runner.invoke(call_app, ["entities", "merge-candidates", "--json"])
+        work_result = runner.invoke(
+            call_app, ["entities", "merge-candidates", "--facet", "work", "--json"]
+        )
+        other_result = runner.invoke(
+            call_app, ["entities", "merge-candidates", "--facet", "other", "--json"]
+        )
+        open_result = runner.invoke(
+            call_app, ["entities", "merge-candidates", "--status", "open", "--json"]
+        )
+
+        assert record.exit_code == 0
+        assert all_result.exit_code == 0
+        assert work_result.exit_code == 0
+        assert other_result.exit_code == 0
+        assert open_result.exit_code == 0
+        assert len(json.loads(all_result.output)) == 1
+        assert len(json.loads(work_result.output)) == 1
+        assert json.loads(other_result.output) == []
+        assert len(json.loads(open_result.output)) == 1
+
+    def test_merge_candidates_empty_text(self, entity_env):
+        entity_env()
+
+        result = runner.invoke(call_app, ["entities", "merge-candidates"])
+
+        assert result.exit_code == 0
+        assert "No merge candidates found." in result.output

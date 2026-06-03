@@ -34,6 +34,8 @@ SOL_DAY and SOL_FACET are set in your environment. Commands default to the curre
   - The `entity` parameter becomes the entity name if creating new; if it matches an existing attached entity, returns that instead
 - `sol call entities aka ENTITY AKA` - add an alias/abbreviation to an attached entity FOR THIS FACET
   - The `entity` parameter can be entity_id, full name, or existing alias
+- `sol call entities merge-candidates --json` - list merge candidates already recorded (any facet), so you reflect prior decisions
+- `sol call entities record-merge-candidate VARIANT CANONICAL --evidence "..." [--basis name-variant] [--detections N] [--needs N]` - durably record a proposed merge (VARIANT folds into CANONICAL)
 
 ## Review Process
 
@@ -41,12 +43,13 @@ SOL_DAY and SOL_FACET are set in your environment. Commands default to the curre
 
 1. Compute the last 7 days in YYYYMMDD format (e.g., if today is 20250115, review 20250108-20250114)
 2. Load attached entities for THIS facet: `sol call entities list` - skip entities already attached to this facet
-3. Load detected entities for THIS facet for each of the last 7 days:
+3. Load existing merge candidates: `sol call entities merge-candidates --json`. Note any already recorded (including accepted or dismissed) so your report reflects prior decisions. You still record today's findings below regardless — recording an existing pair only refreshes its evidence and never overturns a prior accept/dismiss.
+4. Load detected entities for THIS facet for each of the last 7 days:
    - `sol call entities list -d 20250114` - detections for this facet on this day
    - `sol call entities list -d 20250113` - detections for this facet on this day
    - ... continue for all 7 days
 
-4. Aggregate detections by entity name (only detections from THIS facet):
+5. Aggregate detections by entity name (only detections from THIS facet):
    - Count how many days each entity appeared in this facet
    - Collect all descriptions for each entity from this facet's detections
    - Note the entity type from each detection
@@ -160,6 +163,20 @@ sol call entities aka postgresql PG
 - Summarize promotions and aliases
 - Example: "Promoted 3 entities: Sarah Chen [+aka: Bob] (5 detections), API Gateway (5 detections), Federal Aviation Administration [+aka: FAA] (6 detections)"
 
+### Phase 5b: Record Merge Candidates
+
+For every clear name-variant pair (a VARIANT form and the CANONICAL form it refers to), durably record a merge candidate in addition to any `aka` you add.
+
+**Direction rule:** CANONICAL is the target/name to keep; VARIANT is the source folded in. Default to the more-detected name as canonical. On a tie, keep the shorter everyday form and drop corporate suffixes like "Inc", "LLC", or "Corp"; for a person's nickname vs full proper name, keep the FULL proper name as canonical. Example: "Kognova Inc" (variant) folds into "Kognova" (canonical).
+
+**Execution:**
+```bash
+sol call entities record-merge-candidate "<VARIANT>" "<CANONICAL>" --evidence "<short summary, e.g. 'Kognova Inc / Kognova — needs 1 more' or 'Supabase ×2'>" --basis name-variant --detections <combined detection count> [--needs <N if still short of promotion>]
+```
+Facet comes from SOL_FACET, and day comes from SOL_DAY.
+
+Only record a genuine variant→canonical pair. A single name merely near its promotion threshold with NO variant is NOT a merge candidate — leave it in the emit_final report only. Recording is idempotent: re-recording refreshes evidence, never duplicates or overturns a prior accept/dismiss.
+
 ## Smart Duplicate Handling
 
 **Substring Matches:**
@@ -213,7 +230,7 @@ When invoked:
 6. Synthesize timeless descriptions for qualifying entities
 7. Execute `sol call entities attach` for each promotion to THIS facet
 8. Detect name variations and execute `sol call entities aka` for aliases
-9. Call `emit_final(content=<promoted entities, aliases, near-threshold, skipped ambiguities>)` exactly once. Include promoted entities, aliases added, near-threshold entities, and skipped ambiguities.
+9. Call `emit_final(content=<promoted entities, aliases, merge candidates recorded, near-threshold, skipped ambiguities>)` exactly once. Include promoted entities, aliases added, merge candidates recorded, near-threshold entities, and skipped ambiguities.
 
 ## Edge Cases
 
@@ -225,5 +242,6 @@ When invoked:
 
 **Below Threshold**: Report entities close to promotion separately:
 - "3 entities near promotion for [facet]: Alice (Person, 1 detection - needs 1 more), Acme Corp (Company, 2 detections - needs 1 more)"
+Near-threshold entities that are part of a variant pair are recorded as merge candidates in Phase 5b; standalone near-threshold names with no variant stay in this report only.
 
 Remember: Promotion is a facet-specific one-way operation. Only promote entities with clear evidence of consistent relevance to THIS facet and unambiguous identity. Apply strict priority-based thresholds to maintain quality within this facet.
