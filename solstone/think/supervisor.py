@@ -2362,6 +2362,10 @@ def main() -> None:
     if daily_enabled:
         run_catchup_drain()
 
+    # Startup catch-up: submit overdue schedule entries missed while down
+    if schedule_enabled and _supervisor_callosum:
+        scheduler.catch_up()
+
     try:
         print("  Supervisor ready", flush=True)
         _sd_notify("READY=1")

@@ -413,6 +413,40 @@ def register_defaults() -> None:
     _entries = load_config()
 
 
+def _submit_entry(name: str, entry: dict) -> bool:
+    """Emit a supervisor.request for one schedule entry.
+
+    Returns True iff the emit succeeded. Shared by check() (edge-triggered)
+    and catch_up() (level-triggered). Callers own the due/boundary checks;
+    this does emission only.
+    """
+    ref = f"sched:{name}:{now_ms()}"
+    cmd = entry["cmd"]
+
+    if not _callosum:
+        logger.warning("No callosum connection for scheduled task: %s", name)
+        return False
+
+    ok = _callosum.emit(
+        "supervisor",
+        "request",
+        cmd=cmd,
+        ref=ref,
+        scheduler_name=name,
+    )
+    if ok:
+        logger.info(
+            "Scheduled task submitted: %s → %s (ref=%s)",
+            name,
+            " ".join(cmd),
+            ref,
+        )
+        return True
+
+    logger.warning("Failed to emit scheduled task %s (callosum not connected)", name)
+    return False
+
+
 def check() -> None:
     """Check for clock boundaries and submit due tasks.
 
@@ -474,34 +508,42 @@ def check() -> None:
         if not _is_due(entry, _state.get(name), now):
             continue
 
-        ref = f"sched:{name}:{now_ms()}"
-        cmd = entry["cmd"]
-
-        if _callosum:
-            ok = _callosum.emit(
-                "supervisor",
-                "request",
-                cmd=cmd,
-                ref=ref,
-                scheduler_name=name,
-            )
-            if ok:
-                logger.info(
-                    "Scheduled task submitted: %s → %s (ref=%s)",
-                    name,
-                    " ".join(cmd),
-                    ref,
-                )
-                submitted = True
-            else:
-                logger.warning(
-                    "Failed to emit scheduled task %s (callosum not connected)", name
-                )
-        else:
-            logger.warning("No callosum connection for scheduled task: %s", name)
+        if _submit_entry(name, entry):
+            submitted = True
 
     if submitted:
         logger.debug("Submitted scheduled task batch")
+
+
+def catch_up() -> None:
+    """Submit overdue schedule entries on startup (level-triggered).
+
+    Complements the edge-triggered check(): init() re-baselines the boundary
+    marks to now on every (re)start, so an entry whose boundary passed while
+    the supervisor was down would never fire via check(). This pass submits
+    each entry that _is_due() reports overdue exactly once, with no live
+    boundary transition required. Relies on _is_due() plus the completion
+    writeback (health/scheduler.json) to avoid re-firing a completed task on a
+    subsequent restart. Does not touch the boundary marks — check() continues
+    normally afterward.
+    """
+    if not _entries:
+        return
+
+    now = datetime.now()
+    caught_up: list[str] = []
+    for name, entry in _entries.items():
+        if not _is_due(entry, _state.get(name), now):
+            continue
+        if _submit_entry(name, entry):
+            caught_up.append(name)
+
+    if caught_up:
+        logger.info(
+            "Startup catch-up submitted %d overdue schedule(s): %s",
+            len(caught_up),
+            ", ".join(sorted(caught_up)),
+        )
 
 
 def collect_status() -> list[dict[str, Any]]:
