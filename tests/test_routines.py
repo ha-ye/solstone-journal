@@ -406,13 +406,43 @@ class TestTemplates:
             assert template_name in result.stdout
 
     def test_template_frontmatter_valid(self):
-        templates_dir = Path(__file__).resolve().parents[1] / "routines" / "templates"
-        for path in sorted(templates_dir.glob("*.md")):
+        from solstone.think.tools.routines import _templates_dir
+
+        templates = sorted(_templates_dir().glob("*.md"))
+        assert templates, "no routine templates found"
+        for path in templates:
             post = frontmatter.load(path)
             assert post.metadata["name"]
             assert post.metadata["description"]
             assert "default_cadence" in post.metadata
             assert post.content.strip()
+
+    def test_templates_dir_is_package_relative(self):
+        import solstone
+        from solstone.think.tools.routines import _templates_dir
+        from solstone.think.utils import get_project_root
+
+        tpl_dir = _templates_dir().resolve()
+        package_root = Path(solstone.__file__).resolve().parent
+
+        # Anchored inside the solstone package, never on the repo root. The
+        # pre-fix get_project_root()/routines/templates path fails all three.
+        assert tpl_dir.is_relative_to(package_root)
+        assert tpl_dir != (Path(get_project_root()) / "routines" / "templates")
+        assert tpl_dir.is_dir()
+
+        expected = {
+            "commitment-audit",
+            "decision-review",
+            "domain-watch",
+            "energy-audit",
+            "meeting-prep",
+            "monthly-patterns",
+            "morning-briefing",
+            "relationship-pulse",
+            "weekly-review",
+        }
+        assert {p.stem for p in tpl_dir.glob("*.md")} == expected
 
 
 class TestTemplateCreate:

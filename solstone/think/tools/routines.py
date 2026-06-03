@@ -18,7 +18,7 @@ import frontmatter
 import typer
 
 from solstone.think.routines import _run_routine, cron_matches, get_config, save_config
-from solstone.think.utils import get_journal, get_project_root, require_solstone
+from solstone.think.utils import get_journal, require_solstone
 
 app = typer.Typer(help="Manage custom routines.")
 
@@ -83,8 +83,8 @@ def _parse_enabled(value: str) -> bool:
 
 
 def _templates_dir() -> Path:
-    """Resolve the routines templates directory."""
-    return Path(get_project_root()) / "routines" / "templates"
+    """Resolve the routines templates directory (package-relative)."""
+    return Path(__file__).resolve().parents[2] / "talent" / "routines" / "templates"
 
 
 def _load_template(name: str) -> tuple[dict, str]:
