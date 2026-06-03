@@ -9,7 +9,7 @@ import json
 
 import typer
 
-from solstone.apps.observer.share_delete import delete_share_source
+from solstone.apps.observer.share_delete import SHARE_STREAM, delete_source_stream
 
 app = typer.Typer(help="Observer data operations.")
 
@@ -17,5 +17,5 @@ app = typer.Typer(help="Observer data operations.")
 @app.command("delete-source")
 def delete_source() -> None:
     """Delete everything the iOS Share Sheet contributed and print a receipt."""
-    receipt = delete_share_source()
+    receipt = delete_source_stream(SHARE_STREAM)
     typer.echo(json.dumps(receipt, indent=2))

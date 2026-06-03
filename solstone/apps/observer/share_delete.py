@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Delete the iOS Share Sheet source from the observer-owned journal surface."""
+"""Delete an allowed source stream from the observer-owned journal surface."""
 
 from __future__ import annotations
 
@@ -18,6 +18,8 @@ from solstone.think.utils import day_dirs, get_journal, iter_segments
 logger = logging.getLogger(__name__)
 
 SHARE_STREAM = "import.share"
+LOCATION_STREAM = "location"
+DELETABLE_SOURCE_STREAMS = {SHARE_STREAM, LOCATION_STREAM}
 
 _SEGMENT_NOT_REMOVED_REASON = (
     "This segment could not be removed from disk. Try again after checking file "
@@ -41,7 +43,7 @@ def _day_display(day: str) -> str:
     return f"{day[:4]}-{day[4:6]}-{day[6:8]}"
 
 
-def _classify_segment_files(seg_path: Path) -> tuple[int, int]:
+def _classify_segment_files(seg_path: Path, stream: str) -> tuple[int, int]:
     originals = 0
     derived = 0
     for file_path in seg_path.iterdir():
@@ -49,7 +51,9 @@ def _classify_segment_files(seg_path: Path) -> tuple[int, int]:
             continue
         if file_path.name in {"item.json", "stream.json"}:
             continue
-        if file_path.suffix in {".jsonl", ".npz"}:
+        if stream == LOCATION_STREAM and file_path.suffix in {".jsonl", ".npz"}:
+            originals += 1
+        elif file_path.suffix in {".jsonl", ".npz"}:
             derived += 1
         else:
             originals += 1
@@ -58,11 +62,11 @@ def _classify_segment_files(seg_path: Path) -> tuple[int, int]:
 
 def _not_confirmed_entries(
     journal: str,
-    days_with_share: dict[str, list[Path]],
+    days_with_segments: dict[str, list[Path]],
 ) -> list[dict[str, str]]:
     entries: list[dict[str, str]] = []
     facets = get_facets()
-    for day in sorted(days_with_share):
+    for day in sorted(days_with_segments):
         day_fmt = _day_display(day)
         for facet_name, meta in facets.items():
             facet_dir = Path(
@@ -96,19 +100,22 @@ def _not_confirmed_entries(
     return entries
 
 
-def delete_share_source() -> dict:
-    """Delete everything attributed to the import.share source."""
+def delete_source_stream(stream: str) -> dict:
+    """Delete everything attributed to an allowed source stream."""
+    if stream not in DELETABLE_SOURCE_STREAMS:
+        raise ValueError(f"Cannot delete unsupported source stream: {stream!r}")
+
     journal = str(Path(get_journal()).resolve())
 
-    days_with_share: dict[str, list[Path]] = {}
+    days_with_segments: dict[str, list[Path]] = {}
     for day in day_dirs():
         segs = [
             seg_path
-            for stream, _segment, seg_path in iter_segments(day)
-            if stream == SHARE_STREAM
+            for seg_stream, _segment, seg_path in iter_segments(day)
+            if seg_stream == stream
         ]
         if segs:
-            days_with_share[day] = segs
+            days_with_segments[day] = segs
 
     originals = 0
     segments = 0
@@ -118,22 +125,26 @@ def delete_share_source() -> dict:
     history_rows = 0
     not_removed: list[dict[str, str]] = []
 
-    for day in sorted(days_with_share):
+    for day in sorted(days_with_segments):
         day_fmt = _day_display(day)
-        segs = days_with_share[day]
+        segs = days_with_segments[day]
         for seg_path in segs:
             try:
-                segment_originals, segment_derived = _classify_segment_files(seg_path)
+                segment_originals, segment_derived = _classify_segment_files(
+                    seg_path,
+                    stream,
+                )
                 shutil.rmtree(seg_path)
             except OSError as exc:
                 logger.warning(
-                    "Failed to remove import.share segment %s: %s",
+                    "Failed to remove %s segment %s: %s",
+                    stream,
                     seg_path,
                     exc,
                 )
                 not_removed.append(
                     {
-                        "what": f"import.share {day_fmt} {seg_path.name}: segment",
+                        "what": f"{stream} {day_fmt} {seg_path.name}: segment",
                         "plain_reason": _SEGMENT_NOT_REMOVED_REASON,
                     }
                 )
@@ -150,10 +161,10 @@ def delete_share_source() -> dict:
             pass
 
     try:
-        index_result = prune_chunks_by_stream(SHARE_STREAM)
+        index_result = prune_chunks_by_stream(stream)
         index_chunks = index_result["chunks"]
     except Exception as exc:
-        logger.warning("Failed to prune import.share search index: %s", exc)
+        logger.warning("Failed to prune %s search index: %s", stream, exc)
         not_removed.append(
             {
                 "what": "search index",
@@ -162,20 +173,20 @@ def delete_share_source() -> dict:
         )
 
     try:
-        stream_identity = 1 if delete_stream_state(SHARE_STREAM) else 0
+        stream_identity = 1 if delete_stream_state(stream) else 0
     except OSError as exc:
-        logger.warning("Failed to remove import.share stream state: %s", exc)
+        logger.warning("Failed to remove %s stream state: %s", stream, exc)
         not_removed.append(
             {
-                "what": "import.share stream state",
+                "what": f"{stream} stream state",
                 "plain_reason": _STREAM_STATE_NOT_REMOVED_REASON,
             }
         )
 
     try:
-        history_rows = prune_history_by_stream(SHARE_STREAM)
+        history_rows = prune_history_by_stream(stream)
     except Exception as exc:
-        logger.warning("Failed to prune import.share observer history: %s", exc)
+        logger.warning("Failed to prune %s observer history: %s", stream, exc)
         not_removed.append(
             {
                 "what": "observer history",
@@ -183,10 +194,10 @@ def delete_share_source() -> dict:
             }
         )
 
-    not_confirmed = _not_confirmed_entries(journal, days_with_share)
+    not_confirmed = _not_confirmed_entries(journal, days_with_segments)
     receipt = {
         "target": {
-            "stream": SHARE_STREAM,
+            "stream": stream,
             "journal": journal,
         },
         "removed": {
@@ -202,9 +213,10 @@ def delete_share_source() -> dict:
         "backup_hosted": "not confirmed",
     }
     logger.info(
-        "Deleted import.share source: originals=%s segments=%s derived=%s "
+        "Deleted %s source: originals=%s segments=%s derived=%s "
         "index_chunks=%s stream_identity=%s history_rows=%s not_confirmed=%s "
         "not_removed=%s",
+        stream,
         originals,
         segments,
         in_segment_derived,

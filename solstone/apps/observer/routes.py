@@ -56,7 +56,7 @@ from solstone.observe.utils import (
 from solstone.think.streams import stream_name, update_stream, write_segment_stream
 from solstone.think.utils import day_path, iter_segments, now_ms, segment_path
 
-from .share_delete import SHARE_STREAM, delete_share_source
+from .share_delete import DELETABLE_SOURCE_STREAMS, delete_source_stream
 from .utils import (
     ObserverRegistry,
     append_history_record,
@@ -506,15 +506,15 @@ def _save_to_failed(
 @observer_bp.route("/source/<stream>", methods=["DELETE"])
 @observer_bp.route("/source/<stream>/<key>", methods=["DELETE"])
 def delete_source(stream: str, key: str | None = None) -> Any:
-    """Delete the import.share source for an authenticated observer."""
+    """Delete an allowed source stream for an authenticated observer."""
     observer, key_prefix, error = resolve_observer_identity(key)
     if error is not None:
         return error
 
-    if stream != SHARE_STREAM:
+    if stream not in DELETABLE_SOURCE_STREAMS:
         return error_response(
             INVALID_SEGMENT_OR_STREAM,
-            detail="Only the import.share source can be deleted",
+            detail="Only known source streams can be deleted",
         )
 
     form_stream = request.form.get("stream", "").strip()
@@ -529,15 +529,15 @@ def delete_source(stream: str, key: str | None = None) -> Any:
             meta_stream = ""
 
     for candidate in (form_stream, meta_stream):
-        if candidate and candidate != SHARE_STREAM:
+        if candidate and candidate not in DELETABLE_SOURCE_STREAMS:
             return error_response(
                 INVALID_SEGMENT_OR_STREAM,
-                detail="Only the import.share source can be deleted",
+                detail="Only known source streams can be deleted",
             )
 
-    receipt = delete_share_source()
+    receipt = delete_source_stream(stream)
     logger.info(
-        "Deleted import.share source (observer=%s)", observer.get("name", key_prefix)
+        "Deleted %s source (observer=%s)", stream, observer.get("name", key_prefix)
     )
     return jsonify(receipt), 200
 
