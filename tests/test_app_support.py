@@ -241,12 +241,11 @@ def test_recent_beats_stale_under_limit(tmp_path, monkeypatch):
     )[::-1]
 
 
-def test_line_timestamp_beats_mtime_fallback(tmp_path, monkeypatch):
+def test_unparseable_line_inherits_preceding_timestamp(tmp_path, monkeypatch):
     health_dir = _health_dir(tmp_path, monkeypatch)
     line_dt = datetime.now() - timedelta(hours=2)
     mtime_dt = datetime.now() - timedelta(hours=1)
     line_ts = line_dt.isoformat(timespec="seconds")
-    mtime_ts = mtime_dt.isoformat(timespec="seconds")
 
     log_path = _write_log(
         health_dir,
@@ -256,16 +255,57 @@ def test_line_timestamp_beats_mtime_fallback(tmp_path, monkeypatch):
             "ERROR something with no timestamp",
         ],
     )
+    # mtime is more recent than the parsed line; carry-forward must win over it.
     os.utime(log_path, (mtime_dt.timestamp(), mtime_dt.timestamp()))
 
     result = collect_recent_errors()
     line_entry = next(e for e in result if "line-timestamp" in e["message"])
-    fallback_entry = next(e for e in result if "no timestamp" in e["message"])
+    carried_entry = next(e for e in result if "no timestamp" in e["message"])
 
     assert line_entry["time"] == line_ts
     assert line_entry["time_approximate"] is False
-    assert fallback_entry["time"] == mtime_ts
-    assert fallback_entry["time_approximate"] is True
+    # Inherits the preceding parsed timestamp, NOT the file mtime.
+    assert carried_entry["time"] == line_ts
+    assert carried_entry["time_approximate"] is True
+
+
+def test_old_anchor_excludes_carried_unparseable(tmp_path, monkeypatch):
+    health_dir = _health_dir(tmp_path, monkeypatch)
+    stale_dt = datetime.now() - timedelta(days=30)
+    stale_ts = stale_dt.isoformat(timespec="seconds")
+
+    log_path = _write_log(
+        health_dir,
+        "stale_carry.log",
+        [
+            f"{stale_ts} [carry:stderr] ERROR:root:old-anchor",
+            "ERROR continuation with no timestamp",
+        ],
+    )
+    # A recent mtime would, under the old bug, pull the unparseable line in.
+    now_ts = datetime.now().timestamp()
+    os.utime(log_path, (now_ts, now_ts))
+
+    # Anchor is outside the window; the unparseable line inherits it -> both excluded.
+    assert collect_recent_errors() == []
+
+
+def test_unparseable_first_line_uses_mtime(tmp_path, monkeypatch):
+    health_dir = _health_dir(tmp_path, monkeypatch)
+    mtime_dt = datetime.now() - timedelta(hours=1)
+    mtime_ts = mtime_dt.isoformat(timespec="seconds")
+
+    log_path = _write_log(
+        health_dir,
+        "headless.log",
+        ["ERROR boom with no leading timestamp"],
+    )
+    os.utime(log_path, (mtime_dt.timestamp(), mtime_dt.timestamp()))
+
+    result = collect_recent_errors()
+    entry = next(e for e in result if "boom" in e["message"])
+    assert entry["time"] == mtime_ts
+    assert entry["time_approximate"] is True
 
 
 def test_window_excludes_old_and_cli_empty_state(tmp_path, monkeypatch):

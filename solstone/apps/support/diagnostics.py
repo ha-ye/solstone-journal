@@ -120,6 +120,7 @@ def collect_recent_errors(limit: int = 10) -> list[dict[str, Any]]:
     candidates: list[tuple[datetime, dict[str, Any]]] = []
     for log_file in health_dir.glob("*.log"):
         file_mtime: datetime | None = None
+        last_parsed_dt: datetime | None = None
         try:
             lines = log_file.read_text(errors="replace").splitlines()
             for line in lines:
@@ -131,13 +132,17 @@ def collect_recent_errors(limit: int = 10) -> list[dict[str, Any]]:
                     if not parts:
                         raise ValueError
                     dt = datetime.fromisoformat(parts[0])
+                    last_parsed_dt = dt
                     approx = False
                     # Head slice is intentional: the prefix carries ERROR details.
                     message = (parts[1] if len(parts) > 1 else "").strip()[:500]
                 except ValueError:
-                    if file_mtime is None:
-                        file_mtime = datetime.fromtimestamp(log_file.stat().st_mtime)
-                    dt = file_mtime
+                    if last_parsed_dt is not None:
+                        dt = last_parsed_dt
+                    else:
+                        if file_mtime is None:
+                            file_mtime = datetime.fromtimestamp(log_file.stat().st_mtime)
+                        dt = file_mtime
                     approx = True
                     message = line.strip()[:500]
 
