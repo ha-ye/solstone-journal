@@ -9,6 +9,7 @@ import frontmatter
 from jsonschema import Draft202012Validator
 
 from solstone.think.activities import DEFAULT_ACTIVITIES
+from solstone.think.prompts import _resolve_facets, reset_identity_vars_cache
 from solstone.think.talent import (
     RUNTIME_FACETS_SENTINEL,
     get_talent,
@@ -17,6 +18,13 @@ from solstone.think.talent import (
 
 SENSE_PATH = Path(__file__).resolve().parents[1] / "solstone" / "talent" / "sense.md"
 SENSE_SCHEMA_PATH = SENSE_PATH.with_suffix(".schema.json")
+FACET_NAMING_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "solstone"
+    / "think"
+    / "templates"
+    / "facet_naming.md"
+)
 
 
 def _section(text: str, start: str, end: str | None = None) -> str:
@@ -25,6 +33,35 @@ def _section(text: str, start: str, end: str | None = None) -> str:
         return text[section_start:]
     section_end = text.index(end, section_start)
     return text[section_start:section_end]
+
+
+def _facet_naming_template() -> str:
+    return FACET_NAMING_PATH.read_text(encoding="utf-8").strip()
+
+
+def _write_prompt_journal(tmp_path: Path, *, with_facet: bool) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "journal.json").write_text(
+        json.dumps({"identity": {"name": "Test User", "preferred": "Tester"}}),
+        encoding="utf-8",
+    )
+    if with_facet:
+        facet_dir = tmp_path / "facets" / "steady"
+        facet_dir.mkdir(parents=True)
+        (facet_dir / "facet.json").write_text(
+            json.dumps({"title": "Steady Facet", "description": "Prompt testing"}),
+            encoding="utf-8",
+        )
+
+
+def _render_sense_for_tmp_journal(
+    tmp_path: Path, monkeypatch, *, with_facet: bool
+) -> str:
+    _write_prompt_journal(tmp_path, with_facet=with_facet)
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    reset_identity_vars_cache()
+    return get_talent("sense")["user_instruction"]
 
 
 def test_sense_prompt_parses_and_documents_role_and_source():
@@ -77,6 +114,95 @@ def test_sense_schema_facet_uses_runtime_sentinel_constant():
     facet_schema = schema["properties"]["facets"]["items"]["properties"]["facet"]
 
     assert facet_schema["enum"] == [RUNTIME_FACETS_SENTINEL]
+
+
+def test_sense_schema_speculative_facet_nullable_and_required():
+    schema = json.loads(SENSE_SCHEMA_PATH.read_text(encoding="utf-8"))
+    validator = Draft202012Validator(schema)
+    valid = {
+        "density": "active",
+        "content_type": "coding",
+        "activity_summary": "Writing tests.",
+        "entities": [],
+        "facets": [
+            {
+                "facet": RUNTIME_FACETS_SENTINEL,
+                "activity": "Writing tests.",
+                "level": "low",
+            }
+        ],
+        "speculative_facet": "test-planning",
+        "meeting_detected": False,
+        "speakers": [],
+        "recommend": {
+            "screen_record": False,
+            "speaker_attribution": False,
+            "pulse_update": False,
+        },
+        "emotional_register": "focused",
+    }
+
+    assert schema["properties"]["speculative_facet"] == {"type": ["string", "null"]}
+    assert "speculative_facet" in schema["required"]
+    assert list(validator.iter_errors(valid)) == []
+
+    valid_null = dict(valid)
+    valid_null["speculative_facet"] = None
+    assert list(validator.iter_errors(valid_null)) == []
+
+    missing = dict(valid)
+    del missing["speculative_facet"]
+    assert list(validator.iter_errors(missing))
+
+
+def test_sense_prompt_renders_speculative_facet_instruction_in_steady_state(
+    tmp_path, monkeypatch
+):
+    rendered = _render_sense_for_tmp_journal(tmp_path, monkeypatch, with_facet=True)
+    speculative_section = _section(
+        rendered, "### speculative_facet", "### meeting_detected"
+    )
+
+    assert "### speculative_facet" in rendered
+    assert "Propose a name for a NEW facet" in speculative_section
+    assert "level: low" in speculative_section
+    assert _facet_naming_template() in speculative_section
+
+
+def test_sense_prompt_keeps_forced_configured_facet_routing(tmp_path, monkeypatch):
+    rendered = _render_sense_for_tmp_journal(tmp_path, monkeypatch, with_facet=True)
+    facets_section = _section(rendered, "### facets", "### speculative_facet")
+
+    assert "Always include at least one facet" in facets_section
+    assert "MUST be one of the configured facets listed in the input" in facets_section
+    assert "`facets` always has at least one entry" in rendered
+
+
+def test_sense_prompt_suppresses_speculative_facet_when_configured_match_fits(
+    tmp_path, monkeypatch
+):
+    rendered = _render_sense_for_tmp_journal(tmp_path, monkeypatch, with_facet=True)
+    speculative_section = _section(
+        rendered, "### speculative_facet", "### meeting_detected"
+    )
+
+    assert "level: medium" in speculative_section
+    assert "level: high" in speculative_section
+    assert "emit `null`" in speculative_section
+
+
+def test_resolve_facets_zero_facet_discovery_embeds_facet_naming(tmp_path, monkeypatch):
+    _write_prompt_journal(tmp_path, with_facet=False)
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    resolved = _resolve_facets(None)
+
+    assert "No facets are defined yet. You are in discovery mode." in resolved
+    assert (
+        "These names will be used to suggest journal organization to the user."
+        in resolved
+    )
+    assert _facet_naming_template() in resolved
 
 
 def test_hydrate_runtime_enums_replaces_facet_sentinel(monkeypatch):
@@ -197,7 +323,8 @@ def test_role_and_source_do_not_leak_into_other_sense_sections():
         _section(content, "### density", "### content_type"),
         _section(content, "### content_type", "### activity_summary"),
         _section(content, "### activity_summary", "### entities"),
-        _section(content, "### facets", "### meeting_detected"),
+        _section(content, "### facets", "### speculative_facet"),
+        _section(content, "### speculative_facet", "### meeting_detected"),
         _section(content, "### meeting_detected", "### speakers"),
         _section(content, "### speakers", "### recommend"),
         _section(content, "### recommend", "### emotional_register"),

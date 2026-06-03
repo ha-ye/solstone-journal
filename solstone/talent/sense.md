@@ -26,7 +26,7 @@ Read the transcript and screen data. Produce a JSON object with ALL of the follo
 
 ## Output Schema
 
-Authoritative schema: `sense.schema.json`. The output is a single JSON object with these top-level fields: `density`, `content_type`, `activity_summary`, `entities`, `facets`, `meeting_detected`, `speakers`, `recommend`, `emotional_register`. See Field-by-Field Instructions below for semantics and enum values.
+Authoritative schema: `sense.schema.json`. The output is a single JSON object with these top-level fields: `density`, `content_type`, `activity_summary`, `entities`, `facets`, `speculative_facet`, `meeting_detected`, `speakers`, `recommend`, `emotional_register`. See Field-by-Field Instructions below for semantics and enum values.
 
 ## Field-by-Field Instructions
 
@@ -89,7 +89,16 @@ Classify into the owner's configured facets. Always include at least one facet �
 - `activity`: 1-sentence description of what was observed for this facet
 - `level`: "high" (primary focus), "medium" (significant), "low" (brief/peripheral)
 
-**Facet assignment rules:** Do not invent facet IDs that are not in the configured journal facet list. The array always has at least one entry — pick the closest configured facet even when the match is loose, and use `level: low` to signal weak fit.
+**Facet assignment rules:** Do not invent facet IDs that are not in the configured journal facet list. The array always has at least one entry — pick the closest configured facet even when the match is loose, and use `level: low` to signal weak fit. If a better new name is warranted, put it only in `speculative_facet`, not in `facets[]`.
+
+### speculative_facet
+Propose a name for a NEW facet that fits this segment better than any configured facet, or emit `null`.
+
+Emit a proposed name ONLY when every configured-facet match is weak: every entry you put in `facets[]` is `level: low`. When at least one `facets[]` entry is `level: medium` or `level: high`, emit `null`.
+
+This field is purely additive and never changes routing: `facets[]` still must classify the segment into the closest configured facet exactly as described above. Invented names belong ONLY in `speculative_facet`, NEVER in `facets[]`.
+
+The proposed name must be specific and grounded in the observed activity. $facet_naming
 
 ### meeting_detected
 `true` ONLY if you can identify distinct, named participants in a live multi-person interaction:
@@ -136,5 +145,6 @@ The observable emotional tone of the segment based on conversation tone, speech 
 6. Activity summary must describe observable actions, not inferred states.
 7. Skip entities whose name contains a speaker-uncertainty placeholder. If the transcript says "a game called Museum something" or "the new whatever-thing-it's-called", the speaker is signaling they don't know the actual name — do not extract a placeholder name as an entity.
 8. If `meeting_detected=true`, `speakers` must contain at least one entry (use generic labels if no names are identifiable). If `activity_summary` mentions specific named people, projects, or tools, those names should also appear in `entities` (subject to the per-type rules above) — don't reference an entity by name in the summary and then omit it from `entities`.
+9. Emit a `speculative_facet` name only when all `facets[]` entries are `level: low`; otherwise emit `null`. Never invent a `facets[]` ID.
 
 Return ONLY the JSON object, no other text or explanation.

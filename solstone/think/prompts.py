@@ -183,13 +183,14 @@ def _resolve_facets(facet: str | None) -> str:
         summary = facet_summaries()
         if summary and summary != "No facets found.":
             return summary
+        naming = _load_raw_templates().get("facet_naming", "").strip()
+        naming_sentence = f" {naming}" if naming else ""
         return (
             "No facets are defined yet. You are in discovery mode. "
             "Name the contexts you observe based on what is actually happening "
-            "in this segment — use specific, descriptive names that reflect the "
-            'actual activity (e.g., "engineering-work" not "work", '
-            '"investor-calls" not "meetings"). These names will be used to '
-            "suggest journal organization to the user."
+            "in this segment."
+            f"{naming_sentence} "
+            "These names will be used to suggest journal organization to the user."
         )
     except Exception:
         return ""
