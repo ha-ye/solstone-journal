@@ -855,6 +855,21 @@ def run_segment_sense(
                 **({"stream": stream} if stream else {}),
             )
 
+    summary_name = "timeline:segment_summary"
+    summary_config = _cfg(summary_name)
+    if summary_config:
+        agents_to_run.append((summary_name, summary_config))
+    else:
+        _log_skip(
+            summary_name,
+            "no_config",
+            f"{summary_name} config not found",
+            mode=target_schedule,
+            day=day,
+            segment=segment,
+            **({"stream": stream} if stream else {}),
+        )
+
     # Only fold-consumed segment events carry stream; not_recommended skips stay untagged.
     if recommend.get("screen_record"):
         screen_config = _cfg("screen")
@@ -2669,6 +2684,7 @@ def dry_run(
 
         for name, label in [
             ("entities", "always for non-idle"),
+            ("timeline:segment_summary", "always for non-idle"),
             ("screen", "if recommend.screen_record"),
             (
                 "speaker_attribution",

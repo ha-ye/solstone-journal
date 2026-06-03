@@ -35,6 +35,7 @@ STREAM_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 CHRONICLE_DIR = "chronicle"
 DEFAULT_STREAM = "_default"
 EXIT_TEMPFAIL = 75
+EXIT_EMPTY = 66  # EX_NOINPUT: a rollup ran over zero inputs (nothing to roll up)
 
 
 class SolstoneNotConfigured(RuntimeError):

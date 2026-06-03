@@ -23,7 +23,12 @@ from solstone.apps.timeline.rollup import (
     pick_top_events_async,
     pick_top_events_batch,
 )
-from solstone.think.utils import get_journal, get_owner_timezone, require_solstone
+from solstone.think.utils import (
+    EXIT_EMPTY,
+    get_journal,
+    get_owner_timezone,
+    require_solstone,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -172,7 +177,7 @@ async def _rollup_day(
     segments = load_day_segments(journal, day)
     if not segments:
         typer.echo(f"  [empty] {day}: no segment timeline.json found")
-        return None
+        raise typer.Exit(EXIT_EMPTY)
 
     by_hour = group_by_hour(segments)
 
@@ -348,7 +353,7 @@ async def _rollup_master(
         typer.echo(
             f"  [empty] no day-level timeline.json found under {journal}/chronicle/*/"
         )
-        return 0
+        raise typer.Exit(EXIT_EMPTY)
 
     by_month = group_by_month(day_rollups)
     if months_filter:

@@ -36,6 +36,12 @@ def _segment_configs(*names: str) -> dict[str, dict]:
             "type": "cogitate",
             "schedule": "segment",
         },
+        "timeline:segment_summary": {
+            "priority": 41,
+            "type": "generate",
+            "output": "json",
+            "schedule": "segment",
+        },
         "screen": {
             "priority": 20,
             "type": "generate",
@@ -416,6 +422,82 @@ class TestRunSegmentSense:
 
         assert "entities" in spawned
         assert "screen" not in spawned
+
+    def test_segment_summary_dispatched_for_non_idle(self, segment_dir, monkeypatch):
+        from solstone.think import thinking as think
+
+        spawned = []
+        _write_sense_output(
+            segment_dir,
+            {"density": "active", "recommend": {"screen_record": False}, "facets": []},
+        )
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _segment_configs(
+                "sense", "entities", "timeline:segment_summary"
+            ),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "_callosum", None)
+
+        think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+
+        assert "timeline:segment_summary" in spawned
+
+    def test_segment_summary_not_dispatched_on_idle(self, segment_dir, monkeypatch):
+        from solstone.think import thinking as think
+
+        spawned = []
+        _write_sense_output(
+            segment_dir,
+            {"density": "idle", "recommend": {}, "facets": []},
+        )
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _segment_configs(
+                "sense", "entities", "timeline:segment_summary"
+            ),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "_callosum", None)
+
+        think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+
+        assert "timeline:segment_summary" not in spawned
 
     def test_pulse_dispatch(self, segment_dir, monkeypatch):
         from solstone.think import thinking as think

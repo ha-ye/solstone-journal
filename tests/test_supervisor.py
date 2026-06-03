@@ -1231,6 +1231,16 @@ def test_scheduler_completion_updates_scheduler_json(tmp_path, monkeypatch):
     assert data["other"] == {"last_run": 1}
 
 
+def test_exit_status_for_code_maps_empty_sentinel():
+    from solstone.think.supervisor import _exit_status_for_code
+    from solstone.think.utils import EXIT_EMPTY
+
+    assert _exit_status_for_code(0) == "ok"
+    assert _exit_status_for_code(EXIT_EMPTY) == "empty"
+    assert _exit_status_for_code(1) == "error"
+    assert _exit_status_for_code(75) == "error"
+
+
 def test_run_task_completes_when_scheduler_writeback_fails(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     queue = mod.TaskQueue(on_queue_change=None)

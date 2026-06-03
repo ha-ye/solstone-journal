@@ -40,6 +40,15 @@ def test_rollup_day_help_flag_matrix():
         assert flag in result.output
 
 
+def test_rollup_day_empty_input_exits_empty_sentinel(timeline_journal):
+    from solstone.think.utils import EXIT_EMPTY
+
+    result = CliRunner().invoke(app, ["rollup-day", DAY])
+
+    assert result.exit_code == EXIT_EMPTY
+    assert not (timeline_journal / "chronicle" / DAY / "timeline.json").exists()
+
+
 def test_rollup_day_dry_run_no_llm_calls(timeline_journal, mock_agenerate):
     """AC#7."""
     mock = mock_agenerate({"picks": [0], "rationale": "unused"})

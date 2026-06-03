@@ -47,6 +47,15 @@ def test_rollup_master_help_flag_matrix():
         assert flag in result.output
 
 
+def test_rollup_master_empty_input_exits_empty_sentinel(timeline_journal):
+    from solstone.think.utils import EXIT_EMPTY
+
+    result = CliRunner().invoke(app, ["rollup-master"])
+
+    assert result.exit_code == EXIT_EMPTY
+    assert not (timeline_journal / "timeline.json").exists()
+
+
 def test_rollup_master_writes_seed_shape(timeline_journal, mock_agenerate):
     """AC#9, AC#10."""
     _write_day(timeline_journal, "20260510", ["A", "B", "C"])

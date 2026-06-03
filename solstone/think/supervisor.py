@@ -42,6 +42,7 @@ from solstone.think.sync_check import (
     write_self_heartbeat,
 )
 from solstone.think.utils import (
+    EXIT_EMPTY,
     EXIT_TEMPFAIL,
     day_path,
     find_available_port,
@@ -547,7 +548,7 @@ class TaskQueue:
             )
 
             exit_code = managed.wait()
-            exit_status = "ok" if exit_code == 0 else "error"
+            exit_status = _exit_status_for_code(exit_code)
 
             for ref in refs:
                 callosum.emit(
@@ -962,6 +963,20 @@ def _stop_process(managed: RunnerManagedProcess) -> None:
     timeout = _SERVICE_STATE.get(managed.name, {}).get("shutdown_timeout", 15)
     _terminate_managed(managed, timeout, reason="shutdown")
     managed.cleanup()
+
+
+def _exit_status_for_code(exit_code: int) -> str:
+    """Map a scheduled task's process exit code to a scheduler status label.
+
+    0 -> "ok"; EXIT_EMPTY -> "empty" (a rollup ran over zero inputs - a distinct,
+    non-error "nothing to do" outcome); any other non-zero code -> "error".
+    Timeouts are mapped separately by the caller.
+    """
+    if exit_code == 0:
+        return "ok"
+    if exit_code == EXIT_EMPTY:
+        return "empty"
+    return "error"
 
 
 def _record_scheduler_completion(
