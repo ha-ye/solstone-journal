@@ -214,6 +214,53 @@ def test_feedback_identified_empty_email_omits_kwarg(support_client, monkeypatch
     assert "user_email" not in captured[0]
 
 
+def test_revision_hash_when_git_available(monkeypatch):
+    import subprocess
+
+    from solstone.apps.support import diagnostics
+
+    class _CP:
+        returncode = 0
+        stdout = "abc1234\n"
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _CP())
+    assert diagnostics.collect_revision() == "abc1234"
+
+
+def test_revision_none_when_not_a_repo(monkeypatch):
+    import subprocess
+
+    from solstone.apps.support import diagnostics
+
+    class _CP:
+        returncode = 128
+        stdout = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _CP())
+    assert diagnostics.collect_revision() is None
+
+
+def test_revision_none_when_git_raises(monkeypatch):
+    import subprocess
+
+    from solstone.apps.support import diagnostics
+
+    def _boom(*a, **k):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+    assert diagnostics.collect_revision() is None
+
+
+def test_collect_all_includes_revision(monkeypatch):
+    from solstone.apps.support import diagnostics
+
+    monkeypatch.setattr(diagnostics, "collect_revision", lambda: "deadbee")
+    bundle = diagnostics.collect_all()
+    assert bundle["revision"] == "deadbee"
+    assert "version" in bundle
+
+
 def test_recent_beats_stale_under_limit(tmp_path, monkeypatch):
     health_dir = _health_dir(tmp_path, monkeypatch)
     stale = (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
