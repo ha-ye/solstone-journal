@@ -119,6 +119,7 @@ def test_write_and_find_manifest():
         # Read it back
         with open(manifest_path) as f:
             data = json.load(f)
+        assert data["import_id"] == "20260115_120000"
         assert data["source_type"] == "ics"
         assert data["source_hash"] == "abc123"
         assert data["entry_count"] == 42
@@ -128,6 +129,7 @@ def test_write_and_find_manifest():
         # Find by hash
         found = find_manifest_by_hash(Path(journal), "abc123")
         assert found is not None
+        assert found["import_id"] == "20260115_120000"
         assert found["source_type"] == "ics"
 
         # Not found for different hash

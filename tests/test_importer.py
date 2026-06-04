@@ -1144,6 +1144,25 @@ def test_importer_existing_import_without_force_still_errors(tmp_path, monkeypat
     assert _read_action_entries(tmp_path) == []
 
 
+def test_import_one_collision_raises_catchable_file_exists_error(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.importers.cli")
+
+    timestamp = "20240101_120000"
+    import_dir = tmp_path / "imports" / timestamp
+    import_dir.mkdir(parents=True)
+    (import_dir / "stale.txt").write_text("old import payload")
+
+    media = tmp_path / "note.txt"
+    media.write_text("new transcript")
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    with pytest.raises(FileExistsError) as ei:
+        mod.import_one(media, timestamp=timestamp)
+
+    assert not isinstance(ei.value, SystemExit)
+
+
 def test_file_importer_without_timestamp(tmp_path, monkeypatch, capsys):
     """File importers auto-generate timestamp and skip import setup."""
     mod = importlib.import_module("solstone.think.importers.cli")
@@ -1388,6 +1407,136 @@ def test_import_one_skips_wait_when_disabled(tmp_path, monkeypatch):
     assert elapsed < 5
     assert result.get("segments")
     assert "failed_segments" not in result
+
+
+def test_import_one_audio_reimport_is_deduped(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.importers.cli")
+
+    audio_file = tmp_path / "test.mp3"
+    audio_file.write_bytes(b"fake audio")
+    calls = []
+    callosum = MagicMock()
+
+    def fake_prepare_audio_segments(media_path, day_dir, base_dt, import_id, stream):
+        calls.append(media_path)
+        seg_dir = Path(day_dir) / stream / "120000_300"
+        seg_dir.mkdir(parents=True, exist_ok=True)
+        (seg_dir / "imported_audio.mp3").write_bytes(b"sliced audio")
+        return [("120000_300", seg_dir, ["imported_audio.mp3"])]
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(mod, "CallosumConnection", lambda **kwargs: callosum)
+    monkeypatch.setattr(mod, "get_rev", lambda: "test-rev")
+    monkeypatch.setattr(mod, "_status_emitter", lambda: None)
+    monkeypatch.setattr(mod, "prepare_audio_segments", fake_prepare_audio_segments)
+    monkeypatch.setattr(
+        mod,
+        "update_stream",
+        lambda stream, day, seg, **kwargs: {
+            "prev_day": None,
+            "prev_segment": None,
+            "seq": 1,
+        },
+    )
+    monkeypatch.setattr(mod, "write_segment_stream", lambda *args, **kwargs: None)
+
+    result = mod.import_one(
+        audio_file,
+        timestamp="20260303_120000",
+        source="audio",
+        wait_for_processing=False,
+    )
+
+    assert result is not None
+    assert len(calls) == 1
+    manifest_path = tmp_path / "imports" / "20260303_120000" / "manifest.json"
+    assert manifest_path.exists()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["source_hash"] == hashlib.sha256(b"fake audio").hexdigest()
+    assert manifest["source_type"] == "audio"
+    assert manifest["import_id"] == "20260303_120000"
+    assert manifest["days_affected"] == ["20260303"]
+
+    audio_file2 = tmp_path / "same-audio.mp3"
+    audio_file2.write_bytes(b"fake audio")
+    result = mod.import_one(
+        audio_file2,
+        timestamp="20260303_120000",
+        source="audio",
+        wait_for_processing=False,
+    )
+
+    assert result is not None
+    assert result["reason"] == "already_imported"
+    assert len(calls) == 1
+
+
+def test_import_one_text_reimport_is_deduped(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.importers.cli")
+    text_mod = importlib.import_module("solstone.think.importers.text")
+
+    transcript = "hello\nworld"
+    txt = tmp_path / "sample.txt"
+    txt.write_text(transcript)
+    calls = []
+
+    def fake_detect_segment(text, start_time):
+        calls.append((text, start_time))
+        return [("12:00:00", text)]
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(
+        mod, "detect_created", lambda p, **kw: {"day": "20240101", "time": "120000"}
+    )
+    monkeypatch.setattr(text_mod, "detect_transcript_segment", fake_detect_segment)
+    monkeypatch.setattr(
+        text_mod,
+        "detect_transcript_json",
+        lambda text, segment_start: {
+            "entries": [
+                {
+                    "start": segment_start,
+                    "speaker": "Unknown",
+                    "text": text,
+                }
+            ],
+            "topics": "",
+            "setting": "",
+        },
+    )
+    monkeypatch.setattr(mod, "CallosumConnection", lambda **kwargs: MagicMock())
+    monkeypatch.setattr(mod, "get_rev", lambda: "test-rev")
+    monkeypatch.setattr(mod, "_status_emitter", lambda: None)
+
+    result = mod.import_one(
+        txt,
+        timestamp="20240101_120000",
+        source="text",
+    )
+
+    assert result is not None
+    assert len(calls) == 1
+    manifest_path = tmp_path / "imports" / "20240101_120000" / "manifest.json"
+    assert manifest_path.exists()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["source_type"] == "text"
+    assert manifest["import_id"] == "20240101_120000"
+    assert manifest["days_affected"] == ["20240101"]
+    segment_dir = day_path("20240101") / "import.text"
+    assert len(list(segment_dir.iterdir())) == 1
+
+    txt2 = tmp_path / "same-sample.txt"
+    txt2.write_text(transcript)
+    result = mod.import_one(
+        txt2,
+        timestamp="20240101_120000",
+        source="text",
+    )
+
+    assert result is not None
+    assert result["reason"] == "already_imported"
+    assert len(calls) == 1
+    assert len(list(segment_dir.iterdir())) == 1
 
 
 def test_file_importer_indexes_created_files_in_process(tmp_path, monkeypatch):

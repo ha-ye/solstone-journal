@@ -360,7 +360,7 @@ def _setup_import(
             logger.info(f"Removing existing import directory: {import_dir}")
             shutil.rmtree(import_dir)
         else:
-            raise SystemExit(
+            raise FileExistsError(
                 f"Error: Import already exists for timestamp {timestamp}\n"
                 f"To re-import, use --force to delete existing data and start over"
             )
@@ -551,19 +551,22 @@ def write_manifest(
     source_hash: str,
     entry_count: int,
     files_created: list[str],
+    days_affected: list[str] | None = None,
 ) -> Path:
     """Write an import manifest for deduplication tracking.
 
     Returns path to the manifest file.
     """
-    days_affected = sorted(
-        {
-            os.path.basename(os.path.dirname(os.path.dirname(f)))
-            for f in files_created
-            if os.path.basename(os.path.dirname(os.path.dirname(f))).isdigit()
-        }
-    )
+    if days_affected is None:
+        days_affected = sorted(
+            {
+                os.path.basename(os.path.dirname(os.path.dirname(f)))
+                for f in files_created
+                if os.path.basename(os.path.dirname(os.path.dirname(f))).isdigit()
+            }
+        )
     manifest = {
+        "import_id": import_id,
         "source_type": source_type,
         "source_hash": source_hash,
         "entry_count": entry_count,

@@ -6,9 +6,7 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -37,18 +35,6 @@ def _extract_metadata(path: str) -> str:
         return proc.stdout
     except Exception as exc:  # pragma: no cover - exiftool optional
         return f"Error extracting metadata: {exc}"
-
-
-def _debug_write_content(content: str, path: str) -> None:
-    """Write content to a debug file in /tmp for diagnosis."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"gemini_debug_{timestamp}_{os.path.basename(path)}.md"
-    debug_path = os.path.join("/tmp", filename)
-
-    with open(debug_path, "w", encoding="utf-8") as f:
-        f.write(content)
-
-    print(f"Debug: Content written to {debug_path}", file=sys.stderr)
 
 
 def detect_created(
@@ -89,9 +75,6 @@ def detect_created(
     markdown = "\n".join(lines)
     if guidance:
         markdown += f"\n\nImportant guidance from the user: {guidance}"
-
-    # Debug: write content to temp file
-    _debug_write_content(markdown, path)
 
     from solstone.think.models import generate
 

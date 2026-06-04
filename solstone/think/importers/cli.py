@@ -402,6 +402,32 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
                 _file_importer = detected
                 import_source = detected.name
 
+    # Source-level dedup for audio/text (before timestamp detection and before
+    # _setup_import rewrites args.media). Mirrors the file-importer dedup at the
+    # file-importer branch; skipped for --force and --dry-run (which still preview).
+    if _file_importer is None and not args.dry_run:
+        from solstone.think.importers.shared import (
+            find_manifest_by_hash,
+            hash_source,
+        )
+
+        _source_hash = hash_source(Path(args.media))
+        if not args.force:
+            existing = find_manifest_by_hash(Path(get_journal()), _source_hash)
+            if existing:
+                imported_at = existing.get("imported_at", "unknown date")
+                entry_count = existing.get("entry_count", 0)
+                print(
+                    f"This file was already imported on {imported_at} "
+                    f"({entry_count} entries). Use --force to re-import."
+                )
+                return {
+                    "skipped": True,
+                    "reason": "already_imported",
+                    "imported_at": imported_at,
+                    "entry_count": entry_count,
+                }
+
     # --- Timestamp resolution ---
     if _file_importer is not None and not args.timestamp:
         # File importers don't need an external timestamp — auto-generate for metadata
@@ -1086,6 +1112,22 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
             "date_range",
             [processing_results["target_day"], processing_results["target_day"]],
         )
+
+        # Write dedup manifest for audio/text imports. File importers already wrote
+        # theirs in the file-importer branch above (line ~887); guard prevents a
+        # double write since all branches fall through this common tail.
+        if _file_importer is None:
+            from solstone.think.importers.shared import write_manifest
+
+            write_manifest(
+                journal_root,
+                import_id=args.timestamp,
+                source_type=import_source,
+                source_hash=_source_hash,
+                entry_count=len(all_created_files),
+                files_created=all_created_files,
+                days_affected=[day],
+            )
 
         imported_path = import_dir / "imported.json"
         # Write imported.json with all processing metadata

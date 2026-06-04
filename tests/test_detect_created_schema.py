@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
+import glob
 import importlib
 import json
 from pathlib import Path
@@ -71,9 +72,12 @@ def test_detect_created_passes_schema_to_generate(monkeypatch):
         lambda path: "QuickTime Create Date : 2024:03:15 14:30:52",
     )
 
+    before = set(glob.glob("/tmp/gemini_debug_*"))
     result = detect_created_mod.detect_created("/dev/null")
+    after = set(glob.glob("/tmp/gemini_debug_*"))
 
     assert captured["json_schema"] is detect_created_mod._SCHEMA
+    assert after == before
     assert result == {
         "day": "20240315",
         "time": "143052",
