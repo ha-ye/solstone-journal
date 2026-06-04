@@ -25,6 +25,7 @@ SYNCABLE_REGISTRY: dict[str, str] = {
     "plaud": "solstone.think.importers.plaud",
     "granola": "solstone.think.importers.granola",
     "obsidian": "solstone.think.importers.obsidian",
+    "audio": "solstone.think.importers.audio",
 }
 
 

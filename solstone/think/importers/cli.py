@@ -316,9 +316,13 @@ def _run_sync(backend_name: str, *, dry_run: bool = True, **extra: Any) -> None:
                         print(f"  - {name}")
                 print()
                 print("Run with --save to import:")
-                print(f"  sol import --sync {backend_name} --save")
+                src = sync_kwargs.get("source_path")
+                if src:
+                    print(f"  sol import --sync {backend_name} --save --path {src}")
+                else:
+                    print(f"  sol import --sync {backend_name} --save")
 
-    if not dry_run and available == 0 and downloaded == 0:
+    if not dry_run and available == 0 and downloaded == 0 and not errors:
         print()
         print("Everything is up to date.")
 
