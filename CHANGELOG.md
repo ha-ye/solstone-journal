@@ -4,6 +4,21 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.5.0] - 2026-06-05
+
+### Added
+- you can now point solstone at a folder of audio files and keep it in sync with your journal. `sol import --sync audio --path <folder>` shows what is new, and `--save` imports only what has not already been brought in.
+- sol now surfaces suggested facets and entity merges for review, so organizing the journal has a clear place to happen.
+
+### Changed
+- provider readiness is now one signal across Settings, Health, support diagnostics, chat, and the command line. when a provider or model is blocking work, solstone shows the affected task and the next step instead of scattering the reason across pages.
+- on Apple Silicon, the local setup path now matches the on-device engine the journal actually runs, including the right memory requirement before activation.
+- transcription setup is more careful about memory. when the local model is a poor fit for the machine, solstone says so up front and points to a hosted option instead of trying to push through.
+
+### Fixed
+- provider settings load cleanly from a direct link and show each task's defaults.
+- audio folder sync retires missing skipped files when the source folder changes, so a dry run does not keep warning about files that are no longer there.
+
 ## [0.4.10] - 2026-06-02
 
 ### Added
