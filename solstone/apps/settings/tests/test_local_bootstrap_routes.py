@@ -12,7 +12,7 @@ import pytest
 from solstone.apps.settings import local_bootstrap
 from solstone.apps.settings.install_copy import INSTALL_FAILED_NO_PROGRESS
 from solstone.convey import create_app
-from solstone.think.models import LOCAL_MODEL
+from solstone.think.models import LOCAL_MODEL, QWEN_35_9B
 from solstone.think.providers.install_state import (
     InstallState,
     InstallStatus,
@@ -52,9 +52,11 @@ def _reset_local_state():
 class _FakeThread:
     init_count = 0
     start_count = 0
+    targets = []
 
     def __init__(self, *args, **kwargs):
         type(self).init_count += 1
+        type(self).targets.append(kwargs.get("target"))
         self.alive = True
 
     def start(self):
@@ -85,6 +87,48 @@ def _old_progress_iso() -> str:
 
 def _fresh_progress_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _mlx_readiness(**overrides):
+    readiness = {
+        "install_state": "idle",
+        "model_installed": True,
+        "snapshot_installed": True,
+        "variant_installed": True,
+        "ram_sufficient": True,
+        "platform_supported": True,
+        "package_available": True,
+        "model_id": QWEN_35_9B,
+        "snapshot_dir": "/tmp/qwen-snapshot",
+        "variant_dir": None,
+        "runtime_dir": "/tmp/qwen-snapshot",
+        "install_error": None,
+    }
+    readiness.update(overrides)
+    return readiness
+
+
+def test_mlx_backend_predicate_tracks_sys_platform(monkeypatch):
+    monkeypatch.setattr(local_bootstrap.sys, "platform", "darwin")
+    assert local_bootstrap._is_mlx_backend() is True
+
+    monkeypatch.setattr(local_bootstrap.sys, "platform", "linux")
+    assert local_bootstrap._is_mlx_backend() is False
+
+
+def test_local_bootstrap_linux_contract_for_model_helpers():
+    assert local_bootstrap._is_mlx_backend() is False
+    assert local_bootstrap._resolve_model_id(LOCAL_MODEL) == LOCAL_MODEL
+    assert local_bootstrap.accepted_request_model(None) == LOCAL_MODEL
+    assert local_bootstrap.accepted_request_model("not-real") is None
+    assert local_bootstrap.list_local_models() == [
+        {
+            "name": LOCAL_MODEL,
+            "label": "qwen 3.5 4B VLM — 8 GB",
+            "min_ram_gb": 8,
+            "size_bytes": LOCAL_MODEL_SPECS[LOCAL_MODEL].size_bytes,
+        },
+    ]
 
 
 def test_local_availability_payload_exact_shape(settings_env, monkeypatch):
@@ -125,6 +169,44 @@ def test_local_availability_payload_exact_shape(settings_env, monkeypatch):
     }
 
 
+def test_mlx_availability_payload_exact_shape(settings_env, monkeypatch):
+    settings_env(_settings_config())
+    monkeypatch.setattr(local_bootstrap, "_is_mlx_backend", lambda: True)
+    monkeypatch.setattr(
+        local_bootstrap.mlx_install,
+        "inspect_readiness",
+        lambda _model: _mlx_readiness(),
+    )
+    monkeypatch.setattr(
+        local_bootstrap.psutil,
+        "virtual_memory",
+        lambda: type("VMem", (), {"total": 32 * 1024**3})(),
+    )
+
+    payload = local_bootstrap.get_availability_payload(QWEN_35_9B)
+
+    assert set(payload) == {
+        "model",
+        "platform_supported",
+        "total_memory_gb",
+        "min_ram_gb",
+        "binary_present",
+        "model_present",
+        "available",
+        "reason",
+    }
+    assert payload == {
+        "model": QWEN_35_9B,
+        "platform_supported": True,
+        "total_memory_gb": 32.0,
+        "min_ram_gb": 16,
+        "binary_present": True,
+        "model_present": True,
+        "available": True,
+        "reason": "",
+    }
+
+
 def test_local_models_route_returns_settings_shape(settings_env):
     journal_path, _config = settings_env(_settings_config())
     client = _client(journal_path)
@@ -140,6 +222,45 @@ def test_local_models_route_returns_settings_shape(settings_env):
             "size_bytes": LOCAL_MODEL_SPECS[LOCAL_MODEL].size_bytes,
         },
     ]
+
+
+def test_mlx_models_route_returns_settings_shape(settings_env, monkeypatch):
+    journal_path, _config = settings_env(_settings_config())
+    monkeypatch.setattr(local_bootstrap, "_is_mlx_backend", lambda: True)
+    client = _client(journal_path)
+
+    response = client.get("/app/settings/api/local/models")
+
+    assert response.status_code == 200
+    assert response.get_json() == [
+        {
+            "name": QWEN_35_9B,
+            "label": "qwen 3.5 9B VLM — 16 GB",
+            "min_ram_gb": 16,
+            "size_bytes": None,
+        },
+    ]
+
+
+def test_mlx_availability_accepts_first_fetch_alias(settings_env, monkeypatch):
+    journal_path, _config = settings_env(_settings_config())
+    monkeypatch.setattr(local_bootstrap, "_is_mlx_backend", lambda: True)
+    monkeypatch.setattr(
+        local_bootstrap.mlx_install,
+        "inspect_readiness",
+        lambda _model: _mlx_readiness(),
+    )
+    monkeypatch.setattr(
+        local_bootstrap.psutil,
+        "virtual_memory",
+        lambda: type("VMem", (), {"total": 32 * 1024**3})(),
+    )
+    client = _client(journal_path)
+
+    response = client.get(f"/app/settings/api/local/availability?model={LOCAL_MODEL}")
+
+    assert response.status_code == 200
+    assert response.get_json()["model"] == QWEN_35_9B
 
 
 @pytest.mark.parametrize(
@@ -315,6 +436,60 @@ def test_local_bootstrap_lazy_stall_with_live_thread_stays_in_flight(settings_en
     assert payload["install_error"] is None
 
 
+def test_mlx_availability_ignores_install_state_when_snapshot_missing(
+    settings_env, monkeypatch
+):
+    settings_env(_settings_config())
+    _write_local_status("downloading", last_progress_at=_fresh_progress_iso())
+    monkeypatch.setattr(local_bootstrap, "_is_mlx_backend", lambda: True)
+    monkeypatch.setattr(
+        local_bootstrap.mlx_install,
+        "inspect_readiness",
+        lambda _model: _mlx_readiness(
+            install_state="downloading",
+            model_installed=False,
+            snapshot_installed=False,
+        ),
+    )
+    monkeypatch.setattr(
+        local_bootstrap.psutil,
+        "virtual_memory",
+        lambda: type("VMem", (), {"total": 32 * 1024**3})(),
+    )
+
+    payload = local_bootstrap.get_availability_payload(QWEN_35_9B)
+
+    assert payload["available"] is False
+    assert payload["model_present"] is False
+    assert payload["reason"] == "local model files are not installed"
+
+
+def test_mlx_bootstrap_lazy_stall_with_live_thread_stays_in_flight(
+    settings_env, monkeypatch
+):
+    settings_env(_settings_config())
+    _write_local_status("downloading", last_progress_at=_old_progress_iso())
+    monkeypatch.setattr(local_bootstrap, "_is_mlx_backend", lambda: True)
+    with local_bootstrap._INSTALL_LOCK:
+        local_bootstrap._INSTALL_THREADS[QWEN_35_9B] = _FakeThread()
+
+    payload = local_bootstrap.get_state(QWEN_35_9B)
+
+    assert payload["install_state"] == "downloading"
+    assert payload["install_error"] is None
+
+
+def test_mlx_bootstrap_lazy_stall_without_live_thread_fails(settings_env, monkeypatch):
+    settings_env(_settings_config())
+    _write_local_status("downloading", last_progress_at=_old_progress_iso())
+    monkeypatch.setattr(local_bootstrap, "_is_mlx_backend", lambda: True)
+
+    payload = local_bootstrap.get_state(QWEN_35_9B)
+
+    assert payload["install_state"] == "failed"
+    assert payload["install_error"] == INSTALL_FAILED_NO_PROGRESS
+
+
 @pytest.mark.parametrize("state", ["installed", "failed"])
 def test_local_bootstrap_restart_terminal_states_have_no_bytes(settings_env, state):
     settings_env(_settings_config())
@@ -360,6 +535,37 @@ def test_local_bootstrap_migrates_preexisting_install_without_worker(
     )
     status = read_install_status(scope="bundled", name="local")
     assert status["install_state"] == "installed"
+
+
+def test_mlx_start_bootstrap_dispatches_to_mlx_worker(settings_env, monkeypatch):
+    settings_env(_settings_config())
+    _write_local_status("idle")
+    monkeypatch.setattr(local_bootstrap, "_is_mlx_backend", lambda: True)
+    monkeypatch.setattr(
+        local_bootstrap,
+        "get_availability_payload",
+        lambda _model: {
+            "model": QWEN_35_9B,
+            "platform_supported": True,
+            "total_memory_gb": 32.0,
+            "min_ram_gb": 16,
+            "binary_present": True,
+            "model_present": False,
+            "available": False,
+            "reason": "local model files are not installed",
+        },
+    )
+    _FakeThread.init_count = 0
+    _FakeThread.start_count = 0
+    _FakeThread.targets = []
+    monkeypatch.setattr(local_bootstrap.threading, "Thread", _FakeThread)
+
+    assert local_bootstrap.start_bootstrap(QWEN_35_9B) == (
+        {"install_state": "downloading"},
+        202,
+    )
+
+    assert _FakeThread.targets == [local_bootstrap._mlx_bootstrap_worker]
 
 
 def test_local_worker_resets_progress_between_binary_and_model(
@@ -442,6 +648,42 @@ def test_local_worker_cleans_registered_thread_after_failure(settings_env, monke
     status = read_install_status(scope="bundled", name="local")
     assert status["install_state"] == "failed"
     assert status["install_error"] == "binary download broke"
+
+
+def test_mlx_worker_preserves_install_error_and_cleans_thread(
+    settings_env, monkeypatch
+):
+    settings_env(_settings_config())
+    current = threading.current_thread()
+    with local_bootstrap._INSTALL_LOCK:
+        local_bootstrap._INSTALL_THREADS[QWEN_35_9B] = current
+    _write_local_status("downloading", last_progress_at=_fresh_progress_iso())
+    monkeypatch.setattr(local_bootstrap, "_is_mlx_backend", lambda: True)
+
+    def fake_install_mlx(_model):
+        status = read_install_status(scope="bundled", name="local")
+        write_install_status(
+            transition_state(status, new_state="failed", error="verify broke"),
+            scope="bundled",
+        )
+        raise local_bootstrap.mlx_install.MLXVerificationError("verify broke")
+
+    monkeypatch.setattr(
+        local_bootstrap.mlx_install,
+        "install_local_mlx",
+        fake_install_mlx,
+    )
+
+    local_bootstrap._mlx_bootstrap_worker(QWEN_35_9B)
+
+    with local_bootstrap._INSTALL_LOCK:
+        assert QWEN_35_9B not in local_bootstrap._INSTALL_THREADS
+    status = read_install_status(scope="bundled", name="local")
+    assert status["install_state"] == "failed"
+    assert status["install_error"] == "verify broke"
+    payload = local_bootstrap.get_state(QWEN_35_9B)
+    assert payload["install_state"] == "failed"
+    assert payload["install_error"] == "verify broke"
 
 
 def test_routes_import_registers_local_endpoints(settings_env):

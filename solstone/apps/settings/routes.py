@@ -66,7 +66,6 @@ from solstone.convey.sol_initiated.settings import (
 from solstone.convey.utils import error_response
 from solstone.think.models import LOCAL_MODEL
 from solstone.think.providers.google import validate_vertex_credentials
-from solstone.think.providers.local import LOCAL_MODEL_SPECS
 from solstone.think.retention import (
     _human_bytes,
     check_storage_health,
@@ -675,9 +674,6 @@ def _sol_voice_response(settings: SolVoiceSettings) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 VALID_TIERS = {1, 2, 3}
-LOCAL_MODEL_LABELS = {
-    LOCAL_MODEL: "qwen 3.5 4B VLM — 8 GB",
-}
 
 
 def _local_model_error(model: str) -> Any:
@@ -685,15 +681,16 @@ def _local_model_error(model: str) -> Any:
         INVALID_REQUEST_VALUE,
         detail=(
             f"Unknown local model: {model}. "
-            f"Must be one of: {', '.join(LOCAL_MODEL_SPECS.keys())}"
+            f"Must be one of: {', '.join(local_bootstrap.local_model_ids())}"
         ),
     )
 
 
 def _local_model_from_request() -> tuple[str | None, Any | None]:
-    model = request.args.get("model") or LOCAL_MODEL
-    if model not in LOCAL_MODEL_SPECS:
-        return None, _local_model_error(model)
+    raw = request.args.get("model")
+    model = local_bootstrap.accepted_request_model(raw)
+    if model is None:
+        return None, _local_model_error(raw or LOCAL_MODEL)
     return model, None
 
 
@@ -745,17 +742,7 @@ def get_local_bootstrap_status() -> Any:
 @settings_bp.route("/api/local/models")
 def get_local_models() -> Any:
     try:
-        return jsonify(
-            [
-                {
-                    "name": name,
-                    "label": LOCAL_MODEL_LABELS[name],
-                    "min_ram_gb": spec.min_ram_bytes // 1024**3,
-                    "size_bytes": spec.size_bytes,
-                }
-                for name, spec in LOCAL_MODEL_SPECS.items()
-            ]
-        )
+        return jsonify(local_bootstrap.list_local_models())
     except Exception:
         logger.exception("error loading local provider models")
         return _settings_operation_failed()
@@ -853,9 +840,10 @@ def get_providers() -> Any:
                 pass
 
         provider_status = build_provider_status(providers_list, vertex_creds_configured)
-        local_model_id = request.args.get("local_model") or LOCAL_MODEL
-        if local_model_id not in LOCAL_MODEL_SPECS:
-            return _local_model_error(local_model_id)
+        raw_local_model = request.args.get("local_model")
+        local_model_id = local_bootstrap.accepted_request_model(raw_local_model)
+        if local_model_id is None:
+            return _local_model_error(raw_local_model or LOCAL_MODEL)
         local_status = local_bootstrap.get_state(local_model_id)
 
         return jsonify(

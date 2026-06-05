@@ -6,13 +6,14 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 
 import psutil
 
 from solstone.apps.settings.install_copy import INSTALL_FAILED_NO_PROGRESS
-from solstone.think.models import LOCAL_MODEL
-from solstone.think.providers import local_install
+from solstone.think.models import LOCAL_MODEL, QWEN_35_9B
+from solstone.think.providers import local_install, mlx_install
 from solstone.think.providers.install_state import (
     IN_FLIGHT_STATES,
     InstallStatus,
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 _INSTALL_THREADS: dict[str, threading.Thread] = {}
 _INSTALL_PROGRESS: dict[str, tuple[int | None, int | None]] = {}
 _INSTALL_LOCK = threading.Lock()
+_MLX_MODEL_LABEL = "qwen 3.5 9B VLM — 16 GB"
 
 
 class LocalBootstrapUnavailableError(RuntimeError):
@@ -41,6 +43,54 @@ class LocalBootstrapUnavailableError(RuntimeError):
 
 class LocalBootstrapStartError(RuntimeError):
     """Raised when the bootstrap worker could not be started."""
+
+
+def _is_mlx_backend() -> bool:
+    return sys.platform == "darwin"
+
+
+def _resolve_model_id(model: str | None) -> str:
+    if _is_mlx_backend():
+        return QWEN_35_9B
+    return normalize_model_id(model)
+
+
+def accepted_request_model(model: str | None) -> str | None:
+    """Return the canonical local model id for this backend, if recognized."""
+    candidate = model or LOCAL_MODEL
+    if _is_mlx_backend():
+        return QWEN_35_9B if candidate in {LOCAL_MODEL, QWEN_35_9B} else None
+    return candidate if candidate in LOCAL_MODEL_SPECS else None
+
+
+def local_model_ids() -> list[str]:
+    """Selectable canonical model ids for this backend."""
+    if _is_mlx_backend():
+        return [QWEN_35_9B]
+    return list(LOCAL_MODEL_SPECS)
+
+
+def list_local_models() -> list[dict[str, object]]:
+    """Return backend-aware local model descriptors for Settings."""
+    if _is_mlx_backend():
+        spec = mlx_install.resolve_model_spec()
+        return [
+            {
+                "name": spec.name,
+                "label": _MLX_MODEL_LABEL,
+                "min_ram_gb": spec.min_ram_bytes // 1024**3,
+                "size_bytes": None,
+            }
+        ]
+    return [
+        {
+            "name": name,
+            "label": "qwen 3.5 4B VLM — 8 GB",
+            "min_ram_gb": spec.min_ram_bytes // 1024**3,
+            "size_bytes": spec.size_bytes,
+        }
+        for name, spec in LOCAL_MODEL_SPECS.items()
+    ]
 
 
 def check_binary_present() -> bool:
@@ -70,7 +120,45 @@ def _platform_supported() -> tuple[bool, str]:
 
 def get_availability_payload(model: str) -> dict[str, bool | float | int | str]:
     """Return the local provider availability payload used by Settings."""
-    model_id = normalize_model_id(model)
+    model_id = _resolve_model_id(model)
+    if _is_mlx_backend():
+        spec = mlx_install.resolve_model_spec(model_id)
+        readiness = mlx_install.inspect_readiness(model_id)
+        total_memory_bytes = int(psutil.virtual_memory().total)
+        min_ram_gb = spec.min_ram_bytes // 1024**3
+        available = all(
+            readiness[key]
+            for key in (
+                "platform_supported",
+                "package_available",
+                "ram_sufficient",
+                "model_installed",
+            )
+        )
+        if not readiness["platform_supported"]:
+            reason = "requires Apple Silicon macOS"
+        elif not readiness["package_available"]:
+            reason = "mlx-vlm runtime is not installed"
+        elif not readiness["ram_sufficient"]:
+            reason = (
+                f"insufficient RAM (need {min_ram_gb} GB, "
+                f"have {total_memory_bytes // 1024**3} GB)"
+            )
+        elif not readiness["model_installed"]:
+            reason = "local model files are not installed"
+        else:
+            reason = ""
+        return {
+            "model": readiness["model_id"],
+            "platform_supported": readiness["platform_supported"],
+            "total_memory_gb": round(total_memory_bytes / 1024**3, 1),
+            "min_ram_gb": min_ram_gb,
+            "binary_present": readiness["package_available"],
+            "model_present": readiness["model_installed"],
+            "available": available,
+            "reason": reason,
+        }
+
     spec = LOCAL_MODEL_SPECS[model_id]
     binary_present = check_binary_present()
     model_present = check_model_present(model_id)
@@ -172,14 +260,14 @@ def _normalize_stalled_status(model: str, status: InstallStatus) -> InstallStatu
 
 def get_state(model: str) -> dict[str, int | str | None]:
     """Return the serialized bootstrap state, applying stall detection."""
-    model_id = normalize_model_id(model)
+    model_id = _resolve_model_id(model)
     status = _normalize_stalled_status(model_id, _read_status())
     return _payload_for_status(model_id, status)
 
 
 def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
     """Start the local provider bootstrap worker if needed."""
-    model_id = normalize_model_id(model)
+    model_id = _resolve_model_id(model)
     get_state(model_id)
     status = _read_status()
     if status["install_state"] == "installed":
@@ -210,8 +298,11 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
             return {"install_state": status["install_state"]}, 200
 
         try:
+            worker = (
+                _mlx_bootstrap_worker if _is_mlx_backend() else _run_bootstrap_worker
+            )
             thread = threading.Thread(
-                target=_run_bootstrap_worker,
+                target=worker,
                 args=(model_id,),
                 name=f"local-provider-bootstrap-{model_id}",
                 daemon=True,
@@ -244,7 +335,22 @@ def _blocked_reason(availability: dict[str, bool | float | int | str]) -> str:
     reason = str(availability["reason"])
     if reason.startswith("insufficient RAM"):
         return reason
+    if _is_mlx_backend() and reason == "mlx-vlm runtime is not installed":
+        return reason
     return ""
+
+
+def _mlx_bootstrap_worker(model: str) -> None:
+    current_thread = threading.current_thread()
+    try:
+        mlx_install.install_local_mlx(model)
+    except Exception:
+        logger.exception("local MLX provider bootstrap failed")
+        _clear_progress(model)
+    finally:
+        with _INSTALL_LOCK:
+            if _INSTALL_THREADS.get(model) is current_thread:
+                _INSTALL_THREADS.pop(model, None)
 
 
 def _run_bootstrap_worker(model: str) -> None:
