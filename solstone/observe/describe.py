@@ -23,6 +23,7 @@ import io
 import json
 import logging
 import os
+import sys
 import time
 from enum import Enum
 from pathlib import Path
@@ -30,6 +31,7 @@ from typing import List, Optional
 
 from PIL import Image
 
+from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED
 from solstone.observe.extract import (
     DEFAULT_MAX_EXTRACTIONS,
     select_frames_for_extraction,
@@ -38,6 +40,7 @@ from solstone.observe.utils import get_segment_key, resize_for_vlm
 from solstone.think.callosum import callosum_send
 from solstone.think.markdown import bound_extraction_markdown
 from solstone.think.prompts import load_prompt
+from solstone.think.providers import state as provider_state
 from solstone.think.utils import (
     day_from_path,
     get_config,
@@ -179,8 +182,125 @@ def _build_redact_instruction(rules: List[str]) -> str:
 # Discover categories at module level
 CATEGORIES = _discover_categories()
 
+FRAME_CONTEXT = "observe.describe.frame"
+
 # Build categorization prompt from template
 CATEGORIZATION_PROMPT = _build_categorization_prompt()
+
+
+def _describe_work_key(video_path: Path, day: str | None, segment: str) -> str:
+    return f"{day or ''}/{segment}/{video_path.stem}"
+
+
+def _describe_readiness_contexts() -> list[str]:
+    contexts = {FRAME_CONTEXT}
+    for metadata in CATEGORIES.values():
+        context = metadata.get("context")
+        if context and metadata.get("prompt"):
+            contexts.add(context)
+    return [FRAME_CONTEXT] + sorted(
+        context for context in contexts if context != FRAME_CONTEXT
+    )
+
+
+def _dedup_readiness_contexts(contexts: list[str]) -> list[str]:
+    from solstone.think.models import resolve_provider
+
+    selected: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for context in contexts:
+        key = resolve_provider(context, "generate")
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(context)
+    return selected
+
+
+def _blocked_status(status: str) -> bool:
+    return status in {"blocked", "unhealthy"}
+
+
+def _emit_blocked_notification(view) -> None:
+    event_fields = {
+        "key": view.semantic_key,
+        "work_key": view.work_key,
+        "title": "Screen descriptions paused",
+        "message": view.summary,
+        "icon": "👁️",
+        "app": "sense",
+        "reason_code": view.reason_code,
+        "provider": view.provider,
+        "model": view.model,
+        "context": view.context,
+    }
+    if view.recovery_action:
+        event_fields["action"] = view.recovery_action.target
+    callosum_send(
+        "notification",
+        "show",
+        **{key: value for key, value in event_fields.items() if value is not None},
+    )
+
+
+def _preflight_provider_readiness(
+    video_path: Path,
+    *,
+    day: str | None,
+    segment: str,
+) -> None:
+    work_key = _describe_work_key(video_path, day, segment)
+    from solstone.convey.provider_readiness import present_readiness
+
+    for context in _dedup_readiness_contexts(_describe_readiness_contexts()):
+        readiness = provider_state.readiness_for_context(context, "generate")
+        if not _blocked_status(readiness.status):
+            continue
+        view = present_readiness(readiness, work_key=work_key)
+        _emit_blocked_notification(view)
+        raise SystemExit(EXIT_PROVIDER_BLOCKED)
+
+
+def _abort_for_blocking_request(
+    req,
+    *,
+    output_file,
+    output_path: Path | None,
+    work_key: str,
+    batch=None,
+) -> None:
+    from solstone.convey.provider_readiness import (
+        is_blocking_reason,
+        present_for_reason,
+    )
+
+    reason_code = getattr(req, "reason_code", None)
+    if not reason_code or not is_blocking_reason(reason_code):
+        return
+
+    if batch is not None:
+        for task in list(batch.pending_tasks):
+            task.cancel()
+
+    if output_file and not output_file.closed:
+        output_file.close()
+    if output_path:
+        output_path.unlink(missing_ok=True)
+
+    view = present_for_reason(
+        reason_code,
+        provider=getattr(req, "provider", None) or "",
+        model=getattr(req, "model_used", None) or getattr(req, "model", None),
+        status="unhealthy",
+        context=getattr(req, "context", None),
+        interface="generate",
+        message=getattr(req, "error", None),
+        reset_at_ms=getattr(req, "reset_at_ms", None),
+        work_key=work_key,
+    )
+    _emit_blocked_notification(view)
+    raise SystemExit(EXIT_PROVIDER_BLOCKED)
+
 
 # The enums in `primary` and `secondary` MUST match the filenames under observe/categories/*.md.
 _SCHEMA = json.loads(
@@ -406,6 +526,7 @@ class VideoProcessor:
         self,
         max_concurrent: int = 10,
         output_path: Optional[Path] = None,
+        work_key: str | None = None,
     ) -> None:
         """
         Process video and write vision analysis results to file.
@@ -433,6 +554,11 @@ class VideoProcessor:
         )
         redact_instruction = _build_redact_instruction(
             describe_config.get("redact", [])
+        )
+        work_key = work_key or _describe_work_key(
+            self.video_path,
+            day_from_path(self.video_path),
+            get_segment_key(self.video_path) or "",
         )
 
         # Use dynamically built categorization prompt
@@ -474,7 +600,7 @@ class VideoProcessor:
                 output_file.flush()
 
             # Resolve model for frame description (tier from describe.md frontmatter)
-            _, frame_model = resolve_provider("observe.describe.frame", "generate")
+            _, frame_model = resolve_provider(FRAME_CONTEXT, "generate")
 
             # Create vision requests for all qualified frames
             for frame_data in qualified_frames:
@@ -487,7 +613,7 @@ class VideoProcessor:
                         "Analyze this screenshot frame from a screencast recording.",
                         frame_img,
                     ),
-                    context="observe.describe.frame",
+                    context=FRAME_CONTEXT,
                     model=frame_model,
                     system_instruction=system_instruction,
                     json_output=True,
@@ -548,6 +674,14 @@ class VideoProcessor:
                         error_msg = f"Invalid JSON response: {e}"
 
                 # Retry logic (up to 5 attempts total, so 4 retries)
+                if has_error:
+                    _abort_for_blocking_request(
+                        req,
+                        output_file=output_file,
+                        output_path=output_path,
+                        work_key=work_key,
+                        batch=batch,
+                    )
                 if has_error and req.retry_count < 4:
                     req.retry_count += 1
                     total_frames -= 1  # Don't count retries
@@ -800,6 +934,14 @@ class VideoProcessor:
                         )
 
                 # Retry logic
+                if has_error:
+                    _abort_for_blocking_request(
+                        req,
+                        output_file=output_file,
+                        output_path=output_path,
+                        work_key=work_key,
+                        batch=batch,
+                    )
                 if has_error and req.retry_count < 4:
                     req.retry_count += 1
                     batch.add(req)
@@ -892,7 +1034,7 @@ def output_qualified_frames(
         ],
     }
 
-    print(json.dumps(output, indent=2))
+    sys.stdout.write(json.dumps(output, indent=2) + "\n")
 
 
 async def async_main():
@@ -951,6 +1093,13 @@ async def async_main():
         if output_path.exists():
             logger.warning(f"Overwriting existing analysis file: {output_path}")
 
+        day = day_from_path(video_path)
+        work_key = _describe_work_key(video_path, day, segment)
+        _preflight_provider_readiness(video_path, day=day, segment=segment)
+    else:
+        day = day_from_path(video_path)
+        work_key = _describe_work_key(video_path, day, segment)
+
     logger.info(f"Processing video: {video_path}")
 
     start_time = time.time()
@@ -967,6 +1116,7 @@ async def async_main():
             await processor.process_with_vision(
                 max_concurrent=args.jobs,
                 output_path=output_path,
+                work_key=work_key,
             )
 
             # Emit completion event
@@ -981,9 +1131,6 @@ async def async_main():
                     rel_output = output_path
 
                 duration_ms = int((time.time() - start_time) * 1000)
-
-                # Extract day from video path
-                day = day_from_path(video_path)
 
                 event_fields = {
                     "input": str(rel_input),

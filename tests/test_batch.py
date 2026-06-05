@@ -164,6 +164,80 @@ async def test_batch_error_handling(mock_agenerate):
 
 
 @pytest.mark.asyncio
+@patch("solstone.think.batch.resolve_provider")
+@patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
+async def test_batch_preserves_exception_metadata(
+    mock_agenerate, mock_resolve_provider
+):
+    """Structured provider metadata should survive the batch error path."""
+
+    class ProviderError(RuntimeError):
+        reason_code = "provider_key_invalid"
+        reset_at_ms = 12345
+        provider = "anthropic"
+
+    mock_agenerate.side_effect = ProviderError("bad key")
+    mock_resolve_provider.return_value = ("google", "unused")
+
+    batch = Batch(max_concurrent=5)
+    req = batch.create(contents="Bad prompt", context="test.context")
+    batch.add(req)
+
+    results = []
+    async for r in batch.drain_batch():
+        results.append(r)
+
+    assert len(results) == 1
+    assert results[0].error == "bad key"
+    assert results[0].reason_code == "provider_key_invalid"
+    assert results[0].reset_at_ms == 12345
+    assert results[0].provider == "anthropic"
+    mock_resolve_provider.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("solstone.think.batch.resolve_provider")
+@patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
+async def test_batch_classifies_exception_metadata_when_attrs_missing(
+    mock_agenerate, mock_resolve_provider
+):
+    """Batch should classify generic exceptions and best-effort provider."""
+    mock_agenerate.side_effect = ConnectionError("network down")
+    mock_resolve_provider.return_value = ("google", "gemini-test")
+
+    batch = Batch(max_concurrent=5)
+    req = batch.create(contents="Bad prompt", context="test.context")
+    batch.add(req)
+
+    results = []
+    async for r in batch.drain_batch():
+        results.append(r)
+
+    assert len(results) == 1
+    assert results[0].reason_code == "network_unreachable"
+    assert results[0].reset_at_ms is None
+    assert results[0].provider == "google"
+
+
+def test_batch_update_clears_error_metadata():
+    batch = Batch(max_concurrent=5)
+    req = batch.create(contents="Retry prompt", context="test.context")
+    req.reason_code = "provider_key_invalid"
+    req.provider = "anthropic"
+    req.reset_at_ms = 12345
+    req.error = "bad key"
+
+    with patch.object(batch, "add") as mock_add:
+        batch.update(req)
+
+    assert req.reason_code is None
+    assert req.provider is None
+    assert req.reset_at_ms is None
+    assert req.error is None
+    mock_add.assert_called_once_with(req)
+
+
+@pytest.mark.asyncio
 @patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
 async def test_batch_dynamic_adding(mock_agenerate):
     """Test adding requests dynamically during iteration."""

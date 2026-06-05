@@ -28,6 +28,8 @@ HEALTH_GLANCE_COPY_KEYS = [
     "HEALTH_GLANCE_CATCHING_UP",
     "HEALTH_GLANCE_OBSERVER_SILENT",
     "HEALTH_GLANCE_SERVICES_UNREACHABLE",
+    "HEALTH_GLANCE_READINESS_BLOCKED",
+    "HEALTH_GLANCE_READINESS_UNKNOWN",
 ]
 HEALTH_GLANCE_LITERALS = {
     "HEALTH_GLANCE_OK": "everything's working — last observation {age} ago.",
@@ -40,6 +42,10 @@ HEALTH_GLANCE_LITERALS = {
     ),
     "HEALTH_GLANCE_SERVICES_UNREACHABLE": (
         "I couldn't reach my own services — check that solstone is running."
+    ),
+    "HEALTH_GLANCE_READINESS_BLOCKED": "{summary}",
+    "HEALTH_GLANCE_READINESS_UNKNOWN": (
+        "still checking AI readiness — provider setup will be confirmed shortly."
     ),
 }
 
@@ -188,8 +194,10 @@ def test_glance_precedence_order(health_env):
     witnesses = [
         "HEALTH_GLANCE_SERVICES_UNREACHABLE",
         "HEALTH_GLANCE_SERVICES_ATTENTION",
+        "HEALTH_GLANCE_READINESS_BLOCKED",
         "HEALTH_GLANCE_OBSERVER_SILENT",
         "HEALTH_GLANCE_CATCHING_UP",
+        "HEALTH_GLANCE_READINESS_UNKNOWN",
         "HEALTH_GLANCE_OK",
     ]
     positions = [selector.index(witness) for witness in witnesses]

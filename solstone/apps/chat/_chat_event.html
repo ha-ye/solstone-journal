@@ -79,7 +79,7 @@
     <a class="chat-reflection-card-link" href="{{ ev.url }}">open reflection</a>
   </article>
 {% elif ev.kind == "chat_error" %}
-  {% set rendered_reason = render_chat_reason(ev.reason or "unknown", ev.provider or "") %}
+  {% set rendered_reason = chat_view(ev.reason or "unknown", ev.provider or "") %}
   <div class="chat-error-block">
     <div>{{ rendered_reason.message }}</div>
     {% if ev.detail %}

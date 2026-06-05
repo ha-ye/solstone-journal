@@ -445,42 +445,84 @@ def test_root_stats_contains_backlog_contract_fields():
 
 def test_backlog_day_serialization_includes_reason():
     stats_mod = importlib.import_module("solstone.think.journal_stats")
-    unit = stats_mod.BacklogUnit(
+    corrupt_unit = stats_mod.BacklogUnit(
         mode="segment",
         name="screen",
         facet=None,
         stream="default",
         segment="123456_300",
         why="corrupt_raw",
+        reason_code=None,
         provider=None,
         model=None,
         trailing_fail_count=0,
         last_fail_ts=3000,
         stuck=True,
     )
-    day = stats_mod.BacklogDay(
+    corrupt_day = stats_mod.BacklogDay(
         day="20990411",
         state="stuck",
         segments=1,
         units=1,
         not_sensed=1,
-        why=(unit,),
+        why=(corrupt_unit,),
         reason="corrupt_raw",
+        reason_code=None,
+        provider=None,
+        model=None,
+        error=None,
+    )
+    provider_unit = stats_mod.BacklogUnit(
+        mode="segment",
+        name="entities",
+        facet=None,
+        stream="default",
+        segment="123500_300",
+        why="failed",
+        reason_code="provider_quota_exceeded",
+        provider="openai",
+        model="gpt-5",
+        trailing_fail_count=3,
+        last_fail_ts=4000,
+        stuck=True,
+    )
+    provider_day = stats_mod.BacklogDay(
+        day="20990412",
+        state="stuck",
+        segments=0,
+        units=1,
+        not_sensed=0,
+        why=(provider_unit,),
+        reason="failing_step",
+        reason_code="provider_quota_exceeded",
+        provider="openai",
+        model="gpt-5",
         error=None,
     )
     js = stats_mod.JournalStats()
     js.backlog_view = stats_mod.BacklogView(
         window=1,
-        days=(day,),
+        days=(corrupt_day, provider_day),
         pending_days=0,
-        stuck_days=1,
+        stuck_days=2,
         oldest_pending_day="20990411",
         errors=(),
     )
 
     data = js.to_dict()
 
-    assert data["backlog"]["days"][0]["reason"] == "corrupt_raw"
+    serialized_corrupt = data["backlog"]["days"][0]
+    serialized_provider = data["backlog"]["days"][1]
+    assert serialized_corrupt["reason"] == "corrupt_raw"
+    assert "reason_code" not in serialized_corrupt
+    assert "provider" not in serialized_corrupt
+    assert "model" not in serialized_corrupt
+    assert "reason_code" not in serialized_corrupt["why"][0]
+    assert serialized_provider["reason"] == "failing_step"
+    assert serialized_provider["reason_code"] == "provider_quota_exceeded"
+    assert serialized_provider["provider"] == "openai"
+    assert serialized_provider["model"] == "gpt-5"
+    assert serialized_provider["why"][0]["reason_code"] == "provider_quota_exceeded"
 
 
 def test_backlog_derivation_failure_marks_stats_degraded(tmp_path, monkeypatch, caplog):

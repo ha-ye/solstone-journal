@@ -710,6 +710,7 @@ class CortexService:
             finish_usage = None
             degraded = None
             error_message = None
+            reason_code = None
             model = None
             runtime_seconds = None
             status = "completed"
@@ -741,6 +742,7 @@ class CortexService:
                             status = "error"
                             msg = event.get("error", "")
                             error_message = msg[:200] if msg else None
+                            reason_code = event.get("reason_code")
                             end_ts = event.get("ts", 0)
                             if end_ts and start_ts:
                                 runtime_seconds = round((end_ts - start_ts) / 1000.0, 1)
@@ -764,6 +766,7 @@ class CortexService:
                 "tool_count": tool_count,
                 "cost": calc_agent_cost(model, finish_usage),
                 "error_message": error_message if status == "error" else None,
+                "reason_code": reason_code if status == "error" else None,
                 "degraded": degraded,
                 "output_file": self._summarize_output_file(request),
                 "prompt": request.get("prompt", ""),

@@ -15,6 +15,31 @@ __all__ = [
     "verdict",
 ]
 
+_MISSING_CONFIG_REASONS = {
+    "missing_config",
+    "setup_blocker",
+    "provider_key_missing",
+    "provider_key_invalid",
+    "ram_insufficient",
+    "local_model_missing",
+    "model_missing",
+    "binary_missing",
+    "local_model_installing",
+    "local_model_loading",
+    "local_model_not_ready",
+    "unsupported_platform",
+    "unsupported_model",
+    "sha256_mismatch",
+    "archive_path_traversal",
+}
+_PROVIDER_DOWN_REASONS = {
+    "provider_down",
+    "provider_blocker",
+    "provider_quota_exceeded",
+    "provider_unavailable",
+    "local_server_unhealthy",
+}
+
 
 def _count(value: Any) -> int | float:
     if value is None:
@@ -91,8 +116,15 @@ def _needs_hand(day: dict, backlog: dict) -> bool:
 
 
 def _reason_copy(day: dict) -> str:
-    if day.get("reason") == "corrupt_raw":
+    reason = day.get("reason")
+    reason_code = day.get("reason_code")
+    marker = reason_code if isinstance(reason_code, str) and reason_code else reason
+    if marker == "corrupt_raw":
         return backlog_copy.BACKLOG_REASON_CORRUPT_RAW
+    if marker in _MISSING_CONFIG_REASONS:
+        return backlog_copy.BACKLOG_REASON_MISSING_CONFIG
+    if marker in _PROVIDER_DOWN_REASONS:
+        return backlog_copy.BACKLOG_REASON_PROVIDER_DOWN
     return backlog_copy.BACKLOG_REASON_FAILING_STEP
 
 
@@ -105,11 +137,13 @@ def stuck_rows(backlog: dict | None) -> list[dict]:
         if not _needs_hand(day, backlog):
             continue
         depth = _count(day.get("segments")) + _count(day.get("units"))
-        rows.append(
-            {
-                "day": day.get("day"),
-                "reason": _reason_copy(day),
-                "depth": depth if depth > 0 else None,
-            }
-        )
+        row = {
+            "day": day.get("day"),
+            "reason": _reason_copy(day),
+            "depth": depth if depth > 0 else None,
+        }
+        for field in ("reason_code", "provider", "model"):
+            if day.get(field):
+                row[field] = day.get(field)
+        rows.append(row)
     return rows

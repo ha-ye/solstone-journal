@@ -950,6 +950,15 @@ input:checked + .slider:before {
   margin: 1em 0 1.25em;
 }
 
+.ai-readiness-summary .provider-card__header {
+  margin-bottom: 0.35em;
+}
+
+.ai-readiness-summary[data-severity="neutral"] .provider-card__issue,
+.ai-readiness-summary[data-severity="ok"] .provider-card__issue {
+  color: #666;
+}
+
 .provider-card {
   border: 1px solid var(--facet-border, #e5e0db);
   border-radius: 8px;
@@ -4977,6 +4986,12 @@ const LOCAL_SCOPE_COPY = 'on-device generate and cogitate using bundled llama-se
 const LOCAL_MODEL_LABELS = {
   'local/qwen3.5-4b': 'qwen 3.5 4B VLM — 8 GB',
 };
+const READINESS_SEVERITY_RANK = {
+  ok: 0,
+  neutral: 1,
+  attention: 2,
+  blocker: 3,
+};
 
 async function loadProviders() {
   try {
@@ -5213,8 +5228,10 @@ function populateLocalModelPicker(data) {
   select.value = active;
 }
 
-function providerKind(providerId) {
-  if (providerId === 'local') return 'local-mlx';
+function providerKind(providerId, data = providersData) {
+  if (providerId === 'local') {
+    return data?.local_backend === "mlx" ? 'local-mlx' : 'local';
+  }
   return 'cloud';
 }
 
@@ -5254,22 +5271,110 @@ function providerLabel(providerId, state) {
   return provider?.label || providerId;
 }
 
+function localProviderReadiness(data = providersData) {
+  return data?.ai_readiness?.local || null;
+}
+
+function readinessSeverity(value) {
+  return Object.hasOwn(READINESS_SEVERITY_RANK, value) ? value : 'neutral';
+}
+
+function readinessTone(severity) {
+  return {
+    ok: 'ok',
+    neutral: 'muted',
+    attention: 'warn',
+    blocker: 'error',
+  }[readinessSeverity(severity)] || 'muted';
+}
+
+function topAiReadinessGroup(aiReadiness) {
+  const groups = Array.isArray(aiReadiness?.groups) ? aiReadiness.groups : [];
+  return groups
+    .filter(group => group && typeof group.summary === 'string')
+    .sort((a, b) => (
+      (READINESS_SEVERITY_RANK[readinessSeverity(b.severity)] || 0)
+      - (READINESS_SEVERITY_RANK[readinessSeverity(a.severity)] || 0)
+    ))[0] || null;
+}
+
+function renderAiReadinessSummary(aiReadiness) {
+  const unavailable = !aiReadiness || aiReadiness.unavailable || !aiReadiness.summary;
+  const severity = unavailable ? 'neutral' : readinessSeverity(aiReadiness.summary.severity);
+  const primaryGroup = ['blocker', 'attention'].includes(severity)
+    ? topAiReadinessGroup(aiReadiness)
+    : null;
+  const message = unavailable
+    ? 'AI readiness unavailable'
+    : primaryGroup?.summary
+      || (severity === 'ok' ? 'AI providers are ready.' : 'AI readiness will be confirmed when providers are used.');
+  const action = primaryGroup?.recovery_action || null;
+
+  const summary = document.createElement('div');
+  summary.className = 'provider-card ai-readiness-summary';
+  summary.dataset.aiReadinessSummary = 'true';
+  summary.dataset.severity = severity;
+
+  const header = document.createElement('header');
+  header.className = 'provider-card__header';
+  const title = document.createElement('div');
+  title.className = 'provider-card__title';
+  title.textContent = 'ai readiness';
+  const pills = document.createElement('div');
+  pills.className = 'provider-card__pills';
+  const badge = document.createElement('span');
+  badge.className = 'provider-card__badge';
+  badge.dataset.tone = readinessTone(severity);
+  badge.textContent = severity === 'ok' ? 'Ready' : severity === 'neutral' ? 'Quiet' : 'Needs attention';
+  pills.appendChild(badge);
+  header.append(title, pills);
+  summary.appendChild(header);
+
+  const issue = document.createElement('div');
+  issue.className = 'provider-card__issue';
+  issue.textContent = message;
+  summary.appendChild(issue);
+
+  if (action?.href) {
+    const actions = document.createElement('div');
+    actions.className = 'provider-card__actions';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = action.label || 'Open settings';
+    button.addEventListener('click', () => {
+      window.location.href = action.href;
+    });
+    actions.appendChild(button);
+    summary.appendChild(actions);
+  }
+
+  return summary;
+}
+
 function renderProvidersPanel(data) {
   const container = document.getElementById('providersPanel');
   if (!container) return;
   container.innerHTML = '';
+  container.appendChild(renderAiReadinessSummary(data?.ai_readiness));
   const states = providerPanelStates(data);
   for (const providerId of PROVIDER_NAMES) {
     const state = states[providerId];
     if (!state) continue;
+    const kind = providerKind(providerId, data);
     container.appendChild(
-      renderProviderCard(providerId, state, providerKind(providerId), getProviderAvailability(providerId))
+      renderProviderCard(
+        providerId,
+        state,
+        kind,
+        getProviderAvailability(providerId),
+        providerId === 'local' && kind === 'local' ? localProviderReadiness(data) : null
+      )
     );
   }
 }
 
-function renderProviderCard(providerId, state, kind, availability) {
-  const meta = providerCardMeta(state, kind, availability);
+function renderProviderCard(providerId, state, kind, availability, readiness = null) {
+  const meta = providerCardMeta(state, kind, availability, readiness);
   const card = document.createElement('div');
   card.className = 'provider-card';
   card.dataset.provider = providerId;
@@ -5326,7 +5431,11 @@ function renderProviderCard(providerId, state, kind, availability) {
     primary.type = 'button';
     primary.textContent = meta.primaryLabel;
     primary.disabled = meta.primaryDisabled;
-    if (meta.primaryAction) {
+    if (meta.primaryHref) {
+      primary.addEventListener('click', () => {
+        window.location.href = meta.primaryHref;
+      });
+    } else if (meta.primaryAction) {
       primary.addEventListener('click', () => runProviderAction(providerId, meta.primaryAction));
     }
     actions.appendChild(primary);
@@ -5415,7 +5524,41 @@ function installBadgeLabel(installState, installError) {
   }[installState] || INSTALL_COPY.INSTALL_PHASE_IDLE;
 }
 
-function providerCardMeta(state, kind, availability) {
+function localReadinessBadgeLabel(readiness) {
+  if (readiness?.status === 'ready') return 'Ready';
+  return {
+    local_model_loading: 'Starting up',
+    local_model_not_ready: 'Starting up',
+    local_server_unhealthy: 'Server not responding',
+  }[readiness?.reason_code] || readiness?.summary || 'Readiness pending';
+}
+
+function localReadinessBadgeTone(readiness) {
+  if (readiness?.status === 'ready') return 'ok';
+  if (['local_model_loading', 'local_model_not_ready'].includes(readiness?.reason_code)) return 'progress';
+  if (readiness?.status === 'blocked' || readiness?.status === 'unhealthy') return 'warn';
+  return 'muted';
+}
+
+function localReadinessMeta(readiness) {
+  const action = readiness?.recovery_action || null;
+  return {
+    badgeLabel: localReadinessBadgeLabel(readiness),
+    badgeTone: localReadinessBadgeTone(readiness),
+    primaryLabel: action?.label || null,
+    primaryAction: null,
+    primaryHref: action?.href || null,
+    primaryDisabled: false,
+    showKeyPill: false,
+    keyPillLabel: '',
+    keyPillTone: 'muted',
+    showByteCounter: false,
+    byteLabel: '',
+    issueText: readiness?.status === 'ready' ? '' : (readiness?.detail || readiness?.summary || ''),
+  };
+}
+
+function providerCardMeta(state, kind, availability, readiness = null) {
   if (kind === 'cloud') {
     const configured = !!state?.configured;
     const cogitateReady = !!state?.cogitate_ready;
@@ -5424,6 +5567,7 @@ function providerCardMeta(state, kind, availability) {
       badgeTone: cogitateReady ? 'ok' : 'muted',
       primaryLabel: null,
       primaryAction: null,
+      primaryHref: null,
       primaryDisabled: true,
       showKeyPill: true,
       keyPillLabel: configured ? 'Key set' : 'Needs API key',
@@ -5443,6 +5587,7 @@ function providerCardMeta(state, kind, availability) {
       badgeTone: 'error',
       primaryLabel: INSTALL_COPY.INSTALL_BUTTON_INSTALL,
       primaryAction: 'install',
+      primaryHref: null,
       primaryDisabled: true,
       showKeyPill: false,
       keyPillLabel: '',
@@ -5459,6 +5604,7 @@ function providerCardMeta(state, kind, availability) {
       badgeTone: 'muted',
       primaryLabel: 'Enable',
       primaryAction: 'enable',
+      primaryHref: null,
       primaryDisabled: false,
       showKeyPill: kind === 'cloud',
       ...providerCardKeyFields(keyStatus),
@@ -5487,6 +5633,7 @@ function providerCardMeta(state, kind, availability) {
       ...base,
       primaryLabel: INSTALL_COPY.INSTALL_BUTTON_INSTALLING,
       primaryAction: null,
+      primaryHref: null,
       primaryDisabled: true,
     };
   }
@@ -5495,6 +5642,7 @@ function providerCardMeta(state, kind, availability) {
       ...base,
       primaryLabel: INSTALL_COPY.INSTALL_BUTTON_INSTALL,
       primaryAction: 'install',
+      primaryHref: null,
       primaryDisabled: false,
     };
   }
@@ -5503,13 +5651,18 @@ function providerCardMeta(state, kind, availability) {
       ...base,
       primaryLabel: INSTALL_COPY.INSTALL_BUTTON_RETRY,
       primaryAction: 'install',
+      primaryHref: null,
       primaryDisabled: false,
     };
+  }
+  if (kind === 'local' && installState === 'installed') {
+    return localReadinessMeta(readiness);
   }
   return {
     ...base,
     primaryLabel: null,
     primaryAction: null,
+    primaryHref: null,
     primaryDisabled: true,
   };
 }
@@ -5534,9 +5687,10 @@ function providerByteLabel(kind, installState, badgeLabel, state) {
   if (!['local-mlx', 'local'].includes(kind) || !['downloading', 'verifying'].includes(installState)) return '';
   const received = state?.progress_bytes_received;
   const total = state?.progress_bytes_total;
-  const receivedBytes = Number(received || 0);
-  const totalBytes = Number(total || 0);
-  if ((received == null && total == null) || (receivedBytes === 0 && totalBytes === 0)) return '';
+  const receivedBytes = Number(received);
+  const totalBytes = Number(total);
+  if (!Number.isFinite(receivedBytes) || !Number.isFinite(totalBytes)) return '';
+  if (totalBytes <= 0 || receivedBytes < 0 || receivedBytes > totalBytes) return '';
   return `${badgeLabel} ${formatMlxBytes(receivedBytes)} / ${formatMlxBytes(totalBytes)}`;
 }
 

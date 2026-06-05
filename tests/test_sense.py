@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED
 from solstone.observe.sense import FileSensor, HandlerProcess, QueuedItem
 from solstone.think.runner import DailyLogWriter as ProcessLogWriter
 from solstone.think.runner import _format_log_line
@@ -614,6 +615,45 @@ def test_file_sensor_failing_process_notifies(tmp_path, monkeypatch):
     _, kwargs = notif_call
     assert "describe failed" in kwargs.get("message").lower()
     assert kwargs.get("title") == "Describe Error"
+
+
+def test_file_sensor_provider_blocked_suppresses_describe_error(tmp_path, monkeypatch):
+    """Provider-blocked describe exits stay pending and do not emit error cards."""
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
+    sensor.callosum = MagicMock()
+    test_file = make_segment_file(tmp_path, "screen.webm")
+    log_path = tmp_path / "chronicle" / "20250101" / "health" / "test_describe.log"
+
+    with patch.object(
+        sensor,
+        "_spawn_managed_process",
+        return_value=FakeManaged(
+            FakeProcess(EXIT_PROVIDER_BLOCKED),
+            log_path=log_path,
+        ),
+    ):
+        sensor._handle_file(test_file)
+        sensor.handler_pools["describe"].shutdown(wait=True)
+
+    notification_calls = [
+        call
+        for call in sensor.callosum.emit.call_args_list
+        if call.args[:2] == ("notification", "show")
+    ]
+    observed_calls = [
+        call
+        for call in sensor.callosum.emit.call_args_list
+        if call.args[:2] == ("observe", "observed")
+    ]
+
+    assert notification_calls == []
+    assert len(observed_calls) == 1
+    assert "error" not in observed_calls[0].kwargs
+    assert not test_file.with_suffix(".jsonl").exists()
+    assert sensor.running_handlers["describe"] == []
 
 
 def test_file_sensor_handle_file(tmp_path):

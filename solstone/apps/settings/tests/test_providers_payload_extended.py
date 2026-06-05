@@ -12,6 +12,7 @@ from solstone.apps.settings import routes
 from solstone.apps.settings.local_bootstrap import LOCAL_MODEL_SPECS
 from solstone.convey import create_app
 from solstone.think.providers.install_state import InstallState
+from solstone.think.providers.state import ProviderState
 
 INSTALL_STATUS_FIELDS = {
     "name",
@@ -45,12 +46,81 @@ def _assert_install_status(payload: dict) -> None:
     assert payload["install_state"] in CANONICAL_INSTALL_STATES
 
 
+def _patch_selected_providers(monkeypatch, *, provider: str = "google") -> None:
+    monkeypatch.setattr(
+        "solstone.think.models.resolve_provider",
+        lambda _context, _interface: (provider, f"{provider}-model"),
+    )
+
+
+def _patch_readiness(monkeypatch, reason_code: str, status: str, provider: str) -> None:
+    def fake_readiness(selected_provider: str, interface: str, model: str):
+        return ProviderState(
+            provider=selected_provider,
+            interface=interface,
+            status=status,
+            model=model,
+            reason_code=reason_code if status != "ready" else None,
+        )
+
+    monkeypatch.setattr(
+        "solstone.think.providers.state.readiness_for_provider",
+        fake_readiness,
+    )
+    _patch_selected_providers(monkeypatch, provider=provider)
+
+
+def _assert_ai_readiness_shape(payload: dict) -> None:
+    ai_readiness = payload["ai_readiness"]
+    assert set(ai_readiness) >= {"summary", "interfaces", "groups"}
+    assert set(ai_readiness["summary"]) == {
+        "status",
+        "severity",
+        "active_groups",
+        "blocked_count",
+    }
+    assert set(ai_readiness["interfaces"]) == {"generate", "cogitate"}
+    for view in ai_readiness["interfaces"].values():
+        assert set(view) == {
+            "semantic_key",
+            "work_key",
+            "status",
+            "severity",
+            "reason_code",
+            "provider",
+            "model",
+            "context",
+            "interface",
+            "summary",
+            "detail",
+            "recovery_action",
+            "operator_detail",
+        }
+    if ai_readiness.get("local") is not None:
+        assert set(ai_readiness["local"]) == {
+            "semantic_key",
+            "work_key",
+            "status",
+            "severity",
+            "reason_code",
+            "provider",
+            "model",
+            "context",
+            "interface",
+            "summary",
+            "detail",
+            "recovery_action",
+            "operator_detail",
+        }
+
+
 def test_get_providers_includes_local_install_state(settings_client):
     response = settings_client.get("/app/settings/api/providers")
 
     assert response.status_code == 200
     payload = response.get_json()
     assert "bundled" not in payload
+    assert "ai_readiness" in payload
     assert isinstance(payload["local"], dict)
     assert REMOVED_PROVIDER not in payload
     _assert_install_status(payload["local"])
@@ -134,3 +204,154 @@ def test_get_providers_uses_state_local_status(settings_client, monkeypatch):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["provider_status"]["local"] == sentinel
+
+
+def test_get_providers_ai_readiness_shape(settings_client):
+    response = settings_client.get("/app/settings/api/providers")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    _assert_ai_readiness_shape(payload)
+    assert payload["local_backend"] == "local"
+    assert payload["ai_readiness"]["local"]["provider"] == "local"
+
+
+def test_get_providers_ai_readiness_missing_key_blocks(settings_client, monkeypatch):
+    _patch_readiness(
+        monkeypatch,
+        reason_code="provider_key_missing",
+        status="blocked",
+        provider="google",
+    )
+
+    response = settings_client.get("/app/settings/api/providers")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    _assert_ai_readiness_shape(payload)
+    readiness = payload["ai_readiness"]
+    assert readiness["summary"]["severity"] == "blocker"
+    assert readiness["summary"]["active_groups"] == 1
+    assert readiness["summary"]["blocked_count"] == 1
+    group = readiness["groups"][0]
+    assert group["reason_code"] == "provider_key_missing"
+    assert group["recovery_action"] == {
+        "label": "Open Settings",
+        "href": "/app/settings/#providers",
+    }
+
+
+def test_get_providers_ai_readiness_cloud_unknown_is_neutral(
+    settings_client, monkeypatch
+):
+    _patch_readiness(
+        monkeypatch,
+        reason_code="unknown",
+        status="unknown",
+        provider="anthropic",
+    )
+
+    response = settings_client.get("/app/settings/api/providers")
+
+    assert response.status_code == 200
+    readiness = response.get_json()["ai_readiness"]
+    assert readiness["summary"]["severity"] == "neutral"
+    assert readiness["summary"]["active_groups"] == 0
+    assert readiness["summary"]["blocked_count"] == 0
+    assert readiness["groups"] == []
+
+
+@pytest.mark.parametrize(
+    ("reason_code", "status", "expected_severity"),
+    [
+        ("local_model_missing", "blocked", "blocker"),
+        ("local_model_installing", "blocked", "blocker"),
+        ("local_model_loading", "blocked", "blocker"),
+        ("ram_insufficient", "blocked", "blocker"),
+        ("local_server_unhealthy", "unhealthy", "attention"),
+    ],
+)
+def test_get_providers_ai_readiness_local_blockers_group_coherently(
+    settings_client, monkeypatch, reason_code, status, expected_severity
+):
+    _patch_readiness(
+        monkeypatch,
+        reason_code=reason_code,
+        status=status,
+        provider="local",
+    )
+
+    response = settings_client.get("/app/settings/api/providers")
+
+    assert response.status_code == 200
+    readiness = response.get_json()["ai_readiness"]
+    assert readiness["summary"]["severity"] == expected_severity
+    assert readiness["summary"]["active_groups"] == 1
+    assert readiness["groups"][0]["reason_code"] == reason_code
+    assert readiness["groups"][0]["provider"] == "local"
+
+
+def test_get_providers_ai_readiness_degrades_without_changing_status_payload(
+    settings_client, monkeypatch
+):
+    sentinel = {
+        "configured": True,
+        "selected": True,
+        "generate_ready": True,
+        "cogitate_ready": True,
+        "cogitate_cli": "llama-server",
+        "cogitate_cli_found": True,
+        "issues": ["sentinel"],
+    }
+    monkeypatch.setattr(
+        "solstone.think.providers.state.local_status_dict",
+        lambda: sentinel,
+    )
+    _patch_selected_providers(monkeypatch)
+    monkeypatch.setattr(
+        "solstone.think.providers.state.readiness_for_provider",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    response = settings_client.get("/app/settings/api/providers")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["provider_status"]["local"] == sentinel
+    assert payload["ai_readiness"] == {
+        "summary": {
+            "status": "unknown",
+            "severity": "neutral",
+            "active_groups": 0,
+            "blocked_count": 0,
+        },
+        "interfaces": {},
+        "groups": [],
+        "unavailable": True,
+    }
+
+
+def test_get_providers_ai_readiness_omits_local_on_mlx(settings_client, monkeypatch):
+    _patch_selected_providers(monkeypatch)
+    monkeypatch.setattr(routes.local_bootstrap, "_is_mlx_backend", lambda: True)
+
+    def fake_readiness(provider: str, interface: str, model: str):
+        assert provider != "local"
+        return ProviderState(
+            provider=provider,
+            interface=interface,
+            status="ready",
+            model=model,
+        )
+
+    monkeypatch.setattr(
+        "solstone.think.providers.state.readiness_for_provider",
+        fake_readiness,
+    )
+
+    response = settings_client.get("/app/settings/api/providers")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["local_backend"] == "mlx"
+    assert "local" not in payload["ai_readiness"]

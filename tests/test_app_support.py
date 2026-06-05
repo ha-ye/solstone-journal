@@ -3,6 +3,7 @@
 
 """Tests for support app routes."""
 
+import json
 import os
 from datetime import datetime, timedelta
 
@@ -259,6 +260,135 @@ def test_collect_all_includes_revision(monkeypatch):
     bundle = diagnostics.collect_all()
     assert bundle["revision"] == "deadbee"
     assert "version" in bundle
+
+
+def test_proactive_support_suppresses_readiness_blockers(monkeypatch):
+    from solstone.apps.events import EventContext
+    from solstone.apps.support import events
+
+    captured: list[tuple[tuple, dict]] = []
+    events._error_counts.clear()
+    monkeypatch.setattr(events, "_is_proactive_enabled", lambda: True)
+    monkeypatch.setattr(
+        "solstone.think.callosum.callosum_send",
+        lambda *args, **kwargs: captured.append((args, kwargs)),
+    )
+
+    for reason_code in (
+        "provider_key_missing",
+        "provider_key_missing",
+        "local_server_unhealthy",
+    ):
+        events.detect_repeated_errors(
+            EventContext(
+                msg={"service": "cortex", "reason_code": reason_code},
+                app="support",
+                tract="cortex",
+                event="error",
+            )
+        )
+
+    assert captured == []
+    assert "cortex" not in events._error_counts
+
+
+def test_proactive_support_still_emits_for_generic_errors(monkeypatch):
+    from solstone.apps.events import EventContext
+    from solstone.apps.support import events
+
+    captured: list[tuple[tuple, dict]] = []
+    events._error_counts.clear()
+    monkeypatch.setattr(events, "_is_proactive_enabled", lambda: True)
+    monkeypatch.setattr(
+        "solstone.think.callosum.callosum_send",
+        lambda *args, **kwargs: captured.append((args, kwargs)),
+    )
+
+    for _ in range(3):
+        events.detect_repeated_errors(
+            EventContext(
+                msg={"service": "cortex", "reason_code": "chat_timeout"},
+                app="support",
+                tract="cortex",
+                event="error",
+            )
+        )
+
+    assert len(captured) == 1
+    args, kwargs = captured[0]
+    assert args == ("support", "proactive_suggestion")
+    assert kwargs["service"] == "cortex"
+    assert kwargs["count"] == 3
+
+
+def test_collect_provider_readiness_is_redacted(monkeypatch):
+    from solstone.apps.support import diagnostics
+
+    snapshot = {
+        "summary": {
+            "status": "blocked",
+            "severity": "blocker",
+            "active_groups": 1,
+            "blocked_count": 1,
+        },
+        "interfaces": {
+            "generate": {
+                "provider": "anthropic",
+                "model": "/home/jer/private/model",
+                "reason_code": "provider_key_missing",
+                "status": "blocked",
+                "severity": "blocker",
+                "summary": "Anthropic needs credentials before it can read your screen descriptions",
+                "operator_detail": (
+                    "reason_code=provider_key_missing; provider=anthropic; "
+                    "reset_at_ms=123; message=Traceback (most recent call last): "
+                    "/home/jer/.config ANTHROPIC_API_KEY=sk-testsecret"
+                ),
+            }
+        },
+        "groups": [
+            {
+                "provider": "anthropic",
+                "model": "claude-test",
+                "reason_code": "provider_key_missing",
+                "status": "blocked",
+                "severity": "blocker",
+                "summary": "Anthropic needs credentials before it can read your screen descriptions",
+                "operator_detail": "reason_code=provider_key_missing; provider=anthropic",
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        "solstone.convey.readiness_snapshot.build_readiness_snapshot",
+        lambda: snapshot,
+    )
+
+    payload = diagnostics.collect_provider_readiness()
+    serialized = json.dumps(payload)
+
+    assert payload["interfaces"]["generate"]["provider"] == "anthropic"
+    assert payload["interfaces"]["generate"]["reason_code"] == "provider_key_missing"
+    assert payload["interfaces"]["generate"]["status"] == "blocked"
+    assert payload["interfaces"]["generate"]["reset_at_ms"] == 123
+    assert "ANTHROPIC_API_KEY" not in serialized
+    assert "OPENAI_API_KEY" not in serialized
+    assert "sk-testsecret" not in serialized
+    assert "/home/jer" not in serialized
+    assert "Traceback" not in serialized
+
+
+def test_collect_all_includes_provider_readiness(monkeypatch):
+    from solstone.apps.support import diagnostics
+
+    monkeypatch.setattr(
+        diagnostics,
+        "collect_provider_readiness",
+        lambda: {"interfaces": {"generate": {"provider": "anthropic"}}},
+    )
+
+    assert diagnostics.collect_all()["provider_readiness"] == {
+        "interfaces": {"generate": {"provider": "anthropic"}}
+    }
 
 
 def test_recent_beats_stale_under_limit(tmp_path, monkeypatch):

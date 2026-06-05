@@ -273,9 +273,52 @@ class TestAttentionResolution:
 
         result = _resolve_attention({})
         assert result is not None
+        assert result.placeholder_text == "1 agent error today — ask what happened"
         assert "error" in result.placeholder_text.lower()
         assert "1" in result.placeholder_text
         assert len(result.placeholder_text) <= 90
+
+    def test_p0_readiness_error_prefers_setup_guidance(self, tmp_path, monkeypatch):
+        """Readiness blockers get setup guidance instead of generic error copy."""
+        import json
+        from datetime import datetime
+
+        from solstone.convey.apps import _resolve_attention
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+        today = datetime.now().strftime("%Y%m%d")
+        agents_dir = tmp_path / "talents"
+        agents_dir.mkdir()
+        day_index = agents_dir / f"{today}.jsonl"
+        day_index.write_text(
+            json.dumps(
+                {
+                    "use_id": "1",
+                    "name": "flow",
+                    "day": today,
+                    "ts": 1000,
+                    "status": "error",
+                    "reason_code": "provider_key_missing",
+                    "provider": "anthropic",
+                    "model": "claude-test",
+                }
+            )
+            + "\n"
+        )
+
+        result = _resolve_attention({})
+
+        assert result is not None
+        assert "agent error" not in result.placeholder_text
+        assert "Anthropic needs credentials" in result.placeholder_text
+        assert len(result.placeholder_text) <= 90
+        assert any("provider setup" in line for line in result.context_lines)
+        assert any(
+            "reason_code=provider_key_missing" in line for line in result.context_lines
+        )
+        assert any("provider=anthropic" in line for line in result.context_lines)
+        assert any("model=claude-test" in line for line in result.context_lines)
 
     def test_p0_self_healing(self, tmp_path, monkeypatch):
         """An error followed by a success for the same agent is resolved."""
@@ -298,6 +341,9 @@ class TestAttentionResolution:
                     "day": today,
                     "ts": 1000,
                     "status": "error",
+                    "reason_code": "provider_key_missing",
+                    "provider": "anthropic",
+                    "model": "claude-test",
                 }
             )
             + "\n"

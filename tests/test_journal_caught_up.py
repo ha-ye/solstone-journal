@@ -45,6 +45,9 @@ def unknown_day(day: str = "20200228") -> tuple[BacklogDay, BacklogError]:
         not_sensed=0,
         why=(),
         reason=None,
+        reason_code=None,
+        provider=None,
+        model=None,
         error=error,
     )
     return backlog_day, error
@@ -59,6 +62,9 @@ def backlog_day(day: str, state: str) -> BacklogDay:
         not_sensed=0,
         why=(),
         reason=None,
+        reason_code=None,
+        provider=None,
+        model=None,
         error=None,
     )
 

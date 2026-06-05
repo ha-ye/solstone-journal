@@ -36,6 +36,7 @@ from solstone.convey.network_access import (
     NetworkAccessPasswordTooShort,
     set_network_access,
 )
+from solstone.convey.readiness_snapshot import build_readiness_snapshot
 from solstone.convey.reasons import (
     ACTIVITY_INVALID,
     ACTIVITY_NOT_FOUND,
@@ -845,11 +846,16 @@ def get_providers() -> Any:
         if local_model_id is None:
             return _local_model_error(raw_local_model or LOCAL_MODEL)
         local_status = local_bootstrap.get_state(local_model_id)
+        ai_readiness = build_readiness_snapshot(
+            local_model_id=local_model_id,
+            include_local=not local_bootstrap._is_mlx_backend(),
+        )
 
         return jsonify(
             {
                 "providers": providers_list,
                 "provider_status": provider_status,
+                "ai_readiness": ai_readiness,
                 "generate": type_settings["generate"],
                 "cogitate": type_settings["cogitate"],
                 "contexts": contexts,
@@ -857,6 +863,9 @@ def get_providers() -> Any:
                 "api_keys": api_keys,
                 "key_validation": key_validation,
                 "local": local_status,
+                "local_backend": "mlx"
+                if local_bootstrap._is_mlx_backend()
+                else "local",
                 "google_backend": providers_config.get("google_backend", "auto"),
                 "vertex_credentials_configured": vertex_creds_configured,
                 "vertex_credentials_email": vertex_creds_email,

@@ -69,7 +69,7 @@ BACKLOG_COPY_LITERALS = {
     ),
     "BACKLOG_DAY_BADGE": "stuck",
     "BACKLOG_REASON_CORRUPT_RAW": (
-        "original recording is missing or damaged — re-import it"
+        "original raw media is missing or damaged — re-import it"
     ),
     "BACKLOG_REASON_FAILING_STEP": "a processing step keeps failing — try again",
     "BACKLOG_REASON_MISSING_CONFIG": "a setting's missing — check solstone's setup",

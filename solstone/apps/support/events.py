@@ -17,6 +17,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from solstone.apps.events import EventContext, on_event
+from solstone.convey.provider_readiness import is_blocking_reason
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,10 @@ def detect_repeated_errors(ctx: EventContext) -> None:
     mode is on, fires a notification suggesting the user investigate.
     """
     if not _is_proactive_enabled():
+        return
+
+    reason_code = ctx.msg.get("reason_code")
+    if is_blocking_reason(reason_code or ""):
         return
 
     service = ctx.msg.get("service") or ctx.tract or "unknown"

@@ -22,12 +22,12 @@ def _capture_jsonl(monkeypatch, mod):
     return records
 
 
-def _provider_model(use_id: str) -> tuple[str | None, str | None]:
+def _provider_model_reason(use_id: str) -> tuple[str | None, str | None, str | None]:
     if use_id.endswith("timeout"):
-        return ("google", "gemini-2.5-pro")
+        return ("google", "gemini-2.5-pro", None)
     if use_id.endswith("error"):
-        return (None, None)
-    return ("openai", "gpt-5")
+        return (None, None, "provider_key_missing")
+    return ("openai", "gpt-5", None)
 
 
 def _write_activity_record(
@@ -57,7 +57,11 @@ def test_priority_fail_records_provider_model_and_null_when_missing(monkeypatch)
     from solstone.think import thinking
 
     records = _capture_jsonl(monkeypatch, thinking)
-    monkeypatch.setattr(thinking, "read_use_provider_model", _provider_model)
+    monkeypatch.setattr(
+        thinking,
+        "read_use_provider_model_reason",
+        _provider_model_reason,
+    )
     monkeypatch.setattr(
         thinking,
         "wait_for_uses",
@@ -88,8 +92,10 @@ def test_priority_fail_records_provider_model_and_null_when_missing(monkeypatch)
     failures = [record for record in records if record["event"] == "talent.fail"]
     assert failures[0]["provider"] == "google"
     assert failures[0]["model"] == "gemini-2.5-pro"
+    assert "reason_code" not in failures[0]
     assert failures[1]["provider"] is None
     assert failures[1]["model"] is None
+    assert failures[1]["reason_code"] == "provider_key_missing"
 
 
 def test_activity_fail_records_provider_model_on_timeout_and_terminal(
@@ -102,7 +108,11 @@ def test_activity_fail_records_provider_model_on_timeout_and_terminal(
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
     _write_activity_record(journal, "20240101", "work", "coding_100000_300")
     records = _capture_jsonl(monkeypatch, thinking)
-    monkeypatch.setattr(thinking, "read_use_provider_model", _provider_model)
+    monkeypatch.setattr(
+        thinking,
+        "read_use_provider_model_reason",
+        _provider_model_reason,
+    )
     monkeypatch.setattr(
         thinking,
         "get_talent_configs",
@@ -142,10 +152,16 @@ def test_activity_fail_records_provider_model_on_timeout_and_terminal(
 
     failures = [record for record in records if record["event"] == "talent.fail"]
     assert {
-        (record["name"], record["provider"], record["model"]) for record in failures
+        (
+            record["name"],
+            record["provider"],
+            record["model"],
+            record.get("reason_code"),
+        )
+        for record in failures
     } == {
-        ("timeout", "google", "gemini-2.5-pro"),
-        ("error", None, None),
+        ("timeout", "google", "gemini-2.5-pro", None),
+        ("error", None, None, "provider_key_missing"),
     }
 
 
@@ -153,7 +169,11 @@ def test_flush_fail_records_provider_model_on_timeout_and_terminal(monkeypatch):
     from solstone.think import thinking
 
     records = _capture_jsonl(monkeypatch, thinking)
-    monkeypatch.setattr(thinking, "read_use_provider_model", _provider_model)
+    monkeypatch.setattr(
+        thinking,
+        "read_use_provider_model_reason",
+        _provider_model_reason,
+    )
     monkeypatch.setattr(
         thinking,
         "get_talent_configs",
@@ -185,8 +205,14 @@ def test_flush_fail_records_provider_model_on_timeout_and_terminal(monkeypatch):
 
     failures = [record for record in records if record["event"] == "talent.fail"]
     assert {
-        (record["name"], record["provider"], record["model"]) for record in failures
+        (
+            record["name"],
+            record["provider"],
+            record["model"],
+            record.get("reason_code"),
+        )
+        for record in failures
     } == {
-        ("timeout", "google", "gemini-2.5-pro"),
-        ("error", None, None),
+        ("timeout", "google", "gemini-2.5-pro", None),
+        ("error", None, None, "provider_key_missing"),
     }

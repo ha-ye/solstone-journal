@@ -61,7 +61,11 @@ def test_workspace_unified_provider_panel_replaces_install_regions():
     assert "local-progress-shell" not in text
     assert "function startLocalBootstrap()" in text
     assert "function renderProvidersPanel(data)" in text
-    assert "function providerCardMeta(state, kind, availability)" in text
+    assert "function renderAiReadinessSummary(aiReadiness)" in text
+    assert "summary.dataset.aiReadinessSummary" in text
+    assert (
+        "function providerCardMeta(state, kind, availability, readiness = null)" in text
+    )
     assert "function providerCardMetaLine(state, kind, availability)" in text
     assert "function runProviderAction(providerId, action)" in text
     assert "async function pollProvidersPanel()" in text
@@ -103,6 +107,8 @@ def test_workspace_unified_provider_panel_has_byte_and_blocked_state_paths():
 
     assert "formatMlxBytes(receivedBytes)" in text
     assert "formatMlxBytes(totalBytes)" in text
+    assert "totalBytes <= 0" in text
+    assert "receivedBytes > totalBytes" in text
     assert "function localMlxBlockedReason(state, availability)" in text
     assert "providerCardMetaLine(state, kind, availability)" in text
     assert "INSTALL_COPY.LOCAL_REQUIREMENTS_TEMPLATE" in text
@@ -205,6 +211,7 @@ def test_workspace_local_model_row_uses_shared_local_install_path():
     assert 'id="field-local-active-model"' in text
     assert 'id="mlxModelRow"' not in text
     assert 'id="field-mlx-active-model"' not in text
-    assert "if (providerId === 'local') return 'local-mlx';" in text
+    assert "data?.local_backend === \"mlx\" ? 'local-mlx' : 'local'" in text
     assert "kind === 'local-mlx'" in text
+    assert "kind === 'local'" in text
     assert "function isLocalProviderSelected()" in text

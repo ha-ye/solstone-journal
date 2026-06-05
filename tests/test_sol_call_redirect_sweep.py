@@ -61,7 +61,9 @@ def _is_text_surface(path: Path) -> bool:
 
 
 def _candidate_files() -> list[Path]:
-    files = sorted(path for path in _tracked_files() if _is_text_surface(path))
+    files = sorted(
+        path for path in _tracked_files() if path.exists() and _is_text_surface(path)
+    )
     missing = REQUIRED_TRACKED_PATHS - set(files)
     assert missing == set()
     return files

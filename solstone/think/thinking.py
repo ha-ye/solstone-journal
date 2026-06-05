@@ -32,7 +32,7 @@ from solstone.think.cluster import cluster_segments
 from solstone.think.cortex_client import (
     CortexSpawnUnavailable,
     cortex_request,
-    read_use_provider_model,
+    read_use_provider_model_reason,
     wait_for_uses,
 )
 from solstone.think.facets import (
@@ -120,8 +120,11 @@ def _jsonl_log(event: str, **fields) -> None:
 
 
 def _provider_model_fields(use_id: str) -> dict[str, str | None]:
-    provider, model = read_use_provider_model(use_id)
-    return {"provider": provider, "model": model}
+    provider, model, reason_code = read_use_provider_model_reason(use_id)
+    fields = {"provider": provider, "model": model}
+    if reason_code:
+        fields["reason_code"] = reason_code
+    return fields
 
 
 def _log_skip(name: str, reason: str, detail: str, **extra) -> None:

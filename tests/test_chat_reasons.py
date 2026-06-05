@@ -4,15 +4,26 @@
 import json
 from pathlib import Path
 
-from solstone.convey.chat_reasons import (
-    CHAT_REASONS,
+from solstone.convey.provider_readiness import (
     DISPLAY_NAMES,
-    ChatReason,
-    ChatReasonAction,
-    render_chat_reason,
+    chat_reason_projection,
+    chat_view,
 )
 
 EXPECTED_CODES = {
+    "provider_key_missing",
+    "ram_insufficient",
+    "local_model_missing",
+    "model_missing",
+    "binary_missing",
+    "local_model_installing",
+    "local_model_loading",
+    "local_model_not_ready",
+    "local_server_unhealthy",
+    "unsupported_platform",
+    "unsupported_model",
+    "sha256_mismatch",
+    "archive_path_traversal",
     "provider_key_invalid",
     "provider_quota_exceeded",
     "network_unreachable",
@@ -20,6 +31,7 @@ EXPECTED_CODES = {
     "provider_unavailable",
     "chat_pipeline_unavailable",
     "chat_timeout",
+    "no_output",
     "unknown",
 }
 
@@ -85,23 +97,22 @@ def _render_js_chat_reason(
 
 
 def test_registry_shape():
-    assert set(CHAT_REASONS) == EXPECTED_CODES
-    assert len(CHAT_REASONS) == 8
-    for code, reason in CHAT_REASONS.items():
-        assert isinstance(reason, ChatReason)
-        assert reason.code == code
-        assert reason.template
-        assert reason.action is None or isinstance(reason.action, ChatReasonAction)
+    reasons = chat_reason_projection()
+    assert set(reasons) == EXPECTED_CODES
+    for reason in reasons.values():
+        assert reason["template"]
+        action = reason["action"]
+        assert action is None or set(action) == {"label", "href"}
 
 
 def test_render_known_codes():
-    for code, reason in CHAT_REASONS.items():
-        rendered = render_chat_reason(code, "google")
+    for code, reason in chat_reason_projection().items():
+        rendered = chat_view(code, "google")
         assert rendered["code"] == code
         assert rendered["message"]
         if code == "unknown":
             assert rendered["message"] == "something went wrong with Gemini"
-        elif "{provider}" in reason.template:
+        elif "{provider}" in reason["template"]:
             assert "Gemini" in rendered["message"]
         if code == "provider_key_invalid":
             assert rendered["action"] == {
@@ -109,17 +120,17 @@ def test_render_known_codes():
                 "href": "/app/settings/#providers",
             }
         else:
-            assert rendered["action"] is None
+            assert rendered["action"] == reason["action"]
 
 
 def test_render_display_names():
     for slug, display in DISPLAY_NAMES.items():
-        rendered = render_chat_reason("provider_key_invalid", slug)
+        rendered = chat_view("provider_key_invalid", slug)
         assert display in rendered["message"]
 
 
 def test_render_unknown_code():
-    assert render_chat_reason("not_a_real_code", "") == {
+    assert chat_view("not_a_real_code", "") == {
         "code": "not_a_real_code",
         "message": "not_a_real_code",
         "action": None,
@@ -128,7 +139,7 @@ def test_render_unknown_code():
 
 def test_render_unknown_with_known_provider():
     for slug, display_name in DISPLAY_NAMES.items():
-        assert render_chat_reason("unknown", slug) == {
+        assert chat_view("unknown", slug) == {
             "code": "unknown",
             "message": f"something went wrong with {display_name}",
             "action": None,
@@ -137,7 +148,7 @@ def test_render_unknown_with_known_provider():
 
 def test_render_unknown_with_empty_or_unknown_provider():
     for provider in ("", "weirdslug"):
-        assert render_chat_reason("unknown", provider) == {
+        assert chat_view("unknown", provider) == {
             "code": "unknown",
             "message": "chat had trouble — try again",
             "action": None,
@@ -145,7 +156,7 @@ def test_render_unknown_with_empty_or_unknown_provider():
 
 
 def test_render_empty_provider():
-    assert render_chat_reason("network_unreachable", "") == {
+    assert chat_view("network_unreachable", "") == {
         "code": "network_unreachable",
         "message": "I couldn't reach the network",
         "action": None,
@@ -154,9 +165,9 @@ def test_render_empty_provider():
 
 def test_render_no_placeholder_artifacts_for_all_providers():
     providers = ["", "google", "openai", "anthropic", "local", "weirdslug"]
-    for code in CHAT_REASONS:
+    for code in chat_reason_projection():
         for provider in providers:
-            message = render_chat_reason(code, provider)["message"]
+            message = chat_view(code, provider)["message"]
             assert "{provider}" not in message
             assert "None" not in message
 
@@ -167,31 +178,21 @@ def test_js_parity():
     js_reasons = _extract_frozen_object(text, "CHAT_REASONS")
     js_display_names = _extract_frozen_object(text, "CHAT_REASON_DISPLAY_NAMES")
 
-    py_reasons = {
-        code: {
-            "template": reason.template,
-            "action": (
-                {"label": reason.action.label, "href": reason.action.href}
-                if reason.action
-                else None
-            ),
-        }
-        for code, reason in CHAT_REASONS.items()
-    }
+    py_reasons = chat_reason_projection()
 
     assert js_reasons == py_reasons
     assert js_display_names == DISPLAY_NAMES
 
-    for code, reason in CHAT_REASONS.items():
+    for code, reason in py_reasons.items():
         for provider, display in DISPLAY_NAMES.items():
             js_rendered = _render_js_chat_reason(
                 js_reasons, js_display_names, code, provider
             )
-            py_rendered = render_chat_reason(code, provider)
+            py_rendered = chat_view(code, provider)
             assert js_rendered == py_rendered
             if code == "unknown":
                 continue
-            expected = reason.template.replace("{provider}", display)
+            expected = reason["template"].replace("{provider}", display)
             assert py_rendered["message"] == expected
 
     removed_constants = ("CHAT_" + "TROUBLE_REASON", "CHAT_" + "WATCHDOG_REASON")
@@ -200,7 +201,7 @@ def test_js_parity():
 
 def test_no_hardcoded_chat_had_trouble_literal():
     roots = [Path("solstone/apps/chat"), Path("solstone/convey")]
-    excluded_names = {"chat_reasons.py", "chat_reasons.js"}
+    excluded_names = {"provider_readiness.py", "chat_reasons.js"}
     text_suffixes = {".css", ".html", ".js", ".json", ".md", ".py", ".txt"}
 
     offenders = []

@@ -720,6 +720,48 @@ def test_append_day_index_preserves_degraded_marker(cortex_service, mock_journal
     assert row["degraded"] == {"reason": "near_empty", "output_tokens": 7}
 
 
+def test_append_day_index_carries_error_reason_code(cortex_service, mock_journal):
+    """Test day-index error summaries carry provider reason codes additively."""
+    use_id = "1234567890001"
+    completed_path = mock_journal / "talents" / f"{use_id}.jsonl"
+    completed_path.write_text(
+        json.dumps(
+            {
+                "event": "start",
+                "ts": 1000,
+                "model": "claude-haiku-4-5",
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "event": "error",
+                "ts": 2000,
+                "error": "provider setup blocked",
+                "reason_code": "provider_key_missing",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    request = {
+        "name": "morning_briefing",
+        "day": "20260410",
+        "ts": 1000,
+        "provider": "anthropic",
+        "model": "claude-haiku-4-5",
+    }
+
+    cortex_service._append_day_index(use_id, request, completed_path)
+
+    day_index_path = mock_journal / "talents" / "20260410.jsonl"
+    row = json.loads(day_index_path.read_text(encoding="utf-8").strip())
+    assert row["status"] == "error"
+    assert row["reason_code"] == "provider_key_missing"
+    assert row["provider"] == "anthropic"
+    assert row["model"] == "claude-haiku-4-5"
+
+
 def test_write_error_and_complete(cortex_service, mock_journal):
     """Test writing error and completing file."""
     use_id = "123456789"

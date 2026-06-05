@@ -1502,6 +1502,14 @@
           <span class="backlog-row-day">{{ row.day }}</span>
           <span class="backlog-badge">{{ backlog_copy.BACKLOG_DAY_BADGE }}</span>
           <span class="backlog-row-reason">{{ row.reason }}</span>
+          {% if row.reason_code or row.provider or row.model %}
+          <details class="backlog-row-details">
+            <summary>details</summary>
+            {% if row.reason_code %}<span>reason_code={{ row.reason_code }}</span>{% endif %}
+            {% if row.provider %}<span>provider={{ row.provider }}</span>{% endif %}
+            {% if row.model %}<span>model={{ row.model }}</span>{% endif %}
+          </details>
+          {% endif %}
         </div>
         {% if row.depth %}<span class="backlog-depth">{{ row.depth }}</span>{% endif %}
         <div class="backlog-row-actions">
@@ -1609,16 +1617,26 @@
         HEALTH_GLANCE_CATCHING_UP: {{ health_copy.HEALTH_GLANCE_CATCHING_UP | tojson }},
         HEALTH_GLANCE_OBSERVER_SILENT: {{ health_copy.HEALTH_GLANCE_OBSERVER_SILENT | tojson }},
         HEALTH_GLANCE_SERVICES_UNREACHABLE: {{ health_copy.HEALTH_GLANCE_SERVICES_UNREACHABLE | tojson }},
+        HEALTH_GLANCE_READINESS_BLOCKED: {{ health_copy.HEALTH_GLANCE_READINESS_BLOCKED | tojson }},
+        HEALTH_GLANCE_READINESS_UNKNOWN: {{ health_copy.HEALTH_GLANCE_READINESS_UNKNOWN | tojson }},
       };
+      window.HEALTH_READINESS = {{ health_readiness | tojson }};
     </script>
   </div>
 </div>
 
 <script>
 (function(){
+  let providerReadiness = window.HEALTH_READINESS || null;
+
   fetch('/app/health/api/info')
     .then(r => r.json())
-    .then(info => { state.localHost = info.hostname; updateObserve(); })
+    .then(info => {
+      state.localHost = info.hostname;
+      providerReadiness = info.readiness || providerReadiness;
+      updateObserve();
+      updateStatusSummary();
+    })
     .catch(() => {
       if (!state.connected) {
         connectError = true;
@@ -1834,6 +1852,64 @@
 	    return true;
 	  }
 
+  const READINESS_SEVERITY_RANK = {
+    ok: 0,
+    neutral: 1,
+    attention: 2,
+    blocker: 3,
+  };
+  const PROVIDER_LEVEL_REASON_CODES = new Set([
+    'provider_key_missing',
+    'provider_key_invalid',
+    'provider_quota_exceeded',
+    'provider_unavailable',
+    'network_unreachable',
+    'chat_timeout',
+    'chat_pipeline_unavailable',
+    'unknown',
+    'no_output',
+  ]);
+
+  function readinessSeverity(value) {
+    return Object.hasOwn(READINESS_SEVERITY_RANK, value) ? value : 'neutral';
+  }
+
+  function semanticKey(reasonCode, provider, model) {
+    const code = reasonCode || '';
+    const providerName = provider || '';
+    const modelPart = PROVIDER_LEVEL_REASON_CODES.has(code) ? '' : (model || '');
+    return `${code}:${providerName}:${modelPart}`;
+  }
+
+  function topReadinessGroup(snapshot) {
+    const groups = Array.isArray(snapshot?.groups) ? snapshot.groups : [];
+    return groups
+      .filter(group => group && typeof group.summary === 'string')
+      .sort((a, b) => (
+        (READINESS_SEVERITY_RANK[readinessSeverity(b.severity)] || 0)
+        - (READINESS_SEVERITY_RANK[readinessSeverity(a.severity)] || 0)
+      ))[0] || null;
+  }
+
+  function readinessGlance(snapshot = providerReadiness) {
+    if (!snapshot || snapshot.unavailable) {
+      return { severity: 'neutral', unavailable: true, summary: '' };
+    }
+    const severity = readinessSeverity(snapshot.summary?.severity);
+    const group = ['blocker', 'attention'].includes(severity)
+      ? topReadinessGroup(snapshot)
+      : null;
+    return {
+      severity,
+      unavailable: false,
+      summary: group?.summary || '',
+      reason_code: group?.reason_code || null,
+      provider: group?.provider || null,
+      model: group?.model || null,
+      detail: group?.detail || '',
+    };
+  }
+
   function getAgentId(id) {
     return String(id).slice(-4);
   }
@@ -1894,6 +1970,14 @@
       };
     }
 
+    const readiness = readinessGlance(providerReadiness);
+    if (['blocker', 'attention'].includes(readiness.severity) && readiness.summary) {
+      return {
+        key: 'HEALTH_GLANCE_READINESS_BLOCKED',
+        vars: { summary: readiness.summary },
+      };
+    }
+
     const observers = Array.from(state.observers.values());
     if (observers.length > 0 && observers.every(observer => (now - observer.lastSeen) >= STALE_MS)) {
       const ageMs = Math.min(...observers.map(observer => now - observer.lastSeen));
@@ -1914,6 +1998,9 @@
     }
 
     if (state.services.size > 0 || state.crashed.size > 0) {
+      if (readiness.unavailable) {
+        return { key: 'HEALTH_GLANCE_READINESS_UNKNOWN', vars: {} };
+      }
       return {
         key: 'HEALTH_GLANCE_OK',
         vars: { age: relativeTime(now - (state.lastEventTs || now)) },
@@ -2018,26 +2105,87 @@
   }
   updateLogsBadge();
 
-	  function updateErrorSummary() {
-	    if (state.recentErrors.length === 0 && !state.recentErrorsFilter) {
-	      elements.errorSummary.classList.add('hidden');
-	      return;
-	    }
+  function recentErrorGroupKey(entry) {
+    if (entry.key) return entry.key;
+    if (entry.reason_code) {
+      return semanticKey(entry.reason_code, entry.provider, entry.model);
+    }
+    return [
+      'fallback',
+      entry.type || '',
+      entry.service || '',
+      entry.name || '',
+      entry.stage || '',
+      entry.error || '',
+    ].join(':');
+  }
 
-	    elements.errorSummary.classList.remove('hidden');
-	    const container = elements.errorSummaryContent;
-	    const recent = state.recentErrors
-	      .map((e, idx) => ({ e, realIdx: idx }))
-	      .filter(({ e }) => recentErrorMatchesFilter(e))
-	      .slice(-10)
-	      .reverse();
+  function recentErrorOwnerMessage(entry) {
+    if (entry.summary) return entry.summary;
+    if (entry.reason_code && window.renderChatReason) {
+      return window.renderChatReason(entry.reason_code, entry.provider || '').message;
+    }
+    return entry.error || 'Unknown error';
+  }
 
-	    const newKeys = new Set();
-	    const entries = recent.map(({ e, realIdx }) => {
-	      const key = realIdx + ':' + e.ts + ':' + e.type;
-	      newKeys.add(key);
-	      return { e, realIdx, key };
-	    });
+  function recentErrorDetailText(entry) {
+    const parts = [];
+    if (entry.reason_code) parts.push(`reason_code=${entry.reason_code}`);
+    if (entry.provider) parts.push(`provider=${entry.provider}`);
+    if (entry.model) parts.push(`model=${entry.model}`);
+    if (entry.service) parts.push(`service=${entry.service}`);
+    if (entry.stage) parts.push(`stage=${entry.stage}`);
+    return parts.join(' · ');
+  }
+
+  function groupedRecentErrors() {
+    const groups = new Map();
+    state.recentErrors.forEach((entry, realIdx) => {
+      if (!recentErrorMatchesFilter(entry)) return;
+      const key = recentErrorGroupKey(entry);
+      const existing = groups.get(key);
+      if (!existing) {
+        groups.set(key, {
+          key,
+          e: entry,
+          realIdx,
+          count: 1,
+          lastTs: entry.ts || 0,
+        });
+        return;
+      }
+      existing.count += 1;
+      if ((entry.ts || 0) >= existing.lastTs) {
+        existing.e = entry;
+        existing.realIdx = realIdx;
+        existing.lastTs = entry.ts || 0;
+      }
+    });
+    return Array.from(groups.values()).sort((a, b) => a.lastTs - b.lastTs);
+  }
+
+  function appendRecentError(entry) {
+    state.recentErrors.push(entry);
+    if (state.recentErrors.length > 50) state.recentErrors.shift();
+    updateErrorSummary();
+  }
+
+  function updateErrorSummary() {
+    if (state.recentErrors.length === 0 && !state.recentErrorsFilter) {
+      elements.errorSummary.classList.add('hidden');
+      return;
+    }
+
+    elements.errorSummary.classList.remove('hidden');
+    const container = elements.errorSummaryContent;
+    const recent = groupedRecentErrors().slice(-10).reverse();
+
+    const newKeys = new Set();
+    const entries = recent.map(group => {
+      const { e, realIdx, key, count } = group;
+      newKeys.add(key);
+      return { e, realIdx, key, count };
+    });
 
     const existingByKey = new Map();
     for (const child of Array.from(container.children)) {
@@ -2049,41 +2197,41 @@
       if (!newKeys.has(k)) container.removeChild(child);
     }
 
-	    for (const child of Array.from(container.children)) {
-	      if (!child.getAttribute('data-key')) container.removeChild(child);
-	    }
+    for (const child of Array.from(container.children)) {
+      if (!child.getAttribute('data-key')) container.removeChild(child);
+    }
 
-	    if (state.recentErrorsFilter) {
-	      const filter = state.recentErrorsFilter;
-	      const label = document.createElement('div');
-	      label.style.cssText = 'padding: 0.2em 0 0.45em; font-size: 0.8em; color: #6b7280; display: flex; gap: 0.5em; align-items: center;';
-	      const dayText = filter.day === 'today' ? "today's" : filter.day;
-	      label.appendChild(document.createTextNode(`showing ${dayText} errors`));
-	      if (filter.talent) {
-	        label.appendChild(document.createTextNode(` for ${filter.talent}`));
-	      }
-	      const clearBtn = document.createElement('button');
-	      clearBtn.type = 'button';
-	      clearBtn.setAttribute('data-action', 'clear-error-filter');
-	      clearBtn.className = 'error-advice-link';
-	      clearBtn.textContent = 'clear';
-	      label.appendChild(clearBtn);
-	      container.appendChild(label);
-	    }
+    if (state.recentErrorsFilter) {
+      const filter = state.recentErrorsFilter;
+      const label = document.createElement('div');
+      label.style.cssText = 'padding: 0.2em 0 0.45em; font-size: 0.8em; color: #6b7280; display: flex; gap: 0.5em; align-items: center;';
+      const dayText = filter.day === 'today' ? "today's" : filter.day;
+      label.appendChild(document.createTextNode(`showing ${dayText} errors`));
+      if (filter.talent) {
+        label.appendChild(document.createTextNode(` for ${filter.talent}`));
+      }
+      const clearBtn = document.createElement('button');
+      clearBtn.type = 'button';
+      clearBtn.setAttribute('data-action', 'clear-error-filter');
+      clearBtn.className = 'error-advice-link';
+      clearBtn.textContent = 'clear';
+      label.appendChild(clearBtn);
+      container.appendChild(label);
+    }
 
-	    if (entries.length === 0) {
-	      const empty = document.createElement('div');
-	      empty.style.cssText = 'padding: 0.3em 0; font-size: 0.85em; color: #6b7280;';
-	      empty.textContent = state.recentErrorsFilter ? 'no matching recent errors yet.' : 'no recent errors.';
-	      container.appendChild(empty);
-	      if (state.pendingRecentErrorsFocus) {
-	        state.pendingRecentErrorsFocus = false;
-	        requestAnimationFrame(() => elements.errorSummary.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-	      }
-	      return;
-	    }
+    if (entries.length === 0) {
+      const empty = document.createElement('div');
+      empty.style.cssText = 'padding: 0.3em 0; font-size: 0.85em; color: #6b7280;';
+      empty.textContent = state.recentErrorsFilter ? 'no matching recent errors yet.' : 'no recent errors.';
+      container.appendChild(empty);
+      if (state.pendingRecentErrorsFocus) {
+        state.pendingRecentErrorsFocus = false;
+        requestAnimationFrame(() => elements.errorSummary.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+      }
+      return;
+    }
 
-	    for (const { e, realIdx, key } of entries) {
+    for (const { e, realIdx, key, count } of entries) {
       let row = existingByKey.get(key);
       if (!row) {
         row = document.createElement('div');
@@ -2109,18 +2257,44 @@
       }
 
       const icon = e.type === 'agent' ? '⚙' : e.type === 'import' ? '↓' : '⚠';
-      const ago = relativeTime(Date.now() - e.ts);
+      const ago = relativeTime(Date.now() - (e.ts || Date.now()));
       const info = row.children[0];
       info.textContent = '';
       info.appendChild(document.createTextNode(icon + ' '));
       const strong = document.createElement('strong');
       strong.textContent = e.name;
       info.appendChild(strong);
-      info.appendChild(document.createTextNode(' — ' + truncate(e.error, 60) + ' '));
+      info.appendChild(document.createTextNode(' — ' + truncate(recentErrorOwnerMessage(e), 70) + ' '));
+      if (count > 1) {
+        const countSpan = document.createElement('span');
+        countSpan.style.cssText = 'color: #6b7280; font-size: 0.85em; font-weight: 600;';
+        countSpan.textContent = `×${count} `;
+        info.appendChild(countSpan);
+      }
       const timeSpan = document.createElement('span');
       timeSpan.style.cssText = 'color: #9ca3af; font-size: 0.85em;';
       timeSpan.textContent = ago + ' ago';
       info.appendChild(timeSpan);
+
+      let detail = row.querySelector('[data-error-detail]');
+      const detailText = recentErrorDetailText(e);
+      if (detailText) {
+        if (!detail) {
+          detail = document.createElement('details');
+          detail.setAttribute('data-error-detail', 'true');
+          detail.style.cssText = 'font-size: 0.8em; color: #6b7280;';
+          const summary = document.createElement('summary');
+          summary.textContent = 'details';
+          detail.appendChild(summary);
+          const body = document.createElement('span');
+          body.setAttribute('data-error-detail-body', 'true');
+          detail.appendChild(body);
+          row.insertBefore(detail, row.querySelector('[data-action="view-logs"]').parentElement);
+        }
+        detail.querySelector('[data-error-detail-body]').textContent = detailText;
+      } else if (detail) {
+        detail.remove();
+      }
 
       const viewBtn = row.querySelector('[data-action="view-logs"]');
       viewBtn.setAttribute('data-error-index', realIdx);
@@ -2128,15 +2302,15 @@
       dismissBtn.setAttribute('data-error-index', realIdx);
 
       container.appendChild(row);
-	    }
+    }
 
-	    if (state.pendingRecentErrorsFocus) {
-	      state.pendingRecentErrorsFocus = false;
-	      requestAnimationFrame(() => elements.errorSummary.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-	    }
+    if (state.pendingRecentErrorsFocus) {
+      state.pendingRecentErrorsFocus = false;
+      requestAnimationFrame(() => elements.errorSummary.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    }
 
-	    // Error-type-specific advice templates
-	    const types = new Set(recent.map(({ e }) => e.type));
+    // Error-type-specific advice templates
+    const types = new Set(recent.map(({ e }) => e.type));
     if (types.has('agent')) {
       const advice = document.createElement('div');
       advice.style.cssText = 'padding: 0.25em 0; font-size: 0.8em; color: #9ca3af;';
@@ -2150,8 +2324,8 @@
       advice.appendChild(document.createTextNode(' for details.'));
       container.appendChild(advice);
     }
-	    if (types.has('import')) {
-	      const importErr = recent.find(({ e }) => e.type === 'import')?.e;
+    if (types.has('import')) {
+      const importErr = recent.find(({ e }) => e.type === 'import')?.e;
       const stageText = importErr?.stage && importErr.stage !== 'unknown' ? ' at ' + importErr.stage : '';
       const advice = document.createElement('div');
       advice.style.cssText = 'padding: 0.25em 0; font-size: 0.8em; color: #9ca3af;';
@@ -3570,6 +3744,7 @@
       use_id: agentId,
       name: msg.name || existing.name,
       provider: msg.provider || existing.provider,
+      model: msg.model || existing.model,
       event: msg.event,
       ts: msg.ts,
       startTs: startTs
@@ -3584,15 +3759,19 @@
     if (msg.event === 'finish' || msg.event === 'error') {
       state.lastAgentFinishTs = msg.ts || Date.now();
       if (msg.event === 'error') {
-        state.recentErrors.push({
+        appendRecentError({
           type: 'agent',
           id: agentId,
           name: msg.name || existing.name || 'unknown',
           error: msg.error || 'Unknown error',
+          summary: msg.summary || msg.message || null,
+          key: msg.key || msg.semantic_key || null,
+          reason_code: msg.reason_code || null,
+          provider: msg.provider || existing.provider || null,
+          model: msg.model || existing.model || null,
+          service: 'cortex',
           ts: Date.now()
         });
-        if (state.recentErrors.length > 50) state.recentErrors.shift();
-        updateErrorSummary();
       }
       setTimeout(() => {
         state.agents.delete(agentId);
@@ -3655,16 +3834,20 @@
         lastSeen: Date.now()
       });
 
-      state.recentErrors.push({
+      appendRecentError({
         type: 'import',
         id: importId,
         name: msg.input_file || existing.input_file || 'unknown',
         error: msg.error || 'Unknown error',
+        summary: msg.summary || msg.message || null,
+        key: msg.key || msg.semantic_key || null,
+        reason_code: msg.reason_code || null,
+        provider: msg.provider || null,
+        model: msg.model || null,
+        service: 'importer',
         stage: existing.stage || msg.stage || 'unknown',
         ts: Date.now()
       });
-      if (state.recentErrors.length > 50) state.recentErrors.shift();
-      updateErrorSummary();
 
       // Keep error visible longer
       setTimeout(() => {
@@ -3755,7 +3938,9 @@
       .then(r => r.json())
       .then(info => {
         state.localHost = info.hostname;
+        providerReadiness = info.readiness || providerReadiness;
         updateObserve();
+        updateStatusSummary();
         elements.vitalsCheckBtn.textContent = 'check now';
         elements.vitalsCheckBtn.disabled = false;
       })

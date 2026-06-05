@@ -26,7 +26,8 @@ import asyncio
 import time
 from typing import Any, List, Optional, Union
 
-from .models import agenerate
+from solstone.think.models import agenerate, resolve_provider
+from solstone.think.providers.shared import classify_provider_error
 
 
 class BatchRequest:
@@ -72,6 +73,9 @@ class BatchRequest:
         self.error: Optional[str] = None
         self.duration: float = 0.0
         self.model_used: str = model or ""
+        self.reason_code: Optional[str] = None
+        self.provider: Optional[str] = None
+        self.reset_at_ms: Optional[int] = None
 
 
 class Batch:
@@ -210,6 +214,9 @@ class Batch:
         request.response = None
         request.error = None
         request.duration = 0.0
+        request.reason_code = None
+        request.provider = None
+        request.reset_at_ms = None
 
         # Re-add to batch
         self.add(request)
@@ -285,6 +292,16 @@ class Batch:
             request.duration = time.time() - start_time
             request.response = None
             request.error = str(e)
+            request.reason_code = getattr(e, "reason_code", None) or (
+                classify_provider_error(e, request.context or "")
+            )
+            request.reset_at_ms = getattr(e, "reset_at_ms", None)
+            request.provider = getattr(e, "provider", None)
+            if request.provider is None:
+                try:
+                    request.provider = resolve_provider(request.context, "generate")[0]
+                except (KeyError, TypeError, ValueError):
+                    request.provider = None
 
         # Put completed request in result queue
         await self.result_queue.put(request)

@@ -42,7 +42,7 @@ def _serialize_backlog_error(error: BacklogError) -> dict:
 
 
 def _serialize_backlog_unit(unit: BacklogUnit) -> dict:
-    return {
+    data = {
         "mode": unit.mode,
         "name": unit.name,
         "facet": unit.facet,
@@ -55,10 +55,13 @@ def _serialize_backlog_unit(unit: BacklogUnit) -> dict:
         "last_fail_ts": unit.last_fail_ts,
         "stuck": unit.stuck,
     }
+    if unit.reason_code:
+        data["reason_code"] = unit.reason_code
+    return data
 
 
 def _serialize_backlog_day(day: BacklogDay) -> dict:
-    return {
+    data = {
         "day": day.day,
         "state": day.state,
         "segments": day.segments,
@@ -68,6 +71,13 @@ def _serialize_backlog_day(day: BacklogDay) -> dict:
         "why": [_serialize_backlog_unit(unit) for unit in day.why],
         "error": _serialize_backlog_error(day.error) if day.error else None,
     }
+    if day.reason_code:
+        data["reason_code"] = day.reason_code
+    if day.provider:
+        data["provider"] = day.provider
+    if day.model:
+        data["model"] = day.model
+    return data
 
 
 def _serialize_backlog_view(view: BacklogView) -> dict:

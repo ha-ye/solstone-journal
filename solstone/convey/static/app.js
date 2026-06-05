@@ -2001,35 +2001,61 @@ window.AppServices = {
     _container: null,
     _dismissTimers: {},
 
-	    /**
-	     * Show a persistent notification card
-	     * @param {object} options - {app, icon, title, message, action, facet, dismissible, badge, autoDismiss, buttons}
-	     * @returns {number} Notification ID
-	     */
-	    show(options) {
-	      const buttons = Array.isArray(options.buttons)
-	        ? options.buttons
-	            .filter(button => button && button.label)
-	            .map(button => ({
-	              label: String(button.label),
-	              onClick: typeof button.onClick === 'function' ? button.onClick : null,
-	              dismiss: button.dismiss !== false
-	            }))
-	        : [];
-	      const notif = {
-	        id: this._nextId++,
-	        app: options.app || 'system',
-	        icon: options.icon || '📬',
-	        title: options.title || 'Notification',
+    /**
+     * Show a persistent notification card
+     * @param {object} options - {app, icon, title, message, action, facet, dismissible, badge, autoDismiss, buttons, key, work_key}
+     * @returns {number} Notification ID
+     */
+    show(options) {
+      const key = options.key ? String(options.key) : null;
+      const workKey = options.work_key ? String(options.work_key) : null;
+      const buttons = this._normalizeButtons(options.buttons);
+
+      if (key) {
+        const existing = this._stack.find(n => n.key === key);
+        if (existing) {
+          if (!existing._workKeys) existing._workKeys = new Set();
+          if (workKey) existing._workKeys.add(workKey);
+          existing.count = existing._workKeys.size || 1;
+          existing.lastSeen = Date.now();
+          existing.app = options.app || existing.app;
+          existing.icon = options.icon || existing.icon;
+          existing.title = options.title || existing.title;
+          existing.message = options.message || '';
+          existing.action = options.action || null;
+          existing.facet = options.facet || null;
+          existing.dismissible = options.dismissible !== false;
+          existing.badge = options.badge || this._countBadge(existing.count);
+          existing.autoDismiss = options.autoDismiss || null;
+          existing.buttons = buttons;
+          this._render();
+          return existing.id;
+        }
+      }
+
+      const timestamp = Date.now();
+      const notif = {
+        id: this._nextId++,
+        app: options.app || 'system',
+        icon: options.icon || '📬',
+        title: options.title || 'Notification',
         message: options.message || '',
         action: options.action || null,
-	        facet: options.facet || null,
-	        dismissible: options.dismissible !== false,
-	        badge: options.badge || null,
-	        timestamp: Date.now(),
-	        autoDismiss: options.autoDismiss || null,
-	        buttons
-	      };
+        facet: options.facet || null,
+        dismissible: options.dismissible !== false,
+        badge: options.badge || null,
+        timestamp,
+        lastSeen: timestamp,
+        autoDismiss: options.autoDismiss || null,
+        buttons
+      };
+
+      if (key) {
+        notif.key = key;
+        notif._workKeys = new Set(workKey ? [workKey] : []);
+        notif.count = notif._workKeys.size || 1;
+        notif.badge = options.badge || this._countBadge(notif.count);
+      }
 
       this._stack.push(notif);
       this._addToHistory(notif);
@@ -2126,11 +2152,29 @@ window.AppServices = {
       }
     },
 
+    _normalizeButtons(buttons) {
+      return Array.isArray(buttons)
+        ? buttons
+            .filter(button => button && button.label)
+            .map(button => ({
+              label: String(button.label),
+              onClick: typeof button.onClick === 'function' ? button.onClick : null,
+              dismiss: button.dismiss !== false
+            }))
+        : [];
+    },
+
+    _countBadge(count) {
+      return count > 1 ? `${count} segments` : null;
+    },
+
     /**
      * Get count of active notifications
      * @returns {number}
      */
     count() {
+      // Keyed notifications are deduped in _stack, so length is active groups
+      // plus non-keyed cards rather than raw repeated events.
       return this._stack.length;
     },
 
@@ -2331,7 +2375,7 @@ window.AppServices = {
         card.setAttribute('tabindex', '0');
       }
 
-      const relativeTime = this._getRelativeTime(n.timestamp);
+      const relativeTime = this._getRelativeTime(n.lastSeen || n.timestamp);
       card.innerHTML = `
         <div class="notification-header">
           <span class="notification-app-icon">${window.AppServices.escapeHtml(n.icon)}</span>
@@ -2419,7 +2463,7 @@ window.AppServices = {
       // Update time
 	      const timeEl = card.querySelector('.notification-time');
 	      if (timeEl) {
-	        timeEl.textContent = this._getRelativeTime(n.timestamp);
+	        timeEl.textContent = this._getRelativeTime(n.lastSeen || n.timestamp);
 	      }
 	      this._syncButtons(card, n);
 

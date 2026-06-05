@@ -12,6 +12,40 @@ DAY = "20250115"
 SEGMENT = "120000_300"
 
 
+def _readiness_snapshot(severity: str = "neutral") -> dict:
+    return {
+        "summary": {
+            "status": "unknown" if severity == "neutral" else "blocked",
+            "severity": severity,
+            "active_groups": 1 if severity in {"blocker", "attention"} else 0,
+            "blocked_count": 1 if severity == "blocker" else 0,
+        },
+        "interfaces": {},
+        "groups": [
+            {
+                "semantic_key": "provider_key_missing:anthropic:",
+                "work_key": None,
+                "status": "blocked",
+                "severity": severity,
+                "reason_code": "provider_key_missing",
+                "provider": "anthropic",
+                "model": None,
+                "context": None,
+                "interface": "generate",
+                "summary": "Anthropic needs credentials before it can read your screen descriptions",
+                "detail": "Open provider setup.",
+                "recovery_action": {
+                    "label": "Open Settings",
+                    "href": "/app/settings/#providers",
+                },
+                "operator_detail": "reason_code=provider_key_missing provider=anthropic",
+            }
+        ]
+        if severity in {"blocker", "attention"}
+        else [],
+    }
+
+
 def _seed_reprocess_segment(journal, day=DAY):
     segment_dir = journal / "chronicle" / day / "default" / SEGMENT
     segment_dir.mkdir(parents=True)
@@ -80,7 +114,12 @@ class TestLogRoute:
 
 
 class TestInfoRoute:
-    def test_returns_hostname(self, health_env):
+    def test_returns_hostname_and_readiness(self, health_env, monkeypatch):
+        snapshot = _readiness_snapshot("blocker")
+        monkeypatch.setattr(
+            "solstone.apps.health.routes.build_readiness_snapshot",
+            lambda: snapshot,
+        )
         env = health_env()
         response = env.client.get("/app/health/api/info")
         assert response.status_code == 200
@@ -88,6 +127,54 @@ class TestInfoRoute:
         assert "hostname" in data
         assert isinstance(data["hostname"], str)
         assert len(data["hostname"]) > 0
+        assert data["readiness"] == snapshot
+
+    def test_info_readiness_degrades_when_snapshot_raises(
+        self, health_env, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "solstone.apps.health.routes.build_readiness_snapshot",
+            lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        env = health_env()
+
+        response = env.client.get("/app/health/api/info")
+
+        assert response.status_code == 200
+        readiness = response.get_json()["readiness"]
+        assert readiness["unavailable"] is True
+        assert readiness["summary"]["severity"] == "neutral"
+
+    def test_index_injects_readiness_bootstrap(self, health_env, monkeypatch):
+        snapshot = _readiness_snapshot("blocker")
+        monkeypatch.setattr(
+            "solstone.apps.health.routes.build_readiness_snapshot",
+            lambda: snapshot,
+        )
+        env = health_env()
+
+        response = env.client.get("/app/health/")
+
+        assert response.status_code == 200
+        html = response.get_data(as_text=True)
+        assert "window.HEALTH_READINESS" in html
+        assert "provider_key_missing:anthropic:" in html
+
+    def test_index_readiness_degrades_when_snapshot_raises(
+        self, health_env, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "solstone.apps.health.routes.build_readiness_snapshot",
+            lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        env = health_env()
+
+        response = env.client.get("/app/health/")
+
+        assert response.status_code == 200
+        html = response.get_data(as_text=True)
+        assert '"unavailable": true' in html
+        assert '"severity": "neutral"' in html
 
 
 class TestRestartObserverRoute:

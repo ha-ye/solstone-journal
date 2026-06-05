@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED
 from solstone.observe.utils import (
     AUDIO_EXTENSIONS,
     IMAGE_EXTENSIONS,
@@ -365,6 +366,16 @@ class FileSensor:
                     self._remove_running_handler(handler_name, handler_proc)
                     cpu_fallback = True
                     continue
+
+                if exit_code == EXIT_PROVIDER_BLOCKED:
+                    logger.info(
+                        f"Handler {handler_name} blocked on provider readiness for "
+                        f"{file_path.name}; will retry when ready"
+                    )
+                    self._check_segment_observed(file_path)
+                    handler_proc.cleanup()
+                    self._remove_running_handler(handler_name, handler_proc)
+                    return
 
                 if exit_code == 0:
                     logger.info(

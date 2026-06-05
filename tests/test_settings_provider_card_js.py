@@ -1,0 +1,118 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from solstone.apps.settings import install_copy
+
+WORKSPACE = Path("solstone/apps/settings/workspace.html")
+
+
+def _extract_function(source: str, name: str) -> str:
+    start = source.index(f"function {name}(")
+    brace_start = source.index("{", start)
+    depth = 0
+    in_string: str | None = None
+    escaped = False
+    for index in range(brace_start, len(source)):
+        char = source[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == in_string:
+                in_string = None
+            continue
+        if char in {"'", '"', "`"}:
+            in_string = char
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1]
+    raise AssertionError(f"could not extract {name}")
+
+
+def test_provider_card_helpers_are_coherent():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not available")
+
+    source = WORKSPACE.read_text(encoding="utf-8")
+    functions = "\n".join(
+        _extract_function(source, name)
+        for name in (
+            "formatMlxBytes",
+            "localMlxBlockedReason",
+            "providerKeyPill",
+            "installBadgeLabel",
+            "localReadinessBadgeLabel",
+            "localReadinessBadgeTone",
+            "localReadinessMeta",
+            "providerCardKeyFields",
+            "providerBadgeTone",
+            "providerByteLabel",
+            "firstProviderIssue",
+            "providerCardMeta",
+        )
+    )
+    install_copy_payload = {
+        name: getattr(install_copy, name) for name in install_copy.__all__
+    }
+    script = (
+        f"const INSTALL_COPY = {json.dumps(install_copy_payload)};\n"
+        "const IN_FLIGHT_INSTALL_STATES = ['resolving', 'downloading', 'verifying', 'installing'];\n"
+        f"{functions}\n"
+        "function assert(condition, message) { if (!condition) throw new Error(message); }\n"
+        "function assertCoherent(meta) {\n"
+        "  assert(!(meta.badgeLabel === 'Ready' && meta.primaryAction === 'install'), 'ready badge must not pair with install action');\n"
+        "  assert(!(meta.primaryAction && meta.primaryHref), 'card must not expose two primary action modes');\n"
+        "}\n"
+        "assert(providerByteLabel('local', 'downloading', 'Downloading', {}) === '', 'absent bytes should suppress label');\n"
+        "assert(providerByteLabel('local', 'downloading', 'Downloading', {progress_bytes_received: 4, progress_bytes_total: 0}) === '', 'zero total should suppress label');\n"
+        "assert(providerByteLabel('local', 'downloading', 'Downloading', {progress_bytes_received: 12, progress_bytes_total: 10}) === '', 'overrun bytes should suppress label');\n"
+        "assert(providerByteLabel('local', 'downloading', 'Downloading', {progress_bytes_received: 4, progress_bytes_total: 10}) === 'Downloading 4 B / 10 B', 'valid bytes should render label');\n"
+        "const ready = {status: 'ready', reason_code: 'ready', summary: 'Local is ready', detail: '', recovery_action: null};\n"
+        "const loading = {status: 'blocked', reason_code: 'local_model_loading', summary: 'Local model is starting up', detail: 'Try again shortly.', recovery_action: null};\n"
+        "const unhealthy = {status: 'unhealthy', reason_code: 'local_server_unhealthy', summary: 'The local model server is not responding.', detail: 'Restart local model setup.', recovery_action: null};\n"
+        "const actionView = {status: 'blocked', reason_code: 'ram_insufficient', summary: 'Local model setup needs more memory.', detail: 'Choose another model.', recovery_action: {label: 'Open Settings', href: '/app/settings/#providers'}};\n"
+        "let meta = providerCardMeta({install_state: 'downloading'}, 'local', null, ready);\n"
+        "assert(meta.badgeLabel === INSTALL_COPY.INSTALL_PHASE_DOWNLOADING, 'in-flight install owns badge');\n"
+        "assert(meta.primaryLabel === INSTALL_COPY.INSTALL_BUTTON_INSTALLING && meta.primaryDisabled === true, 'in-flight install owns disabled action');\n"
+        "assertCoherent(meta);\n"
+        "meta = providerCardMeta({install_state: 'installed'}, 'local', null, ready);\n"
+        "assert(meta.badgeLabel === 'Ready' && meta.badgeTone === 'ok', 'installed ready uses readiness badge');\n"
+        "assert(!meta.primaryLabel && !meta.primaryAction && !meta.primaryHref, 'installed ready has no action');\n"
+        "assertCoherent(meta);\n"
+        "meta = providerCardMeta({install_state: 'installed'}, 'local', null, loading);\n"
+        "assert(meta.badgeLabel === 'Starting up' && meta.badgeTone === 'progress', 'installed loading uses readiness progress badge');\n"
+        "assert(!meta.primaryLabel && !meta.primaryAction && !meta.primaryHref, 'installed loading without recovery has no action');\n"
+        "assertCoherent(meta);\n"
+        "meta = providerCardMeta({install_state: 'installed'}, 'local', null, unhealthy);\n"
+        "assert(meta.badgeLabel === 'Server not responding' && meta.badgeTone === 'warn', 'installed unhealthy uses readiness warning badge');\n"
+        "assertCoherent(meta);\n"
+        "meta = providerCardMeta({install_state: 'installed'}, 'local', null, actionView);\n"
+        "assert(meta.primaryLabel === 'Open Settings' && meta.primaryHref === '/app/settings/#providers', 'readiness recovery uses href action');\n"
+        "assert(meta.primaryAction === null, 'readiness recovery must not reuse install action');\n"
+        "assertCoherent(meta);\n"
+        "meta = providerCardMeta({install_state: 'idle'}, 'local', null, ready);\n"
+        "assert(meta.primaryAction === 'install' && meta.badgeLabel !== 'Ready', 'idle install phase owns install action');\n"
+        "assertCoherent(meta);\n"
+        "meta = providerCardMeta({install_state: 'failed', install_error: 'failed'}, 'local', null, ready);\n"
+        "assert(meta.primaryAction === 'install' && meta.primaryLabel === INSTALL_COPY.INSTALL_BUTTON_RETRY, 'failed install phase owns retry action');\n"
+        "assertCoherent(meta);\n"
+        "meta = providerCardMeta({install_state: 'installed'}, 'local-mlx', null, loading);\n"
+        "assert(meta.badgeLabel === INSTALL_COPY.INSTALL_PHASE_INSTALLED, 'MLX branch ignores local readiness view');\n"
+    )
+
+    subprocess.run([node, "-e", script], check=True, text=True)

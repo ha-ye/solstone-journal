@@ -104,6 +104,7 @@ class TerminalState:
     latest_ts: int
     trailing_fail_count: int
     last_fail_ts: int | None
+    reason_code: str | None
     provider: str | None
     model: str | None
 
@@ -125,6 +126,7 @@ class BacklogUnit:
     stream: str | None
     segment: str | None
     why: str
+    reason_code: str | None
     provider: str | None
     model: str | None
     trailing_fail_count: int
@@ -152,6 +154,9 @@ class BacklogDay:
     not_sensed: int
     why: tuple[BacklogUnit, ...]
     reason: str | None
+    reason_code: str | None
+    provider: str | None
+    model: str | None
     error: BacklogError | None
 
 
@@ -333,7 +338,10 @@ def _str_or_none(value: object) -> str | None:
 
 def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
     """Return latest terminal talent state per unit for one day."""
-    records: dict[TerminalUnit, list[tuple[int, int, str, str | None, str | None]]] = {}
+    records: dict[
+        TerminalUnit,
+        list[tuple[int, int, str, str | None, str | None, str | None]],
+    ] = {}
     sequence = 0
 
     try:
@@ -402,6 +410,7 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
                             ts,
                             sequence,
                             latest_event,
+                            _str_or_none(rec.get("reason_code")),
                             _str_or_none(rec.get("provider")),
                             _str_or_none(rec.get("model")),
                         )
@@ -417,9 +426,9 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
     states: dict[TerminalUnit, TerminalState] = {}
     for unit, unit_records in records.items():
         ordered = sorted(unit_records, key=lambda item: (item[0], item[1]))
-        latest_ts, _seq, latest_event, _provider, _model = ordered[-1]
+        latest_ts, _seq, latest_event, _reason_code, _provider, _model = ordered[-1]
         trailing_fail_count = 0
-        for _ts, _seq, event, _provider, _model in reversed(ordered):
+        for _ts, _seq, event, _reason_code, _provider, _model in reversed(ordered):
             if event != TERMINAL_FAIL:
                 break
             trailing_fail_count += 1
@@ -432,8 +441,9 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
             latest_ts=latest_ts,
             trailing_fail_count=trailing_fail_count,
             last_fail_ts=last_fail[0] if last_fail else None,
-            provider=last_fail[3] if last_fail else None,
-            model=last_fail[4] if last_fail else None,
+            reason_code=last_fail[3] if last_fail else None,
+            provider=last_fail[4] if last_fail else None,
+            model=last_fail[5] if last_fail else None,
         )
     return states
 
@@ -773,6 +783,7 @@ def _failed_backlog_unit(
         stream=unit.stream,
         segment=unit.segment,
         why=WHY_FAILED,
+        reason_code=state.reason_code,
         provider=state.provider,
         model=state.model,
         trailing_fail_count=state.trailing_fail_count,
@@ -811,6 +822,7 @@ def _segment_backlog_units(
                         stream=seg["stream"],
                         segment=key,
                         why=WHY_CORRUPT_RAW,
+                        reason_code=None,
                         provider=None,
                         model=None,
                         trailing_fail_count=0,
@@ -840,6 +852,7 @@ def _segment_backlog_units(
                         stream=unit.stream,
                         segment=unit.segment,
                         why=WHY_SENSED_NOT_THOUGHT,
+                        reason_code=None,
                         provider=None,
                         model=None,
                         trailing_fail_count=0,
@@ -859,6 +872,7 @@ def _segment_backlog_units(
                         stream=unit.stream,
                         segment=unit.segment,
                         why=WHY_NEVER_ATTEMPTED,
+                        reason_code=None,
                         provider=None,
                         model=None,
                         trailing_fail_count=0,
@@ -881,6 +895,7 @@ def _segment_backlog_units(
                         stream=unit.stream,
                         segment=unit.segment,
                         why=WHY_SENSED_NOT_THOUGHT,
+                        reason_code=None,
                         provider=None,
                         model=None,
                         trailing_fail_count=0,
@@ -889,6 +904,22 @@ def _segment_backlog_units(
                     )
                 )
     return tuple(why)
+
+
+def _representative_reason_unit(why: tuple[BacklogUnit, ...]) -> BacklogUnit | None:
+    candidates = [unit for unit in why if unit.why == WHY_FAILED and unit.reason_code]
+    if not candidates:
+        return None
+    return sorted(
+        candidates,
+        key=lambda unit: (
+            unit.mode,
+            unit.name,
+            unit.facet or "",
+            unit.stream or "",
+            unit.segment or "",
+        ),
+    )[0]
 
 
 def _non_segment_failed_units(
@@ -926,6 +957,9 @@ def _complete_backlog_day(day: str) -> BacklogDay:
         not_sensed=0,
         why=(),
         reason=None,
+        reason_code=None,
+        provider=None,
+        model=None,
         error=None,
     )
 
@@ -959,6 +993,9 @@ def read_backlog_view(window: int = BACKLOG_DEFAULT_WINDOW) -> BacklogView:
                     not_sensed=0,
                     why=(),
                     reason=None,
+                    reason_code=None,
+                    provider=None,
+                    model=None,
                     error=error,
                 )
             )
@@ -985,6 +1022,9 @@ def read_backlog_view(window: int = BACKLOG_DEFAULT_WINDOW) -> BacklogView:
                     not_sensed=0,
                     why=(),
                     reason=None,
+                    reason_code=None,
+                    provider=None,
+                    model=None,
                     error=error,
                 )
             )
@@ -1002,6 +1042,7 @@ def read_backlog_view(window: int = BACKLOG_DEFAULT_WINDOW) -> BacklogView:
         else:
             reason = None
 
+        representative = _representative_reason_unit(why)
         if any(unit.stuck for unit in why):
             state = BACKLOG_STATE_STUCK
         elif segment_depth > 0 or why:
@@ -1018,6 +1059,9 @@ def read_backlog_view(window: int = BACKLOG_DEFAULT_WINDOW) -> BacklogView:
                 not_sensed=completion.not_sensed,
                 why=why,
                 reason=reason,
+                reason_code=representative.reason_code if representative else None,
+                provider=representative.provider if representative else None,
+                model=representative.model if representative else None,
                 error=None,
             )
         )

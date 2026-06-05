@@ -330,6 +330,7 @@ def test_read_terminal_states_latest_wins_and_preserves_expanded_keys(
                 "ts": 4,
                 "mode": "daily",
                 "name": "alpha",
+                "reason_code": "provider_quota_exceeded",
                 "provider": "anthropic",
                 "model": "claude-opus-4-1",
             },
@@ -371,6 +372,7 @@ def test_read_terminal_states_latest_wins_and_preserves_expanded_keys(
     assert alpha.latest_ts == 4
     assert alpha.trailing_fail_count == 2
     assert alpha.last_fail_ts == 4
+    assert alpha.reason_code == "provider_quota_exceeded"
     assert alpha.provider == "anthropic"
     assert alpha.model == "claude-opus-4-1"
     assert beta.latest_event == "complete"
@@ -883,6 +885,7 @@ def test_read_backlog_view_reports_complete_pending_stuck_and_why_axis(
                 "entities",
                 stuck_fail_ts,
                 stream="default",
+                reason_code="provider_key_missing",
                 provider="anthropic",
                 model="claude-opus-4-1",
             ),
@@ -912,10 +915,14 @@ def test_read_backlog_view_reports_complete_pending_stuck_and_why_axis(
     assert by_day[stuck_day].units == 1
     stuck_unit = by_day[stuck_day].why[0]
     assert stuck_unit.why == "failed"
+    assert stuck_unit.reason_code == "provider_key_missing"
     assert stuck_unit.provider == "anthropic"
     assert stuck_unit.model == "claude-opus-4-1"
     assert stuck_unit.trailing_fail_count == STUCK_FAIL_THRESHOLD
     assert stuck_unit.stuck is True
+    assert by_day[stuck_day].reason_code == "provider_key_missing"
+    assert by_day[stuck_day].provider == "anthropic"
+    assert by_day[stuck_day].model == "claude-opus-4-1"
     assert view.pending_days == 1
     assert view.stuck_days == 1
     assert view.oldest_pending_day == stuck_day
@@ -1092,7 +1099,9 @@ def test_read_backlog_view_repeated_talent_fail_reason_is_failing_step(
 
     assert backlog_day.state == "stuck"
     assert backlog_day.reason == "failing_step"
+    assert backlog_day.reason_code is None
     assert backlog_day.why[0].why == "failed"
+    assert backlog_day.why[0].reason_code is None
     assert backlog_day.why[0].stuck is True
 
 
@@ -1156,6 +1165,7 @@ def test_read_backlog_view_provider_model_failure_remains_failing_step(
                 "entities",
                 3000,
                 stream="default",
+                reason_code="provider_quota_exceeded",
                 provider="openai",
                 model="gpt-5",
             ),
@@ -1174,7 +1184,11 @@ def test_read_backlog_view_provider_model_failure_remains_failing_step(
     assert backlog_day.state == "stuck"
     assert backlog_day.reason == "failing_step"
     assert backlog_day.reason != "provider_down"
+    assert backlog_day.reason_code == "provider_quota_exceeded"
+    assert backlog_day.provider == "openai"
+    assert backlog_day.model == "gpt-5"
     unit = backlog_day.why[0]
+    assert unit.reason_code == "provider_quota_exceeded"
     assert unit.provider == "openai"
     assert unit.model == "gpt-5"
     assert unit.stuck is True

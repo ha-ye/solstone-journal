@@ -1,4 +1,106 @@
 {
+  "ai_readiness": {
+    "groups": [
+      {
+        "context": null,
+        "detail": "Open provider setup and add credentials, then try again.",
+        "interface": "cogitate",
+        "model": "gpt-5.4-mini",
+        "operator_detail": "reason_code=provider_key_missing; provider=openai; status=blocked; model=gpt-5.4-mini; interface=cogitate; message=OPENAI_API_KEY not set",
+        "provider": "openai",
+        "reason_code": "provider_key_missing",
+        "recovery_action": {
+          "href": "/app/settings/#providers",
+          "label": "Open Settings"
+        },
+        "semantic_key": "provider_key_missing:openai:",
+        "severity": "blocker",
+        "status": "blocked",
+        "summary": "OpenAI needs credentials before it can read your screen descriptions",
+        "work_key": null
+      },
+      {
+        "context": null,
+        "detail": "Open provider setup and add credentials, then try again.",
+        "interface": "generate",
+        "model": "gemini-custom-flash-test",
+        "operator_detail": "reason_code=provider_key_missing; provider=google; status=blocked; model=gemini-custom-flash-test; interface=generate; message=GOOGLE_API_KEY not set",
+        "provider": "google",
+        "reason_code": "provider_key_missing",
+        "recovery_action": {
+          "href": "/app/settings/#providers",
+          "label": "Open Settings"
+        },
+        "semantic_key": "provider_key_missing:google:",
+        "severity": "blocker",
+        "status": "blocked",
+        "summary": "Gemini needs credentials before it can read your screen descriptions",
+        "work_key": null
+      }
+    ],
+    "interfaces": {
+      "cogitate": {
+        "context": null,
+        "detail": "Open provider setup and add credentials, then try again.",
+        "interface": "cogitate",
+        "model": "gpt-5.4-mini",
+        "operator_detail": "reason_code=provider_key_missing; provider=openai; status=blocked; model=gpt-5.4-mini; interface=cogitate; message=OPENAI_API_KEY not set",
+        "provider": "openai",
+        "reason_code": "provider_key_missing",
+        "recovery_action": {
+          "href": "/app/settings/#providers",
+          "label": "Open Settings"
+        },
+        "semantic_key": "provider_key_missing:openai:",
+        "severity": "blocker",
+        "status": "blocked",
+        "summary": "OpenAI needs credentials before it can read your screen descriptions",
+        "work_key": null
+      },
+      "generate": {
+        "context": null,
+        "detail": "Open provider setup and add credentials, then try again.",
+        "interface": "generate",
+        "model": "gemini-custom-flash-test",
+        "operator_detail": "reason_code=provider_key_missing; provider=google; status=blocked; model=gemini-custom-flash-test; interface=generate; message=GOOGLE_API_KEY not set",
+        "provider": "google",
+        "reason_code": "provider_key_missing",
+        "recovery_action": {
+          "href": "/app/settings/#providers",
+          "label": "Open Settings"
+        },
+        "semantic_key": "provider_key_missing:google:",
+        "severity": "blocker",
+        "status": "blocked",
+        "summary": "Gemini needs credentials before it can read your screen descriptions",
+        "work_key": null
+      }
+    },
+    "local": {
+      "context": null,
+      "detail": "Finish local model setup, then try the request again.",
+      "interface": "generate",
+      "model": "local/qwen3.5-4b",
+      "operator_detail": "reason_code=local_model_missing; provider=local; status=blocked; model=local/qwen3.5-4b; interface=generate",
+      "provider": "local",
+      "reason_code": "local_model_missing",
+      "recovery_action": {
+        "href": "/app/settings/#providers",
+        "label": "Open Local Model Setup"
+      },
+      "semantic_key": "local_model_missing:local:local/qwen3.5-4b",
+      "severity": "blocker",
+      "status": "blocked",
+      "summary": "local model setup is not finished",
+      "work_key": null
+    },
+    "summary": {
+      "active_groups": 2,
+      "blocked_count": 2,
+      "severity": "blocker",
+      "status": "blocked"
+    }
+  },
   "api_keys": {
     "anthropic": false,
     "google": false,
@@ -470,6 +572,7 @@
     "progress_bytes_received": null,
     "progress_bytes_total": null
   },
+  "local_backend": "local",
   "provider_status": {
     "anthropic": {
       "cogitate_ready": false,

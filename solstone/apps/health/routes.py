@@ -13,6 +13,10 @@ from flask import Blueprint, jsonify, render_template, request
 from solstone.apps.health import copy as health_copy
 from solstone.convey import backlog_copy, state
 from solstone.convey.backlog_view import stuck_rows, verdict
+from solstone.convey.readiness_snapshot import (
+    build_readiness_snapshot,
+    unavailable_snapshot,
+)
 from solstone.convey.reasons import (
     FILE_NOT_FOUND,
     FILE_READ_FAILED,
@@ -70,6 +74,14 @@ def _load_backlog() -> dict | None:
     return backlog if isinstance(backlog, dict) else None
 
 
+def _safe_readiness_snapshot() -> dict:
+    try:
+        return build_readiness_snapshot()
+    except Exception:
+        logger.exception("Failed to build health readiness snapshot")
+        return unavailable_snapshot()
+
+
 @health_bp.route("/")
 def index():
     backlog = _load_backlog()
@@ -77,6 +89,7 @@ def index():
         "app.html",
         health_backlog_verdict=verdict(backlog),
         health_stuck_rows=stuck_rows(backlog),
+        health_readiness=_safe_readiness_snapshot(),
     )
 
 
@@ -112,7 +125,12 @@ def get_log():
 
 @health_bp.route("/api/info")
 def api_info():
-    return jsonify({"hostname": stream_name(host=socket.gethostname())})
+    return jsonify(
+        {
+            "hostname": stream_name(host=socket.gethostname()),
+            "readiness": _safe_readiness_snapshot(),
+        }
+    )
 
 
 @health_bp.post("/api/retry-import")

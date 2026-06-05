@@ -7,10 +7,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from typing import Any
 
 from flask import Flask, g, request, url_for
 
 from solstone.apps import AppRegistry
+from solstone.convey.provider_readiness import is_blocking_reason, present_for_reason
 
 
 def _get_facets_data() -> list[dict]:
@@ -98,7 +100,7 @@ def _resolve_attention(awareness_current: dict) -> AttentionItem | None:
         today = datetime.now().strftime("%Y%m%d")
         day_index = journal / "talents" / f"{today}.jsonl"
         if day_index.exists():
-            errors: dict[str, float] = {}
+            errors: dict[str, dict[str, Any]] = {}
             successes: dict[str, float] = {}
             for line in day_index.read_text().splitlines():
                 if not line.strip():
@@ -108,8 +110,13 @@ def _resolve_attention(awareness_current: dict) -> AttentionItem | None:
                     name = entry.get("name", "")
                     ts = entry.get("ts", 0)
                     if entry.get("status") == "error":
-                        if ts > errors.get(name, 0):
-                            errors[name] = ts
+                        if ts > errors.get(name, {}).get("ts", 0):
+                            errors[name] = {
+                                "ts": ts,
+                                "reason_code": entry.get("reason_code"),
+                                "provider": entry.get("provider"),
+                                "model": entry.get("model"),
+                            }
                     elif entry.get("status") == "completed":
                         if ts > successes.get(name, 0):
                             successes[name] = ts
@@ -117,10 +124,46 @@ def _resolve_attention(awareness_current: dict) -> AttentionItem | None:
                     continue
             unresolved = [
                 name
-                for name, err_ts in errors.items()
-                if successes.get(name, 0) <= err_ts
+                for name, error in errors.items()
+                if successes.get(name, 0) <= error.get("ts", 0)
             ]
             if unresolved:
+                readiness_blockers = []
+                for name in sorted(unresolved):
+                    error = errors[name]
+                    reason_code = error.get("reason_code")
+                    if not is_blocking_reason(reason_code or ""):
+                        continue
+                    provider = error.get("provider") or ""
+                    model = error.get("model")
+                    view = present_for_reason(
+                        reason_code,
+                        provider=provider,
+                        model=model if isinstance(model, str) else None,
+                        status="unhealthy",
+                    )
+                    priority = 0 if view.severity == "blocker" else 1
+                    readiness_blockers.append((priority, name, view))
+                if readiness_blockers:
+                    _priority, name, view = sorted(readiness_blockers)[0]
+                    placeholder = view.summary
+                    if len(placeholder) > 90:
+                        placeholder = (
+                            "Provider setup needs attention — ask how to fix it"
+                        )
+                    return AttentionItem(
+                        placeholder_text=placeholder,
+                        context_lines=[
+                            (
+                                f"System health: {name} is blocked by provider "
+                                "readiness. Guide the owner to fix provider setup "
+                                "before retrying."
+                            ),
+                            f"Readiness: {view.summary}.",
+                            f"Operator detail: {view.operator_detail}.",
+                        ],
+                    )
+
                 count = len(unresolved)
                 names = ", ".join(sorted(unresolved)[:3])
                 suffix = f" (+{count - 3} more)" if count > 3 else ""
@@ -310,8 +353,8 @@ def register_app_context(app: Flask, registry: AppRegistry) -> None:
             pass  # Default placeholder on any error
 
         today = date.today().strftime("%Y%m%d")
-        from solstone.convey.chat_reasons import render_chat_reason
         from solstone.convey.chat_stream import read_chat_events
+        from solstone.convey.provider_readiness import chat_view
         from solstone.convey.sol_initiated.state import (
             latest_unresolved_sol_chat_request,
         )
@@ -333,7 +376,7 @@ def register_app_context(app: Flask, registry: AppRegistry) -> None:
             "chat_bar_attention": chat_bar_attention,
             "chat_bar_sol_request": chat_bar_sol_request,
             # Shared renderer keeps chat error SSR in parity with chat chrome JS.
-            "render_chat_reason": render_chat_reason,
+            "chat_view": chat_view,
             "convey_settings": {"reporting_enabled": reporting_enabled()},
             "CONVEY_COPY": {
                 name.removeprefix("CONVEY_"): getattr(convey_copy, name)

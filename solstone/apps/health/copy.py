@@ -23,3 +23,7 @@ HEALTH_GLANCE_OBSERVER_SILENT = (
 HEALTH_GLANCE_SERVICES_UNREACHABLE = (
     "I couldn't reach my own services — check that solstone is running."
 )
+HEALTH_GLANCE_READINESS_BLOCKED = "{summary}"
+HEALTH_GLANCE_READINESS_UNKNOWN = (
+    "still checking AI readiness — provider setup will be confirmed shortly."
+)

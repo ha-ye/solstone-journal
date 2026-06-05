@@ -20,6 +20,7 @@ from solstone.think.cortex_client import (
     get_use_end_state,
     get_use_log_status,
     read_use_provider_model,
+    read_use_provider_model_reason,
     wait_for_uses,
 )
 from solstone.think.models import GPT_5
@@ -364,11 +365,18 @@ def test_read_use_provider_model_reads_active_log(tmp_path, monkeypatch):
                 "model": "claude-opus-4-1",
             }
         )
+        + "\n"
+        + json.dumps({"event": "error", "reason_code": "provider_key_missing"})
         + "\n",
         encoding="utf-8",
     )
 
     assert read_use_provider_model(use_id) == ("anthropic", "claude-opus-4-1")
+    assert read_use_provider_model_reason(use_id) == (
+        "anthropic",
+        "claude-opus-4-1",
+        "provider_key_missing",
+    )
 
 
 def test_get_agent_log_status_not_found(tmp_path, monkeypatch):
