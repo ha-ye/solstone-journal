@@ -533,60 +533,6 @@ def remove_stale_plists() -> tuple[int, int]:
     return (removed, failed)
 
 
-def _systemd_unit_references_solstone(path: Path, lines: list[str]) -> bool:
-    if path.name == f"{SYSTEMD_UNIT}.service":
-        return True
-    return any(
-        line.startswith("Description=") and "solstone" in line.lower() for line in lines
-    )
-
-
-def remove_stale_systemd_units() -> tuple[int, int]:
-    """Remove stale systemd user units from prior installs."""
-    if not sys.platform.startswith("linux"):
-        return (0, 0)
-
-    scan_dir = _unit_path().parent
-    if not scan_dir.is_dir():
-        return (0, 0)
-
-    current_wrappers = {_managed_wrapper("sol"), _managed_wrapper("journal")}
-    removed = 0
-    failed = 0
-
-    for path in sorted(scan_dir.glob("*.service")):
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-        except OSError as exc:
-            print(f"skipping {path}: {type(exc).__name__}: {exc}", file=sys.stderr)
-            continue
-        if not _systemd_unit_references_solstone(path, lines):
-            continue
-        parts = _exec_start_parts_from_lines(path, lines)
-        if parts is None:
-            continue
-
-        extracted = parts[0]
-        if (
-            Path(extracted).name not in {"sol", "journal"}
-            or extracted not in current_wrappers
-        ):
-            try:
-                path.unlink()
-            except (OSError, PermissionError) as exc:
-                print(f"failed to remove {path}: {exc}", file=sys.stderr)
-                failed += 1
-                continue
-
-            print(
-                f"Removed stale systemd unit {path} "
-                f"(referenced {extracted}, current wrappers are {sorted(current_wrappers)})"
-            )
-            removed += 1
-
-    return (removed, failed)
-
-
 def _generate_systemd_unit(
     env: dict[str, str],
     *,
@@ -699,7 +645,6 @@ def _install(port: int = DEFAULT_SERVICE_PORT) -> int:
         print("Service loaded into launchd")
 
     else:
-        remove_stale_systemd_units()
         unit_content = _generate_systemd_unit(env, port=port, journal_path=journal_path)
         path = _unit_path()
         path.parent.mkdir(parents=True, exist_ok=True)
