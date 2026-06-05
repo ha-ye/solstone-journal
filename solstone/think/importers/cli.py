@@ -224,7 +224,13 @@ def _run_muesli_sync() -> bool:
         return False
 
 
-def _run_sync(backend_name: str, *, dry_run: bool = True, **extra: Any) -> None:
+def _run_sync(
+    backend_name: str,
+    *,
+    dry_run: bool = True,
+    verbose: bool = False,
+    **extra: Any,
+) -> None:
     """Run sync for a named backend and print results."""
     import inspect
 
@@ -275,6 +281,7 @@ def _run_sync(backend_name: str, *, dry_run: bool = True, **extra: Any) -> None:
     skipped = result.get("skipped", 0)
     downloaded = result.get("downloaded", 0)
     errors = result.get("errors", [])
+    state = load_sync_state(journal_root, backend_name)
 
     # Print summary
     print()
@@ -282,7 +289,16 @@ def _run_sync(backend_name: str, *, dry_run: bool = True, **extra: Any) -> None:
     print(f"  Already imported:    {imported}")
     print(f"  Available to import: {available}")
     if skipped:
-        print(f"  Skipped:             {skipped}")
+        reason_counts: dict[str, int] = {}
+        for info in (state or {}).get("files", {}).values():
+            if info.get("status") == "skipped":
+                reason = (info.get("skip_reason") or "unknown").replace("_", " ")
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        if reason_counts:
+            breakdown = ", ".join(f"{n} {r}" for r, n in sorted(reason_counts.items()))
+            print(f"  Skipped:             {skipped} ({breakdown})")
+        else:
+            print(f"  Skipped:             {skipped}")
 
     if downloaded > 0:
         print(f"  Imported this run:   {downloaded}")
@@ -293,7 +309,6 @@ def _run_sync(backend_name: str, *, dry_run: bool = True, **extra: Any) -> None:
 
     # In dry-run mode, show available files
     if dry_run and available > 0:
-        state = load_sync_state(journal_root, backend_name)
         if state:
             files = state.get("files", {})
             avail_files = [
@@ -321,6 +336,23 @@ def _run_sync(backend_name: str, *, dry_run: bool = True, **extra: Any) -> None:
                     print(f"  sol import --sync {backend_name} --save --path {src}")
                 else:
                     print(f"  sol import --sync {backend_name} --save")
+
+    if verbose and state:
+        files = state.get("files", {})
+        if files:
+            print()
+            print("Files:")
+            for fid, info in files.items():
+                name = info.get("filename") or fid
+                status = info.get("status", "unknown")
+                line = f"  {status:<11}{name}"
+                reason = info.get("skip_reason")
+                if status == "skipped" and reason:
+                    line += f" — {reason.replace('_', ' ')}"
+                duration = info.get("duration")
+                if duration is not None:
+                    line += f" ({int(duration)}s)"
+                print(line)
 
     if not dry_run and available == 0 and downloaded == 0 and not errors:
         print()
@@ -1399,7 +1431,8 @@ def main() -> None:
             extra["source_path"] = Path(os.path.expanduser(args.path))
         if args.force:
             extra["force"] = True
-        _run_sync(args.sync, dry_run=not args.save, **extra)
+        extra["auto"] = args.auto
+        _run_sync(args.sync, dry_run=not args.save, verbose=args.verbose, **extra)
         return
 
     if not args.media:

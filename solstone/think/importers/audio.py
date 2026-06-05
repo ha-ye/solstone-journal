@@ -211,6 +211,7 @@ class AudioFolderBackend:
         dry_run: bool = True,
         source_path: Path | None = None,
         force: bool = False,
+        auto: bool | str = True,
     ) -> dict[str, Any]:
         """Catalog or import audio files from a local folder."""
         if shutil.which("ffmpeg") is None:
@@ -249,6 +250,8 @@ class AudioFolderBackend:
         current_rel_paths: set[str] = set()
         to_import: list[tuple[str, Path]] = []
         audio_count = 0
+        errors: list[str] = []
+        downloaded = 0
 
         for path in sorted(source_root.rglob("*")):
             resolved_path = path.resolve()
@@ -287,20 +290,20 @@ class AudioFolderBackend:
 
             duration = _get_audio_duration(str(resolved_path))
             if duration is None:
-                entry = {
-                    **base_entry,
-                    "status": "skipped",
-                    "skip_reason": "probe_failed",
-                }
+                entry = {**base_entry, "status": "unreadable"}
                 entry.pop("imported_at", None)
+                entry.pop("skip_reason", None)
                 entry.pop("last_error", None)
+                entry.pop("duration", None)
                 known_files[rel_path] = entry
+                errors.append(f"{rel_path}: could not read audio (probe failed)")
                 continue
             if duration < 30:
                 entry = {
                     **base_entry,
                     "status": "skipped",
                     "skip_reason": "too_short",
+                    "duration": duration,
                 }
                 entry.pop("imported_at", None)
                 entry.pop("last_error", None)
@@ -310,6 +313,7 @@ class AudioFolderBackend:
             entry = {
                 **base_entry,
                 "status": "available",
+                "duration": duration,
             }
             entry.pop("imported_at", None)
             entry.pop("skip_reason", None)
@@ -322,9 +326,6 @@ class AudioFolderBackend:
         for rel_path, info in known_files.items():
             if rel_path not in current_rel_paths and info.get("status") != "removed":
                 info["status"] = "removed"
-
-        errors: list[str] = []
-        downloaded = 0
 
         def summarize() -> dict[str, Any]:
             return {
@@ -357,7 +358,7 @@ class AudioFolderBackend:
                     result = import_one(
                         path,
                         source="audio",
-                        auto=True,
+                        auto=auto,
                         wait_for_processing=False,
                     )
                 except Exception as exc:

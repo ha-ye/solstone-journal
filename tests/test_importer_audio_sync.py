@@ -2,6 +2,7 @@
 # Copyright (c) 2026 sol pbc
 
 import importlib
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -196,6 +197,282 @@ def test_audio_sync_skips_too_short_files(tmp_path, monkeypatch):
     entry = state["files"]["short.mp3"]
     assert entry["status"] == "skipped"
     assert entry["skip_reason"] == "too_short"
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_audio_sync_probe_failure_prints_error_in_both_modes(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    dry_run,
+):
+    mod = importlib.import_module("solstone.think.importers.cli")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(
+        "solstone.think.importers.audio.shutil.which",
+        lambda name: f"/usr/bin/{name}",
+    )
+    monkeypatch.setattr(
+        "solstone.think.importers.audio._get_audio_duration",
+        lambda path: None if "broken" in path else 29.0,
+    )
+    monkeypatch.setattr(
+        "solstone.think.importers.cli.import_one",
+        lambda path, **kwargs: {"segments": ["120000_300"]},
+    )
+    source_dir = tmp_path / "source"
+    _write_audio(source_dir, "short.mp3")
+    _write_audio(source_dir, "broken.mp3")
+
+    mod._run_sync("audio", dry_run=dry_run, source_path=source_dir)
+
+    output = capsys.readouterr().out
+    assert "Errors: 1" in output
+    assert "broken.mp3: could not read audio (probe failed)" in output
+    assert "too short" in output
+    assert "Skipped:             2" not in output
+    assert "Everything is up to date." not in output
+
+
+def test_audio_sync_partitions_available_skipped_and_unreadable(tmp_path, monkeypatch):
+    from solstone.think.importers.audio import AudioFolderBackend
+
+    monkeypatch.setattr(
+        "solstone.think.importers.audio.shutil.which",
+        lambda name: f"/usr/bin/{name}",
+    )
+
+    def duration_for(path):
+        name = Path(path).name
+        if name == "broken.mp3":
+            return None
+        if name == "short.mp3":
+            return 29.0
+        return 60.0
+
+    monkeypatch.setattr(
+        "solstone.think.importers.audio._get_audio_duration", duration_for
+    )
+    source_dir = tmp_path / "source"
+    _write_audio(source_dir, "long.mp3")
+    _write_audio(source_dir, "short.mp3")
+    _write_audio(source_dir, "broken.mp3")
+
+    result = AudioFolderBackend().sync(tmp_path, source_path=source_dir, dry_run=True)
+
+    assert result["available"] == 1
+    assert result["skipped"] == 1
+    assert len(result["errors"]) == 1
+    state = load_sync_state(tmp_path, "audio")
+    assert state is not None
+    assert state["files"]["broken.mp3"]["status"] == "unreadable"
+
+
+def test_audio_sync_probe_failure_recovery_is_not_sticky(tmp_path, monkeypatch):
+    from solstone.think.importers.audio import AudioFolderBackend
+
+    _patch_audio_tools(monkeypatch, duration=None)
+    source_dir = tmp_path / "source"
+    _write_audio(source_dir, "clip.mp3")
+    backend = AudioFolderBackend()
+
+    backend.sync(tmp_path, source_path=source_dir, dry_run=True)
+    first_state = load_sync_state(tmp_path, "audio")
+    assert first_state is not None
+    assert first_state["files"]["clip.mp3"]["status"] == "unreadable"
+
+    monkeypatch.setattr(
+        "solstone.think.importers.audio._get_audio_duration",
+        lambda _path: 60.0,
+    )
+    backend.sync(tmp_path, source_path=source_dir, dry_run=True)
+
+    state = load_sync_state(tmp_path, "audio")
+    assert state is not None
+    entry = state["files"]["clip.mp3"]
+    assert entry["status"] == "available"
+    assert "last_error" not in entry
+    assert "skip_reason" not in entry
+
+
+def test_run_sync_skipped_reason_visible_without_verbose(tmp_path, monkeypatch, capsys):
+    mod = importlib.import_module("solstone.think.importers.cli")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _patch_audio_tools(monkeypatch, duration=29.0)
+    source_dir = tmp_path / "source"
+    _write_audio(source_dir, "short.mp3")
+
+    mod._run_sync("audio", dry_run=True, source_path=source_dir)
+
+    output = capsys.readouterr().out
+    assert "too short" in output
+    skipped_lines = [
+        line.rstrip() for line in output.splitlines() if "Skipped:" in line
+    ]
+    assert "  Skipped:             1" not in skipped_lines
+
+
+def test_run_sync_verbose_prints_file_dump(tmp_path, monkeypatch, capsys):
+    mod = importlib.import_module("solstone.think.importers.cli")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(
+        "solstone.think.importers.audio.shutil.which",
+        lambda name: f"/usr/bin/{name}",
+    )
+    monkeypatch.setattr(
+        "solstone.think.importers.audio._get_audio_duration",
+        lambda path: 29.0 if Path(path).name == "short.mp3" else 60.0,
+    )
+    source_dir = tmp_path / "source"
+    _write_audio(source_dir, "long.mp3")
+    _write_audio(source_dir, "short.mp3")
+
+    mod._run_sync("audio", dry_run=True, verbose=True, source_path=source_dir)
+    verbose_output = capsys.readouterr().out
+    assert "Files:" in verbose_output
+    assert "available" in verbose_output
+    assert "long.mp3" in verbose_output
+    assert "skipped" in verbose_output
+    assert "short.mp3" in verbose_output
+
+    mod._run_sync("audio", dry_run=True, verbose=False, source_path=source_dir)
+    plain_output = capsys.readouterr().out
+    assert "Files:" not in plain_output
+
+
+def test_importer_main_sync_verbose_wiring(tmp_path, monkeypatch, capsys):
+    mod = importlib.import_module("solstone.think.importers.cli")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(mod, "require_solstone", lambda: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["sol", "--sync", "audio", "--path", str(tmp_path / "source"), "-v"],
+    )
+    _patch_audio_tools(monkeypatch)
+    _write_audio(tmp_path / "source", "clip.mp3")
+
+    mod.main()
+
+    output = capsys.readouterr().out
+    assert "Files:" in output
+    assert "clip.mp3" in output
+
+
+def test_run_sync_verbose_handles_obsidian_shaped_state(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    mod = importlib.import_module("solstone.think.importers.cli")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    save_sync_state(
+        tmp_path,
+        "audio",
+        {
+            "backend": "audio",
+            "files": {
+                "clip.md": {
+                    "filename": "clip.md",
+                    "status": "available",
+                },
+                "done.md": {
+                    "filename": "done.md",
+                    "status": "imported",
+                },
+            },
+        },
+    )
+
+    class FakeAudioBackend:
+        name = "audio"
+
+        def sync(self, journal_root, *, dry_run=True, source_path=None):
+            return {
+                "total": 2,
+                "imported": 1,
+                "available": 1,
+                "skipped": 0,
+                "downloaded": 0,
+                "errors": [],
+            }
+
+    monkeypatch.setattr(
+        "solstone.think.importers.sync.get_syncable_backends",
+        lambda: [FakeAudioBackend()],
+    )
+
+    mod._run_sync("audio", dry_run=True, verbose=True, source_path=tmp_path / "source")
+
+    output = capsys.readouterr().out
+    assert "Files:" in output
+    assert "clip.md" in output
+    assert "done.md" in output
+
+
+def test_audio_sync_auto_passthrough_from_main(tmp_path, monkeypatch, capsys):
+    mod = importlib.import_module("solstone.think.importers.cli")
+    monkeypatch.setattr(mod, "require_solstone", lambda: None)
+    _patch_audio_tools(monkeypatch)
+    import_one = MagicMock(return_value={"segments": ["120000_300"]})
+    monkeypatch.setattr("solstone.think.importers.cli.import_one", import_one)
+
+    guidance_journal = tmp_path / "guidance-journal"
+    guidance_source = tmp_path / "guidance-source"
+    _write_audio(guidance_source, "clip.mp3")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(guidance_journal))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "sol",
+            "--sync",
+            "audio",
+            "--path",
+            str(guidance_source),
+            "--save",
+            "--auto",
+            "guidance text",
+        ],
+    )
+    mod.main()
+    assert import_one.call_args.kwargs["auto"] == "guidance text"
+
+    default_journal = tmp_path / "default-journal"
+    default_source = tmp_path / "default-source"
+    _write_audio(default_source, "clip.mp3", b"default audio")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(default_journal))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["sol", "--sync", "audio", "--path", str(default_source), "--save"],
+    )
+    import_one.reset_mock()
+    capsys.readouterr()
+    mod.main()
+    assert import_one.call_args.kwargs["auto"] is True
+
+    dry_run_journal = tmp_path / "dry-run-journal"
+    dry_run_source = tmp_path / "dry-run-source"
+    _write_audio(dry_run_source, "clip.mp3", b"dry-run audio")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(dry_run_journal))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "sol",
+            "--sync",
+            "audio",
+            "--path",
+            str(dry_run_source),
+            "--auto",
+            "catalog guidance",
+        ],
+    )
+    import_one.reset_mock()
+    capsys.readouterr()
+    mod.main()
+    import_one.assert_not_called()
 
 
 def test_audio_sync_save_imports_new_files_and_checkpoints(tmp_path, monkeypatch):
