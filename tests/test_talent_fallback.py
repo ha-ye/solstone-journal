@@ -271,6 +271,36 @@ def test_preflight_swap_unhealthy_primary(monkeypatch):
     assert config["fallback_from"] == "google"
 
 
+def test_preflight_swap_reads_unified_backend(monkeypatch):
+    from solstone.think.models import CLAUDE_SONNET_4
+    from solstone.think.providers import state
+    from solstone.think.talents import prepare_config
+
+    _patch_prepare_config_dependencies(monkeypatch)
+    monkeypatch.setattr(
+        state,
+        "read_health_status",
+        lambda: {
+            "results": [
+                {
+                    "provider": "google",
+                    "model": "gemini-3-flash-preview",
+                    "interface": "cogitate",
+                    "ok": False,
+                    "reason_code": "provider_unavailable",
+                }
+            ]
+        },
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    config = prepare_config({"name": "chat", "prompt": "hello"})
+
+    assert config["provider"] == "anthropic"
+    assert config["model"] == CLAUDE_SONNET_4
+    assert config["fallback_from"] == "google"
+
+
 def test_preflight_no_swap_healthy_primary(monkeypatch):
     from solstone.think.talents import prepare_config
 

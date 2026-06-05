@@ -240,6 +240,19 @@ def _contains_any(text: str, patterns: tuple[str, ...]) -> bool:
     return any(pattern in text for pattern in patterns)
 
 
+RUNTIME_REASON_CODES = frozenset(
+    {
+        "provider_quota_exceeded",
+        "provider_key_invalid",
+        "chat_timeout",
+        "network_unreachable",
+        "provider_unavailable",
+        "provider_response_invalid",
+        "unknown",
+    }
+)
+
+
 def classify_provider_error(exc: BaseException, provider: str) -> str:
     """Return a chat reason code for a provider exception."""
     try:
@@ -456,6 +469,7 @@ __all__ = [
     "Event",
     "GenerateResult",
     "JSONEventCallback",
+    "RUNTIME_REASON_CODES",
     "ThinkingEvent",
     "USAGE_KEYS",
     "classify_provider_error",

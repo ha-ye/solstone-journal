@@ -1320,7 +1320,9 @@ class TestGenerateJsonSchemaPlumbing:
 
 
 def test_request_health_recheck_emits_callosum_request():
-    with patch("solstone.think.models.callosum_send", return_value=True) as send:
+    with patch(
+        "solstone.think.providers.state.callosum_send", return_value=True
+    ) as send:
         request_health_recheck()
 
     send.assert_called_once_with(
@@ -1332,7 +1334,9 @@ def test_request_health_recheck_emits_callosum_request():
 
 def test_request_health_recheck_does_not_raise_on_send_failure(caplog):
     with (
-        patch("solstone.think.models.callosum_send", return_value=False) as send,
+        patch(
+            "solstone.think.providers.state.callosum_send", return_value=False
+        ) as send,
         caplog.at_level(logging.WARNING),
     ):
         request_health_recheck()

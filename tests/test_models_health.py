@@ -32,6 +32,7 @@ def test_record_provider_failure_appends_new_row(monkeypatch, tmp_path):
     assert row["interface"] == "cogitate"
     assert row["ok"] is False
     assert row["status"] == "quota_exhausted"
+    assert row["reason_code"] == "provider_quota_exceeded"
     assert row["message"] == "Quota exhausted; retry after 12345"
     assert row["elapsed_s"] == 0.0
     assert row["reset_at_ms"] == 12345
@@ -51,6 +52,7 @@ def test_record_provider_failure_updates_duplicate_key(monkeypatch, tmp_path):
     assert row["message"] == "Quota exhausted; retry after 200"
     assert row["ok"] is False
     assert row["status"] == "quota_exhausted"
+    assert row["reason_code"] == "provider_quota_exceeded"
     assert row["elapsed_s"] == 0.0
 
 
@@ -95,7 +97,7 @@ def test_record_provider_failure_atomic_replace_failure_preserves_file(
     def fail_replace(_src, _dst):
         raise OSError("replace failed")
 
-    monkeypatch.setattr("solstone.think.models.os.replace", fail_replace)
+    monkeypatch.setattr("solstone.think.providers.state.os.replace", fail_replace)
 
     with pytest.raises(OSError, match="replace failed"):
         record_provider_failure("google", "flash", "gemini", "cogitate", 400)

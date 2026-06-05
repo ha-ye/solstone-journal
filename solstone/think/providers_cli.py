@@ -39,7 +39,11 @@ def _provider_status(provider_name: str) -> dict[str, object]:
     )
 
 
-def _check_generate(provider_name: str, tier: int, timeout: int) -> tuple[str, str]:
+def _check_generate(
+    provider_name: str,
+    tier: int,
+    timeout: int,
+) -> tuple[str, str, str | None]:
     """Check generate interface for a provider."""
     from solstone.think.models import PROVIDER_DEFAULTS
     from solstone.think.providers import PROVIDER_METADATA, get_provider_module
@@ -47,7 +51,7 @@ def _check_generate(provider_name: str, tier: int, timeout: int) -> tuple[str, s
     env_key = PROVIDER_METADATA[provider_name]["env_key"]
     if env_key and not os.getenv(env_key):
         label = PROVIDER_METADATA[provider_name]["label"]
-        return "skip", f"{label} not configured (no {env_key})"
+        return "skip", f"{label} not configured (no {env_key})", "provider_key_missing"
 
     if not env_key:
         from solstone.think.providers import validate_key
@@ -55,14 +59,19 @@ def _check_generate(provider_name: str, tier: int, timeout: int) -> tuple[str, s
         result = validate_key(provider_name, "")
         if not result.get("valid"):
             if provider_name == "local":
+                from solstone.think.providers import state
+
                 return (
                     "skip",
                     f"Local provider not ready ({result.get('error', 'not ready')})",
+                    state.readiness_for_provider("local", "generate").reason_code
+                    or "unknown",
                 )
             return (
                 "skip",
                 f"{PROVIDER_METADATA[provider_name]['label']} not reachable "
                 f"({result.get('error', 'unreachable')})",
+                "unknown",
             )
 
     try:
@@ -91,15 +100,17 @@ def _check_generate(provider_name: str, tier: int, timeout: int) -> tuple[str, s
                     context="health.check.generate",
                     type="generate",
                 )
-            return "ok", "OK"
-        return "fail", "FAIL: empty response text"
+            return "ok", "OK", None
+        return "fail", "FAIL: empty response text", "provider_response_invalid"
     except Exception as exc:
-        return "fail", f"FAIL: {exc}"
+        from solstone.think.providers.shared import classify_provider_error
+
+        return "fail", f"FAIL: {exc}", classify_provider_error(exc, provider_name)
 
 
 async def _check_cogitate(
     provider_name: str, tier: int, timeout: int
-) -> tuple[str, str]:
+) -> tuple[str, str, str | None]:
     """Check cogitate interface for a provider by running a real prompt."""
     from solstone.think.models import PROVIDER_DEFAULTS
     from solstone.think.providers import PROVIDER_METADATA, get_provider_module
@@ -109,19 +120,30 @@ async def _check_cogitate(
     if provider_name == "local":
         status = _provider_status(provider_name)
         if not status.get("cogitate_ready"):
+            from solstone.think.providers import state
+
+            reason_code = (
+                state.readiness_for_provider("local", "cogitate").reason_code
+                or "unknown"
+            )
             if not status.get("cogitate_cli_found"):
                 from solstone.think.providers import local_install
 
                 return (
                     "skip",
                     f"not installed; run `{local_install.install_hint()}`",
+                    reason_code,
                 )
-            return "skip", _local_readiness_message(status)
+            return "skip", _local_readiness_message(status), reason_code
     elif provider_name in {"anthropic", "openai", "google"}:
         if env_key and not os.getenv(env_key):
-            return "skip", f"{label} not configured (no {env_key})"
+            return (
+                "skip",
+                f"{label} not configured (no {env_key})",
+                "provider_key_missing",
+            )
     elif env_key and not os.getenv(env_key):
-        return "skip", f"{label} not configured (no {env_key})"
+        return "skip", f"{label} not configured (no {env_key})", "provider_key_missing"
 
     if not env_key:
         from solstone.think.providers import validate_key
@@ -129,14 +151,19 @@ async def _check_cogitate(
         result = validate_key(provider_name, "")
         if not result.get("valid"):
             if provider_name == "local":
+                from solstone.think.providers import state
+
                 return (
                     "skip",
                     f"Local provider not ready ({result.get('error', 'not ready')})",
+                    state.readiness_for_provider("local", "cogitate").reason_code
+                    or "unknown",
                 )
             return (
                 "skip",
                 f"{PROVIDER_METADATA[provider_name]['label']} not reachable "
                 f"({result.get('error', 'unreachable')})",
+                "unknown",
             )
 
     try:
@@ -148,12 +175,14 @@ async def _check_cogitate(
             timeout=timeout,
         )
         if result:
-            return "ok", "OK"
-        return "fail", "FAIL: empty response"
+            return "ok", "OK", None
+        return "fail", "FAIL: empty response", "provider_response_invalid"
     except asyncio.TimeoutError:
-        return "fail", f"FAIL: timed out after {timeout}s"
+        return "fail", f"FAIL: timed out after {timeout}s", "chat_timeout"
     except Exception as exc:
-        return "fail", f"FAIL: {exc}"
+        from solstone.think.providers.shared import classify_provider_error
+
+        return "fail", f"FAIL: {exc}", classify_provider_error(exc, provider_name)
 
 
 async def _run_check(args: argparse.Namespace) -> None:
@@ -217,7 +246,7 @@ async def _run_check(args: argparse.Namespace) -> None:
     failed = 0
     skipped = 0
     results: list[dict[str, object]] = []
-    cache: dict[tuple[str, str, str], tuple[str, str, str]] = {}
+    cache: dict[tuple[str, str, str], tuple[str, str, str | None, str]] = {}
 
     for provider_name in providers:
         for tier in tiers:
@@ -230,23 +259,28 @@ async def _run_check(args: argparse.Namespace) -> None:
             for interface_name in interfaces:
                 cache_key = (provider_name, model, interface_name)
                 if cache_key in cache:
-                    status, message, source_tier = cache[cache_key]
+                    status, message, reason_code, source_tier = cache[cache_key]
                     elapsed_s = 0.0
                     elapsed_s_rounded = 0.0
                     reused_from = source_tier
                 else:
                     start = time.perf_counter()
                     if interface_name == "generate":
-                        status, message = _check_generate(
+                        status, message, reason_code = _check_generate(
                             provider_name, tier, args.timeout
                         )
                     else:
-                        status, message = await _check_cogitate(
+                        status, message, reason_code = await _check_cogitate(
                             provider_name, tier, args.timeout
                         )
                     elapsed_s = time.perf_counter() - start
                     elapsed_s_rounded = round(elapsed_s, 1)
-                    cache[cache_key] = (status, message, tier_names[tier])
+                    cache[cache_key] = (
+                        status,
+                        message,
+                        reason_code,
+                        tier_names[tier],
+                    )
                     reused_from = None
 
                 result: dict[str, object] = {
@@ -256,6 +290,7 @@ async def _run_check(args: argparse.Namespace) -> None:
                     "interface": interface_name,
                     "ok": status != "fail",
                     "status": status,
+                    "reason_code": reason_code,
                     "message": str(message),
                     "elapsed_s": elapsed_s_rounded,
                 }
@@ -294,31 +329,24 @@ async def _run_check(args: argparse.Namespace) -> None:
 
     any_failed = any(r["status"] == "fail" for r in results)
 
-    payload = {
-        "results": results,
-        "summary": {
-            "total": total,
-            "passed": passed,
-            "skipped": skipped,
-            "failed": failed,
-        },
-        "checked_at": datetime.now(timezone.utc).isoformat(),
+    summary = {
+        "total": total,
+        "passed": passed,
+        "skipped": skipped,
+        "failed": failed,
     }
-    health_dir = Path(get_journal()) / "health"
-    health_dir.mkdir(parents=True, exist_ok=True)
-    (health_dir / "talents.json").write_text(json.dumps(payload, indent=2))
+    checked_at = datetime.now(timezone.utc).isoformat()
+
+    from solstone.think.providers import state
+
+    state.write_active_check(results, summary, checked_at)
 
     if args.json:
         print(
             json.dumps(
                 {
                     "results": results,
-                    "summary": {
-                        "total": total,
-                        "passed": passed,
-                        "skipped": skipped,
-                        "failed": failed,
-                    },
+                    "summary": summary,
                 },
                 indent=2,
             )

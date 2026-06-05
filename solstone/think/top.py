@@ -9,17 +9,15 @@ and provides keyboard controls for restarting services.
 
 import argparse
 import asyncio
-import json
 import queue
 import time
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import psutil
 from blessed import Terminal
 
 from solstone.think.callosum import CallosumConnection
-from solstone.think.utils import get_journal, setup_cli
+from solstone.think.utils import setup_cli
 
 
 class ServiceManager:
@@ -641,11 +639,9 @@ class ServiceManager:
     def _load_agents_health(self) -> None:
         """Read and cache health/talents.json from the journal."""
         self.agents_health_ts = time.time()
-        try:
-            path = Path(get_journal()) / "health" / "talents.json"
-            self.agents_health = json.loads(path.read_text())
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
-            self.agents_health = None
+        from solstone.think.providers import state
+
+        self.agents_health = state.read_health_status()
 
     def render_observe_section(self) -> list[str]:
         """Render the observe status section with stable layout.

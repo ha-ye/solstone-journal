@@ -10,6 +10,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+def _patch_health_journal(monkeypatch, providers_cli, tmp_path):
+    monkeypatch.setattr(providers_cli, "get_journal", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        "solstone.think.providers.state.get_journal",
+        lambda: str(tmp_path),
+    )
+
+
 def test_run_check_writes_health_file(tmp_path, monkeypatch):
     """_run_check writes provider health results to SOLSTONE_JOURNAL/health/talents.json."""
     import solstone.think.providers_cli as providers_cli
@@ -25,11 +33,15 @@ def test_run_check_writes_health_file(tmp_path, monkeypatch):
 
     monkeypatch.setattr("solstone.think.providers.PROVIDER_REGISTRY", fake_registry)
     monkeypatch.setattr("solstone.think.models.PROVIDER_DEFAULTS", fake_defaults)
-    monkeypatch.setattr(providers_cli, "get_journal", lambda: str(tmp_path))
-    monkeypatch.setattr(providers_cli, "_check_generate", lambda *_args: ("ok", "ok"))
+    _patch_health_journal(monkeypatch, providers_cli, tmp_path)
+    monkeypatch.setattr(
+        providers_cli,
+        "_check_generate",
+        lambda *_args: ("ok", "ok", None),
+    )
 
     async def mock_check_cogitate(*_args):
-        return "ok", "ok"
+        return "ok", "ok", None
 
     monkeypatch.setattr(providers_cli, "_check_cogitate", mock_check_cogitate)
 
@@ -74,11 +86,15 @@ def test_run_check_partial_failure_exits_one(tmp_path, monkeypatch):
 
     monkeypatch.setattr("solstone.think.providers.PROVIDER_REGISTRY", fake_registry)
     monkeypatch.setattr("solstone.think.models.PROVIDER_DEFAULTS", fake_defaults)
-    monkeypatch.setattr(providers_cli, "get_journal", lambda: str(tmp_path))
-    monkeypatch.setattr(providers_cli, "_check_generate", lambda *_args: ("ok", "ok"))
+    _patch_health_journal(monkeypatch, providers_cli, tmp_path)
+    monkeypatch.setattr(
+        providers_cli,
+        "_check_generate",
+        lambda *_args: ("ok", "ok", None),
+    )
 
     async def mock_check_cogitate(*_args):
-        return "fail", "FAIL: timeout"
+        return "fail", "FAIL: timeout", "unknown"
 
     monkeypatch.setattr(providers_cli, "_check_cogitate", mock_check_cogitate)
 
@@ -101,6 +117,11 @@ def test_run_check_partial_failure_exits_one(tmp_path, monkeypatch):
     assert payload["summary"]["passed"] == 3
     assert payload["summary"]["skipped"] == 0
     assert payload["summary"]["failed"] == 3
+    assert all(
+        row["reason_code"] == "unknown"
+        for row in payload["results"]
+        if row["status"] == "fail"
+    )
 
 
 def test_run_check_full_provider_failure_exits_one(tmp_path, monkeypatch):
@@ -118,13 +139,15 @@ def test_run_check_full_provider_failure_exits_one(tmp_path, monkeypatch):
 
     monkeypatch.setattr("solstone.think.providers.PROVIDER_REGISTRY", fake_registry)
     monkeypatch.setattr("solstone.think.models.PROVIDER_DEFAULTS", fake_defaults)
-    monkeypatch.setattr(providers_cli, "get_journal", lambda: str(tmp_path))
+    _patch_health_journal(monkeypatch, providers_cli, tmp_path)
     monkeypatch.setattr(
-        providers_cli, "_check_generate", lambda *_args: ("fail", "FAIL: key not set")
+        providers_cli,
+        "_check_generate",
+        lambda *_args: ("fail", "FAIL: key not set", "unknown"),
     )
 
     async def mock_check_cogitate(*_args):
-        return "fail", "FAIL: key not set"
+        return "fail", "FAIL: key not set", "unknown"
 
     monkeypatch.setattr(providers_cli, "_check_cogitate", mock_check_cogitate)
 
@@ -164,12 +187,12 @@ def test_run_check_dedup_same_model(tmp_path, monkeypatch):
 
     monkeypatch.setattr("solstone.think.providers.PROVIDER_REGISTRY", fake_registry)
     monkeypatch.setattr("solstone.think.models.PROVIDER_DEFAULTS", fake_defaults)
-    monkeypatch.setattr(providers_cli, "get_journal", lambda: str(tmp_path))
+    _patch_health_journal(monkeypatch, providers_cli, tmp_path)
 
-    gen_mock = MagicMock(return_value=("ok", "ok"))
+    gen_mock = MagicMock(return_value=("ok", "ok", None))
     monkeypatch.setattr(providers_cli, "_check_generate", gen_mock)
 
-    cog_inner = MagicMock(return_value=("ok", "ok"))
+    cog_inner = MagicMock(return_value=("ok", "ok", None))
 
     async def mock_check_cogitate(*args):
         return cog_inner(*args)
@@ -228,11 +251,15 @@ def test_run_check_targeted_filters_to_configured_pairs(tmp_path, monkeypatch):
     monkeypatch.setattr("solstone.think.providers.PROVIDER_REGISTRY", fake_registry)
     monkeypatch.setattr("solstone.think.models.PROVIDER_DEFAULTS", fake_defaults)
     monkeypatch.setattr("solstone.think.models.TYPE_DEFAULTS", fake_type_defaults)
-    monkeypatch.setattr(providers_cli, "get_journal", lambda: str(tmp_path))
-    monkeypatch.setattr(providers_cli, "_check_generate", lambda *_args: ("ok", "ok"))
+    _patch_health_journal(monkeypatch, providers_cli, tmp_path)
+    monkeypatch.setattr(
+        providers_cli,
+        "_check_generate",
+        lambda *_args: ("ok", "ok", None),
+    )
 
     async def mock_check_cogitate(*_args):
-        return "ok", "ok"
+        return "ok", "ok", None
 
     monkeypatch.setattr(providers_cli, "_check_cogitate", mock_check_cogitate)
 
@@ -286,7 +313,7 @@ def test_run_check_targeted_flock_dedup(tmp_path, monkeypatch):
     monkeypatch.setattr("solstone.think.providers.PROVIDER_REGISTRY", fake_registry)
     monkeypatch.setattr("solstone.think.models.PROVIDER_DEFAULTS", fake_defaults)
     monkeypatch.setattr("solstone.think.models.TYPE_DEFAULTS", fake_type_defaults)
-    monkeypatch.setattr(providers_cli, "get_journal", lambda: str(tmp_path))
+    _patch_health_journal(monkeypatch, providers_cli, tmp_path)
     monkeypatch.setattr("solstone.think.utils.get_config", lambda: {})
     monkeypatch.setattr("solstone.think.models.get_backup_provider", lambda _: None)
 
@@ -296,7 +323,7 @@ def test_run_check_targeted_flock_dedup(tmp_path, monkeypatch):
     lock_file = open(lock_dir / "recheck.lock", "w")
     fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
-    gen_mock = MagicMock(return_value=("ok", "ok"))
+    gen_mock = MagicMock(return_value=("ok", "ok", None))
     monkeypatch.setattr(providers_cli, "_check_generate", gen_mock)
 
     args = argparse.Namespace(
@@ -343,10 +370,11 @@ def test_check_generate_logs_token_usage(monkeypatch):
     log_mock = MagicMock()
     monkeypatch.setattr("solstone.think.models.log_token_usage", log_mock)
 
-    status, msg = providers_cli._check_generate("fake", 2, 30)
+    status, msg, reason_code = providers_cli._check_generate("fake", 2, 30)
 
     assert status == "ok"
     assert msg == "OK"
+    assert reason_code is None
     log_mock.assert_called_once_with(
         model="fake-flash",
         usage={"input_tokens": 5, "output_tokens": 2},
@@ -384,8 +412,9 @@ def test_missing_env_key_returns_skip(monkeypatch):
     )
     monkeypatch.delenv("FAKE_API_KEY", raising=False)
 
-    status, msg = providers_cli._check_generate("fake", 2, 30)
+    status, msg, reason_code = providers_cli._check_generate("fake", 2, 30)
     assert status == "skip"
+    assert reason_code == "provider_key_missing"
     assert "Fake Provider not configured" in msg
     assert "FAKE_API_KEY" in msg
 
@@ -404,9 +433,12 @@ def test_check_cogitate_cloud_configured_runs_without_install_skip(monkeypatch):
         lambda _provider: FakeModule,
     )
 
-    status, msg = asyncio.run(providers_cli._check_cogitate("anthropic", 2, 30))
+    status, msg, reason_code = asyncio.run(
+        providers_cli._check_cogitate("anthropic", 2, 30)
+    )
 
     assert (status, msg) == ("ok", "OK")
+    assert reason_code is None
 
 
 def test_check_cogitate_local_missing_runtime_names_local_install_hint(monkeypatch):
@@ -421,9 +453,17 @@ def test_check_cogitate_local_missing_runtime_names_local_install_hint(monkeypat
         },
     )
 
-    status, msg = asyncio.run(providers_cli._check_cogitate("local", 2, 30))
+    monkeypatch.setattr(
+        "solstone.think.providers.state.readiness_for_provider",
+        lambda *_args: type("FakeState", (), {"reason_code": "local_model_missing"})(),
+    )
+
+    status, msg, reason_code = asyncio.run(
+        providers_cli._check_cogitate("local", 2, 30)
+    )
 
     assert status == "skip"
+    assert reason_code == "local_model_missing"
     assert "journal install-provider local" in msg
 
 
@@ -436,13 +476,15 @@ def test_all_skip_exits_zero(tmp_path, monkeypatch):
 
     monkeypatch.setattr("solstone.think.providers.PROVIDER_REGISTRY", fake_registry)
     monkeypatch.setattr("solstone.think.models.PROVIDER_DEFAULTS", fake_defaults)
-    monkeypatch.setattr(providers_cli, "get_journal", lambda: str(tmp_path))
+    _patch_health_journal(monkeypatch, providers_cli, tmp_path)
     monkeypatch.setattr(
-        providers_cli, "_check_generate", lambda *_args: ("skip", "not configured")
+        providers_cli,
+        "_check_generate",
+        lambda *_args: ("skip", "not configured", "provider_key_missing"),
     )
 
     async def mock_check_cogitate(*_args):
-        return "skip", "not configured"
+        return "skip", "not configured", "provider_key_missing"
 
     monkeypatch.setattr(providers_cli, "_check_cogitate", mock_check_cogitate)
 
@@ -466,6 +508,7 @@ def test_all_skip_exits_zero(tmp_path, monkeypatch):
     assert payload["summary"]["passed"] == 0
     for result in payload["results"]:
         assert result["status"] == "skip"
+        assert result["reason_code"] == "provider_key_missing"
         assert result["ok"] is True
 
 
@@ -478,13 +521,15 @@ def test_mix_skip_and_fail_exits_one(tmp_path, monkeypatch):
 
     monkeypatch.setattr("solstone.think.providers.PROVIDER_REGISTRY", fake_registry)
     monkeypatch.setattr("solstone.think.models.PROVIDER_DEFAULTS", fake_defaults)
-    monkeypatch.setattr(providers_cli, "get_journal", lambda: str(tmp_path))
+    _patch_health_journal(monkeypatch, providers_cli, tmp_path)
     monkeypatch.setattr(
-        providers_cli, "_check_generate", lambda *_args: ("skip", "not configured")
+        providers_cli,
+        "_check_generate",
+        lambda *_args: ("skip", "not configured", "provider_key_missing"),
     )
 
     async def mock_check_cogitate(*_args):
-        return "fail", "FAIL: broken"
+        return "fail", "FAIL: broken", "unknown"
 
     monkeypatch.setattr(providers_cli, "_check_cogitate", mock_check_cogitate)
 
@@ -519,19 +564,19 @@ def test_skipped_count_in_summary(tmp_path, monkeypatch):
 
     monkeypatch.setattr("solstone.think.providers.PROVIDER_REGISTRY", fake_registry)
     monkeypatch.setattr("solstone.think.models.PROVIDER_DEFAULTS", fake_defaults)
-    monkeypatch.setattr(providers_cli, "get_journal", lambda: str(tmp_path))
+    _patch_health_journal(monkeypatch, providers_cli, tmp_path)
 
     def mock_gen(provider, tier, timeout):
         if provider == "okp":
-            return "ok", "OK"
-        return "skip", "not configured"
+            return "ok", "OK", None
+        return "skip", "not configured", "provider_key_missing"
 
     monkeypatch.setattr(providers_cli, "_check_generate", mock_gen)
 
     async def mock_cog(provider, tier, timeout):
         if provider == "okp":
-            return "ok", "OK"
-        return "skip", "not configured"
+            return "ok", "OK", None
+        return "skip", "not configured", "provider_key_missing"
 
     monkeypatch.setattr(providers_cli, "_check_cogitate", mock_cog)
 
@@ -567,11 +612,15 @@ def test_status_field_in_json_output(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr("solstone.think.providers.PROVIDER_REGISTRY", fake_registry)
     monkeypatch.setattr("solstone.think.models.PROVIDER_DEFAULTS", fake_defaults)
-    monkeypatch.setattr(providers_cli, "get_journal", lambda: str(tmp_path))
-    monkeypatch.setattr(providers_cli, "_check_generate", lambda *_args: ("ok", "OK"))
+    _patch_health_journal(monkeypatch, providers_cli, tmp_path)
+    monkeypatch.setattr(
+        providers_cli,
+        "_check_generate",
+        lambda *_args: ("ok", "OK", None),
+    )
 
     async def mock_cog(*_args):
-        return "ok", "OK"
+        return "ok", "OK", None
 
     monkeypatch.setattr(providers_cli, "_check_cogitate", mock_cog)
 

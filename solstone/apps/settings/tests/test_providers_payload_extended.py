@@ -112,3 +112,25 @@ def test_get_providers_uses_requested_local_model(settings_client, monkeypatch):
     _assert_install_status(payload["local"])
     assert requested_models == [model_id]
     assert payload["local"]["name"] == model_id
+
+
+def test_get_providers_uses_state_local_status(settings_client, monkeypatch):
+    sentinel = {
+        "configured": True,
+        "selected": True,
+        "generate_ready": True,
+        "cogitate_ready": True,
+        "cogitate_cli": "llama-server",
+        "cogitate_cli_found": True,
+        "issues": ["sentinel"],
+    }
+    monkeypatch.setattr(
+        "solstone.think.providers.state.local_status_dict",
+        lambda: sentinel,
+    )
+
+    response = settings_client.get("/app/settings/api/providers")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["provider_status"]["local"] == sentinel

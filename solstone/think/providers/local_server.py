@@ -84,6 +84,13 @@ def is_healthy() -> bool:
     return state == STATE_READY
 
 
+def probe_state() -> tuple[str, str | None]:
+    port = read_service_port(_SERVICE_NAME)
+    if port is None:
+        return STATE_FAILED, "no port"
+    return _probe_health(port)
+
+
 def connect() -> LocalServerInfo:
     port = read_service_port(_SERVICE_NAME)
     if port is None:
@@ -114,4 +121,5 @@ __all__ = [
     "STATE_STOPPED",
     "connect",
     "is_healthy",
+    "probe_state",
 ]

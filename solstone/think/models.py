@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-import fcntl
 import fnmatch
 import functools
 import inspect
@@ -10,15 +9,13 @@ import logging
 import os
 import re
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Union
 
 import frontmatter
 from jsonschema import Draft202012Validator
 
-from solstone.think.callosum import callosum_send
-from solstone.think.utils import get_config, get_journal, now_ms
+from solstone.think.utils import get_config, get_journal
 
 logger = logging.getLogger(__name__)
 
@@ -1267,12 +1264,10 @@ def load_health_status() -> Optional[dict]:
 
     Returns parsed dict or None if file is missing/unreadable.
     """
-    try:
-        health_path = Path(get_journal()) / "health" / "talents.json"
-        with open(health_path) as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return None
+    # Delegating wrapper -> providers.state (see lode contract).
+    from solstone.think.providers import state
+
+    return state.read_health_status()
 
 
 def is_provider_healthy(provider: str, health_data: Optional[dict]) -> bool:
@@ -1285,13 +1280,10 @@ def is_provider_healthy(provider: str, health_data: Optional[dict]) -> bool:
 
     Returns False only when all results for the provider have ok=False.
     """
-    if health_data is None:
-        return True
-    results = health_data.get("results", [])
-    provider_results = [r for r in results if r.get("provider") == provider]
-    if not provider_results:
-        return True
-    return any(r.get("ok") for r in provider_results)
+    # Delegating wrapper -> providers.state (see lode contract).
+    from solstone.think.providers import state
+
+    return state.is_provider_healthy(provider, health_data)
 
 
 def is_provider_model_interface_healthy(
@@ -1301,26 +1293,15 @@ def is_provider_model_interface_healthy(
     health_data: Optional[dict],
 ) -> bool:
     """Check health for a specific provider/model/interface row."""
-    if health_data is None:
-        return True
-    for row in health_data.get("results", []):
-        if (
-            row.get("provider") == provider
-            and row.get("model") == model
-            and row.get("interface") == interface
-            and row.get("ok") is False
-        ):
-            return False
-    return True
+    # Delegating wrapper -> providers.state (see lode contract).
+    from solstone.think.providers import state
 
-
-def _summarize_health_results(results: list[dict[str, Any]]) -> dict[str, int]:
-    return {
-        "total": len(results),
-        "passed": sum(1 for row in results if row.get("status") == "ok"),
-        "skipped": sum(1 for row in results if row.get("status") == "skip"),
-        "failed": sum(1 for row in results if row.get("ok") is False),
-    }
+    return state.is_provider_model_interface_healthy(
+        provider,
+        model,
+        interface,
+        health_data,
+    )
 
 
 def record_provider_failure(
@@ -1331,65 +1312,10 @@ def record_provider_failure(
     reset_at_ms: int,
 ) -> None:
     """Record a provider/model/interface quota failure in health status."""
-    health_dir = Path(get_journal()) / "health"
-    health_dir.mkdir(parents=True, exist_ok=True)
-    health_path = health_dir / "talents.json"
-    lock_path = health_dir / "talents.json.lock"
-    tmp_path = health_dir / f".talents.json.{os.getpid()}.{now_ms()}.tmp"
-    recorded_at = datetime.now(timezone.utc).isoformat()
-    message = f"Quota exhausted; retry after {reset_at_ms}"
+    # Delegating wrapper -> providers.state (see lode contract).
+    from solstone.think.providers import state
 
-    with open(lock_path, "w", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        try:
-            try:
-                with open(health_path, encoding="utf-8") as health_file:
-                    payload = json.load(health_file)
-            except (FileNotFoundError, json.JSONDecodeError, OSError):
-                payload = {}
-
-            results = payload.get("results", [])
-            if not isinstance(results, list):
-                results = []
-            failure_row = {
-                "provider": provider,
-                "tier": tier,
-                "model": model,
-                "interface": interface,
-                "ok": False,
-                "status": "quota_exhausted",
-                "message": message,
-                "elapsed_s": 0.0,
-                "reset_at_ms": reset_at_ms,
-                "recorded_at": recorded_at,
-            }
-
-            for row in results:
-                if (
-                    row.get("provider") == provider
-                    and row.get("model") == model
-                    and row.get("interface") == interface
-                ):
-                    row.update(failure_row)
-                    break
-            else:
-                results.append(failure_row)
-
-            payload["results"] = results
-            payload["summary"] = _summarize_health_results(results)
-            payload.setdefault("checked_at", recorded_at)
-
-            with open(tmp_path, "w", encoding="utf-8") as tmp_file:
-                json.dump(payload, tmp_file, indent=2)
-                tmp_file.write("\n")
-                tmp_file.flush()
-                os.fsync(tmp_file.fileno())
-            os.replace(tmp_path, health_path)
-        finally:
-            try:
-                tmp_path.unlink()
-            except FileNotFoundError:
-                pass
+    state.record_quota_failure(provider, tier, model, interface, reset_at_ms)
 
 
 def should_recheck_health(health_data: Optional[dict]) -> bool:
@@ -1397,42 +1323,18 @@ def should_recheck_health(health_data: Optional[dict]) -> bool:
 
     Returns False when health_data is None or on parse errors.
     """
-    if health_data is None:
-        return False
-    failed_rows = [
-        row for row in health_data.get("results", []) if row.get("ok") is False
-    ]
-    reset_values = [
-        int(row["reset_at_ms"])
-        for row in failed_rows
-        if isinstance(row.get("reset_at_ms"), (int, float))
-    ]
-    missing_reset = len(reset_values) < len(failed_rows)
-    if reset_values and not missing_reset:
-        return now_ms() > min(reset_values)
+    # Delegating wrapper -> providers.state (see lode contract).
+    from solstone.think.providers import state
 
-    checked_at = health_data.get("checked_at")
-    if not checked_at:
-        return False
-    try:
-        checked_time = datetime.fromisoformat(checked_at)
-        if checked_time.tzinfo is None:
-            checked_time = checked_time.replace(tzinfo=timezone.utc)
-        age = datetime.now(timezone.utc) - checked_time
-        return age.total_seconds() > 3600
-    except (ValueError, TypeError):
-        return False
+    return state.should_recheck_health(health_data)
 
 
 def request_health_recheck() -> None:
     """Request a health re-check through the supervisor."""
-    ok = callosum_send(
-        "supervisor",
-        "request",
-        cmd=["journal", "providers", "check", "--targeted"],
-    )
-    if not ok:
-        logger.warning("request_health_recheck: callosum_send returned false")
+    # Delegating wrapper -> providers.state (see lode contract).
+    from solstone.think.providers import state
+
+    state.request_recheck()
 
 
 def generate_with_result(
