@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
+import math
 import platform
 import types
 from unittest.mock import Mock
@@ -59,6 +60,26 @@ class _FakeAdapter:
         if not self._results:
             return []
         return self._results.pop(0)
+
+
+class _LiveFakeAdapter:
+    def __init__(
+        self,
+        *,
+        tokens: list[str],
+        timestamps: list[float],
+        logprobs: list[float],
+    ):
+        self._result = types.SimpleNamespace(
+            timestamps=timestamps,
+            tokens=tokens,
+            logprobs=logprobs,
+        )
+        self.calls = []
+
+    def recognize(self, audio: np.ndarray, sample_rate: int) -> types.SimpleNamespace:
+        self.calls.append((len(audio), sample_rate))
+        return self._result
 
 
 def test_chunked_recognize_short_audio_single_call():
@@ -296,3 +317,68 @@ def test_transcribe_rebuilds_words_with_single_leading_space_and_speaker_none(
         for statement in statements
         for word in statement["words"]
     )
+
+
+def test_live_branch_subwords_join_to_natural_words_and_preserve_confidence(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    logprobs = [-0.1, -0.2, -0.3, -0.4, -0.5, -0.6, -0.7]
+    adapter = _LiveFakeAdapter(
+        tokens=[" Tak", "ing", " out", " the", " m", "one", "y"],
+        timestamps=[0.1, 0.4, 0.8, 1.1, 1.5, 1.8, 2.1],
+        logprobs=logprobs,
+    )
+    _install_fake_modules(
+        monkeypatch, providers=["CPUExecutionProvider"], adapter=adapter
+    )
+
+    statements = parakeet_onnx.transcribe(
+        np.zeros(5 * 16000, dtype=np.float32), 16000, {}
+    )
+
+    assert len(statements) == 1
+    assert statements[0]["text"] == "Taking out the money"
+    for word, logprob in zip(statements[0]["words"], logprobs, strict=True):
+        assert word["probability"] == math.exp(logprob)
+
+
+def test_live_branch_splits_on_sentence_punctuation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    adapter = _LiveFakeAdapter(
+        tokens=[" Last", " year", ".", " Um", " It", "'", "s"],
+        timestamps=[0.1, 0.5, 0.9, 1.2, 1.7, 2.0, 2.1],
+        logprobs=[-0.1, -0.2, -0.3, -0.4, -0.5, -0.6, -0.7],
+    )
+    _install_fake_modules(
+        monkeypatch, providers=["CPUExecutionProvider"], adapter=adapter
+    )
+
+    statements = parakeet_onnx.transcribe(
+        np.zeros(5 * 16000, dtype=np.float32), 16000, {}
+    )
+
+    assert len(statements) == 2
+    assert statements[0]["text"] == "Last year."
+    assert statements[1]["text"] == "Um It's"
+
+
+def test_live_branch_statement_timestamps_match_token_timestamps(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    adapter = _LiveFakeAdapter(
+        tokens=[" Hello", " world", "."],
+        timestamps=[0.5, 1.0, 1.5],
+        logprobs=[-0.1, -0.2, -0.3],
+    )
+    _install_fake_modules(
+        monkeypatch, providers=["CPUExecutionProvider"], adapter=adapter
+    )
+
+    statements = parakeet_onnx.transcribe(
+        np.zeros(5 * 16000, dtype=np.float32), 16000, {}
+    )
+
+    assert len(statements) == 1
+    assert statements[0]["start"] == 0.5
+    assert statements[0]["end"] == 5.0

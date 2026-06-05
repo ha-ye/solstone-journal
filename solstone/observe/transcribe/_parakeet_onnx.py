@@ -182,7 +182,7 @@ def _chunked_recognize(
                     logprob = float(logprobs[index])
                 words.append(
                     {
-                        "word": f" {str(token_text).lstrip()}",
+                        "word": str(token_text),
                         "start": start,
                         "end": end,
                         "probability": math.exp(logprob)
