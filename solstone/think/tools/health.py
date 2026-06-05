@@ -103,7 +103,11 @@ def _render_summary(report: HealthReport) -> None:
     if snap.get("unavailable"):
         typer.echo("  readiness status unavailable")
     elif snap.get("summary", {}).get("active_groups", 0) == 0:
-        typer.echo("  all providers ready")
+        summary = snap.get("summary", {})
+        if summary.get("status") == "ready" or summary.get("severity") == "ok":
+            typer.echo("  all providers ready")
+        else:
+            typer.echo("  no active provider blockers")
     else:
         summary = snap.get("summary", {})
         active = summary.get("active_groups", 0)

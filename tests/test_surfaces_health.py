@@ -270,6 +270,19 @@ def _blocked_readiness_snapshot() -> dict[str, object]:
     }
 
 
+def _neutral_readiness_snapshot() -> dict[str, object]:
+    return {
+        "summary": {
+            "status": "unknown",
+            "severity": "neutral",
+            "active_groups": 0,
+            "blocked_count": 0,
+        },
+        "interfaces": {},
+        "groups": [],
+    }
+
+
 def _invoke_health_summary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1268,6 +1281,29 @@ def test_human_block_clear(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "Provider Readiness" in result.stdout
     assert "all providers ready" in result.stdout
+
+
+def test_human_block_neutral(tmp_path, monkeypatch):
+    _configure_env(tmp_path, monkeypatch)
+    _set_now(monkeypatch, _utc_dt("20260410"))
+    _minimal_facet_tree(tmp_path)
+    monkeypatch.setattr(
+        health_surface, "read_segment_backlog", lambda: _segment_backlog({})
+    )
+    monkeypatch.setattr(
+        health_surface,
+        "build_readiness_snapshot",
+        _neutral_readiness_snapshot,
+    )
+
+    from solstone.think.call import call_app
+
+    result = _RUNNER.invoke(call_app, ["health", "summary"])
+
+    assert result.exit_code == 0
+    assert "Provider Readiness" in result.stdout
+    assert "no active provider blockers" in result.stdout
+    assert "all providers ready" not in result.stdout
 
 
 def test_human_block_blocked(tmp_path, monkeypatch):
