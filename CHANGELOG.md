@@ -4,6 +4,11 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.5.1] - 2026-06-05
+
+### Fixed
+- macOS installs now get the same clean journal package as every other platform. the Apple Silicon wheel no longer carries retired internal talent prompts from an earlier build, so provider readiness stays available after install.
+
 ## [0.5.0] - 2026-06-05
 
 ### Added

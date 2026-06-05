@@ -278,6 +278,7 @@ wheel-macos: parakeet-helper
 	mkdir -p solstone/observe/transcribe/parakeet_helper/_bin
 	cp solstone/observe/transcribe/parakeet_helper/.build/release/parakeet-helper solstone/observe/transcribe/parakeet_helper/_bin/parakeet-helper
 	@echo "==> building macosx_14_0_arm64 platform wheel"
+	rm -rf build/ *.egg-info/
 	$(UV) build --wheel -C--build-option=--plat-name=macosx_14_0_arm64
 else
 wheel-macos:

@@ -90,7 +90,7 @@ GIT_REF=$(git rev-parse HEAD)
 
 # 1. Linux artifacts: sdist + py3-none-any.whl
 echo "==> [1/5] building Linux artifacts (sdist + py3-none-any.whl)"
-rm -rf dist/
+rm -rf build/ dist/ *.egg-info/
 uv build
 
 # Pre-flight the CHANGELOG block now — before the expensive pro5e leg and the
@@ -115,7 +115,7 @@ ssh "$PRO5E_HOST" "ensure-build-windows >/dev/null"
 ssh "$PRO5E_HOST" "tmux-run hopper ~/projects/solstone 'set -e; \
     git fetch origin && \
     git checkout $GIT_REF && \
-    rm -rf dist/ solstone/observe/transcribe/parakeet_helper/_bin && \
+    rm -rf build/ dist/ *.egg-info/ solstone/observe/transcribe/parakeet_helper/_bin && \
     NOTARY_KEYCHAIN_PROFILE=$NOTARY_PROFILE make wheel-macos'"
 
 # 3. Pull the macOS wheel back into local dist/
