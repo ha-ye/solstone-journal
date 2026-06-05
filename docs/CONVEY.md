@@ -82,6 +82,56 @@ The `solstone/convey/views/home.py` module provides essential routes:
 
 All functional views are accessed at `/app/{name}/` URLs.
 
+### HTTP API conventions
+
+These conventions apply to every app `routes.py` and the core blueprints. New and
+refactored routes follow them; the shared helpers in `solstone/convey/utils.py`
+(`error_response`, `success_response`, `parse_pagination_params`) are the reusable
+parts, and the browser client `solstone/convey/static/api.js` (`apiJson`,
+`saveControl`) is the consumer side.
+
+**Namespacing.** JSON APIs live under `/api/` — `/app/{name}/api/<resource>` for an
+app, `/api/<domain>` for a core blueprint (`/api/config`, `/api/system`,
+`/api/chat`, …). HTML pages live at `/app/{name}/<view>` with no `/api/` infix. The
+unauthenticated setup wizard lives under `/init/...`. The `/api/` infix is the
+JSON-vs-HTML discriminator: never put JSON at a non-`/api/` path, never put a page
+under `/api/`.
+
+**Resources and verbs.** Model nouns; the HTTP method is the verb. `GET` is safe and
+never mutates server state. `POST` creates or runs a non-idempotent action; `PUT`
+replaces, `PATCH` partial-updates, `DELETE` removes — use them rather than
+overloading `POST`. Address a resource the same way on read and write (by URL id,
+not by a name in the body). Reserve a verb in the path (`/pair`, `/reprocess`,
+`/accept`) for genuine RPC transitions that have no clean resource mapping.
+
+**Responses.** The HTTP status code is the success signal — the body carries the
+resource, not a `{"success": true}` flag. Return the resource object on a read; a
+`{"items": [...], "total": N, "next_cursor"|"offset": ...}` envelope for a
+collection — never a bare top-level array; `201` plus the created resource
+(including its server-assigned id) on create; `202` plus a status handle for async
+work.
+
+**Errors.** Every JSON route errors through `error_response(REASON, detail=...)` →
+`{error, reason_code, detail}` (see "Owner-facing errors" below). The HTTP status
+comes from the `Reason`. `reason_code` is the machine-readable contract. Never
+return a bare `"", 404`, an `abort()`, an in-band `{"error": ...}` at HTTP 200, or
+raw exception text on a JSON route. HTML page routes may render a 404 page or plain
+text.
+
+**Identity.** The actor comes from `flask.g.identity` (stamped per request), never
+from a client-supplied field. Key-based ingest authenticates with an
+`Authorization: Bearer` header — never a key in the URL path — and derives its
+storage scope from the authenticated record; a scope id in the URL is an assertion
+to check against that record, not an input. Any key-authenticated route must be in
+the `require_login` allowlist.
+
+**Pagination.** Use `parse_pagination_params()` (offset/limit, max 100) or a cursor;
+no list endpoint returns an unbounded full array.
+
+**Composed reads.** Aggregate related data server-side in one named endpoint (the
+shape behind `/app/home/api/pulse`, `settings` `/api/providers`, `speakers`
+`/api/review`) rather than making the client fan out across many calls.
+
 ### Owner-facing errors
 
 Reasons live in `solstone/convey/reasons.py`.
