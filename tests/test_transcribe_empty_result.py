@@ -102,12 +102,26 @@ def test_empty_statements_preserve_path(raw_path, audio_buffer, vad_result):
 def test_backend_raise_propagates(raw_path, audio_buffer, vad_result):
     from solstone.observe.transcribe.main import process_audio
 
-    with patch(
-        "solstone.observe.transcribe.main.stt_transcribe",
-        side_effect=RuntimeError("rev.ai 502"),
+    with (
+        patch(
+            "solstone.observe.transcribe.main.stt_transcribe",
+            side_effect=RuntimeError("rev.ai 502"),
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_journal",
+            return_value=str(raw_path.parents[4]),
+        ),
+        patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
     ):
         with pytest.raises(SystemExit) as exc_info:
             process_audio(raw_path, audio_buffer, vad_result, {}, backend="whisper")
 
     assert exc_info.value.code == 1
     assert raw_path.exists()
+    assert mock_send.call_args.args[:2] == ("observe", "transcribed")
+    assert mock_send.call_args.kwargs["outcome"] == "failed"
+    assert mock_send.call_args.kwargs["backend"] == "whisper"
+    assert (
+        mock_send.call_args.kwargs["input"] == "20260416/default/120000_300/audio.m4a"
+    )
+    assert mock_send.call_args.kwargs["error"] == "RuntimeError: rev.ai 502"

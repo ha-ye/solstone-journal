@@ -3,7 +3,7 @@
 
 """Tests for the Gemini STT backend."""
 
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
@@ -19,6 +19,8 @@ from solstone.observe.transcribe.gemini import (
     get_model_info,
     transcribe,
 )
+from solstone.observe.utils import SAMPLE_RATE
+from solstone.observe.vad import VadResult
 from solstone.think.models import IncompleteJSONError
 
 
@@ -467,3 +469,52 @@ class TestBackendRegistry:
         backend = get_backend("gemini")
         assert hasattr(backend, "transcribe")
         assert hasattr(backend, "get_model_info")
+
+
+def test_process_audio_gemini_backend_uses_vad_chunk_path(tmp_path):
+    from solstone.observe.transcribe.main import process_audio
+
+    raw_path = (
+        tmp_path / "chronicle" / "20260416" / "default" / "120000_300" / "audio.m4a"
+    )
+    raw_path.parent.mkdir(parents=True)
+    raw_path.touch()
+    audio = np.zeros(10 * SAMPLE_RATE, dtype=np.float32)
+    vad_result = VadResult(
+        duration=10.0,
+        speech_duration=5.0,
+        has_speech=True,
+        speech_segments=[(1.0, 3.0), (5.0, 7.0)],
+    )
+    backend_module = Mock()
+    backend_module.get_model_info.return_value = {
+        "model": "gemini",
+        "device": "cloud",
+        "compute_type": "api",
+    }
+
+    with (
+        patch(
+            "solstone.observe.transcribe.main.stt_transcribe", return_value=[]
+        ) as mock_stt_transcribe,
+        patch(
+            "solstone.observe.transcribe.main.get_backend",
+            return_value=backend_module,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_config",
+            return_value={"transcribe": {"preserve_all": True}},
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_journal",
+            return_value=str(tmp_path),
+        ),
+        patch("solstone.observe.transcribe.main.callosum_send"),
+    ):
+        process_audio(raw_path, audio, vad_result, {}, backend="gemini")
+
+    assert mock_stt_transcribe.call_args.args[0] == "gemini"
+    assert (
+        mock_stt_transcribe.call_args.kwargs["speech_segments"]
+        == vad_result.speech_segments
+    )

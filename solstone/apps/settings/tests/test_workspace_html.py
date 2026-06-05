@@ -133,6 +133,19 @@ def test_workspace_unified_provider_panel_has_byte_and_blocked_state_paths():
     assert "insufficient disk" not in match.group("body")
 
 
+def test_workspace_transcription_resource_notice_and_info_line_present():
+    text = _workspace_text()
+
+    assert 'id="transcribeResourceNotice"' in text
+    assert 'id="transcribeResourceNoticeText"' in text
+    assert 'id="transcribeResourceInfo"' in text
+    assert "function renderTranscribeResourceInfo(resource)" in text
+    assert "function renderTranscribeResourceNotice(resource)" in text
+    assert "transcribeResource = data.resource || null" in text
+    assert "renderTranscribeResourceInfo(transcribeResource)" in text
+    assert "renderTranscribeResourceNotice(transcribeResource)" in text
+
+
 def test_workspace_cogitate_key_guidance_strings_present():
     text = _workspace_text()
 

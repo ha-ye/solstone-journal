@@ -211,10 +211,9 @@ class TestNoiseUpgradeGate:
             speech_loud_windows=10,
         )
         transcribe_config = {
-            "backend": "whisper",
             "noise_upgrade": True,
             "noise_upgrade_min_speech_ratio": 0.3,
-            "whisper": {},
+            "parakeet": {},
         }
 
         with (
@@ -231,9 +230,9 @@ class TestNoiseUpgradeGate:
             ) as mock_process_audio,
             patch("solstone.observe.transcribe.revai.has_token", return_value=True),
         ):
-            _process_one(audio_path, args, transcribe_config, [])
+            _process_one(audio_path, args, transcribe_config, "parakeet", [])
 
-        assert mock_process_audio.call_args.kwargs["backend"] == "whisper"
+        assert mock_process_audio.call_args.kwargs["backend"] == "parakeet"
 
     def test_gate_admits_on_high_ratio(self, audio_path, args, audio_buffer):
         from solstone.observe.transcribe.main import _process_one
@@ -249,10 +248,9 @@ class TestNoiseUpgradeGate:
             speech_loud_windows=90,
         )
         transcribe_config = {
-            "backend": "whisper",
             "noise_upgrade": True,
             "noise_upgrade_min_speech_ratio": 0.3,
-            "whisper": {},
+            "parakeet": {},
         }
 
         with (
@@ -269,7 +267,7 @@ class TestNoiseUpgradeGate:
             ) as mock_process_audio,
             patch("solstone.observe.transcribe.revai.has_token", return_value=True),
         ):
-            _process_one(audio_path, args, transcribe_config, [])
+            _process_one(audio_path, args, transcribe_config, "parakeet", [])
 
         assert mock_process_audio.call_args.kwargs["backend"] == "revai"
 
@@ -287,10 +285,9 @@ class TestNoiseUpgradeGate:
             speech_loud_windows=0,
         )
         transcribe_config = {
-            "backend": "whisper",
             "noise_upgrade": True,
             "noise_upgrade_min_speech_ratio": 0.3,
-            "whisper": {},
+            "parakeet": {},
         }
 
         with (
@@ -307,7 +304,7 @@ class TestNoiseUpgradeGate:
             ) as mock_process_audio,
             patch("solstone.observe.transcribe.revai.has_token", return_value=True),
         ):
-            _process_one(audio_path, args, transcribe_config, [])
+            _process_one(audio_path, args, transcribe_config, "parakeet", [])
 
         assert mock_process_audio.call_args.kwargs["backend"] == "revai"
 
@@ -325,10 +322,9 @@ class TestNoiseUpgradeGate:
             speech_loud_windows=90,
         )
         transcribe_config = {
-            "backend": "whisper",
             "noise_upgrade": True,
             "noise_upgrade_min_speech_ratio": 0.3,
-            "whisper": {},
+            "parakeet": {},
         }
 
         with (
@@ -345,9 +341,9 @@ class TestNoiseUpgradeGate:
             ) as mock_process_audio,
             patch("solstone.observe.transcribe.revai.has_token", return_value=True),
         ):
-            _process_one(audio_path, args, transcribe_config, [])
+            _process_one(audio_path, args, transcribe_config, "parakeet", [])
 
-        assert mock_process_audio.call_args.kwargs["backend"] == "whisper"
+        assert mock_process_audio.call_args.kwargs["backend"] == "parakeet"
 
     @pytest.mark.parametrize(
         ("vad", "has_token", "expected_backend"),
@@ -408,7 +404,6 @@ class TestNoiseUpgradeGate:
         from solstone.observe.transcribe.main import _process_one
 
         transcribe_config = {
-            "backend": "parakeet",
             "noise_upgrade": True,
             "noise_upgrade_min_speech_ratio": 0.3,
             "parakeet": {},
@@ -430,6 +425,6 @@ class TestNoiseUpgradeGate:
                 "solstone.observe.transcribe.revai.has_token", return_value=has_token
             ),
         ):
-            _process_one(audio_path, args, transcribe_config, [])
+            _process_one(audio_path, args, transcribe_config, "parakeet", [])
 
         assert mock_process_audio.call_args.kwargs["backend"] == expected_backend

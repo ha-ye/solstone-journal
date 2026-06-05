@@ -536,6 +536,10 @@ def normalize_for_compare(
         if isinstance(normalized, dict):
             # runtime_label is environment-dependent; tested separately.
             normalized.pop("runtime_label", None)
+            resource = normalized.get("resource")
+            if isinstance(resource, dict):
+                for key in resource:
+                    resource[key] = "<normalized>"
     return normalized
 
 

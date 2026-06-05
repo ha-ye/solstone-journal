@@ -63,5 +63,15 @@
       "model": "medium.en"
     }
   },
+  "resource": {
+    "auto_switched": "<normalized>",
+    "available_memory_gb": "<normalized>",
+    "detected": "<normalized>",
+    "force_local_hint": "<normalized>",
+    "min_ram_gb": "<normalized>",
+    "needs_setup": "<normalized>",
+    "notice": "<normalized>",
+    "requirement": "<normalized>"
+  },
   "runtime_label": "Linux ONNX (CPU fp32)"
 }

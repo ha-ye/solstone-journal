@@ -2643,6 +2643,11 @@ button:focus:not(:focus-visible) {
         <a href="#" id="backendKeyLink">configure in API keys</a>
       </div>
 
+      <div id="transcribeResourceNotice" class="provider-key-warning" style="display:none">
+        <span>&#9888;</span>
+        <span id="transcribeResourceNoticeText"></span>
+      </div>
+
       <!-- Whisper-specific settings -->
       <fieldset id="whisper-settings" class="backend-settings">
         <div class="settings-field">
@@ -2729,6 +2734,7 @@ button:focus:not(:focus-visible) {
 
         <div class="form-help">Platform runtime: <span id="parakeet-runtime-label">unsupported</span></div>
       </fieldset>
+      <div class="form-help" id="transcribeResourceInfo"></div>
 
       <!-- Shared settings -->
       <div class="settings-field" style="margin-top: 1.5em;">
@@ -3452,6 +3458,7 @@ let insightsData = null;
 let keyValidationData = {};
 let solVoiceData = null;
 let solVoiceThrottledTimer = null;
+let transcribeResource = null;
 const escapeHtml = (value) => window.AppServices.escapeHtml(value);
 const solVoiceCopy = {
   autoMutedFormat: {{ sol_voice_copy.SOL_VOICE_SETTINGS_CATEGORY_CAP_AUTO_MUTED_FORMAT | tojson }},
@@ -3899,6 +3906,8 @@ function populateFields(config) {
   if (runtimeLabel) {
     runtimeLabel.textContent = transcribeRuntimeLabel;
   }
+  renderTranscribeResourceInfo(transcribeResource);
+  renderTranscribeResourceNotice(transcribeResource);
 
   // Parakeet settings (nested)
   const parakeet = transcribe.parakeet || {};
@@ -6382,12 +6391,39 @@ function setStorageControlsDisabled(disabled) {
   }
 }
 
+function renderTranscribeResourceInfo(resource) {
+  const info = document.getElementById('transcribeResourceInfo');
+  if (!info) return;
+  const lines = [];
+  if (resource?.requirement) lines.push(resource.requirement);
+  if (resource?.detected) lines.push(resource.detected);
+  info.textContent = lines.join(' ');
+}
+
+function renderTranscribeResourceNotice(resource) {
+  const notice = document.getElementById('transcribeResourceNotice');
+  const text = document.getElementById('transcribeResourceNoticeText');
+  if (!notice || !text) return;
+  const show = !!(resource?.auto_switched || resource?.needs_setup);
+  if (!show) {
+    text.textContent = '';
+    notice.style.display = 'none';
+    return;
+  }
+  const lines = [];
+  if (resource.notice) lines.push(resource.notice);
+  if (resource.force_local_hint) lines.push(resource.force_local_hint);
+  text.textContent = lines.join(' ');
+  notice.style.display = 'flex';
+}
+
 async function loadTranscribeBackends() {
   try {
     const data = await window.apiJson('api/transcribe');
     transcribeBackends = data.backends || [];
     transcribeApiKeys = data.api_keys || {};
     transcribeRuntimeLabel = data.runtime_label || 'unsupported';
+    transcribeResource = data.resource || null;
     setLoadState('transcriptionLoadState');
     const select = document.getElementById('field-transcribe-backend');
     const runtimeLabel = document.getElementById('parakeet-runtime-label');
@@ -6397,6 +6433,8 @@ async function loadTranscribeBackends() {
     if (runtimeLabel) {
       runtimeLabel.textContent = transcribeRuntimeLabel;
     }
+    renderTranscribeResourceInfo(transcribeResource);
+    renderTranscribeResourceNotice(transcribeResource);
 
     // Populate the backend select
     if (select) {
@@ -6476,6 +6514,17 @@ document.getElementById('field-transcribe-backend').addEventListener('change', a
     const result = await response.json();
     if (result.success) {
       configData = result.config;
+      if (transcribeResource) {
+        transcribeResource = {
+          ...transcribeResource,
+          auto_switched: false,
+          needs_setup: false,
+          notice: '',
+          force_local_hint: '',
+        };
+        renderTranscribeResourceInfo(transcribeResource);
+        renderTranscribeResourceNotice(transcribeResource);
+      }
       showFieldStatus(e.target, 'saved');
     } else {
       throw new Error(result.error);

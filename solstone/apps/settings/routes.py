@@ -23,7 +23,7 @@ from solstone.apps.chat.config import (
     save_chat_config,
 )
 from solstone.apps.settings import copy as settings_copy
-from solstone.apps.settings import install_copy, local_bootstrap
+from solstone.apps.settings import install_copy, local_bootstrap, transcribe_resource
 from solstone.apps.settings.copy import (
     CONVEY_REFUSE_NO_PASSWORD_NETWORK,
     CONVEY_REFUSE_NO_PASSWORD_TRUST,
@@ -483,6 +483,7 @@ def get_transcribe() -> Any:
         - backends: List of available backends with metadata
         - api_keys: Boolean status for each backend's API key
         - config: Current transcribe config from journal
+        - resource: Memory/platform display payload for the unset default
     """
     try:
         from solstone.observe.transcribe import get_backend_list
@@ -502,6 +503,16 @@ def get_transcribe() -> Any:
                 api_keys[backend["name"]] = bool(os.getenv(env_key))
             else:
                 api_keys[backend["name"]] = True  # Local backends always available
+        google_key_present = bool(api_keys.get("gemini"))
+        configured_backend = transcribe_config.get("backend")
+        try:
+            resource = transcribe_resource.get_transcribe_resource_payload(
+                google_key_present=google_key_present,
+                configured_backend=configured_backend,
+            )
+        except Exception:
+            logger.exception("error loading transcribe resource payload")
+            resource = transcribe_resource.fallback_transcribe_resource_payload()
 
         return jsonify(
             {
@@ -509,6 +520,7 @@ def get_transcribe() -> Any:
                 "api_keys": api_keys,
                 "config": transcribe_config,
                 "runtime_label": runtime_label,
+                "resource": resource,
             }
         )
     except Exception:

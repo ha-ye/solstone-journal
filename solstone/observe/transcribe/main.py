@@ -6,7 +6,7 @@
 Transcription pipeline:
 1. VAD stage: Run Silero VAD to detect speech and filter silent files early
 2. Audio reduction: Trim long silence gaps for faster processing
-3. Transcription: Dispatch to the configured STT backend (default: parakeet)
+3. Transcription: Dispatch to the configured or resource-aware STT backend
 4. Enrichment: Extract topics, setting, emotions, and warnings via LLM (optional)
 5. Embeddings: Generate voice embeddings for each sentence using wespeaker-resnet34
 6. Output: JSONL format compatible with format_audio() in observe/hear.py
@@ -16,7 +16,7 @@ Output files:
 - <stem>.npz: Sentence-level voice embeddings indexed by statement id
 
 Configuration (journal config transcribe section):
-- transcribe.backend: STT backend ("parakeet", "whisper", "revai", "gemini"). Default: "parakeet"
+- transcribe.backend: STT backend ("parakeet", "whisper", "revai", "gemini"). If unset, auto-selected by free memory.
 - transcribe.enrich: Enable/disable LLM enrichment (default: true)
 - transcribe.preserve_all: Keep audio files even when no speech detected (default: false)
 - transcribe.min_speech_seconds: Minimum speech duration to proceed. Default: 1.0
@@ -63,6 +63,14 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from solstone.apps.settings.install_copy import (
+    STT_DETECTED_MEMORY_TEMPLATE,
+    STT_DETECTED_MEMORY_UNKNOWN,
+    STT_EXPLICIT_LOCAL_LOW_TEMPLATE,
+    STT_LOCAL_REQUIREMENTS_TEMPLATE,
+    STT_LOCAL_UNSUPPORTED,
+    STT_NO_KEY_RECOVERY,
+)
 from solstone.apps.speakers.encoder_config import (
     OVERLAP_DETECTOR_ID,
     OVERLAP_DETECTOR_SHA256,
@@ -73,6 +81,11 @@ from solstone.observe.transcribe import (
 )
 from solstone.observe.transcribe import transcribe as stt_transcribe
 from solstone.observe.transcribe.overlap import compute_overlap_fraction
+from solstone.observe.transcribe.resource import (
+    STT_SURFACE,
+    select_stt_backend,
+    stt_local_floor_bytes,
+)
 from solstone.observe.transcribe.whisper import (
     DEFAULT_COMPUTE,
     DEFAULT_DEVICE,
@@ -88,6 +101,7 @@ from solstone.observe.vad import (
 )
 from solstone.think.callosum import callosum_send
 from solstone.think.media import AUDIO_EXTENSIONS as SUPPORTED_AUDIO_FORMATS
+from solstone.think.providers.memory import gb, read_available_bytes
 from solstone.think.utils import (
     day_dirs,
     day_from_path,
@@ -135,6 +149,65 @@ ENTITY_NAMES_LIMIT = 40
 
 # Module-level embedder cache
 _embedder_session: ort.InferenceSession | None = None
+
+
+def resolve_default_backend(args: argparse.Namespace, transcribe_config: dict) -> str:
+    """Resolve the effective default STT backend once, from a single free-RAM read.
+
+    Honors explicit CLI/config choices, warns on an explicit local choice below
+    the platform floor, and raises SystemExit(1) with a clear requirement when
+    there is no viable backend.
+    """
+    available_bytes = read_available_bytes()
+    floor_bytes = stt_local_floor_bytes()
+    google_key_present = bool(os.getenv("GOOGLE_API_KEY"))
+    configured_backend = transcribe_config.get("backend")
+    if args.backend or configured_backend:
+        _warn_if_local_below_floor(
+            args.backend or configured_backend, available_bytes, floor_bytes
+        )
+        return configured_backend or DEFAULT_BACKEND
+    backend = select_stt_backend(
+        available_bytes,
+        google_key_present=google_key_present,
+        floor_bytes=floor_bytes,
+    )
+    if backend == STT_SURFACE:
+        _surface_stt_requirement(available_bytes, floor_bytes)
+        raise SystemExit(1)
+    return backend
+
+
+def _warn_if_local_below_floor(
+    backend: str, available_bytes: int | None, floor_bytes: int | None
+) -> None:
+    if (
+        backend in {"parakeet", "whisper"}
+        and floor_bytes is not None
+        and available_bytes is not None
+        and available_bytes < floor_bytes
+    ):
+        logging.warning(
+            STT_EXPLICIT_LOCAL_LOW_TEMPLATE.format(ram_gb=floor_bytes // 1024**3)
+        )
+
+
+def _surface_stt_requirement(
+    available_bytes: int | None, floor_bytes: int | None
+) -> None:
+    if floor_bytes is None:
+        requirement = STT_LOCAL_UNSUPPORTED
+    else:
+        requirement = STT_LOCAL_REQUIREMENTS_TEMPLATE.format(
+            ram_gb=floor_bytes // 1024**3
+        )
+    available_gb = gb(available_bytes)
+    detected = (
+        STT_DETECTED_MEMORY_UNKNOWN
+        if available_gb is None
+        else STT_DETECTED_MEMORY_TEMPLATE.format(available_gb=available_gb)
+    )
+    logging.error("%s %s %s", requirement, detected, STT_NO_KEY_RECOVERY)
 
 
 def _select_onnx_providers() -> list[str]:
@@ -698,6 +771,14 @@ def process_audio(
 
     except Exception as e:
         logging.error(f"Failed to transcribe {raw_path}: {e}", exc_info=True)
+        try:
+            event = _build_base_event(raw_path, vad_result, segment, observer)
+            event["outcome"] = "failed"
+            event["backend"] = resolved_backend
+            event["error"] = f"{type(e).__name__}: {e}"
+            callosum_send("observe", "transcribed", **event)
+        except Exception:
+            logging.exception("Failed to emit transcription failure event")
         from solstone.think.models import IncompleteJSONError
 
         if isinstance(e, IncompleteJSONError) and e.partial_text:
@@ -711,6 +792,7 @@ def _process_one(
     audio_path: Path,
     args: argparse.Namespace,
     transcribe_config: dict,
+    default_backend: str,
     entity_names: list[str],
 ) -> None:
     """Run the full transcription pipeline for a single audio file."""
@@ -765,8 +847,8 @@ def _process_one(
         reduced_audio, reduction = reduce_audio(audio_buffer, vad_result)
 
     # Stage 3: Determine backend and build backend config
-    # CLI --backend flag overrides config, otherwise use config or default
-    backend = args.backend or transcribe_config.get("backend", DEFAULT_BACKEND)
+    # CLI --backend flag overrides the invocation-level default
+    backend = args.backend or default_backend
 
     # Check for noise upgrade: auto-switch to Rev.ai for noisy recordings
     # Only applies when:
@@ -901,7 +983,7 @@ def main():
         "--backend",
         type=str,
         choices=list(BACKEND_REGISTRY.keys()),
-        help=f"STT backend to use (overrides config, default: {DEFAULT_BACKEND})",
+        help="STT backend to use (overrides config and resource-aware auto default)",
     )
     args = setup_cli(parser)
     require_solstone()
@@ -913,6 +995,7 @@ def main():
 
     config = get_config()
     transcribe_config = config.get("transcribe", {})
+    default_backend = resolve_default_backend(args, transcribe_config)
 
     from solstone.think.entities import load_recent_entity_names
 
@@ -937,7 +1020,13 @@ def main():
                         continue
                     try:
                         logging.info(f"Transcribing: {audio_file}")
-                        _process_one(audio_file, args, transcribe_config, entity_names)
+                        _process_one(
+                            audio_file,
+                            args,
+                            transcribe_config,
+                            default_backend,
+                            entity_names,
+                        )
                         processed += 1
                     except Exception:
                         logging.error(
@@ -979,7 +1068,7 @@ def main():
             f"but parent is: {audio_path.parent.name}"
         )
 
-    _process_one(audio_path, args, transcribe_config, entity_names)
+    _process_one(audio_path, args, transcribe_config, default_backend, entity_names)
 
 
 if __name__ == "__main__":
