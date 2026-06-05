@@ -294,6 +294,35 @@ def test_audio_sync_removed_file_marks_removed(tmp_path, monkeypatch):
     assert state["files"]["removed.mp3"]["status"] == "removed"
 
 
+def test_audio_sync_removed_skipped_file_marks_removed(tmp_path, monkeypatch):
+    from solstone.think.importers.audio import AudioFolderBackend
+
+    monkeypatch.setattr(
+        "solstone.think.importers.audio.shutil.which",
+        lambda name: f"/usr/bin/{name}",
+    )
+    monkeypatch.setattr(
+        "solstone.think.importers.audio._get_audio_duration",
+        lambda path: 29.0 if Path(path).name == "short.mp3" else 60.0,
+    )
+    source_dir = tmp_path / "source"
+    other_source_dir = tmp_path / "other-source"
+    _write_audio(source_dir, "short.mp3")
+    _write_audio(other_source_dir, "long.mp3")
+    backend = AudioFolderBackend()
+    first = backend.sync(tmp_path, source_path=source_dir, dry_run=True)
+    assert first["skipped"] == 1
+
+    second = backend.sync(tmp_path, source_path=other_source_dir, dry_run=True)
+
+    assert second["skipped"] == 0
+    assert second["available"] == 1
+    state = load_sync_state(tmp_path, "audio")
+    assert state is not None
+    assert state["files"]["short.mp3"]["status"] == "removed"
+    assert state["files"]["long.mp3"]["status"] == "available"
+
+
 def test_audio_sync_force_save_does_not_reimport_manifested_file(tmp_path, monkeypatch):
     from solstone.think.importers.audio import AudioFolderBackend
 

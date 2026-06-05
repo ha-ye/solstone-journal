@@ -320,10 +320,7 @@ class AudioFolderBackend:
             raise ValueError("Audio sync path contains no audio files")
 
         for rel_path, info in known_files.items():
-            if rel_path not in current_rel_paths and info.get("status") not in (
-                "removed",
-                "skipped",
-            ):
+            if rel_path not in current_rel_paths and info.get("status") != "removed":
                 info["status"] = "removed"
 
         errors: list[str] = []
