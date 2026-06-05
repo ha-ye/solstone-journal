@@ -3842,7 +3842,7 @@ async function loadConfig() {
     // Load transcribe backends first (populates select options)
     await loadTranscribeBackends();
 
-    const conveyConfigRequest = fetch('api/config/convey')
+    const conveyConfigRequest = fetch('/api/config/convey')
       .then(response => response.json())
       .catch(err => {
         console.error('Error loading convey config:', err);
@@ -4327,7 +4327,7 @@ async function saveConfigValue(section, key, value) {
 }
 
 async function saveConveyReportingEnabled(checked) {
-  const result = await window.apiJson('api/config/convey', {
+  const result = await window.apiJson('/api/config/convey', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ reporting: { enabled: checked } })

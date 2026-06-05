@@ -47,6 +47,14 @@ def test_workspace_has_diagnostic_reports_toggle():
     assert "diagnostic reports" in text
 
 
+def test_workspace_uses_global_convey_config_api():
+    text = _workspace_text()
+
+    assert "fetch('/api/config/convey')" in text
+    assert "window.apiJson('/api/config/convey'" in text
+    assert "'api/config/convey'" not in text
+
+
 def test_workspace_unified_provider_panel_replaces_install_regions():
     text = _workspace_text()
 
