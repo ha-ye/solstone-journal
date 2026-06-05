@@ -15,7 +15,7 @@ from huggingface_hub import RepoFile
 
 from solstone.think.journal_config import read_journal_config
 from solstone.think.models import GEMMA4_26B_A4B_4BIT, QWEN_35_9B
-from solstone.think.providers import mlx_install
+from solstone.think.providers import memory, mlx_install
 from solstone.think.providers.install_state import read_install_status
 
 
@@ -41,9 +41,9 @@ def _local_slot() -> dict:
 def _allow_install(monkeypatch: pytest.MonkeyPatch, *, ram_gb: int = 64) -> None:
     monkeypatch.setattr(mlx_install, "_check_platform_and_package", lambda: (True, ""))
     monkeypatch.setattr(
-        mlx_install.psutil,
+        memory.psutil,
         "virtual_memory",
-        lambda: SimpleNamespace(total=ram_gb * 1024**3),
+        lambda: SimpleNamespace(available=ram_gb * 1024**3, total=64 * 1024**3),
     )
 
 
@@ -113,6 +113,68 @@ def test_default_model_and_registry_contents() -> None:
         mlx_install._MLX_MODEL_REGISTRY[GEMMA4_26B_A4B_4BIT].repo
         == "mlx-community/gemma-4-26b-a4b-it-4bit"
     )
+    assert mlx_install._MLX_MODEL_REGISTRY[QWEN_35_9B].size_bytes == 10453446077
+    assert (
+        mlx_install._MLX_MODEL_REGISTRY[GEMMA4_26B_A4B_4BIT].size_bytes == 15641241224
+    )
+
+
+def test_is_mlx_available_uses_available_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mlx_install, "_check_platform_and_package", lambda: (True, ""))
+    spec = mlx_install.resolve_model_spec(QWEN_35_9B)
+    monkeypatch.setattr(
+        memory.psutil,
+        "virtual_memory",
+        lambda: SimpleNamespace(
+            available=memory.MLX_AVAILABLE_FLOOR_BYTES,
+            total=64 * 1024**3,
+        ),
+    )
+
+    assert mlx_install.is_mlx_available_for_model(spec) == (True, "")
+
+    monkeypatch.setattr(
+        memory.psutil,
+        "virtual_memory",
+        lambda: SimpleNamespace(
+            available=memory.MLX_AVAILABLE_FLOOR_BYTES - 1,
+            total=64 * 1024**3,
+        ),
+    )
+
+    ok, reason = mlx_install.is_mlx_available_for_model(spec)
+    assert ok is False
+    assert reason.startswith("insufficient RAM")
+
+
+def test_inspect_readiness_ram_sufficient_matches_available_floor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_journal(tmp_path, monkeypatch)
+    monkeypatch.setattr(mlx_install, "_check_platform_and_package", lambda: (True, ""))
+    monkeypatch.setattr(mlx_install, "is_mlx_platform_supported", lambda: True)
+    monkeypatch.setattr(
+        memory.psutil,
+        "virtual_memory",
+        lambda: SimpleNamespace(
+            available=memory.MLX_AVAILABLE_FLOOR_BYTES,
+            total=64 * 1024**3,
+        ),
+    )
+
+    assert mlx_install.inspect_readiness(QWEN_35_9B)["ram_sufficient"] is True
+
+    monkeypatch.setattr(
+        memory.psutil,
+        "virtual_memory",
+        lambda: SimpleNamespace(
+            available=memory.MLX_AVAILABLE_FLOOR_BYTES - 1,
+            total=64 * 1024**3,
+        ),
+    )
+
+    readiness = mlx_install.inspect_readiness(QWEN_35_9B)
+    assert readiness["ram_sufficient"] is False
 
 
 def test_install_local_mlx_writes_canonical_sequence(

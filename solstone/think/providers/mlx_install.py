@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 import huggingface_hub
-import psutil
 from huggingface_hub import constants
 from huggingface_hub.file_download import repo_folder_name
 
@@ -27,6 +26,11 @@ from solstone.think.providers.install_state import (
     read_install_status,
     transition_state,
     write_install_status,
+)
+from solstone.think.providers.memory import (
+    MLX_AVAILABLE_FLOOR_BYTES,
+    assess_memory,
+    gb_label,
 )
 
 MLX_SOFT_TOKEN_BUDGET = 1120
@@ -49,7 +53,7 @@ class MLXModelSpec:
     name: str
     repo: str
     revision: str
-    min_ram_bytes: int
+    size_bytes: int
 
 
 _MLX_MODEL_REGISTRY: dict[str, MLXModelSpec] = {
@@ -57,13 +61,15 @@ _MLX_MODEL_REGISTRY: dict[str, MLXModelSpec] = {
         name=QWEN_35_9B,
         repo="mlx-community/Qwen3.5-9B-MLX-8bit",
         revision="84f7c2deea248d8df56240f88102def51c7ed5d6",
-        min_ram_bytes=16 * 1024**3,
+        size_bytes=10453446077,
     ),
     GEMMA4_26B_A4B_4BIT: MLXModelSpec(
         name=GEMMA4_26B_A4B_4BIT,
         repo="mlx-community/gemma-4-26b-a4b-it-4bit",
         revision="efbeee6e582ebfd06abc9d65e90839c4b5d2116b",
-        min_ram_bytes=24 * 1024**3,
+        # Per-model RAM floors are future work tied to hardware-keyed model
+        # selection; today's active VLM floor is shared.
+        size_bytes=15641241224,
     ),
 }
 
@@ -115,12 +121,13 @@ def is_mlx_available_for_model(spec: MLXModelSpec) -> tuple[bool, str]:
     ok, reason = _check_platform_and_package()
     if not ok:
         return ok, reason
-    total_ram = psutil.virtual_memory().total
-    if total_ram < spec.min_ram_bytes:
+    verdict = assess_memory(MLX_AVAILABLE_FLOOR_BYTES, block_below_floor=True)
+    if verdict.severity == "blocked":
+        assert verdict.available_bytes is not None
         return False, (
             f"insufficient RAM for {spec.name} "
-            f"(need {spec.min_ram_bytes // 1024**3} GB, "
-            f"have {total_ram // 1024**3} GB)"
+            f"(need {gb_label(verdict.required_bytes)} GB available, "
+            f"have {gb_label(verdict.available_bytes)} GB available)"
         )
     return True, ""
 
@@ -380,13 +387,13 @@ def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
     spec = resolve_model_spec(str(selected_model))
     status = _read_status()
     presence = _artifact_presence(spec)
-    total_ram = psutil.virtual_memory().total
+    verdict = assess_memory(MLX_AVAILABLE_FLOOR_BYTES, block_below_floor=True)
     return {
         "install_state": status["install_state"],
         "model_installed": presence["model_installed"],
         "snapshot_installed": presence["snapshot_installed"],
         "variant_installed": presence["variant_installed"],
-        "ram_sufficient": total_ram >= spec.min_ram_bytes,
+        "ram_sufficient": verdict.severity != "blocked",
         "platform_supported": is_mlx_platform_supported(),
         "package_available": _check_platform_and_package()[0],
         "model_id": spec.name,

@@ -30,10 +30,10 @@ from solstone.think.providers.install_state import (
 )
 from solstone.think.providers.local import (
     LOCAL_MODEL_SPECS,
-    LocalModelSpec,
     LocalProviderError,
     normalize_model_id,
 )
+from solstone.think.providers.memory import assess_memory
 from solstone.think.utils import get_journal
 
 LOCAL_PROVIDER_NAME = "local"
@@ -389,15 +389,6 @@ def install_local(model_id: str = LOCAL_MODEL) -> dict[str, Any]:
     return install_model(model_id)
 
 
-def _ram_sufficient(spec: LocalModelSpec) -> bool:
-    try:
-        import psutil
-
-        return int(psutil.virtual_memory().total) >= spec.min_ram_bytes
-    except Exception:
-        return True
-
-
 def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
     config = read_journal_config()
     record = config.get("providers", {}).get("bundled", {}).get(LOCAL_PROVIDER_NAME, {})
@@ -432,14 +423,14 @@ def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
         selected_model
     )
     mmproj_installed = resolved_mmproj is None or resolved_mmproj.exists()
-    ram_sufficient = _ram_sufficient(spec)
+    memory_verdict = assess_memory(spec.min_ram_bytes, block_below_floor=False)
     return {
         "install_state": status["install_state"],
         "binary_installed": binary_path.exists() and os.access(binary_path, os.X_OK),
         "model_installed": gguf_path.exists() and mmproj_installed,
         "gguf_installed": gguf_path.exists(),
         "mmproj_installed": mmproj_installed,
-        "ram_sufficient": ram_sufficient,
+        "ram_sufficient": memory_verdict.severity != "blocked",
         "binary_path": str(binary_path),
         "model_path": str(gguf_path),
         "mmproj_path": str(resolved_mmproj) if resolved_mmproj is not None else None,
@@ -451,11 +442,6 @@ def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
 def ensure_artifacts_installed(model_id: str) -> tuple[Path, Path, Path | None]:
     selected_model = normalize_model_id(model_id)
     readiness = inspect_readiness(selected_model)
-    if not readiness["ram_sufficient"]:
-        raise LocalProviderError(
-            "ram_insufficient",
-            "This computer does not have enough memory for the selected local model.",
-        )
     if not readiness["binary_installed"]:
         raise LocalProviderError("binary_missing", "Local runtime is not installed.")
     if not readiness["model_installed"]:

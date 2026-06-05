@@ -1726,6 +1726,28 @@ def test_start_local_server_skips_when_mlx_not_installed_on_darwin(monkeypatch):
     launch.assert_not_called()
 
 
+def test_start_local_server_skips_when_mlx_memory_blocked_on_darwin(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    from solstone.think.providers import mlx_install
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(
+        mlx_install,
+        "inspect_readiness",
+        lambda: {
+            "platform_supported": True,
+            "package_available": True,
+            "ram_sufficient": False,
+            "model_installed": True,
+        },
+    )
+    launch = MagicMock()
+    monkeypatch.setattr(mod, "_launch_process", launch)
+
+    assert mod.start_local_server() is None
+    launch.assert_not_called()
+
+
 def test_start_local_server_launches_llama_server_key_and_cmd(
     tmp_path, monkeypatch, capsys
 ):

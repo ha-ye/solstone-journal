@@ -5297,7 +5297,7 @@ function renderProviderCard(providerId, state, kind, availability) {
   header.append(title, pills);
   card.appendChild(header);
 
-  const metaLine = providerCardMetaLine(state, kind);
+  const metaLine = providerCardMetaLine(state, kind, availability);
   if (metaLine) {
     const details = document.createElement('div');
     details.className = 'provider-card__meta';
@@ -5337,8 +5337,48 @@ function renderProviderCard(providerId, state, kind, availability) {
   return card;
 }
 
-function providerCardMetaLine(state, kind) {
-  return null;
+function providerCardMetaLine(state, kind, availability) {
+  if (!['local', 'local-mlx'].includes(kind) || !availability) return null;
+  const block = document.createElement('div');
+  block.className = 'provider-card__resource-meta';
+  const requirement = installCopyTemplate(INSTALL_COPY.LOCAL_REQUIREMENTS_TEMPLATE, {
+    ram_gb: availability.min_ram_gb,
+    download_size: formatMlxBytes(availability.download_bytes),
+  });
+  appendProviderMetaLine(block, requirement);
+  if (availability.available_memory_gb == null) {
+    appendProviderMetaLine(block, INSTALL_COPY.LOCAL_DETECTED_MEMORY_UNKNOWN);
+  } else {
+    appendProviderMetaLine(
+      block,
+      installCopyTemplate(INSTALL_COPY.LOCAL_DETECTED_MEMORY_TEMPLATE, {
+        available_gb: availability.available_memory_gb,
+      })
+    );
+  }
+  appendProviderMetaLine(block, INSTALL_COPY.LOCAL_PATHS_FRAMING);
+  appendProviderMetaLine(block, INSTALL_COPY.LOCAL_EXPERIMENTAL_NOTE);
+  if (localMlxBlockedReason(state, availability)) {
+    const hasHostedKey = !!(configData?.env?.GOOGLE_API_KEY || configData?.runtime_env?.GOOGLE_API_KEY);
+    appendProviderMetaLine(
+      block,
+      hasHostedKey ? INSTALL_COPY.LOCAL_RECOVERY_HOSTED_KEY_SET : INSTALL_COPY.LOCAL_RECOVERY_NO_HOSTED_KEY
+    );
+  }
+  return block;
+}
+
+function appendProviderMetaLine(parent, text) {
+  const line = document.createElement('div');
+  line.textContent = text;
+  parent.appendChild(line);
+}
+
+function installCopyTemplate(template, values) {
+  return template.replace(/\{([a-z_]+)\}/g, (match, key) => {
+    if (Object.prototype.hasOwnProperty.call(values, key)) return String(values[key]);
+    return match;
+  });
 }
 
 function localMlxBlockedReason(state, availability) {

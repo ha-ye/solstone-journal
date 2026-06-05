@@ -187,18 +187,25 @@ def test_local_readiness_installing(monkeypatch):
     assert provider_state.source == "local_install"
 
 
-def test_local_readiness_ram_insufficient(monkeypatch):
+def test_local_readiness_uses_normal_ready_state_for_non_blocking_memory(
+    monkeypatch,
+):
     monkeypatch.setattr(
         local_install,
         "inspect_readiness",
-        lambda _model=None: _readiness(ram=False),
+        lambda _model=None: _readiness(ram=True),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "probe_state",
+        lambda: (local_server.STATE_READY, None),
     )
 
     provider_state = state.readiness_for_provider("local", "generate")
 
-    assert provider_state.status == "blocked"
-    assert provider_state.reason_code == "ram_insufficient"
-    assert provider_state.source == "local_install"
+    assert provider_state.status == "ready"
+    assert provider_state.reason_code is None
+    assert provider_state.source == "local_server"
 
 
 def test_local_readiness_loading(monkeypatch):

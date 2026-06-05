@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib
 import threading
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,6 +14,7 @@ from solstone.apps.settings import local_bootstrap
 from solstone.apps.settings.install_copy import INSTALL_FAILED_NO_PROGRESS
 from solstone.convey import create_app
 from solstone.think.models import LOCAL_MODEL, QWEN_35_9B
+from solstone.think.providers import memory
 from solstone.think.providers.install_state import (
     InstallState,
     InstallStatus,
@@ -137,9 +139,9 @@ def test_local_availability_payload_exact_shape(settings_env, monkeypatch):
     monkeypatch.setattr(local_bootstrap, "check_model_present", lambda _model: True)
     monkeypatch.setattr(local_bootstrap, "_platform_supported", lambda: (True, ""))
     monkeypatch.setattr(
-        local_bootstrap.psutil,
+        memory.psutil,
         "virtual_memory",
-        lambda: type("VMem", (), {"total": 32 * 1024**3})(),
+        lambda: SimpleNamespace(available=32 * 1024**3, total=32 * 1024**3),
     )
     client = _client(journal_path)
 
@@ -151,21 +153,30 @@ def test_local_availability_payload_exact_shape(settings_env, monkeypatch):
         "model",
         "platform_supported",
         "total_memory_gb",
+        "available_memory_gb",
         "min_ram_gb",
         "binary_present",
         "model_present",
         "available",
         "reason",
+        "warning",
+        "download_bytes",
     }
     assert payload == {
         "model": LOCAL_MODEL,
         "platform_supported": True,
         "total_memory_gb": 32.0,
+        "available_memory_gb": 32.0,
         "min_ram_gb": 8,
         "binary_present": True,
         "model_present": True,
         "available": True,
         "reason": "",
+        "warning": "",
+        "download_bytes": (
+            LOCAL_MODEL_SPECS[LOCAL_MODEL].size_bytes
+            + (LOCAL_MODEL_SPECS[LOCAL_MODEL].mmproj_size_bytes or 0)
+        ),
     }
 
 
@@ -178,9 +189,9 @@ def test_mlx_availability_payload_exact_shape(settings_env, monkeypatch):
         lambda _model: _mlx_readiness(),
     )
     monkeypatch.setattr(
-        local_bootstrap.psutil,
+        memory.psutil,
         "virtual_memory",
-        lambda: type("VMem", (), {"total": 32 * 1024**3})(),
+        lambda: SimpleNamespace(available=32 * 1024**3, total=32 * 1024**3),
     )
 
     payload = local_bootstrap.get_availability_payload(QWEN_35_9B)
@@ -189,21 +200,27 @@ def test_mlx_availability_payload_exact_shape(settings_env, monkeypatch):
         "model",
         "platform_supported",
         "total_memory_gb",
+        "available_memory_gb",
         "min_ram_gb",
         "binary_present",
         "model_present",
         "available",
         "reason",
+        "warning",
+        "download_bytes",
     }
     assert payload == {
         "model": QWEN_35_9B,
         "platform_supported": True,
         "total_memory_gb": 32.0,
-        "min_ram_gb": 16,
+        "available_memory_gb": 32.0,
+        "min_ram_gb": 13,
         "binary_present": True,
         "model_present": True,
         "available": True,
         "reason": "",
+        "warning": "",
+        "download_bytes": 10453446077,
     }
 
 
@@ -235,9 +252,9 @@ def test_mlx_models_route_returns_settings_shape(settings_env, monkeypatch):
     assert response.get_json() == [
         {
             "name": QWEN_35_9B,
-            "label": "qwen 3.5 9B VLM — 16 GB",
-            "min_ram_gb": 16,
-            "size_bytes": None,
+            "label": "qwen 3.5 9B VLM — 13 GB",
+            "min_ram_gb": 13,
+            "size_bytes": 10453446077,
         },
     ]
 
@@ -251,9 +268,9 @@ def test_mlx_availability_accepts_first_fetch_alias(settings_env, monkeypatch):
         lambda _model: _mlx_readiness(),
     )
     monkeypatch.setattr(
-        local_bootstrap.psutil,
+        memory.psutil,
         "virtual_memory",
-        lambda: type("VMem", (), {"total": 32 * 1024**3})(),
+        lambda: SimpleNamespace(available=32 * 1024**3, total=32 * 1024**3),
     )
     client = _client(journal_path)
 
@@ -261,6 +278,53 @@ def test_mlx_availability_accepts_first_fetch_alias(settings_env, monkeypatch):
 
     assert response.status_code == 200
     assert response.get_json()["model"] == QWEN_35_9B
+
+
+def test_mlx_availability_blocks_below_available_floor(settings_env, monkeypatch):
+    settings_env(_settings_config())
+    monkeypatch.setattr(local_bootstrap, "_is_mlx_backend", lambda: True)
+    monkeypatch.setattr(
+        local_bootstrap.mlx_install,
+        "inspect_readiness",
+        lambda _model: _mlx_readiness(),
+    )
+    monkeypatch.setattr(
+        memory.psutil,
+        "virtual_memory",
+        lambda: SimpleNamespace(available=12 * 1024**3, total=32 * 1024**3),
+    )
+
+    payload = local_bootstrap.get_availability_payload(QWEN_35_9B)
+
+    assert payload["available"] is False
+    assert payload["min_ram_gb"] == 13
+    assert payload["available_memory_gb"] == 12.0
+    assert str(payload["reason"]).startswith("insufficient RAM")
+    assert payload["warning"] == ""
+
+
+def test_local_availability_warns_but_does_not_block_on_low_memory(
+    settings_env, monkeypatch
+):
+    journal_path, _config = settings_env(_settings_config())
+    monkeypatch.setattr(local_bootstrap, "check_binary_present", lambda: True)
+    monkeypatch.setattr(local_bootstrap, "check_model_present", lambda _model: True)
+    monkeypatch.setattr(local_bootstrap, "_platform_supported", lambda: (True, ""))
+    monkeypatch.setattr(
+        memory.psutil,
+        "virtual_memory",
+        lambda: SimpleNamespace(available=1 * 1024**3, total=32 * 1024**3),
+    )
+    client = _client(journal_path)
+
+    response = client.get("/app/settings/api/local/availability")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["available"] is True
+    assert payload["reason"] == ""
+    assert payload["warning"].startswith("Available memory is below 8 GB")
+    assert payload["available_memory_gb"] == 1.0
 
 
 @pytest.mark.parametrize(
@@ -374,7 +438,16 @@ def test_start_bootstrap_payload_for_canonical_states(
             "reason": "local runtime is not installed",
             "binary_present": False,
             "model_present": False,
+            "download_bytes": (
+                LOCAL_MODEL_SPECS[LOCAL_MODEL].size_bytes
+                + (LOCAL_MODEL_SPECS[LOCAL_MODEL].mmproj_size_bytes or 0)
+            ),
         },
+    )
+    monkeypatch.setattr(
+        memory.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(free=100 * 1024**3),
     )
     _FakeThread.init_count = 0
     _FakeThread.start_count = 0
@@ -384,6 +457,68 @@ def test_start_bootstrap_payload_for_canonical_states(
         expected_payload,
         expected_status,
     )
+
+
+def test_start_bootstrap_low_memory_warning_does_not_block(settings_env, monkeypatch):
+    settings_env(_settings_config())
+    _write_local_status("idle")
+    monkeypatch.setattr(local_bootstrap, "check_binary_present", lambda: False)
+    monkeypatch.setattr(local_bootstrap, "check_model_present", lambda _model: False)
+    monkeypatch.setattr(local_bootstrap, "_platform_supported", lambda: (True, ""))
+    monkeypatch.setattr(
+        memory.psutil,
+        "virtual_memory",
+        lambda: SimpleNamespace(available=1 * 1024**3, total=32 * 1024**3),
+    )
+    monkeypatch.setattr(
+        memory.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(free=100 * 1024**3),
+    )
+    _FakeThread.init_count = 0
+    _FakeThread.start_count = 0
+    monkeypatch.setattr(local_bootstrap.threading, "Thread", _FakeThread)
+
+    assert local_bootstrap.start_bootstrap(LOCAL_MODEL) == (
+        {"install_state": "downloading"},
+        202,
+    )
+    assert _FakeThread.start_count == 1
+
+
+def test_start_bootstrap_insufficient_disk_blocks_before_worker(
+    settings_env, monkeypatch
+):
+    settings_env(_settings_config())
+    _write_local_status("idle")
+    monkeypatch.setattr(
+        local_bootstrap,
+        "get_availability_payload",
+        lambda _model: {
+            "platform_supported": True,
+            "reason": "local runtime is not installed",
+            "binary_present": False,
+            "model_present": False,
+            "download_bytes": 4 * 1024**3,
+        },
+    )
+    monkeypatch.setattr(
+        memory.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(free=1 * 1024**3),
+    )
+    _FakeThread.init_count = 0
+    _FakeThread.start_count = 0
+    monkeypatch.setattr(local_bootstrap.threading, "Thread", _FakeThread)
+
+    with pytest.raises(
+        local_bootstrap.LocalBootstrapUnavailableError, match="insufficient disk"
+    ):
+        local_bootstrap.start_bootstrap(LOCAL_MODEL)
+
+    assert _FakeThread.init_count == 0
+    status = read_install_status(scope="bundled", name="local")
+    assert status["install_state"] == "idle"
 
 
 def test_local_bootstrap_status_returns_canonical_shape(settings_env):
@@ -452,9 +587,9 @@ def test_mlx_availability_ignores_install_state_when_snapshot_missing(
         ),
     )
     monkeypatch.setattr(
-        local_bootstrap.psutil,
+        memory.psutil,
         "virtual_memory",
-        lambda: type("VMem", (), {"total": 32 * 1024**3})(),
+        lambda: SimpleNamespace(available=32 * 1024**3, total=32 * 1024**3),
     )
 
     payload = local_bootstrap.get_availability_payload(QWEN_35_9B)
@@ -519,9 +654,9 @@ def test_local_bootstrap_migrates_preexisting_install_without_worker(
     )
     monkeypatch.setattr(local_bootstrap, "_platform_supported", lambda: (True, ""))
     monkeypatch.setattr(
-        local_bootstrap.psutil,
+        memory.psutil,
         "virtual_memory",
-        lambda: type("VMem", (), {"total": 32 * 1024**3})(),
+        lambda: SimpleNamespace(available=32 * 1024**3, total=32 * 1024**3),
     )
     monkeypatch.setattr(
         local_bootstrap.threading,
@@ -548,16 +683,24 @@ def test_mlx_start_bootstrap_dispatches_to_mlx_worker(settings_env, monkeypatch)
             "model": QWEN_35_9B,
             "platform_supported": True,
             "total_memory_gb": 32.0,
-            "min_ram_gb": 16,
+            "available_memory_gb": 32.0,
+            "min_ram_gb": 13,
             "binary_present": True,
             "model_present": False,
             "available": False,
             "reason": "local model files are not installed",
+            "warning": "",
+            "download_bytes": 10453446077,
         },
     )
     _FakeThread.init_count = 0
     _FakeThread.start_count = 0
     _FakeThread.targets = []
+    monkeypatch.setattr(
+        memory.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(free=100 * 1024**3),
+    )
     monkeypatch.setattr(local_bootstrap.threading, "Thread", _FakeThread)
 
     assert local_bootstrap.start_bootstrap(QWEN_35_9B) == (

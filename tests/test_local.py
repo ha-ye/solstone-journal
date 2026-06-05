@@ -47,6 +47,7 @@ def test_local_model_specs():
         spec.mmproj_sha256
         == "cd88edcf8d031894960bb0c9c5b9b7e1fea6ebee02b9f7ce925a00d12891f864"
     )
+    assert spec.mmproj_size_bytes == 672423616
 
 
 def test_local_provider_defaults_and_registry():
@@ -451,10 +452,36 @@ def test_local_provider_status_carries_install_hint_substring(monkeypatch):
     assert status["issues"] == [
         "binary_missing",
         "model_missing",
-        "ram_insufficient",
         "run `journal install-provider local`",
     ]
     assert any("journal install-provider local" in issue for issue in status["issues"])
+
+
+def test_build_provider_status_local_configured_ignores_ram_flag(monkeypatch):
+    from solstone.think.providers import build_provider_status
+
+    _select_local_provider(monkeypatch)
+    monkeypatch.setattr(
+        "solstone.think.providers.local_install.inspect_readiness",
+        lambda: {
+            "binary_installed": True,
+            "model_installed": True,
+            "ram_sufficient": False,
+            "binary_path": "/fake/llama-server",
+        },
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.is_healthy", lambda: True
+    )
+
+    status = build_provider_status(
+        [{"name": "local", "label": "Local (on-device)", "env_key": ""}]
+    )["local"]
+
+    assert status["configured"] is True
+    assert status["generate_ready"] is True
+    assert status["cogitate_ready"] is True
+    assert status["issues"] == []
 
 
 def test_local_server_connect_returns_healthy_service(monkeypatch):

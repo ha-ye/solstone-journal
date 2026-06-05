@@ -9,12 +9,13 @@ import tarfile
 import time
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from solstone.think.journal_config import read_journal_config
 from solstone.think.models import LOCAL_MODEL
-from solstone.think.providers import local_install
+from solstone.think.providers import local_install, memory
 from solstone.think.providers.install_state import read_install_status
 from solstone.think.providers.local import LOCAL_MODEL_SPECS
 
@@ -309,6 +310,55 @@ def test_ensure_artifacts_installed_returns_binary_gguf_and_optional_mmproj(
         gguf,
         mmproj,
     )
+
+
+def test_ensure_artifacts_installed_ignores_low_memory_when_artifacts_exist(
+    tmp_path, monkeypatch
+):
+    binary = tmp_path / "llama-server"
+    gguf = tmp_path / "model.gguf"
+    monkeypatch.setattr(
+        local_install,
+        "inspect_readiness",
+        lambda model_id: {
+            "binary_installed": True,
+            "model_installed": True,
+            "ram_sufficient": False,
+            "binary_path": str(binary),
+            "model_path": str(gguf),
+            "mmproj_path": None,
+        },
+    )
+
+    assert local_install.ensure_artifacts_installed(LOCAL_MODEL) == (
+        binary,
+        gguf,
+        None,
+    )
+
+
+def test_inspect_readiness_reports_ram_sufficient_for_low_or_unknown_memory(
+    tmp_path, monkeypatch
+):
+    _init_journal(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        memory.psutil,
+        "virtual_memory",
+        lambda: SimpleNamespace(available=1 * 1024**3, total=16 * 1024**3),
+    )
+
+    readiness = local_install.inspect_readiness(LOCAL_MODEL)
+
+    assert readiness["ram_sufficient"] is True
+
+    def raise_memory_error():
+        raise RuntimeError("psutil failed")
+
+    monkeypatch.setattr(memory.psutil, "virtual_memory", raise_memory_error)
+
+    readiness = local_install.inspect_readiness(LOCAL_MODEL)
+
+    assert readiness["ram_sufficient"] is True
 
 
 def test_inspect_readiness_ignores_stale_model_path_after_model_change(

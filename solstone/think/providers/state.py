@@ -268,9 +268,8 @@ def local_status_dict() -> dict:
     readiness = local_install.inspect_readiness()
     binary_installed = bool(readiness["binary_installed"])
     model_installed = bool(readiness["model_installed"])
-    ram_sufficient = bool(readiness["ram_sufficient"])
     selected = is_local_provider_needed()
-    configured = binary_installed and model_installed and ram_sufficient
+    configured = binary_installed and model_installed
 
     if not selected:
         return {
@@ -289,8 +288,6 @@ def local_status_dict() -> dict:
         issues.append("binary_missing")
     if not model_installed:
         issues.append("model_missing")
-    if not ram_sufficient:
-        issues.append("ram_insufficient")
     if configured and not server_healthy:
         runnable, detail = local_install.probe_binary_runnable(readiness["binary_path"])
         if runnable:
@@ -407,17 +404,6 @@ def _local_readiness_for_provider(
     selected_model = model or LOCAL_MODEL
     readiness = local_install.inspect_readiness(selected_model)
     model_id = str(readiness.get("model_id") or selected_model)
-
-    if not readiness["ram_sufficient"]:
-        return _state(
-            provider,
-            interface,
-            "blocked",
-            "ram_insufficient",
-            model=model_id,
-            message=str(readiness.get("install_error") or "") or None,
-            source="local_install",
-        )
 
     if readiness["install_state"] in IN_FLIGHT_STATES:
         return _state(

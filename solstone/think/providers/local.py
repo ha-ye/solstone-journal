@@ -41,6 +41,7 @@ class LocalModelSpec:
     min_ram_bytes: int
     mmproj_filename: str | None = None
     mmproj_sha256: str | None = None
+    mmproj_size_bytes: int | None = None
 
 
 LOCAL_MODEL_SPECS: dict[str, LocalModelSpec] = {
@@ -54,6 +55,7 @@ LOCAL_MODEL_SPECS: dict[str, LocalModelSpec] = {
         min_ram_bytes=8 * 1024**3,
         mmproj_filename="mmproj-F16.gguf",
         mmproj_sha256="cd88edcf8d031894960bb0c9c5b9b7e1fea6ebee02b9f7ce925a00d12891f864",
+        mmproj_size_bytes=672423616,
     ),
 }
 

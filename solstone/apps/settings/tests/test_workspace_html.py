@@ -62,6 +62,7 @@ def test_workspace_unified_provider_panel_replaces_install_regions():
     assert "function startLocalBootstrap()" in text
     assert "function renderProvidersPanel(data)" in text
     assert "function providerCardMeta(state, kind, availability)" in text
+    assert "function providerCardMetaLine(state, kind, availability)" in text
     assert "function runProviderAction(providerId, action)" in text
     assert "async function pollProvidersPanel()" in text
     assert "function providerCardOverflow(state, kind)" in text
@@ -103,8 +104,27 @@ def test_workspace_unified_provider_panel_has_byte_and_blocked_state_paths():
     assert "formatMlxBytes(receivedBytes)" in text
     assert "formatMlxBytes(totalBytes)" in text
     assert "function localMlxBlockedReason(state, availability)" in text
+    assert "providerCardMetaLine(state, kind, availability)" in text
+    assert "INSTALL_COPY.LOCAL_REQUIREMENTS_TEMPLATE" in text
+    assert "INSTALL_COPY.LOCAL_DETECTED_MEMORY_TEMPLATE" in text
+    assert "INSTALL_COPY.LOCAL_DETECTED_MEMORY_UNKNOWN" in text
+    assert "INSTALL_COPY.LOCAL_PATHS_FRAMING" in text
+    assert "INSTALL_COPY.LOCAL_EXPERIMENTAL_NOTE" in text
+    assert "INSTALL_COPY.LOCAL_RECOVERY_HOSTED_KEY_SET" in text
+    assert "INSTALL_COPY.LOCAL_RECOVERY_NO_HOSTED_KEY" in text
+    assert (
+        "!!(configData?.env?.GOOGLE_API_KEY || configData?.runtime_env?.GOOGLE_API_KEY)"
+    ) in text
     assert "'local runtime is not installed'" in text
     assert "'local model files are not installed'" in text
+    match = re.search(
+        r"const installableReasons = \[(?P<body>.*?)\];",
+        text,
+        re.DOTALL,
+    )
+    assert match is not None
+    assert "insufficient RAM" not in match.group("body")
+    assert "insufficient disk" not in match.group("body")
 
 
 def test_workspace_cogitate_key_guidance_strings_present():
