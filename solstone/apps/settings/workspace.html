@@ -5996,7 +5996,7 @@ function renderContextGroups(data) {
   const container = document.getElementById('contextGroups');
   const contexts = data.context_defaults;
   const overrides = data.contexts || {};
-  const defaultTier = data.default.tier;
+  const defaultTier = data.generate?.tier || data.default?.tier || 2;
   const providers = data.providers || [];
 
   // Group by group name

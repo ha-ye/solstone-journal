@@ -116,3 +116,41 @@ def test_provider_card_helpers_are_coherent():
     )
 
     subprocess.run([node, "-e", script], check=True, text=True)
+
+
+def test_context_groups_render_with_type_specific_provider_defaults():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not available")
+
+    source = WORKSPACE.read_text(encoding="utf-8")
+    start = source.index("function renderContextGroups(")
+    end = source.index("\nfunction setupContextEventListeners", start)
+    render_context_groups = source[start:end]
+    script = (
+        f"{render_context_groups}\n"
+        "function assert(condition, message) { if (!condition) throw new Error(message); }\n"
+        "let rendered = '';\n"
+        "global.document = {\n"
+        "  getElementById(id) {\n"
+        "    assert(id === 'contextGroups', 'unexpected element id ' + id);\n"
+        "    return { set innerHTML(value) { rendered = value; }, get innerHTML() { return rendered; } };\n"
+        "  },\n"
+        "  querySelectorAll() { return []; },\n"
+        "};\n"
+        "global.setupContextEventListeners = function() {};\n"
+        "renderContextGroups({\n"
+        "  generate: { provider: 'local', tier: 2, backup: 'google' },\n"
+        "  providers: [{ name: 'local', label: 'Local (on-device)' }],\n"
+        "  contexts: {},\n"
+        "  context_defaults: {\n"
+        "    'talent.system.chat': { label: 'Chat', group: 'Think', tier: 2 },\n"
+        "    'detect.created': { label: 'Date Detection', group: 'Import', tier: 3 },\n"
+        "  },\n"
+        "});\n"
+        "assert(rendered.includes('Chat'), 'context label should render');\n"
+        "assert(rendered.includes('Date Detection'), 'second context label should render');\n"
+        "assert(rendered.includes('Local (on-device)'), 'provider option should render');\n"
+    )
+
+    subprocess.run([node, "-e", script], check=True, text=True)
