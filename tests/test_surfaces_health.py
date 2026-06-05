@@ -13,6 +13,7 @@ import pytest
 from click.testing import Result
 from typer.testing import CliRunner
 
+from solstone.convey.readiness_snapshot import unavailable_snapshot
 from solstone.think.pipeline_health import SegmentBacklog, SegmentCompletion
 from solstone.think.surfaces import health as health_surface
 
@@ -209,6 +210,64 @@ def _segment_backlog(
         per_day=per_day,
         errors=errors,
     )
+
+
+def _clear_readiness_snapshot() -> dict[str, object]:
+    return {
+        "summary": {
+            "status": "ready",
+            "severity": "ok",
+            "active_groups": 0,
+            "blocked_count": 0,
+        },
+        "interfaces": {},
+        "groups": [],
+    }
+
+
+def _blocked_readiness_snapshot() -> dict[str, object]:
+    return {
+        "summary": {
+            "status": "blocked",
+            "severity": "blocker",
+            "active_groups": 2,
+            "blocked_count": 1,
+        },
+        "interfaces": {
+            "generate": {
+                "severity": "blocker",
+                "summary": "Distinctive blocker summary",
+            },
+            "cogitate": {
+                "severity": "attention",
+                "summary": "Distinctive attention summary",
+            },
+        },
+        "groups": [
+            {
+                "severity": "blocker",
+                "semantic_key": "blocked:primary",
+                "summary": "Distinctive provider blocker summary",
+                "recovery_action": {
+                    "label": "Fix provider settings",
+                    "href": "/app/settings/providers",
+                },
+                "operator_detail": "operator-only diagnostic detail",
+                "reason_code": "blocked_reason_code",
+            },
+            {
+                "severity": "attention",
+                "semantic_key": "attention:secondary",
+                "summary": "Distinctive provider attention summary",
+                "recovery_action": {
+                    "label": "Review provider",
+                    "href": "/app/settings/providers#review",
+                },
+                "operator_detail": "attention operator detail",
+                "reason_code": "attention_reason_code",
+            },
+        ],
+    }
 
 
 def _invoke_health_summary(
@@ -1112,7 +1171,204 @@ def test_cli_health_summary_full_range_json(tmp_path, monkeypatch):
             "consumer_signal",
             "segment_backlog",
             "notes",
+            "provider_readiness",
         }
+        assert list(payload)[-1] == "provider_readiness"
+
+
+def test_provider_readiness_carried_through_verbatim_json(tmp_path, monkeypatch):
+    _configure_env(tmp_path, monkeypatch)
+    _set_now(monkeypatch, _utc_dt("20260410"))
+    _minimal_facet_tree(tmp_path)
+    monkeypatch.setattr(
+        health_surface, "read_segment_backlog", lambda: _segment_backlog({})
+    )
+    sentinel = {
+        "summary": {
+            "status": "blocked",
+            "severity": "blocker",
+            "active_groups": 1,
+            "blocked_count": 1,
+        },
+        "interfaces": {},
+        "groups": [
+            {
+                "severity": "blocker",
+                "semantic_key": "sentinel:marker:",
+                "reason_code": "sentinel_reason",
+                "summary": "SENTINEL SUMMARY",
+            }
+        ],
+        "marker": {"unusual": ["value"]},
+    }
+    monkeypatch.setattr(
+        health_surface,
+        "build_readiness_snapshot",
+        lambda: sentinel,
+    )
+
+    from solstone.think.call import call_app
+
+    result = _RUNNER.invoke(call_app, ["health", "summary", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["provider_readiness"] == sentinel
+
+
+def test_other_sections_unchanged_across_readiness_states(tmp_path, monkeypatch):
+    _configure_env(tmp_path, monkeypatch)
+    _set_now(monkeypatch, _utc_dt("20260410"))
+    _minimal_facet_tree(tmp_path)
+    monkeypatch.setattr(
+        health_surface, "read_segment_backlog", lambda: _segment_backlog({})
+    )
+
+    from solstone.think.call import call_app
+
+    rendered_payloads = []
+    for snapshot in (
+        _clear_readiness_snapshot(),
+        _blocked_readiness_snapshot(),
+        unavailable_snapshot(),
+    ):
+        monkeypatch.setattr(
+            health_surface,
+            "build_readiness_snapshot",
+            lambda snapshot=snapshot: snapshot,
+        )
+        result = _RUNNER.invoke(call_app, ["health", "summary", "--json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout)
+        without_readiness = {
+            key: value for key, value in payload.items() if key != "provider_readiness"
+        }
+        rendered_payloads.append(json.dumps(without_readiness, sort_keys=True))
+
+    assert rendered_payloads[0] == rendered_payloads[1] == rendered_payloads[2]
+
+
+def test_human_block_clear(tmp_path, monkeypatch):
+    _configure_env(tmp_path, monkeypatch)
+    _set_now(monkeypatch, _utc_dt("20260410"))
+    _minimal_facet_tree(tmp_path)
+    monkeypatch.setattr(
+        health_surface, "read_segment_backlog", lambda: _segment_backlog({})
+    )
+    monkeypatch.setattr(
+        health_surface,
+        "build_readiness_snapshot",
+        _clear_readiness_snapshot,
+    )
+
+    from solstone.think.call import call_app
+
+    result = _RUNNER.invoke(call_app, ["health", "summary"])
+
+    assert result.exit_code == 0
+    assert "Provider Readiness" in result.stdout
+    assert "all providers ready" in result.stdout
+
+
+def test_human_block_blocked(tmp_path, monkeypatch):
+    _configure_env(tmp_path, monkeypatch)
+    _set_now(monkeypatch, _utc_dt("20260410"))
+    _minimal_facet_tree(tmp_path)
+    monkeypatch.setattr(
+        health_surface, "read_segment_backlog", lambda: _segment_backlog({})
+    )
+    monkeypatch.setattr(
+        health_surface,
+        "build_readiness_snapshot",
+        _blocked_readiness_snapshot,
+    )
+
+    from solstone.think.call import call_app
+
+    result = _RUNNER.invoke(call_app, ["health", "summary"])
+
+    assert result.exit_code == 0
+    assert "Distinctive provider blocker summary" in result.stdout
+    assert "2 provider groups need attention" in result.stdout
+    assert "Fix provider settings: /app/settings/providers" in result.stdout
+    assert "operator-only diagnostic detail" not in result.stdout
+    assert "blocked_reason_code" not in result.stdout
+
+
+def test_human_block_unavailable(tmp_path, monkeypatch):
+    _configure_env(tmp_path, monkeypatch)
+    _set_now(monkeypatch, _utc_dt("20260410"))
+    _minimal_facet_tree(tmp_path)
+    monkeypatch.setattr(
+        health_surface, "read_segment_backlog", lambda: _segment_backlog({})
+    )
+    monkeypatch.setattr(
+        health_surface,
+        "build_readiness_snapshot",
+        unavailable_snapshot,
+    )
+
+    from solstone.think.call import call_app
+
+    result = _RUNNER.invoke(call_app, ["health", "summary"])
+
+    assert result.exit_code == 0
+    assert "Provider Readiness" in result.stdout
+    assert "readiness status unavailable" in result.stdout
+    assert "all providers ready" not in result.stdout
+    assert "all clear" not in result.stdout
+
+
+def test_readiness_degrades_when_builder_raises(tmp_path, monkeypatch):
+    _configure_env(tmp_path, monkeypatch)
+    _set_now(monkeypatch, _utc_dt("20260410"))
+    _minimal_facet_tree(tmp_path)
+    monkeypatch.setattr(
+        health_surface, "read_segment_backlog", lambda: _segment_backlog({})
+    )
+
+    def raise_readiness_error() -> dict[str, object]:
+        raise RuntimeError("readiness failed")
+
+    monkeypatch.setattr(
+        health_surface,
+        "build_readiness_snapshot",
+        raise_readiness_error,
+    )
+
+    from solstone.think.call import call_app
+
+    result = _RUNNER.invoke(call_app, ["health", "summary", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["provider_readiness"]["unavailable"] is True
+    assert "capture_health" in payload
+
+
+def test_backlog_and_readiness_render_independently(tmp_path, monkeypatch):
+    _configure_env(tmp_path, monkeypatch)
+    _set_now(monkeypatch, _utc_dt("20260410"))
+    _minimal_facet_tree(tmp_path)
+    monkeypatch.setattr(
+        health_surface,
+        "read_segment_backlog",
+        lambda: _segment_backlog({"20260409": 1, "20260410": 2}),
+    )
+    monkeypatch.setattr(
+        health_surface,
+        "build_readiness_snapshot",
+        _blocked_readiness_snapshot,
+    )
+
+    from solstone.think.call import call_app
+
+    result = _RUNNER.invoke(call_app, ["health", "summary"])
+
+    assert result.exit_code == 0
+    assert "3 segments across 2 days awaiting thinking" in result.stdout
+    assert "Provider Readiness" in result.stdout
+    assert "Distinctive provider blocker summary" in result.stdout
 
 
 def test_cli_help_disambiguates_and_lists_health_once(tmp_path, monkeypatch):

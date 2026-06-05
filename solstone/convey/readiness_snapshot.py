@@ -94,3 +94,22 @@ def _build_interface_snapshot() -> dict[str, Any]:
         "interfaces": interface_views,
         "groups": groups,
     }
+
+
+def highest_severity_group(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the snapshot group with the highest presenter severity, or None.
+
+    Reuses ``_READINESS_SEVERITY_RANK`` so the ordering matches every other
+    readiness surface. ``groups`` only ever contains blocker/attention views;
+    ties resolve by ``semantic_key`` for deterministic output.
+    """
+    groups = snapshot.get("groups") or []
+    if not groups:
+        return None
+    return max(
+        groups,
+        key=lambda g: (
+            _READINESS_SEVERITY_RANK.get(g.get("severity", ""), -1),
+            g.get("semantic_key", ""),
+        ),
+    )

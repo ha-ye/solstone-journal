@@ -2,6 +2,7 @@
 # Copyright (c) 2026 sol pbc
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -134,3 +135,4 @@ class HealthReport:
     consumer_signal: ConsumerSignalHealth
     segment_backlog: SegmentBacklogHealth
     notes: tuple[HealthNote, ...]
+    provider_readiness: dict[str, Any]

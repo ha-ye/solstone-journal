@@ -11,11 +11,16 @@ derived from journal data. For infrastructure and service liveness, use
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
+from solstone.convey.readiness_snapshot import (
+    build_readiness_snapshot,
+    unavailable_snapshot,
+)
 from solstone.think.activities import load_activity_records
 from solstone.think.entities.journal import load_all_journal_entities
 from solstone.think.facets import get_facets
@@ -47,6 +52,8 @@ DEGRADED_OUTPUT_NOTE_CAP = 10
 _DAY_MS = 86_400_000
 _HOUR_MS = 3_600_000
 _SPEC_POINTER = "cpo/specs/in-flight/consumer-surface-health.md"
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_now() -> datetime:
@@ -499,6 +506,14 @@ def _build_segment_backlog_health() -> SegmentBacklogHealth:
     )
 
 
+def _build_provider_readiness() -> dict[str, Any]:
+    try:
+        return build_readiness_snapshot()
+    except Exception:
+        logger.exception("error building provider readiness for health report")
+        return unavailable_snapshot()
+
+
 def _build_report(day_from: str, day_to: str) -> HealthReport:
     generated_at = int(_resolve_now().timestamp() * 1000)
     facets = tuple(sorted(get_facets().keys()))
@@ -531,6 +546,7 @@ def _build_report(day_from: str, day_to: str) -> HealthReport:
         consumer_signal=_build_consumer_signal_health(),
         segment_backlog=_build_segment_backlog_health(),
         notes=tuple(notes),
+        provider_readiness=_build_provider_readiness(),
     )
 
 

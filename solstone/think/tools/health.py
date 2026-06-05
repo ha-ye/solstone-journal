@@ -11,6 +11,7 @@ from typing import Optional
 
 import typer
 
+from solstone.convey.readiness_snapshot import highest_severity_group
 from solstone.think.pipeline_health import summarize_pipeline_day
 from solstone.think.surfaces import health as health_surface
 from solstone.think.surfaces.types import HealthReport
@@ -97,6 +98,27 @@ def _render_summary(report: HealthReport) -> None:
     typer.echo(
         f"  profile_entities_total: {report.consumer_signal.profile_entities_total}"
     )
+    snap = report.provider_readiness
+    typer.echo("Provider Readiness")
+    if snap.get("unavailable"):
+        typer.echo("  readiness status unavailable")
+    elif snap.get("summary", {}).get("active_groups", 0) == 0:
+        typer.echo("  all providers ready")
+    else:
+        summary = snap.get("summary", {})
+        active = summary.get("active_groups", 0)
+        group_word = "provider group" if active == 1 else "provider groups"
+        top = highest_severity_group(snap)
+        if top is not None:
+            typer.echo(f"  [{top.get('severity')}] {top.get('summary')}")
+        typer.echo(f"  {active} {group_word} need attention")
+        recovery = (top or {}).get("recovery_action")
+        if isinstance(recovery, dict) and recovery.get("label"):
+            href = recovery.get("href")
+            if href:
+                typer.echo(f"  → {recovery['label']}: {href}")
+            else:
+                typer.echo(f"  → {recovery['label']}")
     typer.echo("Notes")
     if not report.notes:
         typer.echo("  none")
