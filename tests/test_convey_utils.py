@@ -2,6 +2,7 @@
 # Copyright (c) 2026 sol pbc
 
 import math
+import os
 
 from flask import Flask
 
@@ -11,6 +12,7 @@ from solstone.convey.utils import (
     format_date_short,
     relative_time,
     respond_collection,
+    safe_journal_path,
     time_since,
 )
 from solstone.think.utils import day_path
@@ -147,3 +149,48 @@ def test_created_sets_location_header():
     assert status == 201
     assert response.headers["Location"] == "/app/things/abc"
     assert response.get_json() == {"id": "abc"}
+
+
+def _assert_invalid_path_error(error):
+    assert error is not None
+    response, status = error
+    assert status == 400
+    assert response.get_json() == {
+        "error": "I couldn't use that path.",
+        "reason_code": "invalid_path",
+        "detail": "",
+    }
+
+
+def test_safe_journal_path_accepts_contained_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    path, error = safe_journal_path("facets/work/facet.json")
+
+    assert error is None
+    assert path == tmp_path / "facets" / "work" / "facet.json"
+    assert path.is_absolute()
+
+
+def test_safe_journal_path_rejects_invalid_relpaths(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    with _app_context():
+        for relpath in ("..", "../escape", "/etc/passwd", "a\\b", ""):
+            path, error = safe_journal_path(relpath)
+
+            assert path is None
+            _assert_invalid_path_error(error)
+
+
+def test_safe_journal_path_rejects_symlink_escape(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    outside = tmp_path.parent / f"{tmp_path.name}_outside"
+    outside.mkdir()
+    os.symlink(outside, tmp_path / "out")
+
+    with _app_context():
+        path, error = safe_journal_path("out/secret.txt")
+
+    assert path is None
+    _assert_invalid_path_error(error)
