@@ -80,8 +80,6 @@ ROUTE_DECORATORS: frozenset[str] = frozenset(
 # count as occurrences are fixed; never raise one to admit a new violation.
 ALLOWLIST: dict[tuple[str, str], int] = {
     ("solstone/apps/activities/routes.py", "bare-array"): 1,
-    ("solstone/apps/activities/routes.py", "bare-return"): 7,
-    ("solstone/apps/activities/routes.py", "inline-error"): 3,
     ("solstone/apps/import/routes.py", "abort"): 2,
     ("solstone/apps/import/routes.py", "bare-array"): 1,
     ("solstone/apps/link/routes.py", "abort"): 1,

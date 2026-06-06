@@ -111,13 +111,6 @@ ENDPOINTS = [
         "params": {"facet": "work"},
         "status": 200,
     },
-    {
-        "app": "activities",
-        "name": "screen-files",
-        "path": "/app/activities/api/screen_files/20260304",
-        "params": {},
-        "status": 200,
-    },
     # apps/entities/routes.py
     {
         "app": "entities",
