@@ -31,6 +31,8 @@ from solstone.think.entities.journal import (
     journal_entity_memory_path,
 )
 from solstone.think.entities.voiceprints import load_entity_voiceprints_file
+from solstone.think.journal_io.errors import LockTimeout
+from solstone.think.journal_io.npz import load_npz, save_npz
 from solstone.think.utils import day_dirs, get_journal, segment_path
 
 logger = logging.getLogger(__name__)
@@ -40,6 +42,8 @@ LOW_QUALITY_REASON_TOO_FEW_STMTS = "too_few_stmts"
 LOW_QUALITY_REASON_MEDIAN_DURATION_TOO_SHORT = "median_duration_too_short"
 LOW_QUALITY_REASON_CLUSTER_TOO_DIFFUSE = "cluster_too_diffuse"
 MANUAL_OWNER_METHODS = frozenset({"user_assigned", "user_corrected", "user_confirmed"})
+VOICEPRINT_BUSY_ERROR_KIND = "voiceprint_busy"
+VOICEPRINT_BUSY_ERROR = "voiceprint storage is busy; try again"
 _PROVISIONAL_GUARD_CACHE: dict[str, tuple[int, int, np.ndarray]] | None = None
 
 
@@ -166,6 +170,14 @@ def _owner_candidate_path() -> Path:
     awareness_dir = Path(get_journal()) / "awareness"
     awareness_dir.mkdir(parents=True, exist_ok=True)
     return awareness_dir / "owner_candidate.npz"
+
+
+def _voiceprint_busy_result(exc: LockTimeout) -> dict[str, Any]:
+    logger.warning("voiceprint storage busy for %s", exc.path)
+    return {
+        "error": VOICEPRINT_BUSY_ERROR,
+        "error_kind": VOICEPRINT_BUSY_ERROR_KIND,
+    }
 
 
 def _principal_id_or_none() -> str | None:
@@ -453,12 +465,15 @@ def _write_owner_centroid(
 ) -> Path:
     """Write owner_centroid.npz with the canonical schema."""
     owner_path = ensure_journal_entity_memory(principal_id) / "owner_centroid.npz"
-    np.savez_compressed(
+    save_npz(
         owner_path,
-        centroid=np.asarray(centroid, dtype=np.float32).reshape(-1),
-        cluster_size=np.array(cluster_size, dtype=np.int32),
-        threshold=np.array(OWNER_THRESHOLD, dtype=np.float32),
-        last_refreshed_at=np.array(_iso_now()),
+        {
+            "centroid": np.asarray(centroid, dtype=np.float32).reshape(-1),
+            "cluster_size": np.array(cluster_size, dtype=np.int32),
+            "threshold": np.array(OWNER_THRESHOLD, dtype=np.float32),
+            "last_refreshed_at": np.array(_iso_now()),
+        },
+        expected_keys=("centroid", "cluster_size", "threshold", "last_refreshed_at"),
     )
     return owner_path
 
@@ -872,13 +887,19 @@ def detect_owner_candidate() -> dict[str, Any]:
                 break
 
     version = _iso_now()
-    np.savez_compressed(
-        _owner_candidate_path(),
-        centroid=centroid.astype(np.float32),
-        cluster_size=np.array(cluster_size, dtype=np.int32),
-        threshold=np.array(OWNER_THRESHOLD, dtype=np.float32),
-        version=np.array(version),
-    )
+    try:
+        save_npz(
+            _owner_candidate_path(),
+            {
+                "centroid": centroid.astype(np.float32),
+                "cluster_size": np.array(cluster_size, dtype=np.int32),
+                "threshold": np.array(OWNER_THRESHOLD, dtype=np.float32),
+                "version": np.array(version),
+            },
+            expected_keys=("centroid", "cluster_size", "threshold", "version"),
+        )
+    except LockTimeout as exc:
+        return _voiceprint_busy_result(exc)
 
     update_state(
         "voiceprint",
@@ -932,26 +953,28 @@ def load_owner_centroid() -> OwnerCentroid | None:
         return None
 
     try:
-        with np.load(centroid_path, allow_pickle=False) as data:
-            centroid = data.get("centroid")
-            threshold = data.get("threshold")
-            cluster_size = data.get("cluster_size")
-            last_refreshed_at = data.get("last_refreshed_at")
-            if centroid is None or threshold is None or cluster_size is None:
-                return None
+        data = load_npz(centroid_path)
+        if data is None:
+            return None
+        centroid = data.get("centroid")
+        threshold = data.get("threshold")
+        cluster_size = data.get("cluster_size")
+        last_refreshed_at = data.get("last_refreshed_at")
+        if centroid is None or threshold is None or cluster_size is None:
+            return None
 
-            normalized = centroid.astype(np.float32).reshape(-1)
-            norm = np.linalg.norm(normalized)
-            if norm == 0:
-                return None
-            normalized = normalized / norm
-            refreshed = (
-                str(np.asarray(last_refreshed_at).item())
-                if last_refreshed_at is not None
-                else ""
-            )
-            size = int(np.asarray(cluster_size).item())
-            thresh = float(np.asarray(threshold).item())
+        normalized = centroid.astype(np.float32).reshape(-1)
+        norm = np.linalg.norm(normalized)
+        if norm == 0:
+            return None
+        normalized = normalized / norm
+        refreshed = (
+            str(np.asarray(last_refreshed_at).item())
+            if last_refreshed_at is not None
+            else ""
+        )
+        size = int(np.asarray(cluster_size).item())
+        thresh = float(np.asarray(threshold).item())
 
         intra_p25, streams = _load_owner_voiceprint_summary(principal_id)
         return OwnerCentroid(
@@ -1023,7 +1046,9 @@ def confirm_owner_candidate() -> dict[str, Any]:
         return {"error": "No candidate available"}
 
     try:
-        data = np.load(candidate_path, allow_pickle=False)
+        data = load_npz(candidate_path)
+        if data is None:
+            return {"error": "No candidate available"}
         centroid = data["centroid"]
         cluster_size = int(np.asarray(data["cluster_size"]).item())
     except Exception as e:
@@ -1043,7 +1068,10 @@ def confirm_owner_candidate() -> dict[str, Any]:
             entity_type="Person",
         )
 
-    _write_owner_centroid(principal["id"], np.asarray(centroid), cluster_size)
+    try:
+        _write_owner_centroid(principal["id"], np.asarray(centroid), cluster_size)
+    except LockTimeout as exc:
+        return _voiceprint_busy_result(exc)
     clear_owner_provisional_cache(principal["id"])
     candidate_path.unlink(missing_ok=True)
 
@@ -1076,7 +1104,8 @@ def bootstrap_owner_from_manual_tags() -> dict[str, Any]:
         clear_owner_provisional_cache(principal_id)
         cluster_size = None
         try:
-            with np.load(centroid_path, allow_pickle=False) as data:
+            data = load_npz(centroid_path)
+            if data is not None:
                 cluster_size = int(np.asarray(data["cluster_size"]).item())
         except Exception as exc:
             logger.warning(
@@ -1125,7 +1154,10 @@ def bootstrap_owner_from_manual_tags() -> dict[str, Any]:
             source="manual_tags",
         )
 
-    _write_owner_centroid(principal_id, centroid, embeddings_count)
+    try:
+        _write_owner_centroid(principal_id, centroid, embeddings_count)
+    except LockTimeout as exc:
+        return _voiceprint_busy_result(exc)
     clear_owner_provisional_cache(principal_id)
     update_state(
         "voiceprint",

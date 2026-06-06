@@ -70,6 +70,7 @@ from solstone.convey.reasons import (
     SPEAKER_OWNER_VOICE_TOO_CLOSE,
     SPEAKER_REVIEW_UNAVAILABLE,
     SPEAKER_SENTENCE_MISSING,
+    SPEAKER_VOICEPRINT_BUSY,
 )
 from solstone.convey.utils import DATE_RE, error_response, format_date, success_response
 from solstone.think.awareness import get_current
@@ -81,6 +82,8 @@ from solstone.think.entities.journal import (
     load_all_journal_entities,
     load_journal_entity,
 )
+from solstone.think.journal_io.errors import LockTimeout
+from solstone.think.journal_io.npz import load_npz, update_npz
 from solstone.think.utils import (
     day_dirs,
     day_path,
@@ -93,6 +96,7 @@ from solstone.think.utils import segment_key as validate_segment_key
 from solstone.think.utils import segment_path as get_segment_path
 
 logger = logging.getLogger(__name__)
+VOICEPRINT_KEYS = ("embeddings", "metadata")
 
 speakers_bp = Blueprint(
     "app:speakers",
@@ -129,7 +133,9 @@ def _load_embeddings_file(
         return None
 
     try:
-        data = np.load(npz_path)
+        data = load_npz(npz_path)
+        if data is None:
+            return None
         embeddings = data.get("embeddings")
         statement_ids = data.get("statement_ids")
         durations_s = data.get("durations_s")
@@ -207,7 +213,6 @@ def _save_voiceprint(
     folder = ensure_journal_entity_memory(entity_id)
     npz_path = folder / "voiceprints.npz"
 
-    # Build metadata for this voiceprint
     metadata = {
         "day": day,
         "segment_key": segment_key,
@@ -220,27 +225,25 @@ def _save_voiceprint(
         metadata["stream"] = stream
     metadata_json = json.dumps(metadata)
 
-    # Load existing or initialize empty
-    if npz_path.exists():
-        try:
-            data = np.load(npz_path, allow_pickle=False)
-            existing_embeddings = data["embeddings"]
-            existing_metadata = data["metadata"]
-        except Exception:
+    def transform(current: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        if current:
+            existing_embeddings = current["embeddings"]
+            existing_metadata = current["metadata"]
+        else:
             existing_embeddings = np.empty((0, 256), dtype=np.float32)
-            existing_metadata = np.array([], dtype=str)
-    else:
-        existing_embeddings = np.empty((0, 256), dtype=np.float32)
-        existing_metadata = np.array([], dtype=str)
+            existing_metadata = np.asarray([], dtype=str)
 
-    # Append new voiceprint
-    new_embeddings = np.vstack([existing_embeddings, embedding.reshape(1, -1)])
-    new_metadata = np.append(existing_metadata, metadata_json)
+        return {
+            "embeddings": np.vstack(
+                [
+                    existing_embeddings,
+                    embedding.reshape(1, -1).astype(np.float32),
+                ]
+            ),
+            "metadata": np.append(existing_metadata, metadata_json),
+        }
 
-    # Write back (atomic: temp file + rename)
-    tmp_path = npz_path.with_name(npz_path.stem + ".tmp.npz")
-    np.savez_compressed(tmp_path, embeddings=new_embeddings, metadata=new_metadata)
-    tmp_path.rename(npz_path)
+    update_npz(npz_path, transform, expected_keys=VOICEPRINT_KEYS)
     return npz_path
 
 
@@ -266,43 +269,46 @@ def _remove_voiceprint(
     if not npz_path.exists():
         return None
 
-    try:
-        data = np.load(npz_path, allow_pickle=False)
-        embeddings = data.get("embeddings")
-        metadata_arr = data.get("metadata")
+    outcome: str | None = None
+
+    def transform(current: dict[str, np.ndarray]) -> dict[str, np.ndarray] | None:
+        nonlocal outcome
+        embeddings = current.get("embeddings")
+        metadata_arr = current.get("metadata")
         if embeddings is None or metadata_arr is None:
             return None
-    except Exception:
-        return None
 
-    keep = []
-    for i, m_str in enumerate(metadata_arr):
-        try:
-            m = json.loads(m_str)
-            if (
-                m.get("day") == day
-                and m.get("segment_key") == segment_key
-                and m.get("source") == source
-                and m.get("sentence_id") == sentence_id
-            ):
-                continue
-        except (json.JSONDecodeError, TypeError):
-            pass
-        keep.append(i)
+        keep = []
+        for i, m_str in enumerate(metadata_arr):
+            try:
+                m = json.loads(str(m_str))
+                if (
+                    m.get("day") == day
+                    and m.get("segment_key") == segment_key
+                    and m.get("source") == source
+                    and m.get("sentence_id") == sentence_id
+                ):
+                    continue
+            except (json.JSONDecodeError, TypeError):
+                pass
+            keep.append(i)
 
-    if len(keep) == len(metadata_arr):
-        return None
+        if len(keep) == len(metadata_arr):
+            outcome = "not_found"
+            return None
 
-    if not keep:
-        npz_path.unlink()
-        return npz_path
+        if not keep:
+            outcome = "unlinked"
+            return {}
 
-    new_embeddings = embeddings[keep]
-    new_metadata = metadata_arr[keep]
-    tmp_path = npz_path.with_name(npz_path.stem + ".tmp.npz")
-    np.savez_compressed(tmp_path, embeddings=new_embeddings, metadata=new_metadata)
-    tmp_path.rename(npz_path)
-    return None
+        outcome = "rewritten"
+        return {
+            "embeddings": embeddings[keep],
+            "metadata": metadata_arr[keep],
+        }
+
+    update_npz(npz_path, transform, expected_keys=VOICEPRINT_KEYS)
+    return npz_path if outcome == "unlinked" else None
 
 
 def _load_speaker_labels(segment_dir: Path) -> dict | None:
@@ -390,6 +396,14 @@ def _principal_id_or_none() -> str | None:
     if principal is None:
         return None
     return str(principal["id"])
+
+
+def _voiceprint_busy_response(exc: LockTimeout) -> Any:
+    logger.warning("voiceprint storage busy for %s", exc.path)
+    return error_response(
+        SPEAKER_VOICEPRINT_BUSY,
+        detail="voiceprint storage is busy; try again",
+    )
 
 
 def _owner_bootstrap_status_fields() -> dict[str, Any]:
@@ -1047,7 +1061,12 @@ def api_confirm_attribution() -> Any:
             detail="Embedding too similar to owner voice — cannot save",
         )
 
-    _save_voiceprint(speaker, emb, day, segment_key, source, sentence_id, stream=stream)
+    try:
+        _save_voiceprint(
+            speaker, emb, day, segment_key, source, sentence_id, stream=stream
+        )
+    except LockTimeout as exc:
+        return _voiceprint_busy_response(exc)
 
     old_method = label.get("method")
     labels_data["labels"][label_idx]["confidence"] = "high"
@@ -1167,25 +1186,30 @@ def api_correct_attribution() -> Any:
 
     auto_accumulated_methods = {"acoustic", "context", "contextual"}
     removed_voiceprint_path = None
-    if old_speaker and old_method in auto_accumulated_methods:
-        removed_voiceprint_path = _remove_voiceprint(
-            old_speaker, day, segment_key, source, sentence_id
+    try:
+        if old_speaker and old_method in auto_accumulated_methods:
+            removed_voiceprint_path = _remove_voiceprint(
+                old_speaker, day, segment_key, source, sentence_id
+            )
+
+        voiceprints_removed: list[str] = []
+        if removed_voiceprint_path is not None:
+            journal_root = Path(get_journal())
+            voiceprints_removed = [
+                str(removed_voiceprint_path.relative_to(journal_root))
+            ]
+
+        _save_voiceprint(
+            new_speaker,
+            emb,
+            day,
+            segment_key,
+            source,
+            sentence_id,
+            stream=stream,
         )
-
-    voiceprints_removed: list[str] = []
-    if removed_voiceprint_path is not None:
-        journal_root = Path(get_journal())
-        voiceprints_removed = [str(removed_voiceprint_path.relative_to(journal_root))]
-
-    _save_voiceprint(
-        new_speaker,
-        emb,
-        day,
-        segment_key,
-        source,
-        sentence_id,
-        stream=stream,
-    )
+    except LockTimeout as exc:
+        return _voiceprint_busy_response(exc)
 
     labels_data["labels"][label_idx]["speaker"] = new_speaker
     labels_data["labels"][label_idx]["confidence"] = "high"
@@ -1313,7 +1337,12 @@ def api_assign_attribution() -> Any:
             detail="Embedding too similar to owner voice — cannot save",
         )
 
-    _save_voiceprint(speaker, emb, day, segment_key, source, sentence_id, stream=stream)
+    try:
+        _save_voiceprint(
+            speaker, emb, day, segment_key, source, sentence_id, stream=stream
+        )
+    except LockTimeout as exc:
+        return _voiceprint_busy_response(exc)
 
     labels_data["labels"][label_idx]["speaker"] = speaker
     labels_data["labels"][label_idx]["confidence"] = "high"
@@ -1416,6 +1445,8 @@ def api_owner_status() -> Any:
 def api_owner_detect() -> Any:
     """Run owner voice candidate detection."""
     result = detect_owner_candidate()
+    if result.get("error_kind") == "voiceprint_busy":
+        return error_response(SPEAKER_VOICEPRINT_BUSY, detail=result["error"])
     return jsonify(result)
 
 
@@ -1423,6 +1454,8 @@ def api_owner_detect() -> Any:
 def api_owner_build_from_tags() -> Any:
     """Build a confirmed owner centroid directly from validated manual tags."""
     result = bootstrap_owner_from_manual_tags()
+    if result.get("error_kind") == "voiceprint_busy":
+        return error_response(SPEAKER_VOICEPRINT_BUSY, detail=result["error"])
     if "error" in result:
         return error_response(ENTITY_NOT_FOUND, detail=result["error"], status=400)
     if result.get("status") == "confirmed":
@@ -1442,6 +1475,8 @@ def api_owner_build_from_tags() -> Any:
 def api_owner_confirm() -> Any:
     """Confirm the current owner voice candidate and persist the centroid."""
     result = confirm_owner_candidate()
+    if result.get("error_kind") == "voiceprint_busy":
+        return error_response(SPEAKER_VOICEPRINT_BUSY, detail=result["error"])
     if "error" in result:
         code = 404 if "No candidate" in result["error"] else 400
         reason = SPEAKER_REVIEW_UNAVAILABLE if code == 404 else ENTITY_NOT_FOUND

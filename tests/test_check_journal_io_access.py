@@ -88,6 +88,17 @@ def persist(path):
     write_json(path, {"ok": True})
 """
 
+NPZ_SUBMODULE_IMPORT = """\
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+from solstone.think.journal_io.npz import save_npz, update_npz
+
+
+def persist(path, arrays, transform):
+    save_npz(path, arrays, expected_keys=("data",))
+    update_npz(path, transform, expected_keys=("data",))
+"""
+
 
 def _write_file(root: Path, rel: str, content: str) -> None:
     path = root / rel
@@ -159,6 +170,14 @@ def test_non_gated_imports_are_not_violations(non_gated_root):
 def test_submodule_import_is_flagged():
     findings = cja.scan_source(SUBMODULE_IMPORT)
     assert findings == [(7, "write_json", "write_json")]
+
+
+def test_npz_submodule_write_imports_are_flagged():
+    findings = cja.scan_source(NPZ_SUBMODULE_IMPORT)
+    assert [(primitive, bound_name) for _lineno, primitive, bound_name in findings] == [
+        ("save_npz", "save_npz"),
+        ("update_npz", "update_npz"),
+    ]
 
 
 def test_ratchet_by_file_kind_count(bad_root):

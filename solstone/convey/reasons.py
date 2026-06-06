@@ -286,6 +286,11 @@ SPEAKER_NOT_FOUND = Reason(
     "I couldn't find that speaker. They may have been removed — try refreshing the page.",
     404,
 )
+SPEAKER_VOICEPRINT_BUSY = Reason(
+    "speaker_voiceprint_busy",
+    "I couldn't update that voice right now because it was busy. Try again in a moment.",
+    503,
+)
 
 # reprocess
 REPROCESS_PAST_ONLY = Reason(

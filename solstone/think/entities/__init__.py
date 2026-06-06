@@ -120,7 +120,6 @@ from solstone.think.entities.voiceprints import (
     load_existing_voiceprint_keys,
     normalize_embedding,
     save_voiceprints_batch,
-    save_voiceprints_safely,
     voiceprint_file_path,
 )
 
@@ -171,7 +170,6 @@ __all__ = [
     "save_detected_entity",
     "save_entities",
     "save_voiceprints_batch",
-    "save_voiceprints_safely",
     "update_detected_entity",
     "voiceprint_file_path",
     # Matching

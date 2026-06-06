@@ -59,6 +59,8 @@ GATED_PRIMITIVES: frozenset[str] = frozenset(
         "append_text",
         "atomic_replace",
         "hold_lock",
+        "save_npz",
+        "update_npz",
         "write_json",
         "write_jsonl",
         "write_text",
@@ -72,11 +74,14 @@ MODULE_PRIMITIVES: dict[str, frozenset[str]] = {
         {"atomic_replace", "write_json", "write_jsonl", "write_text"}
     ),
     "solstone.think.journal_io.locking": frozenset({"hold_lock"}),
+    "solstone.think.journal_io.npz": frozenset({"save_npz", "update_npz"}),
 }
 
 OWNER_FILES: frozenset[str] = frozenset(
     {
         "solstone/apps/entities/call.py",
+        "solstone/apps/speakers/owner.py",
+        "solstone/apps/speakers/routes.py",
         "solstone/think/activities.py",
         "solstone/think/entities/consolidation.py",
         "solstone/think/entities/journal.py",
@@ -84,6 +89,7 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/think/entities/observations.py",
         "solstone/think/entities/review_candidates.py",
         "solstone/think/entities/saving.py",
+        "solstone/think/entities/voiceprints.py",
         "solstone/think/facet_review_candidates.py",
         "solstone/think/facets.py",
         # Chronicle day content direct writers. Importer modules that merely
