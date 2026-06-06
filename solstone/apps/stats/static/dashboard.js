@@ -776,17 +776,6 @@ const Dashboard = (function() {
     document.getElementById('loading').style.display = 'none';
     document.getElementById('notice').innerHTML = '';
 
-    // Handle API error
-    if (data.error) {
-      document.getElementById('notice').appendChild(
-        el('div', {className: 'alert alert-error'}, [
-          'Couldn\'t load stats data — the stats file may be corrupt or unreadable. ',
-          'Try regenerating with think-journal-stats.'
-        ])
-      );
-      return;
-    }
-
     // Schema version check (non-blocking warning)
     if (stats.schema_version && stats.schema_version !== EXPECTED_SCHEMA_VERSION) {
       document.getElementById('notice').appendChild(
@@ -1007,7 +996,8 @@ const Dashboard = (function() {
           document.getElementById('loading').style.display = 'none';
           document.getElementById('notice').appendChild(
             el('div', {className: 'alert alert-error'}, [
-              'failed to load dashboard data: ' + error.message
+              'Couldn\'t load dashboard data — the stats file may be corrupt or unreadable. ',
+              'Try regenerating with think-journal-stats.'
             ])
           );
         });

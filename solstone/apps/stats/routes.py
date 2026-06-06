@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 from flask import Blueprint, jsonify
 
 from solstone.convey import backlog_copy, state
+from solstone.convey.reasons import FILE_READ_FAILED
+from solstone.convey.utils import error_response
 from solstone.think.talent import get_talent_configs
 
 stats_bp = Blueprint(
@@ -45,7 +47,7 @@ def stats_data() -> Any:
             response["file_mtime"] = os.path.getmtime(stats_path)
         except Exception:
             logger.exception("Failed to read stats data")
-            response["error"] = "Failed to read stats data"
+            return error_response(FILE_READ_FAILED, detail="Failed to read stats data")
 
     response["generators"] = get_talent_configs(type="generate")
 
