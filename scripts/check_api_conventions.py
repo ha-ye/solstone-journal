@@ -79,15 +79,11 @@ ROUTE_DECORATORS: frozenset[str] = frozenset(
 # (posix-relative-path, kind) -> allowed count. Ratchets toward empty: lower a
 # count as occurrences are fixed; never raise one to admit a new violation.
 ALLOWLIST: dict[tuple[str, str], int] = {
-    ("solstone/apps/activities/routes.py", "bare-array"): 1,
     ("solstone/apps/import/routes.py", "abort"): 2,
     ("solstone/apps/import/routes.py", "bare-array"): 1,
     ("solstone/apps/link/routes.py", "abort"): 1,
     ("solstone/apps/observer/routes.py", "bare-array"): 2,
-    ("solstone/apps/settings/routes.py", "bare-array"): 1,
     ("solstone/apps/todos/routes.py", "bare-return"): 5,
-    ("solstone/apps/tokens/routes.py", "abort"): 2,
-    ("solstone/apps/tokens/routes.py", "bare-array"): 1,
     ("solstone/convey/services_scout.py", "abort"): 1,
     ("solstone/convey/services_scout.py", "inline-error"): 2,
 }

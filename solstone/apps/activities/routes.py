@@ -18,7 +18,12 @@ from solstone.convey.reasons import (
     INVALID_MONTH,
     INVALID_PATH,
 )
-from solstone.convey.utils import DATE_RE, error_response, format_date
+from solstone.convey.utils import (
+    DATE_RE,
+    error_response,
+    format_date,
+    respond_collection,
+)
 from solstone.think.activities import (
     estimate_duration_minutes,
     get_activity_by_id,
@@ -188,7 +193,7 @@ def activities_day_activities(day: str) -> Any:
     Returns enriched activity records: timing comes from ``start``/``end`` for
     anticipated records and from segment keys for realized records.
 
-    Returns JSON array of activity objects.
+    Returns JSON collection envelope of activity objects.
     """
     if not DATE_RE.fullmatch(day):
         return error_response(INVALID_DAY, detail="Invalid day format")
@@ -210,7 +215,7 @@ def activities_day_activities(day: str) -> Any:
 
     # Sort by start time (activities without times go last)
     enriched_records.sort(key=lambda a: a.get("startTime", "z"))
-    return jsonify(enriched_records)
+    return respond_collection(enriched_records)
 
 
 @activities_bp.route("/api/activity_output/<path:filename>")

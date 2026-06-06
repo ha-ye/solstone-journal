@@ -40,7 +40,9 @@ class TestActivitiesDayRoutes:
             "/app/activities/api/day/20260214/activities?facet=full-featured"
         )
         assert resp.status_code == 200
-        data = resp.get_json()
+        payload = resp.get_json()
+        data = payload["items"]
+        assert payload["total"] == len(data)
         assert isinstance(data, list)
         assert len(data) >= 2
 
@@ -58,7 +60,7 @@ class TestActivitiesDayRoutes:
         resp = activities_client.get(
             "/app/activities/api/day/20260214/activities?facet=full-featured"
         )
-        data = resp.get_json()
+        data = resp.get_json()["items"]
         coding = next(a for a in data if a["activity"] == "coding")
         assert coding["name"] != ""
         assert coding["icon"] != ""
@@ -68,7 +70,7 @@ class TestActivitiesDayRoutes:
             "/app/activities/api/day/20260422/activities?facet=full-featured"
         )
         assert resp.status_code == 200
-        data = resp.get_json()
+        data = resp.get_json()["items"]
         by_id = {activity["id"]: activity for activity in data}
         assert set(by_id) == {
             "anticipated_meeting_090000_0422",
@@ -217,7 +219,7 @@ class TestActivitiesDayRoutes:
         resp = activities_client.get(
             "/app/activities/api/day/20260214/activities?facet=full-featured"
         )
-        data = resp.get_json()
+        data = resp.get_json()["items"]
         coding = next(a for a in data if a["activity"] == "coding")
         assert len(coding["outputs"]) >= 1
         output = coding["outputs"][0]

@@ -23,6 +23,19 @@ def activities_env(tmp_path, monkeypatch):
         activities_dir = facet_dir / "activities"
         activities_dir.mkdir(parents=True, exist_ok=True)
 
+        config_dir = tmp_path / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "journal.json").write_text(
+            json.dumps(
+                {
+                    "convey": {"trust_localhost": True},
+                    "setup": {"completed_at": 1700000000000},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
         (facet_dir / "facet.json").write_text(
             json.dumps({"title": f"Test {facet}", "description": "Test facet"}) + "\n",
             encoding="utf-8",

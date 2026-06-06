@@ -976,7 +976,8 @@ button.activity-detail-back {
 
   async function loadData() {
     try {
-      const acts = await window.apiJson(`/app/activities/api/day/${day}/activities`);
+      const data = await window.apiJson(`/app/activities/api/day/${day}/activities`);
+      const acts = data?.items;
       if (!Array.isArray(acts)) {
         throw new window.ApiError({
           status: 200,

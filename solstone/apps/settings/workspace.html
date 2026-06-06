@@ -4255,8 +4255,8 @@ async function loadSolVoiceThrottledLog() {
   const log = document.getElementById('sol-voice-throttled-log');
   if (!log || log.hidden) return;
   try {
-    const rows = await window.apiJson('api/sol_voice/throttled?limit=50');
-    renderSolVoiceThrottledLog(Array.isArray(rows) ? rows : []);
+    const data = await window.apiJson('api/sol_voice/throttled?limit=50');
+    renderSolVoiceThrottledLog(Array.isArray(data?.items) ? data.items : []);
   } catch (err) {
     log.textContent = solVoiceCopy.throttledError;
     window.logError(err, { context: 'settings: loadSolVoiceThrottledLog failed' });

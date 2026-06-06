@@ -217,7 +217,8 @@ def test_sol_voice_throttled_endpoint_filters_correctly(settings_env):
     response = client.get("/app/settings/api/sol_voice/throttled?limit=1")
 
     assert response.status_code == 200
-    assert response.get_json() == [
+    payload = response.get_json()
+    assert payload["items"] == [
         {
             "ts": 4,
             "category": "commitment",
@@ -225,6 +226,7 @@ def test_sol_voice_throttled_endpoint_filters_correctly(settings_env):
             "outcome": "rate_floor",
         }
     ]
+    assert payload["total"] == len(payload["items"])
 
 
 def test_sol_voice_throttled_endpoint_handles_missing_file(settings_env):
@@ -234,7 +236,7 @@ def test_sol_voice_throttled_endpoint_handles_missing_file(settings_env):
     response = client.get("/app/settings/api/sol_voice/throttled")
 
     assert response.status_code == 200
-    assert response.get_json() == []
+    assert response.get_json() == {"items": [], "total": 0}
 
 
 def test_sol_voice_settings_persist_through_load_settings(settings_env):

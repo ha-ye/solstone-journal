@@ -64,7 +64,7 @@ from solstone.convey.sol_initiated.settings import (
 from solstone.convey.sol_initiated.settings import (
     save_settings as save_sol_voice_settings,
 )
-from solstone.convey.utils import error_response
+from solstone.convey.utils import error_response, respond_collection
 from solstone.think.models import LOCAL_MODEL
 from solstone.think.providers.google import validate_vertex_credentials
 from solstone.think.retention import (
@@ -629,11 +629,11 @@ def get_sol_voice_throttled() -> Any:
 
     log_path = Path(get_journal()) / "push" / "nudge_log.jsonl"
     if not log_path.exists():
-        return jsonify([])
+        return respond_collection([])
 
     try:
         rows = _read_sol_voice_throttled_rows(log_path, limit)
-        return jsonify(rows)
+        return respond_collection(rows)
     except Exception:
         logger.exception("error loading sol voice throttled log")
         return error_response(FILE_READ_FAILED, detail="unable to load throttled log")

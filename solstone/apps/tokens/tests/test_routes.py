@@ -59,7 +59,9 @@ def test_api_daily_happy_path(tokens_env, monkeypatch):
     response = env.client.get("/app/tokens/api/daily?days=14")
 
     assert response.status_code == 200
-    rows = response.get_json()
+    payload = response.get_json()
+    rows = payload["items"]
+    assert payload["total"] == len(rows)
     assert len(rows) == 14
     assert all(set(row) == {"day", "cost", "tokens"} for row in rows)
     assert sorted(rows, key=lambda row: row["day"]) == rows
@@ -88,7 +90,7 @@ def test_api_daily_zero_fills_missing_days(tokens_env, monkeypatch):
     response = env.client.get("/app/tokens/api/daily?days=7")
 
     assert response.status_code == 200
-    rows = response.get_json()
+    rows = response.get_json()["items"]
     assert [row["day"] for row in rows] == [_day(offset) for offset in range(6, -1, -1)]
     by_day = {row["day"]: row for row in rows}
     assert by_day[_day(5)]["tokens"] == 1000
@@ -100,9 +102,18 @@ def test_api_daily_zero_fills_missing_days(tokens_env, monkeypatch):
 def test_api_daily_rejects_invalid_days(tokens_env):
     env = tokens_env({})
 
-    for days in ["0", "-1", "91", "abc"]:
+    cases = {
+        "abc": "days must be a number",
+        "0": "days must be between 1 and 90",
+        "-1": "days must be between 1 and 90",
+        "91": "days must be between 1 and 90",
+    }
+    for days, expected_detail in cases.items():
         response = env.client.get(f"/app/tokens/api/daily?days={days}")
         assert response.status_code == 400
+        payload = response.get_json()
+        assert payload["reason_code"] == "invalid_request_value"
+        assert payload["detail"] == expected_detail
 
 
 def test_api_daily_cross_month_boundary(tokens_env, monkeypatch):
@@ -124,7 +135,7 @@ def test_api_daily_cross_month_boundary(tokens_env, monkeypatch):
     response = env.client.get("/app/tokens/api/daily?days=7")
 
     assert response.status_code == 200
-    rows = response.get_json()
+    rows = response.get_json()["items"]
     assert [row["day"] for row in rows] == [
         "20260226",
         "20260227",

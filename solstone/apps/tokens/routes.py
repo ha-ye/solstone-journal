@@ -10,12 +10,12 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict
 
-from flask import Blueprint, abort, jsonify, render_template, request
+from flask import Blueprint, jsonify, render_template, request
 
 from solstone.apps.tokens import copy as tokens_copy
 from solstone.convey import state
-from solstone.convey.reasons import INVALID_DAY, INVALID_MONTH
-from solstone.convey.utils import DATE_RE, error_response
+from solstone.convey.reasons import INVALID_DAY, INVALID_MONTH, INVALID_REQUEST_VALUE
+from solstone.convey.utils import DATE_RE, error_response, respond_collection
 from solstone.think.models import calc_token_cost, get_model_provider, iter_token_log
 
 tokens_bp = Blueprint(
@@ -355,10 +355,13 @@ def api_daily():
     try:
         days = int(raw_days)
     except (TypeError, ValueError):
-        abort(400)
+        return error_response(INVALID_REQUEST_VALUE, detail="days must be a number")
 
     if days < 1 or days > 90:
-        abort(400)
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail="days must be between 1 and 90",
+        )
 
     today = date.today()
     rows = []
@@ -381,7 +384,7 @@ def api_daily():
 
         rows.append({"day": day, "cost": round(cost, 4), "tokens": tokens})
 
-    return jsonify(rows)
+    return respond_collection(rows)
 
 
 @tokens_bp.route("/api/stats/<month>")

@@ -835,7 +835,7 @@ function getModelDisplayName(model) {
 
 async function loadDailySeries(days) {
   try {
-    return await window.apiJson(`/app/tokens/api/daily?days=${days}`);
+    return (await window.apiJson(`/app/tokens/api/daily?days=${days}`))?.items ?? null;
   } catch (err) {
     console.error('Failed to load daily token series:', err);
     return null;
