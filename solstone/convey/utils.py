@@ -321,3 +321,57 @@ def success_response(
     if data:
         response_data.update(data)
     return jsonify(response_data), code
+
+
+def respond_collection(
+    items: list[Any],
+    *,
+    total: int | None = None,
+    cursor: str | None = None,
+) -> tuple[Response, int]:
+    """Create a standard JSON collection response.
+
+    The canonical way to return a list resource. Shapes the body as
+    ``{"items": [...], "total": <int>}`` so routes never return a bare
+    top-level JSON array. ``total`` defaults to ``len(items)`` when not
+    given; ``next_cursor`` is added only when ``cursor`` is provided.
+
+    Args:
+        items: The collection items to return.
+        total: Total count of matching items; defaults to ``len(items)``.
+        cursor: Opaque pagination cursor for the next page, if any.
+
+    Returns:
+        Tuple of (jsonify response, 200) ready for Flask return.
+    """
+    body: dict[str, Any] = {
+        "items": items,
+        "total": total if total is not None else len(items),
+    }
+    if cursor is not None:
+        body["next_cursor"] = cursor
+    return jsonify(body), 200
+
+
+def created(
+    resource: dict[str, Any],
+    *,
+    location: str | None = None,
+) -> tuple[Response, int]:
+    """Create a standard 201 response for a newly-created resource.
+
+    The canonical way to return a freshly-created resource with its
+    server-assigned id. Optionally sets a ``Location`` response header.
+
+    Args:
+        resource: The created resource (including its server-assigned id).
+        location: Optional URL of the created resource for the
+            ``Location`` header.
+
+    Returns:
+        Tuple of (jsonify response, 201) ready for Flask return.
+    """
+    response = jsonify(resource)
+    if location is not None:
+        response.headers["Location"] = location
+    return response, 201

@@ -3,13 +3,21 @@
 
 import math
 
+from flask import Flask
+
 from solstone.convey.utils import (
+    created,
     format_date,
     format_date_short,
     relative_time,
+    respond_collection,
     time_since,
 )
 from solstone.think.utils import day_path
+
+
+def _app_context():
+    return Flask(__name__).app_context()
 
 
 def test_format_date():
@@ -94,3 +102,48 @@ def test_list_day_folders(tmp_path, monkeypatch):
     day_path("20240103")
     days = sorted(day_dirs().keys())
     assert days == ["20240101", "20240103"]
+
+
+def test_respond_collection_default_total():
+    with _app_context():
+        response, status = respond_collection([{"id": 1}, {"id": 2}])
+    assert status == 200
+    body = response.get_json()
+    assert body == {"items": [{"id": 1}, {"id": 2}], "total": 2}
+    assert "next_cursor" not in body
+
+
+def test_respond_collection_explicit_total_omits_cursor():
+    with _app_context():
+        response, status = respond_collection([{"id": 1}], total=57)
+    assert status == 200
+    body = response.get_json()
+    assert body == {"items": [{"id": 1}], "total": 57}
+    assert "next_cursor" not in body
+
+
+def test_respond_collection_with_cursor():
+    with _app_context():
+        response, status = respond_collection([], total=99, cursor="20240102")
+    assert status == 200
+    assert response.get_json() == {
+        "items": [],
+        "total": 99,
+        "next_cursor": "20240102",
+    }
+
+
+def test_created_returns_201_without_location():
+    with _app_context():
+        response, status = created({"id": "abc", "name": "thing"})
+    assert status == 201
+    assert response.get_json() == {"id": "abc", "name": "thing"}
+    assert "Location" not in response.headers
+
+
+def test_created_sets_location_header():
+    with _app_context():
+        response, status = created({"id": "abc"}, location="/app/things/abc")
+    assert status == 201
+    assert response.headers["Location"] == "/app/things/abc"
+    assert response.get_json() == {"id": "abc"}

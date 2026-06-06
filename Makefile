@@ -14,7 +14,7 @@ export TMPDIR := /var/tmp
 PYTEST_BASETEMP_INIT := BASETEMP=$$(mktemp -d /var/tmp/solstone-pytest-XXXXXX); trap 'rm -rf "$$BASETEMP"' EXIT INT TERM;
 PYTEST_BASETEMP_FLAG := --basetemp "$$BASETEMP"
 
-.PHONY: install uninstall test test-cov test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills dev all sandbox sandbox-stop install-pinchtab install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify-browser update-browser-baselines review verify verify-api update-api-baselines service-logs check-layer-hygiene smoke-cogitate release release-test FORCE
+.PHONY: install uninstall test test-cov test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills dev all sandbox sandbox-stop install-pinchtab install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify-browser update-browser-baselines review verify verify-api update-api-baselines service-logs check-layer-hygiene check-api-conventions smoke-cogitate release release-test FORCE
 
 # Default target - install package in editable mode
 all: install
@@ -455,6 +455,9 @@ install-checks: .installed
 	@echo "=== Running layer-hygiene check ==="
 	@$(MAKE) check-layer-hygiene
 	@echo ""
+	@echo "=== Running API-conventions check ==="
+	@$(MAKE) check-api-conventions
+	@echo ""
 	@echo "=== Checking extras consistency ==="
 	@$(VENV_BIN)/python scripts/check_extras_consistency.py
 	@echo ""
@@ -516,6 +519,10 @@ pre-commit: .installed
 # Low-bar layer-hygiene check (see docs/coding-standards.md § Layer Hygiene)
 check-layer-hygiene: .installed
 	$(VENV_BIN)/python scripts/check_layer_hygiene.py
+
+# HTTP API conventions check (see docs/CONVEY.md § HTTP API conventions)
+check-api-conventions: .installed
+	$(VENV_BIN)/python scripts/check_api_conventions.py
 
 # Re-run the live four-backend integrated-façade cogitate smoke. Spawns the
 # archived runner (extro `vpe/workspace/archived/`) against this venv so the
