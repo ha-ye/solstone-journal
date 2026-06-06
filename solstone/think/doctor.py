@@ -491,13 +491,13 @@ def journal_sync_check(args: Args) -> CheckResult:
 
 def journal_caught_up_check(args: Args) -> CheckResult:
     del args
-    from solstone.think.pipeline_health import (
-        BACKLOG_STATE_UNKNOWN,
-        read_backlog_view,
-    )
-
     check = JOURNAL_CAUGHT_UP_CHECK
     try:
+        from solstone.think.pipeline_health import (
+            BACKLOG_STATE_UNKNOWN,
+            read_backlog_view,
+        )
+
         view = read_backlog_view()
     except Exception as exc:
         return make_result(

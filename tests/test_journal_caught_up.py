@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import builtins
+
 import pytest
 
 from solstone.think import pipeline_health
@@ -174,6 +176,27 @@ def test_journal_caught_up_warns_when_backlog_read_raises(doctor, monkeypatch):
     assert result.status != "fail"
     assert result.severity == "advisory"
     assert "backlog read failed: RuntimeError: boom" in result.detail
+
+
+def test_journal_caught_up_warns_when_backlog_reader_import_raises(
+    doctor,
+    monkeypatch,
+):
+    real_import = builtins.__import__
+
+    def fail_pipeline_health_import(name, *args, **kwargs):
+        if name == "solstone.think.pipeline_health":
+            raise ImportError("pipeline unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_pipeline_health_import)
+
+    result = doctor.journal_caught_up_check(args(doctor))
+
+    assert result.status == "warn"
+    assert result.status != "fail"
+    assert result.severity == "advisory"
+    assert "backlog read failed: ImportError: pipeline unavailable" in result.detail
 
 
 def test_journal_caught_up_warn_is_visible_but_non_blocking(doctor):
