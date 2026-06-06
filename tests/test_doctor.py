@@ -788,6 +788,37 @@ class TestJsonAndExitCodes:
             json.loads(line)
 
 
+def test_doctor_import_does_not_pull_numpy_or_observe_layers():
+    snippet = (
+        "import sys\n"
+        "import solstone.think.doctor\n"
+        "for m in sorted(sys.modules):\n"
+        "    if (\n"
+        "        m == 'numpy'\n"
+        "        or m.startswith('numpy.')\n"
+        "        or m == 'solstone.observe'\n"
+        "        or m.startswith('solstone.observe.')\n"
+        "    ):\n"
+        "        print('LEAKED:' + m)\n"
+        "        sys.exit(3)\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", snippet],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "SOLSTONE_JOURNAL": str(ROOT / "tests" / "fixtures" / "journal"),
+        },
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "LEAKED" not in result.stdout
+
+
 def test_readiness_battery_does_not_import_inference_or_installer_layers():
     # Proves doctor's readiness battery does not import inference/installer layers.
     snippet = (

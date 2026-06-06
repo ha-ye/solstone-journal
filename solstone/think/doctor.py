@@ -46,7 +46,6 @@ from typing import IO, Callable, Sequence
 from solstone.think import features as _features
 from solstone.think import parakeet_readiness
 from solstone.think.health_cli import fetch_supervisor_status
-from solstone.think.pipeline_health import BACKLOG_STATE_UNKNOWN, read_backlog_view
 from solstone.think.probe import (
     CONFIG_DIR_READABLE_CHECK,
     DEFAULT_REQUIRES_PYTHON,
@@ -492,6 +491,11 @@ def journal_sync_check(args: Args) -> CheckResult:
 
 def journal_caught_up_check(args: Args) -> CheckResult:
     del args
+    from solstone.think.pipeline_health import (
+        BACKLOG_STATE_UNKNOWN,
+        read_backlog_view,
+    )
+
     check = JOURNAL_CAUGHT_UP_CHECK
     try:
         view = read_backlog_view()

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pytest
 
+from solstone.think import pipeline_health
 from solstone.think.pipeline_health import (
     BACKLOG_STATE_UNKNOWN,
     BacklogDay,
@@ -70,7 +71,7 @@ def backlog_day(day: str, state: str) -> BacklogDay:
 
 
 def test_journal_caught_up_ok_only_when_fully_clean(doctor, monkeypatch):
-    monkeypatch.setattr(doctor, "read_backlog_view", clean_view)
+    monkeypatch.setattr(pipeline_health, "read_backlog_view", clean_view)
 
     result = doctor.journal_caught_up_check(args(doctor))
 
@@ -92,7 +93,7 @@ def test_journal_caught_up_unknown_day_warns_before_false_green(
         oldest_pending_day=None,
         errors=(error,),
     )
-    monkeypatch.setattr(doctor, "read_backlog_view", lambda: view)
+    monkeypatch.setattr(pipeline_health, "read_backlog_view", lambda: view)
 
     result = doctor.journal_caught_up_check(args(doctor))
 
@@ -117,7 +118,7 @@ def test_journal_caught_up_pending_and_stuck_warn_with_distinct_counts(
         oldest_pending_day="20200229",
         errors=(),
     )
-    monkeypatch.setattr(doctor, "read_backlog_view", lambda: view)
+    monkeypatch.setattr(pipeline_health, "read_backlog_view", lambda: view)
 
     result = doctor.journal_caught_up_check(args(doctor))
 
@@ -127,6 +128,52 @@ def test_journal_caught_up_pending_and_stuck_warn_with_distinct_counts(
     assert "1 day(s) stuck" in result.detail
     assert "oldest outstanding 20200229" in result.detail
     assert str(2 + 1) not in result.detail
+
+
+def test_journal_caught_up_invokes_backlog_reader_and_derives_result(
+    doctor,
+    monkeypatch,
+):
+    calls = []
+    view = BacklogView(
+        window=30,
+        days=(
+            backlog_day("20200229", "pending"),
+            backlog_day("20200301", "stuck"),
+        ),
+        pending_days=1,
+        stuck_days=1,
+        oldest_pending_day="20200229",
+        errors=(),
+    )
+
+    def fake_read_backlog_view():
+        calls.append("read")
+        return view
+
+    monkeypatch.setattr(pipeline_health, "read_backlog_view", fake_read_backlog_view)
+
+    result = doctor.journal_caught_up_check(args(doctor))
+
+    assert calls == ["read"]
+    assert result.status == "warn"
+    assert "1 day(s) pending" in result.detail
+    assert "1 day(s) stuck" in result.detail
+    assert "oldest outstanding 20200229" in result.detail
+
+
+def test_journal_caught_up_warns_when_backlog_read_raises(doctor, monkeypatch):
+    def fake_read_backlog_view():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(pipeline_health, "read_backlog_view", fake_read_backlog_view)
+
+    result = doctor.journal_caught_up_check(args(doctor))
+
+    assert result.status == "warn"
+    assert result.status != "fail"
+    assert result.severity == "advisory"
+    assert "backlog read failed: RuntimeError: boom" in result.detail
 
 
 def test_journal_caught_up_warn_is_visible_but_non_blocking(doctor):
