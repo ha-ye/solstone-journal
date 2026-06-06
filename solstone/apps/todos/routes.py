@@ -21,6 +21,7 @@ from solstone.apps.todos import copy as todos_copy
 from solstone.apps.todos.todo import (
     TodoChecklist,
     TodoEmptyTextError,
+    TodoItem,
     format_nudge,
     get_todos,
 )
@@ -39,6 +40,7 @@ from solstone.convey.reasons import (
 )
 from solstone.convey.utils import DATE_RE, error_response, format_date
 from solstone.think.facets import get_facets
+from solstone.think.journal_io.errors import LockTimeout
 
 VISIBLE_INCOMPLETE_BUDGET = 30
 VISIBLE_COMPLETED_BUDGET = 5
@@ -260,8 +262,11 @@ def todos_day(day: str):  # type: ignore[override]
 
                 if not error_message:
                     try:
-                        checklist = TodoChecklist.load(day, facet)
-                        item = checklist.append_entry(text)
+
+                        def _add(cl: TodoChecklist) -> TodoItem:
+                            return cl.append_entry(text)
+
+                        item = TodoChecklist.locked_modify(day, facet, _add)
 
                         log_app_action(
                             app="todos",
@@ -331,7 +336,11 @@ def todos_day(day: str):  # type: ignore[override]
 
         try:
             if action == "complete":
-                item = checklist.mark_done(index)
+
+                def _complete(cl: TodoChecklist) -> TodoItem:
+                    return cl.mark_done(index)
+
+                item = TodoChecklist.locked_modify(day, facet, _complete)
                 log_app_action(
                     app="todos",
                     facet=facet,
@@ -340,7 +349,11 @@ def todos_day(day: str):  # type: ignore[override]
                     day=day,
                 )
             elif action == "uncomplete":
-                item = checklist.mark_undone(index)
+
+                def _uncomplete(cl: TodoChecklist) -> TodoItem:
+                    return cl.mark_undone(index)
+
+                item = TodoChecklist.locked_modify(day, facet, _uncomplete)
                 log_app_action(
                     app="todos",
                     facet=facet,
@@ -349,7 +362,11 @@ def todos_day(day: str):  # type: ignore[override]
                     day=day,
                 )
             elif action == "cancel":
-                item = checklist.cancel_entry(index)
+
+                def _cancel(cl: TodoChecklist) -> TodoItem:
+                    return cl.cancel_entry(index)
+
+                item = TodoChecklist.locked_modify(day, facet, _cancel)
                 log_app_action(
                     app="todos",
                     facet=facet,
@@ -390,20 +407,22 @@ def todos_day(day: str):  # type: ignore[override]
                         source_item = checklist.get_item(index)
                         old_text = source_item.text
 
-                        # Add to new facet, preserving original created_at
-                        new_checklist = TodoChecklist.load(day, new_facet)
-                        new_item = new_checklist.append_entry(
-                            text,
-                            nudge=source_item.nudge,
-                            created_at=source_item.created_at,
-                        )
+                        def _add_to_new(cl: TodoChecklist) -> TodoItem:
+                            created = cl.append_entry(
+                                text,
+                                nudge=source_item.nudge,
+                                created_at=source_item.created_at,
+                            )
+                            if source_item.completed:
+                                cl.mark_done(created.index)
+                            return created
 
-                        # Preserve completed status
-                        if source_item.completed:
-                            new_checklist.mark_done(new_item.index)
+                        TodoChecklist.locked_modify(day, new_facet, _add_to_new)
 
-                        # Cancel from old facet
-                        checklist.cancel_entry(index)
+                        def _cancel_source(cl: TodoChecklist) -> None:
+                            cl.cancel_entry(index)
+
+                        TodoChecklist.locked_modify(day, facet, _cancel_source)
 
                         log_app_action(
                             app="todos",
@@ -423,7 +442,11 @@ def todos_day(day: str):  # type: ignore[override]
 
                 # No facet change, just update text
                 old_text = checklist.get_item(index).text
-                checklist.update_entry_text(index, text)
+
+                def _update(cl: TodoChecklist) -> TodoItem:
+                    return cl.update_entry_text(index, text)
+
+                TodoChecklist.locked_modify(day, facet, _update)
                 log_app_action(
                     app="todos",
                     facet=facet,
@@ -441,6 +464,8 @@ def todos_day(day: str):  # type: ignore[override]
         except TodoEmptyTextError:
             flash("Cannot update todo to empty text", "error")
         except IndexError:
+            flash(f"Todo list changed, {CONVEY_RELOAD_HINT}", "error")
+        except LockTimeout:
             flash(f"Todo list changed, {CONVEY_RELOAD_HINT}", "error")
 
         # If AJAX request, return JSON with updated counts
@@ -619,7 +644,7 @@ def move_todo(day: str):  # type: ignore[override]
         )
 
     try:
-        target_checklist = TodoChecklist.load(target_day, facet)
+        TodoChecklist.load(target_day, facet)
     except RuntimeError as exc:
         current_app.logger.debug(
             "Failed to load target todo list for %s/%s: %s", facet, target_day, exc
@@ -639,11 +664,16 @@ def move_todo(day: str):  # type: ignore[override]
             detail=f"Todo list changed, {CONVEY_RELOAD_HINT}",
         )
 
-    # Add to target day
-    try:
-        new_item = target_checklist.append_entry(
+    def _append_target(cl: TodoChecklist) -> TodoItem:
+        created = cl.append_entry(
             source_item.text, nudge=source_item.nudge, created_at=source_item.created_at
         )
+        if source_item.completed:
+            cl.mark_done(created.index)
+        return created
+
+    try:
+        _new_item = TodoChecklist.locked_modify(target_day, facet, _append_target)
     except TodoEmptyTextError as exc:
         current_app.logger.debug("Failed to append todo to %s: %s", target_day, exc)
         return error_response(
@@ -651,13 +681,26 @@ def move_todo(day: str):  # type: ignore[override]
             status=400,
             detail="Unable to move todo to the selected day.",
         )
+    except LockTimeout as exc:
+        current_app.logger.debug("Todo list busy for %s: %s", target_day, exc)
+        return error_response(
+            OPERATION_NO_LONGER_AVAILABLE,
+            status=409,
+            detail=f"Todo list changed, {CONVEY_RELOAD_HINT}",
+        )
 
-    # Preserve completed status
-    if source_item.completed:
-        target_checklist.mark_done(new_item.index)
+    def _cancel_source(cl: TodoChecklist) -> None:
+        cl.cancel_entry(index)
 
-    # Cancel from source day
-    source_checklist.cancel_entry(index)
+    try:
+        TodoChecklist.locked_modify(day, facet, _cancel_source)
+    except LockTimeout as exc:
+        current_app.logger.debug("Todo list busy for %s: %s", day, exc)
+        return error_response(
+            OPERATION_NO_LONGER_AVAILABLE,
+            status=409,
+            detail=f"Todo list changed, {CONVEY_RELOAD_HINT}",
+        )
 
     log_app_action(
         app="todos",

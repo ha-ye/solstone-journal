@@ -15,6 +15,7 @@ import typer
 
 from solstone.apps.todos import todo
 from solstone.think.facets import log_call_action
+from solstone.think.journal_io.errors import LockTimeout
 from solstone.think.utils import get_journal, require_solstone
 
 app = typer.Typer(help="Todo checklist management.")
@@ -43,6 +44,12 @@ def _validate_facet_or_exit(facet: str, label: str) -> None:
             err=True,
         )
         raise typer.Exit(1)
+
+
+def _exit_todo_busy() -> None:
+    """Map a lock-timeout to the standard CLI error surface."""
+    typer.echo("Error: todo list is busy, try again.", err=True)
+    raise typer.Exit(1)
 
 
 @app.command("list")
@@ -187,6 +194,8 @@ def add_todo(
     except todo.TodoEmptyTextError:
         typer.echo("Error: todo text cannot be empty", err=True)
         raise typer.Exit(1)
+    except LockTimeout:
+        _exit_todo_busy()
 
 
 @app.command("done")
@@ -226,6 +235,8 @@ def done_todo(
     except IndexError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
+    except LockTimeout:
+        _exit_todo_busy()
 
 
 @app.command("cancel")
@@ -265,6 +276,8 @@ def cancel_todo(
     except IndexError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
+    except LockTimeout:
+        _exit_todo_busy()
 
 
 @app.command("move")
@@ -358,7 +371,7 @@ def move_todo(
             return checklist, cancelled_item
 
         _, item = todo.TodoChecklist.locked_modify(day, from_facet, _cancel_source)
-    except (FileNotFoundError, IndexError, todo.TodoError):
+    except (FileNotFoundError, IndexError, todo.TodoError, LockTimeout):
         typer.echo(
             f"Warning: Item was appended to '{to_facet}' but could not cancel source in '{from_facet}'. Cancel it manually with: sol call todos cancel {line_number} --day {day} --facet {from_facet}",
             err=True,
@@ -503,16 +516,45 @@ def dispatch_nudges(
     """Dispatch due, unnotified todo nudges."""
     due = _due_nudges(facet)
     today = datetime.now().strftime("%Y%m%d")
-    modified_checklists: dict[str, todo.TodoChecklist] = {}
-    dispatched = 0
+    now_str = datetime.now().strftime("%Y%m%dT%H:%M")
 
-    for facet_name, checklist, item in due:
+    facet_names = sorted({facet_name for facet_name, _checklist, _item in due})
+    dispatched: list[tuple[str, str]] = []  # (facet_name, text)
+
+    for facet_name in facet_names:
+
+        def _mark(checklist: todo.TodoChecklist) -> list[str]:
+            texts: list[str] = []
+            for item in checklist.items:
+                if (
+                    item.nudge
+                    and item.nudge <= now_str
+                    and not item.notified
+                    and not item.completed
+                    and not item.cancelled
+                ):
+                    item.notified = True
+                    texts.append(item.text)
+            if texts:
+                checklist.save()
+            return texts
+
+        try:
+            texts = todo.TodoChecklist.locked_modify(today, facet_name, _mark)
+        except LockTimeout:
+            # Busy facet: skip this run; the lock holder handles it and the
+            # next dispatch retries (idempotent). Do not abort other facets.
+            continue
+        for text in texts:
+            dispatched.append((facet_name, text))
+
+    for facet_name, text in dispatched:
         try:
             subprocess.run(
                 [
                     "sol",
                     "notify",
-                    item.text,
+                    text,
                     "--title",
                     "Todo Reminder",
                     "--icon",
@@ -529,11 +571,5 @@ def dispatch_nudges(
             )
         except FileNotFoundError:
             pass
-        item.notified = True
-        modified_checklists[facet_name] = checklist
-        dispatched += 1
 
-    for checklist in modified_checklists.values():
-        checklist.save()
-
-    typer.echo(f"dispatched {dispatched} nudge(s)")
+    typer.echo(f"dispatched {len(dispatched)} nudge(s)")

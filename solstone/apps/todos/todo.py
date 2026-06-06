@@ -9,18 +9,16 @@ serves as the stable todo ID since todos are never removed, only cancelled.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
-import random
 import re
-import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from solstone.think.facets import get_facets
+from solstone.think.journal_io import atomic_replace, hold_lock
 from solstone.think.utils import get_journal, now_ms
 
 __all__ = [
@@ -315,65 +313,40 @@ class TodoChecklist:
         day: str,
         facet: str,
         modify_fn: Any,
-        max_retries: int = 3,
     ) -> Any:
         """Perform a locked load-modify-save on a todo checklist.
 
-        Acquires an exclusive file lock, loads current state, applies the
-        mutation function, and returns the result. The modify_fn receives a
-        fresh ``TodoChecklist`` and should call save-triggering methods
-        (``append_entry``, ``mark_done``, ``cancel_entry``) which persist
-        inside the lock.  Retries with randomized backoff on transient OS
-        errors.
+        Acquires the exclusive sidecar lock via the shared ``hold_lock``
+        primitive, loads current state, applies ``modify_fn`` (which receives a
+        fresh ``TodoChecklist`` and calls save-triggering methods that persist
+        atomically inside the lock), and returns its result.
 
         Args:
             day: Journal day in ``YYYYMMDD`` format.
             facet: Facet name.
-            modify_fn: Called with a fresh TodoChecklist.  Must return the
-                value to propagate to the caller.
-            max_retries: Maximum attempts (default 3).
+            modify_fn: Called with a fresh TodoChecklist. Must return the value
+                to propagate to the caller.
 
         Returns:
             Whatever ``modify_fn`` returns.
 
         Raises:
-            OSError: If all retries exhausted on transient errors.
+            LockTimeout: if the lock is not acquired before the primitive's
+                default timeout. Owner entry points map this to their error
+                surface.
         """
         path = todo_file_path(day, facet)
-        lock_path = path.parent / f"{path.name}.lock"
-
-        last_error: Exception | None = None
-        for attempt in range(max_retries):
-            try:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with open(lock_path, "w") as lock_file:
-                    fcntl.flock(lock_file, fcntl.LOCK_EX)
-                    try:
-                        checklist = cls.load(day, facet)
-                        return modify_fn(checklist)
-                    finally:
-                        fcntl.flock(lock_file, fcntl.LOCK_UN)
-            except (IndexError, TodoError, FileNotFoundError):
-                raise  # Logical errors — don't retry
-            except OSError as exc:
-                last_error = exc
-                if attempt < max_retries - 1:
-                    time.sleep(random.uniform(0.05, 0.3) * (attempt + 1))
-
-        raise last_error  # type: ignore[misc]
+        with hold_lock(path):
+            checklist = cls.load(day, facet)
+            return modify_fn(checklist)
 
     def save(self) -> None:
-        """Persist the checklist back to disk, creating parent directories if needed."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-
-        lines = []
-        for item in self.items:
-            lines.append(json.dumps(item.to_jsonl(), ensure_ascii=False))
-
+        """Persist the checklist to disk via durable atomic replace."""
+        lines = [json.dumps(item.to_jsonl(), ensure_ascii=False) for item in self.items]
         content = "\n".join(lines)
         if lines:
             content += "\n"
-        self.path.write_text(content, encoding="utf-8")
+        atomic_replace(self.path, content)
         self.exists = True
 
     def display(self) -> str:
