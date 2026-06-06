@@ -4,6 +4,18 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.5.2] - 2026-06-05
+
+### Changed
+- terminal `sol chat` now runs through the same chat that the web app uses, so you get the same answer whichever way you ask. it shows its progress as it works and prints the final answer at the end.
+
+### Fixed
+- on-device transcription no longer splits words apart. transcripts from the local engine were coming through with letters scattered ("Tak ing out the m one y" instead of "Taking out the money"); new transcriptions now read as natural words and sentences. anything already stored garbled needs a fresh re-transcription to clean up.
+- asking sol about your own journal now gets an answer. questions that look something up in your memory, like past conversations, your notes, a quote, or your name, used to get declined; sol answers them now. reflection-style questions are unchanged.
+- on macOS, setup and upgrade no longer stall at the readiness check. a diagnostic step could take long enough to time out on a fresh or cold machine; it now runs in a fraction of a second.
+- syncing a folder of audio now tells you what it couldn't read. `sol import --sync audio` used to fold an unreadable file in with the ones it intentionally skipped; an unreadable file is now called out on its own line, with a reason, and the per-file list shows up with `-v`. `--auto` guidance also works alongside `--sync --save` now.
+- on Linux, installing or reinstalling the journal service no longer removes other services you set up. if you had your own solstone-related units, like a desktop observer or your own backup job, an upgrade could delete them. that cleanup step is gone.
+
 ## [0.5.1] - 2026-06-05
 
 ### Fixed
