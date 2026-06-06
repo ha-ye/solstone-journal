@@ -44,6 +44,7 @@ from solstone.think.importers.utils import (
 )
 from solstone.think.indexer.journal import search_counts as search_counts_impl
 from solstone.think.indexer.journal import search_journal as search_journal_impl
+from solstone.think.journal_config import write_journal_config
 from solstone.think.utils import (
     day_path,
     get_journal,
@@ -953,10 +954,8 @@ def config(
     ),
 ) -> None:
     """Show or update retention configuration."""
-    import os
-
     from solstone.think.retention import load_retention_config
-    from solstone.think.utils import get_config, get_journal
+    from solstone.think.utils import get_config
 
     if mode is None and days is None and not clear:
         cfg = load_retention_config()
@@ -1027,14 +1026,7 @@ def config(
             params={"mode": mode, "days": days},
         )
 
-    config_dir = Path(get_journal()) / "config"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / "journal.json"
-
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(journal_config, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-    os.chmod(config_path, 0o600)
+    write_journal_config(journal_config)
 
     cfg = load_retention_config()
     result = {

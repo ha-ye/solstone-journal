@@ -9,10 +9,10 @@ import argparse
 import json
 import logging
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from solstone.think.journal_config import write_journal_config
 from solstone.think.utils import get_journal, setup_cli
 
 logger = logging.getLogger(__name__)
@@ -93,31 +93,12 @@ def run_migration(journal_path: Path, *, dry_run: bool) -> MigrationSummary:
         return summary
 
     try:
-        _write_config(config_path, raw)
+        write_journal_config(raw)
     except OSError:
         logger.exception("Failed to write %s", config_path)
         summary.errors += 1
 
     return summary
-
-
-def _write_config(config_path: Path, config: dict) -> None:
-    config_dir = config_path.parent
-    fd, tmp_path = tempfile.mkstemp(
-        dir=config_dir,
-        suffix=".tmp",
-        prefix=".journal_",
-        text=True,
-    )
-    tmp_file = Path(tmp_path)
-    try:
-        with open(fd, "w", encoding="utf-8") as handle:
-            json.dump(config, handle, indent=2, ensure_ascii=False)
-            handle.write("\n")
-        tmp_file.replace(config_path)
-    except BaseException:
-        tmp_file.unlink(missing_ok=True)
-        raise
 
 
 def _print_summary(summary: MigrationSummary) -> None:

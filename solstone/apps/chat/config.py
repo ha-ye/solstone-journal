@@ -11,7 +11,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from solstone.think.utils import _write_config_atomic, get_journal
+from solstone.think.journal_io.atomic import atomic_replace
+from solstone.think.utils import get_journal
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +42,20 @@ def save_chat_config(updates: dict[str, Any]) -> dict[str, Any]:
 
     merged = _deep_merge(_read_chat_config(), clean_updates)
     config = _normalize_config(merged)
-    _write_config_atomic(_chat_config_path(), config)
+    _write_chat_config(config)
     return config
 
 
 def _chat_config_path() -> Path:
     return Path(get_journal()) / "config" / "chat.json"
+
+
+def _write_chat_config(config: dict[str, Any]) -> None:
+    atomic_replace(
+        _chat_config_path(),
+        json.dumps(config, indent=2, ensure_ascii=False) + "\n",
+        mode=0o600,
+    )
 
 
 def _read_chat_config() -> dict[str, Any]:

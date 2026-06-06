@@ -6,10 +6,13 @@
 from __future__ import annotations
 
 import json
-import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from solstone.think.journal_io.atomic import atomic_replace
+from solstone.think.journal_io.locking import hold_lock
 from solstone.think.utils import get_config, get_journal
 
 
@@ -30,16 +33,24 @@ def write_journal_config(config: dict[str, Any]) -> None:
 
     config_path = get_journal_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = config_path.with_suffix(config_path.suffix + ".tmp")
-    with open(tmp_path, "w", encoding="utf-8") as handle:
-        json.dump(config, handle, indent=2, ensure_ascii=False)
-        handle.write("\n")
-    os.chmod(tmp_path, 0o600)
-    os.replace(tmp_path, config_path)
+    atomic_replace(
+        config_path,
+        json.dumps(config, indent=2, ensure_ascii=False) + "\n",
+        mode=0o600,
+    )
+
+
+@contextmanager
+def hold_config_lock() -> Iterator[None]:
+    """Hold the journal config read-modify-write lock."""
+
+    with hold_lock(get_journal_config_path()):
+        yield
 
 
 __all__ = [
     "get_journal_config_path",
+    "hold_config_lock",
     "read_journal_config",
     "write_journal_config",
 ]

@@ -18,7 +18,8 @@ def _write_journal_config(journal: Path, data: object) -> Path:
     return config_path
 
 
-def test_rename_unified_and_remove_triage_idempotent(tmp_path):
+def test_rename_unified_and_remove_triage_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     config_path = _write_journal_config(
         tmp_path,
         {
@@ -60,7 +61,8 @@ def test_rename_unified_and_remove_triage_idempotent(tmp_path):
     assert config_path.stat().st_mtime_ns == before_mtime_ns
 
 
-def test_preserves_existing_chat_context_when_unified_exists(tmp_path):
+def test_preserves_existing_chat_context_when_unified_exists(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     config_path = _write_journal_config(
         tmp_path,
         {
@@ -84,7 +86,8 @@ def test_preserves_existing_chat_context_when_unified_exists(tmp_path):
     assert data["providers"]["contexts"]["talent.system.chat"] == {"provider": "google"}
 
 
-def test_noop_when_no_legacy_provider_contexts_present(tmp_path):
+def test_noop_when_no_legacy_provider_contexts_present(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     config_path = _write_journal_config(
         tmp_path,
         {

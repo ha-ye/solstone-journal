@@ -5,16 +5,15 @@
 
 from __future__ import annotations
 
-import json
 import os
 from datetime import timedelta
-from pathlib import Path
 
 from flask import Flask, g, request
 from jinja2 import ChoiceLoader, FileSystemLoader
 
 from solstone.apps import AppRegistry
 from solstone.convey.secure_listener import ConveyIdentity
+from solstone.think.journal_config import write_journal_config
 from solstone.think.utils import ensure_journal_config
 
 from . import state, system
@@ -42,7 +41,7 @@ def _migrate_password_hash() -> None:
     """Migrate plaintext convey.password to hashed password_hash."""
     from werkzeug.security import generate_password_hash
 
-    from solstone.think.utils import get_config, get_journal
+    from solstone.think.utils import get_config
 
     config = get_config()
     convey = config.get("convey", {})
@@ -55,12 +54,7 @@ def _migrate_password_hash() -> None:
         convey["password_hash"] = generate_password_hash(plaintext)
 
     config["convey"] = convey
-    config_path = Path(get_journal()) / "config" / "journal.json"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-    os.chmod(config_path, 0o600)
+    write_journal_config(config)
 
 
 def _migrate_setup_completed() -> None:
@@ -71,7 +65,7 @@ def _migrate_setup_completed() -> None:
     now writes all config atomically in init_finalize(), so this path is
     only reached for pre-existing journals.
     """
-    from solstone.think.utils import get_config, get_journal
+    from solstone.think.utils import get_config
 
     config = get_config()
 
@@ -85,12 +79,7 @@ def _migrate_setup_completed() -> None:
     config.setdefault("setup", {})["completed_at"] = now_ms()
     config.setdefault("convey", {})["trust_localhost"] = True
 
-    config_path = Path(get_journal()) / "config" / "journal.json"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-    os.chmod(config_path, 0o600)
+    write_journal_config(config)
 
 
 def install_identity_stamper(app: Flask) -> None:

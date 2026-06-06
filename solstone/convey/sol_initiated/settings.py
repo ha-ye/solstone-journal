@@ -6,18 +6,18 @@
 from __future__ import annotations
 
 import copy
-import fcntl
-import json
 import logging
-import os
-import tempfile
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from solstone.convey.sol_initiated.copy import CATEGORY_CAP_DEFAULTS
 from solstone.convey.sol_initiated.dedup import parse_dedupe_window
-from solstone.think.utils import get_config, get_journal
+from solstone.think.journal_config import (
+    hold_config_lock,
+    read_journal_config,
+    write_journal_config,
+)
+from solstone.think.utils import get_config
 
 logger = logging.getLogger(__name__)
 _MISSING = object()
@@ -95,15 +95,16 @@ def save_settings(updates: dict[str, Any]) -> SolVoiceSettings:
     if not isinstance(updates, dict):
         raise ValueError("sol_voice update must be an object")
 
-    config = get_config()
-    raw_root = config.get("sol_voice")
-    if not isinstance(raw_root, dict):
-        raw_root = {}
+    with hold_config_lock():
+        config = read_journal_config()
+        raw_root = config.get("sol_voice")
+        if not isinstance(raw_root, dict):
+            raw_root = {}
 
-    merged = _deep_merge(raw_root, updates)
-    settings = _parse_settings(merged, strict=True)
-    config["sol_voice"] = settings.to_dict()
-    _write_config_atomic(config)
+        merged = _deep_merge(raw_root, updates)
+        settings = _parse_settings(merged, strict=True)
+        config["sol_voice"] = settings.to_dict()
+        write_journal_config(config)
     return settings
 
 
@@ -356,39 +357,3 @@ def _deep_merge(base: object, updates: dict[str, Any]) -> dict[str, Any]:
             continue
         merged[key] = copy.deepcopy(value)
     return merged
-
-
-def _write_config_atomic(config: dict[str, Any]) -> None:
-    config_path = Path(get_journal()) / "config" / "journal.json"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    with config_path.open("a+", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        temp_path: Path | None = None
-        try:
-            fd, raw_temp_path = tempfile.mkstemp(
-                dir=config_path.parent,
-                prefix=".journal.",
-                suffix=".tmp",
-                text=True,
-            )
-            temp_path = Path(raw_temp_path)
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(config, handle, indent=2, ensure_ascii=False)
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_path, config_path)
-            os.chmod(config_path, 0o600)
-            _fsync_dir(config_path.parent)
-        finally:
-            if temp_path is not None and temp_path.exists():
-                temp_path.unlink()
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-
-
-def _fsync_dir(path: Path) -> None:
-    dir_fd = os.open(path, os.O_DIRECTORY)
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)

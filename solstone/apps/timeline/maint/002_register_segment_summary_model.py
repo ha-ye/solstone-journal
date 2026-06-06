@@ -8,13 +8,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
+from solstone.think.journal_config import write_journal_config
 from solstone.think.utils import get_journal, setup_cli
 
 logger = logging.getLogger(__name__)
@@ -29,28 +27,6 @@ class RegistrationSummary:
     preserved: int = 0
     warnings: int = 0
     errors: int = 0
-
-
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_name: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=path.parent,
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            tmp_name = handle.name
-            handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_name, path)
-    except BaseException:
-        if tmp_name:
-            Path(tmp_name).unlink(missing_ok=True)
-        raise
 
 
 def run_registration(
@@ -115,7 +91,7 @@ def run_registration(
         return summary
 
     try:
-        _atomic_write_json(config_path, raw)
+        write_journal_config(raw)
     except OSError as exc:
         logger.warning("Failed to write %s: %s", config_path, exc)
         summary.errors += 1

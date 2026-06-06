@@ -12,14 +12,12 @@ from __future__ import annotations
 
 import argparse
 import getpass
-import json
-import os
 import sys
-from pathlib import Path
 
 from werkzeug.security import generate_password_hash
 
-from solstone.think.utils import get_config, get_journal, require_solstone, setup_cli
+from solstone.think.journal_config import write_journal_config
+from solstone.think.utils import get_config, require_solstone, setup_cli
 
 
 def _set_password() -> None:
@@ -37,12 +35,7 @@ def _set_password() -> None:
     config.setdefault("convey", {})["password_hash"] = password_hash
     config.get("convey", {}).pop("password", None)
 
-    config_path = Path(get_journal()) / "config" / "journal.json"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-    os.chmod(config_path, 0o600)
+    write_journal_config(config)
 
     print("Password set successfully.")
 

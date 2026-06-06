@@ -9,7 +9,6 @@ Auto-discovered by ``think.call`` and mounted as ``sol call import ...``.
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timezone
 from importlib import import_module
 from pathlib import Path
@@ -29,6 +28,7 @@ from solstone.think.entities.relationships import (
     load_facet_relationship,
     save_facet_relationship,
 )
+from solstone.think.journal_config import write_journal_config
 from solstone.think.utils import get_journal, require_solstone
 
 app = typer.Typer(help="Import review and resolution.")
@@ -87,15 +87,6 @@ def _set_nested(cfg: dict, dotted_key: str, value: Any) -> None:
             current[part] = child
         current = child
     current[parts[-1]] = value
-
-
-def _write_config(config: dict) -> None:
-    config_path = Path(get_journal()) / "config" / "journal.json"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(config_path, "w", encoding="utf-8") as handle:
-        json.dump(config, handle, indent=2, ensure_ascii=False)
-        handle.write("\n")
-    os.chmod(config_path, 0o600)
 
 
 def merge_entity_fields(
@@ -264,7 +255,7 @@ def _resolve_config_field(state_dir: Path, field: str, action: str) -> None:
 
         config = get_config()
         _set_nested(config, field, diff_entry.get("source"))
-        _write_config(config)
+        write_journal_config(config)
         log_action = "config_field_applied"
         reason = "review_apply"
     else:

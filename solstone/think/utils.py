@@ -709,15 +709,6 @@ def _resolve_os_timezone() -> str:
         return ""
 
 
-def _write_config_atomic(path: Path, config: dict[str, Any]) -> None:
-    from solstone.think.entities.core import atomic_write
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    content = json.dumps(config, indent=2, ensure_ascii=False) + "\n"
-    atomic_write(path, content)
-    os.chmod(path, 0o600)
-
-
 def ensure_journal_config() -> dict[str, Any]:
     """Materialize <journal>/config/journal.json and return its contents.
 
@@ -725,6 +716,8 @@ def ensure_journal_config() -> dict[str, Any]:
     file exists but lacks ``convey.secret``, the secret is backfilled. Identity
     fields on an existing file are never modified.
     """
+    from solstone.think.journal_config import write_journal_config
+
     global _default_config
 
     journal = Path(get_journal())
@@ -735,7 +728,7 @@ def ensure_journal_config() -> dict[str, Any]:
             config = json.load(fh)
         if not config.get("convey", {}).get("secret"):
             config.setdefault("convey", {})["secret"] = secrets.token_hex(32)
-            _write_config_atomic(config_path, config)
+            write_journal_config(config)
         return config
 
     if _default_config is None:
@@ -761,7 +754,7 @@ def ensure_journal_config() -> dict[str, Any]:
     config["identity"]["preferred"] = login_name
     config["identity"]["timezone"] = timezone
     config.setdefault("convey", {})["secret"] = secrets.token_hex(32)
-    _write_config_atomic(config_path, config)
+    write_journal_config(config)
     return config
 
 

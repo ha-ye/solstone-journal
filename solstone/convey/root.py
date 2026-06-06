@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import queue
@@ -82,19 +81,6 @@ def _check_basic_auth() -> bool:
     if not password_hash:
         return False
     return check_password_hash(password_hash, auth.password or "")
-
-
-def _save_config_section(section: str, data: dict) -> dict:
-    """Merge data into a config section and write back to journal.json."""
-    config = get_config()
-    config.setdefault(section, {}).update(data)
-    config_path = Path(get_journal()) / "config" / "journal.json"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-    os.chmod(config_path, 0o600)
-    return config
 
 
 bp = Blueprint(

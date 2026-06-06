@@ -10,7 +10,6 @@ import threading
 
 import pytest
 
-from solstone.think import journal_config
 from solstone.think.journal_config import write_journal_config
 from solstone.think.services.scout import (
     KEY_FINGERPRINT_FIELD,
@@ -253,11 +252,10 @@ def test_atomic_write_leaves_existing_config_on_replace_failure(
     def fail_replace(_tmp, _path) -> None:
         raise OSError("replace failed")
 
-    monkeypatch.setattr(journal_config.os, "replace", fail_replace)
+    monkeypatch.setattr("solstone.think.journal_io.atomic.os.replace", fail_replace)
 
     with pytest.raises(OSError, match="replace failed"):
         write_journal_config(config)
 
     assert _config_path(journal_copy).read_text() == original_text
-    tmp_path = _config_path(journal_copy).with_suffix(".json.tmp")
-    assert json.loads(tmp_path.read_text())["env"]["GOOGLE_API_KEY"] == "after"
+    assert list(_config_path(journal_copy).parent.glob(".tmp_*")) == []

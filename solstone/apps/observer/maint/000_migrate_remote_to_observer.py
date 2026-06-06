@@ -8,9 +8,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 from pathlib import Path
 
+from solstone.think.journal_config import write_journal_config
 from solstone.think.utils import get_journal, setup_cli
 
 logger = logging.getLogger(__name__)
@@ -100,10 +100,7 @@ def _migrate_config(journal_path: Path) -> bool:
 
     del observe_config["remote"]
 
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-    os.chmod(config_path, 0o600)
+    write_journal_config(config)
     return True
 
 

@@ -80,6 +80,7 @@ MODULE_PRIMITIVES: dict[str, frozenset[str]] = {
 OWNER_FILES: frozenset[str] = frozenset(
     {
         "solstone/apps/entities/call.py",
+        "solstone/apps/chat/config.py",
         "solstone/apps/speakers/owner.py",
         "solstone/apps/speakers/routes.py",
         "solstone/apps/todos/call.py",
@@ -94,6 +95,7 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/think/entities/voiceprints.py",
         "solstone/think/facet_review_candidates.py",
         "solstone/think/facets.py",
+        "solstone/think/journal_config.py",
         # Chronicle day content direct writers. Importer modules that merely
         # route through importers/shared.py are not direct owners and are
         # intentionally omitted.

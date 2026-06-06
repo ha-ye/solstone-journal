@@ -38,7 +38,7 @@ def test_idempotent_when_present_and_matches(timeline_journal, monkeypatch):
         {"providers": {"contexts": {mod.CONTEXT_NAME: mod.EXPECTED_CONTEXT}}},
     )
     monkeypatch.setattr(
-        mod, "_atomic_write_json", lambda *args, **kwargs: pytest.fail("rewrite")
+        mod, "write_journal_config", lambda *args, **kwargs: pytest.fail("rewrite")
     )
 
     summary = mod.run_registration(timeline_journal)
@@ -56,7 +56,7 @@ def test_warns_and_preserves_divergent_model(timeline_journal, monkeypatch):
     }
     write_json(_journal_config_path(timeline_journal), data)
     monkeypatch.setattr(
-        mod, "_atomic_write_json", lambda *args, **kwargs: pytest.fail("rewrite")
+        mod, "write_journal_config", lambda *args, **kwargs: pytest.fail("rewrite")
     )
 
     summary = mod.run_registration(timeline_journal)

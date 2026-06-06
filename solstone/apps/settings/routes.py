@@ -65,6 +65,7 @@ from solstone.convey.sol_initiated.settings import (
     save_settings as save_sol_voice_settings,
 )
 from solstone.convey.utils import error_response, respond_collection
+from solstone.think.journal_config import write_journal_config
 from solstone.think.models import LOCAL_MODEL
 from solstone.think.providers.google import validate_vertex_credentials
 from solstone.think.retention import (
@@ -278,10 +279,6 @@ def update_config() -> Any:
                 detail=f"Unknown section: {section}",
             )
 
-        config_dir = Path(state.journal_root) / "config"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        config_path = config_dir / "journal.json"
-
         # Load existing config
         old_config = get_journal_config()
         config = get_journal_config()
@@ -425,11 +422,7 @@ def update_config() -> Any:
                     else:
                         config["providers"]["key_validation"].pop(val_key, None)
 
-        # Write back to file
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-        os.chmod(config_path, 0o600)
+        write_journal_config(config)
 
         # Log if something changed (don't log sensitive values)
         if changed_fields:
@@ -968,13 +961,7 @@ def validate_all_keys() -> Any:
 
         config["providers"]["key_validation"] = key_validation
 
-        config_dir = Path(state.journal_root) / "config"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        config_path = config_dir / "journal.json"
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-        os.chmod(config_path, 0o600)
+        write_journal_config(config)
 
         return jsonify({"success": True, "key_validation": key_validation})
     except Exception:
@@ -1001,10 +988,6 @@ def update_providers() -> Any:
         request_data = request.get_json()
         if not request_data:
             return error_response(MISSING_REQUEST_BODY, detail="No data provided")
-
-        config_dir = Path(state.journal_root) / "config"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        config_path = config_dir / "journal.json"
 
         # Load existing config
         config = get_journal_config()
@@ -1246,11 +1229,7 @@ def update_providers() -> Any:
                     kv = config["providers"].get("key_validation", {})
                     kv.pop("google_vertex", None)
 
-        # Write back to file
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-        os.chmod(config_path, 0o600)
+        write_journal_config(config)
 
         # Log if something changed
         if changed_fields:
@@ -1341,10 +1320,6 @@ def update_generators() -> Any:
         if not request_data:
             return error_response(MISSING_REQUEST_BODY, detail="No data provided")
 
-        config_dir = Path(state.journal_root) / "config"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        config_path = config_dir / "journal.json"
-
         # Load existing config
         config = get_journal_config()
         old_providers = copy.deepcopy(config.get("providers", {}))
@@ -1395,11 +1370,7 @@ def update_generators() -> Any:
                     }
                 config["providers"]["contexts"][context_key] = ctx_config
 
-        # Write back to file
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-        os.chmod(config_path, 0o600)
+        write_journal_config(config)
 
         # Log if something changed
         if changed_fields:
@@ -1484,10 +1455,6 @@ def update_vision() -> Any:
         request_data = request.get_json()
         if not request_data:
             return error_response(MISSING_REQUEST_BODY, detail="No data provided")
-
-        config_dir = Path(state.journal_root) / "config"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        config_path = config_dir / "journal.json"
 
         # Load existing config
         config = get_journal_config()
@@ -1597,11 +1564,7 @@ def update_vision() -> Any:
                         }
                     config["describe"]["categories"][name] = cat_config
 
-        # Write back to file
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-        os.chmod(config_path, 0o600)
+        write_journal_config(config)
 
         # Log if something changed
         if changed_fields:
@@ -1682,10 +1645,6 @@ def update_observe() -> Any:
         if not request_data:
             return error_response(MISSING_REQUEST_BODY, detail="No data provided")
 
-        config_dir = Path(state.journal_root) / "config"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        config_path = config_dir / "journal.json"
-
         # Load existing config
         config = get_journal_config()
         old_observe = copy.deepcopy(config.get("observe", {}))
@@ -1748,10 +1707,7 @@ def update_observe() -> Any:
 
         # Save config if changed
         if changed_fields:
-            with open(config_path, "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
-                f.write("\n")
-            os.chmod(config_path, 0o600)
+            write_journal_config(config)
 
             log_app_action(
                 app="settings",
@@ -2593,14 +2549,7 @@ def update_storage() -> Any:
                 }
             retention["per_stream"] = new_per_stream
 
-        config_dir = Path(state.journal_root) / "config"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        config_path = config_dir / "journal.json"
-
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-        os.chmod(config_path, 0o600)
+        write_journal_config(config)
 
         if changed:
             log_app_action(

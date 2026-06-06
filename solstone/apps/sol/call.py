@@ -7,13 +7,13 @@ Auto-discovered by ``think.call`` and mounted as ``sol call sol ...``.
 """
 
 import json
-import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 import typer
 
+from solstone.think.journal_config import read_journal_config, write_journal_config
 from solstone.think.utils import get_project_root, require_solstone
 
 app = typer.Typer(help="Agent identity — name and status.")
@@ -41,9 +41,7 @@ def _get_agent_config() -> dict:
 
 def _update_agent_config(updates: dict) -> dict:
     """Update agent config in journal.json and return the full agent block."""
-    from solstone.think.utils import get_config, get_journal
-
-    config = get_config()
+    config = read_journal_config()
     agent = config.get(
         "agent",
         {
@@ -56,12 +54,7 @@ def _update_agent_config(updates: dict) -> dict:
     agent.update(updates)
     config["agent"] = agent
 
-    config_path = Path(get_journal()) / "config" / "journal.json"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2)
-        f.write("\n")
-    os.chmod(config_path, 0o600)
+    write_journal_config(config)
 
     return agent
 
@@ -153,21 +146,15 @@ def set_owner(
 ) -> None:
     """Set the journal owner's name (and optional bio)."""
     from solstone.think.identity import update_self_md_section
-    from solstone.think.utils import get_config, get_journal
 
-    config = get_config()
+    config = read_journal_config()
     identity = config.get("identity", {})
     identity["name"] = name
     if bio is not None:
         identity["bio"] = bio
     config["identity"] = identity
 
-    config_path = Path(get_journal()) / "config" / "journal.json"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2)
-        f.write("\n")
-    os.chmod(config_path, 0o600)
+    write_journal_config(config)
 
     # Update identity/self.md
     owner_content = name
