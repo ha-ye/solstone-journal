@@ -51,6 +51,23 @@ class SolstoneNotConfigured(RuntimeError):
         self.error = error
 
 
+class CorruptConfigError(Exception):
+    """Raised when config/journal.json exists but cannot be parsed.
+
+    Distinct from the missing-file case (which returns defaults). The message
+    is owner-voice because it surfaces at sol call / HTTP boundaries.
+    """
+
+    def __init__(self, path: str | Path, *, error: Exception | None = None):
+        self.path = str(path)
+        self.error = error
+        super().__init__(
+            f"I couldn't read your settings file at {self.path}. "
+            "Your settings were NOT changed. "
+            "Repair the file or restore config/journal.json from a backup, then try again."
+        )
+
+
 def now_ms() -> int:
     """Return current time as Unix epoch milliseconds."""
     return int(time.time() * 1000)
@@ -806,11 +823,7 @@ def get_config() -> dict[str, Any]:
         with open(config_path, "r", encoding="utf-8") as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError) as exc:
-        # Log error but return defaults to avoid breaking callers
-        logging.getLogger(__name__).warning(
-            "Failed to load config from %s: %s", config_path, exc
-        )
-        return copy.deepcopy(_default_config)
+        raise CorruptConfigError(config_path, error=exc) from exc
 
 
 def _append_task_log(dir_path: str | Path, message: str) -> None:

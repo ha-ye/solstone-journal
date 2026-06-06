@@ -257,6 +257,27 @@ def test_api_get_config_masks_password_without_effective_host_url(journal_copy):
     assert "pairing" not in payload
 
 
+def test_api_put_corrupt_config_returns_reason_without_writing(journal_copy):
+    client = _settings_client(journal_copy)
+    with client.session_transaction() as sess:
+        sess["logged_in"] = True
+    config_path = journal_copy / "config" / "journal.json"
+    config_path.write_bytes(b"{ invalid json }")
+    before = config_path.read_bytes()
+
+    with patch("solstone.apps.settings.routes.write_journal_config") as write_config:
+        response = client.put(
+            "/app/settings/api/config",
+            json={"section": "identity", "data": {"name": "Changed"}},
+            content_type="application/json",
+        )
+
+    assert response.status_code == 500
+    assert response.get_json()["reason_code"] == "corrupt_config"
+    write_config.assert_not_called()
+    assert config_path.read_bytes() == before
+
+
 def test_api_put_network_access_refuses_without_password(journal_copy):
     _clear_password(journal_copy)
     client = _settings_client(journal_copy)

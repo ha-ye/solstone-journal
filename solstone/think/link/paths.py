@@ -98,6 +98,7 @@ def relay_url() -> str:
             if isinstance(url, str) and url.strip():
                 return url.strip().rstrip("/")
     except Exception:
+        # Intended fail-closed-on-unreadable-config: use the benign default relay.
         pass
     return DEFAULT_RELAY_URL
 

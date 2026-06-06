@@ -331,6 +331,7 @@ def register_app_context(app: Flask, registry: AppRegistry) -> None:
                     if agent_name:
                         apps_dict["sol"]["label"] = agent_name
             except Exception:
+                # Intended fail-closed-on-unreadable-config: keep the default label.
                 pass  # Keep default label on any error
 
         # Get starred apps list

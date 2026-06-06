@@ -257,6 +257,7 @@ def cloud_key_configured(env_key: str) -> bool:
 
         return bool(read_journal_config().get("env", {}).get(env_key))
     except Exception:
+        # Intended fail-closed-on-unreadable-config: report no cloud key.
         return False
 
 

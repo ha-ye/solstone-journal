@@ -113,6 +113,15 @@ def create_app(journal: str = "") -> Flask:
         static_folder=os.path.join(os.path.dirname(__file__), "static"),
     )
 
+    from solstone.think.utils import CorruptConfigError
+
+    from .reasons import CORRUPT_CONFIG
+    from .utils import error_response
+
+    @app.errorhandler(CorruptConfigError)
+    def _handle_corrupt_config(exc: CorruptConfigError):
+        return error_response(CORRUPT_CONFIG, detail=str(exc))
+
     # Add apps directory to template search path so apps can have their templates
     # in apps/{name}/workspace.html instead of needing a templates/ subfolder
     convey_templates = os.path.join(os.path.dirname(__file__), "templates")

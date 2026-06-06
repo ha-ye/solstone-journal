@@ -76,8 +76,13 @@ from solstone.think.retention import (
     purge,
 )
 from solstone.think.streams import list_streams
+from solstone.think.utils import (
+    CorruptConfigError,
+    get_journal,
+    get_project_root,
+    now_ms,
+)
 from solstone.think.utils import get_config as get_journal_config
-from solstone.think.utils import get_journal, get_project_root, now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +214,8 @@ def get_config() -> Any:
     """
     try:
         return jsonify(_project_public_config(get_journal_config()))
+    except CorruptConfigError:
+        raise
     except Exception:
         logger.exception("error loading config")
         return _settings_operation_failed()
@@ -458,6 +465,8 @@ def update_config() -> Any:
                 "success": True,
             }
         )
+    except CorruptConfigError:
+        raise
     except Exception:
         logger.exception("error updating config")
         return _settings_operation_failed()
@@ -2630,6 +2639,8 @@ def run_purge() -> Any:
             )
 
         return jsonify(response)
+    except CorruptConfigError:
+        raise
     except Exception:
         logger.exception("error running purge")
         return _settings_operation_failed()

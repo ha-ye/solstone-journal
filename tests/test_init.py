@@ -1,7 +1,11 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
 import base64
 import json
 import re
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -332,6 +336,19 @@ class TestInitDetection:
 
         assert resp.status_code == 200
         assert after == before
+
+    def test_init_get_does_not_overwrite_corrupt_config(self, journal_copy):
+        app = create_app(str(journal_copy))
+        app.config["TESTING"] = True
+        client = app.test_client()
+        config_path = journal_copy / "config" / "journal.json"
+        config_path.write_bytes(b"{ invalid json }")
+        before = config_path.read_bytes()
+
+        with pytest.raises(json.JSONDecodeError):
+            client.get("/init")
+
+        assert config_path.read_bytes() == before
 
 
 class TestInitValidateProvider:
@@ -678,6 +695,25 @@ class TestInitFinalize:
         config = _read_config(journal_copy)
         assert config["retention"]["raw_media"] == "keep"
         assert config["retention"]["raw_media_days"] is None
+
+    def test_finalize_corrupt_config_returns_reason_without_writing(
+        self, fresh_client, journal_copy
+    ):
+        config_path = journal_copy / "config" / "journal.json"
+        config_path.write_bytes(b"{ invalid json }")
+        before = config_path.read_bytes()
+
+        with patch("solstone.convey.root.write_journal_config") as write_config:
+            resp = fresh_client.post(
+                "/init/finalize",
+                json={"name": "Jane"},
+                content_type="application/json",
+            )
+
+        assert resp.status_code == 500
+        assert resp.get_json()["reason_code"] == "corrupt_config"
+        write_config.assert_not_called()
+        assert config_path.read_bytes() == before
 
 
 class TestRemovedEndpoints:

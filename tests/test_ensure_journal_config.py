@@ -122,6 +122,21 @@ def test_ensure_journal_config_backfills_secret_without_touching_identity(
     assert config["convey"]["secret"]
 
 
+def test_ensure_journal_config_raises_on_corrupt_existing_config_without_writing(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    config_path = _config_path(tmp_path)
+    config_path.parent.mkdir(parents=True)
+    config_path.write_bytes(b"{ invalid json }")
+    before = config_path.read_bytes()
+
+    with pytest.raises(json.JSONDecodeError):
+        utils.ensure_journal_config()
+
+    assert config_path.read_bytes() == before
+
+
 def test_ensure_journal_config_returned_dict_does_not_mutate_defaults(
     tmp_path, monkeypatch
 ):

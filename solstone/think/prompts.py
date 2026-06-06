@@ -307,7 +307,7 @@ def load_prompt(
         substituted), the resolved path to the ``.md`` file, and metadata from
         the JSON frontmatter.
     """
-    from solstone.think.utils import get_config
+    from solstone.think.utils import CorruptConfigError, get_config
 
     if not name:
         raise ValueError("Prompt name must be provided")
@@ -363,6 +363,8 @@ def load_prompt(
         # Use safe_substitute to avoid errors for undefined variables
         template = Template(text)
         text = template.safe_substitute(template_vars)
+    except CorruptConfigError:
+        raise
     except Exception as exc:
         # Log but don't fail - return original text if substitution fails
         logging.debug("Template substitution failed for %s: %s", prompt_path, exc)

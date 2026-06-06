@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from solstone.think.utils import get_config, journal_is_active
+from solstone.think.utils import CorruptConfigError, get_config, journal_is_active
 
 
 @pytest.fixture
@@ -136,8 +136,8 @@ def test_get_config_empty_journal(tmp_path, monkeypatch):
     assert config["identity"]["name"] == ""
 
 
-def test_get_config_handles_invalid_json(tmp_path, monkeypatch):
-    """Test get_config returns defaults when JSON is invalid."""
+def test_get_config_raises_on_invalid_json(tmp_path, monkeypatch):
+    """Test get_config raises when present journal.json is invalid."""
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
     # Create config with invalid JSON
@@ -148,19 +148,12 @@ def test_get_config_handles_invalid_json(tmp_path, monkeypatch):
     with open(config_file, "w") as f:
         f.write("{ invalid json }")
 
-    # Should return default structure and log warning
-    config = get_config()
+    with pytest.raises(CorruptConfigError) as exc_info:
+        get_config()
 
-    assert "identity" in config
-    assert config["identity"]["name"] == ""
-    assert config["identity"]["pronouns"] == {
-        "subject": "",
-        "object": "",
-        "possessive": "",
-        "reflexive": "",
-    }
-    assert config["identity"]["bio"] == ""
-    assert "describe" in config
+    message = str(exc_info.value)
+    assert str(config_file) in message
+    assert "NOT changed" in message
 
 
 def test_get_config_with_fixtures(monkeypatch):

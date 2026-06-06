@@ -36,6 +36,7 @@ def window_open(now: float | None = None) -> bool:
         nonces = NonceStore(nonces_path()).snapshot()
         return any(not nonce.used and nonce.expires_at > ts for nonce in nonces)
     except Exception:
+        # Intended fail-closed-on-unreadable-config: close cert-less pairing.
         log.warning(
             "cert-less pairing window read failed; treating closed",
             exc_info=True,

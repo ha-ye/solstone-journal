@@ -91,6 +91,7 @@ def pre_process(context: dict) -> dict:
     """Build chat-context template vars for the chat talent prompt."""
     from solstone.think.routines import get_config as get_routines_config
     from solstone.think.routines import save_config as save_routines_config
+    from solstone.think.utils import CorruptConfigError
 
     facet = context.get("facet")
     trigger_kind, trigger_payload = _normalize_trigger(context)
@@ -201,6 +202,8 @@ def pre_process(context: dict) -> dict:
 
     try:
         template_vars["routine_suggestion"] = render_routine_suggestion()
+    except CorruptConfigError:
+        raise
     except Exception:
         logger.debug("Routine suggestion eligibility check failed", exc_info=True)
 

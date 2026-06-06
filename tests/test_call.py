@@ -9,8 +9,14 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
+import solstone.think.call as call_module
 from solstone.think.call import call_app
-from solstone.think.utils import resolve_sol_day, resolve_sol_facet, resolve_sol_segment
+from solstone.think.utils import (
+    CorruptConfigError,
+    resolve_sol_day,
+    resolve_sol_facet,
+    resolve_sol_segment,
+)
 
 runner = CliRunner()
 
@@ -127,6 +133,24 @@ def merge_journal(tmp_path, monkeypatch):
 
 class TestDiscovery:
     """Tests for app CLI discovery."""
+
+    def test_main_prints_corrupt_config_and_exits_nonzero(self, monkeypatch, capsys):
+        """main() should surface corrupt config in owner voice."""
+
+        def raise_corrupt_config():
+            raise CorruptConfigError("/x/config/journal.json")
+
+        monkeypatch.setattr(call_module, "call_app", raise_corrupt_config)
+
+        with pytest.raises(typer.Exit) as exc_info:
+            call_module.main()
+
+        assert exc_info.value.exit_code == 1
+        captured = capsys.readouterr()
+        assert "I couldn't read your settings file at /x/config/journal.json." in (
+            captured.err
+        )
+        assert "Your settings were NOT changed." in captured.err
 
     def test_no_args_shows_help(self):
         """Running 'sol call' with no args shows help."""

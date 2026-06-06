@@ -113,4 +113,10 @@ call_app.add_typer(_moved_stub("identity"), name="identity")
 
 def main() -> None:
     """Entry point for ``sol call``."""
-    call_app()
+    from solstone.think.utils import CorruptConfigError
+
+    try:
+        call_app()
+    except CorruptConfigError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc

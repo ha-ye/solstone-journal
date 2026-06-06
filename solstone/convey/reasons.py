@@ -90,6 +90,11 @@ OPERATION_NO_LONGER_AVAILABLE = Reason(
 )
 
 # config/settings
+CORRUPT_CONFIG = Reason(
+    "corrupt_config",
+    "I couldn't read your settings.",
+    500,
+)
 INVALID_CONFIG_VALUE = Reason(
     "invalid_config_value",
     "I couldn't save that setting because one value was invalid.",

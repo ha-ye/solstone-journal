@@ -12,6 +12,7 @@ import sys
 import pytest
 
 from solstone.apps.timeline.tests.conftest import write_json
+from solstone.think.utils import CorruptConfigError
 
 mod = importlib.import_module(
     "solstone.apps.timeline.maint.002_register_segment_summary_model"
@@ -75,11 +76,13 @@ def test_creates_providers_contexts_when_missing_section(timeline_journal):
     assert data["providers"]["contexts"][mod.CONTEXT_NAME] == mod.EXPECTED_CONTEXT
 
 
-def test_malformed_json_exits_nonzero(timeline_journal, monkeypatch):
-    _journal_config_path(timeline_journal).write_text("{bad", encoding="utf-8")
+def test_malformed_json_fails_loud(timeline_journal, monkeypatch):
+    config_path = _journal_config_path(timeline_journal)
+    config_path.write_text("{bad", encoding="utf-8")
+    before = config_path.read_bytes()
     monkeypatch.setattr(sys, "argv", ["register-segment-summary-model"])
 
-    with pytest.raises(SystemExit) as exc:
+    with pytest.raises(CorruptConfigError):
         mod.main()
 
-    assert exc.value.code == 1
+    assert config_path.read_bytes() == before

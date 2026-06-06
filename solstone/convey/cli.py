@@ -28,6 +28,7 @@ def _resolve_config_password_hash() -> str:
         convey_config = config.get("convey", {})
         return convey_config.get("password_hash", "")
     except Exception:
+        # Intended fail-closed-on-unreadable-config: no hash means no password auth.
         return ""
 
 
@@ -40,6 +41,7 @@ def _resolve_bind_host() -> str:
             get_config().get("convey", {}).get("allow_network_access", False)
         )
     except Exception:
+        # Intended fail-closed-on-unreadable-config: bind localhost only.
         allow_network_access = False
     return "0.0.0.0" if allow_network_access else "127.0.0.1"
 

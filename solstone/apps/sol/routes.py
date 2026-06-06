@@ -703,6 +703,7 @@ def api_identity() -> Any:
             }
         )
     except Exception:
+        # Intended fail-closed-on-unreadable-config: return no identity payload.
         return error_response(
             TALENT_OPERATION_FAILED,
             detail="Unable to load identity data",

@@ -60,6 +60,7 @@ def _get_password_hash() -> str:
         convey_config = config.get("convey", {})
         return convey_config.get("password_hash", "")
     except Exception:
+        # Intended fail-closed-on-unreadable-config: no hash means no password auth.
         return ""
 
 
@@ -69,6 +70,7 @@ def _is_setup_complete() -> bool:
         config = get_config()
         return bool(config.get("setup", {}).get("completed_at"))
     except Exception:
+        # Intended fail-closed-on-unreadable-config: require setup flow.
         return False
 
 

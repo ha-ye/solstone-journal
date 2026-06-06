@@ -9,9 +9,12 @@ from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from solstone.convey.chat_stream import append_chat_event
 from solstone.convey.sol_initiated.copy import KIND_SOL_CHAT_REQUEST
 from solstone.think.identity import ensure_identity_directory
+from solstone.think.utils import CorruptConfigError
 
 TEMPLATE_VAR_KEYS = {
     "digest_contents",
@@ -999,6 +1002,22 @@ def test_chat_context_enrichment_errors_are_graceful(monkeypatch, tmp_path):
     assert result["messages"] == [
         {"role": "user", "content": "What is on my calendar today?"}
     ]
+
+
+def test_chat_context_corrupt_config_re_raises_from_routine_suggestion(
+    monkeypatch, tmp_path
+):
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    module = _load_chat_context_module()
+
+    def _raise_corrupt_config():
+        raise CorruptConfigError(journal / "config" / "journal.json")
+
+    monkeypatch.setattr(module, "render_routine_suggestion", _raise_corrupt_config)
+
+    with pytest.raises(CorruptConfigError):
+        module.pre_process({"day": "20260420"})
 
 
 def test_chat_context_drops_legacy_memory_imports(monkeypatch):
