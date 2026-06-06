@@ -9,7 +9,7 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request
 
-from solstone.convey.utils import format_date
+from solstone.convey.utils import format_date, parse_pagination_params
 from solstone.think.facets import get_facets
 from solstone.think.indexer.journal import search_counts, search_journal
 
@@ -145,8 +145,9 @@ def search_journal_api() -> Any:
     query = request.args.get("q", "").strip()
 
     # Parse parameters
-    results_per_day = int(request.args.get("limit", 5))
-    day_offset = int(request.args.get("offset", 0))
+    results_per_day, day_offset = parse_pagination_params(
+        default_limit=5, max_limit=100, min_limit=1
+    )
     facet_filter = _parse_facet_filter()
     agent_filter = _parse_agent_filter()
     stream_filter = _parse_stream_filter()
@@ -257,8 +258,9 @@ def day_results_api() -> Any:
     if not day:
         return jsonify({"results": [], "total": 0})
 
-    offset = int(request.args.get("offset", 0))
-    limit = int(request.args.get("limit", 20))
+    limit, offset = parse_pagination_params(
+        default_limit=20, max_limit=100, min_limit=1
+    )
     facet_filter = _parse_facet_filter()
     agent_filter = _parse_agent_filter()
     stream_filter = _parse_stream_filter()
