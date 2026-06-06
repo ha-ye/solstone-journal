@@ -260,6 +260,8 @@ def _install_wrappers_unlocked(
     write_wrappers_atomically(contents)
 
 
+# OWNS alias repair for setup: backs up non-owned aliases and writes managed
+# wrappers; doctor only reports stale aliases.
 def provision_wrappers(curdir: Path, journal: str) -> None:
     """Provision/repair both managed wrappers, backing up a non-owned alias first."""
     validate_journal_path_for_wrapper(journal)

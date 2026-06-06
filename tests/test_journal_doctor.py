@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import plistlib
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -53,15 +52,6 @@ def make_existing_target(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("", encoding="utf-8")
     return path
-
-
-def assert_managed_wrapper(home_root: Path, binary: str, journal: Path, fake_bin: Path):
-    alias = home_root / ".local" / "bin" / binary
-    assert alias.exists()
-    parsed = install_guard.parse_wrapper(alias.read_text(encoding="utf-8"))
-    assert parsed is not None
-    assert parsed["journal"] == str(journal)
-    assert parsed["sol_bin"] == str(fake_bin / binary)
 
 
 def patch_alias_absent(doctor, monkeypatch):
@@ -226,18 +216,6 @@ class TestJournalAlias:
         monkeypatch.setattr(install_guard, "_legacy_backup_dir", lambda: backup_dir)
         self.backup_dir = backup_dir
 
-    def setup_auto_migration(self, doctor, monkeypatch, tmp_path):
-        patch_alias_absent(doctor, monkeypatch)
-        fake_bin = tmp_path / "fakevenv" / "bin"
-        fake_bin.mkdir(parents=True)
-        journal = tmp_path / "journal"
-        monkeypatch.setattr(sys, "executable", str(fake_bin / "python"))
-        monkeypatch.setattr(
-            "solstone.think.install_guard._current_journal_for_alias",
-            lambda: journal,
-        )
-        return fake_bin, journal
-
     def test_journal_only_absent_ok_even_if_sol_is_foreign(
         self, doctor, monkeypatch, home_root, tmp_path
     ):
@@ -251,10 +229,10 @@ class TestJournalAlias:
 
         assert result.status == "ok"
 
-    def test_journal_uv_tool_auto_migrates_only_journal(
+    def test_journal_uv_tool_reports_only_journal(
         self, doctor, monkeypatch, home_root, tmp_path
     ):
-        fake_bin, journal = self.setup_auto_migration(doctor, monkeypatch, tmp_path)
+        patch_alias_absent(doctor, monkeypatch)
         repo = make_repo(tmp_path)
         target = make_existing_target(
             home_root
@@ -266,17 +244,20 @@ class TestJournalAlias:
             / "bin"
             / "journal"
         )
-        make_alias(home_root, "journal", target)
+        alias = make_alias(home_root, "journal", target)
+        original_target = alias.readlink()
         monkeypatch.setattr(doctor, "ROOT", repo)
 
         result = doctor.stale_alias_symlink_check(args(doctor), binary="journal")
 
-        assert result.status == "ok"
+        assert result.status == "warn"
         assert "uv-tool" in result.detail
-        assert_managed_wrapper(home_root, "journal", journal, fake_bin)
+        assert result.fix is not None
+        assert "journal setup" in result.fix
+        assert alias.is_symlink()
+        assert alias.readlink() == original_target
         assert not (home_root / ".local" / "bin" / "sol").exists()
-        backups = list(self.backup_dir.glob("journal.old-symlink-*"))
-        assert len(backups) == 1
+        assert list(self.backup_dir.glob("*.old-symlink-*")) == []
 
 
 class TestLaunchdStalePlist:

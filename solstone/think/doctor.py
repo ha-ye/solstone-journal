@@ -21,6 +21,10 @@ Decision log:
   exit code. Filter via `--feature <name>`.
 """
 
+# doctor EXAMINES ONLY — never mutate (no writes, installs, downloads,
+# migrations, network) and never import the inference (solstone.observe.*) or
+# installer (install_models) layers. Diagnose and report; setup performs changes.
+
 from __future__ import annotations
 
 import argparse
@@ -37,9 +41,10 @@ from functools import partial
 from importlib.metadata import PackageNotFoundError, distribution
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
-from typing import IO, Any, Callable, Sequence
+from typing import IO, Callable, Sequence
 
 from solstone.think import features as _features
+from solstone.think import parakeet_readiness
 from solstone.think.health_cli import fetch_supervisor_status
 from solstone.think.pipeline_health import BACKLOG_STATE_UNKNOWN, read_backlog_view
 from solstone.think.probe import (
@@ -71,18 +76,6 @@ from solstone.think.service import (
 from solstone.think.setup_events import STATUS_TRANSLATION, JsonlEmitter, utc_now_iso
 from solstone.think.sync_check import check_journal_sync, format_doctor_report
 from solstone.think.utils import get_journal_info, is_packaged_install
-
-
-class _InstallModelsProxy:
-    """Lazy module proxy; install_models imports observe audio deps at import time."""
-
-    def __getattr__(self, name: str) -> Any:
-        from solstone.think import install_models as module
-
-        return getattr(module, name)
-
-
-install_models = _InstallModelsProxy()
 
 
 @dataclass(frozen=True)
@@ -373,75 +366,8 @@ def _partial_migration_detail(binary: str, backup: Path) -> str:
     )
 
 
-def _legacy_target_from_symlink(alias: Path) -> tuple[Path, str] | None:
-    if not alias.is_symlink():
-        return None
-    target = Path(os.readlink(alias))
-    if not target.is_absolute():
-        target = alias.parent / target
-    resolved = target.resolve(strict=False)
-    tag = _recognized_legacy_target(resolved)
-    if tag is None:
-        return None
-    return resolved, tag
-
-
-def _auto_migrate_legacy_aliases(
-    check: Check,
-    install_guard: object,
-    binary: str,
-) -> CheckResult:
-    try:
-        journal = install_guard._current_journal_for_alias()
-    except Exception as exc:
-        return make_result(
-            check,
-            "fail",
-            f"legacy {binary} alias detected but journal resolution failed: {type(exc).__name__}: {exc} — run from venv to auto-migrate",
-            f"run `journal setup` from the repo that owns the wrapper, or remove `~/.local/bin/{binary}` manually if the repo is gone",
-        )
-
-    alias = install_guard.alias_paths()[binary]
-    legacy = _legacy_target_from_symlink(alias)
-    if legacy is None:
-        return make_result(
-            check,
-            "fail",
-            f"legacy {binary} alias auto-migration failed: alias is no longer a recognized legacy symlink",
-        )
-    _target, tag = legacy
-
-    try:
-        backup = install_guard._legacy_backup_path(binary)
-        backup.parent.mkdir(parents=True, exist_ok=True)
-        alias.replace(backup)
-
-        sol_bin = Path(sys.executable).parent / binary
-        install_guard.install_wrappers(
-            str(journal),
-            {binary: str(sol_bin)},
-            paths={binary: alias},
-        )
-    except Exception as exc:
-        return make_result(
-            check,
-            "fail",
-            f"legacy {binary} alias auto-migration failed: {type(exc).__name__}: {exc}",
-        )
-
-    if tag == "uv-tool":
-        migration_phrase = "migrated legacy uv-tool symlink"
-    elif tag.startswith("pipx"):
-        migration_phrase = "migrated legacy pipx symlink"
-    else:
-        migration_phrase = "migrated legacy symlink"
-    return make_result(
-        check,
-        "ok",
-        f"auto-migrated legacy {tag} install for {binary} ({migration_phrase}): backed up {binary} → {backup}; installed managed wrapper at ~/.local/bin/{binary}",
-    )
-
-
+# EXAMINE ONLY: detect + report; alias repair is owned by setup's wrapper step
+# (install_guard.provision_wrappers) — never mutate aliases here.
 def stale_alias_symlink_check(args: Args, binary: str) -> CheckResult:
     del args
     check = STALE_ALIAS_CHECK
@@ -489,7 +415,12 @@ def stale_alias_symlink_check(args: Args, binary: str) -> CheckResult:
     if state in {cross_repo, dangling, foreign} and other is not None:
         tag = _recognized_legacy_target(other)
         if tag is not None:
-            return _auto_migrate_legacy_aliases(check, install_guard, binary)
+            return make_result(
+                check,
+                "warn",
+                f"~/.local/bin/{binary} is a legacy {tag} install ({other})",
+                f"another sol/journal CLI is installed at ~/.local/bin/{binary}; run `journal setup` to repair",
+            )
 
     if state is cross_repo:
         fail_detail = f"~/.local/bin/{binary} points at another repo ({other})"
@@ -619,7 +550,7 @@ def default_stt_ready_check(args: Args) -> CheckResult:
             f"configured backend is {backend}; parakeet readiness not applicable",
         )
 
-    os_name, arch = install_models._platform_info()
+    os_name, arch = parakeet_readiness._platform_info()
     if (os_name, arch) not in {("linux", "x86_64"), ("darwin", "arm64")}:
         return make_result(check, "skip", "parakeet not supported on this platform")
 
@@ -633,11 +564,11 @@ def default_stt_ready_check(args: Args) -> CheckResult:
         )
 
     try:
-        ready_cache = install_models._check_parakeet_ready(
+        ready_cache = parakeet_readiness._check_parakeet_ready(
             os_name,
             arch,
             variant,
-            install_models._sentinel_path(variant),
+            parakeet_readiness._sentinel_path(variant),
         )
     except RuntimeError as exc:
         return make_result(check, "warn", str(exc), _DEFAULT_STT_MODEL_FIX)

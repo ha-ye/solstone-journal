@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable
 from unittest.mock import Mock
 
 import pytest
@@ -20,10 +21,12 @@ from solstone.think.setup_events import (
     STEP_NAMES,
 )
 from tests.test_setup import (
+    assert_setup_wrapper,
     expected_service_install_command,
     expected_skills_journal_command,
     expected_skills_user_command,
     patch_home,
+    patch_runtime_bin,
     patch_service_health,
     patch_source_checkout,
     patch_subprocess,
@@ -93,6 +96,28 @@ def doctor_non_port_warning_lines() -> list[dict]:
     ]
 
 
+def stale_alias_warning_lines() -> list[dict]:
+    return [
+        doctor_ok_lines()[0],
+        {
+            "event": "check.completed",
+            "ts": "2026-05-11T00:00:00Z",
+            "name": "stale_alias_symlink",
+            "severity": "blocker",
+            "status": "warning",
+            "detail": "~/.local/bin/sol is a legacy uv-tool install",
+            "fix": "run journal setup",
+        },
+        {
+            "event": "doctor.completed",
+            "ts": "2026-05-11T00:00:00Z",
+            "status": "warning",
+            "duration_ms": 1,
+            "summary": {"total": 1, "failed": 0, "warnings": 1, "skipped": 0},
+        },
+    ]
+
+
 def run_setup_jsonl(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -102,6 +127,7 @@ def run_setup_jsonl(
     doctor_lines: list[dict] | None = None,
     command_returncode: int = 0,
     command_stderr: str = "",
+    pre_setup: Callable[[], None] | None = None,
 ) -> tuple[int, list[dict], str]:
     patch_home(monkeypatch, tmp_path)
     patch_source_checkout(monkeypatch, tmp_path)
@@ -112,6 +138,8 @@ def run_setup_jsonl(
         command_returncode=command_returncode,
         command_stderr=command_stderr,
     )
+    if pre_setup is not None:
+        pre_setup()
     journal = tmp_path / "journal"
     argv = ["--jsonl", "--yes", "--journal", str(journal)]
     if args:
@@ -220,6 +248,51 @@ def test_setup_jsonl_translates_doctor_advisories_to_step_warning(
     assert warnings[-1]["step"] == "doctor"
     assert warnings[-1]["text"] == ".local/bin/sol is not reachable"
     assert warnings[-1]["fix_hint"] == "uv tool install solstone"
+
+
+def test_setup_jsonl_stale_alias_warning_allows_wrapper_repair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    bin_dir = patch_runtime_bin(monkeypatch, tmp_path)
+    backup_dir = tmp_path / "legacy-backups"
+    backup_dir.mkdir()
+    monkeypatch.setattr(install_guard, "_legacy_backup_dir", lambda: backup_dir)
+    seeded_aliases: dict[str, Path] = {}
+
+    def seed_cross_repo_aliases() -> None:
+        aliases = install_guard.alias_paths()
+        seeded_aliases.update(aliases)
+        other_bin = tmp_path / "other" / ".venv" / "bin"
+        for binary, alias in aliases.items():
+            target = other_bin / binary
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("", encoding="utf-8")
+            alias.parent.mkdir(parents=True, exist_ok=True)
+            alias.symlink_to(target)
+
+    rc, events, _out = run_setup_jsonl(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        ["--skip-models", "--skip-skills", "--skip-service"],
+        doctor_lines=stale_alias_warning_lines(),
+        pre_setup=seed_cross_repo_aliases,
+    )
+    journal = tmp_path / "journal"
+
+    assert rc == 0
+    for binary, alias in seeded_aliases.items():
+        assert not alias.is_symlink()
+        assert_setup_wrapper(alias, binary, journal, bin_dir)
+    assert len(list(backup_dir.glob("*.old-symlink-*"))) == 2
+    assert any(
+        event.get("event") == "check.completed"
+        and event.get("name") == "stale_alias_symlink"
+        and event.get("status") == "warning"
+        for event in events
+    )
 
 
 def test_setup_jsonl_existing_journal_emits_dead_end(

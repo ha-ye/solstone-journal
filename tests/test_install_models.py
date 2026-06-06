@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from solstone.think import install_models
+from solstone.think import install_models, parakeet_readiness
 
 
 def _sha256(data: bytes) -> str:
@@ -118,25 +118,25 @@ def test_verify_bundled_assets_reports_mutated_asset(
 
 def test_verify_returns_true_when_files_at_fluidaudio_sibling(tmp_path: Path):
     cache_dir = tmp_path / "models"
-    repo_dir = tmp_path / install_models.MAC_FLUIDAUDIO_REPO_NAME
-    _write_model_files(repo_dir, install_models.MAC_MODEL_FILES)
+    repo_dir = tmp_path / parakeet_readiness.MAC_FLUIDAUDIO_REPO_NAME
+    _write_model_files(repo_dir, parakeet_readiness.MAC_MODEL_FILES)
 
-    assert install_models._verify_mac_cache(cache_dir) is True
+    assert parakeet_readiness._verify_mac_cache(cache_dir) is True
 
 
 def test_verify_returns_false_when_sibling_empty(tmp_path: Path):
     cache_dir = tmp_path / "models"
     cache_dir.mkdir()
-    (tmp_path / install_models.MAC_FLUIDAUDIO_REPO_NAME).mkdir()
+    (tmp_path / parakeet_readiness.MAC_FLUIDAUDIO_REPO_NAME).mkdir()
 
-    assert install_models._verify_mac_cache(cache_dir) is False
+    assert parakeet_readiness._verify_mac_cache(cache_dir) is False
 
 
 def test_verify_returns_false_when_files_at_literal_path(tmp_path: Path):
     cache_dir = tmp_path / "models"
-    _write_model_files(cache_dir, install_models.MAC_MODEL_FILES)
+    _write_model_files(cache_dir, parakeet_readiness.MAC_MODEL_FILES)
 
-    assert install_models._verify_mac_cache(cache_dir) is False
+    assert parakeet_readiness._verify_mac_cache(cache_dir) is False
 
 
 def test_helper_path_env_override_wins(
@@ -224,7 +224,7 @@ def test_main_check_ready_cache_returns_zero(
         sentinel_path,
         install_models._build_payload("linux", "x86_64", "cpu", cache_dir),
     )
-    monkeypatch.setattr(install_models, "_verify_linux_cache", lambda path: True)
+    monkeypatch.setattr(parakeet_readiness, "_verify_linux_cache", lambda path: True)
 
     assert install_models.main() == 0
     assert f"model ready: {cache_dir}" in capsys.readouterr().out

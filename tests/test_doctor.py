@@ -204,12 +204,12 @@ class TestDefaultSttReady:
         journal = tmp_path / "journal"
         monkeypatch.setattr(doctor, "get_journal_info", lambda: (str(journal), "env"))
         monkeypatch.setattr(
-            doctor.install_models,
+            doctor.parakeet_readiness,
             "_platform_info",
             lambda: ("linux", "x86_64"),
         )
         monkeypatch.setattr(
-            doctor.install_models,
+            doctor.parakeet_readiness,
             "_sentinel_path",
             lambda variant: tmp_path / f"{variant}.sentinel",
         )
@@ -226,7 +226,7 @@ class TestDefaultSttReady:
             return ready_cache
 
         monkeypatch.setattr(
-            doctor.install_models,
+            doctor.parakeet_readiness,
             "_check_parakeet_ready",
             fake_check_ready,
         )
@@ -240,7 +240,7 @@ class TestDefaultSttReady:
         self.setup_linux_parakeet_default(doctor, monkeypatch, tmp_path)
         monkeypatch.setattr(doctor.importlib.util, "find_spec", lambda name: None)
         monkeypatch.setattr(
-            doctor.install_models,
+            doctor.parakeet_readiness,
             "_check_parakeet_ready",
             lambda *_args: pytest.fail("model readiness should not run"),
         )
@@ -255,7 +255,7 @@ class TestDefaultSttReady:
         self.setup_linux_parakeet_default(doctor, monkeypatch, tmp_path)
         monkeypatch.setattr(doctor.importlib.util, "find_spec", lambda name: object())
         monkeypatch.setattr(
-            doctor.install_models,
+            doctor.parakeet_readiness,
             "_check_parakeet_ready",
             lambda *_args: (_ for _ in ()).throw(RuntimeError("sentinel missing")),
         )
@@ -281,7 +281,7 @@ class TestDefaultSttReady:
         )
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
         monkeypatch.setattr(
-            doctor.install_models,
+            doctor.parakeet_readiness,
             "_platform_info",
             lambda: pytest.fail("platform should not be checked"),
         )
@@ -298,13 +298,13 @@ class TestDefaultSttReady:
         ready_cache = tmp_path / "cache"
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
         monkeypatch.setattr(
-            doctor.install_models,
+            doctor.parakeet_readiness,
             "_platform_info",
             lambda: ("linux", "x86_64"),
         )
         monkeypatch.setattr(doctor.importlib.util, "find_spec", lambda name: object())
         monkeypatch.setattr(
-            doctor.install_models,
+            doctor.parakeet_readiness,
             "_check_parakeet_ready",
             lambda *_args: ready_cache,
         )
@@ -318,7 +318,7 @@ class TestDefaultSttReady:
     def test_skips_arm64_linux_in_runner(self, doctor, monkeypatch, tmp_path):
         self.setup_linux_parakeet_default(doctor, monkeypatch, tmp_path)
         monkeypatch.setattr(
-            doctor.install_models,
+            doctor.parakeet_readiness,
             "_platform_info",
             lambda: ("linux", "aarch64"),
         )
@@ -382,18 +382,6 @@ class TestStaleAliasSymlink:
             lambda: (install_guard.AliasState, install_guard.check_alias),
         )
 
-    def setup_auto_migration(self, doctor, monkeypatch, tmp_path):
-        self.setup_import(doctor, monkeypatch)
-        fake_bin = tmp_path / "fakevenv" / "bin"
-        fake_bin.mkdir(parents=True)
-        journal = tmp_path / "journal"
-        monkeypatch.setattr(sys, "executable", str(fake_bin / "python"))
-        monkeypatch.setattr(
-            "solstone.think.install_guard._current_journal_for_alias",
-            lambda: journal,
-        )
-        return fake_bin, journal
-
     @staticmethod
     def make_existing_target(path: Path) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -401,13 +389,28 @@ class TestStaleAliasSymlink:
         return path
 
     @staticmethod
-    def assert_managed_wrapper(home_root, binary, journal, fake_bin):
-        alias = home_root / ".local" / "bin" / binary
-        assert alias.exists()
-        parsed = install_guard.parse_wrapper(alias.read_text(encoding="utf-8"))
-        assert parsed is not None
-        assert parsed["journal"] == str(journal)
-        assert parsed["sol_bin"] == str(fake_bin / binary)
+    def legacy_target(
+        home_root: Path, legacy_parts: tuple[str, ...], binary: str
+    ) -> Path:
+        return home_root.joinpath(*legacy_parts) / "bin" / binary
+
+    def assert_report_only_alias(
+        self,
+        result,
+        alias: Path,
+        original_target: str,
+        expected_tag: str,
+        other_binary: str,
+        home_root: Path,
+    ) -> None:
+        assert result.status == "warn"
+        assert expected_tag in result.detail
+        assert result.fix is not None
+        assert "journal setup" in result.fix
+        assert alias.is_symlink()
+        assert os.readlink(alias) == original_target
+        assert list(self.backup_dir.glob("*.old-symlink-*")) == []
+        assert not (home_root / ".local" / "bin" / other_binary).exists()
 
     def test_absent_ok(self, doctor, monkeypatch, home_root, tmp_path):
         self.setup_import(doctor, monkeypatch)
@@ -471,118 +474,86 @@ class TestStaleAliasSymlink:
         assert result.status == "skip"
         assert "could not import solstone.think.install_guard" in result.detail
 
-    def test_uv_tool_auto_migrates(self, doctor, monkeypatch, home_root, tmp_path):
-        fake_bin, journal = self.setup_auto_migration(doctor, monkeypatch, tmp_path)
-        repo = make_repo(tmp_path)
-        target = self.make_existing_target(
-            home_root / ".local" / "share" / "uv" / "tools" / "solstone" / "bin" / "sol"
-        )
-        make_alias(home_root, target)
-        monkeypatch.setattr(doctor, "ROOT", repo)
-
-        result = doctor.stale_alias_symlink_check(args(doctor), binary="sol")
-
-        assert result.status == "ok"
-        assert "auto-migrated" in result.detail
-        assert "uv-tool" in result.detail
-        self.assert_managed_wrapper(home_root, "sol", journal, fake_bin)
-        assert not (home_root / ".local" / "bin" / "journal").exists()
-        backups = list(self.backup_dir.glob("sol.old-symlink-*"))
-        assert len(backups) == 1
-        assert backups[0].exists()
-
-    def test_pipx_xdg_auto_migrates(self, doctor, monkeypatch, home_root, tmp_path):
-        fake_bin, journal = self.setup_auto_migration(doctor, monkeypatch, tmp_path)
-        repo = make_repo(tmp_path)
-        target = self.make_existing_target(
-            home_root
-            / ".local"
-            / "share"
-            / "pipx"
-            / "venvs"
-            / "solstone"
-            / "bin"
-            / "sol"
-        )
-        make_alias(home_root, target)
-        monkeypatch.setattr(doctor, "ROOT", repo)
-
-        result = doctor.stale_alias_symlink_check(args(doctor), binary="sol")
-
-        assert result.status == "ok"
-        assert "pipx-xdg" in result.detail
-        self.assert_managed_wrapper(home_root, "sol", journal, fake_bin)
-        assert not (home_root / ".local" / "bin" / "journal").exists()
-
-    def test_pipx_legacy_auto_migrates(self, doctor, monkeypatch, home_root, tmp_path):
-        fake_bin, journal = self.setup_auto_migration(doctor, monkeypatch, tmp_path)
-        repo = make_repo(tmp_path)
-        target = self.make_existing_target(
-            home_root / ".local" / "pipx" / "venvs" / "solstone" / "bin" / "sol"
-        )
-        make_alias(home_root, target)
-        monkeypatch.setattr(doctor, "ROOT", repo)
-
-        result = doctor.stale_alias_symlink_check(args(doctor), binary="sol")
-
-        assert result.status == "ok"
-        assert "pipx-legacy" in result.detail
-        self.assert_managed_wrapper(home_root, "sol", journal, fake_bin)
-        assert not (home_root / ".local" / "bin" / "journal").exists()
-
-    def test_uv_tool_dangling_auto_migrates(
-        self, doctor, monkeypatch, home_root, tmp_path
+    @pytest.mark.parametrize(
+        ("legacy_parts", "expected_tag"),
+        [
+            ((".local", "share", "uv", "tools", "solstone"), "uv-tool"),
+            ((".local", "share", "pipx", "venvs", "solstone"), "pipx-xdg"),
+            ((".local", "pipx", "venvs", "solstone"), "pipx-legacy"),
+        ],
+    )
+    @pytest.mark.parametrize("binary", ("sol", "journal"))
+    def test_legacy_alias_reports_only(
+        self,
+        doctor,
+        monkeypatch,
+        home_root,
+        tmp_path,
+        legacy_parts,
+        expected_tag,
+        binary,
     ):
-        fake_bin, journal = self.setup_auto_migration(doctor, monkeypatch, tmp_path)
+        self.setup_import(doctor, monkeypatch)
         repo = make_repo(tmp_path)
-        target = (
-            home_root / ".local" / "share" / "uv" / "tools" / "solstone" / "bin" / "sol"
+        target = self.make_existing_target(
+            self.legacy_target(home_root, legacy_parts, binary)
         )
-        target.parent.mkdir(parents=True, exist_ok=True)
-        make_alias(home_root, target)
+        alias = make_alias(home_root, target, binary=binary)
+        original_target = os.readlink(alias)
         monkeypatch.setattr(doctor, "ROOT", repo)
 
-        result = doctor.stale_alias_symlink_check(args(doctor), binary="sol")
+        result = doctor.stale_alias_symlink_check(args(doctor), binary=binary)
 
-        assert result.status == "ok"
-        assert "migrated legacy uv-tool symlink" in result.detail
-        self.assert_managed_wrapper(home_root, "sol", journal, fake_bin)
-        assert not (home_root / ".local" / "bin" / "journal").exists()
-        backups = list(self.backup_dir.glob("sol.old-symlink-*"))
-        assert len(backups) == 1
-        assert backups[0].is_symlink()
+        other_binary = "journal" if binary == "sol" else "sol"
+        self.assert_report_only_alias(
+            result,
+            alias,
+            original_target,
+            expected_tag,
+            other_binary,
+            home_root,
+        )
 
-    def test_pipx_xdg_dangling_auto_migrates(
-        self, doctor, monkeypatch, home_root, tmp_path
+    @pytest.mark.parametrize(
+        ("legacy_parts", "expected_tag"),
+        [
+            ((".local", "share", "uv", "tools", "solstone"), "uv-tool"),
+            ((".local", "share", "pipx", "venvs", "solstone"), "pipx-xdg"),
+        ],
+    )
+    @pytest.mark.parametrize("binary", ("sol", "journal"))
+    def test_dangling_legacy_alias_reports_only(
+        self,
+        doctor,
+        monkeypatch,
+        home_root,
+        tmp_path,
+        legacy_parts,
+        expected_tag,
+        binary,
     ):
-        fake_bin, journal = self.setup_auto_migration(doctor, monkeypatch, tmp_path)
+        self.setup_import(doctor, monkeypatch)
         repo = make_repo(tmp_path)
-        target = (
-            home_root
-            / ".local"
-            / "share"
-            / "pipx"
-            / "venvs"
-            / "solstone"
-            / "bin"
-            / "sol"
-        )
+        target = self.legacy_target(home_root, legacy_parts, binary)
         target.parent.mkdir(parents=True, exist_ok=True)
-        make_alias(home_root, target)
+        alias = make_alias(home_root, target, binary=binary)
+        original_target = os.readlink(alias)
         monkeypatch.setattr(doctor, "ROOT", repo)
 
-        result = doctor.stale_alias_symlink_check(args(doctor), binary="sol")
+        result = doctor.stale_alias_symlink_check(args(doctor), binary=binary)
 
-        assert result.status == "ok"
-        assert "migrated legacy pipx symlink" in result.detail
-        self.assert_managed_wrapper(home_root, "sol", journal, fake_bin)
-        assert not (home_root / ".local" / "bin" / "journal").exists()
-        backups = list(self.backup_dir.glob("sol.old-symlink-*"))
-        assert len(backups) == 1
-        assert backups[0].is_symlink()
+        other_binary = "journal" if binary == "sol" else "sol"
+        self.assert_report_only_alias(
+            result,
+            alias,
+            original_target,
+            expected_tag,
+            other_binary,
+            home_root,
+        )
 
     def test_non_legacy_target_warns(self, doctor, monkeypatch, home_root, tmp_path):
-        self.setup_auto_migration(doctor, monkeypatch, tmp_path)
+        self.setup_import(doctor, monkeypatch)
         repo = make_repo(tmp_path)
         target = self.make_existing_target(
             tmp_path / "opt" / "random" / "foo" / "bin" / "sol"
@@ -594,26 +565,6 @@ class TestStaleAliasSymlink:
 
         assert result.status == "warn"
         assert list(self.backup_dir.glob("sol.old-symlink-*")) == []
-
-    def test_idempotent_after_migration(self, doctor, monkeypatch, home_root, tmp_path):
-        self.setup_auto_migration(doctor, monkeypatch, tmp_path)
-        repo = make_repo(tmp_path)
-        target = self.make_existing_target(
-            home_root / ".local" / "share" / "uv" / "tools" / "solstone" / "bin" / "sol"
-        )
-        make_alias(home_root, target)
-        monkeypatch.setattr(doctor, "ROOT", repo)
-
-        first = doctor.stale_alias_symlink_check(args(doctor), binary="sol")
-        backups_after_first = sorted(self.backup_dir.glob("*.old-symlink-*"))
-        second = doctor.stale_alias_symlink_check(args(doctor), binary="sol")
-        backups_after_second = sorted(self.backup_dir.glob("*.old-symlink-*"))
-
-        assert first.status == "ok"
-        assert second.status == "ok"
-        assert backups_after_second == backups_after_first
-        assert len(list(self.backup_dir.glob("sol.old-symlink-*"))) == 1
-        assert list(self.backup_dir.glob("journal.old-symlink-*")) == []
 
     def test_partial_migration_recovery_detail(
         self, doctor, monkeypatch, home_root, tmp_path
@@ -835,6 +786,40 @@ class TestJsonAndExitCodes:
         assert lines
         for line in lines:
             json.loads(line)
+
+
+def test_readiness_battery_does_not_import_inference_or_installer_layers():
+    # Proves doctor's readiness battery does not import inference/installer layers.
+    snippet = (
+        "import sys\n"
+        "from solstone.think import doctor\n"
+        "doctor.run_checks(doctor.parse_args(['--readiness']))\n"
+        "bad = sorted(\n"
+        "    m\n"
+        "    for m in sys.modules\n"
+        "    if m == 'solstone.think.install_models'\n"
+        "    or m == 'solstone.observe.transcribe'\n"
+        "    or m.startswith('solstone.observe.transcribe.')\n"
+        ")\n"
+        "if bad:\n"
+        "    print('LEAKED:' + ','.join(bad))\n"
+        "    sys.exit(3)\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", snippet],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "SOLSTONE_JOURNAL": str(ROOT / "tests" / "fixtures" / "journal"),
+        },
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "LEAKED" not in result.stdout
 
 
 def test_sol_doctor_subprocess_json_shape():

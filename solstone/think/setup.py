@@ -36,6 +36,9 @@ from solstone.think.utils import is_source_checkout as source_checkout
 
 TOTAL_STEPS = 7
 MANIFEST_SCHEMA_VERSION = 1
+# doctor is examine-only and must complete near-instantly; 30s is a generous
+# backstop, not a work budget. If doctor approaches it, the cause is a layer
+# leak (a heavy import) to fix at the source — do not raise this number.
 DOCTOR_TIMEOUT_SECONDS = 30
 DOCTOR_JSONL_EVENTS = frozenset(
     {"doctor.started", "check.completed", "doctor.completed"}
@@ -1234,6 +1237,8 @@ def step_skills_journal(ctx: SetupContext, step_index: int) -> StepResult:
     return step_result("skills_journal", "ok", paths, started_at)
 
 
+# OWNS alias repair (the mutation) via install_guard.provision_wrappers; doctor
+# only reports stale aliases.
 def step_wrapper(ctx: SetupContext, step_index: int) -> StepResult:
     from solstone.think import install_guard
 
