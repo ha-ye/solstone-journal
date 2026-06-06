@@ -70,11 +70,11 @@ def _resolve_source(name: str) -> tuple[dict, str, Path]:
         )
 
     try:
-        key_prefix = journal_source_state_prefix(source)
+        derived_prefix = journal_source_state_prefix(source)
     except ValueError as exc:
         _fail(f"Import source '{name}' has an invalid state prefix: {exc}")
-    state_dir = get_state_directory(key_prefix)
-    return source, key_prefix, state_dir
+    state_dir = get_state_directory(derived_prefix)
+    return source, derived_prefix, state_dir
 
 
 def _set_nested(cfg: dict, dotted_key: str, value: Any) -> None:

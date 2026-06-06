@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import enum
 import json
 import logging
 import os
@@ -27,6 +28,39 @@ KEY_BYTES = 32
 STATE_AREAS = ("segments", "entities", "facets", "imports", "config")
 FINGERPRINT_RE = re.compile(r"^sha256:([a-f0-9]{64})$")
 _PEER_INSTANCE_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,256}$")
+
+
+class IngestIdentityCase(enum.Enum):
+    MISSING_AUTH = "missing_auth"
+    INVALID_PL_IDENTITY = "invalid_pl_identity"
+    PL_REVOKED = "pl_revoked"
+    PL_DISABLED = "pl_disabled"
+    INVALID_API_KEY = "invalid_api_key"
+    DL_REVOKED = "dl_revoked"
+    PREFIX_MISMATCH = "prefix_mismatch"
+
+
+class IngestIdentityError(Exception):
+    """Raised by require_ingest_identity to signal a typed auth/prefix failure.
+
+    Rendering-agnostic: carries the semantic case so each ingest surface maps it
+    to that surface's exact failure rendering (import -> abort()).
+    """
+
+    def __init__(self, case: IngestIdentityCase) -> None:
+        super().__init__(case.value)
+        self.case = case
+
+
+_INGEST_IDENTITY_ABORTS: dict[IngestIdentityCase, tuple[int, str]] = {
+    IngestIdentityCase.MISSING_AUTH: (401, "Missing or invalid authentication"),
+    IngestIdentityCase.INVALID_PL_IDENTITY: (401, "Invalid PL identity"),
+    IngestIdentityCase.PL_REVOKED: (403, "Journal source has been revoked"),
+    IngestIdentityCase.PL_DISABLED: (403, "Journal source is disabled"),
+    IngestIdentityCase.INVALID_API_KEY: (401, "Invalid API key"),
+    IngestIdentityCase.DL_REVOKED: (403, "API key has been revoked"),
+    IngestIdentityCase.PREFIX_MISMATCH: (403, "Key prefix mismatch"),
+}
 
 
 def is_valid_journal_source_name(name: str) -> bool:
@@ -337,43 +371,60 @@ def get_state_directory(key_prefix: str) -> Path:
     return Path(state.journal_root) / "imports" / key_prefix
 
 
-def require_journal_source(f):
-    @wraps(f)
-    def wrapped(*args, **kwargs):
-        identity = getattr(g, "identity", None)
-        identity_mode = getattr(identity, "mode", None)
-        if identity_mode in {"pl-direct", "pl-via-spl"}:
-            fingerprint = getattr(identity, "fingerprint", None)
-            if not isinstance(fingerprint, str) or not fingerprint:
-                abort(401, description="Missing or invalid authentication")
-            source = load_journal_source_by_fingerprint(fingerprint)
-            if not source:
-                abort(401, description="Invalid PL identity")
-            if source.get("revoked"):
-                abort(403, description="Journal source has been revoked")
-            if source.get("enabled") is False:
-                abort(403, description="Journal source is disabled")
+def require_ingest_identity(key_prefix: str | None) -> tuple[dict, str]:
+    """Resolve the authenticated ingest identity and derive its storage prefix.
 
-            g.journal_source = source
-            return f(*args, **kwargs)
-
+    Authenticates via the PL g.identity path (pl-direct/pl-via-spl) or an
+    Authorization: Bearer header, looks up the journal-source record, checks
+    revoked/disabled, and derives the storage prefix from the AUTHENTICATED
+    record. When key_prefix is provided, asserts it equals the derived prefix
+    (confused-deputy guard). Returns (source, derived_prefix). Raises
+    IngestIdentityError(case) on any failure; performs no write and touches no g.
+    """
+    identity = getattr(g, "identity", None)
+    identity_mode = getattr(identity, "mode", None)
+    if identity_mode in {"pl-direct", "pl-via-spl"}:
+        fingerprint = getattr(identity, "fingerprint", None)
+        if not isinstance(fingerprint, str) or not fingerprint:
+            raise IngestIdentityError(IngestIdentityCase.MISSING_AUTH)
+        source = load_journal_source_by_fingerprint(fingerprint)
+        if not source:
+            raise IngestIdentityError(IngestIdentityCase.INVALID_PL_IDENTITY)
+        if source.get("revoked"):
+            raise IngestIdentityError(IngestIdentityCase.PL_REVOKED)
+        if source.get("enabled") is False:
+            raise IngestIdentityError(IngestIdentityCase.PL_DISABLED)
+    else:
         auth = request.headers.get("Authorization", "")
         token = None
         if auth.startswith("Bearer "):
             bearer = auth[7:].strip()
             if bearer:
                 token = bearer
-
         if not token:
-            abort(401, description="Missing or invalid authentication")
-
+            raise IngestIdentityError(IngestIdentityCase.MISSING_AUTH)
         source = load_journal_source(token)
         if not source:
-            abort(401, description="Invalid API key")
+            raise IngestIdentityError(IngestIdentityCase.INVALID_API_KEY)
         if source.get("revoked"):
-            abort(403, description="API key has been revoked")
+            raise IngestIdentityError(IngestIdentityCase.DL_REVOKED)
 
+    derived_prefix = journal_source_state_prefix(source)
+    if key_prefix is not None and derived_prefix != key_prefix:
+        raise IngestIdentityError(IngestIdentityCase.PREFIX_MISMATCH)
+    return source, derived_prefix
+
+
+def require_journal_source(f):
+    @wraps(f)
+    def wrapped(*args, **kwargs):
+        try:
+            source, derived_prefix = require_ingest_identity(kwargs.get("key_prefix"))
+        except IngestIdentityError as exc:
+            status, description = _INGEST_IDENTITY_ABORTS[exc.case]
+            abort(status, description=description)
         g.journal_source = source
+        g.derived_prefix = derived_prefix
         return f(*args, **kwargs)
 
     return wrapped

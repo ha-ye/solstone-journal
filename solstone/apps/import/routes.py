@@ -1007,13 +1007,10 @@ def api_journal_source_status(name: str) -> Any:
 @import_bp.route("/journal/<key_prefix>/manifest/<area>")
 @require_journal_source
 def journal_source_manifest(key_prefix: str, area: str) -> Any:
-    if journal_source_state_prefix(g.journal_source) != key_prefix:
-        # PROTOCOL-ONLY: journal-source key mismatch from non-owner clients.
-        abort(403, description="Key prefix mismatch")
     if area not in STATE_AREAS:
         # PROTOCOL-ONLY: journal-source manifest area from non-owner clients.
         abort(404, description="Unknown manifest area")
-    state_path = get_state_directory(key_prefix) / area / "state.json"
+    state_path = get_state_directory(g.derived_prefix) / area / "state.json"
     try:
         data = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):

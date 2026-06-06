@@ -22,6 +22,8 @@ create_state_directory = journal_sources.create_state_directory
 find_journal_source_by_name = journal_sources.find_journal_source_by_name
 generate_key = journal_sources.generate_key
 get_state_directory = journal_sources.get_state_directory
+IngestIdentityCase = journal_sources.IngestIdentityCase
+IngestIdentityError = journal_sources.IngestIdentityError
 is_valid_journal_source_name = journal_sources.is_valid_journal_source_name
 journal_source_state_prefix = journal_sources.journal_source_state_prefix
 list_journal_sources = journal_sources.list_journal_sources
@@ -29,6 +31,7 @@ load_journal_source = journal_sources.load_journal_source
 load_journal_source_by_fingerprint = journal_sources.load_journal_source_by_fingerprint
 mint_pl_journal_source_record = journal_sources.mint_pl_journal_source_record
 require_journal_source = journal_sources.require_journal_source
+require_ingest_identity = journal_sources.require_ingest_identity
 save_journal_source = journal_sources.save_journal_source
 
 FINGERPRINT = "sha256:" + "a" * 64
@@ -146,11 +149,9 @@ def manifest_app(manifest_env):
     @app.route("/journal/<key_prefix>/manifest/<area>")
     @require_journal_source
     def journal_source_manifest(key_prefix: str, area: str):
-        if journal_source_state_prefix(g.journal_source) != key_prefix:
-            abort(403, description="Key prefix mismatch")
         if area not in STATE_AREAS:
             abort(404, description="Unknown manifest area")
-        state_path = get_state_directory(key_prefix) / area / "state.json"
+        state_path = get_state_directory(g.derived_prefix) / area / "state.json"
         try:
             data = json.loads(state_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -164,6 +165,109 @@ def test_generate_key():
     key = generate_key()
     assert len(key) == 43
     assert re.fullmatch(r"[A-Za-z0-9_-]{43}", key)
+
+
+def _assert_ingest_identity_case(
+    app: Flask,
+    expected: IngestIdentityCase,
+    *,
+    headers: dict[str, str] | None = None,
+    identity: ConveyIdentity | None = None,
+    key_prefix: str | None = None,
+) -> None:
+    with app.test_request_context(headers=headers or {}):
+        if identity is not None:
+            g.identity = identity
+        with pytest.raises(IngestIdentityError) as exc_info:
+            require_ingest_identity(key_prefix)
+    assert exc_info.value.case is expected
+
+
+def test_require_ingest_identity_valid_dl_bearer(journal_env):
+    key = generate_key()
+    source = _source("identity-dl", key, created_at=123)
+    assert save_journal_source(source) is True
+    app = Flask(__name__)
+
+    with app.test_request_context(headers={"Authorization": f"Bearer {key}"}):
+        resolved, derived_prefix = require_ingest_identity(key[:8])
+
+    assert resolved["name"] == "identity-dl"
+    assert derived_prefix == key[:8]
+    assert derived_prefix == journal_source_state_prefix(resolved)
+
+
+def test_require_ingest_identity_valid_pl(journal_env):
+    source = _pl_source()
+    assert save_journal_source(source) is True
+    app = Flask(__name__)
+    expected_prefix = journal_source_state_prefix(source)
+
+    with app.test_request_context():
+        g.identity = _pl_identity()
+        resolved, derived_prefix = require_ingest_identity(expected_prefix)
+
+    assert resolved["fingerprint"] == FINGERPRINT
+    assert derived_prefix == expected_prefix
+
+
+def test_require_ingest_identity_failure_cases(journal_env):
+    app = Flask(__name__)
+
+    _assert_ingest_identity_case(app, IngestIdentityCase.MISSING_AUTH)
+    _assert_ingest_identity_case(
+        app,
+        IngestIdentityCase.MISSING_AUTH,
+        headers={"Authorization": "Basic xyz"},
+    )
+    _assert_ingest_identity_case(
+        app,
+        IngestIdentityCase.INVALID_API_KEY,
+        headers={"Authorization": "Bearer does-not-exist"},
+    )
+
+    revoked_key = "revoked1-test-key"
+    revoked_source = _source("revoked-dl", revoked_key)
+    revoked_source["revoked"] = True
+    revoked_source["revoked_at"] = now_ms()
+    assert save_journal_source(revoked_source) is True
+    _assert_ingest_identity_case(
+        app,
+        IngestIdentityCase.DL_REVOKED,
+        headers={"Authorization": f"Bearer {revoked_key}"},
+    )
+
+    _assert_ingest_identity_case(
+        app,
+        IngestIdentityCase.INVALID_PL_IDENTITY,
+        identity=_pl_identity(FINGERPRINT_2),
+    )
+
+    revoked_pl = _pl_source(revoked=True, revoked_at=now_ms())
+    assert save_journal_source(revoked_pl) is True
+    _assert_ingest_identity_case(
+        app,
+        IngestIdentityCase.PL_REVOKED,
+        identity=_pl_identity(FINGERPRINT),
+    )
+
+    disabled_pl = _pl_source(fingerprint=FINGERPRINT_2, enabled=False)
+    assert save_journal_source(disabled_pl) is True
+    _assert_ingest_identity_case(
+        app,
+        IngestIdentityCase.PL_DISABLED,
+        identity=_pl_identity(FINGERPRINT_2),
+    )
+
+    mismatch_key = "abcd1234-valid-key"
+    mismatch_source = _source("mismatch-dl", mismatch_key)
+    assert save_journal_source(mismatch_source) is True
+    _assert_ingest_identity_case(
+        app,
+        IngestIdentityCase.PREFIX_MISMATCH,
+        headers={"Authorization": f"Bearer {mismatch_key}"},
+        key_prefix="deadbeef",
+    )
 
 
 def test_create_and_load(journal_env):

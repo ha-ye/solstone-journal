@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from flask import abort, g, jsonify, request
+from flask import g, jsonify, request
 from werkzeug.utils import secure_filename
 
 from solstone.convey import emit, state
@@ -42,7 +42,6 @@ from solstone.think.utils import DEFAULT_STREAM, STREAM_RE, day_path
 
 from .journal_sources import (
     get_state_directory,
-    journal_source_state_prefix,
     require_journal_source,
     save_journal_source,
 )
@@ -116,9 +115,6 @@ def register_ingest_routes(bp) -> None:
     @bp.route("/journal/<key_prefix>/ingest/segments", methods=["POST"])
     @require_journal_source
     def ingest_segments(key_prefix: str):
-        if journal_source_state_prefix(g.journal_source) != key_prefix:
-            abort(403, description="Key prefix mismatch")
-
         metadata_raw = request.form.get("metadata")
         if not metadata_raw:
             return error_response(MISSING_REQUIRED_FIELD, detail="Missing metadata")
@@ -143,7 +139,7 @@ def register_ingest_routes(bp) -> None:
                 MISSING_REQUIRED_FIELD, detail="Missing segments array"
             )
 
-        log_path = get_state_directory(key_prefix) / "segments" / "log.jsonl"
+        log_path = get_state_directory(g.derived_prefix) / "segments" / "log.jsonl"
         pair_mode = g.journal_source.get("pair_mode")
         sender_fingerprint = (
             g.journal_source["fingerprint"] if pair_mode == "pl" else None
@@ -310,7 +306,9 @@ def register_ingest_routes(bp) -> None:
                 )
 
         if new_state:
-            state_path = get_state_directory(key_prefix) / "segments" / "state.json"
+            state_path = (
+                get_state_directory(g.derived_prefix) / "segments" / "state.json"
+            )
             state_path.parent.mkdir(parents=True, exist_ok=True)
             try:
                 existing = json.loads(state_path.read_text(encoding="utf-8"))
@@ -348,9 +346,6 @@ def register_ingest_routes(bp) -> None:
     @bp.route("/journal/<key_prefix>/ingest/entities", methods=["POST"])
     @require_journal_source
     def ingest_entities(key_prefix: str):
-        if journal_source_state_prefix(g.journal_source) != key_prefix:
-            abort(403, description="Key prefix mismatch")
-
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             return error_response(INVALID_JSON_REQUEST, detail="Invalid JSON body")
@@ -361,7 +356,7 @@ def register_ingest_routes(bp) -> None:
                 MISSING_REQUIRED_FIELD, detail="Missing entities array"
             )
 
-        state_dir = get_state_directory(key_prefix)
+        state_dir = get_state_directory(g.derived_prefix)
         log_path = state_dir / "entities" / "log.jsonl"
         state_path = state_dir / "entities" / "state.json"
         staged_dir = state_dir / "entities" / "staged"
@@ -655,9 +650,6 @@ def register_ingest_routes(bp) -> None:
     @bp.route("/journal/<key_prefix>/ingest/facets", methods=["POST"])
     @require_journal_source
     def ingest_facets(key_prefix: str):
-        if journal_source_state_prefix(g.journal_source) != key_prefix:
-            abort(403, description="Key prefix mismatch")
-
         metadata_raw = request.form.get("metadata")
         if not metadata_raw:
             return error_response(MISSING_REQUIRED_FIELD, detail="Missing metadata")
@@ -680,7 +672,7 @@ def register_ingest_routes(bp) -> None:
         if not isinstance(facets, list):
             return error_response(MISSING_REQUIRED_FIELD, detail="Missing facets array")
 
-        state_dir = get_state_directory(key_prefix)
+        state_dir = get_state_directory(g.derived_prefix)
         entities_state_path = state_dir / "entities" / "state.json"
         facets_state_path = state_dir / "facets" / "state.json"
         log_path = state_dir / "facets" / "log.jsonl"
@@ -809,9 +801,6 @@ def register_ingest_routes(bp) -> None:
     @bp.route("/journal/<key_prefix>/ingest/imports", methods=["POST"])
     @require_journal_source
     def ingest_imports(key_prefix: str):
-        if journal_source_state_prefix(g.journal_source) != key_prefix:
-            abort(403, description="Key prefix mismatch")
-
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             return error_response(INVALID_JSON_REQUEST, detail="Invalid JSON body")
@@ -822,7 +811,7 @@ def register_ingest_routes(bp) -> None:
                 MISSING_REQUIRED_FIELD, detail="Missing imports array"
             )
 
-        state_dir = get_state_directory(key_prefix)
+        state_dir = get_state_directory(g.derived_prefix)
         log_path = state_dir / "imports" / "log.jsonl"
         state_path = state_dir / "imports" / "state.json"
         staged_dir = state_dir / "imports" / "staged"
@@ -973,9 +962,6 @@ def register_ingest_routes(bp) -> None:
     @bp.route("/journal/<key_prefix>/ingest/config", methods=["POST"])
     @require_journal_source
     def ingest_config(key_prefix: str):
-        if journal_source_state_prefix(g.journal_source) != key_prefix:
-            abort(403, description="Key prefix mismatch")
-
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             return error_response(INVALID_JSON_REQUEST, detail="Invalid JSON body")
@@ -986,7 +972,7 @@ def register_ingest_routes(bp) -> None:
                 MISSING_REQUIRED_FIELD, detail="Missing config object"
             )
 
-        state_dir = get_state_directory(key_prefix)
+        state_dir = get_state_directory(g.derived_prefix)
         log_path = state_dir / "config" / "log.jsonl"
         state_path = state_dir / "config" / "state.json"
         config_dir = state_dir / "config"
