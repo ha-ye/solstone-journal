@@ -28,12 +28,12 @@ this ledger for TLS verification and per-request authorization.
 from __future__ import annotations
 
 import datetime as dt
-import fcntl
 import json
-import os
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
+
+from solstone.think.journal_io import hold_lock, write_json
 
 MAX_DEVICE_LABEL_LEN = 80
 
@@ -106,20 +106,22 @@ class AuthorizedClients:
             network=network,
         )
         with self._lock:
-            current = self._load_file_locked()
-            current[fingerprint] = entry
-            self._atomic_write_locked(current)
-            self._entries = current
+            with hold_lock(self._path):
+                current = self._load_file_locked()
+                current[fingerprint] = entry
+                self._write(current)
+                self._entries = current
 
     def remove(self, fingerprint: str) -> bool:
         with self._lock:
-            current = self._load_file_locked()
-            if fingerprint not in current:
-                return False
-            del current[fingerprint]
-            self._atomic_write_locked(current)
-            self._entries = current
-            return True
+            with hold_lock(self._path):
+                current = self._load_file_locked()
+                if fingerprint not in current:
+                    return False
+                del current[fingerprint]
+                self._write(current)
+                self._entries = current
+                return True
 
     def touch_last_seen(
         self, fingerprint: str, *, now: dt.datetime | None = None
@@ -127,14 +129,15 @@ class AuthorizedClients:
         """Update last_seen_at for a paired device. Returns False if not paired."""
         ts = (now or dt.datetime.now(dt.UTC)).strftime("%Y-%m-%dT%H:%M:%SZ")
         with self._lock:
-            current = self._load_file_locked()
-            existing = current.get(fingerprint)
-            if existing is None:
-                return False
-            current[fingerprint] = replace(existing, last_seen_at=ts)
-            self._atomic_write_locked(current)
-            self._entries = current
-            return True
+            with hold_lock(self._path):
+                current = self._load_file_locked()
+                existing = current.get(fingerprint)
+                if existing is None:
+                    return False
+                current[fingerprint] = replace(existing, last_seen_at=ts)
+                self._write(current)
+                self._entries = current
+                return True
 
     def update_label(self, fingerprint: str, label: str) -> bool:
         """Update device_label for a paired device. Returns False if not paired."""
@@ -144,14 +147,15 @@ class AuthorizedClients:
         if len(normalized) > MAX_DEVICE_LABEL_LEN:
             raise ValueError("label too long")
         with self._lock:
-            current = self._load_file_locked()
-            existing = current.get(fingerprint)
-            if existing is None:
-                return False
-            current[fingerprint] = replace(existing, device_label=normalized)
-            self._atomic_write_locked(current)
-            self._entries = current
-            return True
+            with hold_lock(self._path):
+                current = self._load_file_locked()
+                existing = current.get(fingerprint)
+                if existing is None:
+                    return False
+                current[fingerprint] = replace(existing, device_label=normalized)
+                self._write(current)
+                self._entries = current
+                return True
 
     def snapshot(self) -> list[ClientEntry]:
         self.reload_if_stale()
@@ -212,8 +216,7 @@ class AuthorizedClients:
                 )
         return out
 
-    def _atomic_write_locked(self, entries: dict[str, ClientEntry]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+    def _write(self, entries: dict[str, ClientEntry]) -> None:
         payload = [
             {
                 "fingerprint": e.fingerprint,
@@ -226,11 +229,4 @@ class AuthorizedClients:
             }
             for e in entries.values()
         ]
-        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            json.dump(payload, f, indent=2)
-            f.write("\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, self._path)
+        write_json(self._path, payload)

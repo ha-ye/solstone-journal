@@ -107,6 +107,11 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/think/facet_review_candidates.py",
         "solstone/think/facets.py",
         "solstone/think/journal_config.py",
+        # Link domain — device-pairing service state.
+        "solstone/think/link/auth.py",
+        "solstone/think/link/ca.py",
+        "solstone/think/link/nonces.py",
+        "solstone/think/link/paths.py",
         "solstone/think/skills.py",
         "solstone/think/streams.py",
         # Chronicle day content direct writers. Importer modules that merely

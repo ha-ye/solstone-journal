@@ -32,6 +32,8 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 from cryptography.x509.oid import NameOID
 
+from solstone.think.journal_io import atomic_replace
+
 CA_VALIDITY_DAYS = 365 * 10
 CLIENT_CERT_VALIDITY_DAYS = 365 * 10  # Revocation is via authorized_clients.json.
 ATTESTATION_LIFETIME_SECONDS = 240  # 4 min — under the 5 min relay cap.
@@ -99,10 +101,9 @@ def generate_ca(
         .sign(private_key, hashes.SHA256())
     )
 
-    ca_dir.mkdir(parents=True, exist_ok=True)
     cert_path = _cert_path(ca_dir)
     key_path = _key_path(ca_dir)
-    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    atomic_replace(cert_path, cert.public_bytes(serialization.Encoding.PEM))
     _write_key(key_path, private_key)
     return _materialize(cert, private_key)
 
@@ -261,8 +262,7 @@ def _write_key(path: Path, key: ec.EllipticCurvePrivateKey) -> None:
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     )
-    path.write_bytes(encoded)
-    path.chmod(0o600)
+    atomic_replace(path, encoded, mode=0o600)
 
 
 def _hex_sha256(data: bytes) -> str:

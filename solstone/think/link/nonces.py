@@ -15,12 +15,12 @@ Atomic replaces guard against partial writes.
 
 from __future__ import annotations
 
-import fcntl
 import json
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from solstone.think.journal_io import hold_lock, write_json
 
 NONCE_TTL_SECONDS = 300  # 5 min per the spl pairing spec.
 
@@ -64,16 +64,18 @@ class NonceStore:
             manual_code=manual_code,
             role=role,
         )
-        with self._locked_read_write() as entries:
+        with hold_lock(self._path):
+            entries = self._read()
             self._gc_locked(entries, ts)
             entries[nonce] = entry
-            self._write_locked(entries)
+            self._write(entries)
         return entry
 
     def consume(self, value: str, *, now: int | None = None) -> Nonce | None:
         """Mark a nonce used if valid. Single-use enforced atomically."""
         ts = now if now is not None else int(time.time())
-        with self._locked_read_write() as entries:
+        with hold_lock(self._path):
+            entries = self._read()
             self._gc_locked(entries, ts)
             entry = entries.get(value)
             if entry is None:
@@ -90,13 +92,14 @@ class NonceStore:
                 role=entry.role,
             )
             entries[value] = entry
-            self._write_locked(entries)
+            self._write(entries)
             return entry
 
     def consume_by_code(self, code: str, *, now: int | None = None) -> Nonce | None:
         """Mark the nonce matching a manual code used if valid."""
         ts = now if now is not None else int(time.time())
-        with self._locked_read_write() as entries:
+        with hold_lock(self._path):
+            entries = self._read()
             self._gc_locked(entries, ts)
             for value, entry in entries.items():
                 if entry.manual_code != code:
@@ -111,7 +114,7 @@ class NonceStore:
                     role=entry.role,
                 )
                 entries[value] = used_entry
-                self._write_locked(entries)
+                self._write(entries)
                 return used_entry
         return None
 
@@ -125,11 +128,12 @@ class NonceStore:
     def gc(self, *, now: int | None = None) -> int:
         """Remove expired entries. Returns count removed."""
         ts = now if now is not None else int(time.time())
-        with self._locked_read_write() as entries:
+        with hold_lock(self._path):
+            entries = self._read()
             before = len(entries)
             self._gc_locked(entries, ts)
             if len(entries) != before:
-                self._write_locked(entries)
+                self._write(entries)
             return before - len(entries)
 
     def _read(self) -> dict[str, Nonce]:
@@ -166,8 +170,7 @@ class NonceStore:
                 )
         return out
 
-    def _write_locked(self, entries: dict[str, Nonce]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+    def _write(self, entries: dict[str, Nonce]) -> None:
         payload = [
             {
                 "value": e.value,
@@ -180,40 +183,9 @@ class NonceStore:
             }
             for e in entries.values()
         ]
-        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
-            f.write("\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, self._path)
+        write_json(self._path, payload)
 
     def _gc_locked(self, entries: dict[str, Nonce], now: int) -> None:
         to_drop = [k for k, e in entries.items() if e.used or e.expires_at <= now]
         for k in to_drop:
             del entries[k]
-
-    class _Guard:
-        def __init__(self, store: NonceStore) -> None:
-            self.store = store
-            self.lock_path = store._path.with_suffix(store._path.suffix + ".lock")
-            self.fd = -1
-
-        def __enter__(self) -> dict[str, Nonce]:
-            self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-            self.fd = os.open(
-                str(self.lock_path),
-                os.O_RDWR | os.O_CREAT,
-                0o600,
-            )
-            fcntl.flock(self.fd, fcntl.LOCK_EX)
-            return self.store._read()
-
-        def __exit__(self, *_: object) -> None:
-            try:
-                fcntl.flock(self.fd, fcntl.LOCK_UN)
-            finally:
-                os.close(self.fd)
-
-    def _locked_read_write(self) -> NonceStore._Guard:
-        return NonceStore._Guard(self)

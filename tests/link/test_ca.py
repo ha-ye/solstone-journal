@@ -7,14 +7,17 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from pathlib import Path
 
+import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
 from solstone.think.link.ca import (
+    _write_key,
     cert_fingerprint,
     generate_ca,
     load_ca,
@@ -42,6 +45,41 @@ def test_load_or_generate_is_idempotent(tmp_path: Path) -> None:
     second = load_or_generate_ca(ca_dir)
 
     assert first.fingerprint_sha256() == second.fingerprint_sha256()
+
+
+def test_generate_ca_write_is_atomic(tmp_path: Path, monkeypatch) -> None:
+    ca_dir = tmp_path / "ca"
+    generate_ca(ca_dir)
+    key_before = (ca_dir / "private.pem").read_bytes()
+    cert_before = (ca_dir / "cert.pem").read_bytes()
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise OSError("simulated crash during replace")
+
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(OSError):
+        generate_ca(ca_dir)
+
+    assert (ca_dir / "private.pem").read_bytes() == key_before
+    assert (ca_dir / "cert.pem").read_bytes() == cert_before
+    assert list(ca_dir.glob(".tmp_*")) == []
+
+
+def test_write_key_is_atomic(tmp_path: Path, monkeypatch) -> None:
+    ca_dir = tmp_path / "ca"
+    generate_ca(ca_dir)
+    key_before = (ca_dir / "private.pem").read_bytes()
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise OSError("simulated crash during private-key replace")
+
+    monkeypatch.setattr(os, "replace", boom)
+    new_key = ec.generate_private_key(ec.SECP256R1())
+    with pytest.raises(OSError):
+        _write_key(ca_dir / "private.pem", new_key)
+
+    assert (ca_dir / "private.pem").read_bytes() == key_before
+    assert list(ca_dir.glob(".tmp_*")) == []
 
 
 def test_sign_csr_produces_valid_cert_chained_to_ca(tmp_path: Path) -> None:
