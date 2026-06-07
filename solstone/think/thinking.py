@@ -40,6 +40,7 @@ from solstone.think.facets import (
     get_enabled_facets,
     load_segment_facets,
 )
+from solstone.think.journal_io import atomic_replace
 from solstone.think.pipeline_health import (
     SEGMENT_FLOOR_TALENTS,
     classify_segment_completion,
@@ -463,14 +464,6 @@ def _load_json_file(path: Path, default: object) -> object:
         return default
 
 
-def _write_json_atomic(path: Path, data: object) -> None:
-    """Atomically write JSON data to a file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(f"{path.suffix}.tmp")
-    tmp.write_text(json.dumps(data), encoding="utf-8")
-    tmp.replace(path)
-
-
 def _has_audio_embeddings(seg_dir: Path) -> bool:
     """Return True when a segment has audio embedding files."""
     for npz_path in seg_dir.glob("*.npz"):
@@ -815,11 +808,11 @@ def run_segment_sense(
                             for facet, entry in state_machine.state.items()
                         },
                     }
-                    _write_json_atomic(
+                    atomic_replace(
                         state_machine.journal_root
                         / "awareness"
                         / "activity_state.json",
-                        snapshot,
+                        json.dumps(snapshot),
                     )
                 except Exception:
                     logging.debug(
@@ -1057,9 +1050,9 @@ def run_segment_sense(
                         for facet, entry in state_machine.state.items()
                     },
                 }
-                _write_json_atomic(
+                atomic_replace(
                     state_machine.journal_root / "awareness" / "activity_state.json",
-                    snapshot,
+                    json.dumps(snapshot),
                 )
             except Exception:
                 logging.debug("Failed to write activity state snapshot", exc_info=True)

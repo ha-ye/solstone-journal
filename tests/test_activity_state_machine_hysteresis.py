@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from solstone.think.activity_state_machine import ActivityStateMachine
-from solstone.think.thinking import _write_json_atomic
+from solstone.think.journal_io import atomic_replace
 
 DAY = "20260304"
 
@@ -42,7 +42,9 @@ def _persist_snapshot(journal_root: Path, state_machine: ActivityStateMachine) -
             for facet, entry in state_machine.state.items()
         },
     }
-    _write_json_atomic(journal_root / "awareness" / "activity_state.json", snapshot)
+    atomic_replace(
+        journal_root / "awareness" / "activity_state.json", json.dumps(snapshot)
+    )
 
 
 def test_single_segment_facet_wobble_does_not_end():

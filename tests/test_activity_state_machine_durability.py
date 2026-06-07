@@ -12,7 +12,7 @@ from solstone.think.activities import (
     make_activity_id,
 )
 from solstone.think.activity_state_machine import ActivityStateMachine
-from solstone.think.thinking import _write_json_atomic
+from solstone.think.journal_io import atomic_replace
 
 
 def _sense(content_type: str = "coding", density: str = "active", facet: str = "test"):
@@ -37,7 +37,9 @@ def _persist_snapshot(journal_root: Path, state_machine: ActivityStateMachine) -
             for facet, entry in state_machine.state.items()
         },
     }
-    _write_json_atomic(journal_root / "awareness" / "activity_state.json", snapshot)
+    atomic_replace(
+        journal_root / "awareness" / "activity_state.json", json.dumps(snapshot)
+    )
 
 
 def _append_ended_records(
@@ -176,7 +178,7 @@ def test_batch_construction_has_no_journal_root_and_skips_snapshot(
         "active": {},
     }
     state_path = tmp_path / "awareness" / "activity_state.json"
-    _write_json_atomic(state_path, marker)
+    atomic_replace(state_path, json.dumps(marker))
     mtime_before = state_path.stat().st_mtime_ns
 
     state_machine = ActivityStateMachine()

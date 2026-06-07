@@ -25,13 +25,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
-import threading
 import time
 from pathlib import Path
 
-from solstone.think.journal_io import atomic_replace
+from solstone.think.journal_io import atomic_replace, write_json
 from solstone.think.utils import get_journal, iter_segments
 
 logger = logging.getLogger(__name__)
@@ -236,13 +234,7 @@ def update_stream(
         if platform:
             state["platform"] = platform
 
-    # Atomic write: write to unique tmp file then rename
-    tid = threading.get_ident()
-    tmp_path = state_path.with_suffix(f".{os.getpid()}-{tid}.tmp")
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2)
-        f.write("\n")
-    os.rename(str(tmp_path), str(state_path))
+    write_json(state_path, state)
 
     return {"prev_day": prev_day, "prev_segment": prev_segment, "seq": seq}
 
@@ -380,11 +372,7 @@ def rebuild_stream_state(name: str | None = None) -> dict:
     rebuilt = []
     for sname, state in streams.items():
         state_path = streams_dir / f"{sname}.json"
-        tmp_path = state_path.with_suffix(f".{os.getpid()}.tmp")
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2)
-            f.write("\n")
-        os.rename(str(tmp_path), str(state_path))
+        write_json(state_path, state)
         rebuilt.append(sname)
 
     return {"rebuilt": rebuilt, "segments_scanned": segments_scanned}

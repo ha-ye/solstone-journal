@@ -188,8 +188,10 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Observations (`observations.jsonl`) | `solstone/think/entities/observations.py` |
 | Activities (`facets/*/activities/*.jsonl`) | `solstone/think/activities.py` |
 | Timeline (`chronicle/<day>/timeline.json`, `chronicle/**/<seg>/timeline.json`, root `timeline.json`) | `solstone/apps/timeline/call.py` + `solstone/apps/timeline/talent/segment_summary.py` |
+| Per-segment sense outputs (`chronicle/**/<seg>/talents/{sense.json,facets.json,speakers.json,density.json,activity.md,sense.md}`) | `solstone/think/sense_splitter.py` |
 | Skills (`skills/patterns.jsonl`, `skills/edit_requests.jsonl`, `skills/{slug}.md`) | `solstone/think/skills.py` |
 | Awareness (`awareness/current.json`, `awareness/YYYYMMDD.jsonl`) | `solstone/think/awareness.py` |
+| Awareness activity state (`awareness/activity_state.json`) | `solstone/think/thinking.py` |
 | Identity (`identity/*.md`, `identity/history.jsonl` audit log) | `solstone/think/identity.py` |
 | Todos (`facets/*/todos/*.jsonl`) | `solstone/apps/todos/todo.py` + `solstone/apps/todos/call.py` |
 | Config (`config/journal.json`) | `solstone/think/journal_config.py` |
@@ -197,7 +199,7 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Chat config (`config/chat.json`) | `solstone/apps/chat/config.py` |
 | Vertex credentials (`.config/vertex-credentials.json`) | `solstone/apps/settings/vertex_credentials.py` |
 | Speaker labels (`chronicle/**/talents/speaker_labels.json`) | `solstone/apps/speakers/attribution.py` |
-| Segment-stream marker (`chronicle/**/<seg>/stream.json`) | `solstone/think/streams.py` |
+| Stream identity (`chronicle/**/<seg>/stream.json` marker + `streams/<name>.json` state) | `solstone/think/streams.py` |
 | Link service state (`link/ca/cert.pem`, `link/ca/private.pem`, `link/nonces.json`, `link/authorized_clients.json`, `link/state.json`, `link/tokens/account.json`, `link/totp.json`) | `solstone/think/link/ca.py` + `solstone/think/link/nonces.py` + `solstone/think/link/auth.py` + `solstone/think/link/paths.py` |
 | Chronicle day content (`chronicle/YYYYMMDD/**`) | The capturing module (observer, importer) per its declared outputs |
 | Index (SQLite, `indexer/*`) | `solstone/think/indexer/*` |
