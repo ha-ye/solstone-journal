@@ -69,7 +69,7 @@ class ConveyClient:
         *,
         params: Any = None,
         json: Any = None,
-    ) -> dict[str, Any]:
+    ) -> Any:
         method = method.upper()
         if method not in {"GET", "POST"}:
             raise ValueError(f"unsupported convey method: {method}")
@@ -92,19 +92,21 @@ class ConveyClient:
 
         return self._decode(response)
 
-    def _decode(self, response: Any) -> dict[str, Any]:
+    def _decode(self, response: Any) -> Any:
         status = response.status_code
         text = response.text
         stripped = text.strip()
         parsed: Any = None
+        parsed_ok = False
         if stripped:
             try:
                 parsed = json.loads(stripped)
+                parsed_ok = True
             except (json.JSONDecodeError, ValueError):
                 parsed = None
 
         if 200 <= status < 300:
-            if isinstance(parsed, dict):
+            if parsed_ok:
                 return parsed
             raise ConveyClientError(MALFORMED_RESPONSE_MESSAGE, status=status)
 

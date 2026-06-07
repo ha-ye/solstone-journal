@@ -106,7 +106,7 @@ def test_error_envelope_decodes_and_translator_prints_verbatim(status: int) -> N
     assert result.stderr.strip() == "Owner message."
 
 
-@pytest.mark.parametrize("text", ["", "<html>", "[1,2]"])
+@pytest.mark.parametrize("text", ["", "<html>"])
 def test_malformed_2xx_raises_client_error(text: str) -> None:
     client = ConveyClient(
         session=FakeSession([FakeResponse(200, text)]),
@@ -117,6 +117,26 @@ def test_malformed_2xx_raises_client_error(text: str) -> None:
         client.request("GET", "/api/x")
 
     assert excinfo.value.error == MALFORMED_RESPONSE_MESSAGE
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("[1, 2]", [1, 2]),
+        ('"hi"', "hi"),
+        ("42", 42),
+        ("4.5", 4.5),
+        ("true", True),
+        ("null", None),
+    ],
+)
+def test_non_dict_success_bodies_pass_through(text: str, expected: Any) -> None:
+    client = ConveyClient(
+        session=FakeSession([FakeResponse(200, text)]),
+        base_url="http://localhost:5015",
+    )
+
+    assert client.request("GET", "/api/x") == expected
 
 
 def test_non_envelope_error_raises_server_error_message() -> None:
