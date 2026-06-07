@@ -317,6 +317,13 @@ ENTITY_BUSY = Reason(
     503,
 )
 
+# identity
+IDENTITY_BUSY = Reason(
+    "identity_busy",
+    "I couldn't update my identity right now because it was busy. Try again in a moment.",
+    503,
+)
+
 # skills
 SKILLS_BUSY = Reason(
     "skills_busy",

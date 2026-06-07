@@ -13,7 +13,9 @@ from pathlib import Path
 
 import typer
 
+from solstone.convey.reasons import IDENTITY_BUSY
 from solstone.think.journal_config import read_journal_config, write_journal_config
+from solstone.think.journal_io import LockTimeout
 from solstone.think.utils import get_project_root, require_solstone
 
 app = typer.Typer(help="Agent identity — name and status.")
@@ -89,25 +91,29 @@ def set_name(
     from solstone.think.identity import update_self_md_opening, update_self_md_section
 
     named_date = agent.get("named_date", "")
-    update_self_md_opening(
-        f"I am {name}. this is a new journal — we're just getting started.",
-        actor="sol call sol set-name",
-        reason="agent name updated",
-    )
-    if named_date:
-        update_self_md_section(
-            "my name",
-            f"{name} (named {named_date})",
+    try:
+        update_self_md_opening(
+            f"I am {name}. this is a new journal — we're just getting started.",
             actor="sol call sol set-name",
             reason="agent name updated",
         )
-    else:
-        update_self_md_section(
-            "my name",
-            name,
-            actor="sol call sol set-name",
-            reason="agent name updated",
-        )
+        if named_date:
+            update_self_md_section(
+                "my name",
+                f"{name} (named {named_date})",
+                actor="sol call sol set-name",
+                reason="agent name updated",
+            )
+        else:
+            update_self_md_section(
+                "my name",
+                name,
+                actor="sol call sol set-name",
+                reason="agent name updated",
+            )
+    except LockTimeout:
+        typer.echo(IDENTITY_BUSY.message, err=True)
+        raise typer.Exit(1)
     project_root = Path(get_project_root())
     subprocess.run(
         ["make", "skills"], cwd=project_root, check=False, capture_output=True
@@ -160,12 +166,16 @@ def set_owner(
     owner_content = name
     if bio:
         owner_content += f"\n{bio}"
-    update_self_md_section(
-        "who I'm here for",
-        owner_content,
-        actor="sol call sol set-owner",
-        reason="owner identity updated",
-    )
+    try:
+        update_self_md_section(
+            "who I'm here for",
+            owner_content,
+            actor="sol call sol set-owner",
+            reason="owner identity updated",
+        )
+    except LockTimeout:
+        typer.echo(IDENTITY_BUSY.message, err=True)
+        raise typer.Exit(1)
 
     typer.echo(json.dumps({"name": name, "bio": bio or ""}, indent=2))
     project_root = Path(get_project_root())
@@ -179,7 +189,11 @@ def sol_init() -> None:
     """Initialize the identity directory with self.md and agency.md."""
     from solstone.think.identity import ensure_identity_directory
 
-    identity_dir = ensure_identity_directory()
+    try:
+        identity_dir = ensure_identity_directory()
+    except LockTimeout:
+        typer.echo(IDENTITY_BUSY.message, err=True)
+        raise typer.Exit(1)
     typer.echo(
         json.dumps({"identity_dir": str(identity_dir), "status": "ok"}, indent=2)
     )

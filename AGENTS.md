@@ -190,6 +190,7 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Timeline (`chronicle/<day>/timeline.json`, `chronicle/**/<seg>/timeline.json`, root `timeline.json`) | `solstone/apps/timeline/call.py` + `solstone/apps/timeline/talent/segment_summary.py` |
 | Skills (`skills/patterns.jsonl`, `skills/edit_requests.jsonl`, `skills/{slug}.md`) | `solstone/think/skills.py` |
 | Awareness (`awareness/current.json`, `awareness/YYYYMMDD.jsonl`) | `solstone/think/awareness.py` |
+| Identity (`identity/*.md`, `identity/history.jsonl` audit log) | `solstone/think/identity.py` |
 | Todos (`facets/*/todos/*.jsonl`) | `solstone/apps/todos/todo.py` + `solstone/apps/todos/call.py` |
 | Config (`config/journal.json`) | `solstone/think/journal_config.py` |
 | Convey config (`config/convey.json`) | `solstone/convey/config.py` + `solstone/think/facets.py` |

@@ -3,10 +3,12 @@
 
 import hashlib
 import json
+import multiprocessing
 import os
 import re
 import stat
 import threading
+import traceback
 from pathlib import Path
 
 import pytest
@@ -73,7 +75,7 @@ def test_write_identity_atomic_failure(tmp_path, monkeypatch):
     def fail_replace(src, dst):
         raise OSError("replace failed")
 
-    monkeypatch.setattr("solstone.think.identity.os.replace", fail_replace)
+    monkeypatch.setattr("solstone.think.journal_io.atomic.os.replace", fail_replace)
 
     with pytest.raises(OSError, match="replace failed"):
         write_identity(
@@ -87,7 +89,56 @@ def test_write_identity_atomic_failure(tmp_path, monkeypatch):
 
     assert target.read_text(encoding="utf-8") == "original\n"
     assert not _history_path(tmp_path).exists()
-    assert list(identity_dir.glob(".self.md.*.tmp")) == []
+    assert list(identity_dir.glob(".tmp_*.tmp")) == []
+
+
+def _identity_worker(journal_path, barrier, errors, index):
+    os.environ["SOLSTONE_JOURNAL"] = journal_path
+    try:
+        from solstone.think.identity import write_identity
+
+        barrier.wait(timeout=5)
+        write_identity(
+            "self.md",
+            actor=f"writer-{index}",
+            op="replace",
+            section=None,
+            content=f"content-{index}\n",
+            reason="test",
+        )
+    except BaseException:
+        errors.put(traceback.format_exc())
+        raise
+
+
+def test_write_identity_serializes_process_writers(tmp_path):
+    ctx = multiprocessing.get_context("spawn")
+    barrier = ctx.Barrier(4)
+    errors = ctx.Queue()
+    procs = [
+        ctx.Process(target=_identity_worker, args=(str(tmp_path), barrier, errors, i))
+        for i in range(4)
+    ]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join(timeout=15)
+    for p in procs:
+        if p.is_alive():
+            p.terminate()
+    drained = []
+    while True:
+        try:
+            drained.append(errors.get_nowait())
+        except Exception:
+            break
+    assert all(p.exitcode == 0 for p in procs), "\n".join(drained)
+
+    records = _read_history(tmp_path)
+    assert len(records) == 4
+    assert {r["actor"] for r in records} == {f"writer-{i}" for i in range(4)}
+    final = (tmp_path / "identity" / "self.md").read_text(encoding="utf-8")
+    assert final in {f"content-{i}\n" for i in range(4)}
 
 
 def test_write_identity_lock_serializes(tmp_path):

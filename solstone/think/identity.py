@@ -5,16 +5,13 @@
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import logging
-import os
-import tempfile
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+
+from solstone.think.journal_io import append_text, atomic_replace, hold_lock
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +109,8 @@ STEWARD_SECTION_ATTENTION = "## Needs your attention"
 STEWARD_SECTION_AUTO_REPAIRS = "## Auto-repairs (last 7d)"
 STEWARD_SECTION_TRENDS = "## Trends (last 7d)"
 
+_LOCK_SENTINEL = ".identity"
+
 
 def _build_self_md(config: dict) -> str:
     agent = config.get("agent", {})
@@ -199,59 +198,6 @@ def _history_ts() -> str:
     )
 
 
-@contextmanager
-def _identity_lock(identity_dir: Path) -> Iterator[None]:
-    lock_path = identity_dir / ".lock"
-    with open(lock_path, "w", encoding="utf-8") as lock_fd:
-        # Serialize the whole directory so file replacement and history ordering stay aligned.
-        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
-
-
-def _append_history_locked(identity_dir: Path, line: str) -> None:
-    fd = os.open(
-        _history_path(identity_dir),
-        os.O_APPEND | os.O_CREAT | os.O_WRONLY,
-        0o600,
-    )
-    try:
-        os.write(fd, line.encode("utf-8"))
-    finally:
-        os.close(fd)
-
-
-def _replace_file(identity_dir: Path, file_name: str, content: str) -> None:
-    fd, tmp_path = tempfile.mkstemp(
-        dir=identity_dir,
-        prefix=f".{file_name}.",
-        suffix=".tmp",
-    )
-    replaced = False
-    try:
-        os.fchmod(fd, 0o600)
-        os.write(fd, content.encode("utf-8"))
-        os.close(fd)
-        fd = -1
-        os.replace(tmp_path, identity_dir / file_name)
-        replaced = True
-    except Exception:
-        if fd != -1:
-            os.close(fd)
-        if not replaced:
-            try:
-                os.unlink(tmp_path)
-            except FileNotFoundError:
-                pass
-        raise
-
-
-def _restore_previous_content(identity_dir: Path, file_name: str, content: str) -> None:
-    _replace_file(identity_dir, file_name, content)
-
-
 def _prune_partner_getting_started(content: str) -> str:
     if "## getting started" not in content:
         return content
@@ -324,7 +270,7 @@ def _write_identity_locked(
     target = identity_dir / file_name
     had_existing = target.exists()
     before_content = target.read_text(encoding="utf-8") if had_existing else ""
-    _replace_file(identity_dir, file_name, content)
+    atomic_replace(target, content, mode=0o600)
     record = {
         "ts": _history_ts(),
         "file": file_name,
@@ -338,14 +284,14 @@ def _write_identity_locked(
         "bytes_after": _byte_count(content),
     }
     try:
-        _append_history_locked(
-            identity_dir,
-            json.dumps(record, separators=(",", ":")) + "\n",
+        append_text(
+            _history_path(identity_dir),
+            json.dumps(record, separators=(",", ":")),
         )
     except Exception:
         if had_existing:
             try:
-                _restore_previous_content(identity_dir, file_name, before_content)
+                atomic_replace(target, before_content, mode=0o600)
             except Exception:
                 logger.exception(
                     "Failed to restore %s after history append failure", target
@@ -378,7 +324,7 @@ def write_identity(
     """
 
     identity_dir = _identity_dir()
-    with _identity_lock(identity_dir):
+    with hold_lock(identity_dir / _LOCK_SENTINEL):
         _write_identity_locked(
             identity_dir,
             file,
@@ -401,7 +347,7 @@ def update_identity_section(
     identity_dir = _identity_dir()
     file_name = Path(file).name
     target = identity_dir / file_name
-    with _identity_lock(identity_dir):
+    with hold_lock(identity_dir / _LOCK_SENTINEL):
         if not target.exists():
             return False
         existing = target.read_text(encoding="utf-8")
@@ -448,7 +394,7 @@ def update_self_md_opening(
 ) -> bool:
     identity_dir = _identity_dir()
     target = identity_dir / "self.md"
-    with _identity_lock(identity_dir):
+    with hold_lock(identity_dir / _LOCK_SENTINEL):
         if not target.exists():
             return False
         existing = target.read_text(encoding="utf-8")
