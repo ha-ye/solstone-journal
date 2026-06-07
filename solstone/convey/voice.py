@@ -198,7 +198,7 @@ def refresh_voice_brain():
     )
 
 
-@voice_bp.get("/nav-hints")
+@voice_bp.route("/nav-hints", methods=["GET", "POST"])
 def nav_hints():
     call_id = request.args.get("call_id", "").strip()
     if not call_id:
@@ -207,7 +207,7 @@ def nav_hints():
     return jsonify({"hints": hints, "consumed": True})
 
 
-@voice_bp.get("/observer-actions")
+@voice_bp.route("/observer-actions", methods=["GET", "POST"])
 def observer_actions():
     call_id = request.args.get("call_id", "").strip()
     if not call_id:

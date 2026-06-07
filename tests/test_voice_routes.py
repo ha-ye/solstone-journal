@@ -9,6 +9,7 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 import pytest
 
 from solstone.convey import create_app
+from solstone.think.voice.nav_queue import get_nav_queue
 from solstone.think.voice.observer_queue import get_observer_queue
 
 
@@ -72,6 +73,69 @@ def test_nav_hints_unknown_call_id_returns_empty(voice_client):
     assert response.get_json() == {"hints": [], "consumed": True}
 
 
+def test_post_nav_hints_drains_and_clears(voice_client):
+    q = get_nav_queue()
+    q.clear()
+    q.push("call-nav-post", "first nav hint")
+    q.push("call-nav-post", "second nav hint")
+
+    response = voice_client.post("/api/voice/nav-hints?call_id=call-nav-post")
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "hints": ["first nav hint", "second nav hint"],
+        "consumed": True,
+    }
+
+    second = voice_client.post("/api/voice/nav-hints?call_id=call-nav-post")
+    assert second.status_code == 200
+    assert second.get_json() == {"hints": [], "consumed": True}
+
+
+def test_get_and_post_nav_hints_are_equivalent(voice_client):
+    q = get_nav_queue()
+    q.clear()
+    q.push("nav-via-get", "shared nav hint")
+    q.push("nav-via-post", "shared nav hint")
+
+    get_response = voice_client.get("/api/voice/nav-hints?call_id=nav-via-get")
+    post_response = voice_client.post("/api/voice/nav-hints?call_id=nav-via-post")
+
+    assert get_response.status_code == 200
+    assert post_response.status_code == 200
+    assert get_response.get_json() == post_response.get_json()
+    assert post_response.get_json()["consumed"] is True
+
+
+def test_post_nav_hints_no_body_uses_query_string(voice_client):
+    q = get_nav_queue()
+    q.clear()
+    q.push("call-nav-post-no-body", "bodyless nav hint")
+
+    response = voice_client.post("/api/voice/nav-hints?call_id=call-nav-post-no-body")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "hints": ["bodyless nav hint"],
+        "consumed": True,
+    }
+
+
+def test_post_nav_hints_missing_call_id_returns_400(voice_client):
+    response = voice_client.post("/api/voice/nav-hints")
+    assert response.status_code == 400
+    data = response.get_json()
+    assert data["error"] == "I couldn't use one of those values."
+    assert data["reason_code"] == "invalid_request_value"
+    assert data["detail"] == "call_id is required"
+
+    blank = voice_client.post("/api/voice/nav-hints?call_id=%20%20")
+    assert blank.status_code == 400
+    blank_data = blank.get_json()
+    assert blank_data["error"] == "I couldn't use one of those values."
+    assert blank_data["reason_code"] == "invalid_request_value"
+    assert blank_data["detail"] == "call_id is required"
+
+
 def test_observer_actions_missing_call_id_returns_empty(voice_client):
     response = voice_client.get("/api/voice/observer-actions")
     assert response.status_code == 200
@@ -109,6 +173,37 @@ def test_observer_actions_drain_clears_queue(voice_client):
     second = voice_client.get("/api/voice/observer-actions?call_id=call-obs-route")
     assert second.status_code == 200
     assert second.get_json() == {"actions": [], "consumed": True}
+
+
+def test_post_observer_actions_drains_and_clears(voice_client):
+    queue = get_observer_queue()
+    queue.clear()
+    queue.push("call-obs-post", {"type": "start_observer", "mode": "meeting"})
+    queue.push("call-obs-post", {"type": "start_observer", "mode": "voice_memo"})
+
+    response = voice_client.post("/api/voice/observer-actions?call_id=call-obs-post")
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "actions": [
+            {"type": "start_observer", "mode": "meeting"},
+            {"type": "start_observer", "mode": "voice_memo"},
+        ],
+        "consumed": True,
+    }
+
+    second = voice_client.post("/api/voice/observer-actions?call_id=call-obs-post")
+    assert second.status_code == 200
+    assert second.get_json() == {"actions": [], "consumed": True}
+
+
+def test_post_observer_actions_missing_call_id_returns_empty(voice_client):
+    response = voice_client.post("/api/voice/observer-actions")
+    assert response.status_code == 200
+    assert response.get_json() == {"actions": [], "consumed": True}
+
+    blank = voice_client.post("/api/voice/observer-actions?call_id=%20%20")
+    assert blank.status_code == 200
+    assert blank.get_json() == {"actions": [], "consumed": True}
 
 
 def test_status_reports_all_fields(voice_client, voice_app, monkeypatch):
