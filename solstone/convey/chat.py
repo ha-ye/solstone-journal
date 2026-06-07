@@ -14,7 +14,7 @@ import pprint
 import re
 import threading
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -36,12 +36,14 @@ from solstone.convey.chat_stream import (
 from solstone.convey.reasons import (
     AGENT_UNAVAILABLE,
     CHAT_QUEUE_FULL,
+    INVALID_REQUEST_VALUE,
     MISSING_REQUIRED_FIELD,
     TALENT_NOT_FOUND,
 )
 from solstone.convey.sol_initiated import (
     record_owner_chat_dismissed,
     record_owner_chat_open,
+    start_chat,
 )
 from solstone.convey.sol_initiated.copy import KIND_SOL_CHAT_REQUEST, SURFACE_CONVEY
 from solstone.convey.utils import error_response
@@ -180,6 +182,25 @@ def sol_chat_request_open() -> Any:
         return error_response(MISSING_REQUIRED_FIELD, detail="request_id required")
     record_owner_chat_open(request_id, surface=SURFACE_CONVEY)
     return jsonify({"ok": True})
+
+
+@chat_bp.route("/start", methods=["POST"])
+def chat_start_request() -> Any:
+    """Start a sol-initiated chat request (CLI dispatch over start_chat)."""
+    payload = request.get_json(force=True, silent=True) or {}
+    try:
+        result = start_chat(
+            summary=payload.get("summary", ""),
+            message=payload.get("message"),
+            category=payload.get("category", ""),
+            dedupe=payload.get("dedupe", ""),
+            dedupe_window=payload.get("dedupe_window"),
+            since_ts=payload.get("since_ts", 0),
+            trigger_talent=payload.get("trigger_talent", ""),
+        )
+    except ValueError as exc:
+        return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
+    return jsonify(asdict(result))
 
 
 @chat_bp.route(f"/{KIND_SOL_CHAT_REQUEST}/dismissed", methods=["POST"])

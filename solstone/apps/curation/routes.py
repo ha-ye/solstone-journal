@@ -11,7 +11,7 @@ from flask import Blueprint, Response, jsonify, render_template, request
 
 from solstone.apps.curation import copy as curation_copy
 from solstone.convey.reasons import ENTITY_BUSY, MISSING_REQUIRED_FIELD
-from solstone.convey.utils import error_response
+from solstone.convey.utils import error_response, respond_collection
 from solstone.think.curation import (
     accept_entity_candidate,
     accept_facet_candidate,
@@ -20,6 +20,7 @@ from solstone.think.curation import (
     load_open_items,
     merge_preview_fields,
 )
+from solstone.think.facet_review_candidates import load_candidates
 from solstone.think.journal_io import LockTimeout
 
 curation_bp = Blueprint("app:curation", __name__, url_prefix="/app/curation")
@@ -65,6 +66,11 @@ def _result_response(result: dict[str, Any]) -> Response | tuple[Response, int]:
     if result.get("status") == "error":
         return jsonify(result), 400
     return jsonify(result)
+
+
+@curation_bp.route("/api/facet/candidates")
+def facet_candidates() -> Response:
+    return respond_collection(load_candidates())
 
 
 @curation_bp.post("/api/facet/accept")

@@ -50,7 +50,15 @@ from solstone.convey.utils import DATE_RE, error_response, format_date, success_
 from solstone.observe.hear import format_audio
 from solstone.observe.screen import format_screen
 from solstone.observe.utils import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
-from solstone.think.cluster import cluster_scan, cluster_segments, scan_day
+from solstone.think.cluster import (
+    cluster,
+    cluster_period,
+    cluster_range,
+    cluster_scan,
+    cluster_segments,
+    cluster_span,
+    scan_day,
+)
 from solstone.think.data_state import (
     DataState,
     create_analyzing_marker,
@@ -268,6 +276,39 @@ def transcript_day_data(day: str) -> Any:
             "segments": segments,
         }
     )
+
+
+@transcripts_bp.route("/api/read/<day>")
+def api_read(day: str) -> Any:
+    """Return clustered transcript markdown for a day, segment, span, or range."""
+    if not DATE_RE.fullmatch(day):
+        return error_response(INVALID_DAY, status=404, detail="Day not found")
+
+    sources: dict[str, bool] = {
+        "transcripts": request.args.get("transcripts") == "1",
+        "percepts": request.args.get("percepts") == "1",
+        "agents": request.args.get("agents") == "1",
+    }
+    start = request.args.get("start")
+    end = request.args.get("end")
+    segment = request.args.get("segment")
+    segments = request.args.get("segments")
+    stream = request.args.get("stream")
+
+    if start and end:
+        markdown = cluster_range(day, start, end, sources)
+    elif segments:
+        span = [s.strip() for s in segments.split(",") if s.strip()]
+        try:
+            markdown, _counts = cluster_span(day, span, sources, stream=stream)
+        except ValueError as exc:
+            return error_response(INVALID_SEGMENT_OR_STREAM, detail=str(exc))
+    elif segment:
+        markdown, _counts = cluster_period(day, segment, sources, stream=stream)
+    else:
+        markdown, _counts = cluster(day, sources)
+
+    return jsonify({"markdown": markdown})
 
 
 @transcripts_bp.route("/api/serve_file/<day>/<path:rel_path>")
