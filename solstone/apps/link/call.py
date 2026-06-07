@@ -298,12 +298,16 @@ def unpair(
 @app.command()
 def status() -> None:
     """Report enrollment, listen-WS state, active tunnel count, relay endpoint."""
-    state = LinkState.load_or_create()
+    state = LinkState.load()
     token = load_service_token()
     url = relay_url()
     entries = _authorized().snapshot()
-    typer.echo(f"Instance ID:   {state.instance_id}")
-    typer.echo(f"Home label:    {state.home_label}")
+    if state is None:
+        typer.echo("Instance ID:   (not provisioned — pair a device to provision)")
+        typer.echo("Home label:    (not provisioned)")
+    else:
+        typer.echo(f"Instance ID:   {state.instance_id}")
+        typer.echo(f"Home label:    {state.home_label}")
     typer.echo(f"Relay URL:     {url}")
     typer.echo(f"Enrolled:      {'yes' if token else 'no'}")
     typer.echo(f"Paired devices: {len(entries)}")

@@ -129,6 +129,22 @@ class LinkState:
         state.save()
         return state
 
+    @classmethod
+    def load(cls, *, default_label: str = "solstone") -> LinkState | None:
+        """Pure read of `state.json`; None if unprovisioned/unreadable. No write."""
+        path = state_path()
+        if not path.exists():
+            return None
+        try:
+            raw = json.loads(path.read_text("utf-8"))
+            iid = raw.get("instance_id")
+            label = raw.get("home_label") or default_label
+            if isinstance(iid, str) and iid:
+                return cls(instance_id=iid, home_label=label)
+        except (json.JSONDecodeError, OSError):
+            return None
+        return None
+
     def save(self) -> None:
         path = state_path()
         path.parent.mkdir(parents=True, exist_ok=True)

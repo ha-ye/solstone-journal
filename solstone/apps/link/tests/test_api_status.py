@@ -6,8 +6,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from typer.testing import CliRunner
+
+from solstone.apps.link import call as link_call
 from solstone.apps.link import routes as link_routes
 from solstone.think.link.local_endpoints import LocalEndpoint
+from solstone.think.link.paths import LinkState
 from solstone.think.link.window import read_posture
 
 TOTP_SECRET = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
@@ -333,6 +337,74 @@ def test_back_compat_field_set(link_env, monkeypatch) -> None:
     assert isinstance(data["ca_fingerprint"], str) or data["ca_fingerprint"] is None
     assert isinstance(data["has_password"], bool)
     assert isinstance(data["lan_accessible"], bool)
+
+
+def test_api_status_unprovisioned(link_env, monkeypatch) -> None:
+    env = link_env(provision=False)
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+
+    def fail_save(self) -> None:
+        raise AssertionError("LinkState.save should not be called by status")
+
+    monkeypatch.setattr(LinkState, "save", fail_save)
+    assert not (env.journal / "link" / "state.json").exists()
+
+    data = _get_status(env)
+
+    assert set(data) == {
+        "instance_id",
+        "home_label",
+        "enrolled",
+        "relay_url",
+        "ca_fingerprint",
+        "has_password",
+        "lan_accessible",
+        "posture",
+        "reachability",
+        "relay_state",
+        "home_address",
+        "vpn",
+    }
+    assert data["instance_id"] is None
+    assert data["home_label"] is None
+    assert not (env.journal / "link" / "state.json").exists()
+
+
+def test_api_status_does_not_provision(link_env, monkeypatch) -> None:
+    env = link_env()
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+    state_file = env.journal / "link" / "state.json"
+    before_mtime = state_file.stat().st_mtime_ns
+
+    def fail_save(self) -> None:
+        raise AssertionError("LinkState.save should not be called by status")
+
+    monkeypatch.setattr(LinkState, "save", fail_save)
+
+    _get_status(env)
+
+    assert state_file.stat().st_mtime_ns == before_mtime
+
+
+def test_cli_status_unprovisioned_does_not_write_state(tmp_path, monkeypatch) -> None:
+    journal = tmp_path / "journal"
+    journal.mkdir()
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    monkeypatch.setattr(link_call, "require_solstone", lambda: None)
+
+    def fail_save(self) -> None:
+        raise AssertionError("LinkState.save should not be called by status")
+
+    monkeypatch.setattr(LinkState, "save", fail_save)
+
+    result = CliRunner().invoke(link_call.app, ["status"])
+
+    assert result.exit_code == 0
+    assert (
+        "Instance ID:   (not provisioned — pair a device to provision)" in result.stdout
+    )
+    assert "Home label:    (not provisioned)" in result.stdout
+    assert not (journal / "link" / "state.json").exists()
 
 
 def test_status_reports_convey_password_state(link_env, monkeypatch) -> None:

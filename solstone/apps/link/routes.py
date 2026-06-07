@@ -332,7 +332,7 @@ def api_devices() -> Any:
 @link_bp.route("/api/status")
 def api_status() -> Any:
     """Snapshot of link-service state for the dashboard header."""
-    state = LinkState.load_or_create()
+    state = LinkState.load()
     token = load_service_token()
     token_present = token is not None
     ca_fp = _ca_fingerprint() if ca_dir().exists() else None
@@ -351,8 +351,8 @@ def api_status() -> Any:
     ]
     return jsonify(
         {
-            "instance_id": state.instance_id,
-            "home_label": state.home_label,
+            "instance_id": state.instance_id if state else None,
+            "home_label": state.home_label if state else None,
             "enrolled": token_present,
             "relay_url": relay_url(),
             "ca_fingerprint": ca_fp,

@@ -14,7 +14,12 @@ import pytest
 def link_env(tmp_path, monkeypatch):
     """Create a temporary journal for link app testing."""
 
-    def _create(*, posture: str | None = None, totp_secret: str | None = None):
+    def _create(
+        *,
+        posture: str | None = None,
+        totp_secret: str | None = None,
+        provision: bool = True,
+    ):
         journal = tmp_path / "journal"
         journal.mkdir(exist_ok=True)
 
@@ -32,6 +37,10 @@ def link_env(tmp_path, monkeypatch):
         )
 
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+        if provision:
+            from solstone.think.link.paths import LinkState
+
+            LinkState.load_or_create()
         if totp_secret is not None:
             from solstone.think.link.paths import save_totp_secret
 
