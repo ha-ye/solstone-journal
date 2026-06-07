@@ -29,6 +29,7 @@ from solstone.think.entities.relationships import (
     save_facet_relationship,
 )
 from solstone.think.journal_config import write_journal_config
+from solstone.think.journal_io import atomic_replace
 from solstone.think.utils import get_journal, require_solstone
 
 app = typer.Typer(help="Import review and resolution.")
@@ -228,10 +229,7 @@ def _load_config_diff(diff_path: Path) -> dict[str, dict[str, Any]]:
 
 def _write_config_diff(diff_path: Path, diff: dict[str, dict[str, Any]]) -> None:
     diff_path.parent.mkdir(parents=True, exist_ok=True)
-    diff_path.write_text(
-        json.dumps(diff, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    atomic_replace(diff_path, json.dumps(diff, indent=2, ensure_ascii=False) + "\n")
 
 
 def _resolve_config_field(state_dir: Path, field: str, action: str) -> None:

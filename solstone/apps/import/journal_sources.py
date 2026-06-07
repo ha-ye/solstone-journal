@@ -20,6 +20,7 @@ from flask import abort, g, request
 from solstone.apps.utils import get_app_storage_path
 from solstone.convey import state
 from solstone.think.entities.core import atomic_write
+from solstone.think.journal_io import atomic_replace
 from solstone.think.utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -357,13 +358,13 @@ def create_state_directory(journal_root: Path, key_prefix: str) -> Path:
     state_dir.mkdir(parents=True, exist_ok=True)
     source_path = state_dir / "source.json"
     if not source_path.exists():
-        source_path.write_text("{}", encoding="utf-8")
+        atomic_replace(source_path, "{}")
     for area in STATE_AREAS:
         area_dir = state_dir / area
         area_dir.mkdir(parents=True, exist_ok=True)
         state_path = area_dir / "state.json"
         if not state_path.exists():
-            state_path.write_text("{}", encoding="utf-8")
+            atomic_replace(state_path, "{}")
     return state_dir
 
 

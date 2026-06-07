@@ -16,6 +16,7 @@ from solstone.think.entities.relationships import (
     save_facet_relationship,
 )
 from solstone.think.facets import ensure_facet
+from solstone.think.journal_io import atomic_replace
 
 from .ingest import _append_decision
 
@@ -230,9 +231,8 @@ def _stage_unmapped_entity(
         "source_data": source_data,
         "staged_at": datetime.now(timezone.utc).isoformat(),
     }
-    target_path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
+    atomic_replace(
+        target_path, json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
     )
     return target_path
 
@@ -254,9 +254,8 @@ def _stage_facet_json_conflict(
         "target_content": target_content,
         "staged_at": datetime.now(timezone.utc).isoformat(),
     }
-    target_path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
+    atomic_replace(
+        target_path, json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
     )
     return target_path
 

@@ -8,9 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -38,6 +36,7 @@ from solstone.think.entities.journal import (
     save_journal_entity,
 )
 from solstone.think.entities.matching import find_matching_entity
+from solstone.think.journal_io import append_text, atomic_replace
 from solstone.think.utils import DEFAULT_STREAM, STREAM_RE, day_path
 
 from .journal_sources import (
@@ -69,20 +68,12 @@ _IDENTITY_PATHS = frozenset(
 
 def _append_decision(log_path: Path, entry: dict) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(log_path, "a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    append_text(log_path, json.dumps(entry, ensure_ascii=False))
 
 
 def _write_state_atomic(state_path: Path, state_data: dict) -> None:
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=state_path.parent, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(state_data, handle, indent=2)
-        Path(tmp_path).rename(state_path)
-    except Exception:
-        Path(tmp_path).unlink(missing_ok=True)
-        raise
+    atomic_replace(state_path, json.dumps(state_data, indent=2))
 
 
 def _flatten_config(cfg: dict, prefix: str = "") -> dict[str, Any]:
@@ -514,9 +505,9 @@ def register_ingest_routes(bp) -> None:
                         "reason": "low_confidence_match",
                         "staged_at": datetime.now(timezone.utc).isoformat(),
                     }
-                    (staged_dir / f"{source_id}.json").write_text(
+                    atomic_replace(
+                        staged_dir / f"{source_id}.json",
                         json.dumps(staged_payload, indent=2, ensure_ascii=False) + "\n",
-                        encoding="utf-8",
                     )
                     staged += 1
                     _append_decision(
@@ -549,10 +540,10 @@ def register_ingest_routes(bp) -> None:
                             "reason": "id_collision",
                             "staged_at": datetime.now(timezone.utc).isoformat(),
                         }
-                        (staged_dir / f"{source_id}.json").write_text(
+                        atomic_replace(
+                            staged_dir / f"{source_id}.json",
                             json.dumps(staged_payload, indent=2, ensure_ascii=False)
                             + "\n",
-                            encoding="utf-8",
                         )
                         staged += 1
                         _append_decision(
@@ -577,10 +568,10 @@ def register_ingest_routes(bp) -> None:
                             "reason": "principal_conflict",
                             "staged_at": datetime.now(timezone.utc).isoformat(),
                         }
-                        (staged_dir / f"{source_id}.json").write_text(
+                        atomic_replace(
+                            staged_dir / f"{source_id}.json",
                             json.dumps(staged_payload, indent=2, ensure_ascii=False)
                             + "\n",
-                            encoding="utf-8",
                         )
                         staged += 1
                         _append_decision(
@@ -890,9 +881,9 @@ def register_ingest_routes(bp) -> None:
                         "reason": "id_collision",
                         "staged_at": datetime.now(timezone.utc).isoformat(),
                     }
-                    (staged_dir / f"{import_id}.json").write_text(
+                    atomic_replace(
+                        staged_dir / f"{import_id}.json",
                         json.dumps(staged_payload, indent=2, ensure_ascii=False) + "\n",
-                        encoding="utf-8",
                     )
                     staged += 1
                     _append_decision(
@@ -907,21 +898,21 @@ def register_ingest_routes(bp) -> None:
                     )
                 else:
                     target_dir.mkdir(parents=True, exist_ok=True)
-                    (target_dir / "import.json").write_text(
+                    atomic_replace(
+                        target_dir / "import.json",
                         json.dumps(import_json, indent=2, ensure_ascii=False) + "\n",
-                        encoding="utf-8",
                     )
-                    (target_dir / "imported.json").write_text(
+                    atomic_replace(
+                        target_dir / "imported.json",
                         json.dumps(imported_json, indent=2, ensure_ascii=False) + "\n",
-                        encoding="utf-8",
                     )
                     lines = [
                         json.dumps(entry, ensure_ascii=False)
                         for entry in content_manifest
                     ]
-                    (target_dir / "content_manifest.jsonl").write_text(
+                    atomic_replace(
+                        target_dir / "content_manifest.jsonl",
                         "\n".join(lines) + "\n" if lines else "",
-                        encoding="utf-8",
                     )
                     copied += 1
                     _append_decision(
@@ -1022,13 +1013,13 @@ def register_ingest_routes(bp) -> None:
                 }
 
         config_dir.mkdir(parents=True, exist_ok=True)
-        (config_dir / "source_config.json").write_text(
+        atomic_replace(
+            config_dir / "source_config.json",
             json.dumps(source_config, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
         )
-        (config_dir / "diff.json").write_text(
+        atomic_replace(
+            config_dir / "diff.json",
             json.dumps(diff, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
         )
 
         config_state["last_hash"] = content_hash
