@@ -10,10 +10,12 @@ import stat
 from importlib import import_module
 
 import pytest
-from flask import Flask, abort, g, jsonify, request
+from flask import Flask, g, jsonify, request
 
 import solstone.convey.state as convey_state
+from solstone.convey.reasons import INVALID_REQUEST_VALUE
 from solstone.convey.secure_listener import ConveyIdentity
+from solstone.convey.utils import error_response
 from solstone.think.utils import now_ms
 
 journal_sources = import_module("solstone.apps.import.journal_sources")
@@ -150,7 +152,9 @@ def manifest_app(manifest_env):
     @require_journal_source
     def journal_source_manifest(key_prefix: str, area: str):
         if area not in STATE_AREAS:
-            abort(404, description="Unknown manifest area")
+            return error_response(
+                INVALID_REQUEST_VALUE, status=404, detail="Unknown manifest area"
+            )
         state_path = get_state_directory(g.derived_prefix) / area / "state.json"
         try:
             data = json.loads(state_path.read_text(encoding="utf-8"))
@@ -701,6 +705,8 @@ def test_manifest_invalid_area(manifest_app, manifest_env):
     )
 
     assert response.status_code == 404
+    body = response.get_json()
+    assert body["reason_code"] == INVALID_REQUEST_VALUE.code
 
 
 def test_manifest_key_prefix_mismatch(manifest_app, manifest_env):

@@ -16,6 +16,7 @@ from solstone.think.importers.utils import (
     get_import_details,
     list_import_timestamps,
     load_import_segments,
+    move_import,
     read_import_metadata,
     read_imported_results,
     save_import_file,
@@ -68,6 +69,40 @@ def test_save_import_text(temp_journal):
     assert result_path.exists()
     assert result_path.read_text(encoding="utf-8") == "Hello world"
     assert result_path.parent.name == "20250101_130000"
+
+
+def test_move_import_success(temp_journal):
+    """Test moving an import directory to a new timestamp."""
+    old_timestamp = "20250101_120000"
+    new_timestamp = "20250101_121500"
+    old_dir = temp_journal / "imports" / old_timestamp
+    old_dir.mkdir(parents=True)
+    (old_dir / "sample.txt").write_text("test content", encoding="utf-8")
+
+    result = move_import(temp_journal, old_timestamp, new_timestamp)
+
+    new_dir = temp_journal / "imports" / new_timestamp
+    assert result == new_dir
+    assert new_dir.exists()
+    assert (new_dir / "sample.txt").read_text(encoding="utf-8") == "test content"
+    assert not old_dir.exists()
+
+
+def test_move_import_missing_source(temp_journal):
+    """Test moving a missing import directory raises FileNotFoundError."""
+    with pytest.raises(FileNotFoundError):
+        move_import(temp_journal, "20250101_120000", "20250101_121500")
+
+
+def test_move_import_target_exists(temp_journal):
+    """Test moving over an existing import directory raises FileExistsError."""
+    old_timestamp = "20250101_120000"
+    new_timestamp = "20250101_121500"
+    (temp_journal / "imports" / old_timestamp).mkdir(parents=True)
+    (temp_journal / "imports" / new_timestamp).mkdir(parents=True)
+
+    with pytest.raises(FileExistsError):
+        move_import(temp_journal, old_timestamp, new_timestamp)
 
 
 def test_write_and_read_import_metadata(temp_journal):

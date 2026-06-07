@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, abort, g, jsonify, render_template, request
+from flask import Blueprint, g, jsonify, render_template, request
 from werkzeug.utils import secure_filename
 
 from solstone.apps.utils import log_app_action
@@ -25,13 +25,14 @@ from solstone.convey.reasons import (
     JOURNAL_SOURCE_PROBLEM,
     MISSING_REQUIRED_FIELD,
 )
-from solstone.convey.utils import error_response
+from solstone.convey.utils import error_response, respond_collection
 from solstone.think.detect_created import detect_created
 from solstone.think.importers.utils import (
     build_import_info,
     generate_content_manifest,
     get_import_details,
     list_import_timestamps,
+    move_import,
     read_import_metadata,
     save_import_file,
     save_import_text,
@@ -786,28 +787,24 @@ def import_start() -> Any:
     is_local_path = not str(file_path).startswith(str(imports_dir))
     original_timestamp = file_path.parent.name if not is_local_path else ts
 
-    # If timestamp changed, rename the import directory
+    # If timestamp changed, move the import directory through the imports/ owner
     if not is_local_path and original_timestamp != ts:
-        old_import_dir = journal_root / "imports" / original_timestamp
-        new_import_dir = journal_root / "imports" / ts
-
-        # Check if old directory exists
-        if not old_import_dir.exists():
+        try:
+            new_import_dir = move_import(
+                journal_root=journal_root,
+                old_timestamp=original_timestamp,
+                new_timestamp=ts,
+            )
+        except FileNotFoundError:
             return error_response(
                 IMPORT_NOT_FOUND,
                 detail=f"Import directory not found for {original_timestamp}",
             )
-
-        # Check if target directory already exists
-        if new_import_dir.exists():
+        except FileExistsError:
             return error_response(
                 IMPORT_CONFLICT,
                 detail=f"Import already exists for timestamp {ts}",
             )
-
-        # Rename the directory
-        try:
-            old_import_dir.rename(new_import_dir)
         except Exception as e:
             return error_response(
                 IMPORT_METADATA_FAILED,
@@ -945,7 +942,7 @@ def api_journal_source_list() -> Any:
                 "created_at": s.get("created_at"),
             }
         )
-    return jsonify(result)
+    return respond_collection(result)
 
 
 @import_bp.route("/api/journal-sources/<name>/revoke", methods=["POST"])
@@ -1009,7 +1006,9 @@ def api_journal_source_status(name: str) -> Any:
 def journal_source_manifest(key_prefix: str, area: str) -> Any:
     if area not in STATE_AREAS:
         # PROTOCOL-ONLY: journal-source manifest area from non-owner clients.
-        abort(404, description="Unknown manifest area")
+        return error_response(
+            INVALID_REQUEST_VALUE, status=404, detail="Unknown manifest area"
+        )
     state_path = get_state_directory(g.derived_prefix) / area / "state.json"
     try:
         data = json.loads(state_path.read_text(encoding="utf-8"))

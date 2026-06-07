@@ -79,6 +79,40 @@ def save_import_text(
     return file_path
 
 
+def move_import(
+    journal_root: Path,
+    old_timestamp: str,
+    new_timestamp: str,
+) -> Path:
+    """Atomically move an import staging directory to a new timestamp.
+
+    Both directories live under ``imports/`` on the same filesystem, so the
+    move is a single atomic ``rename``.
+
+    Args:
+        journal_root: Root journal directory
+        old_timestamp: Current import timestamp directory name
+        new_timestamp: Destination import timestamp directory name
+
+    Returns:
+        Path to the moved (destination) import directory.
+
+    Raises:
+        FileNotFoundError: If the source import directory does not exist.
+        FileExistsError: If the destination import directory already exists.
+    """
+    old_dir = journal_root / "imports" / old_timestamp
+    new_dir = journal_root / "imports" / new_timestamp
+
+    if not old_dir.exists():
+        raise FileNotFoundError(f"Import directory not found for {old_timestamp}")
+    if new_dir.exists():
+        raise FileExistsError(f"Import already exists for timestamp {new_timestamp}")
+
+    old_dir.rename(new_dir)
+    return new_dir
+
+
 # ============================================================================
 # Metadata Operations
 # ============================================================================

@@ -88,14 +88,17 @@ def test_api_journal_source_list_excludes_pl_records(journal_env) -> None:
     response = app.test_client().get("/app/import/api/journal-sources/list")
 
     assert response.status_code == 200
-    assert response.get_json() == [
-        {
-            "name": "alpha",
-            "prefix": journal_source_state_prefix(dl_source),
-            "status": "active",
-            "created_at": 1000,
-        }
-    ]
+    assert response.get_json() == {
+        "items": [
+            {
+                "name": "alpha",
+                "prefix": journal_source_state_prefix(dl_source),
+                "status": "active",
+                "created_at": 1000,
+            }
+        ],
+        "total": 1,
+    }
 
 
 def test_cli_status_and_revoke_cannot_target_pl_fingerprint_by_name(
