@@ -24,6 +24,7 @@ from solstone.apps.observer.utils import mint_pl_observer_record, save_observer
 from solstone.convey.copy import OBSERVER_CALLOSUM_LIVE_LABEL
 from solstone.convey.secure_listener import ConveyIdentity
 from solstone.convey.sol_initiated.copy import KIND_SOL_CHAT_REQUEST
+from solstone.observe.protocol import OBSERVER_PROTOCOL_VERSION
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.paths import authorized_clients_path
 from solstone.think.streams import update_stream, write_segment_stream
@@ -260,7 +261,9 @@ def test_api_create_observer(observer_env):
     assert len(data["key"]) > 32  # 256 bits = 43 base64 chars
     assert data["key_prefix"] == data["key"][:8]
     assert data["name"] == "test-laptop"
-    assert "/app/observer/ingest/" in data["ingest_url"]
+    assert data["ingest_url"] == "/app/observer/ingest"
+    assert data["key"] not in data["ingest_url"]
+    assert data["protocol_version"] == OBSERVER_PROTOCOL_VERSION
 
 
 def test_api_create_requires_name(observer_env):
@@ -1164,6 +1167,73 @@ def test_ingest_revoked_key(observer_env):
     assert "Observer revoked" in resp.get_json()["detail"]
 
 
+def test_keyless_ingest_bearer_rejects_revoked_and_disabled_keys(observer_env):
+    env = observer_env()
+
+    resp = env.client.post(
+        "/app/observer/api/create",
+        json={"name": "keyless-revoked-test"},
+        content_type="application/json",
+    )
+    revoked_data = resp.get_json()
+    revoked_key = revoked_data["key"]
+
+    resp = env.client.delete(f"/app/observer/api/{revoked_data['key_prefix']}")
+    assert resp.status_code == 200
+
+    resp = env.client.post(
+        "/app/observer/ingest",
+        headers={"Authorization": f"Bearer {revoked_key}"},
+        data={
+            "day": "20250103",
+            "segment": "120000_300",
+            "files": (io.BytesIO(b"revoked content"), "audio.flac"),
+        },
+    )
+    assert resp.status_code == 403
+    body = resp.get_json()
+    assert body["reason_code"] == "pl_revoked"
+    assert body["detail"] == "Observer revoked"
+
+    resp = env.client.post(
+        "/app/observer/api/create",
+        json={"name": "keyless-disabled-test"},
+        content_type="application/json",
+    )
+    disabled_data = resp.get_json()
+    disabled_key = disabled_data["key"]
+    assert save_observer(
+        {
+            "key": disabled_key,
+            "name": "keyless-disabled-test",
+            "created_at": 0,
+            "last_seen": None,
+            "last_segment": None,
+            "enabled": False,
+            "revoked": False,
+            "revoked_at": None,
+            "stats": {
+                "segments_received": 0,
+                "bytes_received": 0,
+            },
+        }
+    )
+
+    resp = env.client.post(
+        "/app/observer/ingest",
+        headers={"Authorization": f"Bearer {disabled_key}"},
+        data={
+            "day": "20250103",
+            "segment": "120000_300",
+            "files": (io.BytesIO(b"disabled content"), "audio.flac"),
+        },
+    )
+    assert resp.status_code == 403
+    body = resp.get_json()
+    assert body["reason_code"] == "feature_unavailable"
+    assert body["detail"] == "Observer disabled"
+
+
 def test_ingest_event_revoked_key(observer_env):
     """Test that event relay rejects revoked keys."""
     env = observer_env()
@@ -1213,7 +1283,32 @@ def test_api_get_key(observer_env):
     data = resp.get_json()
     assert data["key"] == key
     assert data["name"] == "key-test"
-    assert data["ingest_url"] == f"/app/observer/ingest/{key}"
+    assert data["ingest_url"] == "/app/observer/ingest"
+    assert key not in data["ingest_url"]
+    assert data["protocol_version"] == OBSERVER_PROTOCOL_VERSION
+
+
+def test_mint_responses_protocol_version_single_source_and_keyless_unconditional(
+    observer_env, monkeypatch
+):
+    monkeypatch.setattr("solstone.observe.protocol.OBSERVER_PROTOCOL_VERSION", 99)
+    env = observer_env()
+
+    resp = env.client.post(
+        "/app/observer/api/create",
+        json={"name": "mint-protocol-test"},
+        content_type="application/json",
+    )
+    assert resp.status_code == 200
+    create_data = resp.get_json()
+    assert create_data["protocol_version"] == 99
+    assert create_data["ingest_url"] == "/app/observer/ingest"
+
+    resp = env.client.get(f"/app/observer/api/{create_data['key_prefix']}/key")
+    assert resp.status_code == 200
+    key_data = resp.get_json()
+    assert key_data["protocol_version"] == 99
+    assert key_data["ingest_url"] == "/app/observer/ingest"
 
 
 def test_api_get_key_nonexistent(observer_env):
@@ -1698,6 +1793,41 @@ def test_segments_endpoint_lists_uploads(observer_env):
     assert (
         file_info["submitted_name"] == "120000_300_audio.flac"
     )  # Original name preserved
+
+
+def test_legacy_url_key_ingest_and_segments_still_sync(observer_env):
+    env = observer_env()
+
+    resp = env.client.post(
+        "/app/observer/api/create",
+        json={"name": "legacy-url-key-test"},
+        content_type="application/json",
+    )
+    key = resp.get_json()["key"]
+
+    test_data = b"legacy url key content"
+    resp = env.client.post(
+        f"/app/observer/ingest/{key}",
+        data={
+            "day": "20250103",
+            "segment": "120000_300",
+            "files": (io.BytesIO(test_data), "120000_300_audio.flac"),
+        },
+    )
+    assert resp.status_code == 200
+
+    resp = env.client.get(f"/app/observer/ingest/{key}/segments/20250103")
+    assert resp.status_code == 200
+    data = resp.get_json()
+
+    assert isinstance(data, list)
+    assert len(data) == 1
+    segment = data[0]
+    assert segment["key"] == "120000_300"
+    assert len(segment["files"]) == 1
+
+    file_info = segment["files"][0]
+    assert file_info["status"] == "present"
 
 
 def test_segments_endpoint_v2_empty(observer_env):

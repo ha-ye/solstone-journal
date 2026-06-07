@@ -57,6 +57,23 @@ def test_resolve_dl_success_from_bearer(app_env):
     assert prefix == DL_KEY[:8]
 
 
+def test_resolve_dl_bearer_key_wins_over_url_key(app_env):
+    header_key = "headerkey123456789"
+    url_key = "urlkey123456789"
+    save_observer({"key": header_key, "name": "header", "enabled": True, "stats": {}})
+    save_observer({"key": url_key, "name": "url", "enabled": True, "stats": {}})
+
+    with app_env.test_request_context(
+        headers={"Authorization": f"Bearer {header_key}"}
+    ):
+        observer, prefix, error = resolve_observer_identity(url_key=url_key)
+
+    assert error is None
+    assert observer["name"] == "header"
+    assert observer["key"] == header_key
+    assert prefix == header_key[:8]
+
+
 def test_resolve_dl_missing_auth(app_env):
     with app_env.test_request_context():
         observer, prefix, error = resolve_observer_identity()

@@ -394,7 +394,7 @@ def _check_observer_enabled(observer: dict):
     return None
 
 
-# Observer uses ObserverRegistry, key-in-URL auth, and no prefix assertion; defer require_ingest_identity until key->header migration.
+# Observer still resolves through ObserverRegistry; minted pairings use header-Bearer auth, with legacy key-in-URL fallback deferring require_ingest_identity until URL-key auth is retired.
 def resolve_observer_identity(url_key: str | None = None):
     fingerprint = _identity_fingerprint()
     if fingerprint is not None:

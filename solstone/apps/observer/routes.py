@@ -353,7 +353,7 @@ def api_create() -> Any:
     )
 
     # Build ingest URL
-    ingest_url = f"/app/observer/ingest/{key}"
+    ingest_url = "/app/observer/ingest"
 
     return jsonify(
         {
@@ -361,6 +361,7 @@ def api_create() -> Any:
             "key_prefix": key[:8],
             "name": name,
             "ingest_url": ingest_url,
+            "protocol_version": protocol.OBSERVER_PROTOCOL_VERSION,
         }
     )
 
@@ -419,7 +420,8 @@ def api_get_key(key_prefix: str) -> Any:
         {
             "key": key,
             "name": data.get("name", ""),
-            "ingest_url": f"/app/observer/ingest/{key}",
+            "ingest_url": "/app/observer/ingest",
+            "protocol_version": protocol.OBSERVER_PROTOCOL_VERSION,
         }
     )
 
