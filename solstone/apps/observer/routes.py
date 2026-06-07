@@ -46,7 +46,8 @@ from solstone.convey.reasons import (
     SETTINGS_OPERATION_FAILED,
     Reason,
 )
-from solstone.convey.utils import error_response
+from solstone.convey.utils import error_response, respond_collection
+from solstone.observe import protocol
 from solstone.observe.utils import (
     MAX_SEGMENT_ATTEMPTS,
     compute_bytes_sha256,
@@ -1054,6 +1055,35 @@ def ingest_event(key: str | None = None) -> Any:
     return jsonify({"status": "ok"})
 
 
+def _requested_protocol_version() -> int:
+    """Observer ingest protocol version the requesting peer advertises.
+
+    Returns 1 (legacy/unversioned) when the header is absent or unparsable.
+    """
+    raw = request.headers.get(protocol.OBSERVER_PROTOCOL_VERSION_HEADER)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 1
+
+
+def _respond_observer_segments(items: list[dict], *, client_pv: int) -> Any:
+    """Finalize the observer-segments 200 response.
+
+    Canonical shape is the {items, total, protocol_version} collection envelope.
+    A peer advertising protocol < v2 (a prior release) instead receives a bare
+    top-level JSON array so its list-iterating consumer keeps syncing. This
+    legacy downgrade is the SINGLE place a bare array reaches the wire - delete
+    this branch once no prior-release peers remain (no retirement schedule yet).
+    """
+    if client_pv >= protocol.OBSERVER_PROTOCOL_VERSION:
+        response, status = respond_collection(items)
+        body = response.get_json()
+        body["protocol_version"] = protocol.OBSERVER_PROTOCOL_VERSION
+        return jsonify(body), status
+    return jsonify(items)
+
+
 @observer_bp.route("/ingest/segments/<day>")
 @observer_bp.route("/ingest/<key>/segments/<day>")
 def ingest_segments(day: str, key: str | None = None) -> Any:
@@ -1076,11 +1106,13 @@ def ingest_segments(day: str, key: str | None = None) -> Any:
     if not re.match(r"^\d{8}$", day):
         return error_response(INVALID_DAY, detail="Invalid day format")
 
+    client_pv = _requested_protocol_version()
+
     # Load sync history for this observer/day
     records = load_history(key_prefix, day)
 
     if not records:
-        return jsonify([])
+        return _respond_observer_segments([], client_pv=client_pv)
 
     # Get day directory for file verification
     day_dir = day_path(day)
@@ -1167,4 +1199,4 @@ def ingest_segments(day: str, key: str | None = None) -> Any:
         if "original_key" in segment_data:
             entry["original_key"] = segment_data["original_key"]
         result.append(entry)
-    return jsonify(result)
+    return _respond_observer_segments(result, client_pv=client_pv)

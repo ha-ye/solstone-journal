@@ -33,6 +33,7 @@ from typing import Any
 
 import requests
 
+from solstone.observe import protocol
 from solstone.observe.peer_lookup import PeerInfo, PeerLookupError, resolve_peer
 from solstone.observe.pl_http import PlHttpSession
 from solstone.think.callosum import callosum_send
@@ -463,6 +464,40 @@ def _parse_day_spec(day_spec: str | None, journal_root: Path) -> list[str]:
     raise ValueError("Invalid day format: use YYYYMMDD or YYYYMMDD-YYYYMMDD")
 
 
+def _parse_remote_segments(data: Any, day: str) -> dict[str, dict[str, str]]:
+    """Parse a segments 200 body (envelope or bare array) to {key: {name: sha}}.
+
+    Accepts both the v2 ``{"items": [...]}`` envelope and the legacy bare array,
+    yielding an identical map. Any unrecognized body degrades to ``{}`` with a
+    logged warning; never raises.
+    """
+    if isinstance(data, dict):
+        items = data.get("items")
+    elif isinstance(data, list):
+        items = data
+    else:
+        items = None
+    if not isinstance(items, list):
+        logger.warning(
+            f"Remote segment query for {day}: unrecognized response body, ignoring"
+        )
+        return {}
+    try:
+        return {
+            entry["key"]: {
+                file_info["name"]: file_info["sha256"]
+                for file_info in entry.get("files", [])
+            }
+            for entry in items
+            if isinstance(entry, dict) and entry.get("key")
+        }
+    except (KeyError, TypeError, AttributeError) as e:
+        logger.warning(
+            f"Remote segment query for {day}: malformed segment entry, ignoring: {e}"
+        )
+        return {}
+
+
 def _query_remote_segments(
     session: requests.Session,
     base_url: str,
@@ -471,17 +506,24 @@ def _query_remote_segments(
     """Query remote observer for existing segments on a day."""
     url = f"{base_url}/app/observer/ingest/segments/{day}"
     try:
-        response = session.get(url, timeout=UPLOAD_TIMEOUT)
+        response = session.get(
+            url,
+            headers={
+                protocol.OBSERVER_PROTOCOL_VERSION_HEADER: str(
+                    protocol.OBSERVER_PROTOCOL_VERSION
+                )
+            },
+            timeout=UPLOAD_TIMEOUT,
+        )
         if response.status_code == 200:
-            data = response.json()
-            return {
-                entry["key"]: {
-                    file_info["name"]: file_info["sha256"]
-                    for file_info in entry.get("files", [])
-                }
-                for entry in data
-                if entry.get("key")
-            }
+            try:
+                data = response.json()
+            except ValueError:
+                logger.warning(
+                    f"Remote segment query for {day}: non-JSON 200 body, ignoring"
+                )
+                return {}
+            return _parse_remote_segments(data, day)
         if response.status_code == 401:
             raise ValueError(AUTH_INVALID_OBSERVER_KEY)
         if response.status_code == 403:

@@ -4,8 +4,10 @@
 """Tests for observe/transfer.py - day archive export, import, and send."""
 
 import json
+import logging
 import tarfile
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -459,7 +461,7 @@ class TestTransferSend:
         self,
         *,
         get_status: int = 200,
-        get_json: list | None = None,
+        get_json: Any | None = None,
         post_status: int = 200,
         post_json: dict | None = None,
     ) -> MagicMock:
@@ -481,6 +483,63 @@ class TestTransferSend:
         mock_session.post.return_value = post_response
 
         return mock_session
+
+    def test_query_remote_segments_parses_envelope_and_array_identically(self):
+        from solstone.observe.transfer import _query_remote_segments
+
+        segment_data = [{"key": "s1", "files": [{"name": "a.flac", "sha256": "abc"}]}]
+        envelope_session = self._make_session(
+            get_json={
+                "items": segment_data,
+                "total": 1,
+                "protocol_version": 2,
+            }
+        )
+        array_session = self._make_session(get_json=segment_data)
+
+        envelope_result = _query_remote_segments(
+            envelope_session,
+            "https://example.com",
+            "20250103",
+        )
+        array_result = _query_remote_segments(
+            array_session,
+            "https://example.com",
+            "20250103",
+        )
+
+        assert envelope_result == {"s1": {"a.flac": "abc"}}
+        assert array_result == envelope_result
+        assert envelope_session.get.call_args.kwargs["headers"] == {
+            "X-Solstone-Protocol-Version": "2"
+        }
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"error": "nope"},
+            {"items": 5},
+            "oops",
+        ],
+    )
+    def test_query_remote_segments_degrades_unrecognized_bodies(
+        self,
+        body,
+        caplog,
+    ):
+        from solstone.observe.transfer import _query_remote_segments
+
+        mock_session = self._make_session(get_json=body)
+
+        with caplog.at_level(logging.WARNING):
+            result = _query_remote_segments(
+                mock_session,
+                "https://example.com",
+                "20250103",
+            )
+
+        assert result == {}
+        assert caplog.records
 
     def test_parse_day_spec_single(self, tmp_path):
         from solstone.observe.transfer import _parse_day_spec
@@ -644,12 +703,19 @@ class TestTransferSend:
             in (capsys.readouterr().out)
         )
 
-    def test_send_auth_error(self):
+    @pytest.mark.parametrize(
+        ("status", "message"),
+        [
+            (401, "Authentication failed"),
+            (403, "revoked or disabled"),
+        ],
+    )
+    def test_send_auth_error(self, status, message):
         from solstone.observe.transfer import _query_remote_segments
 
-        mock_session = self._make_session(get_status=401)
+        mock_session = self._make_session(get_status=status)
 
-        with pytest.raises(ValueError, match="Authentication failed"):
+        with pytest.raises(ValueError, match=message):
             _query_remote_segments(
                 mock_session,
                 "https://example.com",
