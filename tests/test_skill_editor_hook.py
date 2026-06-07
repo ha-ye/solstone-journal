@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,9 @@ from solstone.apps.skills.talent.skill_editor import (
     post_process,
     pre_process,
 )
+from solstone.convey.reasons import SKILLS_BUSY
 from solstone.think import skills as think_skills
+from solstone.think.journal_io import LockTimeout
 
 
 @pytest.fixture
@@ -295,6 +298,28 @@ def test_pre_handles_missing_slug_defensively(skill_editor_env):
     assert rows[0]["processing_error"] == "slug missing"
 
 
+def test_pre_missing_slug_lock_timeout_logs_and_leaves_request_pending(
+    skill_editor_env, monkeypatch, caplog
+):
+    _seed_fixture(
+        skill_editor_env,
+        edit_requests=[_request(slug="missing-skill")],
+    )
+
+    def raise_timeout(_mutate):
+        raise LockTimeout(think_skills.edit_requests_path(), 0.1)
+
+    monkeypatch.setattr(think_skills, "locked_modify_edit_requests", raise_timeout)
+
+    with caplog.at_level(logging.WARNING):
+        result = pre_process({"day": "2026-04-19"})
+
+    assert result == {"skip_reason": "edit-request target slug missing"}
+    assert SKILLS_BUSY.message in caplog.text
+    rows = think_skills.load_edit_requests()
+    assert rows[0]["processed_at"] is None
+
+
 def test_pre_refresh_missing_profile_falls_back_to_create(skill_editor_env):
     _seed_fixture(
         skill_editor_env,
@@ -429,6 +454,75 @@ def test_post_processes_edit_request_clears_both_flags(skill_editor_env):
     assert updated["needs_refresh"] is False
     requests = think_skills.load_edit_requests()
     assert requests[0]["processed_at"] is not None
+
+
+def test_post_pattern_lock_timeout_logs_and_leaves_pattern_pending(
+    skill_editor_env, monkeypatch, caplog
+):
+    _seed_fixture(skill_editor_env, patterns=[_pattern(needs_profile=True)])
+    result = _profile_markdown(
+        slug="alpha-skill",
+        display_name="Alpha Skill",
+        description="A grounded recurring capability.",
+        confidence=0.8,
+    )
+
+    def raise_timeout(_mutate):
+        raise LockTimeout(think_skills.patterns_path(), 0.1)
+
+    monkeypatch.setattr(think_skills, "locked_modify_patterns", raise_timeout)
+
+    with caplog.at_level(logging.WARNING):
+        post_process(
+            result,
+            {"meta": {"slug": "alpha-skill", "mode": "create", "request_id": None}},
+        )
+
+    assert SKILLS_BUSY.message in caplog.text
+    assert think_skills.load_profile("alpha-skill") is not None
+    updated = think_skills.find_pattern("alpha-skill")
+    assert updated["needs_profile"] is True
+
+
+def test_post_edit_request_lock_timeout_logs_and_leaves_request_pending(
+    skill_editor_env, monkeypatch, caplog
+):
+    _seed_fixture(
+        skill_editor_env,
+        patterns=[_pattern(needs_profile=True, needs_refresh=True)],
+        edit_requests=[_request()],
+        profiles={"alpha-skill": _profile_markdown()},
+    )
+    result = _profile_markdown(
+        slug="alpha-skill",
+        display_name="Edited Skill",
+        description="Edited grounded profile.",
+        confidence=0.75,
+    )
+
+    def raise_timeout(_mutate):
+        raise LockTimeout(think_skills.edit_requests_path(), 0.1)
+
+    monkeypatch.setattr(think_skills, "locked_modify_edit_requests", raise_timeout)
+
+    with caplog.at_level(logging.WARNING):
+        post_process(
+            result,
+            {
+                "meta": {
+                    "slug": "alpha-skill",
+                    "mode": "edit_request",
+                    "request_id": "req-1",
+                }
+            },
+        )
+
+    assert SKILLS_BUSY.message in caplog.text
+    updated = think_skills.find_pattern("alpha-skill")
+    assert updated["needs_profile"] is False
+    assert updated["needs_refresh"] is False
+    requests = think_skills.load_edit_requests()
+    assert requests[0]["processed_at"] is None
 
 
 def test_post_rejects_slug_mismatch(skill_editor_env):

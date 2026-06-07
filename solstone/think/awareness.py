@@ -23,7 +23,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from solstone.think.journal_io import MalformedPolicy, hold_lock, read_json, write_json
+from solstone.think.journal_io import (
+    MalformedPolicy,
+    append_jsonl,
+    hold_lock,
+    read_json,
+    write_json,
+)
 
 logger = logging.getLogger(__name__)
 _LEGACY_AGENT_FIELD = "talent"
@@ -144,8 +150,7 @@ def append_log(
 
     log_day = day or _today()
     log_path = _awareness_dir() / f"{log_day}.jsonl"
-    with open(log_path, "a") as f:
-        f.write(json.dumps(entry) + "\n")
+    append_jsonl(log_path, entry)
 
     return entry
 

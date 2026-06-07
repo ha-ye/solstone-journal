@@ -64,16 +64,16 @@ def test_rollup_day_dry_run_no_llm_calls(timeline_journal, mock_agenerate):
 def test_rollup_day_writes_seed_shape(timeline_journal, mock_agenerate):
     """AC#6."""
     for i in range(5):
-        _write_segment(timeline_journal, DAY, f"12000{i}_60", f"Event {i}")
+        title = "Café Event" if i == 0 else f"Event {i}"
+        _write_segment(timeline_journal, DAY, f"12000{i}_60", title)
     mock = mock_agenerate({"picks": [0, 1, 2, 3], "rationale": "highest consequence"})
 
     asyncio.run(
         _rollup_day(timeline_journal, DAY, top=4, jobs=5, dry_run=False, force=False)
     )
 
-    payload = json.loads(
-        (timeline_journal / "chronicle" / DAY / "timeline.json").read_text()
-    )
+    timeline_path = timeline_journal / "chronicle" / DAY / "timeline.json"
+    payload = json.loads(timeline_path.read_text())
     assert payload["day"] == DAY
     assert payload["model"] == GEMINI_FLASH
     assert payload["segment_count"] == 5
@@ -81,6 +81,10 @@ def test_rollup_day_writes_seed_shape(timeline_journal, mock_agenerate):
     assert len(payload["day_top"]) == 4
     assert payload["hours"]["12"]["rationale"] == "highest consequence"
     assert mock.call_args.kwargs["model"] == GEMINI_FLASH
+    raw = timeline_path.read_bytes()
+    assert b"Caf\xc3\xa9 Event" in raw
+    assert b"\\u00e9" not in raw
+    assert raw.endswith(b"\n")
 
 
 def test_rollup_day_skip_when_exists_without_force(timeline_journal, mock_agenerate):

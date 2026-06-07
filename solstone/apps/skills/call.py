@@ -14,6 +14,8 @@ from typing import Any, Callable
 
 import typer
 
+from solstone.convey.reasons import SKILLS_BUSY
+from solstone.think.journal_io import LockTimeout
 from solstone.think.skills import (
     find_pattern,
     load_patterns,
@@ -129,6 +131,8 @@ def _locked_update_pattern(
         locked_modify_patterns(mutate)
     except _PatternCommandError as exc:
         _exit_with_message(exc.message, code=exc.exit_code)
+    except LockTimeout:
+        _exit_with_message(SKILLS_BUSY.message, code=1)
 
     if updated_pattern is None:  # pragma: no cover - defensive assertion
         raise RuntimeError(f"pattern mutation produced no row for slug {slug}")
@@ -308,6 +312,8 @@ def seed_skill(
         locked_modify_patterns(mutate)
     except _PatternCommandError as exc:
         _exit_with_message(exc.message, code=exc.exit_code)
+    except LockTimeout:
+        _exit_with_message(SKILLS_BUSY.message, code=1)
 
     if created_pattern is None:  # pragma: no cover - defensive assertion
         raise RuntimeError(f"seed did not create pattern {slug}")
@@ -432,7 +438,10 @@ def edit_request_skill(
         next_rows.append(request)
         return next_rows
 
-    locked_modify_edit_requests(mutate)
+    try:
+        locked_modify_edit_requests(mutate)
+    except LockTimeout:
+        _exit_with_message(SKILLS_BUSY.message, code=1)
 
     if json_output:
         _echo_json({"request_id": request_id, "slug": slug})

@@ -59,7 +59,7 @@ def test_rollup_master_empty_input_exits_empty_sentinel(timeline_journal):
 def test_rollup_master_writes_seed_shape(timeline_journal, mock_agenerate):
     """AC#9, AC#10."""
     _write_day(timeline_journal, "20260510", ["A", "B", "C"])
-    _write_day(timeline_journal, "20260511", ["D", "E"])
+    _write_day(timeline_journal, "20260511", ["D", "Café E"])
     mock = mock_agenerate({"picks": [4, 0, 1, 2], "rationale": "monthly consequence"})
 
     asyncio.run(
@@ -73,14 +73,19 @@ def test_rollup_master_writes_seed_shape(timeline_journal, mock_agenerate):
         )
     )
 
-    payload = json.loads((timeline_journal / "timeline.json").read_text())
+    timeline_path = timeline_journal / "timeline.json"
+    payload = json.loads(timeline_path.read_text())
     assert payload["model"] == GEMINI_FLASH
     assert payload["top_n"] == 4
     assert list(payload["months"]) == ["202605"]
     assert payload["months"]["202605"]["day_count"] == 2
-    assert payload["months"]["202605"]["month_top"][0]["title"] == "E"
+    assert payload["months"]["202605"]["month_top"][0]["title"] == "Café E"
     assert payload["year_top"][0]["month"] == "202605"
     assert mock.call_args.kwargs["model"] == GEMINI_FLASH
+    raw = timeline_path.read_bytes()
+    assert b"Caf\xc3\xa9 E" in raw
+    assert b"\\u00e9" not in raw
+    assert raw.endswith(b"\n")
 
 
 def test_rollup_master_year_top_is_month_top_first_per_month(timeline_journal):

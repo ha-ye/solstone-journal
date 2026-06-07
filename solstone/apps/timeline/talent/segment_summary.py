@@ -7,12 +7,10 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
 import time
 from pathlib import Path
-from typing import Any
 
+from solstone.think.journal_io import atomic_replace
 from solstone.think.models import GEMINI_LITE
 from solstone.think.utils import day_path, iter_segments, segment_path
 
@@ -70,28 +68,6 @@ def origin_for_segment(seg_dir):
     except ValueError:
         return seg_dir.name
     return "/".join(parts[ci + 1 :])
-
-
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_name: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=path.parent,
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            tmp_name = handle.name
-            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_name, path)
-    except BaseException:
-        if tmp_name:
-            Path(tmp_name).unlink(missing_ok=True)
-        raise
 
 
 def _candidate_segment_dirs(day: str, segment: str, stream: str | None) -> list[Path]:
@@ -207,5 +183,8 @@ def post_process(result: str, context: dict) -> str | None:
         "model": MODEL,
         "generated_at": int(time.time()),
     }
-    _atomic_write_json(seg_dir / "timeline.json", payload)
+    atomic_replace(
+        seg_dir / "timeline.json",
+        json.dumps(payload, ensure_ascii=False) + "\n",
+    )
     return None

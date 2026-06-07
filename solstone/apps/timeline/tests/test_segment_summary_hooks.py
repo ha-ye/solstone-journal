@@ -110,9 +110,7 @@ def test_post_process_writes_augmented_timeline_atomically(
     monkeypatch.setattr(segment_summary.time, "time", lambda: 1770000000.9)
 
     returned = segment_summary.post_process(
-        json.dumps(
-            {"title": "Display Reset", "description": "Restarts display manager."}
-        ),
+        json.dumps({"title": "Café Reset", "description": "Restarts café display."}),
         {"day": DAY, "segment": SEGMENT, "stream": "archon"},
     )
 
@@ -122,12 +120,17 @@ def test_post_process_writes_augmented_timeline_atomically(
     )
     assert not list(timeline.parent.glob("*.tmp"))
     assert json.loads(timeline.read_text(encoding="utf-8")) == {
-        "title": "Display Reset",
-        "description": "Restarts display manager.",
+        "title": "Café Reset",
+        "description": "Restarts café display.",
         "origin": f"{DAY}/archon/{SEGMENT}",
         "model": GEMINI_LITE,
         "generated_at": 1770000000,
     }
+    raw = timeline.read_bytes()
+    assert b"Caf\xc3\xa9 Reset" in raw
+    assert b"\\u00e9" not in raw
+    assert b"\n " not in raw
+    assert raw.endswith(b"\n")
 
 
 def test_post_process_records_literal_model(timeline_journal):

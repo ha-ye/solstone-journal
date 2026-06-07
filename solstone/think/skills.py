@@ -10,7 +10,6 @@ Sole write-owner of:
 
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import secrets
@@ -18,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from solstone.think.entities.core import atomic_write
+from solstone.think.journal_io import atomic_replace, hold_lock, write_text
 from solstone.think.utils import get_journal
 
 logger = logging.getLogger(__name__)
@@ -44,16 +43,6 @@ def edit_requests_path() -> Path:
 def profile_path(slug: str) -> Path:
     """Return the markdown profile path for one skill slug."""
     return skills_dir() / f"{slug}.md"
-
-
-def patterns_lock_path() -> Path:
-    """Return the sibling lock path for patterns.jsonl."""
-    return skills_dir() / ".patterns.lock"
-
-
-def edit_requests_lock_path() -> Path:
-    """Return the sibling lock path for edit_requests.jsonl."""
-    return skills_dir() / ".edit_requests.lock"
 
 
 def _load_jsonl_rows(path: Path) -> list[dict[str, Any]]:
@@ -119,7 +108,7 @@ def _save_jsonl_rows(path: Path, rows: list[dict[str, Any]]) -> None:
     content = ""
     if rows:
         content = "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n"
-    atomic_write(path, content)
+    atomic_replace(path, content)
 
 
 def save_patterns(rows: list[dict[str, Any]]) -> None:
@@ -134,7 +123,7 @@ def save_edit_requests(rows: list[dict[str, Any]]) -> None:
 
 def save_profile(slug: str, markdown: str) -> None:
     """Persist one markdown skill profile atomically."""
-    atomic_write(profile_path(slug), markdown)
+    write_text(profile_path(slug), markdown)
 
 
 def rename_profile(old_slug: str, new_slug: str) -> bool:
@@ -153,36 +142,22 @@ def locked_modify_patterns(
     fn: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
     """Apply a locked read-modify-write cycle to patterns.jsonl."""
-    skills_dir()
-    lock_path = patterns_lock_path()
-    # Lock file contents are irrelevant; opening with "w" matches the existing pattern.
-    with open(lock_path, "w", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        try:
-            rows = load_patterns()
-            new_rows = fn(rows)
-            save_patterns(new_rows)
-            return new_rows
-        finally:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
+    with hold_lock(patterns_path()):
+        rows = load_patterns()
+        new_rows = fn(rows)
+        save_patterns(new_rows)
+        return new_rows
 
 
 def locked_modify_edit_requests(
     fn: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
     """Apply a locked read-modify-write cycle to edit_requests.jsonl."""
-    skills_dir()
-    lock_path = edit_requests_lock_path()
-    # Lock file contents are irrelevant; opening with "w" matches the existing pattern.
-    with open(lock_path, "w", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        try:
-            rows = load_edit_requests()
-            new_rows = fn(rows)
-            save_edit_requests(new_rows)
-            return new_rows
-        finally:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
+    with hold_lock(edit_requests_path()):
+        rows = load_edit_requests()
+        new_rows = fn(rows)
+        save_edit_requests(new_rows)
+        return new_rows
 
 
 def observation_key(slug: str, day: str, activity_ids: list[str]) -> str:

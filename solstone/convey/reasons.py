@@ -317,6 +317,13 @@ ENTITY_BUSY = Reason(
     503,
 )
 
+# skills
+SKILLS_BUSY = Reason(
+    "skills_busy",
+    "I couldn't update your skills right now because they were busy. Try again in a moment.",
+    503,
+)
+
 # reprocess
 REPROCESS_PAST_ONLY = Reason(
     "reprocess_past_only",

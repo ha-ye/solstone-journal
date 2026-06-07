@@ -86,6 +86,8 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/apps/speakers/owner.py",
         "solstone/apps/speakers/routes.py",
         "solstone/apps/settings/vertex_credentials.py",
+        "solstone/apps/timeline/call.py",
+        "solstone/apps/timeline/talent/segment_summary.py",
         "solstone/apps/todos/call.py",
         "solstone/apps/todos/todo.py",
         "solstone/think/activities.py",
@@ -101,6 +103,8 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/think/facet_review_candidates.py",
         "solstone/think/facets.py",
         "solstone/think/journal_config.py",
+        "solstone/think/skills.py",
+        "solstone/think/streams.py",
         # Chronicle day content direct writers. Importer modules that merely
         # route through importers/shared.py are not direct owners and are
         # intentionally omitted.

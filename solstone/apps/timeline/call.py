@@ -8,13 +8,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
-import tempfile
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 import typer
 
@@ -23,6 +20,7 @@ from solstone.apps.timeline.rollup import (
     pick_top_events_async,
     pick_top_events_batch,
 )
+from solstone.think.journal_io import atomic_replace
 from solstone.think.utils import (
     EXIT_EMPTY,
     get_journal,
@@ -51,30 +49,6 @@ def _parse_day(value: str) -> str:
     if not DAY_RE.fullmatch(value):
         raise typer.BadParameter("day must be YYYYMMDD")
     return value
-
-
-def _atomic_write_json(
-    path: Path, payload: dict[str, Any], *, indent: int | None
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_name: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=path.parent,
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            tmp_name = handle.name
-            handle.write(json.dumps(payload, ensure_ascii=False, indent=indent) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_name, path)
-    except BaseException:
-        if tmp_name:
-            Path(tmp_name).unlink(missing_ok=True)
-        raise
 
 
 def origin_for_segment(seg_dir: Path) -> str:
@@ -277,7 +251,7 @@ async def _rollup_day(
         "hours": hours_out,
     }
 
-    _atomic_write_json(out_path, payload, indent=2)
+    atomic_replace(out_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     typer.echo(
         f"  [ok {day}] hour-rollup {t_hr:.1f}s  total {t_total:.1f}s  → {out_path}"
     )
@@ -449,7 +423,7 @@ async def _rollup_master(
         "months": months_out,
     }
 
-    _atomic_write_json(out_path, payload, indent=2)
+    atomic_replace(out_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     size_kb = out_path.stat().st_size / 1024
     typer.echo(f"\n[ok] wrote {out_path} ({size_kb:.1f} KB)")
     typer.echo(f"  months: {len(months_out)}")

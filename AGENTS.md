@@ -187,13 +187,16 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Facets (`facets/*/facet.json`, `facets/*/relationships/`) | `solstone/think/facets.py` + `solstone/apps/facets/*` (if/when created) |
 | Observations (`observations.jsonl`) | `solstone/think/entities/observations.py` |
 | Activities (`facets/*/activities/*.jsonl`) | `solstone/think/activities.py` |
-| Awareness (`awareness/current.json`) | `solstone/think/awareness.py` |
+| Timeline (`chronicle/<day>/timeline.json`, `chronicle/**/<seg>/timeline.json`, root `timeline.json`) | `solstone/apps/timeline/call.py` + `solstone/apps/timeline/talent/segment_summary.py` |
+| Skills (`skills/patterns.jsonl`, `skills/edit_requests.jsonl`, `skills/{slug}.md`) | `solstone/think/skills.py` |
+| Awareness (`awareness/current.json`, `awareness/YYYYMMDD.jsonl`) | `solstone/think/awareness.py` |
 | Todos (`facets/*/todos/*.jsonl`) | `solstone/apps/todos/todo.py` + `solstone/apps/todos/call.py` |
 | Config (`config/journal.json`) | `solstone/think/journal_config.py` |
 | Convey config (`config/convey.json`) | `solstone/convey/config.py` + `solstone/think/facets.py` |
 | Chat config (`config/chat.json`) | `solstone/apps/chat/config.py` |
 | Vertex credentials (`.config/vertex-credentials.json`) | `solstone/apps/settings/vertex_credentials.py` |
 | Speaker labels (`chronicle/**/talents/speaker_labels.json`) | `solstone/apps/speakers/attribution.py` |
+| Segment-stream marker (`chronicle/**/<seg>/stream.json`) | `solstone/think/streams.py` |
 | Chronicle day content (`chronicle/YYYYMMDD/**`) | The capturing module (observer, importer) per its declared outputs |
 | Index (SQLite, `indexer/*`) | `solstone/think/indexer/*` |
 

@@ -31,6 +31,7 @@ import threading
 import time
 from pathlib import Path
 
+from solstone.think.journal_io import atomic_replace
 from solstone.think.utils import get_journal, iter_segments
 
 logger = logging.getLogger(__name__)
@@ -275,9 +276,7 @@ def write_segment_stream(
         "seq": seq,
     }
     marker_path = Path(segment_dir) / "stream.json"
-    with open(marker_path, "w", encoding="utf-8") as f:
-        json.dump(marker, f)
-        f.write("\n")
+    atomic_replace(marker_path, json.dumps(marker) + "\n")
 
 
 def read_segment_stream(segment_dir: str | Path) -> dict | None:

@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 
 from solstone.think.skills import (
-    edit_requests_lock_path,
     edit_requests_path,
     find_pattern,
     load_edit_requests,
@@ -20,7 +19,6 @@ from solstone.think.skills import (
     locked_modify_patterns,
     make_request_id,
     observation_key,
-    patterns_lock_path,
     patterns_path,
     profile_path,
     rename_profile,
@@ -51,8 +49,6 @@ def test_path_helpers_return_expected_names(skill_journal):
     assert patterns_path() == skill_journal / "skills" / "patterns.jsonl"
     assert edit_requests_path() == skill_journal / "skills" / "edit_requests.jsonl"
     assert profile_path("alpha-skill") == skill_journal / "skills" / "alpha-skill.md"
-    assert patterns_lock_path() == skill_journal / "skills" / ".patterns.lock"
-    assert edit_requests_lock_path() == skill_journal / "skills" / ".edit_requests.lock"
 
 
 def test_load_patterns_missing_file_returns_empty(skill_journal):
@@ -61,13 +57,17 @@ def test_load_patterns_missing_file_returns_empty(skill_journal):
 
 def test_save_and_load_patterns_roundtrip(skill_journal):
     rows = [
-        {"slug": "alpha-skill", "status": "emerging"},
+        {"slug": "alpha-skill", "status": "emerging", "name": "Café Skill"},
         {"slug": "beta-skill", "status": "mature"},
     ]
 
     save_patterns(rows)
 
     assert load_patterns() == rows
+    raw = patterns_path().read_bytes()
+    assert b"Caf\xc3\xa9 Skill" in raw
+    assert b"\\u00e9" not in raw
+    assert raw.endswith(b"\n")
 
 
 def test_save_patterns_empty_list_writes_empty_file(skill_journal):
@@ -116,9 +116,10 @@ def test_load_profile_missing_returns_none(skill_journal):
 
 
 def test_save_profile_writes_and_load_reads_back(skill_journal):
-    save_profile("alpha-skill", "# Alpha Skill\n")
+    save_profile("alpha-skill", "# Alpha Skill")
 
-    assert load_profile("alpha-skill") == "# Alpha Skill\n"
+    assert load_profile("alpha-skill") == "# Alpha Skill"
+    assert profile_path("alpha-skill").read_bytes() == b"# Alpha Skill"
 
 
 def test_rename_profile_renames_and_returns_true(skill_journal):

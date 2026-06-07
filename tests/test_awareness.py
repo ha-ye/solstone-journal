@@ -92,14 +92,19 @@ class TestDailyLog:
     def test_append_log_creates_file(self, tmp_path):
         from solstone.think.awareness import _awareness_dir, _today, append_log
 
-        entry = append_log("state", key="test.started", message="hello")
+        entry = append_log("state", key="test.started", message="café")
 
         log_path = _awareness_dir() / f"{_today()}.jsonl"
         assert log_path.exists()
         assert entry["kind"] == "state"
         assert entry["key"] == "test.started"
-        assert entry["message"] == "hello"
+        assert entry["message"] == "café"
         assert "ts" in entry
+        raw = log_path.read_bytes()
+        assert b"caf\\u00e9" in raw
+        assert b"caf\xc3\xa9" not in raw
+        assert raw.endswith(b"\n")
+        assert raw.count(b"\n") == 1
 
     def test_append_log_appends_multiple(self):
         from solstone.think.awareness import _today, append_log, read_log

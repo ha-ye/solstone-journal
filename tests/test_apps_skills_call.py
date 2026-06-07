@@ -9,8 +9,10 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from solstone.apps.skills.call import app as skills_app
+from solstone.apps.skills import call as skills_call
+from solstone.convey.reasons import SKILLS_BUSY
 from solstone.think.call import call_app
+from solstone.think.journal_io import LockTimeout
 from solstone.think.skills import (
     load_edit_requests,
     load_patterns,
@@ -21,6 +23,7 @@ from solstone.think.skills import (
 )
 
 runner = CliRunner()
+skills_app = skills_call.app
 
 
 @pytest.fixture
@@ -346,6 +349,29 @@ def test_seed_collision_errors_with_slug_already_exists(skill_cli_env):
     assert "slug already exists" in result.stderr
 
 
+def test_seed_lock_timeout_exits_busy(skill_cli_env, monkeypatch):
+    def raise_timeout(_mutate):
+        raise LockTimeout(Path("patterns.jsonl"), 0.1)
+
+    monkeypatch.setattr(skills_call, "locked_modify_patterns", raise_timeout)
+
+    result = _invoke(
+        "seed",
+        "alpha-skill",
+        "--name",
+        "Alpha Skill",
+        "--day",
+        "2026-04-19",
+        "--facet",
+        "work",
+        "--activity-ids",
+        "act_abc",
+    )
+
+    assert result.exit_code == 1
+    assert SKILLS_BUSY.message in result.stderr
+
+
 def test_promote_missing_slug_errors(skill_cli_env):
     result = _invoke("promote", "missing-skill")
 
@@ -361,6 +387,20 @@ def test_promote_sets_needs_profile(skill_cli_env):
     payload = json.loads(result.output)
     assert result.exit_code == 0
     assert payload["needs_profile"] is True
+
+
+def test_promote_lock_timeout_exits_busy(skill_cli_env, monkeypatch):
+    _seed_patterns(_make_pattern())
+
+    def raise_timeout(_mutate):
+        raise LockTimeout(Path("patterns.jsonl"), 0.1)
+
+    monkeypatch.setattr(skills_call, "locked_modify_patterns", raise_timeout)
+
+    result = _invoke("promote", "alpha-skill")
+
+    assert result.exit_code == 1
+    assert SKILLS_BUSY.message in result.stderr
 
 
 def test_promote_already_flagged_exits_0(skill_cli_env):
@@ -458,6 +498,20 @@ def test_edit_request_appends_with_unique_id(skill_cli_env):
     rows = load_edit_requests()
     assert len(rows) == 2
     assert rows[0]["id"] != rows[1]["id"]
+
+
+def test_edit_request_lock_timeout_exits_busy(skill_cli_env, monkeypatch):
+    _seed_patterns(_make_pattern())
+
+    def raise_timeout(_mutate):
+        raise LockTimeout(Path("edit_requests.jsonl"), 0.1)
+
+    monkeypatch.setattr(skills_call, "locked_modify_edit_requests", raise_timeout)
+
+    result = _invoke("edit-request", "alpha-skill", "--instructions", "revise opening")
+
+    assert result.exit_code == 1
+    assert SKILLS_BUSY.message in result.stderr
 
 
 def test_edit_request_on_retired_skill_allowed(skill_cli_env):

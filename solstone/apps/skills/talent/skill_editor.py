@@ -11,9 +11,11 @@ from typing import Any
 
 import frontmatter
 
+from solstone.convey.reasons import SKILLS_BUSY
 from solstone.think import skills as think_skills
 from solstone.think.activities import get_activity_output_path, get_activity_record
 from solstone.think.identity import update_identity_section
+from solstone.think.journal_io import LockTimeout
 from solstone.think.utils import get_journal
 
 logger = logging.getLogger(__name__)
@@ -91,7 +93,10 @@ def _mark_edit_request_processed(request_id: str, *, error: str | None = None) -
             break
         return rows
 
-    think_skills.locked_modify_edit_requests(mutate)
+    try:
+        think_skills.locked_modify_edit_requests(mutate)
+    except LockTimeout:
+        logger.warning("skill_editor: %s", SKILLS_BUSY.message)
 
 
 def _build_metadata_section(
@@ -562,7 +567,11 @@ def post_process(result: str, context: dict) -> str | None:
             think_skills.touch_updated(target)
         return rows
 
-    think_skills.locked_modify_patterns(mutate_patterns)
+    try:
+        think_skills.locked_modify_patterns(mutate_patterns)
+    except LockTimeout:
+        logger.warning("skill_editor: %s", SKILLS_BUSY.message)
+        return None
 
     if mode == "edit_request" and request_id:
 
@@ -574,7 +583,11 @@ def post_process(result: str, context: dict) -> str | None:
                 break
             return rows
 
-        think_skills.locked_modify_edit_requests(mutate_requests)
+        try:
+            think_skills.locked_modify_edit_requests(mutate_requests)
+        except LockTimeout:
+            logger.warning("skill_editor: %s", SKILLS_BUSY.message)
+            return None
 
     if mode == "create" and was_new_profile:
         nudge_line = f"- Noticed recurring skill: {display_name} — observed {observation_count} times"

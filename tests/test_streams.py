@@ -156,14 +156,19 @@ def test_write_read_segment_stream(tmp_path):
     seg_dir = tmp_path / "chronicle" / "20250119" / "default" / "142500_300"
     seg_dir.mkdir(parents=True)
 
-    write_segment_stream(seg_dir, "archon", "20250119", "142000_300", 5)
+    write_segment_stream(seg_dir, "café", "20250119", "142000_300", 5)
 
     marker = read_segment_stream(seg_dir)
     assert marker is not None
-    assert marker["stream"] == "archon"
+    assert marker["stream"] == "café"
     assert marker["prev_day"] == "20250119"
     assert marker["prev_segment"] == "142000_300"
     assert marker["seq"] == 5
+    raw = (seg_dir / "stream.json").read_bytes()
+    assert b"caf\\u00e9" in raw
+    assert b"caf\xc3\xa9" not in raw
+    assert b"\n " not in raw
+    assert raw.endswith(b"\n")
 
 
 def test_write_segment_stream_first(tmp_path):
