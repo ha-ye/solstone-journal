@@ -4,11 +4,13 @@
 """Tests for app agent discovery, loading, and route helpers."""
 
 import json
+import re
 from pathlib import Path
 
 import pytest
 
 from solstone.apps.sol.routes import _resolve_output_path
+from solstone.think.journal_config import read_journal_config, write_journal_config
 from solstone.think.talent import _resolve_talent_path, get_talent, get_talent_configs
 
 
@@ -283,6 +285,41 @@ def agents_client(tmp_path):
     yield app.test_client()
 
 
+@pytest.fixture
+def sol_identity_client(tmp_path, monkeypatch):
+    """Create a sol blueprint client backed by a temporary journal."""
+    from flask import Flask
+
+    from solstone.apps.sol.routes import sol_bp
+    from solstone.convey import state
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    app = Flask(__name__)
+    app.config["TESTING"] = True
+    app.register_blueprint(sol_bp)
+
+    monkeypatch.setattr(state, "journal_root", str(tmp_path))
+
+    return app.test_client(), tmp_path
+
+
+def _write_sol_self_md(journal: Path) -> Path:
+    identity_dir = journal / "identity"
+    identity_dir.mkdir(parents=True, exist_ok=True)
+    path = identity_dir / "self.md"
+    path.write_text(
+        "# self\n\n"
+        "I am sol. this is a new journal — we're just getting started.\n\n"
+        "## my name\n"
+        "sol (default)\n\n"
+        "## who I'm here for\n"
+        "[getting to know you]\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 class TestApiOutputFile:
     """Tests for api_output_file endpoint."""
 
@@ -521,3 +558,100 @@ class TestApiThickness:
 
         assert resp.status_code == 200
         assert set(resp.get_json().keys()) == {"agent", "identity", "thickness"}
+
+
+class TestSolIdentityRoutes:
+    """Tests for the sol call HTTP cutover routes."""
+
+    def test_api_agent_returns_rich_default_when_agent_key_absent(
+        self, sol_identity_client
+    ):
+        client, _journal = sol_identity_client
+        write_journal_config({})
+
+        resp = client.get("/app/sol/api/agent")
+
+        assert resp.status_code == 200
+        assert resp.get_json() == {
+            "name": "sol",
+            "name_status": "default",
+            "named_date": None,
+            "proposal_count": 0,
+        }
+
+    def test_api_set_name_updates_agent_and_self_md(self, sol_identity_client):
+        client, journal = sol_identity_client
+        write_journal_config({})
+        self_path = _write_sol_self_md(journal)
+
+        resp = client.post(
+            "/app/sol/api/set-name",
+            json={"name": "aria", "status": "chosen"},
+        )
+
+        assert resp.status_code == 200
+        payload = resp.get_json()
+        assert payload["name"] == "aria"
+        assert payload["name_status"] == "chosen"
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", payload["named_date"])
+        assert read_journal_config()["agent"] == payload
+        self_content = self_path.read_text(encoding="utf-8")
+        assert "I am aria." in self_content
+        assert f"aria (named {payload['named_date']})" in self_content
+
+    def test_api_reset_updates_agent(self, sol_identity_client):
+        client, _journal = sol_identity_client
+        write_journal_config(
+            {
+                "agent": {
+                    "name": "aria",
+                    "name_status": "chosen",
+                    "named_date": "2026-04-19",
+                    "proposal_count": 2,
+                }
+            }
+        )
+
+        resp = client.post("/app/sol/api/reset")
+
+        assert resp.status_code == 200
+        assert resp.get_json() == {
+            "name": "sol",
+            "name_status": "default",
+            "named_date": None,
+            "proposal_count": 2,
+        }
+        assert read_journal_config()["agent"]["name"] == "sol"
+
+    def test_api_set_owner_updates_identity_and_self_md(self, sol_identity_client):
+        client, journal = sol_identity_client
+        write_journal_config({})
+        self_path = _write_sol_self_md(journal)
+
+        resp = client.post(
+            "/app/sol/api/set-owner",
+            json={"name": "Jer", "bio": "Building solstone"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.get_json() == {"name": "Jer", "bio": "Building solstone"}
+        config = read_journal_config()
+        assert config["identity"]["name"] == "Jer"
+        assert config["identity"]["bio"] == "Building solstone"
+        self_content = self_path.read_text(encoding="utf-8")
+        assert "Jer" in self_content
+        assert "Building solstone" in self_content
+        assert "[getting to know you]" not in self_content
+
+    def test_api_sol_init_creates_identity_directory(self, sol_identity_client):
+        client, journal = sol_identity_client
+
+        resp = client.post("/app/sol/api/sol-init")
+
+        assert resp.status_code == 200
+        assert resp.get_json() == {
+            "identity_dir": str(journal / "identity"),
+            "status": "ok",
+        }
+        assert (journal / "identity" / "self.md").exists()
+        assert (journal / "identity" / "agency.md").exists()

@@ -691,6 +691,23 @@ def test_delete_source_happy_path(observer_env):
     assert not seg_dir.exists()
 
 
+def test_api_delete_source_hardcodes_share_stream(observer_env):
+    env = observer_env()
+    share_seg = _plant_source_segment(env)
+    location_seg = _plant_location_segment(env, segment="130000_300")
+
+    resp = env.client.post("/app/observer/api/delete-source")
+
+    assert resp.status_code == 200
+    receipt = resp.get_json()
+    assert receipt["target"]["stream"] == "import.share"
+    assert receipt["removed"]["segments"] == 1
+    assert receipt["removed"]["originals"] == 1
+    assert receipt["removed"]["in_segment_derived"] == 1
+    assert not share_seg.exists()
+    assert location_seg.exists()
+
+
 def test_delete_source_location_happy_path(observer_env):
     env = observer_env()
     create_resp = env.client.post(

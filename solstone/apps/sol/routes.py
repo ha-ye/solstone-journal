@@ -8,20 +8,32 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, jsonify, redirect, render_template, request, url_for
+from flask import (
+    Blueprint,
+    Response,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
 
 from solstone.convey import state
 from solstone.convey.reasons import (
     FILE_NOT_FOUND,
     FILE_READ_FAILED,
+    IDENTITY_BUSY,
     INVALID_DAY,
+    INVALID_JSON_REQUEST,
     INVALID_MONTH,
     INVALID_PATH,
+    MISSING_REQUEST_BODY,
+    MISSING_REQUIRED_FIELD,
     TALENT_NOT_FOUND,
     TALENT_OPERATION_FAILED,
     TALENT_RUN_MALFORMED,
@@ -29,6 +41,13 @@ from solstone.convey.reasons import (
 )
 from solstone.convey.utils import DATE_RE, error_response, format_date
 from solstone.think.facets import get_facets
+from solstone.think.identity import (
+    ensure_identity_directory,
+    update_self_md_opening,
+    update_self_md_section,
+)
+from solstone.think.journal_config import read_journal_config, write_journal_config
+from solstone.think.journal_io import LockTimeout
 from solstone.think.models import calc_agent_cost
 from solstone.think.talent import get_output_path, get_talent_configs
 from solstone.think.utils import resolve_journal_path, updated_days
@@ -38,6 +57,35 @@ sol_bp = Blueprint(
     __name__,
     url_prefix="/app/sol",
 )
+
+DEFAULT_AGENT = {
+    "name": "sol",
+    "name_status": "default",
+    "named_date": None,
+    "proposal_count": 0,
+}
+
+
+def _read_json_body() -> tuple[dict[str, Any] | None, tuple[Response, int] | None]:
+    if not request.get_data():
+        return None, error_response(MISSING_REQUEST_BODY, detail="no request body")
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return None, error_response(
+            INVALID_JSON_REQUEST, detail="request body must be a JSON object"
+        )
+    return data, None
+
+
+def _require_field(
+    body: dict[str, Any], field: str
+) -> tuple[str | None, tuple[Response, int] | None]:
+    value = body.get(field)
+    if not isinstance(value, str) or not value:
+        return None, error_response(
+            MISSING_REQUIRED_FIELD, detail=f"{field} is required"
+        )
+    return value, None
 
 
 def _resolve_output_path(
@@ -708,6 +756,110 @@ def api_identity() -> Any:
             TALENT_OPERATION_FAILED,
             detail="Unable to load identity data",
         )
+
+
+@sol_bp.route("/api/agent")
+def api_agent() -> Any:
+    config = read_journal_config()
+    return jsonify(config.get("agent", dict(DEFAULT_AGENT)))
+
+
+@sol_bp.route("/api/set-name", methods=["POST"])
+def api_set_name() -> Any:
+    body, error = _read_json_body()
+    if error is not None:
+        return error
+    name, error = _require_field(body, "name")
+    if error is not None:
+        return error
+    status = body.get("status") or "chosen"
+
+    config = read_journal_config()
+    agent = config.get("agent", dict(DEFAULT_AGENT))
+    named_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    agent.update(
+        {
+            "name": name,
+            "name_status": status,
+            "named_date": named_date,
+        }
+    )
+    config["agent"] = agent
+    write_journal_config(config)
+
+    try:
+        update_self_md_opening(
+            f"I am {name}. this is a new journal — we're just getting started.",
+            actor="sol call sol set-name",
+            reason="agent name updated",
+        )
+        update_self_md_section(
+            "my name",
+            f"{name} (named {named_date})",
+            actor="sol call sol set-name",
+            reason="agent name updated",
+        )
+    except LockTimeout:
+        return error_response(IDENTITY_BUSY, detail="identity is busy; try again")
+    return jsonify(agent)
+
+
+@sol_bp.route("/api/reset", methods=["POST"])
+def api_reset() -> Any:
+    config = read_journal_config()
+    agent = config.get("agent", dict(DEFAULT_AGENT))
+    agent.update(
+        {
+            "name": "sol",
+            "name_status": "default",
+            "named_date": None,
+        }
+    )
+    config["agent"] = agent
+    write_journal_config(config)
+    return jsonify(agent)
+
+
+@sol_bp.route("/api/set-owner", methods=["POST"])
+def api_set_owner() -> Any:
+    body, error = _read_json_body()
+    if error is not None:
+        return error
+    name, error = _require_field(body, "name")
+    if error is not None:
+        return error
+    bio = body.get("bio")
+
+    config = read_journal_config()
+    identity = config.get("identity", {})
+    identity["name"] = name
+    if bio is not None:
+        identity["bio"] = bio
+    config["identity"] = identity
+    write_journal_config(config)
+
+    owner_content = name
+    if bio:
+        owner_content += f"\n{bio}"
+    try:
+        update_self_md_section(
+            "who I'm here for",
+            owner_content,
+            actor="sol call sol set-owner",
+            reason="owner identity updated",
+        )
+    except LockTimeout:
+        return error_response(IDENTITY_BUSY, detail="identity is busy; try again")
+    return jsonify({"name": name, "bio": bio or ""})
+
+
+@sol_bp.route("/api/sol-init", methods=["POST"])
+def api_sol_init() -> Any:
+    try:
+        identity_dir = ensure_identity_directory()
+    except LockTimeout:
+        return error_response(IDENTITY_BUSY, detail="identity is busy; try again")
+    return jsonify({"identity_dir": str(identity_dir), "status": "ok"})
 
 
 @sol_bp.route("/api/thickness")
