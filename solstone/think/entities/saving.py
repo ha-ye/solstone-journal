@@ -8,12 +8,11 @@ This module handles saving entities to storage:
 - save_detected_entity: Concurrency-safe single entity detection with file locking
 """
 
-import fcntl
 import json
 import random
 import time
 
-from solstone.think.entities.core import EntityDict, atomic_write, entity_slug
+from solstone.think.entities.core import EntityDict, entity_slug
 from solstone.think.entities.journal import (
     create_journal_entity,
     load_journal_entity,
@@ -25,6 +24,7 @@ from solstone.think.entities.loading import (
     load_entities,
 )
 from solstone.think.entities.relationships import save_facet_relationship
+from solstone.think.journal_io import atomic_replace, hold_lock
 
 
 def _save_entities_detected(facet: str, entities: list[EntityDict], day: str) -> None:
@@ -45,7 +45,7 @@ def _save_entities_detected(facet: str, entities: list[EntityDict], day: str) ->
 
     # Format as JSONL and write atomically
     content = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in sorted_entities)
-    atomic_write(path, content, prefix="entities_")
+    atomic_replace(path, content)
     clear_entity_loading_cache()
 
 
@@ -208,23 +208,17 @@ def _locked_modify_detected(
         OSError: If all retries exhausted on transient errors
     """
     path = detected_entities_path(facet, day)
-    lock_path = path.parent / f"{path.name}.lock"
 
     last_error: Exception | None = None
     for attempt in range(max_retries):
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(lock_path, "w") as lock_file:
-                fcntl.flock(lock_file, fcntl.LOCK_EX)
-                try:
-                    # Fresh load inside lock — sees all prior writers' changes
-                    clear_entity_loading_cache()
-                    entities = load_entities(facet, day)
-                    entities = modify_fn(entities)
-                    _save_entities_detected(facet, entities, day)
-                    return entities
-                finally:
-                    fcntl.flock(lock_file, fcntl.LOCK_UN)
+            with hold_lock(path):
+                # Fresh load inside lock — sees all prior writers' changes
+                clear_entity_loading_cache()
+                entities = load_entities(facet, day)
+                entities = modify_fn(entities)
+                _save_entities_detected(facet, entities, day)
+                return entities
         except ValueError:
             raise  # Logical errors (duplicate, not found) — don't retry
         except OSError as exc:

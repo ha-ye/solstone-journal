@@ -409,27 +409,27 @@ def test_save_detected_entity_retry_on_error(fixture_journal, tmp_path, monkeypa
     """Test that save_detected_entity retries on transient OSError."""
     from unittest.mock import patch
 
+    from solstone.think.journal_io import atomic_replace as _real_atomic_replace
+
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     (tmp_path / "facets" / "test_facet" / "entities").mkdir(parents=True)
 
     call_count = 0
-    original_atomic_write = __import__(
-        "solstone.think.entities.core", fromlist=["atomic_write"]
-    ).atomic_write
 
-    def flaky_atomic_write(path, content, prefix=".tmp_"):
+    def flaky_atomic_replace(path, data, *, mode=None):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
             raise PermissionError("Simulated transient error")
-        return original_atomic_write(path, content, prefix)
+        return _real_atomic_replace(path, data, mode=mode)
 
     with patch(
-        "solstone.think.entities.saving.atomic_write", side_effect=flaky_atomic_write
+        "solstone.think.entities.saving.atomic_replace",
+        side_effect=flaky_atomic_replace,
     ):
         save_detected_entity("test_facet", "20250101", "Person", "Alice", "Friend")
 
-    assert call_count == 2  # First attempt failed, second succeeded
+    assert call_count == 2
     loaded = load_entities("test_facet", "20250101")
     assert len(loaded) == 1
     assert loaded[0]["name"] == "Alice"
@@ -2072,6 +2072,34 @@ def test_add_observation_success(fixture_journal, tmp_path, monkeypatch):
     # Verify persistence
     loaded = load_observations("personal", "Alice")
     assert len(loaded) == 2
+
+
+def test_add_observation_retry_on_error(fixture_journal, tmp_path, monkeypatch):
+    """Test that add_observation retries on transient OSError."""
+    from unittest.mock import patch
+
+    from solstone.think.journal_io import atomic_replace as _real_atomic_replace
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    call_count = 0
+
+    def flaky_atomic_replace(path, data, *, mode=None):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise PermissionError("Simulated transient error")
+        return _real_atomic_replace(path, data, mode=mode)
+
+    with patch(
+        "solstone.think.entities.observations.atomic_replace",
+        side_effect=flaky_atomic_replace,
+    ):
+        add_observation("personal", "Alice", "Prefers async communication", "20250113")
+
+    assert call_count == 2
+    loaded = load_observations("personal", "Alice")
+    assert [obs["content"] for obs in loaded] == ["Prefers async communication"]
 
 
 def test_add_observation_empty_content(fixture_journal, tmp_path, monkeypatch):

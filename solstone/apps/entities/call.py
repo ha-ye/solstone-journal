@@ -13,6 +13,7 @@ from pathlib import Path
 
 import typer
 
+from solstone.convey.reasons import ENTITY_BUSY
 from solstone.think.curation import (
     accept_entity_candidate,
     dismiss_entity_candidate,
@@ -51,6 +52,7 @@ from solstone.think.entities.saving import (
 )
 from solstone.think.facets import log_call_action
 from solstone.think.indexer.journal import search_entities
+from solstone.think.journal_io import LockTimeout
 from solstone.think.utils import (
     get_journal,
     now_ms,
@@ -236,6 +238,9 @@ def detect_entity(
     except ValueError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
+    except LockTimeout:
+        typer.echo(ENTITY_BUSY.message, err=True)
+        raise typer.Exit(1)
 
     log_call_action(
         facet=facet,
@@ -366,6 +371,9 @@ def update_entity(
         update_detected_entity(facet, day, entity, description)
     except ValueError as exc:
         typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+    except LockTimeout:
+        typer.echo(ENTITY_BUSY.message, err=True)
         raise typer.Exit(1)
 
     log_call_action(
@@ -527,7 +535,11 @@ def record_merge_candidate(
         created = False
         return rows
 
-    locked_modify_candidates(mutate)
+    try:
+        locked_modify_candidates(mutate)
+    except LockTimeout:
+        typer.echo(ENTITY_BUSY.message, err=True)
+        raise typer.Exit(1)
 
     if row is None:  # pragma: no cover - defensive assertion
         raise RuntimeError("record-merge-candidate produced no row")
@@ -621,12 +633,16 @@ def accept_merge_candidate(
 ) -> None:
     """Preview or accept one recorded entity merge candidate."""
     facet = resolve_sol_facet(facet)
-    result = accept_entity_candidate(
-        facet,
-        source_slug,
-        target_slug,
-        commit=commit,
-    )
+    try:
+        result = accept_entity_candidate(
+            facet,
+            source_slug,
+            target_slug,
+            commit=commit,
+        )
+    except LockTimeout:
+        typer.echo(ENTITY_BUSY.message, err=True)
+        raise typer.Exit(1)
     status = result.get("status")
     if status == "error":
         _echo_merge_candidate_error(result)
@@ -652,7 +668,11 @@ def dismiss_merge_candidate(
 ) -> None:
     """Dismiss one recorded entity merge candidate."""
     facet = resolve_sol_facet(facet)
-    result = dismiss_entity_candidate(facet, source_slug, target_slug)
+    try:
+        result = dismiss_entity_candidate(facet, source_slug, target_slug)
+    except LockTimeout:
+        typer.echo(ENTITY_BUSY.message, err=True)
+        raise typer.Exit(1)
     status = result.get("status")
     if status == "error":
         _echo_merge_candidate_error(result)
@@ -732,6 +752,9 @@ def observe_entity(
         add_observation(facet, resolved_name, content, source_day)
     except ValueError as exc:
         typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+    except LockTimeout:
+        typer.echo(ENTITY_BUSY.message, err=True)
         raise typer.Exit(1)
 
     log_call_action(

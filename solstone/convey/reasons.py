@@ -306,6 +306,11 @@ AWARENESS_BUSY = Reason(
     "I couldn't update what I know right now because it was busy. Try again in a moment.",
     503,
 )
+ENTITY_BUSY = Reason(
+    "entity_busy",
+    "I couldn't update that entity right now because it was busy. Try again in a moment.",
+    503,
+)
 
 # reprocess
 REPROCESS_PAST_ONLY = Reason(

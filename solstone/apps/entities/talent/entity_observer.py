@@ -18,6 +18,7 @@ import logging
 from solstone.think.entities.context import assemble_observer_context
 from solstone.think.entities.loading import load_entities
 from solstone.think.entities.observations import add_observation, load_observations
+from solstone.think.journal_io import LockTimeout
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +88,13 @@ def post_process(result: str, context: dict) -> str | None:
                     "Skipping duplicate observation for %s: %s", entity_id, content[:60]
                 )
                 continue
-            add_observation(facet, entity_id, content, day)
+            try:
+                add_observation(facet, entity_id, content, day)
+            except LockTimeout:
+                logger.warning(
+                    "observations busy for %s; skipping remaining", entity_id
+                )
+                break
             existing.add(content.lower())
 
     return None

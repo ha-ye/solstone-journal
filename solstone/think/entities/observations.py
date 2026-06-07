@@ -10,16 +10,15 @@ They capture useful information like preferences, expertise, relationships,
 and biographical facts that help with future interactions.
 """
 
-import fcntl
 import json
 import random
 import time
 from pathlib import Path
 from typing import Any, Iterator
 
-from solstone.think.entities.core import atomic_write
 from solstone.think.entities.journal import load_all_journal_entities
 from solstone.think.entities.relationships import entity_memory_path
+from solstone.think.journal_io import atomic_replace, hold_lock
 from solstone.think.utils import get_journal, now_ms
 
 # Global cache for entity observations: {(facet, entity_slug): list[dict]}
@@ -213,7 +212,7 @@ def save_observations(
     content = "".join(
         json.dumps(obs, ensure_ascii=False) + "\n" for obs in observations
     )
-    atomic_write(path, content, prefix=".observations_")
+    atomic_replace(path, content)
 
 
 def add_observation(
@@ -251,33 +250,27 @@ def add_observation(
         raise ValueError("Observation content cannot be empty")
 
     path = observations_file_path(facet, name)
-    lock_path = path.parent / f"{path.name}.lock"
 
     last_error: Exception | None = None
     for attempt in range(max_retries):
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(lock_path, "w") as lock_file:
-                fcntl.flock(lock_file, fcntl.LOCK_EX)
-                try:
-                    observations = load_observations(facet, name)
+            with hold_lock(path):
+                observations = load_observations(facet, name)
 
-                    observation: dict[str, Any] = {
-                        "content": content,
-                        "observed_at": now_ms(),
-                    }
-                    if source_day:
-                        observation["source_day"] = source_day
+                observation: dict[str, Any] = {
+                    "content": content,
+                    "observed_at": now_ms(),
+                }
+                if source_day:
+                    observation["source_day"] = source_day
 
-                    observations.append(observation)
-                    save_observations(facet, name, observations)
+                observations.append(observation)
+                save_observations(facet, name, observations)
 
-                    return {
-                        "observations": observations,
-                        "count": len(observations),
-                    }
-                finally:
-                    fcntl.flock(lock_file, fcntl.LOCK_UN)
+                return {
+                    "observations": observations,
+                    "count": len(observations),
+                }
         except ValueError:
             raise  # Logical errors — don't retry
         except OSError as exc:

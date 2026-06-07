@@ -15,7 +15,8 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from solstone.think.entities.core import EntityDict, atomic_write, get_identity_names
+from solstone.think.entities.core import EntityDict, get_identity_names
+from solstone.think.journal_io import atomic_replace
 from solstone.think.utils import get_journal, now_ms
 
 # Global cache for journal entities: {entity_id: EntityDict}
@@ -94,7 +95,7 @@ def save_journal_entity(entity: EntityDict) -> None:
 
     path = journal_entity_path(entity_id)
     content = json.dumps(entity, ensure_ascii=False, indent=2) + "\n"
-    atomic_write(path, content, prefix=".entity_")
+    atomic_replace(path, content)
 
 
 def scan_journal_entities() -> list[str]:

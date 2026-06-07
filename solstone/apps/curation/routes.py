@@ -10,7 +10,7 @@ from typing import Any
 from flask import Blueprint, Response, jsonify, render_template, request
 
 from solstone.apps.curation import copy as curation_copy
-from solstone.convey.reasons import MISSING_REQUIRED_FIELD
+from solstone.convey.reasons import ENTITY_BUSY, MISSING_REQUIRED_FIELD
 from solstone.convey.utils import error_response
 from solstone.think.curation import (
     accept_entity_candidate,
@@ -20,6 +20,7 @@ from solstone.think.curation import (
     load_open_items,
     merge_preview_fields,
 )
+from solstone.think.journal_io import LockTimeout
 
 curation_bp = Blueprint("app:curation", __name__, url_prefix="/app/curation")
 
@@ -117,14 +118,18 @@ def accept_entity() -> Response | tuple[Response, int]:
     except KeyError as exc:
         return _missing_field(str(exc.args[0]))
 
-    return _result_response(
-        accept_entity_candidate(
+    try:
+        result = accept_entity_candidate(
             facet,
             source_slug,
             target_slug,
             commit=True,
         )
-    )
+    except LockTimeout:
+        return error_response(
+            ENTITY_BUSY, detail="entity merge candidates are busy; try again"
+        )
+    return _result_response(result)
 
 
 @curation_bp.post("/api/entity/dismiss")
@@ -137,4 +142,10 @@ def dismiss_entity() -> Response | tuple[Response, int]:
     except KeyError as exc:
         return _missing_field(str(exc.args[0]))
 
-    return _result_response(dismiss_entity_candidate(facet, source_slug, target_slug))
+    try:
+        result = dismiss_entity_candidate(facet, source_slug, target_slug)
+    except LockTimeout:
+        return error_response(
+            ENTITY_BUSY, detail="entity merge candidates are busy; try again"
+        )
+    return _result_response(result)

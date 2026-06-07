@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import threading
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -17,7 +18,6 @@ from solstone.think.entities.review_candidates import (
     load_candidates,
     locked_modify_candidates,
     review_candidates_dir,
-    review_candidates_lock_path,
     review_candidates_path,
     save_candidates,
     touch_updated,
@@ -43,10 +43,6 @@ def test_path_helpers_return_expected_names(candidate_journal):
     assert (
         review_candidates_path()
         == candidate_journal / "entities" / "review-candidates.jsonl"
-    )
-    assert (
-        review_candidates_lock_path()
-        == candidate_journal / "entities" / ".review-candidates.lock"
     )
 
 
@@ -201,6 +197,20 @@ def test_locked_modify_candidates_applies_fn_and_persists(candidate_journal):
     assert load_candidates() == [
         {"facet": "work", "source_slug": "s", "target_slug": "t"}
     ]
+
+
+def test_locked_modify_candidates_does_not_retry_on_write_error(candidate_journal):
+    def mutate(rows):
+        return list(rows) + [{"facet": "work", "source_slug": "s", "target_slug": "t"}]
+
+    with patch(
+        "solstone.think.entities.review_candidates.atomic_replace",
+        side_effect=PermissionError("Simulated write error"),
+    ) as atomic_replace:
+        with pytest.raises(OSError):
+            locked_modify_candidates(mutate)
+
+    assert atomic_replace.call_count == 1
 
 
 def test_locked_modify_candidates_serializes_threads(candidate_journal):

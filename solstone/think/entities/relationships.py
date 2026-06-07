@@ -17,7 +17,8 @@ import json
 import shutil
 from pathlib import Path
 
-from solstone.think.entities.core import EntityDict, atomic_write, entity_slug
+from solstone.think.entities.core import EntityDict, entity_slug
+from solstone.think.journal_io import atomic_replace
 from solstone.think.utils import get_journal
 
 # Global cache for facet relationships: {(facet, entity_id): EntityDict}
@@ -105,7 +106,7 @@ def save_facet_relationship(
     relationship["entity_id"] = entity_id
 
     content = json.dumps(relationship, ensure_ascii=False, indent=2) + "\n"
-    atomic_write(path, content, prefix=".relationship_")
+    atomic_replace(path, content)
 
 
 def scan_facet_relationships(facet: str) -> list[str]:

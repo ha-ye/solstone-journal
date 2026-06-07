@@ -9,10 +9,15 @@ This module handles seeding entities from structured imports:
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
+
+from solstone.think.journal_io import LockTimeout
 
 if TYPE_CHECKING:
     from solstone.think.entities.core import EntityDict
+
+logger = logging.getLogger(__name__)
 
 
 def seed_entities(
@@ -109,7 +114,16 @@ def seed_entities(
 
                         ensure_facet(facet)
                         facet_ensured = True
-                    add_observation(facet, resolved_name, obs_content, source_day=day)
+                    try:
+                        add_observation(
+                            facet, resolved_name, obs_content, source_day=day
+                        )
+                    except LockTimeout:
+                        logger.warning(
+                            "observations busy for %s; skipping remaining",
+                            resolved_name,
+                        )
+                        break
                     existing_contents.add(obs_content)
 
     return resolved
