@@ -2,7 +2,7 @@
 
 # solstone journal
 
-your co-brain — observers experience your day along with you, sol curates your memories, and your journal holds everything.
+a memory your agents can work from. observers experience your day along with you, sol curates your memories, and your journal holds everything.
 
 the python core of the solstone product family — the journal layer that the [solstone native apps](https://solstone.app) wrap. it runs in the background on your computer, experiencing your day along with you. AI agents transcribe, extract entities, detect meetings, build knowledge graphs, and surface daily insights — all without any manual input. everything stays on your machine in daily journal directories. open source, local-first, no cloud required.
 
