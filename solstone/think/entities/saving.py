@@ -9,10 +9,21 @@ This module handles saving entities to storage:
 """
 
 import json
+import logging
 import random
 import time
+from collections.abc import Callable
+from pathlib import Path
+from typing import TypeVar
 
 from solstone.think.entities.core import EntityDict, entity_slug
+from solstone.think.entities.errors import (
+    AkaConflictError,
+    EntityBlockedError,
+    EntityExistsError,
+    EntityNotFoundError,
+    EntityWriteError,
+)
 from solstone.think.entities.journal import (
     create_journal_entity,
     load_journal_entity,
@@ -22,8 +33,17 @@ from solstone.think.entities.loading import (
     detected_entities_path,
     load_entities,
 )
-from solstone.think.entities.relationships import save_facet_relationship
+from solstone.think.entities.matching import validate_aka_uniqueness
+from solstone.think.entities.relationships import (
+    load_facet_relationship,
+    rename_entity_memory,
+    save_facet_relationship,
+)
 from solstone.think.journal_io import atomic_replace, hold_lock
+from solstone.think.utils import get_journal, now_ms
+
+logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
 def _save_entities_detected(facet: str, entities: list[EntityDict], day: str) -> None:
@@ -175,6 +195,259 @@ def save_entities(
         _save_entities_detected(facet, entities, day)
     else:
         _save_entities_attached(facet, entities)
+
+
+def attached_store_lock_path(facet: str) -> Path:
+    """Return the per-facet sentinel path used to lock attached entity writes."""
+    return Path(get_journal()) / "facets" / facet / "entities" / ".attached-entities"
+
+
+def _locked_attached(
+    facet: str,
+    fn: Callable[[], T],
+    max_retries: int = 3,
+) -> T:
+    """Run an attached-entity mutation under the facet-wide attached lock."""
+    last_error: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            with hold_lock(attached_store_lock_path(facet)):
+                return fn()
+        except EntityWriteError:
+            raise
+        except OSError as exc:
+            last_error = exc
+            if attempt < max_retries - 1:
+                time.sleep(random.uniform(0.05, 0.3) * (attempt + 1))
+
+    raise last_error  # type: ignore[misc]
+
+
+def attach_or_reactivate_entity(
+    facet: str,
+    *,
+    entity_type: str,
+    name: str,
+    description: str,
+) -> tuple[EntityDict, bool]:
+    """Attach a new entity or reactivate a detached exact-name match."""
+
+    def _attach() -> tuple[EntityDict, bool]:
+        entities = load_entities(
+            facet,
+            include_detached=True,
+            include_blocked=True,
+        )
+        name_lower = name.lower()
+
+        for entity in entities:
+            if entity.get("name", "").lower() != name_lower:
+                continue
+
+            if entity.get("blocked"):
+                raise EntityBlockedError()
+
+            entity_id = entity["id"]
+            if entity.get("detached"):
+                relationship = load_facet_relationship(facet, entity_id)
+                if relationship is None:
+                    raise EntityNotFoundError()
+                relationship.pop("detached", None)
+                if description:
+                    relationship["description"] = description
+                relationship["updated_at"] = now_ms()
+                save_facet_relationship(facet, entity_id, relationship)
+
+                journal_entity = load_journal_entity(entity_id)
+                if journal_entity and journal_entity.get("type") != entity_type:
+                    journal_entity["type"] = entity_type
+                    save_journal_entity(journal_entity)
+
+                return relationship, True
+
+            raise EntityExistsError()
+
+        entity_id = entity_slug(name)
+        journal_entity = load_journal_entity(entity_id)
+        if journal_entity and journal_entity.get("blocked"):
+            raise EntityBlockedError()
+        if journal_entity is None:
+            create_journal_entity(entity_id, name, entity_type)
+
+        now = now_ms()
+        relationship: EntityDict = {
+            "entity_id": entity_id,
+            "description": description,
+            "attached_at": now,
+            "updated_at": now,
+        }
+        save_facet_relationship(facet, entity_id, relationship)
+        return relationship, False
+
+    return _locked_attached(facet, _attach)
+
+
+def detach_facet_entity(facet: str, entity_id: str) -> EntityDict:
+    """Detach an active relationship from a facet."""
+
+    def _detach() -> EntityDict:
+        relationship = load_facet_relationship(facet, entity_id)
+        if relationship is None or relationship.get("detached"):
+            raise EntityNotFoundError()
+        relationship["detached"] = True
+        relationship["updated_at"] = now_ms()
+        save_facet_relationship(facet, entity_id, relationship)
+        return relationship
+
+    return _locked_attached(facet, _detach)
+
+
+def update_facet_entity_description(
+    facet: str,
+    entity_id: str,
+    description: str,
+) -> EntityDict:
+    """Update an active facet relationship description."""
+
+    def _update() -> EntityDict:
+        relationship = load_facet_relationship(facet, entity_id)
+        if relationship is None or relationship.get("detached"):
+            raise EntityNotFoundError()
+        relationship["description"] = description
+        relationship["updated_at"] = now_ms()
+        save_facet_relationship(facet, entity_id, relationship)
+        return relationship
+
+    return _locked_attached(facet, _update)
+
+
+def update_facet_entity_identity(
+    facet: str,
+    *,
+    old_name: str,
+    new_name: str,
+    entity_type: str,
+    aka_list: list[str],
+) -> EntityDict:
+    """Faithfully port the existing route identity update semantics."""
+
+    def _update() -> EntityDict:
+        entities = load_entities(facet, include_detached=True)
+        target: EntityDict | None = None
+        for entity in entities:
+            if not entity.get("detached") and entity.get("name") == old_name:
+                target = entity
+                break
+
+        if target is None:
+            raise EntityNotFoundError()
+
+        if new_name.lower() != old_name.lower():
+            for entity in entities:
+                if entity is target or entity.get("detached"):
+                    continue
+                if entity.get("name", "").lower() == new_name.lower():
+                    raise EntityExistsError()
+
+        for aka in aka_list:
+            conflict = validate_aka_uniqueness(
+                aka,
+                entities,
+                exclude_entity_name=old_name,
+            )
+            if conflict:
+                raise AkaConflictError(aka, conflict)
+
+        new_id = entity_slug(new_name)
+        old_id = target["id"]
+        journal_entity = load_journal_entity(new_id) or create_journal_entity(
+            new_id,
+            new_name,
+            entity_type or target.get("type", ""),
+        )
+
+        journal_entity["name"] = new_name
+        if entity_type:
+            journal_entity["type"] = entity_type
+        if aka_list:
+            journal_entity["aka"] = sorted(
+                set(journal_entity.get("aka", [])) | set(aka_list)
+            )
+        save_journal_entity(journal_entity)
+
+        relationship = load_facet_relationship(facet, old_id) or {
+            "entity_id": old_id,
+            "description": target.get("description", ""),
+            "attached_at": target.get("attached_at"),
+            "updated_at": target.get("updated_at"),
+        }
+        relationship["updated_at"] = now_ms()
+        save_facet_relationship(facet, new_id, relationship)
+
+        if new_name != old_name:
+            try:
+                rename_entity_memory(facet, old_name, new_name)
+            except OSError as exc:
+                logger.warning(
+                    "Failed to rename entity memory from %s to %s in facet %s: %s",
+                    old_name,
+                    new_name,
+                    facet,
+                    exc,
+                )
+
+        return journal_entity
+
+    return _locked_attached(facet, _update)
+
+
+def add_entity_aka(
+    facet: str,
+    entity_id: str,
+    aka: str,
+    *,
+    exclude_name: str,
+) -> list[str]:
+    """Add a single alias to a journal entity after locked facet dedup checks."""
+
+    def _add() -> list[str]:
+        entities = load_entities(
+            facet,
+            include_detached=True,
+            include_blocked=True,
+        )
+        conflict = validate_aka_uniqueness(
+            aka,
+            entities,
+            exclude_entity_name=exclude_name,
+        )
+        if conflict:
+            raise AkaConflictError(aka, conflict)
+
+        journal_entity = load_journal_entity(entity_id)
+        if journal_entity is None:
+            raise EntityNotFoundError()
+
+        aliases = set(journal_entity.get("aka", []))
+        aliases.add(aka)
+        journal_entity["aka"] = sorted(aliases)
+        save_journal_entity(journal_entity)
+        return journal_entity["aka"]
+
+    return _locked_attached(facet, _add)
+
+
+def delete_detected_entity(facet: str, day: str, name: str) -> list[EntityDict]:
+    """Delete detected entities with an exact name match from one day."""
+    removed: list[EntityDict] = []
+
+    def _delete(entities: list[EntityDict]) -> list[EntityDict]:
+        nonlocal removed
+        removed = [entity for entity in entities if entity.get("name") == name]
+        return [entity for entity in entities if entity.get("name") != name]
+
+    _locked_modify_detected(facet, day, _delete)
+    return removed
 
 
 def _locked_modify_detected(

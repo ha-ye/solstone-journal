@@ -7,10 +7,17 @@ import pytest
 
 from solstone.think.entities import (
     DEFAULT_ACTIVITY_TS,
+    AkaConflictError,
+    EntityBlockedError,
+    EntityExistsError,
+    EntityNotFoundError,
+    add_entity_aka,
     add_observation,
+    attach_or_reactivate_entity,
     block_journal_entity,
     count_observations,
     delete_journal_entity,
+    detach_facet_entity,
     detected_entities_path,
     ensure_entity_memory,
     entity_last_active_ts,
@@ -41,6 +48,8 @@ from solstone.think.entities import (
     touch_entity,
     unblock_journal_entity,
     update_detected_entity,
+    update_facet_entity_description,
+    update_facet_entity_identity,
     validate_aka_uniqueness,
 )
 
@@ -343,6 +352,213 @@ def test_save_entities_attached_reflects_fresh_read(
 
     loaded_second = load_entities("test_facet")
     assert {e["name"] for e in loaded_second} == {"Alice", "Bob"}
+
+
+def test_concurrent_description_updates_preserve_both_entities(
+    fixture_journal, tmp_path, monkeypatch
+):
+    """Concurrent attached-entity description writes do not lose sibling updates."""
+    import threading
+
+    facet = "test_facet"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    (tmp_path / "facets" / facet).mkdir(parents=True)
+
+    save_entities(
+        facet,
+        [
+            {"type": "Person", "name": "Alice", "description": "Initial Alice"},
+            {"type": "Person", "name": "Bob", "description": "Initial Bob"},
+        ],
+    )
+
+    barrier = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def update_description(name: str, description: str) -> None:
+        try:
+            entity_id = entity_slug(name)
+            load_entities(facet, include_detached=True)
+            barrier.wait(timeout=5)
+            update_facet_entity_description(facet, entity_id, description)
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(
+            target=update_description,
+            args=("Alice", "Updated Alice"),
+        ),
+        threading.Thread(
+            target=update_description,
+            args=("Bob", "Updated Bob"),
+        ),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not errors
+    assert load_facet_relationship(facet, "alice")["description"] == "Updated Alice"
+    assert load_facet_relationship(facet, "bob")["description"] == "Updated Bob"
+
+
+def test_attach_or_reactivate_entity_fresh_key_order(
+    fixture_journal, tmp_path, monkeypatch
+):
+    """Fresh targeted attach writes the same ordered schema as bulk save."""
+    facet = "test_facet"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    relationship, reattached = attach_or_reactivate_entity(
+        facet,
+        entity_type="Person",
+        name="Alice Johnson",
+        description="Friend",
+    )
+
+    assert reattached is False
+    assert list(load_journal_entity("alice_johnson")) == [
+        "id",
+        "name",
+        "type",
+        "created_at",
+    ]
+    assert list(relationship) == [
+        "entity_id",
+        "description",
+        "attached_at",
+        "updated_at",
+    ]
+    assert list(load_facet_relationship(facet, "alice_johnson")) == [
+        "entity_id",
+        "description",
+        "attached_at",
+        "updated_at",
+    ]
+
+
+def test_detach_facet_entity_key_order(fixture_journal, tmp_path, monkeypatch):
+    """Targeted detach preserves the existing relationship field order."""
+    facet = "test_facet"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    attach_or_reactivate_entity(
+        facet,
+        entity_type="Person",
+        name="Alice",
+        description="Friend",
+    )
+
+    relationship = detach_facet_entity(facet, "alice")
+
+    assert relationship["detached"] is True
+    assert list(load_facet_relationship(facet, "alice")) == [
+        "entity_id",
+        "description",
+        "attached_at",
+        "updated_at",
+        "detached",
+    ]
+
+
+def test_update_facet_entity_description_key_order(
+    fixture_journal, tmp_path, monkeypatch
+):
+    """Targeted description updates keep the relationship schema order stable."""
+    facet = "test_facet"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    attach_or_reactivate_entity(
+        facet,
+        entity_type="Person",
+        name="Alice",
+        description="Initial",
+    )
+
+    update_facet_entity_description(facet, "alice", "Updated")
+
+    relationship = load_facet_relationship(facet, "alice")
+    assert relationship["description"] == "Updated"
+    assert list(relationship) == [
+        "entity_id",
+        "description",
+        "attached_at",
+        "updated_at",
+    ]
+
+
+def test_attached_owner_methods_raise_typed_errors(
+    fixture_journal, tmp_path, monkeypatch
+):
+    """Targeted attached writes raise owner exceptions instead of value errors."""
+    facet = "test_facet"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    save_entities(
+        facet,
+        [
+            {"type": "Person", "name": "Alice", "description": "Friend"},
+            {"type": "Person", "name": "Bob", "description": "Neighbor"},
+        ],
+    )
+
+    with pytest.raises(EntityExistsError):
+        attach_or_reactivate_entity(
+            facet,
+            entity_type="Person",
+            name="Alice",
+            description="Duplicate",
+        )
+
+    with pytest.raises(EntityNotFoundError):
+        detach_facet_entity(facet, "missing")
+
+    with pytest.raises(EntityNotFoundError):
+        update_facet_entity_description(facet, "missing", "Updated")
+
+    with pytest.raises(EntityExistsError):
+        update_facet_entity_identity(
+            facet,
+            old_name="Alice",
+            new_name="Bob",
+            entity_type="Person",
+            aka_list=[],
+        )
+
+    with pytest.raises(AkaConflictError):
+        update_facet_entity_identity(
+            facet,
+            old_name="Alice",
+            new_name="Alice",
+            entity_type="Person",
+            aka_list=["Bob"],
+        )
+
+    with pytest.raises(AkaConflictError):
+        add_entity_aka(facet, "alice", "Bob", exclude_name="Alice")
+
+    with pytest.raises(EntityNotFoundError):
+        add_entity_aka(facet, "missing", "Missing Alias", exclude_name="Missing")
+
+
+def test_attach_or_reactivate_entity_blocked_before_detached(
+    fixture_journal, tmp_path, monkeypatch
+):
+    """Attach reports blocked for entities that are both blocked and detached."""
+    facet = "test_facet"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    save_entities(
+        facet,
+        [{"type": "Person", "name": "Alice", "description": "Friend"}],
+    )
+    block_journal_entity("alice")
+
+    with pytest.raises(EntityBlockedError):
+        attach_or_reactivate_entity(
+            facet,
+            entity_type="Person",
+            name="Alice",
+            description="Friend",
+        )
 
 
 def test_save_journal_entity_reflects_fresh_reads(tmp_path, monkeypatch):

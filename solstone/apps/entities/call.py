@@ -21,13 +21,14 @@ from solstone.think.curation import (
 )
 from solstone.think.entities.consolidation import consolidate_detected_entities
 from solstone.think.entities.core import entity_slug, is_valid_entity_type
-from solstone.think.entities.journal import (
-    create_journal_entity,
-    load_journal_entity,
-    save_journal_entity,
+from solstone.think.entities.errors import (
+    AkaConflictError,
+    EntityBlockedError,
+    EntityExistsError,
+    EntityNotFoundError,
 )
 from solstone.think.entities.loading import load_entities
-from solstone.think.entities.matching import resolve_entity, validate_aka_uniqueness
+from solstone.think.entities.matching import resolve_entity
 from solstone.think.entities.observations import (
     add_observation,
     load_observations,
@@ -45,15 +46,17 @@ from solstone.think.entities.review_candidates import (
     utc_now_iso,
 )
 from solstone.think.entities.saving import (
+    add_entity_aka,
+    attach_or_reactivate_entity,
     save_detected_entity,
     update_detected_entity,
+    update_facet_entity_description,
 )
 from solstone.think.facets import log_call_action
 from solstone.think.indexer.journal import search_entities
 from solstone.think.journal_io import LockTimeout
 from solstone.think.utils import (
     get_journal,
-    now_ms,
     require_solstone,
     resolve_sol_day,
     resolve_sol_facet,
@@ -262,48 +265,25 @@ def attach_entity(
         typer.echo(f"Error: Invalid entity type '{type_}'.", err=True)
         raise typer.Exit(1)
 
-    resolved, _ = resolve_entity(
-        facet, entity, include_detached=True, include_blocked=True
-    )
-
-    if resolved and resolved.get("blocked"):
-        name = resolved.get("name", entity)
-        typer.echo(f"Error: Entity '{name}' is blocked.", err=True)
-        raise typer.Exit(1)
-
-    if resolved and resolved.get("detached"):
-        name = resolved.get("name", entity)
-        typer.echo(
-            f"Error: Entity '{name}' was previously removed by the user.", err=True
+    try:
+        attach_or_reactivate_entity(
+            facet,
+            entity_type=type_,
+            name=entity,
+            description=description,
         )
-        raise typer.Exit(1)
-
-    if resolved:
-        typer.echo(f"Entity '{resolved.get('name')}' already attached.")
+    except EntityExistsError:
+        typer.echo(f"Entity '{entity}' already attached.")
         return
-
-    name = entity
-    now = now_ms()
-    entity_id = entity_slug(name)
-
-    # Create journal entity (identity record) if it doesn't exist
-    load_journal_entity(entity_id) or create_journal_entity(
-        entity_id=entity_id,
-        name=name,
-        entity_type=type_,
-    )
-
-    # Create facet relationship (per-entity file, no load-all needed)
-    save_facet_relationship(
-        facet,
-        entity_id,
-        {
-            "entity_id": entity_id,
-            "description": description,
-            "attached_at": now,
-            "updated_at": now,
-        },
-    )
+    except EntityBlockedError:
+        typer.echo(f"Error: Entity '{entity}' is blocked.", err=True)
+        raise typer.Exit(1)
+    except EntityNotFoundError:
+        typer.echo(f"Error: Entity '{entity}' not found.", err=True)
+        raise typer.Exit(1)
+    except LockTimeout:
+        typer.echo(ENTITY_BUSY.message, err=True)
+        raise typer.Exit(1)
 
     log_call_action(
         facet=facet,
@@ -311,11 +291,11 @@ def attach_entity(
         params={
             "type": type_,
             "entity": entity,
-            "name": name,
+            "name": entity,
             "description": description,
         },
     )
-    typer.echo(f"Entity '{name}' attached.")
+    typer.echo(f"Entity '{entity}' attached.")
 
 
 @app.command("update")
@@ -336,15 +316,15 @@ def update_entity(
         resolved_name = resolved.get("name", entity)
         entity_id = resolved.get("id", entity_slug(resolved_name))
 
-        # Load and update only the target entity's relationship file
-        relationship = load_facet_relationship(facet, entity_id)
-        if relationship is None:
+        try:
+            update_facet_entity_description(facet, entity_id, description)
+        except EntityNotFoundError:
             typer.echo(f"Error: Entity '{resolved_name}' not found.", err=True)
             raise typer.Exit(1)
+        except LockTimeout:
+            typer.echo(ENTITY_BUSY.message, err=True)
+            raise typer.Exit(1)
 
-        relationship["description"] = description
-        relationship["updated_at"] = now_ms()
-        save_facet_relationship(facet, entity_id, relationship)
         log_call_action(
             facet=facet,
             action="entity_update",
@@ -404,29 +384,26 @@ def add_aka(
         typer.echo(f"Alias '{aka_value}' already exists for '{resolved_name}'.")
         return
 
-    # Validate uniqueness across all entities in facet
-    entities = load_entities(
-        facet, day=None, include_detached=True, include_blocked=True
-    )
-
-    conflict = validate_aka_uniqueness(
-        aka_value, entities, exclude_entity_name=resolved_name
-    )
-    if conflict:
+    entity_id = resolved.get("id", entity_slug(resolved_name))
+    try:
+        add_entity_aka(
+            facet,
+            entity_id,
+            aka_value,
+            exclude_name=resolved_name,
+        )
+    except AkaConflictError as exc:
         typer.echo(
-            f"Error: Alias '{aka_value}' conflicts with entity '{conflict}'.", err=True
+            f"Error: Alias '{exc.alias}' conflicts with entity '{exc.conflict_name}'.",
+            err=True,
         )
         raise typer.Exit(1)
-
-    entity_id = resolved.get("id", entity_slug(resolved_name))
-
-    # Update journal entity aka (identity-level, not facet-specific)
-    journal_entity = load_journal_entity(entity_id)
-    if journal_entity:
-        existing_aka = set(journal_entity.get("aka", []))
-        existing_aka.add(aka_value)
-        journal_entity["aka"] = sorted(existing_aka)
-        save_journal_entity(journal_entity)
+    except EntityNotFoundError:
+        typer.echo(f"Error: Entity '{resolved_name}' not found.", err=True)
+        raise typer.Exit(1)
+    except LockTimeout:
+        typer.echo(ENTITY_BUSY.message, err=True)
+        raise typer.Exit(1)
 
     log_call_action(
         facet=facet,

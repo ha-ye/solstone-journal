@@ -25,6 +25,9 @@ health/*.sock
 */health/*.sock
 chronicle/*/health/*.sock
 
+# Journal sidecar locks from make dev / make sandbox
+*.lock
+
 # Test-created entities and facets (from test runs that write to fixtures)
 entities/person_a/
 facets/test.facet/

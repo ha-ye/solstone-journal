@@ -2613,17 +2613,19 @@ function startDescriptionEdit(entity) {
 }
 
 function saveDescription(entity, newDescription) {
-  fetch(`api/${encodeURIComponent(currentFacet)}/description`, {
+  fetch(`api/${encodeURIComponent(currentFacet)}/entity/${encodeURIComponent(entity.id)}/description`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      name: entity.name,
       description: newDescription
     })
   })
-  .then(response => response.json())
-  .then(data => {
-    if (data.success) {
+  .then(async response => ({
+    ok: response.ok,
+    data: await response.json().catch(() => ({}))
+  }))
+  .then(({ ok, data }) => {
+    if (ok) {
       entity.description = newDescription;
       currentDetailEntity.description = newDescription;
       hideInlineError('description-save-error');
@@ -2667,14 +2669,15 @@ function detachEntity(entity) {
   const detachedFacet = currentFacet;
   const entityId = entity.id;
   const entityName = entity.name;
-  fetch(`api/${encodeURIComponent(currentFacet)}`, {
-    method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: entity.name })
+  fetch(`api/${encodeURIComponent(currentFacet)}/entity/${encodeURIComponent(entity.id)}`, {
+    method: 'DELETE'
   })
-  .then(response => response.json())
-  .then(data => {
-    if (data.success) {
+  .then(async response => ({
+    ok: response.ok,
+    data: await response.json().catch(() => ({}))
+  }))
+  .then(({ ok, data }) => {
+    if (ok) {
       hideInlineError('detach-action-error');
       // Go back to list view and refresh
       navigateToList();
@@ -2723,9 +2726,12 @@ function reattachEntity(entity) {
       description: entity.description || ''
     })
   })
-  .then(response => response.json())
-  .then(data => {
-    if (data.success) {
+  .then(async response => ({
+    ok: response.ok,
+    data: await response.json().catch(() => ({}))
+  }))
+  .then(({ ok, data }) => {
+    if (ok) {
       hideInlineError('detach-action-error');
       // Update local state and re-render detail view
       delete entity.detached;
@@ -2760,9 +2766,12 @@ function attachEntityToFacet(entity, description) {
       description: description
     })
   })
-  .then(response => response.json())
-  .then(data => {
-    if (data.success) {
+  .then(async response => ({
+    ok: response.ok,
+    data: await response.json().catch(() => ({}))
+  }))
+  .then(({ ok, data }) => {
+    if (ok) {
       // Reload detail view - entity is now attached
       showDetailView(entity.id);
       loadEntities();  // Refresh list in background
@@ -3409,9 +3418,12 @@ function attachDetectedEntity(entity, button) {
       description: entity.description || ''
     })
   })
-  .then(response => response.json())
-  .then(data => {
-    if (data.success) {
+  .then(async response => ({
+    ok: response.ok,
+    data: await response.json().catch(() => ({}))
+  }))
+  .then(({ ok, data }) => {
+    if (ok) {
       hideInlineError('detected-action-error');
       // Reload to get full entity data
       loadEntities();

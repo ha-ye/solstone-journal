@@ -41,9 +41,42 @@ def test_confirm_gates_delete(html):
     assert "ENT_COPY.ENT_DETACH_CONFIRM" in show
 
 
+def test_detach_uses_id_addressed_url(html):
+    detach = _function_body(html, "detachEntity")
+    assert (
+        "api/${encodeURIComponent(currentFacet)}/entity/${encodeURIComponent(entity.id)}"
+        in detach
+    )
+    assert "body: JSON.stringify" not in detach
+    assert "name: entity.name" not in detach
+
+
+def test_save_description_uses_id_addressed_url(html):
+    save = _function_body(html, "saveDescription")
+    assert (
+        "api/${encodeURIComponent(currentFacet)}/entity/${encodeURIComponent(entity.id)}/description"
+        in save
+    )
+    assert "name: entity.name" not in save
+    assert "ok: response.ok" in save
+    assert "if (ok)" in save
+
+
+def test_attach_branches_gate_on_response_ok(html):
+    for function_name in [
+        "reattachEntity",
+        "attachEntityToFacet",
+        "attachDetectedEntity",
+    ]:
+        fn = _function_body(html, function_name)
+        assert "ok: response.ok" in fn
+        assert "if (ok)" in fn
+        assert "if (data.success)" not in fn
+
+
 def test_success_only_toast(html):
     detach = _function_body(html, "detachEntity")
-    success, _, failure = detach.partition(".catch(")
+    success, _, failure = detach.partition("\n  .catch(error")
     assert "notifications.show" in success
     assert "ENT_COPY.ENT_DETACH_DONE" in success
     assert "ENT_COPY.ENT_DETACH_REATTACH_ACTION" in success

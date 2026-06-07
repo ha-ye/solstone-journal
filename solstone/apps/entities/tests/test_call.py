@@ -8,10 +8,13 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from solstone.convey.reasons import ENTITY_BUSY
 from solstone.think.call import call_app
+from solstone.think.entities import detach_facet_entity, load_facet_relationship
 from solstone.think.entities.core import entity_slug
 from solstone.think.entities.journal import save_journal_entity
 from solstone.think.entities.review_candidates import save_candidates
+from solstone.think.journal_io import LockTimeout
 
 runner = CliRunner()
 
@@ -196,6 +199,39 @@ class TestEntitiesAttach:
 
         assert result.exit_code == 0
         assert "already attached" in result.output
+
+    def test_attach_detached_reactivates(self, entity_env):
+        entity_env(
+            attached=[
+                {
+                    "type": "Person",
+                    "name": "Alice Johnson",
+                    "description": "Removed",
+                    "attached_at": 1000,
+                    "updated_at": 1000,
+                }
+            ]
+        )
+        detach_facet_entity("personal", "alice_johnson")
+
+        result = runner.invoke(
+            call_app,
+            [
+                "entities",
+                "attach",
+                "Person",
+                "Alice Johnson",
+                "Friend",
+                "-f",
+                "personal",
+            ],
+        )
+
+        relationship = load_facet_relationship("personal", "alice_johnson")
+        assert result.exit_code == 0
+        assert "attached" in result.output
+        assert "detached" not in relationship
+        assert relationship["description"] == "Friend"
 
     def test_attach_invalid_type(self, entity_env):
         entity_env()
@@ -455,6 +491,32 @@ class TestEntitiesAka:
 
         assert result.exit_code == 0
         assert "first word" in result.output
+
+    def test_aka_lock_timeout_exits_busy(self, entity_env, monkeypatch):
+        entity_env(
+            attached=[
+                {
+                    "type": "Person",
+                    "name": "Alice Johnson",
+                    "description": "Friend",
+                    "attached_at": 1000,
+                    "updated_at": 1000,
+                }
+            ]
+        )
+
+        def raise_busy(*args, **kwargs):
+            raise LockTimeout(Path("busy"), 0.01)
+
+        monkeypatch.setattr("solstone.apps.entities.call.add_entity_aka", raise_busy)
+
+        result = runner.invoke(
+            call_app,
+            ["entities", "aka", "Alice Johnson", "Ali", "-f", "personal"],
+        )
+
+        assert result.exit_code == 1
+        assert ENTITY_BUSY.message in result.output
 
 
 class TestEntitiesObservations:
