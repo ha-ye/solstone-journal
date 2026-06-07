@@ -121,10 +121,8 @@ SHUTIL_FS_FUNCS: frozenset[str] = frozenset(
 # count as occurrences are converted; stale entries fail until lowered/removed.
 ALLOWLIST: dict[tuple[str, str], int] = {
     ("solstone/apps/activities/call.py", "import"): 6,
-    ("solstone/apps/chat/call.py", "import"): 1,
     ("solstone/apps/entities/call.py", "fs"): 3,
     ("solstone/apps/entities/call.py", "import"): 15,
-    ("solstone/apps/facets/call.py", "import"): 3,
     ("solstone/apps/import/call.py", "fs"): 17,
     ("solstone/apps/import/call.py", "import"): 8,
     ("solstone/apps/link/call.py", "import"): 12,
@@ -139,7 +137,6 @@ ALLOWLIST: dict[tuple[str, str], int] = {
     ("solstone/apps/timeline/call.py", "import"): 3,
     ("solstone/apps/todos/call.py", "fs"): 1,
     ("solstone/apps/todos/call.py", "import"): 12,
-    ("solstone/apps/transcripts/call.py", "import"): 3,
 }
 
 

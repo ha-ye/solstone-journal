@@ -6,21 +6,16 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
 
 import typer
 
-from solstone.convey.sol_initiated import start_chat
+from solstone.think.convey_client import convey_cli, get_client
 
 app = typer.Typer(help="Chat tools.")
 
 
-@app.callback()
-def _callback() -> None:
-    """Chat app command group."""
-
-
 @app.command("start")
+@convey_cli
 def cmd_start(
     summary: str = typer.Option(..., "--summary", help="Short request summary."),
     message: str | None = typer.Option(None, "--message", help="Optional message."),
@@ -39,18 +34,36 @@ def cmd_start(
     ),
 ) -> None:
     """Start a sol-initiated chat request."""
-    try:
-        result = start_chat(
-            summary=summary,
-            message=message,
-            category=category,
-            dedupe=dedupe,
-            dedupe_window=dedupe_window,
-            since_ts=since_ts,
-            trigger_talent=trigger_talent,
-        )
-    except ValueError as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(1) from exc
+    if not summary.strip():
+        typer.echo("Error: summary is required", err=True)
+        raise typer.Exit(1)
+    if len(summary.strip()) > 80:
+        typer.echo("Error: summary must be 80 characters or fewer", err=True)
+        raise typer.Exit(1)
+    if message is not None and len(message.strip()) > 500:
+        typer.echo("Error: message must be 500 characters or fewer", err=True)
+        raise typer.Exit(1)
+    if not dedupe.strip():
+        typer.echo("Error: dedupe is required", err=True)
+        raise typer.Exit(1)
+    if not trigger_talent.strip():
+        typer.echo("Error: trigger_talent is required", err=True)
+        raise typer.Exit(1)
+    if since_ts <= 0:
+        typer.echo("Error: since_ts must be positive", err=True)
+        raise typer.Exit(1)
 
-    typer.echo(json.dumps(asdict(result)))
+    result = get_client().request(
+        "POST",
+        "/api/chat/start",
+        json={
+            "summary": summary,
+            "message": message,
+            "category": category,
+            "dedupe": dedupe,
+            "dedupe_window": dedupe_window,
+            "since_ts": since_ts,
+            "trigger_talent": trigger_talent,
+        },
+    )
+    typer.echo(json.dumps(result))
