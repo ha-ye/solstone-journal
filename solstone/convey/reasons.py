@@ -340,6 +340,17 @@ SKILLS_BUSY = Reason(
     "I couldn't update your skills right now because they were busy. Try again in a moment.",
     503,
 )
+SKILL_NOT_FOUND = Reason("skill_not_found", "I couldn't find that skill.", 404)
+SKILL_ALREADY_EXISTS = Reason(
+    "skill_already_exists",
+    "I couldn't save that skill because it already exists.",
+    409,
+)
+SKILL_NOT_MATURE = Reason(
+    "skill_not_mature",
+    "I couldn't refresh that skill because it isn't mature yet.",
+    409,
+)
 
 # reprocess
 REPROCESS_PAST_ONLY = Reason(
