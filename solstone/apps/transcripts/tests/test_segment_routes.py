@@ -1278,7 +1278,7 @@ def test_delete_segment_returns_pending_response_shape(client, monkeypatch):
 def test_cancel_delete_segment_within_window_keeps_directory(
     client, journal_copy, monkeypatch
 ):
-    monkeypatch.setattr("solstone.apps.transcripts.routes.SEGMENT_DELETE_TTL", 0.2)
+    monkeypatch.setattr("solstone.apps.transcripts.routes.SEGMENT_DELETE_TTL", 5.0)
     segment_dir = (
         journal_copy / "chronicle" / FIXTURE_DAY / FIXTURE_STREAM / FIXTURE_SEGMENT
     )
@@ -1378,7 +1378,7 @@ def test_delete_segment_writes_pending_and_committed_audit_rows(
 def test_cancel_delete_segment_writes_cancelled_audit_row(
     client, journal_copy, monkeypatch
 ):
-    monkeypatch.setattr("solstone.apps.transcripts.routes.SEGMENT_DELETE_TTL", 0.2)
+    monkeypatch.setattr("solstone.apps.transcripts.routes.SEGMENT_DELETE_TTL", 5.0)
     cancel_response = client.delete(
         f"/app/transcripts/api/segment/{FIXTURE_DAY}/{FIXTURE_STREAM}/{FIXTURE_SEGMENT}"
     )

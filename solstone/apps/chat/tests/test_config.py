@@ -81,30 +81,43 @@ def test_save_chat_config_atomic_under_concurrent_reads(tmp_path, monkeypatch):
     journal = _journal(tmp_path, monkeypatch)
     path = journal / "config" / "chat.json"
     save_chat_config({"thinking_surfaces": "on_tap"})
+
+    import solstone.think.journal_io.atomic as atomic_module
+
+    real_replace = atomic_module.os.replace
+    replace_ready = threading.Event()
+    allow_replace = threading.Event()
+
+    def gated_replace(src, dst):
+        if Path(dst) == path:
+            replace_ready.set()
+            if not allow_replace.wait(timeout=5):
+                raise TimeoutError("timed out waiting to release chat config replace")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(atomic_module.os, "replace", gated_replace)
+
     errors: list[Exception] = []
-    malformed: list[object] = []
-    done = threading.Event()
 
-    def reader() -> None:
-        while not done.is_set():
-            try:
-                with path.open(encoding="utf-8") as handle:
-                    payload = json.load(handle)
-            except json.JSONDecodeError as exc:
-                errors.append(exc)
-                continue
-            value = payload.get("thinking_surfaces")
-            if value not in {"always", "on_tap", "never"}:
-                malformed.append(value)
+    def writer() -> None:
+        try:
+            save_chat_config({"thinking_surfaces": "always"})
+        except Exception as exc:  # pragma: no cover - surfaced by assertion below
+            errors.append(exc)
 
-    thread = threading.Thread(target=reader)
+    thread = threading.Thread(target=writer)
     thread.start()
     try:
-        for index in range(200):
-            save_chat_config({"thinking_surfaces": "always" if index % 2 else "on_tap"})
+        assert replace_ready.wait(timeout=5)
+        for _ in range(100):
+            with path.open(encoding="utf-8") as handle:
+                assert json.load(handle)["thinking_surfaces"] == "on_tap"
+        allow_replace.set()
+        thread.join(timeout=5)
     finally:
-        done.set()
+        allow_replace.set()
         thread.join(timeout=5)
 
     assert errors == []
-    assert malformed == []
+    assert not thread.is_alive()
+    assert load_chat_config()["thinking_surfaces"] == "always"

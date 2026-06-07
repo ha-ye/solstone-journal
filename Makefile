@@ -364,21 +364,26 @@ PYTEST := $(VENV_BIN)/pytest
 RUFF := $(VENV_BIN)/ruff
 MYPY := $(VENV_BIN)/mypy
 
+# Keep the default full-suite fan-out below host saturation; override with
+# `make PYTEST_MAX_WORKERS=16 test` on a dedicated box.
+PYTEST_MAX_WORKERS ?= 8
+PYTEST_XDIST_ARGS := -n auto --maxprocesses $(PYTEST_MAX_WORKERS) --dist loadgroup
+
 # Check formatting without modifying files — gates `make test`
 format-check: .installed
 	@$(RUFF) format --check . || { echo "Run 'make format' to fix formatting"; exit 1; }
 
 # Run all unit tests — core (tests/) + every app (solstone/apps/*/tests/).
-# -n auto --dist loadgroup lives here, not in pyproject addopts, so bare
-# pytest / pytest-watch / IDE runs stay serial.
+# xdist lives here, not in pyproject addopts, so bare pytest / pytest-watch /
+# IDE runs stay serial.
 test: .installed format-check
 	@echo "Running unit tests (core + apps)..."
-	$(PYTEST_BASETEMP_INIT) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) tests/ solstone/apps/ -q -n auto --dist loadgroup
+	$(PYTEST_BASETEMP_INIT) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) tests/ solstone/apps/ -q $(PYTEST_XDIST_ARGS)
 
 # Same suite with full-repo coverage (used by ci/verify)
 test-cov: .installed format-check
 	@echo "Running unit tests with coverage (core + apps)..."
-	$(PYTEST_BASETEMP_INIT) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) tests/ solstone/apps/ -q --cov=. -n auto --dist loadgroup
+	$(PYTEST_BASETEMP_INIT) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) tests/ solstone/apps/ -q --cov=. $(PYTEST_XDIST_ARGS)
 
 # Run a single app's tests
 test-app: .installed
