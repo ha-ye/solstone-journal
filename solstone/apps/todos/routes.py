@@ -22,6 +22,8 @@ from solstone.apps.todos.todo import (
     TodoChecklist,
     TodoEmptyTextError,
     TodoItem,
+    TodoMovePartialError,
+    TodoNotMovableError,
     format_nudge,
     get_todos,
 )
@@ -216,7 +218,11 @@ def todos_page() -> str:
 @todos_bp.route("/<day>", methods=["GET", "POST"])
 def todos_day(day: str):  # type: ignore[override]
     if not DATE_RE.fullmatch(day):
-        return "", 404
+        return error_response(
+            INVALID_DAY,
+            status=404,
+            detail="Day must be in YYYYMMDD format.",
+        )
 
     if request.method == "POST":
         action = request.form.get("action")
@@ -404,25 +410,9 @@ def todos_day(day: str):  # type: ignore[override]
 
                     # If facet changed, move the todo (cancel source, add to target)
                     if new_facet != facet:
-                        source_item = checklist.get_item(index)
-                        old_text = source_item.text
-
-                        def _add_to_new(cl: TodoChecklist) -> TodoItem:
-                            created = cl.append_entry(
-                                text,
-                                nudge=source_item.nudge,
-                                created_at=source_item.created_at,
-                            )
-                            if source_item.completed:
-                                cl.mark_done(created.index)
-                            return created
-
-                        TodoChecklist.locked_modify(day, new_facet, _add_to_new)
-
-                        def _cancel_source(cl: TodoChecklist) -> None:
-                            cl.cancel_entry(index)
-
-                        TodoChecklist.locked_modify(day, facet, _cancel_source)
+                        _created, cancelled = TodoChecklist.move_entry(
+                            day, facet, index, day, new_facet, text=text
+                        )
 
                         log_app_action(
                             app="todos",
@@ -430,7 +420,7 @@ def todos_day(day: str):  # type: ignore[override]
                             action="todo_edit",
                             params={
                                 "line_number": index,
-                                "old_text": old_text,
+                                "old_text": cancelled.text,
                                 "new_text": text,
                                 "old_facet": facet,
                                 "new_facet": new_facet,
@@ -464,6 +454,10 @@ def todos_day(day: str):  # type: ignore[override]
         except TodoEmptyTextError:
             flash("Cannot update todo to empty text", "error")
         except IndexError:
+            flash(f"Todo list changed, {CONVEY_RELOAD_HINT}", "error")
+        except TodoNotMovableError:
+            flash(f"Todo list changed, {CONVEY_RELOAD_HINT}", "error")
+        except TodoMovePartialError:
             flash(f"Todo list changed, {CONVEY_RELOAD_HINT}", "error")
         except LockTimeout:
             flash(f"Todo list changed, {CONVEY_RELOAD_HINT}", "error")
@@ -602,7 +596,11 @@ def todos_overflow(day: str, facet: str, section: str):
 def move_todo(day: str):  # type: ignore[override]
     """Move a todo to a different day by cancelling source and adding to target."""
     if not DATE_RE.fullmatch(day):
-        return "", 404
+        return error_response(
+            INVALID_DAY,
+            status=404,
+            detail="Day must be in YYYYMMDD format.",
+        )
 
     payload = request.get_json(silent=True) or {}
     target_day = (payload.get("target_day") or "").strip()
@@ -631,75 +629,32 @@ def move_todo(day: str):  # type: ignore[override]
             }
         )
 
+    # L9: replaying an already-moved item returns 409 without appending again.
     try:
-        source_checklist = TodoChecklist.load(day, facet)
-    except RuntimeError as exc:
+        _created, cancelled = TodoChecklist.move_entry(
+            day, facet, index, target_day, facet
+        )
+    except (IndexError, TodoNotMovableError, TodoMovePartialError, LockTimeout) as exc:
         current_app.logger.debug(
-            "Failed to load source todo list for %s/%s: %s", facet, day, exc
+            "Failed to move todo %s from %s/%s to %s/%s: %s",
+            index,
+            facet,
+            day,
+            facet,
+            target_day,
+            exc,
         )
         return error_response(
             OPERATION_NO_LONGER_AVAILABLE,
             status=409,
             detail=f"Todo list changed, {CONVEY_RELOAD_HINT}",
         )
-
-    try:
-        TodoChecklist.load(target_day, facet)
-    except RuntimeError as exc:
-        current_app.logger.debug(
-            "Failed to load target todo list for %s/%s: %s", facet, target_day, exc
-        )
-        return error_response(
-            TODO_OPERATION_FAILED,
-            detail="Unable to access target day.",
-        )
-
-    try:
-        source_item = source_checklist.get_item(index)
-    except IndexError as exc:
-        current_app.logger.debug("Failed to locate todo %s on %s: %s", index, day, exc)
-        return error_response(
-            OPERATION_NO_LONGER_AVAILABLE,
-            status=409,
-            detail=f"Todo list changed, {CONVEY_RELOAD_HINT}",
-        )
-
-    def _append_target(cl: TodoChecklist) -> TodoItem:
-        created = cl.append_entry(
-            source_item.text, nudge=source_item.nudge, created_at=source_item.created_at
-        )
-        if source_item.completed:
-            cl.mark_done(created.index)
-        return created
-
-    try:
-        _new_item = TodoChecklist.locked_modify(target_day, facet, _append_target)
     except TodoEmptyTextError as exc:
         current_app.logger.debug("Failed to append todo to %s: %s", target_day, exc)
         return error_response(
             TODO_OPERATION_FAILED,
             status=400,
             detail="Unable to move todo to the selected day.",
-        )
-    except LockTimeout as exc:
-        current_app.logger.debug("Todo list busy for %s: %s", target_day, exc)
-        return error_response(
-            OPERATION_NO_LONGER_AVAILABLE,
-            status=409,
-            detail=f"Todo list changed, {CONVEY_RELOAD_HINT}",
-        )
-
-    def _cancel_source(cl: TodoChecklist) -> None:
-        cl.cancel_entry(index)
-
-    try:
-        TodoChecklist.locked_modify(day, facet, _cancel_source)
-    except LockTimeout as exc:
-        current_app.logger.debug("Todo list busy for %s: %s", day, exc)
-        return error_response(
-            OPERATION_NO_LONGER_AVAILABLE,
-            status=409,
-            detail=f"Todo list changed, {CONVEY_RELOAD_HINT}",
         )
 
     log_app_action(
@@ -710,8 +665,8 @@ def move_todo(day: str):  # type: ignore[override]
             "source_day": day,
             "target_day": target_day,
             "line_number": index,
-            "text": source_item.text,
-            "completed": source_item.completed,
+            "text": cancelled.text,
+            "completed": cancelled.completed,
         },
         day=day,
     )
@@ -731,7 +686,11 @@ def move_todo(day: str):  # type: ignore[override]
 @todos_bp.route("/<day>/generate", methods=["POST"])
 def generate_todos(day: str):  # type: ignore[override]
     if not DATE_RE.fullmatch(day):
-        return "", 404
+        return error_response(
+            INVALID_DAY,
+            status=404,
+            detail="Day must be in YYYYMMDD format.",
+        )
 
     payload = request.get_json(silent=True) or {}
     facet = (payload.get("facet") or "personal").strip()
@@ -791,7 +750,11 @@ Write the generated checklist to facets/{facet}/todos/{day}.jsonl"""
 @todos_bp.route("/<day>/generation-status")
 def todo_generation_status(day: str):  # type: ignore[override]
     if not DATE_RE.fullmatch(day):
-        return "", 404
+        return error_response(
+            INVALID_DAY,
+            status=404,
+            detail="Day must be in YYYYMMDD format.",
+        )
 
     facet = request.args.get("facet", "personal")
     use_id = request.args.get("use_id")
@@ -838,7 +801,11 @@ def todo_generation_status(day: str):  # type: ignore[override]
 def generate_weekly_todos(day: str, facet: str):  # type: ignore[override]
     """Spawn todo_weekly agent for a specific facet."""
     if not DATE_RE.fullmatch(day):
-        return "", 404
+        return error_response(
+            INVALID_DAY,
+            status=404,
+            detail="Day must be in YYYYMMDD format.",
+        )
 
     day_date = datetime.strptime(day, "%Y%m%d")
 

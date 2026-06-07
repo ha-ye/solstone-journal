@@ -26,6 +26,8 @@ __all__ = [
     "TodoItem",
     "TodoError",
     "TodoEmptyTextError",
+    "TodoNotMovableError",
+    "TodoMovePartialError",
     "find_cross_facet_matches",
     "parse_nudge",
     "format_nudge",
@@ -150,6 +152,47 @@ class TodoEmptyTextError(TodoError):
 
     def __init__(self) -> None:
         super().__init__("todo text cannot be empty")
+
+
+class TodoNotMovableError(TodoError):
+    """Raised when a todo cannot be moved from its source."""
+
+    line_number: int
+
+    def __init__(self, line_number: int) -> None:
+        self.line_number = line_number
+        super().__init__(f"todo {line_number} is already cancelled")
+
+
+class TodoMovePartialError(TodoError):
+    """Raised when a move append succeeded but source finalization failed."""
+
+    src_day: str
+    src_facet: str
+    line_number: int
+    dst_day: str
+    dst_facet: str
+    new_index: int
+
+    def __init__(
+        self,
+        src_day: str,
+        src_facet: str,
+        line_number: int,
+        dst_day: str,
+        dst_facet: str,
+        new_index: int,
+    ) -> None:
+        self.src_day = src_day
+        self.src_facet = src_facet
+        self.line_number = line_number
+        self.dst_day = dst_day
+        self.dst_facet = dst_facet
+        self.new_index = new_index
+        super().__init__(
+            f"todo {line_number} was appended to {dst_facet}/{dst_day} "
+            f"as line {new_index}, but the source could not be finalized"
+        )
 
 
 @dataclass(slots=True)
@@ -339,6 +382,58 @@ class TodoChecklist:
         with hold_lock(path):
             checklist = cls.load(day, facet)
             return modify_fn(checklist)
+
+    @classmethod
+    def move_entry(
+        cls,
+        src_day: str,
+        src_facet: str,
+        line_number: int,
+        dst_day: str,
+        dst_facet: str,
+        *,
+        text: str | None = None,
+    ) -> tuple[TodoItem, TodoItem]:
+        """Move a todo entry between todo files under ordered source/dest locks."""
+        src_path = todo_file_path(src_day, src_facet)
+        dst_path = todo_file_path(dst_day, dst_facet)
+        if src_path == dst_path:
+            raise ValueError("todo move source and destination are identical")
+
+        first, second = sorted((src_path, dst_path), key=str)
+        with hold_lock(first), hold_lock(second):
+            source = cls.load(src_day, src_facet)
+            _index, item = source._get_item(line_number)
+            if item.cancelled:
+                raise TodoNotMovableError(line_number)
+
+            effective_text = item.text if text is None else text
+            dest = cls.load(dst_day, dst_facet)
+            created = dest.append_entry(
+                effective_text,
+                nudge=item.nudge,
+                created_at=item.created_at,
+            )
+
+            try:
+                if item.completed:
+                    dest.mark_done(created.index)
+                cancelled = source.cancel_entry(
+                    line_number,
+                    cancelled_reason="moved_to_facet",
+                    moved_to=dst_facet,
+                )
+            except Exception as exc:
+                raise TodoMovePartialError(
+                    src_day,
+                    src_facet,
+                    line_number,
+                    dst_day,
+                    dst_facet,
+                    created.index,
+                ) from exc
+
+            return created, cancelled
 
     def save(self) -> None:
         """Persist the checklist to disk via durable atomic replace."""

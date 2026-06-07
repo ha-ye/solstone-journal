@@ -12,7 +12,10 @@ import pytest
 
 from solstone.apps.todos.todo import (
     TodoChecklist,
+    TodoEmptyTextError,
     TodoItem,
+    TodoMovePartialError,
+    TodoNotMovableError,
     find_cross_facet_matches,
     get_facets_with_todos,
     get_todos,
@@ -35,6 +38,10 @@ def _write_todos(root: Path, facet: str, day: str, items: list[dict]) -> Path:
     lines = [json.dumps(item, ensure_ascii=False) for item in items]
     todo_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return todo_path
+
+
+def _read_todos(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
 def test_get_todos_returns_none_when_missing(monkeypatch, journal_root):
@@ -474,6 +481,157 @@ def test_checklist_cancel_entry(monkeypatch, journal_root):
     content = checklist.path.read_text(encoding="utf-8")
     data = json.loads(content.strip())
     assert data["cancelled"] is True
+
+
+def test_move_entry_cross_facet_same_day(monkeypatch, journal_root):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_root))
+    _write_todos(
+        journal_root,
+        "work",
+        "20240105",
+        [
+            {
+                "text": "Ship feature",
+                "nudge": "20240105T10:30",
+                "created_at": 1704067200000,
+            }
+        ],
+    )
+
+    created, cancelled = TodoChecklist.move_entry(
+        "20240105", "work", 1, "20240105", "personal"
+    )
+
+    assert created.text == "Ship feature"
+    assert created.nudge == "20240105T10:30"
+    assert created.created_at == 1704067200000
+    assert cancelled.cancelled is True
+    assert cancelled.cancelled_reason == "moved_to_facet"
+    assert cancelled.moved_to == "personal"
+    source = _read_todos(journal_root / "facets" / "work" / "todos" / "20240105.jsonl")
+    dest = _read_todos(
+        journal_root / "facets" / "personal" / "todos" / "20240105.jsonl"
+    )
+    assert source[0]["cancelled"] is True
+    assert source[0]["moved_to"] == "personal"
+    assert dest[0]["text"] == "Ship feature"
+    assert dest[0]["created_at"] == 1704067200000
+
+
+def test_move_entry_cross_day_same_facet_carries_completion(monkeypatch, journal_root):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_root))
+    _write_todos(
+        journal_root,
+        "personal",
+        "20240105",
+        [
+            {
+                "text": "Done thing",
+                "completed": True,
+                "created_at": 1704067200000,
+            }
+        ],
+    )
+
+    created, cancelled = TodoChecklist.move_entry(
+        "20240105", "personal", 1, "20240106", "personal"
+    )
+
+    assert created.completed is True
+    assert cancelled.completed is True
+    dest = _read_todos(
+        journal_root / "facets" / "personal" / "todos" / "20240106.jsonl"
+    )
+    assert dest[0]["completed"] is True
+
+
+def test_move_entry_text_override(monkeypatch, journal_root):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_root))
+    _write_todos(journal_root, "work", "20240105", [{"text": "Old text"}])
+
+    created, cancelled = TodoChecklist.move_entry(
+        "20240105", "work", 1, "20240105", "personal", text="New text"
+    )
+
+    assert cancelled.text == "Old text"
+    assert created.text == "New text"
+
+
+def test_move_entry_empty_text_override_preserves_source(monkeypatch, journal_root):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_root))
+    source_path = _write_todos(journal_root, "work", "20240105", [{"text": "Old text"}])
+
+    with pytest.raises(TodoEmptyTextError):
+        TodoChecklist.move_entry("20240105", "work", 1, "20240105", "personal", text="")
+
+    assert "cancelled" not in _read_todos(source_path)[0]
+    assert not (
+        journal_root / "facets" / "personal" / "todos" / "20240105.jsonl"
+    ).exists()
+
+
+def test_move_entry_rejects_identical_source_and_destination(monkeypatch, journal_root):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_root))
+    _write_todos(journal_root, "personal", "20240105", [{"text": "Same place"}])
+
+    with pytest.raises(ValueError, match="identical"):
+        TodoChecklist.move_entry("20240105", "personal", 1, "20240105", "personal")
+
+
+def test_move_entry_rejects_out_of_range(monkeypatch, journal_root):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_root))
+    _write_todos(journal_root, "work", "20240105", [{"text": "Only one"}])
+
+    with pytest.raises(IndexError):
+        TodoChecklist.move_entry("20240105", "work", 2, "20240105", "personal")
+
+
+def test_move_entry_rejects_cancelled_source(monkeypatch, journal_root):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_root))
+    _write_todos(
+        journal_root,
+        "work",
+        "20240105",
+        [{"text": "Already moved", "cancelled": True}],
+    )
+
+    with pytest.raises(TodoNotMovableError, match="already cancelled"):
+        TodoChecklist.move_entry("20240105", "work", 1, "20240105", "personal")
+
+
+def test_move_entry_partial_failure_preserves_source(monkeypatch, journal_root):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_root))
+    source_path = _write_todos(
+        journal_root,
+        "work",
+        "20240105",
+        [{"text": "Keep source", "created_at": 1704067200000}],
+    )
+
+    def fail_cancel(
+        self: TodoChecklist,
+        line_number: int,
+        cancelled_reason: str | None = None,
+        moved_to: str | None = None,
+    ):
+        raise RuntimeError("cancel failed")
+
+    monkeypatch.setattr(TodoChecklist, "cancel_entry", fail_cancel)
+
+    with pytest.raises(TodoMovePartialError) as exc_info:
+        TodoChecklist.move_entry("20240105", "work", 1, "20240105", "personal")
+
+    assert exc_info.value.src_day == "20240105"
+    assert exc_info.value.src_facet == "work"
+    assert exc_info.value.dst_day == "20240105"
+    assert exc_info.value.dst_facet == "personal"
+    assert exc_info.value.new_index == 1
+    source = _read_todos(source_path)
+    dest = _read_todos(
+        journal_root / "facets" / "personal" / "todos" / "20240105.jsonl"
+    )
+    assert source[0].get("cancelled") is None
+    assert dest[0]["text"] == "Keep source"
 
 
 def test_checklist_display_includes_cancelled_with_strikethrough(

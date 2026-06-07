@@ -14,6 +14,7 @@ from pathlib import Path
 import typer
 
 from solstone.apps.todos import todo
+from solstone.apps.todos.todo import TodoMovePartialError, TodoNotMovableError
 from solstone.think.facets import log_call_action
 from solstone.think.journal_io.errors import LockTimeout
 from solstone.think.utils import get_journal, require_solstone
@@ -309,12 +310,17 @@ def move_todo(
         )
         raise typer.Exit(1)
 
+    if from_facet == to_facet:
+        typer.echo("Error: source and destination facet are the same.", err=True)
+        raise typer.Exit(1)
+
     try:
         source_checklist = todo.TodoChecklist.load(day, from_facet)
         if not source_checklist.exists:
             raise FileNotFoundError()
         todo.validate_line_number(line_number, len(source_checklist.items))
         item = source_checklist.items[line_number - 1]
+        # Completion is enforced pre-call; move_entry intentionally stays policy-neutral.
         if item.completed:
             raise todo.TodoError("Cannot move a completed todo.")
         if item.cancelled:
@@ -333,45 +339,15 @@ def move_todo(
         raise typer.Exit(1)
 
     try:
-
-        def _append_dest(
-            checklist: todo.TodoChecklist,
-        ) -> tuple[todo.TodoChecklist, todo.TodoItem]:
-            new_item = checklist.append_entry(
-                item.text,
-                item.nudge,
-                created_at=item.created_at,
-            )
-            return checklist, new_item
-
-        _, new_item = todo.TodoChecklist.locked_modify(day, to_facet, _append_dest)
-    except Exception as exc:
-        typer.echo(
-            f"Error: Failed to append to destination facet '{to_facet}': {exc}. Source todo is unchanged.",
-            err=True,
+        new_item, cancelled = todo.TodoChecklist.move_entry(
+            day, from_facet, line_number, day, to_facet
         )
+    except (IndexError, TodoNotMovableError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
-
-    try:
-
-        def _cancel_source(
-            checklist: todo.TodoChecklist,
-        ) -> tuple[todo.TodoChecklist, todo.TodoItem]:
-            todo.validate_line_number(line_number, len(checklist.items))
-            current_item = checklist.items[line_number - 1]
-            if current_item.completed:
-                raise todo.TodoError("Cannot move a completed todo.")
-            if current_item.cancelled:
-                raise todo.TodoError("Cannot move an already cancelled todo.")
-            cancelled_item = checklist.cancel_entry(
-                line_number,
-                cancelled_reason="moved_to_facet",
-                moved_to=to_facet,
-            )
-            return checklist, cancelled_item
-
-        _, item = todo.TodoChecklist.locked_modify(day, from_facet, _cancel_source)
-    except (FileNotFoundError, IndexError, todo.TodoError, LockTimeout):
+    except LockTimeout:
+        _exit_todo_busy()
+    except TodoMovePartialError:
         typer.echo(
             f"Warning: Item was appended to '{to_facet}' but could not cancel source in '{from_facet}'. Cancel it manually with: sol call todos cancel {line_number} --day {day} --facet {from_facet}",
             err=True,
@@ -382,7 +358,7 @@ def move_todo(
         "moved_from": from_facet,
         "moved_to": to_facet,
         "line_number": line_number,
-        "text": item.text,
+        "text": cancelled.text,
     }
     params_in: dict[str, object] = {
         "moved_from": from_facet,
@@ -396,7 +372,7 @@ def move_todo(
     log_call_action(facet=from_facet, action="todo_move_out", params=params_out)
     log_call_action(facet=to_facet, action="todo_move_in", params=params_in)
     typer.echo(
-        f"Moved todo {line_number} ('{item.text}') from '{from_facet}' to '{to_facet}'."
+        f"Moved todo {line_number} ('{cancelled.text}') from '{from_facet}' to '{to_facet}'."
     )
 
 

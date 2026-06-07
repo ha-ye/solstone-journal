@@ -83,7 +83,6 @@ ALLOWLIST: dict[tuple[str, str], int] = {
     ("solstone/apps/import/routes.py", "bare-array"): 1,
     ("solstone/apps/link/routes.py", "abort"): 1,
     ("solstone/apps/observer/routes.py", "bare-array"): 2,
-    ("solstone/apps/todos/routes.py", "bare-return"): 5,
     ("solstone/convey/services_scout.py", "abort"): 1,
     ("solstone/convey/services_scout.py", "inline-error"): 2,
 }

@@ -511,6 +511,27 @@ class TestTodosMove:
         assert result.exit_code == 1
         assert "does not exist" in result.output
 
+    def test_move_same_facet_rejected(self, move_env):
+        _, src_facet, _dst_facet = move_env([{"text": "Ship feature"}])
+
+        result = runner.invoke(
+            call_app,
+            [
+                "todos",
+                "move",
+                "1",
+                "--day",
+                "20240101",
+                "--from",
+                src_facet,
+                "--to",
+                src_facet,
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "source and destination facet are the same" in result.output
+
 
 class TestSolEnvResolution:
     """Tests for SOL_* env var resolution in todos commands."""
