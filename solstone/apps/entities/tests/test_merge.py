@@ -11,6 +11,7 @@ import numpy as np
 from typer.testing import CliRunner
 
 from solstone.apps.entities.call import app as entities_app
+from solstone.think.entities import merge as merge_mod
 from solstone.think.entities.journal import load_journal_entity
 
 runner = CliRunner()
@@ -297,6 +298,154 @@ def test_merge_commit_deep_merges_and_logs(speakers_env):
         "facets",
         "segments",
     }
+
+
+def test_merge_facet_move_writes_target_before_source_delete_on_cleanup_failure(
+    speakers_env,
+    monkeypatch,
+):
+    env = speakers_env()
+    env.create_entity("Cleanup Alias")
+    env.create_entity("Cleanup Canon")
+    source_rel_dir = env.create_facet_relationship(
+        "work",
+        "cleanup_alias",
+        description="Source relationship",
+    )
+
+    def fail_cleanup(*args, **kwargs):
+        raise RuntimeError("cleanup boom")
+
+    monkeypatch.setattr(
+        merge_mod,
+        "_apply_destructive_plan",
+        fail_cleanup,
+        raising=False,
+    )
+
+    result = merge_mod.merge_entity("cleanup_alias", "cleanup_canon", commit=True)
+
+    assert result["failed_phase"] == "cleanup"
+    target_rel_path = (
+        env.journal / "facets" / "work" / "entities" / "cleanup_canon" / "entity.json"
+    )
+    assert _read_json(target_rel_path)["entity_id"] == "cleanup_canon"
+    assert source_rel_dir.exists()
+
+
+def test_merge_commit_failure_reports_failed_phase_and_resume_marker(
+    speakers_env,
+    monkeypatch,
+):
+    env = speakers_env()
+    env.create_entity("Failure Source")
+    env.create_entity("Failure Target")
+    env.create_segment("20240101", "143022_300", ["mic_audio"])
+    env.create_speaker_labels(
+        "20240101",
+        "143022_300",
+        [
+            {
+                "sentence_id": 1,
+                "speaker": "failure_source",
+                "confidence": "high",
+                "method": "acoustic",
+            }
+        ],
+    )
+
+    def fail_segments(*args, **kwargs):
+        raise RuntimeError("segment boom")
+
+    monkeypatch.setattr(merge_mod, "_apply_segment_plan", fail_segments)
+
+    result = merge_mod.merge_entity("failure_source", "failure_target", commit=True)
+
+    assert result["error"] == "segment boom"
+    assert result["failed_phase"] == "segments"
+    assert "recovery" in result
+    assert result["source_id"] == "failure_source"
+    assert result["target_id"] == "failure_target"
+    source = load_journal_entity("failure_source")
+    assert source is not None
+    assert source["merged_into"] == "failure_target"
+
+
+def test_merge_segment_rewrites_use_owner_byte_shapes(speakers_env):
+    env = speakers_env()
+    env.create_segment("20240101", "143022_300", ["mic_audio"])
+    env.create_entity("Bytes Source")
+    env.create_entity("Bytes Target")
+    labels_before = [
+        {
+            "sentence_id": 1,
+            "speaker": "bytes_source",
+            "confidence": "high",
+            "method": "acoustic",
+        },
+        {
+            "sentence_id": 2,
+            "speaker": "other_person",
+            "confidence": "medium",
+            "method": "context",
+        },
+    ]
+    corrections_before = [
+        {
+            "sentence_id": 1,
+            "original_speaker": "bytes_source",
+            "corrected_speaker": "bytes_source",
+            "original_method": "acoustic",
+            "timestamp": 1700000000000,
+        }
+    ]
+    env.create_speaker_labels("20240101", "143022_300", labels_before)
+    env.create_speaker_corrections("20240101", "143022_300", corrections_before)
+
+    result = merge_mod.merge_entity("bytes_source", "bytes_target", commit=True)
+
+    assert result["merged"] is True
+    expected_labels = {
+        "labels": [
+            {
+                "sentence_id": 1,
+                "speaker": "bytes_target",
+                "confidence": "high",
+                "method": "acoustic",
+            },
+            {
+                "sentence_id": 2,
+                "speaker": "other_person",
+                "confidence": "medium",
+                "method": "context",
+            },
+        ],
+        "owner_centroid_last_refreshed_at": None,
+        "voiceprint_versions": {},
+    }
+    labels_path = _labels_path(env, "20240101", "143022_300")
+    assert labels_path.read_bytes() == (
+        json.dumps(expected_labels, indent=2) + "\n"
+    ).encode("utf-8")
+    assert _read_json(labels_path) == expected_labels
+
+    expected_corrections = {
+        "corrections": [
+            {
+                "sentence_id": 1,
+                "original_speaker": "bytes_target",
+                "corrected_speaker": "bytes_target",
+                "original_method": "acoustic",
+                "timestamp": 1700000000000,
+            }
+        ]
+    }
+    corrections_path = _corrections_path(env, "20240101", "143022_300")
+    assert corrections_path.read_bytes() == json.dumps(
+        expected_corrections,
+        indent=2,
+    ).encode("utf-8")
+    assert _read_json(corrections_path) == expected_corrections
 
 
 def test_merge_default_keeps_source_as_aka(speakers_env):

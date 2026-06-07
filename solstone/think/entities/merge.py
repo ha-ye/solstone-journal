@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,8 @@ from solstone.think.entities.voiceprints import (
     save_voiceprints_batch,
 )
 from solstone.think.utils import day_dirs, get_journal, iter_segments, now_ms
+
+logger = logging.getLogger(__name__)
 
 
 def _dedupe_akas(target_values: list[Any], source_values: list[Any]) -> list[str]:
@@ -508,38 +511,89 @@ def _check_aka_cross_references(
     return offenders
 
 
-def _apply_facet_plan(operations: list[dict[str, Any]], target_id: str) -> None:
+def _apply_facet_additive_plan(
+    operations: list[dict[str, Any]],
+    target_id: str,
+) -> None:
     for operation in operations:
         if operation["kind"] == "move":
             source_rel_dir = operation["source_rel_dir"]
-            target_rel_dir = operation["target_rel_dir"]
-            if target_rel_dir.exists():
-                shutil.rmtree(target_rel_dir)
-            source_rel_dir.rename(target_rel_dir)
-            moved_path = target_rel_dir / "entity.json"
-            try:
-                with open(moved_path, encoding="utf-8") as handle:
-                    rel_data = json.load(handle)
-                rel_data["entity_id"] = target_id
-                save_facet_relationship(operation["facet"], target_id, rel_data)
-            except (json.JSONDecodeError, OSError):
-                pass
+            with open(source_rel_dir / "entity.json", encoding="utf-8") as handle:
+                rel_data = json.load(handle)
+            rel_data["entity_id"] = target_id
+            save_facet_relationship(operation["facet"], target_id, rel_data)
+            observations_path = source_rel_dir / "observations.jsonl"
+            if observations_path.is_file():
+                save_observations(
+                    operation["facet"],
+                    target_id,
+                    _read_jsonl(observations_path),
+                )
             continue
 
         save_facet_relationship(
             operation["facet"], target_id, operation["relationship"]
         )
         save_observations(operation["facet"], target_id, operation["observations"])
-        shutil.rmtree(operation["source_rel_dir"])
 
 
-def _apply_segment_plan(operations: list[dict[str, Any]]) -> None:
+def _apply_destructive_plan(
+    operations: list[dict[str, Any]],
+    source_id: str,
+) -> list[str]:
     for operation in operations:
-        out_path = operation["path"]
-        tmp_path = out_path.with_suffix(".tmp")
-        with open(tmp_path, "w", encoding="utf-8") as handle:
-            json.dump(operation["data"], handle, indent=2)
-        tmp_path.rename(out_path)
+        source_rel_dir = operation["source_rel_dir"]
+        if source_rel_dir.exists():
+            shutil.rmtree(source_rel_dir)
+
+    discovery_cache = Path(get_journal()) / "awareness" / "discovery_clusters.json"
+    caches_cleared: list[str] = []
+    if discovery_cache.exists():
+        discovery_cache.unlink()
+        caches_cleared.append("discovery_clusters")
+
+    source_entity_dir = Path(get_journal()) / "entities" / source_id
+    if source_entity_dir.exists():
+        shutil.rmtree(source_entity_dir)
+
+    return caches_cleared
+
+
+def _apply_segment_plan(
+    operations: list[dict[str, Any]],
+    source_id: str,
+    target_id: str,
+) -> None:
+    from solstone.apps.speakers.attribution import (
+        remap_speaker_corrections_for_entity_merge,
+        update_speaker_labels,
+    )
+
+    def remap_label_speakers(current: dict | None) -> dict | None:
+        if current is None:
+            return None
+        labels = current.get("labels", [])
+        if not isinstance(labels, list):
+            return None
+
+        changed = False
+        for label in labels:
+            if not isinstance(label, dict):
+                continue
+            if label.get("speaker") == source_id:
+                label["speaker"] = target_id
+                changed = True
+        return current if changed else None
+
+    for operation in operations:
+        # Planned data is intentionally unused; owners remap fresh under lock.
+        seg_dir = operation["path"].parent.parent
+        if operation["kind"] == "speaker_labels":
+            update_speaker_labels(seg_dir, remap_label_speakers)
+        elif operation["kind"] == "speaker_corrections":
+            remap_speaker_corrections_for_entity_merge(seg_dir, source_id, target_id)
+        else:
+            raise ValueError(f"Unknown segment merge operation: {operation['kind']}")
 
 
 def _audit_counts(result: dict[str, Any]) -> dict[str, Any]:
@@ -665,25 +719,23 @@ def merge_entity(
     if not commit:
         return result
 
+    failed_phase = "identity"
     try:
         save_journal_entity(resume_source)
         save_journal_entity(planned_target)
 
+        failed_phase = "voiceprints"
         if voiceprint_plan["items"]:
             save_voiceprints_batch(target_id, voiceprint_plan["items"])
 
-        _apply_facet_plan(facet_plan["operations"], target_id)
-        _apply_segment_plan(segment_plan["operations"])
+        failed_phase = "facets"
+        _apply_facet_additive_plan(facet_plan["operations"], target_id)
 
-        discovery_cache = Path(get_journal()) / "awareness" / "discovery_clusters.json"
-        caches_cleared: list[str] = []
-        if discovery_cache.exists():
-            discovery_cache.unlink()
-            caches_cleared.append("discovery_clusters")
+        failed_phase = "segments"
+        _apply_segment_plan(segment_plan["operations"], source_id, target_id)
 
-        source_entity_dir = Path(get_journal()) / "entities" / source_id
-        if source_entity_dir.exists():
-            shutil.rmtree(source_entity_dir)
+        failed_phase = "cleanup"
+        caches_cleared = _apply_destructive_plan(facet_plan["operations"], source_id)
 
         result["caches_cleared"] = caches_cleared
 
@@ -707,4 +759,20 @@ def merge_entity(
 
         return result
     except Exception as exc:
-        return {"error": str(exc)}
+        logger.exception(
+            "entity merge failed during %s (source=%s target=%s)",
+            failed_phase,
+            source_id,
+            target_id,
+        )
+        return {
+            "error": str(exc),
+            "failed_phase": failed_phase,
+            "recovery": (
+                f"Entity merge failed during {failed_phase}. Inspect that phase, then rerun "
+                f"`sol call entities merge {source_id} {target_id} --commit` to resume. "
+                f"The source entity remains marked merged_into={target_id}."
+            ),
+            "source_id": source_id,
+            "target_id": target_id,
+        }

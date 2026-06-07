@@ -497,6 +497,48 @@ def append_speaker_correction(seg_dir: Path, correction: dict) -> None:
         atomic_replace(path, json.dumps({"corrections": corrections}, indent=2))
 
 
+def remap_speaker_corrections_for_entity_merge(
+    seg_dir: Path,
+    source_id: str,
+    target_id: str,
+) -> int:
+    """Merge-only locked replace-all remap of source_id→target_id across all corrections.
+
+    Distinct from append_speaker_correction (the UI append path). Reads fresh
+    under lock so a concurrent append is preserved.
+    """
+    path = seg_dir / "talents" / "speaker_corrections.json"
+    with hold_lock(path):
+        current = read_json(
+            path,
+            on_error=MalformedPolicy.WARN_AND_SKIP,
+            default=None,
+        )
+        if not current:
+            return 0
+
+        corrections = (
+            current.get("corrections", []) if isinstance(current, dict) else []
+        )
+        changed_entries = 0
+        for correction in corrections:
+            if not isinstance(correction, dict):
+                continue
+            changed = False
+            for field in ("original_speaker", "corrected_speaker"):
+                if correction.get(field) == source_id:
+                    correction[field] = target_id
+                    changed = True
+            if changed:
+                changed_entries += 1
+
+        if changed_entries == 0:
+            return 0
+
+        atomic_replace(path, json.dumps({"corrections": corrections}, indent=2))
+        return changed_entries
+
+
 def _label_sentence_id(label: dict) -> int | None:
     sid = label.get("sentence_id")
     if sid is None:
