@@ -29,6 +29,16 @@ REMOVED_PROVIDER = "mlx"
 
 @pytest.fixture
 def settings_client(settings_env):
+    client, _journal_path = _settings_client_with_journal(settings_env)
+    return client
+
+
+@pytest.fixture
+def settings_client_with_journal(settings_env):
+    return _settings_client_with_journal(settings_env)
+
+
+def _settings_client_with_journal(settings_env):
     journal_path, config = settings_env()
     config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
     config.setdefault("convey", {})["trust_localhost"] = True
@@ -38,7 +48,18 @@ def settings_client(settings_env):
     )
     app = create_app(str(journal_path))
     app.config["TESTING"] = True
-    return app.test_client()
+    return app.test_client(), journal_path
+
+
+def _valid_vertex_creds() -> dict:
+    return {
+        "type": "service_account",
+        "project_id": "test-project",
+        "client_email": "test@test-project.iam.gserviceaccount.com",
+        "private_key": "-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----\n",
+        "client_id": "123",
+        "token_uri": "https://oauth2.googleapis.com/token",
+    }
 
 
 def _assert_install_status(payload: dict) -> None:
@@ -355,3 +376,65 @@ def test_get_providers_ai_readiness_omits_local_on_mlx(settings_client, monkeypa
     payload = response.get_json()
     assert payload["local_backend"] == "mlx"
     assert "local" not in payload["ai_readiness"]
+
+
+def test_put_providers_imports_and_clears_vertex_credentials(
+    settings_client_with_journal, monkeypatch
+):
+    client, journal_path = settings_client_with_journal
+    monkeypatch.setattr(
+        "solstone.apps.settings.routes.validate_vertex_credentials",
+        lambda _path: {
+            "valid": True,
+            "email": "test@test-project.iam.gserviceaccount.com",
+        },
+    )
+
+    response = client.put(
+        "/app/settings/api/providers",
+        json={"vertex_credentials": json.dumps(_valid_vertex_creds())},
+    )
+
+    assert response.status_code == 200
+    creds_file = journal_path / ".config" / "vertex-credentials.json"
+    assert creds_file.exists()
+    assert creds_file.stat().st_mode & 0o777 == 0o600
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
+    assert config["providers"]["vertex_credentials"] == str(creds_file)
+
+    response = client.put(
+        "/app/settings/api/providers",
+        json={"vertex_credentials": ""},
+    )
+
+    assert response.status_code == 200
+    assert not creds_file.exists()
+    config = json.loads(config_path.read_text())
+    assert "vertex_credentials" not in config["providers"]
+
+
+def test_put_providers_clear_refuses_noncanonical_path_but_removes_config(
+    settings_client_with_journal,
+):
+    client, journal_path = settings_client_with_journal
+    noncanonical = journal_path / "elsewhere.json"
+    noncanonical.write_text("secret", encoding="utf-8")
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
+    config["providers"]["vertex_credentials"] = str(noncanonical)
+    config["providers"].setdefault("key_validation", {})["google_vertex"] = {
+        "valid": True,
+    }
+    config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+
+    response = client.put(
+        "/app/settings/api/providers",
+        json={"vertex_credentials": ""},
+    )
+
+    assert response.status_code == 200
+    assert noncanonical.exists()
+    config = json.loads(config_path.read_text())
+    assert "vertex_credentials" not in config["providers"]
+    assert "google_vertex" not in config["providers"]["key_validation"]

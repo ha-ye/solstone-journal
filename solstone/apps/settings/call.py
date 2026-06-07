@@ -29,6 +29,10 @@ from solstone.apps.settings.copy import (
     CONVEY_TRUST_ENABLE_DONE,
     format_convey_status,
 )
+from solstone.apps.settings.vertex_credentials import (
+    delete_vertex_credentials,
+    save_vertex_credentials,
+)
 from solstone.convey.network_access import (
     NetworkAccessPasswordRequired,
     set_network_access,
@@ -621,15 +625,7 @@ def vertex_credentials_import(
         typer.echo(f"Missing required fields: {', '.join(missing)}", err=True)
         raise typer.Exit(1)
 
-    journal_root = Path(get_journal())
-    creds_dir = journal_root / ".config"
-    creds_dir.mkdir(parents=True, exist_ok=True)
-    creds_file = creds_dir / "vertex-credentials.json"
-
-    with open(creds_file, "w", encoding="utf-8") as f:
-        json.dump(creds_data, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-    os.chmod(creds_file, 0o600)
+    creds_file = save_vertex_credentials(creds_data, Path(get_journal()))
 
     config = _get_config()
     config.setdefault("providers", {})
@@ -665,12 +661,7 @@ def vertex_credentials_clear() -> None:
     config.setdefault("providers", {})
     old_path = config["providers"].get("vertex_credentials")
     if old_path:
-        canonical = Path(get_journal()) / ".config" / "vertex-credentials.json"
-        if Path(old_path).resolve() == canonical.resolve():
-            try:
-                canonical.unlink(missing_ok=True)
-            except OSError:
-                pass
+        delete_vertex_credentials(old_path, Path(get_journal()))
         config["providers"].pop("vertex_credentials", None)
         config["providers"].setdefault("key_validation", {})
         config["providers"]["key_validation"].pop("google_vertex", None)

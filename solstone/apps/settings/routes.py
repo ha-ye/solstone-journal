@@ -28,6 +28,10 @@ from solstone.apps.settings.copy import (
     CONVEY_REFUSE_NO_PASSWORD_NETWORK,
     CONVEY_REFUSE_NO_PASSWORD_TRUST,
 )
+from solstone.apps.settings.vertex_credentials import (
+    delete_vertex_credentials,
+    save_vertex_credentials,
+)
 from solstone.apps.utils import log_app_action
 from solstone.convey import chat_stream, state
 from solstone.convey import copy as convey_copy
@@ -1182,13 +1186,10 @@ def update_providers() -> Any:
                     )
 
                 # Save credentials file
-                creds_dir = Path(state.journal_root) / ".config"
-                creds_dir.mkdir(parents=True, exist_ok=True)
-                creds_file = creds_dir / "vertex-credentials.json"
-                with open(creds_file, "w", encoding="utf-8") as f:
-                    json.dump(creds_data, f, indent=2, ensure_ascii=False)
-                    f.write("\n")
-                os.chmod(creds_file, 0o600)
+                creds_file = save_vertex_credentials(
+                    creds_data,
+                    Path(state.journal_root),
+                )
 
                 # Store path in config
                 old_val = old_providers.get("vertex_credentials", "")
@@ -1225,14 +1226,7 @@ def update_providers() -> Any:
                         "new": None,
                     }
                     # Only delete the file we created, not arbitrary paths
-                    canonical = (
-                        Path(state.journal_root) / ".config" / "vertex-credentials.json"
-                    )
-                    if Path(old_path).resolve() == canonical.resolve():
-                        try:
-                            canonical.unlink(missing_ok=True)
-                        except OSError:
-                            pass
+                    delete_vertex_credentials(old_path, Path(state.journal_root))
                     config["providers"].pop("vertex_credentials", None)
                     # Clear validation
                     kv = config["providers"].get("key_validation", {})

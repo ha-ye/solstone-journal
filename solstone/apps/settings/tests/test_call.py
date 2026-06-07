@@ -438,6 +438,7 @@ class TestVertexCredentials:
         assert result.exit_code == 0
         canonical = journal_path / ".config" / "vertex-credentials.json"
         assert canonical.exists()
+        assert canonical.stat().st_mode & 0o777 == 0o600
         saved = json.loads((journal_path / "config" / "journal.json").read_text())
         assert saved["providers"]["vertex_credentials"] == str(canonical)
 
@@ -513,6 +514,25 @@ class TestVertexCredentials:
 
         assert result.exit_code == 0
         assert not creds_file.exists()
+        updated = json.loads(config_path.read_text())
+        assert "vertex_credentials" not in updated["providers"]
+        assert "google_vertex" not in updated["providers"]["key_validation"]
+
+    def test_clear_refuses_noncanonical_path_but_removes_config(self, settings_env):
+        journal_path, _config = settings_env()
+        noncanonical = journal_path / "elsewhere.json"
+        noncanonical.write_text("secret", encoding="utf-8")
+
+        config_path = journal_path / "config" / "journal.json"
+        saved = json.loads(config_path.read_text())
+        saved["providers"]["vertex_credentials"] = str(noncanonical)
+        saved["providers"]["key_validation"]["google_vertex"] = {"valid": True}
+        config_path.write_text(json.dumps(saved, indent=2) + "\n", encoding="utf-8")
+
+        result = runner.invoke(call_app, ["settings", "vertex-credentials", "clear"])
+
+        assert result.exit_code == 0
+        assert noncanonical.exists()
         updated = json.loads(config_path.read_text())
         assert "vertex_credentials" not in updated["providers"]
         assert "google_vertex" not in updated["providers"]["key_validation"]

@@ -83,6 +83,7 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/apps/chat/config.py",
         "solstone/apps/speakers/owner.py",
         "solstone/apps/speakers/routes.py",
+        "solstone/apps/settings/vertex_credentials.py",
         "solstone/apps/todos/call.py",
         "solstone/apps/todos/todo.py",
         "solstone/think/activities.py",
