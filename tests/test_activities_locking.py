@@ -58,7 +58,9 @@ def test_locked_modify_serializes_concurrent_edits(tmp_path, monkeypatch):
         target=worker, args=("cli:update", "first writer"), kwargs={"hold_lock": True}
     )
     second = threading.Thread(
-        target=worker, args=("cli:mute", "second writer"), kwargs={"hold_lock": False}
+        target=worker,
+        args=("cli:mute", "second writer café"),
+        kwargs={"hold_lock": False},
     )
 
     first.start()
@@ -75,9 +77,12 @@ def test_locked_modify_serializes_concurrent_edits(tmp_path, monkeypatch):
     assert len(records) == 1
     assert [edit["note"] for edit in records[0]["edits"]] == [
         "first writer",
-        "second writer",
+        "second writer café",
     ]
 
-    raw_lines = record_path.read_text(encoding="utf-8").splitlines()
+    raw_text = record_path.read_text(encoding="utf-8")
+    assert "café" in raw_text
+    assert "\\u00e9" not in raw_text
+    raw_lines = raw_text.splitlines()
     assert len(raw_lines) == 1
     assert json.loads(raw_lines[0])["edits"][1]["actor"] == "cli:mute"

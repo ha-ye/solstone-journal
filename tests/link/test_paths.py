@@ -192,7 +192,9 @@ def test_save_service_token_is_atomic(
 
     token_path = service_token_path()
     assert token_path.exists()
-    assert not any(path.name.endswith(".tmp") for path in token_path.parent.iterdir())
+    assert json.loads(token_path.read_text("utf-8")) == {"service_token": "tok.123"}
+    assert token_path.stat().st_mode & 0o777 == 0o600
+    assert {path.name for path in token_path.parent.iterdir()} == {token_path.name}
 
 
 def test_load_service_token_reads_legacy_account_key(
@@ -245,7 +247,9 @@ def test_save_totp_secret_is_atomic(
 
     secret_path = totp_secret_path()
     assert secret_path.exists()
-    assert not any(path.name.endswith(".tmp") for path in secret_path.parent.iterdir())
+    assert json.loads(secret_path.read_text("utf-8")) == {"totp_secret": "SECRET"}
+    assert secret_path.stat().st_mode & 0o777 == 0o600
+    assert {path.name for path in secret_path.parent.iterdir()} == {secret_path.name}
 
 
 def test_generate_totp_secret_shape() -> None:

@@ -15,6 +15,7 @@ from typing import Any
 
 import typer
 
+from solstone.convey.reasons import ACTIVITIES_BUSY
 from solstone.think.activities import (
     append_activity_record,
     append_edit,
@@ -30,6 +31,7 @@ from solstone.think.activities import (
 from solstone.think.entities.loading import load_entities
 from solstone.think.entities.matching import find_matching_entity
 from solstone.think.facets import get_facets, log_call_action
+from solstone.think.journal_io import LockTimeout
 from solstone.think.utils import (
     get_sol_facet,
     now_ms,
@@ -466,7 +468,13 @@ def create_record(
         note="created",
     )
 
-    if not append_activity_record(resolved_facet, resolved_day, record):
+    try:
+        created = append_activity_record(resolved_facet, resolved_day, record)
+    except LockTimeout:
+        typer.echo(ACTIVITIES_BUSY.message, err=True)
+        raise typer.Exit(1)
+
+    if not created:
         typer.echo(f"Error: activity already exists: {span_id}", err=True)
         raise typer.Exit(1)
 
@@ -523,14 +531,18 @@ def update_record_command(
         raise typer.Exit(1)
 
     note_text = note or f"updated fields: {', '.join(sorted(patch))}"
-    updated = update_activity_record(
-        resolved_facet,
-        resolved_day,
-        span_id,
-        patch,
-        actor="cli:update",
-        note=note_text,
-    )
+    try:
+        updated = update_activity_record(
+            resolved_facet,
+            resolved_day,
+            span_id,
+            patch,
+            actor="cli:update",
+            note=note_text,
+        )
+    except LockTimeout:
+        typer.echo(ACTIVITIES_BUSY.message, err=True)
+        raise typer.Exit(1)
     if updated is None:
         typer.echo(f"activity not found: {span_id}", err=True)
         raise typer.Exit(1)
@@ -569,13 +581,17 @@ def mute_record(
     """Hide an activity record without deleting it."""
     resolved_facet = resolve_sol_facet(facet)
     resolved_day = resolve_sol_day(day)
-    record = mute_activity_record(
-        resolved_facet,
-        resolved_day,
-        span_id,
-        actor="cli:mute",
-        reason=reason,
-    )
+    try:
+        record = mute_activity_record(
+            resolved_facet,
+            resolved_day,
+            span_id,
+            actor="cli:mute",
+            reason=reason,
+        )
+    except LockTimeout:
+        typer.echo(ACTIVITIES_BUSY.message, err=True)
+        raise typer.Exit(1)
     if record is None:
         typer.echo(f"activity not found: {span_id}", err=True)
         raise typer.Exit(1)
@@ -614,13 +630,17 @@ def unmute_record(
     """Restore a previously hidden activity record."""
     resolved_facet = resolve_sol_facet(facet)
     resolved_day = resolve_sol_day(day)
-    record = unmute_activity_record(
-        resolved_facet,
-        resolved_day,
-        span_id,
-        actor="cli:unmute",
-        reason=reason,
-    )
+    try:
+        record = unmute_activity_record(
+            resolved_facet,
+            resolved_day,
+            span_id,
+            actor="cli:unmute",
+            reason=reason,
+        )
+    except LockTimeout:
+        typer.echo(ACTIVITIES_BUSY.message, err=True)
+        raise typer.Exit(1)
     if record is None:
         typer.echo(f"activity not found: {span_id}", err=True)
         raise typer.Exit(1)

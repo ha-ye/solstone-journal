@@ -133,6 +133,7 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/think/importers/cli.py",
         "solstone/think/importers/documents.py",
         "solstone/think/importers/shared.py",
+        "solstone/convey/chat_stream.py",
         # imports/** bundle + sync-cursor writers (local/CLI import flows).
         "solstone/think/importers/plaud.py",  # streamed imported-audio install.
         "solstone/think/importers/sync.py",

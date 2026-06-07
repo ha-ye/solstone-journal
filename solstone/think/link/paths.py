@@ -31,6 +31,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from solstone.think.journal_io import write_json
 from solstone.think.utils import get_journal
 
 # Production spl-relay endpoint. Single source of truth — self-hosters
@@ -146,19 +147,11 @@ class LinkState:
         return None
 
     def save(self) -> None:
-        path = state_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(
-                {"instance_id": self.instance_id, "home_label": self.home_label},
-                f,
-                indent=2,
-            )
-            f.write("\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
+        write_json(
+            state_path(),
+            {"instance_id": self.instance_id, "home_label": self.home_label},
+            indent=2,
+        )
 
 
 def load_service_token() -> str | None:
@@ -178,15 +171,7 @@ def load_service_token() -> str | None:
 def save_service_token(token: str) -> None:
     """Persist the service token atomically with mode 0600."""
     path = service_token_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"service_token": token}, f, indent=2)
-        f.write("\n")
-        f.flush()
-        os.fsync(f.fileno())
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    write_json(path, {"service_token": token}, indent=2, mode=0o600)
 
 
 def generate_totp_secret() -> str:
@@ -209,12 +194,4 @@ def load_totp_secret() -> str | None:
 def save_totp_secret(secret: str) -> None:
     """Persist the relay pairing TOTP secret atomically with mode 0600."""
     path = totp_secret_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"totp_secret": secret}, f, indent=2)
-        f.write("\n")
-        f.flush()
-        os.fsync(f.fileno())
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    write_json(path, {"totp_secret": secret}, indent=2, mode=0o600)

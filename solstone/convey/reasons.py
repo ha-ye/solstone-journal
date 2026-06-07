@@ -316,6 +316,11 @@ ENTITY_BUSY = Reason(
     "I couldn't update that entity right now because it was busy. Try again in a moment.",
     503,
 )
+ACTIVITIES_BUSY = Reason(
+    "activities_busy",
+    "I couldn't update activities right now because they were busy. Try again in a moment.",
+    503,
+)
 
 # identity
 IDENTITY_BUSY = Reason(

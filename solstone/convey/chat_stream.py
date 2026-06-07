@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
 import threading
 import time
@@ -15,6 +14,7 @@ from typing import Any
 
 from solstone.think.callosum import callosum_send
 from solstone.think.indexer.journal import index_file
+from solstone.think.journal_io import atomic_replace
 from solstone.think.streams import update_stream, write_segment_stream
 from solstone.think.utils import (
     day_path,
@@ -413,17 +413,5 @@ def _read_events_file(path: Path) -> list[dict[str, Any]]:
 
 
 def _write_events_file(path: Path, events: list[dict[str, Any]]) -> None:
-    tmp_path = path.with_suffix(f".{os.getpid()}-{threading.get_ident()}.tmp")
-    try:
-        with open(tmp_path, "w", encoding="utf-8") as handle:
-            for event in events:
-                handle.write(json.dumps(event, ensure_ascii=False))
-                handle.write("\n")
-        os.replace(tmp_path, path)
-    except Exception:
-        try:
-            if tmp_path.exists():
-                tmp_path.unlink()
-        except OSError:
-            pass
-        raise
+    body = "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events)
+    atomic_replace(path, body)

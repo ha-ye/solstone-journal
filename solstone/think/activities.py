@@ -11,18 +11,15 @@ stored as facets/{facet}/activities/{day}.jsonl.
 """
 
 import difflib
-import fcntl
 import json
 import logging
 import os
-import random
 import re
-import tempfile
-import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from solstone.think.journal_io import atomic_replace, hold_lock
 from solstone.think.utils import get_journal, segment_parse
 
 logger = logging.getLogger(__name__)
@@ -784,17 +781,10 @@ def _read_jsonl_records(path: Path) -> list[dict[str, Any]]:
 
 def _write_jsonl_records(path: Path, records: list[dict[str, Any]]) -> None:
     """Atomically write JSONL entries to *path*."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            for record in records:
-                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-        os.replace(tmp_name, path)
-    except BaseException:
-        if os.path.exists(tmp_name):
-            os.unlink(tmp_name)
-        raise
+    atomic_replace(
+        path,
+        "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records),
+    )
 
 
 def _fallback_activity_title(record: dict[str, Any]) -> str:
@@ -835,42 +825,21 @@ def locked_modify(
     modify_fn: Any,
     *,
     create_if_missing: bool = False,
-    max_retries: int = 3,
 ) -> None:
     """Perform a locked load-modify-save cycle on a JSONL file."""
-    lock_path = path.parent / f"{path.name}.lock"
-
-    last_error: OSError | None = None
-    for attempt in range(max_retries):
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(lock_path, "w", encoding="utf-8") as lock_file:
-                fcntl.flock(lock_file, fcntl.LOCK_EX)
-                try:
-                    existed = path.exists()
-                    if not existed and not create_if_missing:
-                        raise FileNotFoundError(path)
-                    current = _read_jsonl_records(path) if existed else []
-                    updated = modify_fn([dict(item) for item in current])
-                    if not isinstance(updated, list):
-                        raise TypeError("modify_fn must return list[dict]")
-                    if not existed and not updated:
-                        return
-                    if existed and updated == current:
-                        return
-                    _write_jsonl_records(path, updated)
-                finally:
-                    fcntl.flock(lock_file, fcntl.LOCK_UN)
+    with hold_lock(path):
+        existed = path.exists()
+        if not existed and not create_if_missing:
+            raise FileNotFoundError(path)
+        current = _read_jsonl_records(path) if existed else []
+        updated = modify_fn([dict(item) for item in current])
+        if not isinstance(updated, list):
+            raise TypeError("modify_fn must return list[dict]")
+        if not existed and not updated:
             return
-        except (FileNotFoundError, TypeError, ValueError):
-            raise
-        except OSError as exc:
-            last_error = exc
-            if attempt < max_retries - 1:
-                time.sleep(random.uniform(0.05, 0.3) * (attempt + 1))
-
-    if last_error is not None:
-        raise last_error
+        if existed and updated == current:
+            return
+        _write_jsonl_records(path, updated)
 
 
 def append_edit(

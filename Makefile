@@ -14,7 +14,7 @@ export TMPDIR := /var/tmp
 PYTEST_BASETEMP_INIT := BASETEMP=$$(mktemp -d /var/tmp/solstone-pytest-XXXXXX); trap 'rm -rf "$$BASETEMP"' EXIT INT TERM;
 PYTEST_BASETEMP_FLAG := --basetemp "$$BASETEMP"
 
-.PHONY: install uninstall test test-cov test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills dev all sandbox sandbox-stop install-pinchtab install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify-browser update-browser-baselines review verify verify-api update-api-baselines service-logs check-layer-hygiene check-api-conventions check-journal-io-access smoke-cogitate release release-test FORCE
+.PHONY: install uninstall test test-cov test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills dev all sandbox sandbox-stop install-pinchtab install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify-browser update-browser-baselines review verify verify-api update-api-baselines service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic smoke-cogitate release release-test FORCE
 
 # Default target - install package in editable mode
 all: install
@@ -461,6 +461,9 @@ install-checks: .installed
 	@echo "=== Running journal-io access check ==="
 	@$(MAKE) check-journal-io-access
 	@echo ""
+	@echo "=== Running journal-io mechanic check ==="
+	@$(MAKE) check-journal-io-mechanic
+	@echo ""
 	@echo "=== Checking extras consistency ==="
 	@$(VENV_BIN)/python scripts/check_extras_consistency.py
 	@echo ""
@@ -530,6 +533,10 @@ check-api-conventions: .installed
 # Journal-io write-primitive access check (see AGENTS.md §7 L2)
 check-journal-io-access: .installed
 	$(VENV_BIN)/python scripts/check_journal_io_access.py
+
+# Journal raw-mechanic check (see AGENTS.md §7 L2)
+check-journal-io-mechanic: .installed
+	$(VENV_BIN)/python scripts/check_journal_io_mechanic.py
 
 # Re-run the live four-backend integrated-façade cogitate smoke. Spawns the
 # archived runner (extro `vpe/workspace/archived/`) against this venv so the

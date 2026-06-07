@@ -436,7 +436,6 @@ def write_structured_import(
     Returns:
         List of created file paths (absolute)
     """
-    import tempfile
     from collections import defaultdict
 
     # Group entries by day (YYYYMMDD extracted from ts)
@@ -505,17 +504,7 @@ def write_structured_import(
             lines.append(json.dumps(entry))
         content = "\n".join(lines) + "\n"
 
-        # Atomic write: write to temp file, then rename
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(import_dir), suffix=".tmp", prefix="imported_"
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(content)
-            os.replace(tmp_path, str(out_path))
-        except BaseException:
-            os.unlink(tmp_path)
-            raise
+        atomic_replace(out_path, content)
 
         created.append(str(out_path))
         logger.info("Wrote %d entries to %s", len(day_entries), out_path)
