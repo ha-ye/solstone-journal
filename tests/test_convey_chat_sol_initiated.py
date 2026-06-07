@@ -135,6 +135,78 @@ def test_sol_request_open_endpoint_records_open(tmp_path, monkeypatch) -> None:
     assert events[-1]["surface"] == SURFACE_CONVEY
 
 
+def test_sol_request_open_endpoint_broadcast_suppresses_push(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import solstone.convey.chat as chat
+    from solstone.think.push import triggers
+
+    _setup_journal(tmp_path, monkeypatch)
+    _reset_chat_state(chat)
+    emitted = []
+
+    class FakeCallosum:
+        def emit(self, tract, event, **kwargs):
+            emitted.append((tract, event, kwargs))
+            return True
+
+    class FakeRuntime:
+        callosum = FakeCallosum()
+
+    monkeypatch.setattr(chat, "_runtime", FakeRuntime(), raising=False)
+    app = Flask(__name__)
+    app.config["TESTING"] = True
+    app.register_blueprint(chat.chat_bp)
+
+    response = app.test_client().post(
+        f"/api/chat/{KIND_SOL_CHAT_REQUEST}/open",
+        json={"request_id": "req-1"},
+    )
+
+    assert response.status_code == 200
+    assert len(emitted) == 1
+    tract, kind, kwargs = emitted[0]
+    assert (tract, kind) == ("chat", KIND_OWNER_CHAT_OPEN)
+    assert kwargs["request_id"] == "req-1"
+
+    monkeypatch.setattr(triggers, "is_configured", lambda: True)
+    devices = [{"token": "a" * 64}]
+    monkeypatch.setattr(triggers, "_eligible_devices", lambda: devices)
+    monkeypatch.setattr(triggers.time, "time", lambda: 123.0)
+    sent_calls = []
+
+    def fake_send_many(push_devices, payload, *, collapse_id, priority, push_type):
+        sent_calls.append(
+            {
+                "devices": push_devices,
+                "payload": payload,
+                "collapse_id": collapse_id,
+                "priority": priority,
+                "push_type": push_type,
+            }
+        )
+        return 1, 0
+
+    monkeypatch.setattr(triggers, "send_many", fake_send_many)
+    message = {"tract": tract, "event": kind, **kwargs}
+
+    triggers.handle_chat_lifecycle(message)
+
+    assert sent_calls == [
+        {
+            "devices": devices,
+            "payload": {
+                "aps": {"mutable-content": 1, "content-available": 1},
+                "data": {"action": KIND_OWNER_CHAT_OPEN, "request_id": "req-1"},
+            },
+            "collapse_id": f"sol_chat_lifecycle:req-1:{KIND_OWNER_CHAT_OPEN}",
+            "priority": 5,
+            "push_type": "background",
+        }
+    ]
+
+
 def test_sol_request_open_endpoint_requires_request_id(tmp_path, monkeypatch) -> None:
     import solstone.convey.chat as chat
 

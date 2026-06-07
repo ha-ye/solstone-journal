@@ -22,7 +22,6 @@ from solstone.convey.sol_initiated.copy import (
     CATEGORIES,
     KIND_OWNER_CHAT_OPEN,
     KIND_SOL_CHAT_REQUEST,
-    SURFACE_CONVEY,
 )
 
 
@@ -591,7 +590,7 @@ def test_universal_chat_bar_renders_on_today_and_past_day(journal_copy, monkeypa
         assert html.count('id="chatBarForm"') == 1
 
 
-def test_chat_today_page_records_owner_chat_open_for_unresolved_request(
+def test_chat_today_page_does_not_record_owner_chat_open_for_unresolved_request(
     journal_copy,
     monkeypatch,
 ):
@@ -604,10 +603,12 @@ def test_chat_today_page_records_owner_chat_open_for_unresolved_request(
     response = env.client.get(f"/app/chat/{today}")
 
     assert response.status_code == 200
-    events = read_chat_events(today)
-    assert events[-1]["kind"] == KIND_OWNER_CHAT_OPEN
-    assert events[-1]["request_id"] == "req"
-    assert events[-1]["surface"] == SURFACE_CONVEY
+    assert [
+        event
+        for event in read_chat_events(today)
+        if event.get("kind") == KIND_OWNER_CHAT_OPEN
+    ] == []
+    assert 'data-sol-open-request-id="req"' in response.get_data(as_text=True)
 
 
 def test_chat_today_page_without_unresolved_request_writes_no_open(
@@ -622,6 +623,7 @@ def test_chat_today_page_without_unresolved_request_writes_no_open(
     response = env.client.get(f"/app/chat/{today}")
 
     assert response.status_code == 200
+    assert 'data-sol-open-request-id=""' in response.get_data(as_text=True)
     assert [
         event
         for event in read_chat_events(today)
@@ -643,6 +645,7 @@ def test_chat_past_day_request_does_not_record_owner_chat_open(
     response = env.client.get(f"/app/chat/{past_day}")
 
     assert response.status_code == 200
+    assert 'data-sol-open-request-id=""' in response.get_data(as_text=True)
     assert [
         event
         for event in read_chat_events(past_day)
@@ -650,7 +653,7 @@ def test_chat_past_day_request_does_not_record_owner_chat_open(
     ] == []
 
 
-def test_chat_today_page_records_repeated_owner_chat_open(
+def test_chat_today_repeated_loads_record_no_open(
     journal_copy,
     monkeypatch,
 ):
@@ -665,16 +668,17 @@ def test_chat_today_page_records_repeated_owner_chat_open(
 
     assert first.status_code == 200
     assert second.status_code == 200
+    assert 'data-sol-open-request-id="req"' in first.get_data(as_text=True)
+    assert 'data-sol-open-request-id="req"' in second.get_data(as_text=True)
     opens = [
         event
         for event in read_chat_events(today)
         if event.get("kind") == KIND_OWNER_CHAT_OPEN
     ]
-    assert len(opens) == 2
-    assert {event["request_id"] for event in opens} == {"req"}
+    assert opens == []
 
 
-def test_chat_today_initial_render_excludes_newly_written_open(
+def test_chat_today_get_is_read_only_and_renders_request_var(
     journal_copy,
     monkeypatch,
 ):
@@ -690,4 +694,5 @@ def test_chat_today_initial_render_excludes_newly_written_open(
     assert response.status_code == 200
     assert 'id="event-0"' in html
     assert 'id="event-1"' not in html
-    assert len(read_chat_events(today)) == 2
+    assert len(read_chat_events(today)) == 1
+    assert 'data-sol-open-request-id="req"' in html

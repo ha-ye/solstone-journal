@@ -785,6 +785,10 @@
     solPingApiJson(solPingEndpoint('open'), solRequestState.request_id);
   }
 
+  window.recordOwnerChatOpen = function(requestId) {
+    solPingApiJson(solPingEndpoint('open'), requestId);
+  };
+
   function clearConversationSuggestion() {
     if (!input) return;
     delete input.dataset.suggestion;

@@ -115,6 +115,8 @@ reconnect quickly and the next `sol_chat_request` repopulates the value.
 
 ### D3. `/app/chat` page-load `record_owner_chat_open`
 
+> **Superseded:** the `/app/chat` page-load open is now recorded by a front-end POST-on-load to `POST /api/chat/sol_chat_request/open`; the GET handler is read-only and no longer writes `owner_chat_open`.
+
 Add server-side open recording in `solstone/apps/chat/routes.py::day(day)`.
 
 Current route shape:

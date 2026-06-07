@@ -1,4 +1,4 @@
-<section class="chat-app" data-day="{{ day }}" data-today="{{ today_day }}">
+<section class="chat-app" data-day="{{ day }}" data-today="{{ today_day }}" data-sol-open-request-id="{{ sol_open_request_id or '' }}">
   <header class="chat-app-search">
     <form id="chatSearchForm" class="chat-search-form" role="search">
       <label class="visually-hidden" for="chatSearchInput">search chat</label>
@@ -53,6 +53,7 @@
   const day = root.dataset.day;
   const todayDay = root.dataset.today;
   const isToday = day === todayDay;
+  const solOpenRequestId = root.dataset.solOpenRequestId;
   const transcript = document.getElementById('chatTranscript');
   const ownerName = transcript.dataset.ownerName;
   const agentName = transcript.dataset.agentName;
@@ -96,6 +97,10 @@
         appendEventFromLive(msg, transcript);
       });
       window.addEventListener('beforeunload', chatEventsCleanup, { once: true });
+    }
+
+    if (isToday && solOpenRequestId && window.recordOwnerChatOpen) {
+      window.recordOwnerChatOpen(solOpenRequestId);
     }
   }
 
