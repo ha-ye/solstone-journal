@@ -25,7 +25,7 @@ from solstone.convey.reasons import (
     JOURNAL_SOURCE_PROBLEM,
     MISSING_REQUIRED_FIELD,
 )
-from solstone.convey.utils import error_response, respond_collection
+from solstone.convey.utils import error_response, load_json, respond_collection
 from solstone.think.detect_created import detect_created
 from solstone.think.importers.utils import (
     build_import_info,
@@ -999,6 +999,74 @@ def api_journal_source_status(name: str) -> Any:
             "stats": source.get("stats", {}),
         }
     )
+
+
+@import_bp.route("/api/journal-sources/<name>/staged")
+def api_journal_source_staged(name: str) -> Any:
+    source = find_journal_source_by_name(name)
+    if not source:
+        return error_response(
+            JOURNAL_SOURCE_PROBLEM,
+            status=404,
+            detail=f"Journal source '{name}' not found",
+        )
+    area = request.args.get("area")
+    if area is not None and area not in {"entities", "facets", "config"}:
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            status=400,
+            detail="Area must be one of: entities, facets, config",
+        )
+    # Mirrors api_journal_source_status: a registry-returned record always has a
+    # valid prefix, so call journal_source_state_prefix directly (no try/except).
+    state_dir = get_state_directory(journal_source_state_prefix(source))
+    items: list[dict[str, Any]] = []
+
+    if area in {None, "entities"}:
+        staged_dir = state_dir / "entities" / "staged"
+        for staged_path in sorted(staged_dir.glob("*.json")):
+            payload = load_json(staged_path)
+            if not isinstance(payload, dict):
+                continue
+            items.append(
+                {
+                    "area": "entities",
+                    "source_id": staged_path.stem,
+                    "reason": payload.get("reason"),
+                    "source_entity": payload.get("source_entity"),
+                    "match_candidates": payload.get("match_candidates"),
+                    "staged_at": payload.get("staged_at"),
+                }
+            )
+
+    if area in {None, "facets"}:
+        staged_dir = state_dir / "facets" / "staged"
+        for staged_path in sorted(staged_dir.glob("**/*.staged.json")):
+            payload = load_json(staged_path)
+            if not isinstance(payload, dict):
+                continue
+            relative_path = staged_path.relative_to(staged_dir)
+            parts = relative_path.parts
+            if len(parts) < 3:
+                continue
+            line = {
+                "area": "facets",
+                "staged_file": relative_path.as_posix(),
+                "facet": parts[0],
+                "file_type": parts[1],
+            }
+            line.update(payload)
+            items.append(line)
+
+    if area in {None, "config"}:
+        diff = load_json(state_dir / "config" / "diff.json")
+        # Config-parity decision: include the config item iff diff.json exists
+        # AND loads as a dict. A missing / unreadable / non-dict diff is omitted
+        # (still HTTP 200) — never a 500, never an empty-diff placeholder.
+        if isinstance(diff, dict):
+            items.append({"area": "config", "diff": diff})
+
+    return respond_collection(items)
 
 
 @import_bp.route("/journal/<key_prefix>/manifest/<area>")
