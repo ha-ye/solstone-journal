@@ -837,8 +837,6 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
     data_state: dict[str, str] = {}
     for modality in ("audio", "screen"):
         has_chunks = any(chunk["type"] == modality for chunk in chunks)
-        # Sanctioned read-path mutation (CLAUDE.md §7 L1/L6 exception, ACs 10/11/12):
-        # the shared helper may rename/unlink sidecar markers. See data_state.derive_modality_state.
         if has_chunks:
             data_state[modality] = derive_modality_state(
                 segment_dir_path,

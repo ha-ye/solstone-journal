@@ -22,7 +22,11 @@ from typing import Any
 from solstone.observe.hear import format_audio
 from solstone.observe.screen import format_screen
 from solstone.observe.utils import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
-from solstone.think.data_state import DataState, derive_modality_state
+from solstone.think.data_state import (
+    DataState,
+    derive_modality_state,
+    repair_modality_markers,
+)
 from solstone.think.identity import (
     STEWARD_SECTION_ATTENTION,
     STEWARD_SECTION_AUTO_REPAIRS,
@@ -192,6 +196,13 @@ def _modality_signals(segment_dir: Path, modality: str) -> dict[str, bool | str]
 
     media_purged = has_raw_reference and not has_raw_file
     if has_chunks:
+        repair_modality_markers(
+            segment_dir,
+            modality,
+            has_chunks=True,
+            has_jsonl=has_jsonl,
+            has_raw=bool(raw_files),
+        )
         state = derive_modality_state(
             segment_dir,
             modality,
@@ -202,6 +213,13 @@ def _modality_signals(segment_dir: Path, modality: str) -> dict[str, bool | str]
     elif media_purged:
         state = DataState.PURGED.value
     else:
+        repair_modality_markers(
+            segment_dir,
+            modality,
+            has_chunks=False,
+            has_jsonl=has_jsonl,
+            has_raw=bool(raw_files),
+        )
         state = derive_modality_state(
             segment_dir,
             modality,

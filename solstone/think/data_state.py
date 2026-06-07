@@ -72,6 +72,34 @@ def create_analyzing_marker(seg_path: Path, modality: str) -> Path:
     return path
 
 
+def _classify_marker(
+    marker_path: Path, *, has_chunks: bool
+) -> tuple[str, dict | None, str]:
+    if has_chunks:
+        return "chunks_win", None, ""
+    if not marker_path.is_file():
+        return "none", None, ""
+
+    try:
+        payload = json.loads(marker_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("marker JSON must be an object")
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return "corrupt", None, str(exc)
+
+    try:
+        marker_age = time.time() - marker_path.stat().st_mtime
+    except OSError:
+        marker_age = 0
+    if marker_age > ANALYZING_STALE_SECONDS:
+        return (
+            "stale",
+            payload,
+            f"analyzing marker older than {ANALYZING_STALE_SECONDS} seconds",
+        )
+    return "active", payload, ""
+
+
 def derive_modality_state(
     seg_path: Path,
     modality: str,
@@ -80,53 +108,19 @@ def derive_modality_state(
     has_jsonl: bool,
     has_raw: bool,
 ) -> str:
-    """Resolve per-modality data state, reconciling analyzing sidecars.
+    """Purely resolve per-modality data state without writing sidecar markers.
 
-    Read-path mutation contract (sanctioned by ACs 10, 11, 12):
-      - chunks-win rescue: orphaned .analyzing_<m> is unlinked when has_chunks is True.
-      - stale-reconcile: .analyzing_<m> older than ANALYZING_STALE_SECONDS is renamed
-        to .analyze_failed_<m> with {"reason":"stale", ...}.
-      - corrupt-JSON: unparseable .analyzing_<m> is renamed to .analyze_failed_<m>
-        with {"reason":"marker_corrupt", ...} regardless of mtime.
-    All writes touch ONLY the two sidecar files in seg_path; no chunks, no jsonl,
-    no domain state. Documented exception to CLAUDE.md §7 L1/L6.
+    Marker repair is intentionally separated into repair_modality_markers().
     """
     marker_path = _analyzing_path(seg_path, modality)
     failed_path = _failed_path(seg_path, modality)
 
-    if has_chunks:
-        marker_path.unlink(missing_ok=True)
+    verdict, _payload, _detail = _classify_marker(marker_path, has_chunks=has_chunks)
+    if verdict == "chunks_win":
         return DataState.ANALYZED.value
-
-    if marker_path.is_file():
-        try:
-            payload = json.loads(marker_path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                raise ValueError("marker JSON must be an object")
-        except (OSError, json.JSONDecodeError, ValueError) as exc:
-            _write_failed_marker(
-                marker_path,
-                failed_path,
-                modality,
-                "marker_corrupt",
-                str(exc),
-            )
-            return DataState.FAILED.value
-
-        try:
-            marker_age = time.time() - marker_path.stat().st_mtime
-        except OSError:
-            marker_age = 0
-        if marker_age > ANALYZING_STALE_SECONDS:
-            _write_failed_marker(
-                marker_path,
-                failed_path,
-                modality,
-                "stale",
-                f"analyzing marker older than {ANALYZING_STALE_SECONDS} seconds",
-                payload,
-            )
-            return DataState.FAILED.value
+    if verdict in {"corrupt", "stale"}:
+        return DataState.FAILED.value
+    if verdict == "active":
         return DataState.ANALYZING.value
 
     if failed_path.is_file():
@@ -134,3 +128,37 @@ def derive_modality_state(
     if has_jsonl or has_raw:
         return DataState.PENDING.value
     return DataState.ABSENT.value
+
+
+def repair_modality_markers(
+    seg_path: Path,
+    modality: str,
+    *,
+    has_chunks: bool,
+    has_jsonl: bool,
+    has_raw: bool,
+) -> None:
+    """Repair analyzing sidecars using the former derive_modality_state writes."""
+    marker_path = _analyzing_path(seg_path, modality)
+    failed_path = _failed_path(seg_path, modality)
+    verdict, payload, detail = _classify_marker(marker_path, has_chunks=has_chunks)
+
+    if verdict == "chunks_win":
+        marker_path.unlink(missing_ok=True)
+    elif verdict == "corrupt":
+        _write_failed_marker(
+            marker_path,
+            failed_path,
+            modality,
+            "marker_corrupt",
+            detail,
+        )
+    elif verdict == "stale":
+        _write_failed_marker(
+            marker_path,
+            failed_path,
+            modality,
+            "stale",
+            detail,
+            payload,
+        )

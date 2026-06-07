@@ -499,8 +499,6 @@ def _detect_data_state(seg_path: Path) -> dict[str, str]:
         _jsonl_has_marker_row(path, "start") for path in audio_jsonl_files
     ) or any(_has_nonempty_text(path) for path in audio_md_files)
     audio_has_raw = _has_raw_media(raw_media_paths, AUDIO_EXTENSIONS)
-    # Sanctioned read-path mutation (CLAUDE.md §7 L1/L6 exception, ACs 10/11/12):
-    # the shared helper may rename/unlink sidecar markers. See data_state.derive_modality_state.
     audio_state = derive_modality_state(
         seg_path,
         "audio",

@@ -18,6 +18,7 @@ from solstone.think.identity import (
 from solstone.think.steward import (
     RecipeOutcome,
     StalePendingTarget,
+    _modality_signals,
     detect_stale_pending_segments,
     load_steward_log,
     read_steward_health,
@@ -116,6 +117,70 @@ def test_recipe_skips_already_analyzing(tmp_path, monkeypatch):
     (segment_dir / ".analyzing_audio").write_text("{}", encoding="utf-8")
 
     assert detect_stale_pending_segments("20260526", "20260525") == []
+
+
+def test_modality_signals_repairs_chunks_win_marker(tmp_path):
+    segment_dir = tmp_path / "090000_300"
+    segment_dir.mkdir()
+    marker = segment_dir / ".analyzing_screen"
+    marker.write_text(
+        '{"started_at": "2026-05-20T09:00:00Z", "modality": "screen"}\n',
+        encoding="utf-8",
+    )
+    (segment_dir / "screen.jsonl").write_text(
+        '{"raw": "screen.webm"}\n{"timestamp": 1, "content": {}}\n',
+        encoding="utf-8",
+    )
+
+    signals = _modality_signals(segment_dir, "screen")
+
+    assert signals["state"] == "analyzed"
+    assert not marker.exists()
+
+
+def test_modality_signals_repairs_stale_pending_marker(tmp_path):
+    segment_dir = tmp_path / "090000_300"
+    segment_dir.mkdir()
+    marker = segment_dir / ".analyzing_screen"
+    failed = segment_dir / ".analyze_failed_screen"
+    (segment_dir / "screen.webm").write_bytes(b"raw")
+    marker.write_text(
+        '{"started_at": "2026-05-20T09:00:00Z", "modality": "screen"}\n',
+        encoding="utf-8",
+    )
+    old_time = time.time() - 2000
+    os.utime(marker, (old_time, old_time))
+
+    signals = _modality_signals(segment_dir, "screen")
+
+    assert signals["state"] == "failed"
+    assert not marker.exists()
+    payload = json.loads(failed.read_text(encoding="utf-8"))
+    assert payload["reason"] == "stale"
+    assert payload["modality"] == "screen"
+
+
+def test_modality_signals_does_not_repair_media_purged_marker(tmp_path):
+    segment_dir = tmp_path / "090000_300"
+    segment_dir.mkdir()
+    marker = segment_dir / ".analyzing_screen"
+    failed = segment_dir / ".analyze_failed_screen"
+    marker.write_text(
+        '{"started_at": "2026-05-20T09:00:00Z", "modality": "screen"}\n',
+        encoding="utf-8",
+    )
+    old_time = time.time() - 2000
+    os.utime(marker, (old_time, old_time))
+    (segment_dir / "screen.jsonl").write_text(
+        '{"raw": "screen.webm"}\n',
+        encoding="utf-8",
+    )
+
+    signals = _modality_signals(segment_dir, "screen")
+
+    assert signals["state"] == "purged"
+    assert marker.exists()
+    assert not failed.exists()
 
 
 def test_recipe_fire_success_appends_log_entry(tmp_path, monkeypatch):
