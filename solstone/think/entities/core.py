@@ -12,11 +12,8 @@ the entity system:
 """
 
 import hashlib
-import os
 import re
-import tempfile
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from slugify import slugify
@@ -194,33 +191,3 @@ def entity_slug(name: str) -> str:
         slug = slug[: MAX_ENTITY_SLUG_LENGTH - 9] + "_" + name_hash
 
     return slug
-
-
-def atomic_write(path: Path, content: str, prefix: str = ".tmp_") -> None:
-    """Write content to a file atomically using tempfile + rename.
-
-    Creates a temporary file in the same directory, writes content,
-    then atomically renames to the target path. This ensures the
-    target file is never in a partial state.
-
-    Args:
-        path: Target file path
-        content: String content to write
-        prefix: Prefix for the temporary file (default: ".tmp_")
-
-    Raises:
-        OSError: If write or rename fails
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    fd, temp_path = tempfile.mkstemp(dir=path.parent, prefix=prefix, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(content)
-        os.replace(temp_path, path)
-    except Exception:
-        try:
-            os.unlink(temp_path)
-        except Exception:
-            pass
-        raise

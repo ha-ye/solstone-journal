@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from solstone.think.entities.core import atomic_write
+from solstone.think.journal_io import atomic_replace
 from solstone.think.utils import get_journal
 
 logger = logging.getLogger("solstone.push.devices")
@@ -75,7 +75,7 @@ def _read_store() -> list[dict[str, Any]]:
 
 def _write_store(devices: list[dict[str, Any]]) -> None:
     payload = json.dumps({"devices": devices}, indent=2, ensure_ascii=False) + "\n"
-    atomic_write(_devices_path(), payload, prefix=".push_devices_")
+    atomic_replace(_devices_path(), payload)
 
 
 def load_devices() -> list[dict[str, Any]]:

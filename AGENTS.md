@@ -182,6 +182,7 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 |--------|------------------------|
 | Entities (`entities/*/entity.json`, `entities/*/*.npz`) | `solstone/think/entities/journal.py` + `solstone/think/entities/relationships.py` + `solstone/think/entities/consolidation.py` + `solstone/think/entities/saving.py` + `solstone/think/entities/merge.py` + `solstone/think/entities/voiceprints.py` + `solstone/apps/entities/call.py` + `solstone/apps/speakers/owner.py` + `solstone/apps/speakers/routes.py` |
 | Owner voice candidate (`awareness/owner_candidate.npz`) | `solstone/apps/speakers/owner.py` |
+| Speaker discovery clusters (`awareness/discovery_clusters.json`, `awareness/discovery_clusters.resolved.json`) | `solstone/apps/speakers/discovery.py` |
 | Entity merge candidates (`entities/review-candidates.jsonl`) | `solstone/think/entities/review_candidates.py` + `solstone/apps/entities/call.py` |
 | Facet review candidates (`facets/review-candidates.jsonl`) | `solstone/think/facet_review_candidates.py` |
 | Facets (`facets/*/facet.json`, `facets/*/relationships/`) | `solstone/think/facets.py` + `solstone/apps/facets/*` (if/when created) |
@@ -195,6 +196,7 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Identity (`identity/*.md`, `identity/history.jsonl` audit log) | `solstone/think/identity.py` |
 | Todos (`facets/*/todos/*.jsonl`) | `solstone/apps/todos/todo.py` + `solstone/apps/todos/call.py` |
 | Config (`config/journal.json`) | `solstone/think/journal_config.py` |
+| Push devices (`config/push_devices.json`) | `solstone/think/push/devices.py` |
 | Convey config (`config/convey.json`) | `solstone/convey/config.py` + `solstone/think/facets.py` |
 | Chat config (`config/chat.json`) | `solstone/apps/chat/config.py` |
 | Vertex credentials (`.config/vertex-credentials.json`) | `solstone/apps/settings/vertex_credentials.py` |
@@ -203,6 +205,7 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Link service state (`link/ca/cert.pem`, `link/ca/private.pem`, `link/nonces.json`, `link/authorized_clients.json`, `link/state.json`, `link/tokens/account.json`, `link/totp.json`) | `solstone/think/link/ca.py` + `solstone/think/link/nonces.py` + `solstone/think/link/auth.py` + `solstone/think/link/paths.py` |
 | Chronicle day content (`chronicle/YYYYMMDD/**`) | The capturing module (observer, importer) per its declared outputs |
 | Index (SQLite, `indexer/*`) | `solstone/think/indexer/*` |
+| Observer registry and sync history (`apps/observer/observers/*.json`, `apps/observer/observers/*/hist/*.jsonl`) | `solstone/apps/observer/utils.py` |
 | Import ingest/resolve staging (`imports/**`) | `solstone/apps/import/ingest.py` + `solstone/apps/import/call.py` + `solstone/apps/import/facet_ingest.py` + `solstone/apps/import/journal_sources.py` — HTTP-ingest + resolve staging state, plus the remote-ingest bundle under `imports/<id>/`. `journal_sources.py` owns only its `create_state_directory` `imports/` initializers; its source registry is app-storage. Import-bundle and sync-cursor content under `imports/<id>/` and `imports/<backend>.json` is written by `solstone/think/importers/{utils,cli,shared,sync}.py` (local/CLI import flows + sync cursor), and `solstone/think/importers/plaud.py` installs streamed imported audio onto `imports/<id>/<name>` via journal_io's `install_file` primitive, as importer declared outputs (L7). |
 
 If you're about to write to a domain from a module not in this table, stop and route through the owner.

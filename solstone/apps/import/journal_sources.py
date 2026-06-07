@@ -19,7 +19,6 @@ from flask import abort, g, request
 
 from solstone.apps.utils import get_app_storage_path
 from solstone.convey import state
-from solstone.think.entities.core import atomic_write
 from solstone.think.journal_io import atomic_replace
 from solstone.think.utils import now_ms
 
@@ -299,7 +298,7 @@ def save_journal_source(data: dict) -> bool:
         if _validate_journal_source_record(clean, Path("<journal_source>")) is None:
             return False
         source_path = get_journal_sources_dir() / _journal_source_filename(clean)
-        atomic_write(source_path, json.dumps(clean, indent=2))
+        atomic_replace(source_path, json.dumps(clean, indent=2))
         os.chmod(source_path, 0o600)
         JournalSourceRegistry.singleton().invalidate()
         return True
@@ -347,7 +346,7 @@ def mint_pl_journal_source_record(
     }
     if peer_instance_id is not None:
         record["peer_instance_id"] = peer_instance_id
-    atomic_write(source_path, json.dumps(record, indent=2))
+    atomic_replace(source_path, json.dumps(record, indent=2))
     os.chmod(source_path, 0o600)
     JournalSourceRegistry.singleton().invalidate()
     return source_path

@@ -84,6 +84,7 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/apps/chat/config.py",
         "solstone/convey/config.py",
         "solstone/apps/speakers/attribution.py",
+        "solstone/apps/speakers/discovery.py",
         "solstone/apps/speakers/owner.py",
         "solstone/apps/speakers/routes.py",
         "solstone/apps/settings/vertex_credentials.py",
@@ -95,6 +96,7 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/apps/import/call.py",
         "solstone/apps/import/facet_ingest.py",
         "solstone/apps/import/journal_sources.py",
+        "solstone/apps/observer/utils.py",
         "solstone/think/activities.py",
         "solstone/think/awareness.py",
         "solstone/think/entities/consolidation.py",
@@ -109,6 +111,9 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/think/facets.py",
         "solstone/think/identity.py",
         "solstone/think/journal_config.py",
+        "solstone/think/push/devices.py",
+        # Host-config mechanic only; writes ~/.config/solstone/.last-start-version, not journal domain state.
+        "solstone/think/start.py",
         # Link domain — device-pairing service state.
         "solstone/think/link/auth.py",
         "solstone/think/link/ca.py",

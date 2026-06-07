@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 from sklearn.cluster import HDBSCAN
 
-from solstone.think.entities.core import atomic_write
+from solstone.think.journal_io import atomic_replace
 from solstone.think.utils import day_dirs, day_path, get_journal, now_ms, segment_path
 
 logger = logging.getLogger(__name__)
@@ -95,7 +95,7 @@ def _write_resolved_cluster(cluster_id: int, entity_id: str, label: str) -> None
         "label": label,
         "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
     }
-    atomic_write(path, json.dumps(data, indent=2, sort_keys=True), prefix=".discovery_")
+    atomic_replace(path, json.dumps(data, indent=2, sort_keys=True))
 
 
 def _get_sentence_text(segment_dir: Path, source: str, sentence_id: int) -> str | None:

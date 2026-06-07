@@ -10,8 +10,8 @@ import sys
 from pathlib import Path
 
 import solstone
-from solstone.think.entities.core import atomic_write
 from solstone.think.install_guard import alias_paths, install_wrappers
+from solstone.think.journal_io import atomic_replace
 from solstone.think.service import reconcile_installed_unit
 from solstone.think.skills_cli import install_project
 from solstone.think.user_config import config_path
@@ -52,11 +52,7 @@ def _refresh_for_version_marker() -> None:
     _install_current_wrappers()
     reconcile_installed_unit()
     _refresh_skill_links()
-    atomic_write(
-        marker_path,
-        f"{solstone.__version__}\n",
-        prefix=".last_start_version_",
-    )
+    atomic_replace(marker_path, f"{solstone.__version__}\n")
 
 
 def main() -> None:

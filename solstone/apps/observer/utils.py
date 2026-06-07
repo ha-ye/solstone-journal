@@ -25,7 +25,7 @@ from solstone.convey.reasons import (
     PL_REVOKED,
 )
 from solstone.convey.utils import error_response
-from solstone.think.entities.core import atomic_write
+from solstone.think.journal_io import atomic_replace
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.paths import authorized_clients_path
 from solstone.think.utils import now_ms
@@ -249,7 +249,7 @@ def save_observer(data: dict) -> bool:
     try:
         clean = _persistable_record(data)
         observer_path = observers_dir / _observer_filename(clean)
-        atomic_write(observer_path, json.dumps(clean, indent=2))
+        atomic_replace(observer_path, json.dumps(clean, indent=2))
         os.chmod(observer_path, 0o600)
         ObserverRegistry.singleton().invalidate()
         return True
@@ -279,7 +279,7 @@ def mint_pl_observer_record(
             "bytes_received": 0,
         },
     }
-    atomic_write(observer_path, json.dumps(record, indent=2))
+    atomic_replace(observer_path, json.dumps(record, indent=2))
     os.chmod(observer_path, 0o600)
     ObserverRegistry.singleton().invalidate()
     return observer_path
@@ -492,7 +492,7 @@ def prune_history_by_stream(stream: str) -> int:
             content = "".join(
                 json.dumps(row, ensure_ascii=False) + "\n" for row in keep
             )
-            atomic_write(hist_path, content)
+            atomic_replace(hist_path, content)
 
     return total
 
@@ -515,7 +515,7 @@ def increment_stat(key_prefix: str, stat_name: str) -> None:
 
         data["stats"][stat_name] = data["stats"].get(stat_name, 0) + 1
 
-        atomic_write(observer_path, json.dumps(data, indent=2))
+        atomic_replace(observer_path, json.dumps(data, indent=2))
         os.chmod(observer_path, 0o600)
         ObserverRegistry.singleton().invalidate()
     except (json.JSONDecodeError, OSError, KeyError) as e:

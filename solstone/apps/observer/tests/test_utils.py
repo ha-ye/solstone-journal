@@ -301,7 +301,7 @@ class TestAtomicWriteCrashSafety:
         def raising_stub(*args, **kwargs):
             raise OSError("simulated crash")
 
-        monkeypatch.setattr("solstone.think.entities.core.os.replace", raising_stub)
+        monkeypatch.setattr("solstone.think.journal_io.atomic.os.replace", raising_stub)
 
         updated_observer = {
             "key": "testkey123456789",
@@ -329,7 +329,7 @@ class TestAtomicWriteCrashSafety:
         def raising_stub(*args, **kwargs):
             raise OSError("simulated crash")
 
-        monkeypatch.setattr("solstone.think.entities.core.os.replace", raising_stub)
+        monkeypatch.setattr("solstone.think.journal_io.atomic.os.replace", raising_stub)
 
         increment_stat("testkey1", "events_received")
 
