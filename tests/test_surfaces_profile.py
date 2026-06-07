@@ -17,14 +17,8 @@ def _configure_env(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("SOL_SKIP_SUPERVISOR_CHECK", "1")
 
     import solstone.think.utils as think_utils
-    from solstone.think.entities.journal import clear_journal_entity_cache
-    from solstone.think.entities.loading import clear_entity_loading_cache
-    from solstone.think.entities.relationships import clear_relationship_caches
 
     think_utils._journal_path_cache = None
-    clear_journal_entity_cache()
-    clear_entity_loading_cache()
-    clear_relationship_caches()
 
 
 def _write_journal_entity(

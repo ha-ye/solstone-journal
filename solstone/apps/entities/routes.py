@@ -37,6 +37,7 @@ from solstone.convey.reasons import (
 )
 from solstone.convey.utils import error_response
 from solstone.think.entities import (
+    EntityDict,
     block_journal_entity,
     count_observations,
     entity_last_active_ts,
@@ -717,7 +718,11 @@ def delete_detected(facet_name: str) -> Any:
 
 
 def _build_facet_relationships(
-    entity_id: str, entity_name: str, facets_config: dict
+    entity_id: str,
+    entity_name: str,
+    facets_config: dict,
+    *,
+    all_relationships: dict[str, dict[str, EntityDict]] | None = None,
 ) -> tuple[list, int, int]:
     """Build facet relationships list for a journal entity.
 
@@ -734,7 +739,10 @@ def _build_facet_relationships(
     latest_active_ts = 0
 
     for facet_name in facets_config:
-        relationship = load_facet_relationship(facet_name, entity_id)
+        if all_relationships is None:
+            relationship = load_facet_relationship(facet_name, entity_id)
+        else:
+            relationship = all_relationships.get(facet_name, {}).get(entity_id)
         if not relationship:
             continue
 
@@ -786,8 +794,10 @@ def get_journal_entities_data() -> dict:
     """
     facets_config = get_facets()
     journal_entities = load_all_journal_entities()
-    for facet_name in facets_config:
-        load_all_facet_relationships(facet_name)
+    all_relationships = {
+        facet_name: load_all_facet_relationships(facet_name)
+        for facet_name in facets_config
+    }
 
     entities = []
     for entity_id, journal_entity in journal_entities.items():
@@ -795,7 +805,12 @@ def get_journal_entities_data() -> dict:
 
         # Build facet relationships
         facet_relationships, total_observation_count, latest_active_ts = (
-            _build_facet_relationships(entity_id, entity_name, facets_config)
+            _build_facet_relationships(
+                entity_id,
+                entity_name,
+                facets_config,
+                all_relationships=all_relationships,
+            )
         )
 
         # Build enriched entity

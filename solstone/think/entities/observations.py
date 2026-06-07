@@ -21,23 +21,6 @@ from solstone.think.entities.relationships import entity_memory_path
 from solstone.think.journal_io import atomic_replace, hold_lock
 from solstone.think.utils import get_journal, now_ms
 
-# Global cache for entity observations: {(facet, entity_slug): list[dict]}
-_OBSERVATION_CACHE: dict[tuple[str, str], list[dict[str, Any]]] | None = None
-# Global cache for observation counts: {path: count}
-_OBSERVATION_COUNT_CACHE: dict[Path, int] | None = None
-
-
-def clear_observation_cache() -> None:
-    """Clear the entity observation cache."""
-    global _OBSERVATION_CACHE
-    _OBSERVATION_CACHE = None
-
-
-def clear_observation_count_cache() -> None:
-    """Clear the entity observation count cache."""
-    global _OBSERVATION_COUNT_CACHE
-    _OBSERVATION_COUNT_CACHE = None
-
 
 def observations_file_path(facet: str, name: str) -> Path:
     """Return path to observations file for an entity.
@@ -70,16 +53,8 @@ def _iter_observation_files() -> Iterator[Path]:
 
 
 def _count_observation_file(obs_file: Path) -> int:
-    global _OBSERVATION_COUNT_CACHE
     if not obs_file.exists():
         return 0
-
-    if _OBSERVATION_COUNT_CACHE is None:
-        _OBSERVATION_COUNT_CACHE = {}
-
-    cached = _OBSERVATION_COUNT_CACHE.get(obs_file)
-    if cached is not None:
-        return cached
 
     try:
         with open(obs_file, "r", encoding="utf-8") as f:
@@ -87,7 +62,6 @@ def _count_observation_file(obs_file: Path) -> int:
     except OSError:
         return 0
 
-    _OBSERVATION_COUNT_CACHE[obs_file] = count
     return count
 
 
@@ -149,15 +123,6 @@ def load_observations(facet: str, name: str) -> list[dict[str, Any]]:
         >>> load_observations("work", "Alice Johnson")
         [{"content": "Prefers async communication", "observed_at": 1736784000000, "source_day": "20250113"}]
     """
-    global _OBSERVATION_CACHE
-    from solstone.think.entities.core import entity_slug
-
-    slug = entity_slug(name)
-    if _OBSERVATION_CACHE is not None:
-        cached = _OBSERVATION_CACHE.get((facet, slug))
-        if cached is not None:
-            return cached
-
     path = observations_file_path(facet, name)
 
     if not path.exists():
@@ -174,10 +139,6 @@ def load_observations(facet: str, name: str) -> list[dict[str, Any]]:
                 observations.append(data)
             except json.JSONDecodeError:
                 continue  # Skip malformed lines
-
-    # Update cache if initialized
-    if _OBSERVATION_CACHE is not None:
-        _OBSERVATION_CACHE[(facet, slug)] = observations
 
     return observations
 
@@ -202,10 +163,6 @@ def save_observations(
         name: Entity name
         observations: List of observation dictionaries
     """
-    # Clear cache on modification
-    clear_observation_cache()
-    clear_observation_count_cache()
-
     path = observations_file_path(facet, name)
 
     # Format observations as JSONL

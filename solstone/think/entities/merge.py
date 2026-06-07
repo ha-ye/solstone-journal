@@ -11,19 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from solstone.think.entities.journal import (
-    clear_journal_entity_cache,
     load_journal_entity,
     save_journal_entity,
     scan_journal_entities,
 )
-from solstone.think.entities.loading import clear_entity_loading_cache
-from solstone.think.entities.observations import (
-    clear_observation_cache,
-    clear_observation_count_cache,
-    save_observations,
-)
+from solstone.think.entities.observations import save_observations
 from solstone.think.entities.relationships import (
-    clear_relationship_caches,
     save_facet_relationship,
 )
 from solstone.think.entities.voiceprints import (
@@ -549,21 +542,6 @@ def _apply_segment_plan(operations: list[dict[str, Any]]) -> None:
         tmp_path.rename(out_path)
 
 
-def _clear_merge_caches() -> list[str]:
-    clear_journal_entity_cache()
-    clear_relationship_caches()
-    clear_observation_cache()
-    clear_observation_count_cache()
-    clear_entity_loading_cache()
-    return [
-        "journal_entity_cache",
-        "relationship_caches",
-        "observation_cache",
-        "observation_count_cache",
-        "entity_loading_cache",
-    ]
-
-
 def _audit_counts(result: dict[str, Any]) -> dict[str, Any]:
     return {
         "identity": {
@@ -698,7 +676,7 @@ def merge_entity(
         _apply_segment_plan(segment_plan["operations"])
 
         discovery_cache = Path(get_journal()) / "awareness" / "discovery_clusters.json"
-        caches_cleared = _clear_merge_caches()
+        caches_cleared: list[str] = []
         if discovery_cache.exists():
             discovery_cache.unlink()
             caches_cleared.append("discovery_clusters")

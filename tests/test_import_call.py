@@ -14,7 +14,6 @@ import solstone.convey.state as convey_state
 import solstone.think.utils as think_utils
 from solstone.think.call import call_app
 from solstone.think.entities.journal import (
-    clear_journal_entity_cache,
     load_journal_entity,
     save_journal_entity,
 )
@@ -59,7 +58,6 @@ def import_env(tmp_path, monkeypatch):
     monkeypatch.setattr(convey_state, "journal_root", str(tmp_path), raising=False)
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     think_utils._journal_path_cache = None
-    clear_journal_entity_cache()
     (tmp_path / "apps" / "import" / "journal_sources").mkdir(
         parents=True, exist_ok=True
     )

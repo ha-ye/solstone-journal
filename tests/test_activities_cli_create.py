@@ -27,10 +27,6 @@ def _configure_cli_env(tmp_path, monkeypatch) -> None:
 
     think_utils._journal_path_cache = None
 
-    from solstone.think.entities.loading import clear_entity_loading_cache
-
-    clear_entity_loading_cache()
-
 
 def _base_payload() -> dict:
     return {

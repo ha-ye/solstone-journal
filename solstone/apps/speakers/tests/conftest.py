@@ -19,10 +19,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from solstone.think.entities import entity_slug
-from solstone.think.entities.journal import clear_journal_entity_cache
-from solstone.think.entities.loading import clear_entity_loading_cache
-from solstone.think.entities.observations import clear_observation_cache
-from solstone.think.entities.relationships import clear_relationship_caches
 
 # Default stream name for test fixtures
 STREAM = "test"
@@ -55,10 +51,6 @@ def speakers_env(tmp_path, monkeypatch):
             self.journal = journal_path
             monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_path))
             monkeypatch.setenv("SOL_SKIP_SUPERVISOR_CHECK", "1")
-            clear_journal_entity_cache()
-            clear_entity_loading_cache()
-            clear_relationship_caches()
-            clear_observation_cache()
             import solstone.think.utils as think_utils
 
             think_utils._journal_path_cache = None
@@ -471,10 +463,6 @@ def speakers_env(tmp_path, monkeypatch):
         return SpeakersEnv(tmp_path)
 
     yield _create
-    clear_journal_entity_cache()
-    clear_entity_loading_cache()
-    clear_relationship_caches()
-    clear_observation_cache()
     import solstone.think.utils as think_utils
 
     think_utils._journal_path_cache = None

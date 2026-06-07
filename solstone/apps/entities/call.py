@@ -22,12 +22,11 @@ from solstone.think.curation import (
 from solstone.think.entities.consolidation import consolidate_detected_entities
 from solstone.think.entities.core import entity_slug, is_valid_entity_type
 from solstone.think.entities.journal import (
-    clear_journal_entity_cache,
     create_journal_entity,
     load_journal_entity,
     save_journal_entity,
 )
-from solstone.think.entities.loading import clear_entity_loading_cache, load_entities
+from solstone.think.entities.loading import load_entities
 from solstone.think.entities.matching import resolve_entity, validate_aka_uniqueness
 from solstone.think.entities.observations import (
     add_observation,
@@ -35,7 +34,6 @@ from solstone.think.entities.observations import (
     save_observations,
 )
 from solstone.think.entities.relationships import (
-    clear_relationship_caches,
     entity_memory_path,
     load_facet_relationship,
     save_facet_relationship,
@@ -67,13 +65,6 @@ app = typer.Typer(help="Entity management.")
 @app.callback()
 def _require_up() -> None:
     require_solstone()
-
-
-def _clear_all_caches():
-    """Clear all underlying think entity caches."""
-    clear_entity_loading_cache()
-    clear_relationship_caches()
-    clear_journal_entity_cache()
 
 
 def _resolve_or_exit(facet: str, entity: str) -> dict:
@@ -354,7 +345,6 @@ def update_entity(
         relationship["description"] = description
         relationship["updated_at"] = now_ms()
         save_facet_relationship(facet, entity_id, relationship)
-        clear_entity_loading_cache()
         log_call_action(
             facet=facet,
             action="entity_update",

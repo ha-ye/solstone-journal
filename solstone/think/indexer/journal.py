@@ -25,12 +25,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
-from solstone.think.entities.journal import (
-    clear_journal_entity_cache,
-    load_all_journal_entities,
-)
+from solstone.think.entities.journal import load_all_journal_entities
 from solstone.think.entities.relationships import (
-    clear_relationship_caches,
     load_all_facet_relationships_across_facets,
 )
 from solstone.think.formatters import (
@@ -680,8 +676,6 @@ def scan_journal(journal: str, verbose: bool = False, full: bool = False) -> boo
         or (fresh_count > 0 and not has_entity_chunks)
     )
     if entity_changed:
-        clear_journal_entity_cache()
-        clear_relationship_caches()
         _index_entity_search_chunks(conn)
         conn.execute(
             "REPLACE INTO files(path, mtime) VALUES (?, ?)",

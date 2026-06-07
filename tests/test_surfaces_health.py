@@ -25,14 +25,6 @@ def _configure_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     monkeypatch.setenv("SOL_SKIP_SUPERVISOR_CHECK", "1")
 
-    from solstone.think.entities.journal import clear_journal_entity_cache
-    from solstone.think.entities.loading import clear_entity_loading_cache
-    from solstone.think.entities.relationships import clear_relationship_caches
-
-    clear_journal_entity_cache()
-    clear_entity_loading_cache()
-    clear_relationship_caches()
-
 
 def _set_now(monkeypatch: pytest.MonkeyPatch, value: datetime) -> None:
     assert value.tzinfo == UTC

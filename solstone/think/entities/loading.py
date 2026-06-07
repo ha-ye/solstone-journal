@@ -28,15 +28,6 @@ from solstone.think.entities.relationships import (
 )
 from solstone.think.utils import get_journal
 
-# Global cache for loaded entities: {(facet, day, detached, blocked): list[EntityDict]}
-_ENTITY_LOADING_CACHE: dict[tuple, list[EntityDict]] | None = None
-
-
-def clear_entity_loading_cache() -> None:
-    """Clear the entity loading cache."""
-    global _ENTITY_LOADING_CACHE
-    _ENTITY_LOADING_CACHE = None
-
 
 def detected_entities_path(facet: str, day: str) -> Path:
     """Return path to detected entities file for a facet and day.
@@ -115,7 +106,11 @@ def parse_entity_file(
 
 
 def _load_entities_from_relationships(
-    facet: str, *, include_detached: bool = False, include_blocked: bool = False
+    facet: str,
+    *,
+    include_detached: bool = False,
+    include_blocked: bool = False,
+    journal_entities: dict[str, EntityDict] | None = None,
 ) -> list[EntityDict]:
     """Load attached entities from facet relationships + journal entities.
 
@@ -132,7 +127,8 @@ def _load_entities_from_relationships(
         return []
 
     # Load all journal entities for enrichment
-    journal_entities = load_all_journal_entities()
+    if journal_entities is None:
+        journal_entities = load_all_journal_entities()
 
     entities = []
     for entity_id in entity_ids:
@@ -188,15 +184,6 @@ def load_entities(
         >>> load_entities("personal")
         [{"id": "john_smith", "type": "Person", "name": "John Smith", "description": "Friend"}]
     """
-    global _ENTITY_LOADING_CACHE
-
-    # Use cache if available
-    cache_key = (facet, day, include_detached, include_blocked)
-    if _ENTITY_LOADING_CACHE is not None:
-        cached = _ENTITY_LOADING_CACHE.get(cache_key)
-        if cached is not None:
-            return cached
-
     # For detected entities, use day-specific files
     if day is not None:
         path = detected_entities_path(facet, day)
@@ -206,13 +193,6 @@ def load_entities(
         result = _load_entities_from_relationships(
             facet, include_detached=include_detached, include_blocked=include_blocked
         )
-
-    # Populate cache if initialized
-    if _ENTITY_LOADING_CACHE is not None:
-        _ENTITY_LOADING_CACHE[cache_key] = result
-    else:
-        # Initialize and populate
-        _ENTITY_LOADING_CACHE = {cache_key: result}
 
     return result
 
@@ -254,6 +234,7 @@ def load_all_attached_entities(
     # Track seen IDs for deduplication (use ID instead of name for uniqueness)
     seen_ids: set[str] = set()
     all_entities: list[EntityDict] = []
+    journal_entities = load_all_journal_entities()
 
     # Process facets in sorted order for deterministic results
     for facet_path in sorted(facets_dir.iterdir()):
@@ -262,7 +243,11 @@ def load_all_attached_entities(
 
         facet_name = facet_path.name
 
-        for entity in load_entities(facet_name, include_detached=False):
+        for entity in _load_entities_from_relationships(
+            facet_name,
+            include_detached=False,
+            journal_entities=journal_entities,
+        ):
             entity_id = entity.get("id", "")
             # Keep first occurrence only (deduplicate by ID)
             if entity_id and entity_id not in seen_ids:

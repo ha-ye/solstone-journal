@@ -23,10 +23,7 @@ from solstone.observe.export import (
     export_segments,
     main,
 )
-from solstone.think.entities.journal import (
-    clear_journal_entity_cache,
-    save_journal_entity,
-)
+from solstone.think.entities.journal import save_journal_entity
 
 journal_sources = import_module("solstone.apps.import.journal_sources")
 import_routes = import_module("solstone.apps.import.routes")
@@ -41,7 +38,6 @@ import_bp = import_routes.import_bp
 def _set_active_journal(monkeypatch, journal: Path) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
     think_utils._journal_path_cache = None
-    clear_journal_entity_cache()
 
 
 def _extract_path(url: str) -> str:
@@ -182,7 +178,6 @@ def export_integration_env(tmp_path, monkeypatch):
     }
 
     think_utils._journal_path_cache = None
-    clear_journal_entity_cache()
 
 
 def _write_bytes(path: Path, content: bytes) -> None:

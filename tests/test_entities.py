@@ -9,6 +9,7 @@ from solstone.think.entities import (
     DEFAULT_ACTIVITY_TS,
     add_observation,
     block_journal_entity,
+    count_observations,
     delete_journal_entity,
     detected_entities_path,
     ensure_entity_memory,
@@ -19,8 +20,11 @@ from solstone.think.entities import (
     get_identity_names,
     iter_detected_entity_names_since,
     load_all_attached_entities,
+    load_all_facet_relationships,
+    load_all_journal_entities,
     load_detected_entities_recent,
     load_entities,
+    load_facet_relationship,
     load_journal_entity,
     load_observations,
     load_recent_entity_names,
@@ -30,6 +34,8 @@ from solstone.think.entities import (
     resolve_entity,
     save_detected_entity,
     save_entities,
+    save_facet_relationship,
+    save_journal_entity,
     save_observations,
     touch_entities_from_activity,
     touch_entity,
@@ -286,16 +292,10 @@ def test_save_entities_sorting(fixture_journal, tmp_path, monkeypatch):
     assert "beta_corp" in journal_ids
 
 
-def test_save_entities_detected_invalidates_loading_cache(
+def test_save_entities_detected_reflects_fresh_read(
     fixture_journal, tmp_path, monkeypatch
 ):
-    """Regression: save_entities must invalidate the loading cache so load-after-save returns fresh data.
-
-    The autouse _clear_entity_caches fixture only clears between tests, so within
-    a single test the cache persists across calls. Before the fix, the first load
-    populated the cache and a subsequent save did not invalidate it — the second
-    load returned stale data from the cache rather than re-reading disk.
-    """
+    """Detected entity reads reflect same-process saves."""
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     (tmp_path / "facets" / "test_facet" / "entities").mkdir(parents=True)
 
@@ -321,10 +321,10 @@ def test_save_entities_detected_invalidates_loading_cache(
     assert {e["name"] for e in loaded_second} == {"Alice", "Bob"}
 
 
-def test_save_entities_attached_invalidates_loading_cache(
+def test_save_entities_attached_reflects_fresh_read(
     fixture_journal, tmp_path, monkeypatch
 ):
-    """Regression: save_entities (attached path, day=None) must invalidate the loading cache."""
+    """Attached entity reads reflect same-process saves."""
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     (tmp_path / "facets" / "test_facet").mkdir(parents=True)
 
@@ -343,6 +343,36 @@ def test_save_entities_attached_invalidates_loading_cache(
 
     loaded_second = load_entities("test_facet")
     assert {e["name"] for e in loaded_second} == {"Alice", "Bob"}
+
+
+def test_save_journal_entity_reflects_fresh_reads(tmp_path, monkeypatch):
+    """Journal entity readers reflect same-process saves."""
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    save_journal_entity({"id": "alice", "name": "Alice", "type": "Person"})
+
+    assert load_journal_entity("alice")["name"] == "Alice"
+    assert load_all_journal_entities()["alice"]["name"] == "Alice"
+
+    save_journal_entity({"id": "alice", "name": "Alice Updated", "type": "Person"})
+
+    assert load_journal_entity("alice")["name"] == "Alice Updated"
+    assert load_all_journal_entities()["alice"]["name"] == "Alice Updated"
+
+
+def test_save_facet_relationship_reflects_fresh_reads(tmp_path, monkeypatch):
+    """Facet relationship readers reflect same-process saves."""
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    save_facet_relationship("work", "alice", {"description": "First"})
+
+    assert load_facet_relationship("work", "alice")["description"] == "First"
+    assert load_all_facet_relationships("work")["alice"]["description"] == "First"
+
+    save_facet_relationship("work", "alice", {"description": "Second"})
+
+    assert load_facet_relationship("work", "alice")["description"] == "Second"
+    assert load_all_facet_relationships("work")["alice"]["description"] == "Second"
 
 
 def test_save_detected_entity_basic(fixture_journal, tmp_path, monkeypatch):
@@ -2029,7 +2059,7 @@ def test_load_observations_empty(fixture_journal, tmp_path, monkeypatch):
 
 
 def test_save_and_load_observations(fixture_journal, tmp_path, monkeypatch):
-    """Test saving and loading observations."""
+    """Observation readers reflect same-process saves."""
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
     # Save observations
@@ -2050,6 +2080,16 @@ def test_save_and_load_observations(fixture_journal, tmp_path, monkeypatch):
     assert loaded[0]["observed_at"] == 1700000000000
     assert loaded[0]["source_day"] == "20250113"
     assert loaded[1]["content"] == "Expert in Kubernetes"
+    assert count_observations("personal", "Alice Johnson") == 2
+
+    updated_observations = [
+        {"content": "Prefers afternoon meetings", "observed_at": 1700000002000},
+    ]
+    save_observations("personal", "Alice Johnson", updated_observations)
+
+    loaded_updated = load_observations("personal", "Alice Johnson")
+    assert [obs["content"] for obs in loaded_updated] == ["Prefers afternoon meetings"]
+    assert count_observations("personal", "Alice Johnson") == 1
 
 
 def test_add_observation_success(fixture_journal, tmp_path, monkeypatch):

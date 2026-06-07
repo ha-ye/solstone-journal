@@ -26,15 +26,10 @@ for name, module in list(sys.modules.items()):
 
 from solstone.apps.speakers.tests.conftest import speakers_env as _speakers_env
 from solstone.convey import create_app
-from solstone.think.entities.journal import clear_journal_entity_cache
-from solstone.think.entities.loading import clear_entity_loading_cache
 from solstone.think.entities.observations import (
     add_observation,
-    clear_observation_cache,
-    clear_observation_count_cache,
     save_observations,
 )
-from solstone.think.entities.relationships import clear_relationship_caches
 from solstone.think.entities.saving import save_entities
 from tests._baseline_harness import copytree_tracked
 
@@ -50,11 +45,6 @@ def journal_copy(tmp_path, monkeypatch):
     dst = tmp_path / "journal"
     copytree_tracked(src, dst)
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(dst.resolve()))
-    clear_journal_entity_cache()
-    clear_entity_loading_cache()
-    clear_relationship_caches()
-    clear_observation_cache()
-    clear_observation_count_cache()
     import solstone.think.utils as think_utils
 
     think_utils._journal_path_cache = None
@@ -85,11 +75,6 @@ def entity_env(tmp_path, monkeypatch):
             # SOLSTONE_JOURNAL is set, entity files exist
     """
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    clear_journal_entity_cache()
-    clear_entity_loading_cache()
-    clear_relationship_caches()
-    clear_observation_cache()
-    clear_observation_count_cache()
     import solstone.think.utils as think_utils
 
     think_utils._journal_path_cache = None
@@ -112,11 +97,6 @@ def entity_env(tmp_path, monkeypatch):
         return tmp_path
 
     yield _create
-    clear_journal_entity_cache()
-    clear_entity_loading_cache()
-    clear_relationship_caches()
-    clear_observation_cache()
-    clear_observation_count_cache()
     import solstone.think.utils as think_utils
 
     think_utils._journal_path_cache = None
@@ -126,11 +106,6 @@ def entity_env(tmp_path, monkeypatch):
 def entity_move_env(tmp_path, monkeypatch):
     """Create a two-facet environment for entity move tests."""
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    clear_journal_entity_cache()
-    clear_entity_loading_cache()
-    clear_relationship_caches()
-    clear_observation_cache()
-    clear_observation_count_cache()
     import solstone.think.utils as think_utils
 
     think_utils._journal_path_cache = None
@@ -172,11 +147,6 @@ def entity_move_env(tmp_path, monkeypatch):
         return tmp_path, src_facet, dst_facet, entity_name
 
     yield _create
-    clear_journal_entity_cache()
-    clear_entity_loading_cache()
-    clear_relationship_caches()
-    clear_observation_cache()
-    clear_observation_count_cache()
     import solstone.think.utils as think_utils
 
     think_utils._journal_path_cache = None

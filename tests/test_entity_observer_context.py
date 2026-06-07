@@ -9,22 +9,12 @@ from pathlib import Path
 
 from solstone.apps.entities.talent.entity_observer import post_process, pre_process
 from solstone.think.entities.context import assemble_observer_context
-from solstone.think.entities.journal import clear_journal_entity_cache
-from solstone.think.entities.loading import clear_entity_loading_cache
-from solstone.think.entities.observations import (
-    clear_observation_cache,
-    load_observations,
-)
-from solstone.think.entities.relationships import clear_relationship_caches
+from solstone.think.entities.observations import load_observations
 from solstone.think.talent import get_talent
 
 
 def _set_journal(monkeypatch, path: str) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", path)
-    clear_entity_loading_cache()
-    clear_observation_cache()
-    clear_relationship_caches()
-    clear_journal_entity_cache()
 
 
 def _write_json(path: Path, data: dict) -> None:

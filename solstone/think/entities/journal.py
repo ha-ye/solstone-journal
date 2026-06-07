@@ -19,15 +19,6 @@ from solstone.think.entities.core import EntityDict, get_identity_names
 from solstone.think.journal_io import atomic_replace
 from solstone.think.utils import get_journal, now_ms
 
-# Global cache for journal entities: {entity_id: EntityDict}
-_JOURNAL_ENTITY_CACHE: dict[str, EntityDict] | None = None
-
-
-def clear_journal_entity_cache() -> None:
-    """Clear the journal entity cache."""
-    global _JOURNAL_ENTITY_CACHE
-    _JOURNAL_ENTITY_CACHE = None
-
 
 def journal_entity_path(entity_id: str) -> Path:
     """Return path to journal-level entity file.
@@ -51,10 +42,6 @@ def load_journal_entity(entity_id: str) -> EntityDict | None:
         Entity dict with id, name, type, aka, is_principal, created_at fields,
         or None if not found.
     """
-    global _JOURNAL_ENTITY_CACHE
-    if _JOURNAL_ENTITY_CACHE is not None and entity_id in _JOURNAL_ENTITY_CACHE:
-        return _JOURNAL_ENTITY_CACHE[entity_id]
-
     path = journal_entity_path(entity_id)
     if not path.exists():
         return None
@@ -64,10 +51,6 @@ def load_journal_entity(entity_id: str) -> EntityDict | None:
             data = json.load(f)
         # Ensure id is present
         data["id"] = entity_id
-
-        # Update cache if it exists (single entity load doesn't populate full cache)
-        if _JOURNAL_ENTITY_CACHE is not None:
-            _JOURNAL_ENTITY_CACHE[entity_id] = data
 
         return data
     except (json.JSONDecodeError, OSError):
@@ -89,9 +72,6 @@ def save_journal_entity(entity: EntityDict) -> None:
     entity_id = entity.get("id")
     if not entity_id:
         raise ValueError("Entity must have an 'id' field")
-
-    # Clear cache on modification
-    clear_journal_entity_cache()
 
     path = journal_entity_path(entity_id)
     content = json.dumps(entity, ensure_ascii=False, indent=2) + "\n"
@@ -124,10 +104,6 @@ def load_all_journal_entities() -> dict[str, EntityDict]:
     Returns:
         Dict mapping entity_id to entity dict
     """
-    global _JOURNAL_ENTITY_CACHE
-    if _JOURNAL_ENTITY_CACHE is not None:
-        return _JOURNAL_ENTITY_CACHE
-
     entity_ids = scan_journal_entities()
     entities = {}
     for entity_id in entity_ids:
@@ -135,7 +111,6 @@ def load_all_journal_entities() -> dict[str, EntityDict]:
         if entity:
             entities[entity_id] = entity
 
-    _JOURNAL_ENTITY_CACHE = entities
     return entities
 
 
@@ -267,9 +242,6 @@ def block_journal_entity(entity_id: str) -> dict[str, Any]:
     if journal_entity.get("is_principal"):
         raise ValueError("Cannot block the principal (self) entity")
 
-    # Clear cache on modification
-    clear_journal_entity_cache()
-
     # Set blocked flag on journal entity
     journal_entity["blocked"] = True
     journal_entity["updated_at"] = now_ms()
@@ -350,12 +322,6 @@ def delete_journal_entity(entity_id: str) -> dict[str, Any]:
 
     if journal_entity.get("is_principal"):
         raise ValueError("Cannot delete the principal (self) entity")
-
-    from solstone.think.entities.relationships import clear_relationship_caches
-
-    # Clear cache on modification
-    clear_journal_entity_cache()
-    clear_relationship_caches()
 
     facets_deleted = []
 

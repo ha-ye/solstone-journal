@@ -243,13 +243,7 @@ def test_merge_commit_deep_merges_and_logs(speakers_env):
     assert data["segments"]["corrections_rewritten"] == 1
     assert data["segments"]["errors"] == []
     assert data["audit_log_path"] == str(_audit_log_path(env))
-    assert set(data["caches_cleared"]) >= {
-        "journal_entity_cache",
-        "relationship_caches",
-        "observation_cache",
-        "entity_loading_cache",
-        "discovery_clusters",
-    }
+    assert data["caches_cleared"] == ["discovery_clusters"]
 
     assert load_journal_entity("alice_alias") is None
     canonical = load_journal_entity("alice_canonical")

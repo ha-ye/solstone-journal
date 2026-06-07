@@ -119,10 +119,6 @@ def _install_heavy_module_stubs():
 
 
 from solstone.convey.chat import stop_all_chat_runtime
-from solstone.think.entities.journal import clear_journal_entity_cache
-from solstone.think.entities.loading import clear_entity_loading_cache
-from solstone.think.entities.observations import clear_observation_cache
-from solstone.think.entities.relationships import clear_relationship_caches
 from solstone.think.push.runtime import stop_all_push_runtime
 from solstone.think.utils import now_ms
 from solstone.think.voice import brain as voice_brain
@@ -142,20 +138,6 @@ def set_test_journal_path(monkeypatch):
         str(Path("tests/fixtures/journal").resolve()),
     )
     monkeypatch.setenv("SOL_SKIP_SUPERVISOR_CHECK", "1")
-
-
-@pytest.fixture(autouse=True)
-def _clear_entity_caches():
-    """Clear all entity caches before/after each test."""
-    clear_entity_loading_cache()
-    clear_journal_entity_cache()
-    clear_relationship_caches()
-    clear_observation_cache()
-    yield
-    clear_entity_loading_cache()
-    clear_journal_entity_cache()
-    clear_relationship_caches()
-    clear_observation_cache()
 
 
 @pytest.fixture(autouse=True)

@@ -19,7 +19,6 @@ from solstone.think.entities.journal import (
     save_journal_entity,
 )
 from solstone.think.entities.loading import (
-    clear_entity_loading_cache,
     detected_entities_path,
     load_entities,
 )
@@ -46,7 +45,6 @@ def _save_entities_detected(facet: str, entities: list[EntityDict], day: str) ->
     # Format as JSONL and write atomically
     content = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in sorted_entities)
     atomic_replace(path, content)
-    clear_entity_loading_cache()
 
 
 def _save_entities_attached(facet: str, entities: list[EntityDict]) -> None:
@@ -150,8 +148,6 @@ def _save_entities_attached(facet: str, entities: list[EntityDict]) -> None:
         # Save facet relationship
         save_facet_relationship(facet, entity_id, relationship)
 
-    clear_entity_loading_cache()
-
 
 def save_entities(
     facet: str, entities: list[EntityDict], day: str | None = None
@@ -214,7 +210,6 @@ def _locked_modify_detected(
         try:
             with hold_lock(path):
                 # Fresh load inside lock — sees all prior writers' changes
-                clear_entity_loading_cache()
                 entities = load_entities(facet, day)
                 entities = modify_fn(entities)
                 _save_entities_detected(facet, entities, day)

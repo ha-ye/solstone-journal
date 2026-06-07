@@ -118,12 +118,8 @@ def test_add_observation_serializes_process_writers(
 ) -> None:
     _run_workers(tmp_path, monkeypatch, "observations", _observation_worker)
 
-    from solstone.think.entities.observations import (
-        clear_observation_cache,
-        load_observations,
-    )
+    from solstone.think.entities.observations import load_observations
 
-    clear_observation_cache()
     observations = load_observations("work", "Alice")
 
     assert sorted(obs["content"] for obs in observations) == [
@@ -140,12 +136,8 @@ def test_save_detected_entity_serializes_process_writers(
 ) -> None:
     _run_workers(tmp_path, monkeypatch, "detected", _detected_entity_worker)
 
-    from solstone.think.entities.loading import (
-        clear_entity_loading_cache,
-        load_entities,
-    )
+    from solstone.think.entities.loading import load_entities
 
-    clear_entity_loading_cache()
     entities = load_entities("work", "20250101")
 
     assert sorted(entity["name"] for entity in entities) == ["E0", "E1", "E2", "E3"]
