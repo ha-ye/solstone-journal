@@ -327,6 +327,13 @@ ACTIVITIES_BUSY = Reason(
     503,
 )
 
+# ledger
+LEDGER_ITEM_NOT_FOUND = Reason(
+    "ledger_item_not_found",
+    "I couldn't find that ledger item.",
+    404,
+)
+
 # identity
 IDENTITY_BUSY = Reason(
     "identity_busy",

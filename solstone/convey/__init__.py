@@ -21,6 +21,9 @@ from .apps import register_app_context
 from .bridge import emit
 from .chat import chat_bp, start_chat_runtime
 from .config import bp as config_bp
+from .ledger import bp as ledger_bp
+from .profile import bp as profile_bp
+from .profile import profiles_bp
 from .request_id import install_request_id_stamper
 from .root import bp as root_bp
 from .services_scout import bp as services_scout_bp
@@ -156,6 +159,11 @@ def create_app(journal: str = "") -> Flask:
 
     # Register system health API blueprint
     app.register_blueprint(system.bp)
+
+    # Register ledger + profile tool-group API blueprints
+    app.register_blueprint(ledger_bp)
+    app.register_blueprint(profile_bp)
+    app.register_blueprint(profiles_bp)
 
     # Register voice API blueprint
     app.register_blueprint(voice_bp)
