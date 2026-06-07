@@ -12,7 +12,10 @@ from typing import Any
 from flask import Blueprint, jsonify
 from packaging.version import InvalidVersion, Version
 
+from solstone.convey.reasons import AWARENESS_BUSY
+from solstone.convey.utils import error_response
 from solstone.think.capture_health import get_capture_health
+from solstone.think.journal_io.errors import LockTimeout
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +105,14 @@ def _get_version_info() -> dict[str, Any]:
 @bp.route("/status")
 def system_status():
     """Return system health: version, capture status, overall ok."""
-    version = _get_version_info()
+    try:
+        version = _get_version_info()
+    except LockTimeout as exc:
+        logger.warning("awareness state busy for %s", exc.path)
+        return error_response(
+            AWARENESS_BUSY,
+            detail="awareness state is busy; try again",
+        )
     capture = get_capture_health()
 
     ok = capture["status"] in ("active", "no_observers")

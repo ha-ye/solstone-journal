@@ -187,6 +187,7 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Facets (`facets/*/facet.json`, `facets/*/relationships/`) | `solstone/think/facets.py` + `solstone/apps/facets/*` (if/when created) |
 | Observations (`observations.jsonl`) | `solstone/think/entities/observations.py` |
 | Activities (`facets/*/activities/*.jsonl`) | `solstone/think/activities.py` |
+| Awareness (`awareness/current.json`) | `solstone/think/awareness.py` |
 | Todos (`facets/*/todos/*.jsonl`) | `solstone/apps/todos/todo.py` + `solstone/apps/todos/call.py` |
 | Config (`config/journal.json`) | `solstone/think/journal_config.py` |
 | Chat config (`config/chat.json`) | `solstone/apps/chat/config.py` |

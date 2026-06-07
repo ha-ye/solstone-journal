@@ -1462,7 +1462,10 @@ def api_owner_status() -> Any:
 @speakers_bp.route("/api/owner/detect", methods=["POST"])
 def api_owner_detect() -> Any:
     """Run owner voice candidate detection."""
-    result = detect_owner_candidate()
+    try:
+        result = detect_owner_candidate()
+    except LockTimeout as exc:
+        return _voiceprint_busy_response(exc)
     if result.get("error_kind") == "voiceprint_busy":
         return error_response(SPEAKER_VOICEPRINT_BUSY, detail=result["error"])
     return jsonify(result)
@@ -1471,7 +1474,10 @@ def api_owner_detect() -> Any:
 @speakers_bp.route("/api/owner/build-from-tags", methods=["POST"])
 def api_owner_build_from_tags() -> Any:
     """Build a confirmed owner centroid directly from validated manual tags."""
-    result = bootstrap_owner_from_manual_tags()
+    try:
+        result = bootstrap_owner_from_manual_tags()
+    except LockTimeout as exc:
+        return _voiceprint_busy_response(exc)
     if result.get("error_kind") == "voiceprint_busy":
         return error_response(SPEAKER_VOICEPRINT_BUSY, detail=result["error"])
     if "error" in result:
@@ -1492,7 +1498,10 @@ def api_owner_build_from_tags() -> Any:
 @speakers_bp.route("/api/owner/confirm", methods=["POST"])
 def api_owner_confirm() -> Any:
     """Confirm the current owner voice candidate and persist the centroid."""
-    result = confirm_owner_candidate()
+    try:
+        result = confirm_owner_candidate()
+    except LockTimeout as exc:
+        return _voiceprint_busy_response(exc)
     if result.get("error_kind") == "voiceprint_busy":
         return error_response(SPEAKER_VOICEPRINT_BUSY, detail=result["error"])
     if "error" in result:
@@ -1516,7 +1525,10 @@ def api_owner_confirm() -> Any:
 @speakers_bp.route("/api/owner/reject", methods=["POST"])
 def api_owner_reject() -> Any:
     """Reject the current owner voice candidate."""
-    reject_owner_candidate()
+    try:
+        reject_owner_candidate()
+    except LockTimeout as exc:
+        return _voiceprint_busy_response(exc)
     return jsonify({"status": "needs_detection"})
 
 
