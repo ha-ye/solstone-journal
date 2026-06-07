@@ -210,6 +210,13 @@ TALENT_OPERATION_FAILED = Reason(
     500,
 )
 
+# health
+HEALTH_REPORT_FAILED = Reason(
+    "health_report_failed",
+    "I couldn't build your journal health report.",
+    500,
+)
+
 # voice / push / support
 FEATURE_UNAVAILABLE = Reason(
     "feature_unavailable",

@@ -708,3 +708,18 @@ def api_identity() -> Any:
             TALENT_OPERATION_FAILED,
             detail="Unable to load identity data",
         )
+
+
+@sol_bp.route("/api/thickness")
+def api_thickness() -> Any:
+    """Return relationship/thickness signals (also bundled in /api/identity)."""
+    try:
+        from solstone.think.awareness import compute_thickness
+
+        return jsonify(compute_thickness())
+    except Exception:
+        logging.exception("api_thickness failed")
+        return error_response(
+            TALENT_OPERATION_FAILED,
+            detail="Unable to load thickness signals",
+        )

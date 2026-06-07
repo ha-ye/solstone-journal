@@ -21,6 +21,7 @@ from .apps import register_app_context
 from .bridge import emit
 from .chat import chat_bp, start_chat_runtime
 from .config import bp as config_bp
+from .health import bp as health_bp
 from .ledger import bp as ledger_bp
 from .profile import bp as profile_bp
 from .profile import profiles_bp
@@ -164,6 +165,9 @@ def create_app(journal: str = "") -> Flask:
     app.register_blueprint(ledger_bp)
     app.register_blueprint(profile_bp)
     app.register_blueprint(profiles_bp)
+
+    # Register data-trust health API blueprint
+    app.register_blueprint(health_bp)
 
     # Register voice API blueprint
     app.register_blueprint(voice_bp)

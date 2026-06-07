@@ -498,3 +498,26 @@ class TestApiUpdatedDays:
         assert resp.status_code == 500
         payload = resp.get_json()
         assert "error" in payload
+
+
+class TestApiThickness:
+    """Tests for identity and thickness endpoints."""
+
+    def test_api_thickness_returns_six_signal_keys(self, agents_client):
+        resp = agents_client.get("/app/sol/api/thickness")
+
+        assert resp.status_code == 200
+        assert set(resp.get_json().keys()) == {
+            "entity_depth",
+            "conversation_count",
+            "recall_success",
+            "facet_count",
+            "journal_days",
+            "ready",
+        }
+
+    def test_api_identity_still_returns_three_keys(self, agents_client):
+        resp = agents_client.get("/app/sol/api/identity")
+
+        assert resp.status_code == 200
+        assert set(resp.get_json().keys()) == {"agent", "identity", "thickness"}
