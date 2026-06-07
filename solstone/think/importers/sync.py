@@ -5,9 +5,10 @@
 
 import json
 import logging
-import tempfile
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+
+from solstone.think.journal_io import atomic_replace
 
 logger = logging.getLogger(__name__)
 
@@ -49,17 +50,7 @@ def save_sync_state(journal_root: Path, backend: str, state: dict[str, Any]) -> 
     imports_dir.mkdir(parents=True, exist_ok=True)
     state_path = imports_dir / f"{backend}.json"
 
-    fd, tmp_path = tempfile.mkstemp(
-        dir=imports_dir, suffix=".tmp", prefix=f".{backend}_"
-    )
-    tmp_file = Path(tmp_path)
-    try:
-        with open(fd, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2)
-        tmp_file.replace(state_path)
-    except BaseException:
-        tmp_file.unlink(missing_ok=True)
-        raise
+    atomic_replace(state_path, json.dumps(state, indent=2))
 
 
 def get_syncable_backends() -> list[SyncableBackend]:

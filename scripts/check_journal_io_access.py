@@ -119,6 +119,9 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/think/importers/cli.py",
         "solstone/think/importers/documents.py",
         "solstone/think/importers/shared.py",
+        # imports/** bundle + sync-cursor writers (local/CLI import flows).
+        "solstone/think/importers/sync.py",
+        "solstone/think/importers/utils.py",
     }
 )
 

@@ -25,6 +25,7 @@ from solstone.think.importers.shared import (
 from solstone.think.importers.text import _read_transcript, process_transcript
 from solstone.think.importers.utils import save_import_segments
 from solstone.think.indexer.journal import index_file
+from solstone.think.journal_io import atomic_replace
 from solstone.think.segment import _touch_health_marker
 from solstone.think.streams import stream_name, update_stream, write_segment_stream
 from solstone.think.utils import (
@@ -1168,8 +1169,7 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
         imported_path = import_dir / "imported.json"
         # Write imported.json with all processing metadata
         try:
-            with open(imported_path, "w", encoding="utf-8") as f:
-                json.dump(processing_results, f, indent=2)
+            atomic_replace(imported_path, json.dumps(processing_results, indent=2))
             logger.info(f"Saved import processing metadata: {imported_path}")
         except Exception as e:
             logger.warning(f"Failed to save imported.json: {e}")
@@ -1188,8 +1188,7 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
                 ]
                 import_meta["imported_json_path"] = str(imported_path)
                 import_meta["segments"] = created_segments
-                with open(import_metadata_path, "w", encoding="utf-8") as f:
-                    json.dump(import_meta, f, indent=2)
+                atomic_replace(import_metadata_path, json.dumps(import_meta, indent=2))
                 logger.info(f"Updated import metadata: {import_metadata_path}")
             except Exception as e:
                 logger.warning(f"Failed to update import metadata: {e}")
@@ -1256,8 +1255,7 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
 
         # Write error state to imported.json for persistent failure tracking
         try:
-            with open(imported_path, "w", encoding="utf-8") as f:
-                json.dump(error_results, f, indent=2)
+            atomic_replace(imported_path, json.dumps(error_results, indent=2))
             logger.info(f"Saved error state: {imported_path}")
         except Exception as write_err:
             logger.warning(f"Failed to write error state: {write_err}")

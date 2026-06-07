@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from solstone.think.importers.utils import save_import_file, write_import_metadata
+from solstone.think.journal_io import atomic_replace
 from solstone.think.media import MIME_TYPES
 from solstone.think.utils import day_path, get_journal, now_ms
 
@@ -577,8 +578,7 @@ def write_manifest(
     manifest_dir = journal_root / "imports" / import_id
     manifest_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = manifest_dir / "manifest.json"
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2)
+    atomic_replace(manifest_path, json.dumps(manifest, indent=2))
     return manifest_path
 
 
@@ -650,9 +650,8 @@ def write_content_manifest(
     manifest_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = manifest_dir / "content_manifest.jsonl"
 
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        for entry in entries:
-            f.write(json.dumps(entry) + "\n")
+    lines = [json.dumps(entry) for entry in entries]
+    atomic_replace(manifest_path, "\n".join(lines) + "\n" if lines else "")
 
     return manifest_path
 

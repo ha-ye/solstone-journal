@@ -13,6 +13,7 @@ import json
 import re
 from pathlib import Path
 
+from solstone.think.journal_io import atomic_replace
 from solstone.think.utils import resolve_journal_path
 
 # ============================================================================
@@ -45,7 +46,7 @@ def save_import_file(
     file_path = import_dir / filename
     if source_path != file_path:
         # Copy content if different paths
-        file_path.write_bytes(source_path.read_bytes())
+        atomic_replace(file_path, source_path.read_bytes())
 
     return file_path
 
@@ -73,7 +74,7 @@ def save_import_text(
 
     # Save the text
     file_path = import_dir / filename
-    file_path.write_text(content, encoding="utf-8")
+    atomic_replace(file_path, content)
 
     return file_path
 
@@ -98,7 +99,7 @@ def write_import_metadata(
     import_dir = journal_root / "imports" / timestamp
     import_dir.mkdir(parents=True, exist_ok=True)
     metadata_path = import_dir / "import.json"
-    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    atomic_replace(metadata_path, json.dumps(metadata, indent=2))
 
 
 def read_import_metadata(
@@ -168,7 +169,7 @@ def update_import_metadata_fields(
 
     # Write back if modified
     if updated:
-        metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        atomic_replace(metadata_path, json.dumps(metadata, indent=2))
 
     return metadata, updated
 
@@ -604,9 +605,8 @@ def generate_content_manifest(journal_root: Path, timestamp: str) -> Path | None
         return None
 
     manifest_path = import_dir / "content_manifest.jsonl"
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        for entry in entries:
-            f.write(json.dumps(entry) + "\n")
+    lines = [json.dumps(entry) for entry in entries]
+    atomic_replace(manifest_path, "\n".join(lines) + "\n" if lines else "")
     return manifest_path
 
 
@@ -637,7 +637,7 @@ def save_import_segments(
         "segments": segments,
         "day": day,
     }
-    segments_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    atomic_replace(segments_path, json.dumps(data, indent=2))
 
 
 def load_import_segments(
