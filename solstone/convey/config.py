@@ -5,20 +5,25 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from flask import Blueprint, request
 
+from solstone.think.journal_io import LockTimeout, atomic_replace, hold_lock
+
 from . import state
 from .reasons import (
+    CONVEY_BUSY,
     CONVEY_OPERATION_FAILED,
     INVALID_CONFIG_VALUE,
     INVALID_JSON_REQUEST,
     MISSING_REQUIRED_FIELD,
 )
-from .utils import error_response, load_json, save_json, success_response
+from .utils import error_response, load_json, success_response
 
 logger = logging.getLogger(__name__)
 
@@ -69,21 +74,32 @@ def reporting_enabled() -> bool:
     return config.get("reporting", {}).get("enabled", True)
 
 
-def save_convey_config(config: dict[str, Any]) -> bool:
-    """Save config/convey.json atomically.
+def _write_convey_config(config: dict[str, Any]) -> None:
+    """Atomically persist convey config. Caller MUST hold the convey.json lock."""
+    atomic_replace(
+        _get_config_path(),
+        json.dumps(config, indent=2, ensure_ascii=False) + "\n",
+    )
 
-    Args:
-        config: Configuration dict to save
 
-    Returns:
-        True if successful, False otherwise
+def locked_modify_convey_config(
+    transform: Callable[[dict[str, Any]], dict[str, Any] | None],
+) -> dict[str, Any] | None:
+    """Apply a locked read-modify-write to config/convey.json.
+
+    Reads the current config under an exclusive lock, applies ``transform``,
+    and atomically persists the result. If ``transform`` returns ``None`` the
+    write is skipped (no-op). Returns the persisted config, or ``None`` when
+    skipped.
     """
-    config_path = _get_config_path()
-
-    # Ensure config directory exists
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-
-    return save_json(config_path, config, indent=2)
+    path = _get_config_path()
+    with hold_lock(path):
+        config = load_convey_config()
+        new_config = transform(config)
+        if new_config is None:
+            return None
+        _write_convey_config(new_config)
+        return new_config
 
 
 def seed_default_app_navigation(config: dict[str, Any]) -> bool:
@@ -117,24 +133,16 @@ def get_selected_facet() -> str | None:
 
 
 def set_selected_facet(facet: str | None) -> None:
-    """Update selected facet in config.
+    """Update selected facet in config (best-effort; never raises)."""
 
-    Args:
-        facet: Facet name to select, or None to clear selection
-    """
-    config = load_convey_config()
+    def _transform(config: dict[str, Any]) -> dict[str, Any]:
+        config.setdefault("facets", {})["selected"] = facet
+        return config
 
-    # Ensure facets section exists
-    if "facets" not in config:
-        config["facets"] = {}
-
-    # Update selected field
-    config["facets"]["selected"] = facet
-
-    # Save config (async safe - doesn't block if write fails)
-    success = save_convey_config(config)
-    if not success:
-        logger.warning(f"Failed to save selected facet: {facet}")
+    try:
+        locked_modify_convey_config(_transform)
+    except (LockTimeout, OSError) as exc:
+        logger.warning("Failed to save selected facet %s: %s", facet, exc)
 
 
 def apply_facet_order(facets: list[dict], config: dict) -> list[dict]:
@@ -350,37 +358,23 @@ def update_config() -> tuple[Any, int]:
                 detail=f"Invalid config: {error_msg}",
             )
 
-        # Merge with existing config (partial updates supported)
-        current_config = load_convey_config()
+        def _transform(config: dict[str, Any]) -> dict[str, Any]:
+            if "facets" in new_config:
+                config.setdefault("facets", {}).update(new_config["facets"])
+            if "apps" in new_config:
+                config.setdefault("apps", {}).update(new_config["apps"])
+            if "reporting" in new_config:
+                config.setdefault("reporting", {}).update(new_config["reporting"])
+            return config
 
-        # Deep merge facets section
-        if "facets" in new_config:
-            if "facets" not in current_config:
-                current_config["facets"] = {}
-            current_config["facets"].update(new_config["facets"])
+        persisted = locked_modify_convey_config(_transform)
+        return success_response({"config": persisted})
 
-        # Deep merge apps section
-        if "apps" in new_config:
-            if "apps" not in current_config:
-                current_config["apps"] = {}
-            current_config["apps"].update(new_config["apps"])
-
-        # Deep merge reporting section
-        if "reporting" in new_config:
-            if "reporting" not in current_config:
-                current_config["reporting"] = {}
-            current_config["reporting"].update(new_config["reporting"])
-
-        # Save updated config
-        success = save_convey_config(current_config)
-        if not success:
-            return error_response(
-                CONVEY_OPERATION_FAILED,
-                detail="Failed to save configuration",
-            )
-
-        return success_response({"config": current_config})
-
+    except LockTimeout:
+        return error_response(
+            CONVEY_BUSY,
+            detail="Interface settings are busy; try again",
+        )
     except Exception as e:
         logger.error(f"Failed to update config: {e}", exc_info=True)
         return error_response(
@@ -418,22 +412,19 @@ def update_facet_order() -> tuple[Any, int]:
                 detail="'order' must contain only strings",
             )
 
-        # Load config and update facets.order
-        config = load_convey_config()
-        if "facets" not in config:
-            config["facets"] = {}
-        config["facets"]["order"] = order
+        def _transform(config: dict[str, Any]) -> dict[str, Any]:
+            config.setdefault("facets", {})["order"] = order
+            return config
 
-        # Save
-        success = save_convey_config(config)
-        if not success:
-            return error_response(
-                CONVEY_OPERATION_FAILED,
-                detail="Failed to save facet order",
-            )
+        locked_modify_convey_config(_transform)
 
         return success_response({"order": order})
 
+    except LockTimeout:
+        return error_response(
+            CONVEY_BUSY,
+            detail="Interface settings are busy; try again",
+        )
     except Exception as e:
         logger.error(f"Failed to update facet order: {e}", exc_info=True)
         return error_response(
@@ -471,22 +462,19 @@ def update_app_order() -> tuple[Any, int]:
                 detail="'order' must contain only strings",
             )
 
-        # Load config and update apps.order
-        config = load_convey_config()
-        if "apps" not in config:
-            config["apps"] = {}
-        config["apps"]["order"] = order
+        def _transform(config: dict[str, Any]) -> dict[str, Any]:
+            config.setdefault("apps", {})["order"] = order
+            return config
 
-        # Save
-        success = save_convey_config(config)
-        if not success:
-            return error_response(
-                CONVEY_OPERATION_FAILED,
-                detail="Failed to save app order",
-            )
+        locked_modify_convey_config(_transform)
 
         return success_response({"order": order})
 
+    except LockTimeout:
+        return error_response(
+            CONVEY_BUSY,
+            detail="Interface settings are busy; try again",
+        )
     except Exception as e:
         logger.error(f"Failed to update app order: {e}", exc_info=True)
         return error_response(
@@ -524,30 +512,25 @@ def toggle_app_star() -> tuple[Any, int]:
                 detail="'starred' must be a boolean",
             )
 
-        # Load config and update apps.starred
-        config = load_convey_config()
-        if "apps" not in config:
-            config["apps"] = {}
+        def _transform(config: dict[str, Any]) -> dict[str, Any]:
+            apps_config = config.setdefault("apps", {})
+            starred_apps = set(apps_config.get("starred", []))
+            if starred:
+                starred_apps.add(app_name)
+            else:
+                starred_apps.discard(app_name)
+            apps_config["starred"] = sorted(starred_apps)
+            return config
 
-        starred_apps = set(config["apps"].get("starred", []))
-
-        if starred:
-            starred_apps.add(app_name)
-        else:
-            starred_apps.discard(app_name)
-
-        config["apps"]["starred"] = sorted(starred_apps)
-
-        # Save
-        success = save_convey_config(config)
-        if not success:
-            return error_response(
-                CONVEY_OPERATION_FAILED,
-                detail="Failed to save app starred status",
-            )
+        locked_modify_convey_config(_transform)
 
         return success_response({"app": app_name, "starred": starred})
 
+    except LockTimeout:
+        return error_response(
+            CONVEY_BUSY,
+            detail="Interface settings are busy; try again",
+        )
     except Exception as e:
         logger.error(f"Failed to toggle app star: {e}", exc_info=True)
         return error_response(

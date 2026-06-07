@@ -74,7 +74,10 @@ def accept_facet() -> Response | tuple[Response, int]:
         name_key = str(_required(data, "name_key"))
     except KeyError:
         return _missing_field("name_key")
-    return _result_response(accept_facet_candidate(name_key))
+    try:
+        return _result_response(accept_facet_candidate(name_key))
+    except LockTimeout:
+        return error_response(ENTITY_BUSY, detail="suggestions are busy; try again")
 
 
 @curation_bp.post("/api/facet/dismiss")
@@ -84,7 +87,10 @@ def dismiss_facet() -> Response | tuple[Response, int]:
         name_key = str(_required(data, "name_key"))
     except KeyError:
         return _missing_field("name_key")
-    return _result_response(dismiss_facet_candidate(name_key))
+    try:
+        return _result_response(dismiss_facet_candidate(name_key))
+    except LockTimeout:
+        return error_response(ENTITY_BUSY, detail="suggestions are busy; try again")
 
 
 @curation_bp.post("/api/entity/preview")

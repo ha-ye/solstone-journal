@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from solstone.think.entities import get_identity_names
+from solstone.think.journal_io import append_text, atomic_replace, hold_lock
 from solstone.think.utils import day_dirs, day_path, get_journal, iter_segments
 
 
@@ -185,9 +186,6 @@ def _write_action_log(
     else:
         log_path = Path(journal) / "config" / "actions" / f"{day}.jsonl"
 
-    # Ensure parent directory exists
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-
     # Create log entry
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -206,8 +204,7 @@ def _write_action_log(
         entry["use_id"] = use_id
 
     # Append to log file
-    with open(log_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    append_text(log_path, json.dumps(entry, ensure_ascii=False))
 
 
 def log_call_action(
@@ -244,20 +241,7 @@ def log_call_action(
 
 def _write_facet_json(path: Path, data: dict[str, Any]) -> None:
     """Write facet metadata atomically."""
-    import tempfile
-
-    temp_fd, temp_path = tempfile.mkstemp(dir=path.parent, suffix=".json", text=True)
-    try:
-        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-        os.replace(temp_path, path)
-    except Exception:
-        try:
-            os.unlink(temp_path)
-        except Exception:
-            pass
-        raise
+    atomic_replace(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
 def ensure_facet(slug: str) -> bool:
@@ -757,23 +741,7 @@ def set_facet_muted(facet: str, muted: bool) -> None:
         facet_data.pop("muted", None)
 
     # Write back atomically
-    import tempfile
-
-    temp_fd, temp_path = tempfile.mkstemp(
-        dir=facet_json_path.parent, suffix=".json", text=True
-    )
-    try:
-        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
-            json.dump(facet_data, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-        os.replace(temp_path, facet_json_path)
-    except Exception:
-        # Clean up temp file on error
-        try:
-            os.unlink(temp_path)
-        except Exception:
-            pass
-        raise
+    _write_facet_json(facet_json_path, facet_data)
 
     # Log the change
     action = "facet_mute" if muted else "facet_unmute"
@@ -886,22 +854,7 @@ def update_facet(name: str, **kwargs: Any) -> dict[str, Any]:
             changed_fields[field] = {"old": old_value, "new": new_value}
             facet_data[field] = new_value
 
-    import tempfile
-
-    temp_fd, temp_path = tempfile.mkstemp(
-        dir=facet_json_path.parent, suffix=".json", text=True
-    )
-    try:
-        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
-            json.dump(facet_data, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-        os.replace(temp_path, facet_json_path)
-    except Exception:
-        try:
-            os.unlink(temp_path)
-        except Exception:
-            pass
-        raise
+    _write_facet_json(facet_json_path, facet_data)
 
     if changed_fields:
         log_call_action(
@@ -930,29 +883,31 @@ def delete_facet(name: str, *, consent: bool = False) -> None:
 
     convey_config_path = Path(get_journal()) / "config" / "convey.json"
     if convey_config_path.exists():
-        try:
-            with open(convey_config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
+        with hold_lock(convey_config_path):
+            try:
+                with open(convey_config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
 
-            changed = False
-            facets_config = config.get("facets", {})
+                changed = False
+                facets_config = config.get("facets", {})
 
-            if facets_config.get("selected") == name:
-                facets_config["selected"] = ""
-                changed = True
+                if facets_config.get("selected") == name:
+                    facets_config["selected"] = ""
+                    changed = True
 
-            order = facets_config.get("order", [])
-            if name in order:
-                facets_config["order"] = [item for item in order if item != name]
-                changed = True
+                order = facets_config.get("order", [])
+                if name in order:
+                    facets_config["order"] = [item for item in order if item != name]
+                    changed = True
 
-            if changed:
-                config["facets"] = facets_config
-                with open(convey_config_path, "w", encoding="utf-8") as f:
-                    json.dump(config, f, indent=2, ensure_ascii=False)
-                    f.write("\n")
-        except (json.JSONDecodeError, OSError):
-            pass
+                if changed:
+                    config["facets"] = facets_config
+                    atomic_replace(
+                        convey_config_path,
+                        json.dumps(config, indent=2, ensure_ascii=False) + "\n",
+                    )
+            except (json.JSONDecodeError, OSError):
+                pass
 
     log_params: dict = {"name": name}
     if consent:
@@ -1294,34 +1249,36 @@ def rename_facet(old_name: str, new_name: str) -> None:
     # Step 2: Update config/convey.json
     convey_config_path = Path(journal) / "config" / "convey.json"
     if convey_config_path.exists():
-        try:
-            with open(convey_config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
+        with hold_lock(convey_config_path):
+            try:
+                with open(convey_config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
 
-            changed = False
-            facets_config = config.get("facets", {})
+                changed = False
+                facets_config = config.get("facets", {})
 
-            if facets_config.get("selected") == old_name:
-                facets_config["selected"] = new_name
-                changed = True
+                if facets_config.get("selected") == old_name:
+                    facets_config["selected"] = new_name
+                    changed = True
 
-            order = facets_config.get("order", [])
-            if old_name in order:
-                facets_config["order"] = [
-                    new_name if name == old_name else name for name in order
-                ]
-                changed = True
+                order = facets_config.get("order", [])
+                if old_name in order:
+                    facets_config["order"] = [
+                        new_name if name == old_name else name for name in order
+                    ]
+                    changed = True
 
-            if changed:
-                config["facets"] = facets_config
-                with open(convey_config_path, "w", encoding="utf-8") as f:
-                    json.dump(config, f, indent=2, ensure_ascii=False)
-                    f.write("\n")
-                print("Updated config/convey.json")
-            else:
-                print("No changes needed in config/convey.json")
-        except (json.JSONDecodeError, OSError) as exc:
-            logging.warning("Failed to update convey config: %s", exc)
+                if changed:
+                    config["facets"] = facets_config
+                    atomic_replace(
+                        convey_config_path,
+                        json.dumps(config, indent=2, ensure_ascii=False) + "\n",
+                    )
+                    print("Updated config/convey.json")
+                else:
+                    print("No changes needed in config/convey.json")
+            except (json.JSONDecodeError, OSError) as exc:
+                logging.warning("Failed to update convey config: %s", exc)
 
     # Step 3: Advise index rebuild
     print(

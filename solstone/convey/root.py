@@ -41,8 +41,7 @@ from solstone.think.utils import (
 
 from . import bridge as convey_bridge
 from .config import (
-    load_convey_config,
-    save_convey_config,
+    locked_modify_convey_config,
     seed_default_app_navigation,
 )
 from .copy import LOGIN_NO_PASSWORD_CONFIGURED
@@ -369,8 +368,12 @@ def init_finalize() -> Any:
 
     write_journal_config(config)
 
-    config = load_convey_config()
-    if seed_default_app_navigation(config) and not save_convey_config(config):
+    def _seed(config: dict[str, Any]) -> dict[str, Any] | None:
+        return config if seed_default_app_navigation(config) else None
+
+    try:
+        locked_modify_convey_config(_seed)
+    except Exception:
         logger.error("default app navigation seed convey-config PERSIST failed")
 
     session["logged_in"] = True

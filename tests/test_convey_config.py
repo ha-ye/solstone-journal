@@ -145,7 +145,11 @@ def test_init_finalize_logs_convey_seed_persist_failure(
     from solstone.convey import root as root_module
 
     (journal_copy / "config" / "convey.json").unlink()
-    monkeypatch.setattr(root_module, "save_convey_config", lambda _config: False)
+
+    def _fail_seed(_transform):
+        raise OSError("simulated persist failure")
+
+    monkeypatch.setattr(root_module, "locked_modify_convey_config", _fail_seed)
     caplog.set_level(logging.ERROR, logger="solstone.convey.root")
     app = create_app(str(journal_copy))
     app.config["TESTING"] = True

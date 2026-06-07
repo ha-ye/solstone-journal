@@ -110,6 +110,11 @@ CONVEY_OPERATION_FAILED = Reason(
     "I couldn't update the interface settings.",
     500,
 )
+CONVEY_BUSY = Reason(
+    "convey_busy",
+    "I couldn't update the interface settings right now because they were busy. Try again in a moment.",
+    503,
+)
 NETWORK_SECURITY_REQUIRES_PASSWORD = Reason(
     "network_security_requires_password",
     "I couldn't change network access until a password is set.",

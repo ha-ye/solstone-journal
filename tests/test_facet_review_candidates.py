@@ -15,7 +15,6 @@ from solstone.think.facet_review_candidates import (
     candidate_key,
     dismiss_candidate,
     facet_review_candidates_dir,
-    facet_review_candidates_lock_path,
     facet_review_candidates_path,
     find_candidate,
     load_candidates,
@@ -45,10 +44,6 @@ def test_path_helpers_return_expected_names(candidate_journal):
     assert (
         facet_review_candidates_path()
         == candidate_journal / "facets" / "review-candidates.jsonl"
-    )
-    assert (
-        facet_review_candidates_lock_path()
-        == candidate_journal / "facets" / ".review-candidates.lock"
     )
 
 

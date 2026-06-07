@@ -7,11 +7,11 @@ from __future__ import annotations
 
 import logging
 import sys
+from typing import Any
 
 import solstone.convey.state as convey_state
 from solstone.convey.config import (
-    load_convey_config,
-    save_convey_config,
+    locked_modify_convey_config,
     seed_default_app_navigation,
 )
 from solstone.think.utils import get_journal
@@ -36,18 +36,17 @@ def main():
 
     convey_state.journal_root = str(journal)
 
-    config = load_convey_config()
-    if not seed_default_app_navigation(config):
-        print("Default app navigation already present.")
-        return
+    def _seed(config: dict[str, Any]) -> dict[str, Any] | None:
+        return config if seed_default_app_navigation(config) else None
 
     try:
-        saved = save_convey_config(config)
+        result = locked_modify_convey_config(_seed)
     except Exception as exc:
         _fail("default app navigation seed convey-config PERSIST failed", exc)
 
-    if not saved:
-        _fail("default app navigation seed convey-config PERSIST failed")
+    if result is None:
+        print("Default app navigation already present.")
+        return
 
     print("Seeded default app navigation.")
 

@@ -190,6 +190,7 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Awareness (`awareness/current.json`) | `solstone/think/awareness.py` |
 | Todos (`facets/*/todos/*.jsonl`) | `solstone/apps/todos/todo.py` + `solstone/apps/todos/call.py` |
 | Config (`config/journal.json`) | `solstone/think/journal_config.py` |
+| Convey config (`config/convey.json`) | `solstone/convey/config.py` + `solstone/think/facets.py` |
 | Chat config (`config/chat.json`) | `solstone/apps/chat/config.py` |
 | Vertex credentials (`.config/vertex-credentials.json`) | `solstone/apps/settings/vertex_credentials.py` |
 | Speaker labels (`chronicle/**/talents/speaker_labels.json`) | `solstone/apps/speakers/attribution.py` |

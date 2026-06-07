@@ -8,14 +8,13 @@ Sole write-owner of:
 
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from solstone.think.entities.core import atomic_write
+from solstone.think.journal_io import atomic_replace, hold_lock
 from solstone.think.utils import get_journal
 
 logger = logging.getLogger(__name__)
@@ -31,11 +30,6 @@ def facet_review_candidates_dir() -> Path:
 def facet_review_candidates_path() -> Path:
     """Return the facet review-candidates JSONL path."""
     return facet_review_candidates_dir() / "review-candidates.jsonl"
-
-
-def facet_review_candidates_lock_path() -> Path:
-    """Return the sibling lock path for review-candidates.jsonl."""
-    return facet_review_candidates_dir() / ".review-candidates.lock"
 
 
 def _load_jsonl_rows(path: Path) -> list[dict[str, Any]]:
@@ -77,10 +71,12 @@ def load_candidates() -> list[dict[str, Any]]:
 
 def _save_jsonl_rows(path: Path, rows: list[dict[str, Any]]) -> None:
     """Write *rows* to *path* as JSONL using an atomic replace."""
-    content = ""
-    if rows:
-        content = "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n"
-    atomic_write(path, content)
+    content = (
+        "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n"
+        if rows
+        else ""
+    )
+    atomic_replace(path, content)
 
 
 def save_candidates(rows: list[dict[str, Any]]) -> None:
@@ -107,18 +103,11 @@ def locked_modify_candidates(
     fn: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
     """Apply a locked read-modify-write cycle to review-candidates.jsonl."""
-    facet_review_candidates_dir()
-    lock_path = facet_review_candidates_lock_path()
-    # Lock file contents are irrelevant; opening with "w" matches the existing pattern.
-    with open(lock_path, "w", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        try:
-            rows = load_candidates()
-            new_rows = fn(rows)
-            save_candidates(new_rows)
-            return new_rows
-        finally:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
+    with hold_lock(facet_review_candidates_path()):
+        rows = load_candidates()
+        new_rows = fn(rows)
+        save_candidates(new_rows)
+        return new_rows
 
 
 def utc_now_iso() -> str:
