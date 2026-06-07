@@ -142,68 +142,6 @@ class TestDailyLog:
         assert entries[0]["detail"] == "meeting detected"
 
 
-class TestAwarenessCLI:
-    def test_status_empty(self):
-        from typer.testing import CliRunner
-
-        from solstone.apps.awareness.call import app
-
-        result = CliRunner().invoke(app, ["status"])
-        assert result.exit_code == 0
-        assert "No awareness state" in result.output
-
-    def test_status_with_data(self):
-        from typer.testing import CliRunner
-
-        from solstone.apps.awareness.call import app
-        from solstone.think.awareness import update_state
-
-        update_state("onboarding", {"status": "observing"})
-
-        result = CliRunner().invoke(app, ["status"])
-        assert result.exit_code == 0
-        assert "observing" in result.output
-
-    def test_status_section(self):
-        from typer.testing import CliRunner
-
-        from solstone.apps.awareness.call import app
-        from solstone.think.awareness import update_state
-
-        update_state("onboarding", {"status": "observing"})
-
-        result = CliRunner().invoke(app, ["status", "onboarding"])
-        assert result.exit_code == 0
-        assert "observing" in result.output
-
-    def test_log_cmd(self):
-        from typer.testing import CliRunner
-
-        from solstone.apps.awareness.call import app
-
-        result = CliRunner().invoke(
-            app, ["log", "observation", "saw a meeting", "--key", "test"]
-        )
-        assert result.exit_code == 0
-        data = json.loads(result.output)
-        assert data["kind"] == "observation"
-        assert data["message"] == "saw a meeting"
-        assert data["key"] == "test"
-
-    def test_log_cmd_with_data(self):
-        from typer.testing import CliRunner
-
-        from solstone.apps.awareness.call import app
-
-        result = CliRunner().invoke(
-            app,
-            ["log", "observation", "--data", '{"meetings": 2}'],
-        )
-        assert result.exit_code == 0
-        data = json.loads(result.output)
-        assert data["data"]["meetings"] == 2
-
-
 class TestJournalState:
     def test_first_daily_ready_via_update_state(self):
         from solstone.think.awareness import get_current, update_state
