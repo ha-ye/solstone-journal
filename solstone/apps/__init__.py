@@ -106,15 +106,18 @@ class AppRegistry:
 
     def __init__(self):
         self.apps: dict[str, App] = {}
+        self.api_blueprints: list[Blueprint] = []
 
     def discover(self) -> None:
         """Auto-discover apps using convention over configuration.
 
         For each directory in apps/:
-        1. Check for workspace.html (required)
-        2. Load app.json if present (for icon, label overrides)
-        3. Import routes.py and get blueprint (optional - for custom routes)
-        4. Check for background.html (optional)
+        1. With workspace.html: load a full menu app
+        2. With routes.py but no workspace.html: register an API-only blueprint
+           (no menu entry, no injected index route)
+        3. Load app.json if present (for icon, label overrides)
+        4. Import routes.py and get blueprint (optional - for custom routes)
+        5. Check for background.html (optional)
         """
         apps_dir = Path(__file__).parent
 
@@ -125,9 +128,23 @@ class AppRegistry:
 
             app_name = app_path.name
 
-            # Skip if workspace.html doesn't exist (required)
-            if not (app_path / "workspace.html").exists():
-                logger.debug(f"Skipping {app_name}/ - no workspace.html found")
+            has_workspace = (app_path / "workspace.html").exists()
+            has_routes = (app_path / "routes.py").exists()
+            if not has_workspace:
+                if has_routes:
+                    try:
+                        _routes_module, blueprint = self._load_routes_blueprint(
+                            app_name, app_path
+                        )
+                        self.api_blueprints.append(blueprint)
+                        logger.info(f"Discovered API-only app: {app_name}")
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to load API-only app {app_name}: {e}",
+                            exc_info=True,
+                        )
+                else:
+                    logger.debug(f"Skipping {app_name}/ - no workspace.html found")
                 continue
 
             try:
@@ -136,6 +153,45 @@ class AppRegistry:
                 logger.info(f"Discovered app: {app_name}")
             except Exception as e:
                 logger.error(f"Failed to load app {app_name}: {e}", exc_info=True)
+
+    def _load_routes_blueprint(
+        self, app_name: str, app_path: Path
+    ) -> tuple[Any, Blueprint]:
+        routes_module = importlib.import_module(f"solstone.apps.{app_name}.routes")
+
+        # Find blueprint - look for *_bp attribute
+        expected_bp_var = f"{app_name}_bp"
+        blueprint = None
+
+        for attr_name in dir(routes_module):
+            if attr_name.endswith("_bp"):
+                bp = getattr(routes_module, attr_name)
+                if isinstance(bp, Blueprint):
+                    blueprint = bp
+
+                    # Warn if variable name doesn't match convention
+                    if attr_name != expected_bp_var:
+                        logger.warning(
+                            f"App '{app_name}': Blueprint variable '{attr_name}' should be '{expected_bp_var}'"
+                        )
+
+                    break
+
+        if not blueprint:
+            raise ValueError(
+                f"No blueprint found in apps.{app_name}.routes - "
+                f"expected variable named '{expected_bp_var}'"
+            )
+
+        # Verify blueprint name uses "app:{name}" pattern for consistency
+        expected_name = f"app:{app_name}"
+        if blueprint.name != expected_name:
+            raise ValueError(
+                f"App '{app_name}': Blueprint name must be '{expected_name}', "
+                f"got '{blueprint.name}'. Update Blueprint() declaration in routes.py"
+            )
+
+        return routes_module, blueprint
 
     def _load_app(self, app_name: str, app_path: Path) -> App:
         """Load a single app from its directory.
@@ -183,38 +239,7 @@ class AppRegistry:
         routes_file = app_path / "routes.py"
 
         if routes_file.exists():
-            routes_module = importlib.import_module(f"solstone.apps.{app_name}.routes")
-
-            # Find blueprint - look for *_bp attribute
-            expected_bp_var = f"{app_name}_bp"
-
-            for attr_name in dir(routes_module):
-                if attr_name.endswith("_bp"):
-                    bp = getattr(routes_module, attr_name)
-                    if isinstance(bp, Blueprint):
-                        blueprint = bp
-
-                        # Warn if variable name doesn't match convention
-                        if attr_name != expected_bp_var:
-                            logger.warning(
-                                f"App '{app_name}': Blueprint variable '{attr_name}' should be '{expected_bp_var}'"
-                            )
-
-                        break
-
-            if not blueprint:
-                raise ValueError(
-                    f"No blueprint found in apps.{app_name}.routes - "
-                    f"expected variable named '{expected_bp_var}'"
-                )
-
-            # Verify blueprint name uses "app:{name}" pattern for consistency
-            expected_name = f"app:{app_name}"
-            if blueprint.name != expected_name:
-                raise ValueError(
-                    f"App '{app_name}': Blueprint name must be '{expected_name}', "
-                    f"got '{blueprint.name}'. Update Blueprint() declaration in routes.py"
-                )
+            routes_module, blueprint = self._load_routes_blueprint(app_name, app_path)
         else:
             # No routes.py - create a minimal blueprint
             blueprint = self._create_minimal_blueprint(app_name)
@@ -309,7 +334,9 @@ class AppRegistry:
         if not has_index:
             # No index function, inject default one using record() for deferred setup
             # Only inject if blueprint hasn't been registered yet
-            if not blueprint._got_registered_once:
+            if not blueprint._got_registered_once and not getattr(
+                blueprint, "_solstone_default_index_injected", False
+            ):
 
                 def index():
                     from flask import render_template
@@ -325,6 +352,7 @@ class AppRegistry:
                     )
 
                 blueprint.record(setup_index)
+                blueprint._solstone_default_index_injected = True
                 logger.debug(f"Injected default index route for app '{app_name}'")
 
     def register_blueprints(self, flask_app) -> None:
@@ -346,5 +374,15 @@ class AppRegistry:
             except Exception as e:
                 logger.error(
                     f"Failed to register blueprint for app {app.name}: {e}",
+                    exc_info=True,
+                )
+
+        for blueprint in self.api_blueprints:
+            try:
+                flask_app.register_blueprint(blueprint)
+                logger.info(f"Registered API-only blueprint: {blueprint.name}")
+            except Exception as e:
+                logger.error(
+                    f"Failed to register API-only blueprint {blueprint.name}: {e}",
                     exc_info=True,
                 )
