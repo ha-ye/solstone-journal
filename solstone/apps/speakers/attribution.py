@@ -23,6 +23,7 @@ import json
 import logging
 import re
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,12 @@ from solstone.think.entities import find_matching_entity
 from solstone.think.entities.journal import (
     get_journal_principal,
     load_all_journal_entities,
+)
+from solstone.think.journal_io import (
+    MalformedPolicy,
+    hold_lock,
+    read_json,
+    write_json,
 )
 from solstone.think.utils import day_path, now_ms, segment_path
 
@@ -450,12 +457,45 @@ def attribute_segment(
 # ---------------------------------------------------------------------------
 
 
+def update_speaker_labels(
+    seg_dir: Path,
+    transform: Callable[[dict | None], dict | None],
+) -> None:
+    """Apply a locked read-modify-write transform to speaker_labels.json."""
+    path = seg_dir / "talents" / "speaker_labels.json"
+    with hold_lock(path):
+        current = read_json(
+            path,
+            on_error=MalformedPolicy.WARN_AND_SKIP,
+            default=None,
+        )
+        new = transform(current)
+        if new is None:
+            return
+        write_json(path, new)
+
+
+def _label_sentence_id(label: dict) -> int | None:
+    sid = label.get("sentence_id")
+    if sid is None:
+        return None
+    try:
+        return int(sid)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_user_label(label: dict) -> bool:
+    method = label.get("method")
+    return isinstance(method, str) and method.startswith("user_")
+
+
 def save_speaker_labels(
     seg_dir: Path,
     labels: list[dict],
     metadata: dict[str, Any],
 ) -> Path:
-    """Write speaker_labels.json to the segment's agents/ directory.
+    """Write speaker_labels.json to the segment's talents/ directory.
 
     Preserves user corrections: if speaker_corrections.json exists, any
     sentence that was corrected by the user keeps the corrected attribution
@@ -503,18 +543,100 @@ def save_speaker_labels(
         )
 
     out_path = agents_dir / "speaker_labels.json"
-    data = {
-        "labels": labels,
-        "owner_centroid_last_refreshed_at": metadata.get(
-            "owner_centroid_last_refreshed_at"
-        ),
-        "voiceprint_versions": metadata.get("voiceprint_versions", {}),
-    }
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+
+    def transform(current: dict | None) -> dict:
+        user_by_sid: dict[int, dict] = {}
+        if isinstance(current, dict):
+            current_labels = current.get("labels", [])
+            if isinstance(current_labels, list):
+                for current_label in current_labels:
+                    if not isinstance(current_label, dict):
+                        continue
+                    sid = _label_sentence_id(current_label)
+                    if sid is not None and _is_user_label(current_label):
+                        user_by_sid[sid] = current_label
+
+        merged_labels: list[dict] = []
+        fresh_sids: set[int] = set()
+        for label in labels:
+            sid = _label_sentence_id(label)
+            if sid is None:
+                merged_labels.append(label)
+                continue
+            fresh_sids.add(sid)
+            merged_labels.append(user_by_sid.get(sid, label))
+
+        user_only = [
+            label for sid, label in sorted(user_by_sid.items()) if sid not in fresh_sids
+        ]
+        merged_labels.extend(user_only)
+
+        return {
+            "labels": merged_labels,
+            "owner_centroid_last_refreshed_at": metadata.get(
+                "owner_centroid_last_refreshed_at"
+            ),
+            "voiceprint_versions": metadata.get("voiceprint_versions", {}),
+        }
+
+    update_speaker_labels(seg_dir, transform)
 
     logger.info("Wrote %d labels to %s", len(labels), out_path)
     return out_path
+
+
+def save_speaker_labels_stub(seg_dir: Path, reason: str) -> None:
+    """Write a locked attribution stub for segments that cannot be labeled."""
+    update_speaker_labels(
+        seg_dir,
+        lambda _current: {"labels": [], "skipped": True, "reason": reason},
+    )
+
+
+def apply_label_patches(
+    seg_dir: Path,
+    patches: dict[int, dict],
+    *,
+    allow_insert: bool,
+) -> None:
+    """Apply locked per-sentence speaker label patches."""
+
+    def transform(current: dict | None) -> dict:
+        if isinstance(current, dict):
+            base = dict(current)
+            labels_value = current.get("labels", [])
+            labels = list(labels_value) if isinstance(labels_value, list) else []
+        else:
+            base = {}
+            labels = []
+
+        labels_by_sid: dict[int, dict] = {}
+        for label in labels:
+            if not isinstance(label, dict):
+                continue
+            sid = _label_sentence_id(label)
+            if sid is not None:
+                labels_by_sid[sid] = label
+
+        for sid, fields in patches.items():
+            sid_int = int(sid)
+            existing = labels_by_sid.get(sid_int)
+            if existing is not None:
+                existing.update(fields)
+                continue
+            if not allow_insert:
+                raise ValueError(f"speaker label sentence_id {sid_int} not found")
+            label = {"sentence_id": sid_int, **fields}
+            labels.append(label)
+            labels_by_sid[sid_int] = label
+
+        if allow_insert:
+            labels = sorted(labels, key=lambda label: int(label["sentence_id"]))
+
+        base["labels"] = labels
+        return base
+
+    update_speaker_labels(seg_dir, transform)
 
 
 # ---------------------------------------------------------------------------

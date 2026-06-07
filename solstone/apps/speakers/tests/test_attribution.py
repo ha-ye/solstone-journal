@@ -292,7 +292,7 @@ def test_unmatched_sentences_get_null(speakers_env):
 # ---------------------------------------------------------------------------
 
 
-def test_save_speaker_labels(tmp_path):
+def test_public_speaker_labels_save(tmp_path):
     from solstone.apps.speakers.attribution import save_speaker_labels
 
     labels = [
@@ -321,6 +321,100 @@ def test_save_speaker_labels(tmp_path):
     assert len(data["labels"]) == 2
     assert data["owner_centroid_last_refreshed_at"] == "2026-03-15T12:00:00"
     assert data["voiceprint_versions"]["alice"] == 10
+
+
+def test_public_labels_save_preserves_current_user_labels(tmp_path):
+    from solstone.apps.speakers.attribution import save_speaker_labels
+
+    existing = {
+        "labels": [
+            {
+                "sentence_id": 1,
+                "speaker": "old_pipeline",
+                "confidence": "high",
+                "method": "acoustic",
+            },
+            {
+                "sentence_id": 2,
+                "speaker": "user_choice",
+                "confidence": "high",
+                "method": "user_corrected",
+            },
+            {
+                "sentence_id": 3,
+                "speaker": "user_only",
+                "confidence": "high",
+                "method": "user_assigned",
+            },
+        ],
+        "owner_centroid_last_refreshed_at": None,
+        "voiceprint_versions": {},
+    }
+    talents_dir = tmp_path / "talents"
+    talents_dir.mkdir()
+    labels_path = talents_dir / "speaker_labels.json"
+    labels_path.write_text(json.dumps(existing), encoding="utf-8")
+
+    labels = [
+        {
+            "sentence_id": 1,
+            "speaker": "fresh_pipeline",
+            "confidence": "high",
+            "method": "acoustic",
+        },
+        {
+            "sentence_id": 2,
+            "speaker": "fresh_pipeline",
+            "confidence": "high",
+            "method": "acoustic",
+        },
+    ]
+
+    save_speaker_labels(tmp_path, labels, {})
+
+    data = json.loads(labels_path.read_text(encoding="utf-8"))
+    by_sid = {label["sentence_id"]: label for label in data["labels"]}
+    assert by_sid[1]["speaker"] == "fresh_pipeline"
+    assert by_sid[2]["speaker"] == "user_choice"
+    assert by_sid[2]["method"] == "user_corrected"
+    assert by_sid[3]["speaker"] == "user_only"
+    assert by_sid[3]["method"] == "user_assigned"
+
+
+def test_public_labels_save_keeps_corrections_overlay(tmp_path):
+    from solstone.apps.speakers.attribution import save_speaker_labels
+
+    talents_dir = tmp_path / "talents"
+    talents_dir.mkdir()
+    (talents_dir / "speaker_corrections.json").write_text(
+        json.dumps(
+            {
+                "corrections": [
+                    {
+                        "sentence_id": 1,
+                        "original_speaker": "alice",
+                        "corrected_speaker": "bob",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    labels = [
+        {
+            "sentence_id": 1,
+            "speaker": "alice",
+            "confidence": "high",
+            "method": "acoustic",
+        }
+    ]
+
+    save_speaker_labels(tmp_path, labels, {})
+
+    data = json.loads((talents_dir / "speaker_labels.json").read_text())
+    assert data["labels"][0]["speaker"] == "bob"
+    assert data["labels"][0]["method"] == "user_corrected"
+    assert labels[0]["speaker"] == "bob"
 
 
 # ---------------------------------------------------------------------------

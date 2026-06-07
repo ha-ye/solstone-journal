@@ -992,6 +992,56 @@ def test_api_confirm_attribution(speakers_env):
     assert metadata["stream"] == "test"
 
 
+def test_api_confirm_attribution_labels_busy(speakers_env, monkeypatch):
+    """Confirm returns speaker_labels_busy when the labels lock times out."""
+    from pathlib import Path
+
+    from flask import Flask
+
+    from solstone.apps.speakers import attribution
+    from solstone.apps.speakers.routes import speakers_bp
+    from solstone.think.journal_io.errors import LockTimeout
+
+    env = speakers_env()
+    env.create_segment("20240101", "143022_300", ["mic_audio"])
+    env.create_entity("Alice Test")
+    env.create_speaker_labels(
+        "20240101",
+        "143022_300",
+        [
+            {
+                "sentence_id": 1,
+                "speaker": "alice_test",
+                "confidence": "medium",
+                "method": "acoustic",
+            },
+        ],
+    )
+
+    def busy_hold_lock(path: Path):
+        raise LockTimeout(path=path, timeout=0.0)
+
+    monkeypatch.setattr(attribution, "hold_lock", busy_hold_lock)
+
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    with app.test_client() as client:
+        resp = client.post(
+            "/app/speakers/api/confirm-attribution",
+            json={
+                "day": "20240101",
+                "stream": "test",
+                "segment_key": "143022_300",
+                "source": "mic_audio",
+                "sentence_id": 1,
+            },
+        )
+
+    assert resp.status_code == 503
+    assert resp.get_json()["reason_code"] == "speaker_labels_busy"
+
+
 def test_api_confirm_idempotent(speakers_env):
     """Confirming an already-confirmed attribution is a no-op success."""
     from flask import Flask

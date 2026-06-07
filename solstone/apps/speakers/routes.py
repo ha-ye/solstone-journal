@@ -26,6 +26,7 @@ from flask import (
     send_file,
 )
 
+from solstone.apps.speakers.attribution import apply_label_patches
 from solstone.apps.speakers.copy import (
     SPK_OVERVIEW_KNOWN_VOICES_SORTS,
     speaker_copy_payload,
@@ -66,6 +67,7 @@ from solstone.convey.reasons import (
     MISSING_REQUEST_BODY,
     MISSING_REQUIRED_FIELD,
     SPEAKER_ATTRIBUTION_STATE_INVALID,
+    SPEAKER_LABELS_BUSY,
     SPEAKER_NOT_FOUND,
     SPEAKER_OWNER_VOICE_TOO_CLOSE,
     SPEAKER_REVIEW_UNAVAILABLE,
@@ -326,17 +328,6 @@ def _load_speaker_labels(segment_dir: Path) -> dict | None:
         return None
 
 
-def _save_speaker_labels(segment_dir: Path, labels_data: dict) -> None:
-    """Atomically write speaker_labels.json to a segment's talents/ directory."""
-    talents_dir = segment_dir / "talents"
-    talents_dir.mkdir(parents=True, exist_ok=True)
-    out_path = talents_dir / "speaker_labels.json"
-    tmp_path = out_path.with_suffix(".tmp")
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(labels_data, f, indent=2)
-    tmp_path.rename(out_path)
-
-
 def _load_speaker_corrections(segment_dir: Path) -> list[dict]:
     """Load speaker_corrections.json from a segment's talents/ directory.
 
@@ -403,6 +394,14 @@ def _voiceprint_busy_response(exc: LockTimeout) -> Any:
     return error_response(
         SPEAKER_VOICEPRINT_BUSY,
         detail="voiceprint storage is busy; try again",
+    )
+
+
+def _labels_busy_response(exc: LockTimeout) -> Any:
+    logger.warning("speaker labels busy for %s", exc.path)
+    return error_response(
+        SPEAKER_LABELS_BUSY,
+        detail="speaker labels are busy; try again",
     )
 
 
@@ -1018,14 +1017,12 @@ def api_confirm_attribution() -> Any:
         )
 
     label = None
-    label_idx = None
-    for i, item in enumerate(labels_data.get("labels", [])):
+    for item in labels_data.get("labels", []):
         if item.get("sentence_id") == sentence_id:
             label = item
-            label_idx = i
             break
 
-    if label is None or label_idx is None:
+    if label is None:
         return error_response(
             SPEAKER_SENTENCE_MISSING,
             detail="Sentence not found in labels",
@@ -1069,9 +1066,14 @@ def api_confirm_attribution() -> Any:
         return _voiceprint_busy_response(exc)
 
     old_method = label.get("method")
-    labels_data["labels"][label_idx]["confidence"] = "high"
-    labels_data["labels"][label_idx]["method"] = "user_confirmed"
-    _save_speaker_labels(segment_dir, labels_data)
+    try:
+        apply_label_patches(
+            segment_dir,
+            {sentence_id: {"confidence": "high", "method": "user_confirmed"}},
+            allow_insert=False,
+        )
+    except LockTimeout as exc:
+        return _labels_busy_response(exc)
 
     _append_speaker_correction(
         segment_dir,
@@ -1152,14 +1154,12 @@ def api_correct_attribution() -> Any:
         )
 
     label = None
-    label_idx = None
-    for i, item in enumerate(labels_data.get("labels", [])):
+    for item in labels_data.get("labels", []):
         if item.get("sentence_id") == sentence_id:
             label = item
-            label_idx = i
             break
 
-    if label is None or label_idx is None:
+    if label is None:
         return error_response(
             SPEAKER_SENTENCE_MISSING,
             detail="Sentence not found in labels",
@@ -1211,10 +1211,20 @@ def api_correct_attribution() -> Any:
     except LockTimeout as exc:
         return _voiceprint_busy_response(exc)
 
-    labels_data["labels"][label_idx]["speaker"] = new_speaker
-    labels_data["labels"][label_idx]["confidence"] = "high"
-    labels_data["labels"][label_idx]["method"] = "user_corrected"
-    _save_speaker_labels(segment_dir, labels_data)
+    try:
+        apply_label_patches(
+            segment_dir,
+            {
+                sentence_id: {
+                    "speaker": new_speaker,
+                    "confidence": "high",
+                    "method": "user_corrected",
+                }
+            },
+            allow_insert=False,
+        )
+    except LockTimeout as exc:
+        return _labels_busy_response(exc)
 
     _append_speaker_correction(
         segment_dir,
@@ -1301,14 +1311,12 @@ def api_assign_attribution() -> Any:
         )
 
     label = None
-    label_idx = None
-    for i, item in enumerate(labels_data.get("labels", [])):
+    for item in labels_data.get("labels", []):
         if item.get("sentence_id") == sentence_id:
             label = item
-            label_idx = i
             break
 
-    if label is None or label_idx is None:
+    if label is None:
         return error_response(
             SPEAKER_SENTENCE_MISSING,
             detail="Sentence not found in labels",
@@ -1344,10 +1352,20 @@ def api_assign_attribution() -> Any:
     except LockTimeout as exc:
         return _voiceprint_busy_response(exc)
 
-    labels_data["labels"][label_idx]["speaker"] = speaker
-    labels_data["labels"][label_idx]["confidence"] = "high"
-    labels_data["labels"][label_idx]["method"] = "user_assigned"
-    _save_speaker_labels(segment_dir, labels_data)
+    try:
+        apply_label_patches(
+            segment_dir,
+            {
+                sentence_id: {
+                    "speaker": speaker,
+                    "confidence": "high",
+                    "method": "user_assigned",
+                }
+            },
+            allow_insert=False,
+        )
+    except LockTimeout as exc:
+        return _labels_busy_response(exc)
 
     _append_speaker_correction(
         segment_dir,
@@ -1564,7 +1582,13 @@ def api_discovery_identify() -> Any:
             detail="cluster_id must be an integer",
         )
 
-    result = identify_cluster(cluster_id, name)
+    try:
+        result = identify_cluster(cluster_id, name)
+    except LockTimeout as exc:
+        if exc.path.name == "speaker_labels.json":
+            return _labels_busy_response(exc)
+        return _voiceprint_busy_response(exc)
+
     if "error" in result:
         resolved = load_resolved_cluster(cluster_id)
         if resolved and resolved.get("label", "").strip().lower() == name.lower():

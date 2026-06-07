@@ -296,6 +296,11 @@ SPEAKER_VOICEPRINT_BUSY = Reason(
     "I couldn't update that voice right now because it was busy. Try again in a moment.",
     503,
 )
+SPEAKER_LABELS_BUSY = Reason(
+    "speaker_labels_busy",
+    "I couldn't update those speaker attributions right now because they were busy. Try again in a moment.",
+    503,
+)
 
 # reprocess
 REPROCESS_PAST_ONLY = Reason(

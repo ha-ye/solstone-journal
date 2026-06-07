@@ -34,7 +34,6 @@ def _routes_helpers():
         _load_embeddings_file,
         _load_speaker_labels,
         _normalize_embedding,
-        _save_speaker_labels,
         _scan_segment_embeddings,
     )
 
@@ -42,7 +41,6 @@ def _routes_helpers():
         _load_embeddings_file,
         _load_speaker_labels,
         _normalize_embedding,
-        _save_speaker_labels,
         _scan_segment_embeddings,
         _append_speaker_correction,
         _check_owner_contamination,
@@ -128,7 +126,6 @@ def discover_unknown_speakers() -> dict[str, Any]:
         load_embeddings_file,
         load_speaker_labels,
         normalize_embedding,
-        _,
         scan_segment_embeddings,
         _,
         _,
@@ -340,6 +337,7 @@ def identify_cluster(
     cluster_id: int, name: str, entity_id: str | None = None
 ) -> dict[str, Any]:
     """Identify a discovered unknown speaker cluster."""
+    from solstone.apps.speakers.attribution import apply_label_patches
     from solstone.think.entities import (
         load_existing_voiceprint_keys,
         save_voiceprints_batch,
@@ -349,7 +347,6 @@ def identify_cluster(
         load_embeddings_file,
         load_speaker_labels,
         normalize_embedding,
-        save_speaker_labels,
         _scan,
         append_speaker_correction,
         check_owner_contamination,
@@ -489,6 +486,7 @@ def identify_cluster(
         }
 
         updated = False
+        patches: dict[int, dict[str, Any]] = {}
         for sentence_id in sorted(set(sentence_ids)):
             original = labels_by_sid.get(sentence_id, {})
             new_label = {
@@ -500,7 +498,11 @@ def identify_cluster(
             if original != new_label:
                 updated = True
                 sentences_attributed += 1
-            labels_by_sid[sentence_id] = new_label
+                patches[sentence_id] = {
+                    "speaker": entity_id,
+                    "confidence": "high",
+                    "method": "user_identified",
+                }
 
             correction_key = (sentence_id, entity_id)
             if correction_key in existing_correction_keys:
@@ -519,11 +521,7 @@ def identify_cluster(
             existing_correction_keys.add(correction_key)
 
         if updated:
-            labels_data["labels"] = sorted(
-                labels_by_sid.values(),
-                key=lambda label: int(label["sentence_id"]),
-            )
-            save_speaker_labels(seg_dir, labels_data)
+            apply_label_patches(seg_dir, patches, allow_insert=True)
             segments_updated += 1
 
     _write_resolved_cluster(cluster_id, entity_id, entity_name)

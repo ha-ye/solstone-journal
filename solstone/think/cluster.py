@@ -254,7 +254,7 @@ def _process_segment(
                     file=sys.stderr,
                 )
 
-    # Process agent output summaries from agents/**/*.md files (with optional filtering)
+    # Process agent output summaries from talents/**/*.md files (with optional filtering)
     if agents:
         # Convert bool to filter: True -> None (all), False handled by outer if
         agent_filter = (

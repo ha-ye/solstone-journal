@@ -25,6 +25,7 @@ def pre_process(context: dict) -> dict | None:
         accumulate_voiceprints,
         attribute_segment,
         save_speaker_labels,
+        save_speaker_labels_stub,
     )
     from solstone.think.utils import segment_path
 
@@ -42,15 +43,8 @@ def pre_process(context: dict) -> dict | None:
         logger.info("Attribution skipped: %s", result["error"])
         reason = result["error"]
         if any(seg_dir.glob("*.npz")):
-            agents_dir = seg_dir / "talents"
-            agents_dir.mkdir(parents=True, exist_ok=True)
-            out_path = agents_dir / "speaker_labels.json"
-            with open(out_path, "w", encoding="utf-8") as fh:
-                json.dump(
-                    {"labels": [], "skipped": True, "reason": reason},
-                    fh,
-                    indent=2,
-                )
+            save_speaker_labels_stub(seg_dir, reason)
+            out_path = seg_dir / "talents" / "speaker_labels.json"
             logger.info("Wrote attribution stub: %s (%s)", out_path, reason)
         return {"skip_reason": reason}
 
@@ -58,15 +52,8 @@ def pre_process(context: dict) -> dict | None:
     if not labels:
         reason = "no_embeddings"
         if any(seg_dir.glob("*.npz")):
-            agents_dir = seg_dir / "talents"
-            agents_dir.mkdir(parents=True, exist_ok=True)
-            out_path = agents_dir / "speaker_labels.json"
-            with open(out_path, "w", encoding="utf-8") as fh:
-                json.dump(
-                    {"labels": [], "skipped": True, "reason": reason},
-                    fh,
-                    indent=2,
-                )
+            save_speaker_labels_stub(seg_dir, reason)
+            out_path = seg_dir / "talents" / "speaker_labels.json"
             logger.info("Wrote attribution stub: %s (%s)", out_path, reason)
         return {"skip_reason": reason}
 

@@ -74,10 +74,10 @@ def is_segment_complete(segment_path: Path) -> bool:
     """Check if a segment has finished all processing.
 
     Completion checks (ALL must pass):
-    1. No _active.jsonl files in agents/
+    1. No _active.jsonl files in talents/
     2. audio.jsonl exists if any audio raw media was captured
     3. screen.jsonl exists if any video raw media was captured
-    4. agents/speaker_labels.json exists if embeddings (.npz) are present
+    4. talents/speaker_labels.json exists if embeddings (.npz) are present
     """
     agents_dir = segment_path / "talents"
 
