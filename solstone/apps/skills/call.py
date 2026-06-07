@@ -3,60 +3,27 @@
 
 """CLI commands for owner-wide skill patterns and edit requests.
 
+Every verb reaches the journal only over HTTP via the Convey client; this
+module imports no journal/domain function and performs no filesystem I/O.
 Auto-discovered by ``think.call`` and mounted as ``sol call skills ...``.
 """
 
 from __future__ import annotations
 
 import json
-import logging
-from typing import Any, Callable
+from typing import Any
 
 import typer
 
-from solstone.convey.reasons import SKILLS_BUSY
-from solstone.think.journal_io import LockTimeout
-from solstone.think.skills import (
-    find_pattern,
-    load_patterns,
-    load_profile,
-    locked_modify_edit_requests,
-    locked_modify_patterns,
-    make_request_id,
-    observation_key,
-    profile_path,
-    rename_profile,
-    touch_updated,
-    utc_now_iso,
-)
-from solstone.think.utils import require_solstone
-
-logger = logging.getLogger(__name__)
+from solstone.think.convey_client import convey_cli, get_client
 
 app = typer.Typer(help="Owner-wide skill patterns and edit requests.")
 
-
-class _PatternCommandError(Exception):
-    """Internal control-flow error carrying a CLI message and exit code."""
-
-    def __init__(self, message: str, exit_code: int) -> None:
-        super().__init__(message)
-        self.message = message
-        self.exit_code = exit_code
-
-
-@app.callback()
-def _require_up() -> None:
-    require_solstone()
+_PATTERNS_PAGE_SIZE = 100
 
 
 def _echo_json(payload: Any) -> None:
     typer.echo(json.dumps(payload, indent=2, ensure_ascii=False))
-
-
-def _exit_with_message(message: str, *, code: int) -> None:
-    typer.echo(message, err=True)
-    raise typer.Exit(code=code)
 
 
 def _parse_activity_ids(raw_value: str) -> list[str]:
@@ -67,41 +34,20 @@ def _parse_activity_ids(raw_value: str) -> list[str]:
     return activity_ids
 
 
-def _parse_status_filter(raw_value: str | None) -> set[str] | None:
-    if raw_value is None:
-        return None
-    statuses = {item.strip() for item in raw_value.split(",") if item.strip()}
-    return statuses or None
-
-
-def _pattern_observation_key(
-    pattern: dict[str, Any], observation: dict[str, Any]
-) -> str:
-    return observation_key(
-        str(pattern.get("slug") or ""),
-        str(observation.get("day") or ""),
-        [str(item) for item in observation.get("activity_ids", [])],
-    )
-
-
-def _recompute_derived_fields(pattern: dict[str, Any]) -> None:
-    observations = pattern.get("observations", [])
-    facets = sorted(
-        {
-            str(observation.get("facet") or "")
-            for observation in observations
-            if observation.get("facet")
-        }
-    )
-    days = sorted(
-        str(observation.get("day") or "")
-        for observation in observations
-        if observation.get("day")
-    )
-    pattern["facets_touched"] = facets
-    if days:
-        pattern["first_seen"] = days[0]
-        pattern["last_seen"] = days[-1]
+def _fetch_all_patterns(status: str | None) -> list[dict[str, Any]]:
+    client = get_client()
+    rows: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        params: dict[str, Any] = {"limit": _PATTERNS_PAGE_SIZE, "offset": offset}
+        if status is not None:
+            params["status"] = status
+        body = client.request("GET", "/app/skills/api/patterns", params=params)
+        items = body["items"]
+        rows.extend(items)
+        if not items or len(rows) >= int(body["total"]):
+            return rows
+        offset += len(items)
 
 
 def _emit_pattern_result(
@@ -113,33 +59,8 @@ def _emit_pattern_result(
     typer.echo(text_message)
 
 
-def _locked_update_pattern(
-    slug: str, mutate_fn: Callable[[dict[str, Any]], None]
-) -> dict[str, Any]:
-    updated_pattern: dict[str, Any] | None = None
-
-    def mutate(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        nonlocal updated_pattern
-        pattern = find_pattern(slug, rows)
-        if pattern is None:
-            raise _PatternCommandError("no such skill", 1)
-        mutate_fn(pattern)
-        updated_pattern = pattern
-        return rows
-
-    try:
-        locked_modify_patterns(mutate)
-    except _PatternCommandError as exc:
-        _exit_with_message(exc.message, code=exc.exit_code)
-    except LockTimeout:
-        _exit_with_message(SKILLS_BUSY.message, code=1)
-
-    if updated_pattern is None:  # pragma: no cover - defensive assertion
-        raise RuntimeError(f"pattern mutation produced no row for slug {slug}")
-    return updated_pattern
-
-
 @app.command("list")
+@convey_cli
 def list_skills(
     status: str | None = typer.Option(
         None,
@@ -149,10 +70,7 @@ def list_skills(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """List owner-wide skill patterns."""
-    rows = load_patterns()
-    status_filter = _parse_status_filter(status)
-    if status_filter is not None:
-        rows = [row for row in rows if str(row.get("status") or "") in status_filter]
+    rows = _fetch_all_patterns(status)
 
     if json_output:
         _echo_json(rows)
@@ -171,18 +89,17 @@ def list_skills(
 
 
 @app.command("show")
+@convey_cli
 def show_skill(
     slug: str = typer.Argument(help="Skill slug."),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Show one owner-wide skill pattern and its profile."""
-    pattern = find_pattern(slug)
-    if pattern is None:
-        _exit_with_message("no such skill", code=1)
-
-    profile = load_profile(slug)
+    body = get_client().request("GET", f"/app/skills/api/patterns/{slug}")
+    pattern = body["pattern"]
+    profile = body["profile"]
     if json_output:
-        _echo_json({"pattern": pattern, "profile": profile})
+        _echo_json(body)
         return
 
     typer.echo(f"name: {pattern.get('name', '')}")
@@ -214,6 +131,7 @@ def show_skill(
 
 
 @app.command("observe")
+@convey_cli
 def observe_skill(
     slug: str = typer.Argument(help="Skill slug."),
     day: str = typer.Option(..., "--day", help="Observation day in YYYY-MM-DD format."),
@@ -228,30 +146,16 @@ def observe_skill(
 ) -> None:
     """Record one new observation for an existing skill."""
     normalized_activity_ids = _parse_activity_ids(activity_ids)
-    target_key = observation_key(slug, day, normalized_activity_ids)
-
-    def mutate(pattern: dict[str, Any]) -> None:
-        existing = pattern.get("observations", [])
-        if any(
-            _pattern_observation_key(pattern, observation) == target_key
-            for observation in existing
-        ):
-            raise _PatternCommandError("already observed", 0)
-        existing.append(
-            {
-                "day": day,
-                "facet": facet,
-                "activity_ids": normalized_activity_ids,
-                "notes": notes,
-                "recorded_at": utc_now_iso(),
-            }
-        )
-        _recompute_derived_fields(pattern)
-        if pattern.get("status") == "dormant":
-            pattern["status"] = "mature"
-        touch_updated(pattern)
-
-    pattern = _locked_update_pattern(slug, mutate)
+    pattern = get_client().request(
+        "POST",
+        f"/app/skills/api/patterns/{slug}/observations",
+        json={
+            "day": day,
+            "facet": facet,
+            "activity_ids": normalized_activity_ids,
+            "notes": notes,
+        },
+    )
     _emit_pattern_result(
         pattern,
         json_output=json_output,
@@ -260,6 +164,7 @@ def observe_skill(
 
 
 @app.command("seed")
+@convey_cli
 def seed_skill(
     slug: str = typer.Argument(help="Skill slug."),
     name: str = typer.Option(..., "--name", help="Human-readable skill name."),
@@ -275,71 +180,35 @@ def seed_skill(
 ) -> None:
     """Seed one new emerging skill pattern."""
     normalized_activity_ids = _parse_activity_ids(activity_ids)
-    created_pattern: dict[str, Any] | None = None
-    created_at = utc_now_iso()
-
-    def mutate(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        nonlocal created_pattern
-        if find_pattern(slug, rows) is not None:
-            raise _PatternCommandError("slug already exists", 1)
-        created_pattern = {
+    pattern = get_client().request(
+        "POST",
+        "/app/skills/api/patterns",
+        json={
             "slug": slug,
             "name": name,
-            "status": "emerging",
-            "observations": [
-                {
-                    "day": day,
-                    "facet": facet,
-                    "activity_ids": normalized_activity_ids,
-                    "notes": notes,
-                    "recorded_at": created_at,
-                }
-            ],
-            "facets_touched": [facet],
-            "first_seen": day,
-            "last_seen": day,
-            "needs_profile": False,
-            "needs_refresh": False,
-            "profile_generated_at": None,
-            "created_at": created_at,
-            "updated_at": created_at,
-        }
-        rows = list(rows)
-        rows.append(created_pattern)
-        return rows
-
-    try:
-        locked_modify_patterns(mutate)
-    except _PatternCommandError as exc:
-        _exit_with_message(exc.message, code=exc.exit_code)
-    except LockTimeout:
-        _exit_with_message(SKILLS_BUSY.message, code=1)
-
-    if created_pattern is None:  # pragma: no cover - defensive assertion
-        raise RuntimeError(f"seed did not create pattern {slug}")
+            "day": day,
+            "facet": facet,
+            "activity_ids": normalized_activity_ids,
+            "notes": notes,
+        },
+    )
     _emit_pattern_result(
-        created_pattern,
+        pattern,
         json_output=json_output,
         text_message=f"created skill: {slug}",
     )
 
 
 @app.command("promote")
+@convey_cli
 def promote_skill(
     slug: str = typer.Argument(help="Skill slug."),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Flag one skill for profile generation."""
-
-    def mutate(pattern: dict[str, Any]) -> None:
-        if pattern.get("status") == "mature":
-            raise _PatternCommandError("already mature", 0)
-        if bool(pattern.get("needs_profile")):
-            raise _PatternCommandError("already flagged", 0)
-        pattern["needs_profile"] = True
-        touch_updated(pattern)
-
-    pattern = _locked_update_pattern(slug, mutate)
+    pattern = get_client().request(
+        "POST", f"/app/skills/api/patterns/{slug}/promote", json={}
+    )
     _emit_pattern_result(
         pattern,
         json_output=json_output,
@@ -348,21 +217,15 @@ def promote_skill(
 
 
 @app.command("refresh")
+@convey_cli
 def refresh_skill(
     slug: str = typer.Argument(help="Skill slug."),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Flag one mature skill for profile refresh."""
-
-    def mutate(pattern: dict[str, Any]) -> None:
-        if pattern.get("status") != "mature":
-            raise _PatternCommandError("not mature", 1)
-        if bool(pattern.get("needs_refresh")):
-            raise _PatternCommandError("already flagged", 0)
-        pattern["needs_refresh"] = True
-        touch_updated(pattern)
-
-    pattern = _locked_update_pattern(slug, mutate)
+    pattern = get_client().request(
+        "POST", f"/app/skills/api/patterns/{slug}/refresh", json={}
+    )
     _emit_pattern_result(
         pattern,
         json_output=json_output,
@@ -371,19 +234,15 @@ def refresh_skill(
 
 
 @app.command("mark-dormant")
+@convey_cli
 def mark_dormant_skill(
     slug: str = typer.Argument(help="Skill slug."),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Mark one skill dormant."""
-
-    def mutate(pattern: dict[str, Any]) -> None:
-        if pattern.get("status") == "dormant":
-            raise _PatternCommandError("already flagged", 0)
-        pattern["status"] = "dormant"
-        touch_updated(pattern)
-
-    pattern = _locked_update_pattern(slug, mutate)
+    pattern = get_client().request(
+        "POST", f"/app/skills/api/patterns/{slug}/mark-dormant", json={}
+    )
     _emit_pattern_result(
         pattern,
         json_output=json_output,
@@ -392,19 +251,15 @@ def mark_dormant_skill(
 
 
 @app.command("retire")
+@convey_cli
 def retire_skill(
     slug: str = typer.Argument(help="Skill slug."),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Mark one skill retired."""
-
-    def mutate(pattern: dict[str, Any]) -> None:
-        if pattern.get("status") == "retired":
-            raise _PatternCommandError("already flagged", 0)
-        pattern["status"] = "retired"
-        touch_updated(pattern)
-
-    pattern = _locked_update_pattern(slug, mutate)
+    pattern = get_client().request(
+        "POST", f"/app/skills/api/patterns/{slug}/retire", json={}
+    )
     _emit_pattern_result(
         pattern,
         json_output=json_output,
@@ -413,6 +268,7 @@ def retire_skill(
 
 
 @app.command("edit-request")
+@convey_cli
 def edit_request_skill(
     slug: str = typer.Argument(help="Skill slug."),
     instructions: str = typer.Option(..., "--instructions", help="Edit instructions."),
@@ -420,64 +276,30 @@ def edit_request_skill(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Append one owner-authored edit request for a skill."""
-    if find_pattern(slug) is None:
-        _exit_with_message("no such skill", code=1)
-
-    request_id = make_request_id()
-    request = {
-        "id": request_id,
-        "slug": slug,
-        "instructions": instructions,
-        "requested_at": utc_now_iso(),
-        "requested_by": requested_by,
-        "processed_at": None,
-    }
-
-    def mutate(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        next_rows = list(rows)
-        next_rows.append(request)
-        return next_rows
-
-    try:
-        locked_modify_edit_requests(mutate)
-    except LockTimeout:
-        _exit_with_message(SKILLS_BUSY.message, code=1)
-
+    body = get_client().request(
+        "POST",
+        f"/app/skills/api/patterns/{slug}/edit-requests",
+        json={"instructions": instructions, "requested_by": requested_by},
+    )
     if json_output:
-        _echo_json({"request_id": request_id, "slug": slug})
+        _echo_json({"request_id": body["request_id"], "slug": body["slug"]})
         return
-    typer.echo(f"request_id: {request_id}")
+    typer.echo(f"request_id: {body['request_id']}")
 
 
 @app.command("rename")
+@convey_cli
 def rename_skill(
     old_slug: str = typer.Argument(help="Existing skill slug."),
     new_slug: str = typer.Argument(help="New skill slug."),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Rename one skill slug and move its profile if present."""
-    patterns = load_patterns()
-    if find_pattern(old_slug, patterns) is None:
-        _exit_with_message("no such skill", code=1)
-    if find_pattern(new_slug, patterns) is not None or profile_path(new_slug).exists():
-        _exit_with_message("new slug already exists", code=1)
-
-    rename_profile(old_slug, new_slug)
-
-    try:
-        pattern = _locked_update_pattern(
-            old_slug,
-            lambda row: (row.__setitem__("slug", new_slug), touch_updated(row)),
-        )
-    except Exception:
-        logger.error(
-            "skills: rename_pattern failed after profile move %s -> %s",
-            old_slug,
-            new_slug,
-            exc_info=True,
-        )
-        raise
-
+    pattern = get_client().request(
+        "POST",
+        f"/app/skills/api/patterns/{old_slug}/rename",
+        json={"new_slug": new_slug},
+    )
     _emit_pattern_result(
         pattern,
         json_output=json_output,

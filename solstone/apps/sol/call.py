@@ -3,72 +3,30 @@
 
 """CLI commands for the agent identity system.
 
+Every verb reaches the journal only over HTTP via the Convey client; this
+module imports no journal/domain function and performs no filesystem I/O.
 Auto-discovered by ``think.call`` and mounted as ``sol call sol ...``.
 """
 
 import json
-import subprocess
-from datetime import datetime, timezone
-from pathlib import Path
 
 import typer
 
-from solstone.convey.reasons import IDENTITY_BUSY
-from solstone.think.journal_config import read_journal_config, write_journal_config
-from solstone.think.journal_io import LockTimeout
-from solstone.think.utils import get_project_root, require_solstone
+from solstone.think.convey_client import convey_cli, get_client
 
 app = typer.Typer(help="Agent identity — name and status.")
 
 
-@app.callback()
-def _require_up() -> None:
-    require_solstone()
-
-
-def _get_agent_config() -> dict:
-    """Read agent config from journal config."""
-    from solstone.think.utils import get_config
-
-    return get_config().get(
-        "agent",
-        {
-            "name": "sol",
-            "name_status": "default",
-            "named_date": None,
-            "proposal_count": 0,
-        },
-    )
-
-
-def _update_agent_config(updates: dict) -> dict:
-    """Update agent config in journal.json and return the full agent block."""
-    config = read_journal_config()
-    agent = config.get(
-        "agent",
-        {
-            "name": "sol",
-            "name_status": "default",
-            "named_date": None,
-            "proposal_count": 0,
-        },
-    )
-    agent.update(updates)
-    config["agent"] = agent
-
-    write_journal_config(config)
-
-    return agent
-
-
 @app.command("name")
+@convey_cli
 def name() -> None:
     """Show the current agent name and status."""
-    agent = _get_agent_config()
+    agent = get_client().request("GET", "/app/sol/api/agent")
     typer.echo(json.dumps(agent, indent=2))
 
 
 @app.command("set-name")
+@convey_cli
 def set_name(
     name: str = typer.Argument(..., help="New agent name."),
     status: str = typer.Option(
@@ -79,121 +37,48 @@ def set_name(
     ),
 ) -> None:
     """Set the agent name."""
-    agent = _update_agent_config(
-        {
-            "name": name,
-            "name_status": status,
-            "named_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-        }
+    agent = get_client().request(
+        "POST",
+        "/app/sol/api/set-name",
+        json={"name": name, "status": status},
     )
     typer.echo(json.dumps(agent, indent=2))
-    # Update identity/self.md with new name
-    from solstone.think.identity import update_self_md_opening, update_self_md_section
-
-    named_date = agent.get("named_date", "")
-    try:
-        update_self_md_opening(
-            f"I am {name}. this is a new journal — we're just getting started.",
-            actor="sol call sol set-name",
-            reason="agent name updated",
-        )
-        if named_date:
-            update_self_md_section(
-                "my name",
-                f"{name} (named {named_date})",
-                actor="sol call sol set-name",
-                reason="agent name updated",
-            )
-        else:
-            update_self_md_section(
-                "my name",
-                name,
-                actor="sol call sol set-name",
-                reason="agent name updated",
-            )
-    except LockTimeout:
-        typer.echo(IDENTITY_BUSY.message, err=True)
-        raise typer.Exit(1)
-    project_root = Path(get_project_root())
-    subprocess.run(
-        ["make", "skills"], cwd=project_root, check=False, capture_output=True
-    )
 
 
 @app.command("reset")
+@convey_cli
 def reset() -> None:
     """Reset the agent name to default."""
-    agent = _update_agent_config(
-        {
-            "name": "sol",
-            "name_status": "default",
-            "named_date": None,
-        }
-    )
+    agent = get_client().request("POST", "/app/sol/api/reset")
     typer.echo(json.dumps(agent, indent=2))
-    project_root = Path(get_project_root())
-    subprocess.run(
-        ["make", "skills"], cwd=project_root, check=False, capture_output=True
-    )
 
 
 @app.command("thickness")
+@convey_cli
 def thickness() -> None:
     """Show journal thickness signals for naming readiness."""
-    from solstone.think.awareness import compute_thickness
-
-    typer.echo(json.dumps(compute_thickness(), indent=2))
+    body = get_client().request("GET", "/app/sol/api/thickness")
+    typer.echo(json.dumps(body, indent=2))
 
 
 @app.command("set-owner")
+@convey_cli
 def set_owner(
     name: str = typer.Argument(..., help="Owner name."),
     bio: str = typer.Option(None, "--bio", "-b", help="Short owner bio."),
 ) -> None:
     """Set the journal owner's name (and optional bio)."""
-    from solstone.think.identity import update_self_md_section
-
-    config = read_journal_config()
-    identity = config.get("identity", {})
-    identity["name"] = name
-    if bio is not None:
-        identity["bio"] = bio
-    config["identity"] = identity
-
-    write_journal_config(config)
-
-    # Update identity/self.md
-    owner_content = name
-    if bio:
-        owner_content += f"\n{bio}"
-    try:
-        update_self_md_section(
-            "who I'm here for",
-            owner_content,
-            actor="sol call sol set-owner",
-            reason="owner identity updated",
-        )
-    except LockTimeout:
-        typer.echo(IDENTITY_BUSY.message, err=True)
-        raise typer.Exit(1)
-
-    typer.echo(json.dumps({"name": name, "bio": bio or ""}, indent=2))
-    project_root = Path(get_project_root())
-    subprocess.run(
-        ["make", "skills"], cwd=project_root, check=False, capture_output=True
+    body = get_client().request(
+        "POST",
+        "/app/sol/api/set-owner",
+        json={"name": name, "bio": bio},
     )
+    typer.echo(json.dumps(body, indent=2))
 
 
 @app.command("sol-init")
+@convey_cli
 def sol_init() -> None:
     """Initialize the identity directory with self.md and agency.md."""
-    from solstone.think.identity import ensure_identity_directory
-
-    try:
-        identity_dir = ensure_identity_directory()
-    except LockTimeout:
-        typer.echo(IDENTITY_BUSY.message, err=True)
-        raise typer.Exit(1)
-    typer.echo(
-        json.dumps({"identity_dir": str(identity_dir), "status": "ok"}, indent=2)
-    )
+    body = get_client().request("POST", "/app/sol/api/sol-init")
+    typer.echo(json.dumps(body, indent=2))
