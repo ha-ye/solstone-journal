@@ -202,6 +202,7 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Chat config (`config/chat.json`) | `solstone/apps/chat/config.py` |
 | Vertex credentials (`.config/vertex-credentials.json`) | `solstone/apps/settings/vertex_credentials.py` |
 | Speaker labels (`chronicle/**/talents/speaker_labels.json`) | `solstone/apps/speakers/attribution.py` |
+| Speaker corrections (`chronicle/**/talents/speaker_corrections.json`) | `solstone/apps/speakers/attribution.py` |
 | Stream identity (`chronicle/**/<seg>/stream.json` marker + `streams/<name>.json` state) | `solstone/think/streams.py` |
 | Link service state (`link/ca/cert.pem`, `link/ca/private.pem`, `link/nonces.json`, `link/authorized_clients.json`, `link/state.json`, `link/tokens/account.json`, `link/totp.json`) | `solstone/think/link/ca.py` + `solstone/think/link/nonces.py` + `solstone/think/link/auth.py` + `solstone/think/link/paths.py` |
 | Chronicle day content (`chronicle/YYYYMMDD/**`) | The capturing module (observer, importer) per its declared outputs |

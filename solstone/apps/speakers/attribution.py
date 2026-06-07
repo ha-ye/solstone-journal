@@ -44,6 +44,7 @@ from solstone.think.entities.journal import (
 )
 from solstone.think.journal_io import (
     MalformedPolicy,
+    atomic_replace,
     hold_lock,
     read_json,
     write_json,
@@ -473,6 +474,27 @@ def update_speaker_labels(
         if new is None:
             return
         write_json(path, new)
+
+
+def append_speaker_correction(seg_dir: Path, correction: dict) -> None:
+    """Append a correction entry to speaker_corrections.json under an exclusive lock.
+
+    The locked load-append-replace closes the concurrent-correction lost-update
+    window: two simultaneous appends to the same segment serialize, so neither
+    clobbers the other. Byte output matches json.dump({"corrections": ...},
+    indent=2) (no trailing newline) — atomic_replace, not write_json (which would
+    append a trailing newline and break byte-compat).
+    """
+    path = seg_dir / "talents" / "speaker_corrections.json"
+    with hold_lock(path):
+        current = read_json(
+            path,
+            on_error=MalformedPolicy.WARN_AND_SKIP,
+            default=None,
+        )
+        corrections = (current or {}).get("corrections", [])
+        corrections.append(correction)
+        atomic_replace(path, json.dumps({"corrections": corrections}, indent=2))
 
 
 def _label_sentence_id(label: dict) -> int | None:

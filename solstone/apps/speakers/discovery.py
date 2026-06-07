@@ -29,7 +29,6 @@ MAX_UNMATCHED_EMBEDDINGS = 10000
 def _routes_helpers():
     """Load speakers route helpers lazily to avoid import cycles."""
     from solstone.apps.speakers.routes import (
-        _append_speaker_correction,
         _check_owner_contamination,
         _load_embeddings_file,
         _load_speaker_labels,
@@ -42,7 +41,6 @@ def _routes_helpers():
         _load_speaker_labels,
         _normalize_embedding,
         _scan_segment_embeddings,
-        _append_speaker_correction,
         _check_owner_contamination,
     )
 
@@ -127,7 +125,6 @@ def discover_unknown_speakers() -> dict[str, Any]:
         load_speaker_labels,
         normalize_embedding,
         scan_segment_embeddings,
-        _,
         _,
     ) = _routes_helpers()
 
@@ -337,7 +334,10 @@ def identify_cluster(
     cluster_id: int, name: str, entity_id: str | None = None
 ) -> dict[str, Any]:
     """Identify a discovered unknown speaker cluster."""
-    from solstone.apps.speakers.attribution import apply_label_patches
+    from solstone.apps.speakers.attribution import (
+        append_speaker_correction,
+        apply_label_patches,
+    )
     from solstone.think.entities import (
         load_existing_voiceprint_keys,
         save_voiceprints_batch,
@@ -348,7 +348,6 @@ def identify_cluster(
         load_speaker_labels,
         normalize_embedding,
         _scan,
-        append_speaker_correction,
         check_owner_contamination,
     ) = _routes_helpers()
 

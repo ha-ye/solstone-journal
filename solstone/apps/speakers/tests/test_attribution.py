@@ -417,6 +417,41 @@ def test_public_labels_save_keeps_corrections_overlay(tmp_path):
     assert labels[0]["speaker"] == "bob"
 
 
+def test_owner_correction_output_preserves_public_label_overlay(tmp_path):
+    from solstone.apps.speakers.attribution import (
+        append_speaker_correction,
+        save_speaker_labels,
+    )
+
+    append_speaker_correction(
+        tmp_path,
+        {
+            "sentence_id": 1,
+            "original_speaker": "alice",
+            "corrected_speaker": "bob",
+            "original_method": "acoustic",
+            "timestamp": 0,
+        },
+    )
+
+    save_speaker_labels(
+        tmp_path,
+        [
+            {
+                "sentence_id": 1,
+                "speaker": "alice",
+                "confidence": "high",
+                "method": "acoustic",
+            }
+        ],
+        {},
+    )
+
+    data = json.loads((tmp_path / "talents" / "speaker_labels.json").read_text())
+    assert data["labels"][0]["speaker"] == "bob"
+    assert data["labels"][0]["method"] == "user_corrected"
+
+
 # ---------------------------------------------------------------------------
 # Voiceprint accumulation
 # ---------------------------------------------------------------------------

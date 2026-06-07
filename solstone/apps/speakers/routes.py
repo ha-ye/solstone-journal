@@ -26,7 +26,10 @@ from flask import (
     send_file,
 )
 
-from solstone.apps.speakers.attribution import apply_label_patches
+from solstone.apps.speakers.attribution import (
+    append_speaker_correction,
+    apply_label_patches,
+)
 from solstone.apps.speakers.copy import (
     SPK_OVERVIEW_KNOWN_VOICES_SORTS,
     speaker_copy_payload,
@@ -342,19 +345,6 @@ def _load_speaker_corrections(segment_dir: Path) -> list[dict]:
         return data.get("corrections", [])
     except (json.JSONDecodeError, OSError):
         return []
-
-
-def _append_speaker_correction(segment_dir: Path, correction: dict) -> None:
-    """Append a correction entry to speaker_corrections.json (atomic write)."""
-    corrections = _load_speaker_corrections(segment_dir)
-    corrections.append(correction)
-    talents_dir = segment_dir / "talents"
-    talents_dir.mkdir(parents=True, exist_ok=True)
-    out_path = talents_dir / "speaker_corrections.json"
-    tmp_path = out_path.with_suffix(".tmp")
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump({"corrections": corrections}, f, indent=2)
-    tmp_path.rename(out_path)
 
 
 def _check_owner_contamination(embedding: np.ndarray) -> bool:
@@ -1075,16 +1065,19 @@ def api_confirm_attribution() -> Any:
     except LockTimeout as exc:
         return _labels_busy_response(exc)
 
-    _append_speaker_correction(
-        segment_dir,
-        {
-            "sentence_id": sentence_id,
-            "original_speaker": speaker,
-            "corrected_speaker": speaker,
-            "original_method": old_method,
-            "timestamp": now_ms(),
-        },
-    )
+    try:
+        append_speaker_correction(
+            segment_dir,
+            {
+                "sentence_id": sentence_id,
+                "original_speaker": speaker,
+                "corrected_speaker": speaker,
+                "original_method": old_method,
+                "timestamp": now_ms(),
+            },
+        )
+    except LockTimeout as exc:
+        return _labels_busy_response(exc)
 
     log_app_action(
         app="speakers",
@@ -1226,16 +1219,19 @@ def api_correct_attribution() -> Any:
     except LockTimeout as exc:
         return _labels_busy_response(exc)
 
-    _append_speaker_correction(
-        segment_dir,
-        {
-            "sentence_id": sentence_id,
-            "original_speaker": old_speaker,
-            "corrected_speaker": new_speaker,
-            "original_method": old_method,
-            "timestamp": now_ms(),
-        },
-    )
+    try:
+        append_speaker_correction(
+            segment_dir,
+            {
+                "sentence_id": sentence_id,
+                "original_speaker": old_speaker,
+                "corrected_speaker": new_speaker,
+                "original_method": old_method,
+                "timestamp": now_ms(),
+            },
+        )
+    except LockTimeout as exc:
+        return _labels_busy_response(exc)
 
     log_app_action(
         app="speakers",
@@ -1367,16 +1363,19 @@ def api_assign_attribution() -> Any:
     except LockTimeout as exc:
         return _labels_busy_response(exc)
 
-    _append_speaker_correction(
-        segment_dir,
-        {
-            "sentence_id": sentence_id,
-            "original_speaker": None,
-            "corrected_speaker": speaker,
-            "original_method": label.get("method"),
-            "timestamp": now_ms(),
-        },
-    )
+    try:
+        append_speaker_correction(
+            segment_dir,
+            {
+                "sentence_id": sentence_id,
+                "original_speaker": None,
+                "corrected_speaker": speaker,
+                "original_method": label.get("method"),
+                "timestamp": now_ms(),
+            },
+        )
+    except LockTimeout as exc:
+        return _labels_busy_response(exc)
 
     log_app_action(
         app="speakers",
@@ -1597,7 +1596,7 @@ def api_discovery_identify() -> Any:
     try:
         result = identify_cluster(cluster_id, name)
     except LockTimeout as exc:
-        if exc.path.name == "speaker_labels.json":
+        if exc.path.name in ("speaker_labels.json", "speaker_corrections.json"):
             return _labels_busy_response(exc)
         return _voiceprint_busy_response(exc)
 
