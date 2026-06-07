@@ -69,6 +69,7 @@ from solstone.convey.sol_initiated.settings import (
     save_settings as save_sol_voice_settings,
 )
 from solstone.convey.utils import error_response, respond_collection
+from solstone.think import facets
 from solstone.think.journal_config import write_journal_config
 from solstone.think.models import LOCAL_MODEL
 from solstone.think.providers.google import validate_vertex_credentials
@@ -1791,25 +1792,21 @@ def create_facet() -> Any:
         slug = re.sub(r"[^a-z0-9]+", "-", title.lower())
         slug = slug.strip("-")  # Remove leading/trailing hyphens
 
-        if not slug:
+        if not slug or not re.fullmatch(r"[a-z][a-z0-9_-]*", slug):
             return error_response(
                 INVALID_REQUEST_VALUE,
                 detail="Title must contain at least one letter or number",
             )
 
         # Check for conflicts with existing facets
-        from solstone.think.facets import get_facets
-
-        existing = get_facets()
+        existing = facets.get_facets()
         if slug in existing:
             return error_response(
                 FACET_ALREADY_EXISTS,
                 detail=f"Facet '{slug}' already exists",
             )
 
-        # Create facet directory and config
-        facet_path = Path(state.journal_root) / "facets" / slug
-        facet_path.mkdir(parents=True, exist_ok=True)
+        facets.create_facet(title, emoji=emoji, color=color)
 
         config = {
             "title": title,
@@ -1818,21 +1815,10 @@ def create_facet() -> Any:
             "emoji": emoji,
         }
 
-        config_file = facet_path / "facet.json"
-        with open(config_file, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-
-        # Log the creation
-        log_app_action(
-            app="settings",
-            facet=slug,
-            action="facet_create",
-            params={"title": title, "emoji": emoji, "color": color},
-        )
-
         return jsonify({"success": True, "facet": slug, "config": config}), 201
 
+    except ValueError as e:
+        return error_response(INVALID_REQUEST_VALUE, detail=str(e))
     except Exception:
         logger.exception("error creating facet")
         return _settings_operation_failed()
@@ -1862,46 +1848,27 @@ def update_facet_config(facet_name: str) -> Any:
         if not data:
             return error_response(MISSING_REQUEST_BODY, detail="No data provided")
 
-        # Build path to facet config file
-        facet_path = Path(state.journal_root) / "facets" / facet_name
-        config_file = facet_path / "facet.json"
-
-        if not facet_path.exists():
+        if facet_name not in facets.get_facets():
             return error_response(FACET_NOT_FOUND, detail="Facet not found")
 
-        # Read existing config or create new one
-        if config_file.exists():
-            with open(config_file, "r", encoding="utf-8") as f:
-                config = json.load(f)
-        else:
-            config = {}
+        update_fields = {
+            key: data[key]
+            for key in ("title", "description", "color", "emoji")
+            if key in data
+        }
+        if update_fields:
+            facets.update_facet(facet_name, **update_fields)
+        if "muted" in data:
+            facets.set_facet_muted(facet_name, bool(data["muted"]))
 
-        # Track changes for logging
-        changed_fields = {}
-        allowed_fields = ["title", "description", "color", "emoji", "muted"]
-        for field in allowed_fields:
-            if field in data:
-                old_value = config.get(field)
-                new_value = data[field]
-                if old_value != new_value:
-                    changed_fields[field] = {"old": old_value, "new": new_value}
-                config[field] = new_value
-
-        # Write back to file
-        with open(config_file, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-
-        # Log only if something actually changed
-        if changed_fields:
-            log_app_action(
-                app="settings",
-                facet=facet_name,
-                action="facet_update",
-                params={"changed_fields": changed_fields},
-            )
-
+        config = {
+            key: value
+            for key, value in facets.get_facets()[facet_name].items()
+            if key != "path"
+        }
         return jsonify({"success": True, "facet": facet_name, "config": config})
+    except FileNotFoundError:
+        return error_response(FACET_NOT_FOUND, detail="Facet not found")
     except Exception:
         logger.exception("error saving facet config")
         return _settings_operation_failed()
