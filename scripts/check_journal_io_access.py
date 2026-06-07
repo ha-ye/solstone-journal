@@ -59,6 +59,7 @@ GATED_PRIMITIVES: frozenset[str] = frozenset(
         "append_text",
         "atomic_replace",
         "hold_lock",
+        "install_file",
         "save_npz",
         "update_npz",
         "write_json",
@@ -71,7 +72,7 @@ MODULE_PRIMITIVES: dict[str, frozenset[str]] = {
     "solstone.think.journal_io": GATED_PRIMITIVES,
     "solstone.think.journal_io.append": frozenset({"append_jsonl", "append_text"}),
     "solstone.think.journal_io.atomic": frozenset(
-        {"atomic_replace", "write_json", "write_jsonl", "write_text"}
+        {"atomic_replace", "install_file", "write_json", "write_jsonl", "write_text"}
     ),
     "solstone.think.journal_io.locking": frozenset({"hold_lock"}),
     "solstone.think.journal_io.npz": frozenset({"save_npz", "update_npz"}),
@@ -128,6 +129,7 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/think/importers/documents.py",
         "solstone/think/importers/shared.py",
         # imports/** bundle + sync-cursor writers (local/CLI import flows).
+        "solstone/think/importers/plaud.py",  # streamed imported-audio install.
         "solstone/think/importers/sync.py",
         "solstone/think/importers/utils.py",
     }

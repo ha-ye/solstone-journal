@@ -7,7 +7,8 @@ These helpers take absolute Paths that the caller already owns. They do not
 offer a journal-relative write-anywhere convenience. atomic_replace() writes a
 same-directory temporary file, flushes and fsyncs it, applies a requested mode
 before close, replaces the target with os.replace(), and then always attempts a
-best-effort parent-directory fsync.
+best-effort parent-directory fsync. install_file() promotes a caller-prepared
+same-directory temp onto a destination without reading its content.
 """
 
 import json
@@ -46,6 +47,40 @@ def atomic_replace(path: Path, data: str | bytes, *, mode: int | None = None) ->
             pass
         raise
     _fsync_dir(path.parent)
+
+
+def install_file(temp_path: Path, dest: Path, *, mode: int | None = None) -> None:
+    """Durably install an ALREADY-WRITTEN temp file onto dest.
+
+    Contract: the caller streams content into temp_path and closes it; this
+    primitive promotes it. It never reads the file content into memory.
+    temp_path must live in dest.parent (same filesystem) so os.replace() is
+    atomic, matching atomic_replace()'s same-directory temp contract. Create
+    dest.parent, fsync the prepared temp by opening temp_path read-only, chmod
+    temp_path before replacement when mode is supplied, os.replace() it over
+    dest, then call _fsync_dir(dest.parent). On any exception during the
+    fsync/chmod/replace phase, unlink temp_path and re-raise. A failure
+    mid-install leaves any prior dest intact and cleans temp_path. The final
+    parent-directory fsync stays outside that cleanup block, matching
+    atomic_replace()'s degraded-durability policy.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(temp_path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        if mode is not None:
+            os.chmod(temp_path, mode)
+        os.replace(temp_path, dest)
+    except BaseException:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
+    _fsync_dir(dest.parent)
 
 
 def write_json(

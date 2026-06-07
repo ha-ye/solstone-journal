@@ -18,6 +18,7 @@ import pytest
 from solstone.think.journal_io.append import append_jsonl
 from solstone.think.journal_io.atomic import (
     atomic_replace,
+    install_file,
     write_json,
     write_jsonl,
     write_text,
@@ -80,6 +81,71 @@ def test_atomic_replace_crash_safe(tmp_path, monkeypatch) -> None:
 
     assert path.read_bytes() == b"OLD"
     assert list(path.parent.glob(".tmp_*")) == []
+
+
+def test_install_file_installs_streamed_temp(tmp_path) -> None:
+    dest = tmp_path / "audio.opus"
+    temp = tmp_path / "incoming.part"
+    temp.write_bytes(b"streamed-bytes")
+
+    install_file(temp, dest)
+
+    assert dest.read_bytes() == b"streamed-bytes"
+    assert not temp.exists()
+    assert list(tmp_path.glob(".tmp_*")) == []
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["audio.opus"]
+
+
+def test_install_file_crash_safe(tmp_path, monkeypatch) -> None:
+    dest = tmp_path / "audio.opus"
+    dest.write_bytes(b"OLD")
+    temp = tmp_path / "incoming.part"
+    temp.write_bytes(b"NEW")
+
+    def boom(src, dst):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr("solstone.think.journal_io.atomic.os.replace", boom)
+
+    with pytest.raises(OSError):
+        install_file(temp, dest)
+
+    assert dest.read_bytes() == b"OLD"
+    assert not temp.exists()
+
+
+def test_install_file_applies_mode_before_replace(tmp_path, monkeypatch) -> None:
+    dest = tmp_path / "secret.opus"
+    temp = tmp_path / "incoming.part"
+    temp.write_bytes(b"secret")
+    captured = {}
+    real_replace = os.replace
+
+    def spy(src, dst):
+        captured["mode"] = stat.S_IMODE(os.stat(src).st_mode)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr("solstone.think.journal_io.atomic.os.replace", spy)
+
+    install_file(temp, dest, mode=0o600)
+
+    assert captured["mode"] == 0o600
+    assert stat.S_IMODE(dest.stat().st_mode) == 0o600
+
+
+def test_install_file_never_reads_content_into_memory(tmp_path, monkeypatch) -> None:
+    dest = tmp_path / "audio.opus"
+    temp = tmp_path / "incoming.part"
+    temp.write_bytes(b"streamed-bytes")
+
+    def fail_read(*args, **kwargs):
+        raise AssertionError("install_file must not read content")
+
+    monkeypatch.setattr("solstone.think.journal_io.atomic.os.read", fail_read)
+
+    install_file(temp, dest)
+
+    assert dest.read_bytes() == b"streamed-bytes"
 
 
 def test_parent_dir_fsync_degraded_policy(tmp_path, monkeypatch, caplog) -> None:

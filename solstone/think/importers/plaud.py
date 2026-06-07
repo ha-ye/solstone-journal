@@ -19,6 +19,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from solstone.think.importers.cli import import_one
+from solstone.think.journal_io import install_file
 
 logger = logging.getLogger(__name__)
 
@@ -219,7 +220,7 @@ def download_to_file(
         logger.warning("Plaud download for %s failed: %s", dest_path.name, exc)
         return False
 
-    tmp_path.replace(dest_path)
+    install_file(tmp_path, dest_path)
     size_info = f" ({total} bytes)" if total else ""
     logger.info("[%s] Saved -> %s%s", dest_path.stem, dest_path, size_info)
     return True

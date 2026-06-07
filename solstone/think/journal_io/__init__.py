@@ -15,6 +15,7 @@ from solstone.think.journal_io.append import append_jsonl, append_text
 # Atomic replace writers
 from solstone.think.journal_io.atomic import (
     atomic_replace,
+    install_file,
     write_json,
     write_jsonl,
     write_text,
@@ -67,6 +68,7 @@ __all__ = [
     "segment_path",
     # Atomic replace
     "atomic_replace",
+    "install_file",
     "write_json",
     "write_jsonl",
     "write_text",

@@ -49,7 +49,7 @@ Inventory of every non-test, non-scratch, non-atomic-tmp destructive removal (`s
 | file:line | target | trigger | path validation | audit log | dry-run | class | why |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `solstone/think/importers/shared.py:361` | existing `imports/<timestamp>/` directory | `_setup_import(..., force=True)` | fixed `journal/imports/<timestamp>` path and `import_dir.exists()` gate | yes (`solstone/think/importers/shared.py:351-357`) | yes | `✅` | fixed in this sweep: per-file manifest is hashed and logged before `rmtree` |
-| `solstone/think/importers/plaud.py:196` | temporary download file | Plaud download write failure | exact `NamedTemporaryFile` path created in the same function | no | no | `⚠️` | temp download cleanup, not a journal-domain delete |
+| `solstone/think/importers/plaud.py:212` | temporary download file | Plaud download write failure | exact `NamedTemporaryFile` path created in the same function | no | no | `⚠️` | temp download cleanup, not a journal-domain delete |
 
 ## think/facets
 
