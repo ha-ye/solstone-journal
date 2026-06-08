@@ -5,7 +5,7 @@ This file is the **developer guide** for the solstone repository. Read it before
 Audience:
 
 - **Coders** (cwd = repo root, editing `solstone/observe/`, `solstone/think/`, `solstone/convey/`, `solstone/apps/`, `solstone/talent/`, `tests/`) — you're in the right place.
-- **Cogitate talents** (cwd = `journal/`, running inside the live system) — your entry is `solstone/talent/journal/SKILL.md`, installed into `journal/.claude/skills/journal/` and `journal/.agents/skills/journal/`.
+- **Cogitate talents** (cwd = `journal/`, running inside the live system) — your entry is `solstone/talent/journal/SKILL.md`, installed into `journal/.claude/skills/journal/` and `journal/.agents/skills/journal/`. The runtime contract you operate under — tools, reads vs writes, finalization, access tiers, and what is *not* in your context — is `docs/COGITATE.md`.
 - **Operators** debugging a running system — see `docs/DOCTOR.md`.
 
 For the journal-side runtime entry point, see `journal/AGENTS.md`.
@@ -35,7 +35,7 @@ Read, in order, when you enter the repo for a coding task:
 |-----|---------|--------------|-----------|
 | `solstone/think/sol_cli.py` | CLI entry point — `COMMANDS` / `ALIASES` / `GROUPS` dicts | adding a top-level `sol <cmd>` | `docs/SOLCLI.md` |
 | `solstone/observe/` | Multimodal capture — screen, audio, transcribe, describe, sense, transfer | capture-side bugs, new input modalities | `docs/OBSERVE.md` |
-| `solstone/think/` | Post-processing core — cortex, talent, callosum, indexer, entities, facets, activities, scheduler, heartbeat, supervisor | anything downstream of capture; most coder work lives here | `docs/THINK.md`, `docs/CORTEX.md`, `docs/CALLOSUM.md` |
+| `solstone/think/` | Post-processing core — cortex, talent, callosum, indexer, entities, facets, activities, scheduler, heartbeat, supervisor | anything downstream of capture; most coder work lives here | `docs/THINK.md`, `docs/CORTEX.md`, `docs/COGITATE.md`, `docs/CALLOSUM.md` |
 | `solstone/convey/` | Web app framework — app discovery, routing, bridge | layout / framework-level UI changes | `docs/CONVEY.md` |
 | `solstone/apps/` | Convey apps — each self-contained (`call.py` Typer sub-app + `routes.py` + `templates/`) | adding a user-facing feature, a `sol call <app>` verb, a UI surface | `docs/APPS.md` (required reading before modifying `solstone/apps/`) |
 | `solstone/talent/` | AI talent configs (markdown prompts + optional `.py` post-hooks) + `SKILL.md`s (journal, partner, …) | defining or tuning a talent; adding a journal-side skill | `solstone/talent/journal/SKILL.md`, `docs/PROMPT_TEMPLATES.md` |
@@ -316,6 +316,7 @@ Bare links don't motivate clicking. Each entry below says when you actually need
 | `docs/APPS.md` | **Required before modifying `solstone/apps/`** — pattern catalog for Convey apps, hook-idempotency guidance, Typer sub-app conventions, `maint` commands for data migrations |
 | `docs/THINK.md` | Understanding the think-layer pipeline (importers, indexer, segment/stream processing) |
 | `docs/CORTEX.md` | Modifying talent execution, cortex lifecycle, talent process management |
+| `docs/COGITATE.md` | The cogitate talent runtime contract — cwd/workspace, the `sol`-CLI-authoritative journal access, raw-read bound, access tiers, finalization, disallowed assumptions, and the in-context preamble constant. Read before authoring/editing a talent prompt. |
 | `docs/CALLOSUM.md` | Adding a new tract/event, debugging message flow |
 | `docs/CONVEY.md` | Framework-level web changes (as opposed to an individual app) |
 | `docs/OBSERVE.md` | Capture-side work: new modalities, transcription, sensing |

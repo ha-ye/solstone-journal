@@ -1,0 +1,199 @@
+# Cogitate runtime contract
+
+The canonical contract for **cogitate talents** — the LLM agents Cortex spawns to
+read and update the journal (chat, pulse, awareness_tender, steward, the entity /
+todo / activity / import talents, and the rest). It is the single place a talent
+author can point at and say what a fresh cogitate run's working directory,
+context, tools, finalization, and persistence are — instead of reverse-engineering
+the runtime from `solstone/think/talents.py`, the providers, the policy, and the
+installed OpenHands SDK.
+
+This contract **names capabilities and access classes.** It does not define the
+HTTP API shape (that is convey's — see `docs/CONVEY.md` and `docs/SOLCLI.md`) and
+it is not a per-talent prompt. Every talent prompt is written against this
+contract.
+
+> **Source of truth for the in-context part:** the short runtime preamble every
+> cogitate talent receives is the constant `COGITATE_RUNTIME_PREAMBLE` in
+> `solstone/think/cogitate_contract.py`. The locked access-tier and finalization
+> vocabularies live in the same module (`COGITATE_ACCESS_TIERS`,
+> `FUTURE_ACCESS_TIERS`, `TALENT_FINALIZATION_MODES`). Reference those by path; do
+> not paraphrase them.
+
+---
+
+## What a cogitate run is
+
+A cogitate run is **not** a coding agent (Claude / Codex / Gemini) launched in the
+journal. It is a Python talent subprocess spawned by Cortex, inside which the
+OpenHands SDK builds an `Agent` and a `Conversation` and runs the model against a
+small, explicit tool set.
+
+```
+Cortex (cortex/request)
+   |- spawns: python -m solstone.think.talents      (cwd = journal root)
+        |- prepare_config()                          (talents.py)
+             |- run_cogitate()                        (providers/openhands.py)
+                  |- assemble_prompt()                (providers/cli.py)
+                  |- build the `sol` tool + CogitatePolicy
+                  |- OpenHands Agent (system_prompt = preamble + instruction)
+                  |- OpenHands Conversation -> model loop -> finalization
+```
+
+The model's initial context is **solstone-assembled prompt material plus the
+OpenHands tool schemas** — not a snapshot of the cwd. Files that merely sit in the
+working directory are not in context (see "What is *not* in a talent's context").
+
+## Working directory and OpenHands workspace
+
+These are two different things; conflating them is the most common debugging
+misread.
+
+| | Value | What it governs |
+|---|---|---|
+| **Talent subprocess cwd** | the **journal root** (resolved from `cwd: journal`) | the cwd the `sol` shell tool inherits — i.e. where `sol` / `sol call` commands run |
+| **OpenHands `Conversation` workspace** | the **repo root** (`get_project_root()`) | SDK bookkeeping and file-based subagent discovery — **not** automatic model context |
+| **Conversation persistence** | `journal/.cache/cogitate-history/<session_id>` | the SDK event/state store for the run |
+
+The journal-root cwd matters operationally because the `sol` tool inherits it, but
+**cwd contents are never automatically loaded into the model's context.**
+
+## The `sol` CLI is the authoritative talent-to-journal contract
+
+A talent reaches journal functionality by emitting `sol` / `sol call ...` shell
+commands through the provided shell tool. The `sol` CLI handlers are the **single
+authoritative translation layer** between a talent and the journal: they turn CLI
+syntax into convey API calls. A talent therefore:
+
+- **never** talks to the convey HTTP API directly, and
+- **never** assumes a database, a socket, or any journal access other than the
+  `sol` CLI and (when provided) the bounded raw-read tools below.
+
+The shell tool is invoked like `sol(command="sol call activities list")`. It is a
+**shell-based** surface (the talent emits a `sol ...` command line); it is not a
+parsed single-call RPC. The command policy (below) constrains what may run.
+
+## Reads: domain reads vs raw evidence reads
+
+**Domain reads — the default.** Indexed, normalized, or semantic reads go through
+`sol call` verbs (e.g. `sol call activities list`, `sol call entities show`,
+`sol call transcripts read`). Anything that needs authorization, derived state,
+normalization, or audit behavior is a domain read, not a raw read.
+
+**Raw evidence reads — bounded, for evidence with no `sol` verb.** A normal talent
+may be given a small read tier (`read_file`, `list_directory`, `glob`,
+`grep_search`) for raw evidence (e.g. a per-span narrative file) that no domain
+command exposes. When that tier is present it defaults to **broad journal-root
+read-only**:
+
+- reads resolve under the **journal root** by default;
+- a **denylist** is always refused: `.git`, caches (`.cache`), credentials,
+  virtualenvs, and `node_modules`;
+- **per-call and per-run caps** bound output size and the number of read calls;
+- traversal and symlink escape are refused; binary files, directories, sockets,
+  devices, and FIFOs are refused by `read_file`.
+
+The journal is the owner's own data, so a broad read default carries no data-use
+cost — the denylist and caps are the safety bound, not a permission gate. An
+optional per-talent `read_scope` is a **narrowing hint** only; it is not the
+default gate, and a talent never fails for reading an undeclared journal file.
+
+> The raw-read **tools** are built to this contract; a given run exposes them only
+> if its tier includes them. Check the run's actual tool schema
+> (`journal talent show <name> --prompt`) for what a specific talent receives.
+
+## Writes: only through `sol` domain commands
+
+A talent **writes journal state only through `sol` domain commands** (the
+`sol call ...` verbs for the domain it is updating, e.g.
+`sol call entities update ...`). There is **no general-purpose write tool** and no
+raw-write tier — write-class tools are denied by policy. The mechanic is
+centralized in the domain command (which routes through the convey API to the
+single write-owner for that data); a talent gets the *capability* to update a
+domain, never an arbitrary file-write path. Persistence that does not go through a
+`sol` domain command does not happen.
+
+## Access tiers
+
+A talent's access class is one of the following. The tier vocabulary is locked
+(`COGITATE_ACCESS_TIERS` / `FUTURE_ACCESS_TIERS` in
+`solstone/think/cogitate_contract.py`); the per-talent assignment and its
+enforcement are layered on top of it.
+
+| Tier | Purpose | Surface |
+|---|---|---|
+| `normal` | default cogitate talents | the `sol` tool (`sol` / `sol call`), the bounded raw-read tier, a finalization tool |
+| `system-read` | diagnostics that also read scoped operational evidence (e.g. `steward`) | `normal` plus scoped reads of health / talent / log evidence |
+| `outbound` | comms-like talents that may submit something that leaves the machine (e.g. `support`) | `normal` reads / drafts; **submit is gated on an explicit, real per-send human approval supplied to the run** — never an agent self-grant, a static template, or a scheduled inject |
+
+**There is no `repair` tier in cogitate.** Health fact-gathering *and* repair are a
+deterministic supervisor/system workflow (explicitly launched and logged) — they do
+not need an LLM, and a talent that diagnoses must not also mutate state. The
+owner-facing health narrative is `steward`'s job (`system-read`).
+
+`code-agent` is a **documented future tier**, not part of the current cogitate
+runtime. A code agent needs write access, broad tools (read / edit / write / shell /
+delegation), and a repo cwd — deliberately out of scope here. It gets its own clean
+contract if and when it is built; it is listed in `FUTURE_ACCESS_TIERS` so nothing
+keys enforcement off it today.
+
+## Finalization
+
+Every talent has exactly one finalization mode (`TALENT_FINALIZATION_MODES` in
+`solstone/think/cogitate_contract.py`):
+
+| Mode | When | Behavior |
+|---|---|---|
+| `emit_final` | scheduled / output talents (an `output_path` is set, or the schedule is `daily` / `weekly` / `activity`) | the run is accepted **only** from the `emit_final` tool; `FinishTool` is disabled; a finish with no emitted final is an error |
+| `FinishTool` | manual / no-output talents | the run signals completion through OpenHands' built-in finish tool |
+| `quiet` | side-effect-only talents | the talent has already persisted its work through `sol` domain commands and finishes with no output |
+
+A manual talent's prompt should state which of these it expects so the behavior is
+explicit rather than inferred.
+
+## What is *not* in a talent's context (disallowed assumptions)
+
+A talent prompt must not assume any of the following — they are named here so
+prompts can be checked against them:
+
+- **bare `journal ...` commands** (e.g. `journal identity`, `journal health`,
+  `journal navigate`) — reach the journal through `sol` / `sol call`;
+- **raw `cat` / `ls` / arbitrary shell file reads** — use the raw-read tools when
+  present, not shell file access;
+- **auto-loaded skills, `AGENTS.md`, `CLAUDE.md`, or `GEMINI.md`** — these are
+  normal journal files with no special status. They are *not* injected into a
+  talent's context; this contract is the talent's source of truth. (They remain
+  affordances for coding agents launched in the journal, not for cogitate.)
+- **browser / web tools, MCP tools, and sub-agent delegation** — none are bound;
+- **`cwd: repo` / `write: true` modes** — not cogitate modes; a normal talent runs
+  with the journal cwd and no write tool.
+
+## The in-context preamble (named source constant)
+
+Every cogitate run receives the contract's essential preamble as the head of its
+system prompt. It is the constant `COGITATE_RUNTIME_PREAMBLE` in
+`solstone/think/cogitate_contract.py`, prepended in `assemble_prompt`
+(`solstone/think/providers/cli.py`) ahead of the talent's own instruction. The
+verbatim text:
+
+```
+You are a solstone cogitate talent running inside the live system. This runtime contract is authoritative; do not assume capabilities beyond it.
+
+- Reach the journal through the `sol` command line: run `sol` / `sol call ...` commands via the provided shell tool, e.g. sol(command="sol call activities list"). The `sol` CLI is the one authoritative path between you and the journal; never assume direct database, socket, or HTTP access.
+- Write journal state only through `sol` domain commands (the `sol call ...` verbs for the data you own). There is no general-purpose write tool; persistence that does not go through a `sol` domain command will not happen.
+- Raw evidence reads, when this run provides a read tool, are bounded to the journal root: a denylist (`.git`, caches, credentials, virtualenvs, `node_modules`) and per-call / per-run caps apply. Prefer `sol call` reads; use raw reads only for evidence that has no `sol` command.
+- Finalize as your run is configured: call `emit_final` when an `emit_final` tool is present; otherwise finish through the built-in finish tool; a side-effect-only talent that has already persisted its work finishes quietly with no output.
+- Do not assume tools or context you were not given: no bare `journal ...` commands, no raw `cat` / `ls` / shell file reads, no auto-loaded skills or AGENTS.md / CLAUDE.md, no browser or web access, no MCP tools, and no delegating to sub-agents. Any guidance file is a normal journal file with no special status; this contract is your source of truth.
+```
+
+## Where this is wired (for maintainers)
+
+| Concern | Location |
+|---|---|
+| The contract preamble + locked vocabularies | `solstone/think/cogitate_contract.py` |
+| Preamble injection into the system prompt | `assemble_prompt` in `solstone/think/providers/cli.py` |
+| Cogitate run assembly (tools, policy, workspace, finalization) | `run_cogitate` in `solstone/think/providers/openhands.py` |
+| Command / write policy | `CogitatePolicy` in `solstone/think/cogitate_policy.py` |
+| Finalization tool | `solstone/think/providers/emit_final_tool.py` |
+| Talent configs (prompts + frontmatter) | `solstone/talent/*.md`, `solstone/apps/*/talent/*.md` |
+| Talent execution lifecycle | `docs/CORTEX.md`, `docs/THINK.md` |
