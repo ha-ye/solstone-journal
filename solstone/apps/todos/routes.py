@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from flask import (
     Blueprint,
@@ -21,11 +22,18 @@ from solstone.apps.todos import copy as todos_copy
 from solstone.apps.todos.todo import (
     TodoChecklist,
     TodoEmptyTextError,
+    TodoError,
     TodoItem,
     TodoMovePartialError,
     TodoNotMovableError,
+    find_cross_facet_matches,
     format_nudge,
+    get_facets_with_todos,
+    get_todo_days_in_range,
     get_todos,
+    parse_nudge,
+    upcoming,
+    validate_line_number,
 )
 from solstone.apps.utils import log_app_action
 from solstone.convey import state
@@ -38,10 +46,18 @@ from solstone.convey.reasons import (
     INVALID_REQUEST_VALUE,
     MISSING_REQUIRED_FIELD,
     OPERATION_NO_LONGER_AVAILABLE,
+    TODO_BUSY,
     TODO_OPERATION_FAILED,
 )
-from solstone.convey.utils import DATE_RE, error_response, format_date
-from solstone.think.facets import get_facets
+from solstone.convey.utils import (
+    DATE_RE,
+    created,
+    error_response,
+    format_date,
+    respond_collection,
+    success_response,
+)
+from solstone.think.facets import get_facets, log_call_action
 from solstone.think.journal_io.errors import LockTimeout
 
 VISIBLE_INCOMPLETE_BUDGET = 30
@@ -203,6 +219,464 @@ def api_stats(month: str):
                     stats[day][facet_name] = count
 
     return jsonify(stats)
+
+
+def _json_body() -> dict[str, Any]:
+    payload = request.get_json(silent=True) or {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _body_str(payload: dict[str, Any], name: str) -> str | None:
+    value = payload.get(name)
+    if value is None:
+        return None
+    return str(value)
+
+
+def _required_body_str(payload: dict[str, Any], name: str) -> tuple[str | None, Any]:
+    value = _body_str(payload, name)
+    if value is None:
+        return None, error_response(
+            MISSING_REQUIRED_FIELD, detail=f"{name} is required"
+        )
+    return value, None
+
+
+def _body_line_number(payload: dict[str, Any]) -> tuple[int | None, Any]:
+    try:
+        return int(payload.get("line_number")), None
+    except (TypeError, ValueError):
+        return None, error_response(
+            MISSING_REQUIRED_FIELD,
+            detail="line_number is required",
+        )
+
+
+def _checklist_payload(day: str, facet: str) -> dict[str, Any]:
+    checklist = TodoChecklist.load(day, facet)
+    return {
+        "day": day,
+        "facet": facet,
+        "exists": checklist.exists,
+        "has_items": bool(checklist.items),
+        "display": checklist.display(),
+    }
+
+
+def _due_nudge_items(
+    facet: str | None,
+) -> tuple[str, str, datetime, list[dict[str, Any]]]:
+    now = datetime.now()
+    today = now.strftime("%Y%m%d")
+    now_str = now.strftime("%Y%m%dT%H:%M")
+
+    facets_dir = Path(state.journal_root) / "facets"
+    if not facets_dir.is_dir():
+        return today, now_str, now, []
+
+    if facet is not None:
+        facet_names = [facet]
+    else:
+        facet_names = [d.name for d in facets_dir.iterdir() if d.is_dir()]
+
+    items: list[dict[str, Any]] = []
+    for facet_name in facet_names:
+        checklist = TodoChecklist.load(today, facet_name)
+        if not checklist.exists:
+            continue
+        for item in checklist.items:
+            if (
+                item.nudge
+                and item.nudge <= now_str
+                and not item.notified
+                and not item.completed
+                and not item.cancelled
+            ):
+                items.append(
+                    {
+                        "day": today,
+                        "facet": facet_name,
+                        "index": item.index,
+                        "text": item.text,
+                        "nudge": item.nudge,
+                        "nudge_display": format_nudge(item.nudge, now=now),
+                        "display_line": item.display_line(),
+                    }
+                )
+    return today, now_str, now, items
+
+
+@todos_bp.route("/api/checklist")
+def api_checklist():
+    """Return rendered todo checklist data for the CLI."""
+    day = request.args.get("day", "").strip()
+    to = request.args.get("to")
+    to = to.strip() if to is not None else None
+    facet = request.args.get("facet")
+    facet = facet.strip() if facet is not None and facet.strip() else None
+
+    if to is not None and to < day:
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail=f"--to ({to}) must not be before day ({day})",
+        )
+
+    if to is not None and to != day:
+        facets = [facet] if facet else sorted(get_facets())
+        sections = []
+        for facet_name in facets:
+            days = get_todo_days_in_range(facet_name, day, to)
+            if not days:
+                continue
+            sections.append(
+                {
+                    "facet": facet_name,
+                    "days": [
+                        _checklist_payload(day_str, facet_name) for day_str in days
+                    ],
+                }
+            )
+        return jsonify(
+            {
+                "mode": "range",
+                "day": day,
+                "to": to,
+                "facet": facet,
+                "facet_count": len(facets),
+                "sections": sections,
+            }
+        )
+
+    facets = [facet] if facet else get_facets_with_todos(day)
+    return jsonify(
+        {
+            "mode": "single",
+            "day": day,
+            "facet": facet,
+            "facet_count": len(facets),
+            "facets": [_checklist_payload(day, facet_name) for facet_name in facets],
+        }
+    )
+
+
+@todos_bp.route("/api/upcoming")
+def api_upcoming():
+    """Return rendered upcoming todos for the CLI."""
+    facet = request.args.get("facet")
+    facet = facet.strip() if facet is not None and facet.strip() else None
+    try:
+        limit = int(request.args.get("limit", 20))
+    except (TypeError, ValueError):
+        return error_response(INVALID_REQUEST_VALUE, detail="limit must be an integer")
+    return jsonify({"upcoming": upcoming(limit=limit, facet=facet)})
+
+
+@todos_bp.route("/api/nudges-due")
+def api_nudges_due():
+    """Return due, unnotified todo nudges for the CLI."""
+    facet = request.args.get("facet")
+    facet = facet.strip() if facet is not None and facet.strip() else None
+    _today, _now_str, _now, items = _due_nudge_items(facet)
+    return respond_collection(items)
+
+
+@todos_bp.route("/api/add", methods=["POST"])
+def api_add_todo():
+    """Add a todo through the CLI-backing JSON API."""
+    payload = _json_body()
+    text, error = _required_body_str(payload, "text")
+    if error is not None:
+        return error
+    day, error = _required_body_str(payload, "day")
+    if error is not None:
+        return error
+    facet, error = _required_body_str(payload, "facet")
+    if error is not None:
+        return error
+    assert text is not None and day is not None and facet is not None
+    day = day.strip()
+    facet = facet.strip()
+    nudge = _body_str(payload, "nudge")
+    force = bool(payload.get("force", False))
+
+    if not DATE_RE.fullmatch(day):
+        return error_response(INVALID_DAY, detail=f"invalid day format '{day}'")
+
+    parsed_nudge: str | None = None
+    if nudge is not None:
+        try:
+            parsed_nudge = parse_nudge(nudge, day)
+        except ValueError as exc:
+            return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
+
+    if not force:
+        matches = find_cross_facet_matches(text, day, exclude_facet=facet)
+        if matches:
+            return success_response({"status": "duplicate", "matches": matches})
+
+    try:
+
+        def _add(checklist: TodoChecklist) -> tuple[TodoChecklist, TodoItem]:
+            item = checklist.append_entry(text, nudge=parsed_nudge)
+            return checklist, item
+
+        checklist, item = TodoChecklist.locked_modify(day, facet, _add)
+    except TodoEmptyTextError as exc:
+        return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
+    except LockTimeout:
+        return error_response(TODO_BUSY)
+
+    log_call_action(
+        facet=facet,
+        action="todo_add",
+        params={"line_number": item.index, "text": item.text},
+        day=day,
+    )
+    return created(
+        {
+            "status": "ok",
+            "item": item.as_dict(),
+            "display": checklist.display(),
+        }
+    )
+
+
+@todos_bp.route("/api/done", methods=["POST"])
+def api_done_todo():
+    """Mark a todo done through the CLI-backing JSON API."""
+    payload = _json_body()
+    day, error = _required_body_str(payload, "day")
+    if error is not None:
+        return error
+    facet, error = _required_body_str(payload, "facet")
+    if error is not None:
+        return error
+    line_number, error = _body_line_number(payload)
+    if error is not None:
+        return error
+    assert day is not None and facet is not None and line_number is not None
+    day = day.strip()
+    facet = facet.strip()
+
+    try:
+
+        def _done(checklist: TodoChecklist) -> tuple[TodoChecklist, TodoItem]:
+            item = checklist.mark_done(line_number)
+            return checklist, item
+
+        checklist, item = TodoChecklist.locked_modify(day, facet, _done)
+    except IndexError as exc:
+        return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
+    except LockTimeout:
+        return error_response(TODO_BUSY)
+
+    log_call_action(
+        facet=facet,
+        action="todo_done",
+        params={"line_number": line_number, "text": item.text},
+        day=day,
+    )
+    return success_response(
+        {
+            "item": item.as_dict(),
+            "display": checklist.display(),
+        }
+    )
+
+
+@todos_bp.route("/api/cancel", methods=["POST"])
+def api_cancel_todo():
+    """Cancel a todo through the CLI-backing JSON API."""
+    payload = _json_body()
+    day, error = _required_body_str(payload, "day")
+    if error is not None:
+        return error
+    facet, error = _required_body_str(payload, "facet")
+    if error is not None:
+        return error
+    line_number, error = _body_line_number(payload)
+    if error is not None:
+        return error
+    assert day is not None and facet is not None and line_number is not None
+    day = day.strip()
+    facet = facet.strip()
+
+    try:
+
+        def _cancel(checklist: TodoChecklist) -> tuple[TodoChecklist, TodoItem]:
+            item = checklist.cancel_entry(line_number)
+            return checklist, item
+
+        checklist, item = TodoChecklist.locked_modify(day, facet, _cancel)
+    except IndexError as exc:
+        return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
+    except LockTimeout:
+        return error_response(TODO_BUSY)
+
+    log_call_action(
+        facet=facet,
+        action="todo_cancel",
+        params={"line_number": line_number, "text": item.text},
+        day=day,
+    )
+    return success_response(
+        {
+            "item": item.as_dict(),
+            "display": checklist.display(),
+        }
+    )
+
+
+@todos_bp.route("/api/move", methods=["POST"])
+def api_move_todo():
+    """Move an open todo across facets through the CLI-backing JSON API."""
+    payload = _json_body()
+    day, error = _required_body_str(payload, "day")
+    if error is not None:
+        return error
+    from_facet, error = _required_body_str(payload, "from_facet")
+    if error is not None:
+        return error
+    to_facet, error = _required_body_str(payload, "to_facet")
+    if error is not None:
+        return error
+    line_number, error = _body_line_number(payload)
+    if error is not None:
+        return error
+    assert (
+        day is not None
+        and from_facet is not None
+        and to_facet is not None
+        and line_number is not None
+    )
+    day = day.strip()
+    from_facet = from_facet.strip()
+    to_facet = to_facet.strip()
+    consent = bool(payload.get("consent", False))
+
+    for facet_name in (from_facet, to_facet):
+        if not (Path(state.journal_root) / "facets" / facet_name).is_dir():
+            return error_response(INVALID_REQUEST_VALUE, detail=facet_name)
+
+    try:
+        datetime.strptime(day, "%Y%m%d")
+    except ValueError:
+        return error_response(
+            INVALID_DAY,
+            detail=f"Invalid day format '{day}', expected YYYYMMDD.",
+        )
+
+    if from_facet == to_facet:
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail="source and destination facet are the same.",
+        )
+
+    try:
+        source_checklist = TodoChecklist.load(day, from_facet)
+        if not source_checklist.exists:
+            raise FileNotFoundError()
+        validate_line_number(line_number, len(source_checklist.items))
+        item = source_checklist.items[line_number - 1]
+        if item.completed:
+            raise TodoError("Cannot move a completed todo.")
+        if item.cancelled:
+            raise TodoError("Cannot move an already cancelled todo.")
+    except FileNotFoundError:
+        return error_response(
+            OPERATION_NO_LONGER_AVAILABLE,
+            detail=f"No todos found for day {day} in facet '{from_facet}'.",
+        )
+    except IndexError as exc:
+        return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
+    except TodoError as exc:
+        return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
+
+    try:
+        new_item, cancelled = TodoChecklist.move_entry(
+            day, from_facet, line_number, day, to_facet
+        )
+    except (IndexError, TodoNotMovableError) as exc:
+        return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
+    except LockTimeout:
+        return error_response(TODO_BUSY)
+    except TodoMovePartialError:
+        return error_response(
+            TODO_OPERATION_FAILED,
+            detail=(
+                f"Item was appended to '{to_facet}' but could not cancel source "
+                f"in '{from_facet}'. Cancel it manually with: sol call todos "
+                f"cancel {line_number} --day {day} --facet {from_facet}"
+            ),
+        )
+
+    params_out: dict[str, object] = {
+        "moved_from": from_facet,
+        "moved_to": to_facet,
+        "line_number": line_number,
+        "text": cancelled.text,
+    }
+    params_in: dict[str, object] = {
+        "moved_from": from_facet,
+        "moved_to": to_facet,
+        "line_number": new_item.index,
+        "text": new_item.text,
+    }
+    if consent:
+        params_out["consent"] = True
+        params_in["consent"] = True
+    log_call_action(facet=from_facet, action="todo_move_out", params=params_out)
+    log_call_action(facet=to_facet, action="todo_move_in", params=params_in)
+    return success_response(
+        {
+            "new_item": new_item.as_dict(),
+            "cancelled": cancelled.as_dict(),
+        }
+    )
+
+
+@todos_bp.route("/api/dispatch-nudges", methods=["POST"])
+def api_dispatch_nudges():
+    """Mark due todo nudges as notified for the CLI."""
+    payload = _json_body()
+    facet = _body_str(payload, "facet")
+    facet = facet.strip() if facet is not None and facet.strip() else None
+    today, now_str, _now, due_items = _due_nudge_items(facet)
+
+    facet_names = sorted({item["facet"] for item in due_items})
+    dispatched: list[dict[str, str]] = []
+    for facet_name in facet_names:
+
+        def _mark(checklist: TodoChecklist) -> list[str]:
+            texts: list[str] = []
+            for item in checklist.items:
+                if (
+                    item.nudge
+                    and item.nudge <= now_str
+                    and not item.notified
+                    and not item.completed
+                    and not item.cancelled
+                ):
+                    item.notified = True
+                    texts.append(item.text)
+            if texts:
+                checklist.save()
+            return texts
+
+        try:
+            texts = TodoChecklist.locked_modify(today, str(facet_name), _mark)
+        except LockTimeout:
+            continue
+        for text in texts:
+            dispatched.append({"facet": str(facet_name), "text": text})
+
+    return success_response(
+        {
+            "day": today,
+            "items": dispatched,
+            "total": len(dispatched),
+        }
+    )
 
 
 def _todo_path(day: str, facet: str) -> Path:

@@ -186,6 +186,11 @@ TODO_OPERATION_FAILED = Reason(
     "I couldn't update that todo.",
     500,
 )
+TODO_BUSY = Reason(
+    "todo_busy",
+    "I couldn't update that todo right now because it was busy. Try again in a moment.",
+    503,
+)
 
 # agent/talent
 AGENT_UNAVAILABLE = Reason(
