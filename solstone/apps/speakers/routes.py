@@ -27,8 +27,20 @@ from flask import (
 )
 
 from solstone.apps.speakers.attribution import (
+    accumulate_voiceprints,
     append_speaker_correction,
     apply_label_patches,
+    attribute_segment,
+    backfill_last_seen,
+    backfill_segments,
+    save_speaker_labels,
+)
+from solstone.apps.speakers.bootstrap import (
+    bootstrap_voiceprints,
+    link_import,
+    merge_names,
+    resolve_name_variants,
+    seed_from_imports,
 )
 from solstone.apps.speakers.copy import (
     SPK_OVERVIEW_KNOWN_VOICES_SORTS,
@@ -54,7 +66,9 @@ from solstone.apps.speakers.owner import (
     reject_owner_candidate,
 )
 from solstone.apps.speakers.status import get_speakers_status
+from solstone.apps.speakers.suggest import format_suggestions, suggest_opportunities
 from solstone.apps.speakers.time import segment_start_ts_ms
+from solstone.apps.speakers.wipe import wipe_speaker_artifacts
 from solstone.apps.utils import log_app_action
 from solstone.convey import state
 from solstone.convey.reasons import (
@@ -70,15 +84,17 @@ from solstone.convey.reasons import (
     MISSING_REQUEST_BODY,
     MISSING_REQUIRED_FIELD,
     SPEAKER_ATTRIBUTION_STATE_INVALID,
+    SPEAKER_COMMAND_FAILED,
     SPEAKER_LABELS_BUSY,
     SPEAKER_NOT_FOUND,
+    SPEAKER_OWNER_CENTROID_REQUIRED,
     SPEAKER_OWNER_VOICE_TOO_CLOSE,
     SPEAKER_REVIEW_UNAVAILABLE,
     SPEAKER_SENTENCE_MISSING,
     SPEAKER_VOICEPRINT_BUSY,
 )
 from solstone.convey.utils import DATE_RE, error_response, format_date, success_response
-from solstone.think.awareness import get_current
+from solstone.think.awareness import get_current, owner_detection_ready
 from solstone.think.entities import find_matching_entity
 from solstone.think.entities.journal import (
     ensure_journal_entity_memory,
@@ -1634,6 +1650,245 @@ def api_discovery_identify() -> Any:
     )
 
     return jsonify(result)
+
+
+# CLI-backing routes for sol call speakers HTTP cutover.
+@speakers_bp.route("/api/status", methods=["GET"])
+def api_cli_status() -> Any:
+    """Return the full speakers status payload for CLI-side section selection."""
+    return jsonify(get_speakers_status(None))
+
+
+@speakers_bp.route("/api/bootstrap", methods=["POST"])
+def api_cli_bootstrap() -> Any:
+    """Bootstrap voiceprints for the CLI."""
+    data = request.get_json(silent=True) or {}
+    commit = bool(data.get("commit", False))
+    stats = bootstrap_voiceprints(dry_run=not commit)
+    if "error" in stats:
+        return error_response(
+            SPEAKER_OWNER_CENTROID_REQUIRED,
+            detail=stats["error"],
+        )
+    return jsonify(stats)
+
+
+@speakers_bp.route("/api/resolve-names", methods=["POST"])
+def api_cli_resolve_names() -> Any:
+    """Resolve speaker name variants for the CLI."""
+    data = request.get_json(silent=True) or {}
+    commit = bool(data.get("commit", False))
+    return jsonify(resolve_name_variants(dry_run=not commit))
+
+
+@speakers_bp.route("/api/seed-from-imports", methods=["POST"])
+def api_cli_seed_from_imports() -> Any:
+    """Seed voiceprints from imports for the CLI."""
+    data = request.get_json(silent=True) or {}
+    commit = bool(data.get("commit", False))
+    stats = seed_from_imports(dry_run=not commit)
+    if "error" in stats:
+        return error_response(
+            SPEAKER_OWNER_CENTROID_REQUIRED,
+            detail=stats["error"],
+        )
+    return jsonify(stats)
+
+
+@speakers_bp.route("/api/backfill-last-seen", methods=["POST"])
+def api_cli_backfill_last_seen() -> Any:
+    """Backfill speaker last-seen metadata for the CLI."""
+    data = request.get_json(silent=True) or {}
+    commit = bool(data.get("commit", False))
+    return jsonify(backfill_last_seen(dry_run=not commit))
+
+
+@speakers_bp.route("/api/backfill", methods=["POST"])
+def api_cli_backfill() -> Any:
+    """Backfill speaker labels synchronously for the CLI."""
+    data = request.get_json(silent=True) or {}
+    commit = bool(data.get("commit", False))
+    return jsonify(backfill_segments(dry_run=not commit, progress_callback=None))
+
+
+@speakers_bp.route("/api/wipe", methods=["POST"])
+def api_cli_wipe() -> Any:
+    """Wipe speaker artifacts for the CLI."""
+    data = request.get_json(silent=True) or {}
+    commit = bool(data.get("commit", False))
+    report = wipe_speaker_artifacts(dry_run=not commit)
+    return jsonify(report.to_dict())
+
+
+@speakers_bp.route("/api/attribute-segment", methods=["POST"])
+def api_cli_attribute_segment() -> Any:
+    """Attribute one segment and optionally persist CLI-requested artifacts."""
+    data = request.get_json(silent=True) or {}
+    day = data.get("day")
+    stream = data.get("stream")
+    segment = data.get("segment")
+    commit = bool(data.get("commit", False))
+    save = bool(data.get("save", True))
+    accumulate = bool(data.get("accumulate", True))
+
+    if not all([day, stream, segment]):
+        return error_response(MISSING_REQUIRED_FIELD, detail="Missing required fields")
+
+    result = attribute_segment(day, stream, segment)
+    if result.get("error"):
+        return error_response(
+            SPEAKER_OWNER_CENTROID_REQUIRED,
+            detail=result["error"],
+        )
+
+    labels = result.get("labels", [])
+    metadata = result.get("metadata", {})
+    source = result.get("source")
+    written_path = None
+    accumulated = None
+
+    if commit and save:
+        try:
+            out_path = save_speaker_labels(
+                get_segment_path(day, segment, stream),
+                labels,
+                metadata,
+            )
+        except LockTimeout as exc:
+            return _labels_busy_response(exc)
+        written_path = str(out_path)
+
+    if commit and accumulate and source:
+        try:
+            accumulated = accumulate_voiceprints(day, stream, segment, labels, source)
+        except LockTimeout as exc:
+            return _voiceprint_busy_response(exc)
+
+    return jsonify(
+        {
+            "result": result,
+            "written_path": written_path,
+            "accumulated": accumulated,
+        }
+    )
+
+
+@speakers_bp.route("/api/suggest", methods=["GET"])
+def api_cli_suggest() -> Any:
+    """Return speaker suggestion items plus server-rendered markdown."""
+    try:
+        limit = int(request.args.get("limit", 5))
+    except (TypeError, ValueError):
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail="Invalid limit parameter",
+        )
+    items = suggest_opportunities(limit=limit)
+    return jsonify({"items": items, "markdown": format_suggestions(items)})
+
+
+@speakers_bp.route("/api/discovery/identify-cli", methods=["POST"])
+def api_cli_discovery_identify() -> Any:
+    """Identify a discovery cluster with CLI-compatible pass-through behavior."""
+    data = request.get_json(silent=True) or {}
+    cluster_id = data.get("cluster_id")
+    name = data.get("name")
+    entity_id = data.get("entity_id")
+
+    if cluster_id is None or not name:
+        return error_response(
+            MISSING_REQUIRED_FIELD,
+            detail="cluster_id and name are required",
+        )
+
+    try:
+        cluster_id = int(cluster_id)
+    except (TypeError, ValueError):
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail="cluster_id must be an integer",
+        )
+
+    try:
+        result = identify_cluster(cluster_id, name, entity_id=entity_id)
+    except LockTimeout as exc:
+        if exc.path.name in ("speaker_labels.json", "speaker_corrections.json"):
+            return _labels_busy_response(exc)
+        return _voiceprint_busy_response(exc)
+
+    if "error" in result:
+        return error_response(
+            SPEAKER_COMMAND_FAILED,
+            detail=json.dumps(result, indent=2, default=str),
+            status=400,
+        )
+    return jsonify(result)
+
+
+@speakers_bp.route("/api/merge-names", methods=["POST"])
+def api_cli_merge_names() -> Any:
+    """Merge two speaker names for the CLI."""
+    data = request.get_json(silent=True) or {}
+    alias = data.get("alias")
+    canonical = data.get("canonical")
+    result = merge_names(alias, canonical)
+    if "error" in result:
+        return error_response(
+            SPEAKER_COMMAND_FAILED,
+            detail=json.dumps(result, indent=2, default=str),
+            status=400,
+        )
+    return jsonify(result)
+
+
+@speakers_bp.route("/api/link-import", methods=["POST"])
+def api_cli_link_import() -> Any:
+    """Link an imported speaker name to an entity for the CLI."""
+    data = request.get_json(silent=True) or {}
+    name = data.get("name")
+    entity_id = data.get("entity_id")
+    result = link_import(name, entity_id)
+    if "error" in result:
+        return error_response(
+            SPEAKER_COMMAND_FAILED,
+            detail=json.dumps(result, indent=2, default=str),
+            status=400,
+        )
+    return jsonify(result)
+
+
+@speakers_bp.route("/api/owner/confirm-cli", methods=["POST"])
+def api_cli_owner_confirm() -> Any:
+    """Confirm the owner candidate with CLI-compatible full-result behavior."""
+    try:
+        result = confirm_owner_candidate()
+    except LockTimeout as exc:
+        return _voiceprint_busy_response(exc)
+    if result.get("error_kind") == "voiceprint_busy":
+        return error_response(SPEAKER_VOICEPRINT_BUSY, detail=result["error"])
+    if "error" in result:
+        return error_response(
+            SPEAKER_COMMAND_FAILED,
+            detail=json.dumps(result, indent=2, default=str),
+            status=400,
+        )
+    return jsonify(result)
+
+
+@speakers_bp.route("/api/owner/reject-cli", methods=["POST"])
+def api_cli_owner_reject() -> Any:
+    """Reject the owner candidate with CLI-compatible domain result behavior."""
+    try:
+        result = reject_owner_candidate()
+    except LockTimeout as exc:
+        return _voiceprint_busy_response(exc)
+    return jsonify(result)
+
+
+@speakers_bp.route("/api/owner/ready", methods=["POST"])
+def api_cli_owner_ready() -> Any:
+    """Return owner-detection readiness; this may refresh provisional state."""
+    return jsonify(owner_detection_ready())
 
 
 @speakers_bp.route("/api/serve_audio/<day>/<path:rel_path>")

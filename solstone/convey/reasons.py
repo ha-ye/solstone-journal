@@ -323,6 +323,16 @@ SPEAKER_LABELS_BUSY = Reason(
     "I couldn't update those speaker attributions right now because they were busy. Try again in a moment.",
     503,
 )
+SPEAKER_OWNER_CENTROID_REQUIRED = Reason(
+    "speaker_owner_centroid_required",
+    "I couldn't run that speaker command until your owner voice is set up.",
+    409,
+)
+SPEAKER_COMMAND_FAILED = Reason(
+    "speaker_command_failed",
+    "I couldn't finish that speaker command.",
+    400,
+)
 AWARENESS_BUSY = Reason(
     "awareness_busy",
     "I couldn't update what I know right now because it was busy. Try again in a moment.",
