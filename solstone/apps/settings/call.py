@@ -7,55 +7,47 @@ Auto-discovered by ``think.call`` and mounted as ``sol call settings ...``.
 """
 
 import json
-import os
-import subprocess
-from datetime import datetime, timezone
-from pathlib import Path
+from typing import Any
 
 import typer
 
 from solstone.apps.settings.copy import (
-    CONVEY_HOST_URL_CLEARED,
-    CONVEY_HOST_URL_FLAG_CONFLICT,
-    CONVEY_HOST_URL_SET_DONE,
     CONVEY_NETWORK_DISABLE_DONE,
     CONVEY_NETWORK_DISABLE_PROGRESS,
     CONVEY_NETWORK_ENABLE_DONE,
     CONVEY_NETWORK_ENABLE_PROGRESS,
     CONVEY_REFUSE_NO_PASSWORD_NETWORK,
-    CONVEY_REFUSE_NO_PASSWORD_TRUST,
     CONVEY_RESTART_TIMEOUT,
-    CONVEY_TRUST_DISABLE_DONE,
-    CONVEY_TRUST_ENABLE_DONE,
-    format_convey_status,
-)
-from solstone.apps.settings.vertex_credentials import (
-    delete_vertex_credentials,
-    save_vertex_credentials,
 )
 from solstone.convey.network_access import (
     NetworkAccessPasswordRequired,
     set_network_access,
 )
-from solstone.think.pairing.config import (
-    InvalidHostUrl,
-    clear_host_url,
-    get_host_url,
-    set_host_url,
-    validate_host_url,
+from solstone.convey.reasons import (
+    FILE_NOT_FOUND,
+    INVALID_CONFIG_VALUE,
+    INVALID_JSON_REQUEST,
+    MISSING_REQUIRED_FIELD,
+    NETWORK_SECURITY_REQUIRES_PASSWORD,
 )
+from solstone.think.convey_client import ConveyClientError, convey_cli, get_client
 from solstone.think.service import DEFAULT_SERVICE_PORT
-from solstone.think.utils import get_project_root, require_solstone
+from solstone.think.utils import read_service_port, require_solstone
+
+# Mirrors solstone.apps.settings.routes.API_KEY_ENV_VARS (the canonical order
+# used in the "Invalid env var" message); reconstructed here rather than
+# imported (HTTP-only gate) or read from the response (Flask sorts JSON keys).
+_API_KEY_ENV_VARS = [
+    "GOOGLE_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "REVAI_ACCESS_TOKEN",
+    "PLAUD_ACCESS_TOKEN",
+]
 
 app = typer.Typer(
     help="Journal settings — keys, providers, transcription, identity, and observer."
 )
-
-
-@app.callback()
-def _require_up() -> None:
-    require_solstone()
-
 
 keys_app = typer.Typer(help="API key management.")
 app.add_typer(keys_app, name="keys")
@@ -79,75 +71,72 @@ trust_localhost_app = typer.Typer(help="Localhost password-bypass behavior.")
 convey_app.add_typer(trust_localhost_app, name="trust-localhost")
 
 
-def _get_config():
-    """Read journal config."""
-    from solstone.think.journal_config import read_journal_config
-
-    return read_journal_config()
-
-
-def _write_config(config: dict) -> None:
-    """Write journal config with indent=2, trailing newline, 0o600."""
-    from solstone.think.journal_config import write_journal_config
-
-    write_journal_config(config)
+def _request(
+    method: str,
+    path: str,
+    *,
+    params: dict[str, object] | None = None,
+    json_body: dict[str, object] | None = None,
+) -> Any:
+    return get_client().request(method, path, params=params, json=json_body)
 
 
-def _convey_password_is_set(config: dict) -> bool:
-    from solstone.apps.settings.routes import (
-        _convey_password_is_set as _route_password_is_set,
-    )
+def _get_config() -> dict[str, Any]:
+    return _request("GET", "/app/settings/api/config")
 
-    return _route_password_is_set(config)
+
+def _get_providers() -> dict[str, Any]:
+    return _request("GET", "/app/settings/api/providers")
+
+
+def _post_config(
+    section: str,
+    data: dict[str, Any] | None = None,
+    *,
+    key: str | None = None,
+    value: Any = None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {"section": section}
+    if data is not None:
+        body["data"] = data
+    if key is not None:
+        body["key"] = key
+        body["value"] = value
+    return _request("POST", "/app/settings/api/config", json_body=body)
+
+
+def _echo_json(payload: Any) -> None:
+    typer.echo(json.dumps(payload, indent=2))
+
+
+def _exit_with(message: str) -> None:
+    typer.echo(message, err=True)
+    raise typer.Exit(1)
+
+
+def _validate_env_var_or_exit(env_var: str) -> None:
+    if env_var not in _API_KEY_ENV_VARS:
+        _exit_with(
+            f"Invalid env var: {env_var}. Must be one of: {', '.join(_API_KEY_ENV_VARS)}"
+        )
+
+
+def _provider_for_env_var(providers: dict[str, Any], env_var: str) -> str | None:
+    for provider in providers.get("providers", []):
+        if provider.get("env_key") == env_var:
+            return provider.get("name")
+    return None
 
 
 def _convey_port() -> int:
-    from solstone.think.utils import read_service_port
-
     return read_service_port("convey") or DEFAULT_SERVICE_PORT
-
-
-def _network_access_enabled(config: dict) -> bool:
-    return bool(config.get("convey", {}).get("allow_network_access", False))
-
-
-def _trust_localhost_enabled(config: dict) -> bool:
-    return bool(config.get("convey", {}).get("trust_localhost", True))
-
-
-def _host_url_status_value(config: dict) -> str:
-    pairing_host_url = config.get("pairing", {}).get("host_url")
-    if isinstance(pairing_host_url, str) and pairing_host_url.strip():
-        return f"{get_host_url()} (manual override)"
-    if _network_access_enabled(config):
-        return f"{get_host_url()} (auto-detected)"
-    return f"{get_host_url()} (localhost — network access off)"
-
-
-def _validate_host_url_or_exit(url: str) -> str:
-    try:
-        return validate_host_url(url)
-    except InvalidHostUrl as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(1)
-
-
-def _provider_for_env_var(env_var: str) -> str | None:
-    """Return the provider mapped to an API env var, if any."""
-    from solstone.think.providers import PROVIDER_METADATA
-
-    env_to_provider = {
-        meta["env_key"]: name
-        for name, meta in PROVIDER_METADATA.items()
-        if "env_key" in meta
-    }
-    return env_to_provider.get(env_var)
 
 
 @network_access_app.command("enable")
 def convey_network_access_enable() -> None:
     """Enable non-loopback access to Convey and restart it."""
 
+    require_solstone()
     try:
         result = set_network_access(
             enable=True,
@@ -166,6 +155,7 @@ def convey_network_access_enable() -> None:
 def convey_network_access_disable() -> None:
     """Restrict Convey to localhost and restart it."""
 
+    require_solstone()
     result = set_network_access(
         enable=False,
         on_restart=lambda: typer.echo(CONVEY_NETWORK_DISABLE_PROGRESS),
@@ -177,29 +167,30 @@ def convey_network_access_disable() -> None:
 
 
 @trust_localhost_app.command("enable")
+@convey_cli
 def convey_trust_localhost_enable() -> None:
     """Enable localhost password bypass."""
 
-    config = _get_config()
-    config.setdefault("convey", {})["trust_localhost"] = True
-    _write_config(config)
-    typer.echo(CONVEY_TRUST_ENABLE_DONE)
+    _post_config("convey", {"trust_localhost": True})
+    typer.echo("localhost trust enabled. localhost requests skip the password.")
 
 
 @trust_localhost_app.command("disable")
+@convey_cli
 def convey_trust_localhost_disable() -> None:
     """Disable localhost password bypass."""
 
-    config = _get_config()
-    if not _convey_password_is_set(config):
-        typer.echo(CONVEY_REFUSE_NO_PASSWORD_TRUST, err=True)
-        raise typer.Exit(1)
-    config.setdefault("convey", {})["trust_localhost"] = False
-    _write_config(config)
-    typer.echo(CONVEY_TRUST_DISABLE_DONE)
+    try:
+        _post_config("convey", {"trust_localhost": False})
+    except ConveyClientError as err:
+        if err.reason_code == NETWORK_SECURITY_REQUIRES_PASSWORD.code:
+            _exit_with(err.detail or err.error)
+        raise
+    typer.echo("localhost trust disabled. localhost requests now require the password.")
 
 
 @convey_app.command("host-url")
+@convey_cli
 def convey_host_url(
     url: str | None = typer.Argument(
         None, help="Absolute URL to advertise to devices."
@@ -212,273 +203,126 @@ def convey_host_url(
     """Manage the host URL advertised to remote devices."""
 
     if sum(bool(flag) for flag in (url is not None, auto, show)) != 1:
-        typer.echo(CONVEY_HOST_URL_FLAG_CONFLICT, err=True)
-        raise typer.Exit(1)
+        _exit_with("error: choose exactly one of <url>, --auto, or --show")
     if show:
-        typer.echo(get_host_url())
+        result = _request("GET", "/app/settings/api/convey/host-url")
+        typer.echo(result["host_url"])
         return
     if auto:
-        clear_host_url()
-        typer.echo(CONVEY_HOST_URL_CLEARED)
+        _request("POST", "/app/settings/api/convey/host-url", json_body={"auto": True})
+        typer.echo("host url cleared. auto-detect is active.")
         return
     assert url is not None
-    cleaned = _validate_host_url_or_exit(url)
-    set_host_url(cleaned)
-    typer.echo(CONVEY_HOST_URL_SET_DONE.format(url=cleaned))
+    try:
+        result = _request(
+            "POST",
+            "/app/settings/api/convey/host-url",
+            json_body={"url": url},
+        )
+    except ConveyClientError as err:
+        if err.reason_code == INVALID_CONFIG_VALUE.code and err.detail:
+            _exit_with(err.detail)
+        raise
+    typer.echo(f"host url set: {result['host_url']}")
 
 
 @convey_app.command("status")
+@convey_cli
 def convey_status() -> None:
     """Show Convey network and host-URL status."""
 
-    from solstone.convey.cli import _resolve_bind_host
-
-    config = _get_config()
-    network_access = "on" if _network_access_enabled(config) else "localhost only"
-    bind_host = _resolve_bind_host()
-    password = "set" if _convey_password_is_set(config) else "not set"
-    trust_localhost = "yes" if _trust_localhost_enabled(config) else "no"
-    typer.echo(
-        format_convey_status(
-            bind=f"{bind_host}:{_convey_port()}",
-            host_url=_host_url_status_value(config),
-            network_access=network_access,
-            password=password,
-            trust_localhost=trust_localhost,
-        )
-    )
-
-
-def _validate_env_var_or_exit(env_var: str) -> None:
-    """Exit if env_var is not a supported API key variable."""
-    from solstone.apps.settings.routes import API_KEY_ENV_VARS
-
-    if env_var not in API_KEY_ENV_VARS:
-        typer.echo(
-            f"Invalid env var: {env_var}. Must be one of: {', '.join(API_KEY_ENV_VARS)}",
-            err=True,
-        )
-        raise typer.Exit(1)
-
-
-def _set_provider_type(
-    agent_type: str,
-    provider: str | None,
-    tier: int | None,
-    backup: str | None,
-) -> dict:
-    """Validate and update the provider settings for a single agent type."""
-    from solstone.think.providers import PROVIDER_REGISTRY
-
-    config = _get_config()
-    config.setdefault("providers", {})
-    config["providers"].setdefault(agent_type, {})
-
-    if provider is not None:
-        if provider not in PROVIDER_REGISTRY:
-            typer.echo(
-                f"Invalid provider: {provider}. Must be one of: {', '.join(sorted(PROVIDER_REGISTRY.keys()))}",
-                err=True,
-            )
-            raise typer.Exit(1)
-        config["providers"][agent_type]["provider"] = provider
-
-    if tier is not None:
-        if tier not in {1, 2, 3}:
-            typer.echo(f"Invalid tier: {tier}. Must be 1, 2, or 3.", err=True)
-            raise typer.Exit(1)
-        config["providers"][agent_type]["tier"] = tier
-
-    if backup is not None:
-        if backup not in PROVIDER_REGISTRY:
-            typer.echo(
-                f"Invalid backup provider: {backup}. Must be one of: {', '.join(sorted(PROVIDER_REGISTRY.keys()))}",
-                err=True,
-            )
-            raise typer.Exit(1)
-        config["providers"][agent_type]["backup"] = backup
-
-    _write_config(config)
-    return config["providers"][agent_type]
+    result = _request("GET", "/app/settings/api/convey/status")
+    typer.echo(result["status_text"])
 
 
 @app.command("show")
+@convey_cli
 def show() -> None:
     """Show a summary of journal settings."""
-    from solstone.apps.settings.routes import API_KEY_ENV_VARS
-    from solstone.think.models import TYPE_DEFAULTS
 
     config = _get_config()
-    providers_config = config.get("providers", {})
-    type_settings = {}
-    for agent_type in ("generate", "cogitate"):
-        defaults = TYPE_DEFAULTS[agent_type]
-        type_config = providers_config.get(agent_type, {})
-        type_settings[agent_type] = {
-            "provider": type_config.get("provider", defaults["provider"]),
-            "tier": type_config.get("tier", defaults["tier"]),
-            "backup": type_config.get("backup", defaults["backup"]),
-        }
-
+    providers = _get_providers()
+    env_config = config.get("env", {})
+    keys = {key: bool(env_config.get(key)) for key in _API_KEY_ENV_VARS}
     summary = {
         "identity": config.get("identity", {}),
         "providers": {
-            "generate": type_settings["generate"],
-            "cogitate": type_settings["cogitate"],
-            "google_backend": providers_config.get("google_backend", "auto"),
-            "key_validation": providers_config.get("key_validation", {}),
+            "generate": providers.get("generate", {}),
+            "cogitate": providers.get("cogitate", {}),
+            "google_backend": providers.get("google_backend", "auto"),
+            "key_validation": providers.get("key_validation", {}),
         },
         "transcribe": config.get("transcribe", {}),
         "observe": config.get("observe", {}),
-        "keys": {k: bool(config.get("env", {}).get(k)) for k in API_KEY_ENV_VARS},
+        "keys": keys,
     }
-    typer.echo(json.dumps(summary, indent=2))
+    _echo_json(summary)
 
 
 @keys_app.command("show")
+@convey_cli
 def keys_show() -> None:
     """Show configured API key status."""
-    from solstone.apps.settings.routes import API_KEY_ENV_VARS
 
     config = _get_config()
     env_config = config.get("env", {})
-    status = {k: bool(env_config.get(k)) for k in API_KEY_ENV_VARS}
-    typer.echo(json.dumps(status, indent=2))
+    status = {key: bool(env_config.get(key)) for key in _API_KEY_ENV_VARS}
+    _echo_json(status)
 
 
 @keys_app.command("set")
+@convey_cli
 def keys_set(
     env_var: str = typer.Argument(..., help="Environment variable to set."),
     value: str = typer.Argument(..., help="API key value."),
 ) -> None:
     """Set an API key in journal config."""
-    from solstone.think.providers import validate_key
 
     _validate_env_var_or_exit(env_var)
-    config = _get_config()
-    config.setdefault("env", {})
-    config["env"][env_var] = value
-    os.environ[env_var] = value
-
+    providers = _get_providers()
+    provider = _provider_for_env_var(providers, env_var)
+    response = _post_config("env", key=env_var, value=value)
     validation = None
-    provider = _provider_for_env_var(env_var)
     if provider:
-        config.setdefault("providers", {})
-        validation = validate_key(provider, value)
-        validation["timestamp"] = datetime.now(timezone.utc).isoformat()
-        config["providers"].setdefault("key_validation", {})
-        config["providers"]["key_validation"][provider] = validation
-
-    _write_config(config)
-    typer.echo(
-        json.dumps(
-            {"env_var": env_var, "set": True, "validation": validation},
-            indent=2,
-        )
-    )
+        validation = response.get("key_validation", {}).get(provider)
+    _echo_json({"env_var": env_var, "set": True, "validation": validation})
 
 
 @keys_app.command("clear")
+@convey_cli
 def keys_clear(
     env_var: str = typer.Argument(..., help="Environment variable to clear."),
 ) -> None:
     """Clear an API key from journal config."""
+
     _validate_env_var_or_exit(env_var)
-    config = _get_config()
-    env_config = config.setdefault("env", {})
-    env_config.pop(env_var, None)
-    os.environ.pop(env_var, None)
-
-    provider = _provider_for_env_var(env_var)
-    if provider:
-        config.setdefault("providers", {})
-        config["providers"].setdefault("key_validation", {})
-        config["providers"]["key_validation"].pop(provider, None)
-
-    _write_config(config)
-    typer.echo(json.dumps({"env_var": env_var, "cleared": True}, indent=2))
+    _post_config("env", key=env_var, value="")
+    _echo_json({"env_var": env_var, "cleared": True})
 
 
 @keys_app.command("validate")
+@convey_cli
 def keys_validate(
     cache_result: bool = typer.Option(
         False, "--cache-result", help="Persist results to providers.key_validation."
     ),
 ) -> None:
     """Validate all configured API keys without persisting by default."""
-    from solstone.think.providers import PROVIDER_METADATA, validate_key
-    from solstone.think.providers.google import validate_vertex_credentials
 
-    config = _get_config()
-    env_config = config.get("env", {})
-    env_to_provider = {
-        meta["env_key"]: name
-        for name, meta in PROVIDER_METADATA.items()
-        if "env_key" in meta
-    }
-
-    key_validation = {}
-    for env_var, provider in env_to_provider.items():
-        api_key = env_config.get(env_var, "")
-        if api_key:
-            result = validate_key(provider, api_key)
-            result["timestamp"] = datetime.now(timezone.utc).isoformat()
-            key_validation[provider] = result
-
-    providers_config = config.get("providers", {})
-    if providers_config.get("google_backend") == "vertex" and providers_config.get(
-        "vertex_credentials"
-    ):
-        result = validate_vertex_credentials(providers_config["vertex_credentials"])
-        result["timestamp"] = datetime.now(timezone.utc).isoformat()
-        key_validation["google"] = result
-
-    if cache_result:
-        config.setdefault("providers", {})
-        config["providers"]["key_validation"] = key_validation
-        _write_config(config)
-    typer.echo(json.dumps({"key_validation": key_validation}, indent=2))
+    method = "POST" if cache_result else "GET"
+    response = _request(method, "/app/settings/api/validate-keys")
+    _echo_json({"key_validation": response.get("key_validation", {})})
 
 
 @providers_app.command("show")
+@convey_cli
 def providers_show(
     human: bool = typer.Option(False, "--human", help="Print one-line statuses."),
 ) -> None:
     """Show provider configuration."""
-    from solstone.think.models import TYPE_DEFAULTS
-    from solstone.think.providers import build_provider_status, get_provider_list
 
-    config = _get_config()
-    providers_config = config.get("providers", {})
-    type_settings = {}
-    for agent_type in ("generate", "cogitate"):
-        defaults = TYPE_DEFAULTS[agent_type]
-        type_config = providers_config.get(agent_type, {})
-        type_settings[agent_type] = {
-            "provider": type_config.get("provider", defaults["provider"]),
-            "tier": type_config.get("tier", defaults["tier"]),
-            "backup": type_config.get("backup", defaults["backup"]),
-        }
-
-    providers_list = get_provider_list()
-    api_keys = {}
-    for provider in providers_list:
-        env_key = provider.get("env_key", "")
-        api_keys[provider["name"]] = bool(os.getenv(env_key)) if env_key else False
-
-    vertex_creds_path = providers_config.get("vertex_credentials")
-    vertex_creds_configured = bool(
-        vertex_creds_path and Path(vertex_creds_path).exists()
-    )
-    provider_status = build_provider_status(providers_list, vertex_creds_configured)
-    result = {
-        "providers": providers_list,
-        "provider_status": provider_status,
-        "generate": type_settings["generate"],
-        "cogitate": type_settings["cogitate"],
-        "api_keys": api_keys,
-        "key_validation": providers_config.get("key_validation", {}),
-    }
+    response = _get_providers()
+    provider_status = response.get("provider_status", {})
     if human:
         for name in sorted(provider_status):
             status = provider_status[name]
@@ -493,7 +337,16 @@ def providers_show(
                 status_text = "not ready"
             typer.echo(f"{name}: {status_text}")
         return
-    typer.echo(json.dumps(result, indent=2))
+    _echo_json(
+        {
+            "providers": response.get("providers", []),
+            "provider_status": provider_status,
+            "generate": response.get("generate", {}),
+            "cogitate": response.get("cogitate", {}),
+            "api_keys": response.get("api_keys", {}),
+            "key_validation": response.get("key_validation", {}),
+        }
+    )
 
 
 @providers_app.command("install")
@@ -505,99 +358,115 @@ def providers_install(
     raise typer.Exit(2)
 
 
+def _set_provider_type(
+    agent_type: str,
+    provider: str | None,
+    tier: int | None,
+    backup: str | None,
+) -> dict[str, Any]:
+    if tier is not None and tier not in {1, 2, 3}:
+        _exit_with(f"Invalid tier: {tier}. Must be 1, 2, or 3.")
+    payload = {
+        key: value
+        for key, value in {
+            "provider": provider,
+            "tier": tier,
+            "backup": backup,
+        }.items()
+        if value is not None
+    }
+    try:
+        response = _request(
+            "POST",
+            "/app/settings/api/providers",
+            json_body={agent_type: payload},
+        )
+    except ConveyClientError as err:
+        if err.reason_code == INVALID_CONFIG_VALUE.code and err.detail:
+            _exit_with(err.detail)
+        raise
+    return response.get(agent_type, {})
+
+
 @providers_app.command("set-generate")
+@convey_cli
 def providers_set_generate(
     provider: str | None = typer.Option(None, "--provider", help="Primary provider."),
     tier: int | None = typer.Option(None, "--tier", help="Tier (1, 2, or 3)."),
     backup: str | None = typer.Option(None, "--backup", help="Backup provider."),
 ) -> None:
     """Set generate provider defaults."""
-    typer.echo(
-        json.dumps(_set_provider_type("generate", provider, tier, backup), indent=2)
-    )
+    _echo_json(_set_provider_type("generate", provider, tier, backup))
 
 
 @providers_app.command("set-cogitate")
+@convey_cli
 def providers_set_cogitate(
     provider: str | None = typer.Option(None, "--provider", help="Primary provider."),
     tier: int | None = typer.Option(None, "--tier", help="Tier (1, 2, or 3)."),
     backup: str | None = typer.Option(None, "--backup", help="Backup provider."),
 ) -> None:
     """Set cogitate provider defaults."""
-    typer.echo(
-        json.dumps(_set_provider_type("cogitate", provider, tier, backup), indent=2)
-    )
+    _echo_json(_set_provider_type("cogitate", provider, tier, backup))
 
 
 @google_backend_app.command("show")
+@convey_cli
 def google_backend_show() -> None:
     """Show Google backend status."""
-    config = _get_config()
-    providers_config = config.get("providers", {})
-    google_backend = providers_config.get("google_backend", "auto")
-    vertex_creds_path = providers_config.get("vertex_credentials")
-    vertex_configured = False
-    vertex_email = ""
-    if vertex_creds_path and Path(vertex_creds_path).exists():
-        vertex_configured = True
-        try:
-            creds_data = json.loads(Path(vertex_creds_path).read_text())
-            vertex_email = creds_data.get("client_email", "")
-        except Exception:
-            pass
-    result = {
-        "google_backend": google_backend,
-        "vertex_credentials_configured": vertex_configured,
-        "vertex_credentials_email": vertex_email,
-    }
-    typer.echo(json.dumps(result, indent=2))
+
+    providers = _get_providers()
+    _echo_json(
+        {
+            "google_backend": providers.get("google_backend", "auto"),
+            "vertex_credentials_configured": providers.get(
+                "vertex_credentials_configured", False
+            ),
+            "vertex_credentials_email": providers.get("vertex_credentials_email", ""),
+        }
+    )
 
 
 @google_backend_app.command("set")
+@convey_cli
 def google_backend_set(
     backend: str = typer.Argument(..., help="Google backend to use."),
 ) -> None:
     """Set the Google provider backend."""
     if backend not in ("auto", "aistudio", "vertex"):
-        typer.echo(
-            f"Invalid google_backend: {backend}. Must be 'auto', 'aistudio', or 'vertex'.",
-            err=True,
+        _exit_with(
+            f"Invalid google_backend: {backend}. Must be 'auto', 'aistudio', or 'vertex'."
         )
-        raise typer.Exit(1)
 
-    config = _get_config()
-    config.setdefault("providers", {})
-    config["providers"]["google_backend"] = backend
-    _write_config(config)
-    typer.echo(json.dumps({"google_backend": backend}, indent=2))
+    _request(
+        "POST",
+        "/app/settings/api/providers",
+        json_body={"google_backend": backend},
+    )
+    _echo_json({"google_backend": backend})
 
 
 @vertex_app.command("show")
+@convey_cli
 def vertex_credentials_show() -> None:
     """Show Vertex credential status without secrets."""
+
     config = _get_config()
+    providers = _get_providers()
     providers_config = config.get("providers", {})
-    vertex_creds_path = providers_config.get("vertex_credentials")
-    configured = False
-    email = ""
-    if vertex_creds_path and Path(vertex_creds_path).exists():
-        configured = True
-        try:
-            creds_data = json.loads(Path(vertex_creds_path).read_text())
-            email = creds_data.get("client_email", "")
-        except Exception:
-            pass
-    validation = providers_config.get("key_validation", {}).get("google_vertex", {})
-    result = {
-        "configured": configured,
-        "email": email,
-        "path": vertex_creds_path or "",
-        "validation": validation,
-    }
-    typer.echo(json.dumps(result, indent=2))
+    validation = providers.get("key_validation", {}).get("google_vertex", {})
+    _echo_json(
+        {
+            "configured": providers.get("vertex_credentials_configured", False),
+            "email": providers.get("vertex_credentials_email", ""),
+            "path": providers_config.get("vertex_credentials") or "",
+            "validation": validation,
+        }
+    )
 
 
 @vertex_app.command("import")
+@convey_cli
 def vertex_credentials_import(
     file_path: str = typer.Argument(..., help="Path to service account JSON."),
     skip_validation: bool = typer.Option(
@@ -605,112 +474,70 @@ def vertex_credentials_import(
     ),
 ) -> None:
     """Import Vertex service account credentials into the journal config."""
-    from solstone.think.providers.google import validate_vertex_credentials
-    from solstone.think.utils import get_journal
-
-    source = Path(file_path)
-    if not source.exists():
-        typer.echo(f"Credential file not found: {file_path}", err=True)
-        raise typer.Exit(1)
 
     try:
-        creds_data = json.loads(source.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        typer.echo(f"Invalid JSON in credential file: {file_path}", err=True)
-        raise typer.Exit(1)
-
-    required_fields = ("type", "project_id", "client_email", "private_key")
-    missing = [field for field in required_fields if field not in creds_data]
-    if missing:
-        typer.echo(f"Missing required fields: {', '.join(missing)}", err=True)
-        raise typer.Exit(1)
-
-    creds_file = save_vertex_credentials(creds_data, Path(get_journal()))
-
-    config = _get_config()
-    config.setdefault("providers", {})
-    config["providers"]["vertex_credentials"] = str(creds_file)
-
-    validation = None
-    if not skip_validation:
-        validation = validate_vertex_credentials(str(creds_file))
-        validation["timestamp"] = datetime.now(timezone.utc).isoformat()
-        config["providers"].setdefault("key_validation", {})
-        config["providers"]["key_validation"]["google_vertex"] = validation
-
-    _write_config(config)
-    typer.echo(
-        json.dumps(
-            {
-                "configured": True,
-                "email": creds_data.get("client_email", ""),
-                "path": str(creds_file),
-                "validation": validation,
-            },
-            indent=2,
+        response = _request(
+            "POST",
+            "/app/settings/api/vertex-credentials/import",
+            json_body={"path": file_path, "skip_validation": skip_validation},
         )
-    )
+    except ConveyClientError as err:
+        if err.reason_code == FILE_NOT_FOUND.code:
+            _exit_with(f"Credential file not found: {err.detail}")
+        if err.reason_code == INVALID_JSON_REQUEST.code:
+            _exit_with(f"Invalid JSON in credential file: {err.detail}")
+        if err.reason_code == MISSING_REQUIRED_FIELD.code:
+            _exit_with(f"Missing required fields: {err.detail}")
+        typer.echo(err.error, err=True)
+        raise typer.Exit(1)
+    _echo_json(response)
 
 
 @vertex_app.command("clear")
+@convey_cli
 def vertex_credentials_clear() -> None:
     """Clear stored Vertex credentials."""
-    from solstone.think.utils import get_journal
 
-    config = _get_config()
-    config.setdefault("providers", {})
-    old_path = config["providers"].get("vertex_credentials")
-    if old_path:
-        delete_vertex_credentials(old_path, Path(get_journal()))
-        config["providers"].pop("vertex_credentials", None)
-        config["providers"].setdefault("key_validation", {})
-        config["providers"]["key_validation"].pop("google_vertex", None)
-
-    _write_config(config)
-    typer.echo(json.dumps({"configured": False}, indent=2))
+    _request(
+        "POST",
+        "/app/settings/api/providers",
+        json_body={"vertex_credentials": ""},
+    )
+    _echo_json({"configured": False})
 
 
 @transcribe_app.command("show")
+@convey_cli
 def transcribe_show() -> None:
     """Show transcription backend configuration."""
-    from solstone.observe.transcribe import get_backend_list
 
-    config = _get_config()
-    transcribe_config = config.get("transcribe", {})
-    backends = get_backend_list()
-    api_keys = {}
-    for backend in backends:
-        env_key = backend.get("env_key")
-        if env_key:
-            api_keys[backend["name"]] = bool(os.getenv(env_key))
-        else:
-            api_keys[backend["name"]] = True
-    result = {"backends": backends, "api_keys": api_keys, "config": transcribe_config}
-    typer.echo(json.dumps(result, indent=2))
+    response = _request("GET", "/app/settings/api/transcribe")
+    _echo_json(
+        {
+            "backends": response.get("backends", []),
+            "api_keys": response.get("api_keys", {}),
+            "config": response.get("config", {}),
+        }
+    )
 
 
 @transcribe_app.command("set-backend")
+@convey_cli
 def transcribe_set_backend(
     backend: str = typer.Argument(..., help="Transcription backend."),
 ) -> None:
     """Set the transcription backend."""
-    from solstone.observe.transcribe import BACKEND_REGISTRY
 
-    if backend not in BACKEND_REGISTRY:
-        typer.echo(
-            f"Invalid backend: {backend}. Must be one of: {', '.join(sorted(BACKEND_REGISTRY.keys()))}",
-            err=True,
-        )
-        raise typer.Exit(1)
-
-    config = _get_config()
-    config.setdefault("transcribe", {})
-    config["transcribe"]["backend"] = backend
-    _write_config(config)
-    typer.echo(json.dumps(config["transcribe"], indent=2))
+    response = _request("GET", "/app/settings/api/transcribe")
+    valid = sorted(item["name"] for item in response.get("backends", []))
+    if backend not in valid:
+        _exit_with(f"Invalid backend: {backend}. Must be one of: {', '.join(valid)}")
+    update = _post_config("transcribe", {"backend": backend})
+    _echo_json(update.get("config", {}).get("transcribe", {}))
 
 
 @transcribe_app.command("set")
+@convey_cli
 def transcribe_set(
     enrich: bool | None = typer.Option(None, "--enrich/--no-enrich"),
     noise_upgrade: bool | None = typer.Option(
@@ -718,25 +545,27 @@ def transcribe_set(
     ),
 ) -> None:
     """Set transcription options."""
-    config = _get_config()
-    config.setdefault("transcribe", {})
+
+    data: dict[str, Any] = {}
     if enrich is not None:
-        config["transcribe"]["enrich"] = enrich
+        data["enrich"] = enrich
     if noise_upgrade is not None:
-        config["transcribe"]["noise_upgrade"] = noise_upgrade
-    _write_config(config)
-    typer.echo(json.dumps(config["transcribe"], indent=2))
+        data["noise_upgrade"] = noise_upgrade
+    response = _post_config("transcribe", data)
+    _echo_json(response.get("config", {}).get("transcribe", {}))
 
 
 @identity_app.command("show")
+@convey_cli
 def identity_show() -> None:
     """Show journal identity config."""
+
     config = _get_config()
-    identity = config.get("identity", {})
-    typer.echo(json.dumps(identity, indent=2))
+    _echo_json(config.get("identity", {}))
 
 
 @identity_app.command("set")
+@convey_cli
 def identity_set(
     name: str | None = typer.Option(None, "--name"),
     preferred: str | None = typer.Option(None, "--preferred"),
@@ -749,22 +578,23 @@ def identity_set(
     remove_alias: str | None = typer.Option(None, "--remove-alias"),
 ) -> None:
     """Update journal owner identity."""
+
     config = _get_config()
-    config.setdefault("identity", {})
-    identity = config["identity"]
+    identity = dict(config.get("identity", {}))
+    data: dict[str, Any] = {}
 
     if name is not None:
-        identity["name"] = name
+        data["name"] = name
     if preferred is not None:
-        identity["preferred"] = preferred
+        data["preferred"] = preferred
     if bio is not None:
-        identity["bio"] = bio
+        data["bio"] = bio
     if timezone_name is not None:
-        identity["timezone"] = timezone_name
+        data["timezone"] = timezone_name
 
     if pronouns is not None:
         try:
-            identity["pronouns"] = json.loads(pronouns)
+            data["pronouns"] = json.loads(pronouns)
         except json.JSONDecodeError:
             typer.echo("Invalid JSON in pronouns", err=True)
             raise typer.Exit(1)
@@ -775,7 +605,7 @@ def identity_set(
             emails.append(add_email)
         if remove_email is not None:
             emails = [email for email in emails if email != remove_email]
-        identity["email_addresses"] = emails
+        data["email_addresses"] = emails
 
     if add_alias is not None or remove_alias is not None:
         aliases = list(identity.get("aliases", []))
@@ -783,61 +613,49 @@ def identity_set(
             aliases.append(add_alias)
         if remove_alias is not None:
             aliases = [alias for alias in aliases if alias != remove_alias]
-        identity["aliases"] = aliases
+        data["aliases"] = aliases
 
-    _write_config(config)
-    project_root = Path(get_project_root())
-    subprocess.run(
-        ["make", "skills"], cwd=project_root, check=False, capture_output=True
-    )
-    typer.echo(json.dumps(identity, indent=2))
+    response = _post_config("identity", data)
+    _echo_json(response.get("config", {}).get("identity", {}))
 
 
 @observer_app.command("show")
+@convey_cli
 def observer_show() -> None:
     """Show observer configuration with defaults."""
-    from solstone.apps.settings.routes import OBSERVE_TMUX_DEFAULTS
 
-    config = _get_config()
-    observe_config = config.get("observe", {})
-    tmux_config = observe_config.get("tmux", {})
-    result = {
-        "tmux": {
-            "enabled": tmux_config.get("enabled", OBSERVE_TMUX_DEFAULTS["enabled"]),
-            "capture_interval": tmux_config.get(
-                "capture_interval", OBSERVE_TMUX_DEFAULTS["capture_interval"]
-            ),
-        },
-        "defaults": {"tmux": OBSERVE_TMUX_DEFAULTS},
-    }
-    typer.echo(json.dumps(result, indent=2))
+    response = _request("GET", "/app/settings/api/observe")
+    _echo_json(response)
 
 
 @observer_app.command("set")
+@convey_cli
 def observer_set(
     enabled: bool | None = typer.Option(None, "--enabled/--no-enabled"),
     capture_interval: int | None = typer.Option(None, "--capture-interval"),
 ) -> None:
     """Update observer capture settings."""
-    from solstone.apps.settings.routes import OBSERVE_TMUX_DEFAULTS
 
-    config = _get_config()
-    config.setdefault("observe", {})
-    config["observe"].setdefault("tmux", {})
+    current = _request("GET", "/app/settings/api/observe")
+    defaults = current.get("defaults", {}).get("tmux", {})
+    tmux: dict[str, Any] = {}
 
     if capture_interval is not None:
-        min_val = OBSERVE_TMUX_DEFAULTS["capture_interval_min"]
-        max_val = OBSERVE_TMUX_DEFAULTS["capture_interval_max"]
+        min_val = defaults["capture_interval_min"]
+        max_val = defaults["capture_interval_max"]
         if capture_interval < min_val or capture_interval > max_val:
-            typer.echo(
-                f"tmux.capture_interval must be an integer between {min_val} and {max_val}",
-                err=True,
+            _exit_with(
+                "tmux.capture_interval must be an integer between "
+                f"{min_val} and {max_val}"
             )
-            raise typer.Exit(1)
-        config["observe"]["tmux"]["capture_interval"] = capture_interval
+        tmux["capture_interval"] = capture_interval
 
     if enabled is not None:
-        config["observe"]["tmux"]["enabled"] = enabled
+        tmux["enabled"] = enabled
 
-    _write_config(config)
-    typer.echo(json.dumps(config["observe"]["tmux"], indent=2))
+    response = _request(
+        "POST",
+        "/app/settings/api/observe",
+        json_body={"tmux": tmux},
+    )
+    _echo_json(response.get("tmux", {}))

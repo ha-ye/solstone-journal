@@ -9,7 +9,6 @@ import logging
 import os
 import platform
 import re
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -47,6 +46,7 @@ from solstone.convey.reasons import (
     ACTIVITY_PROTECTED,
     FACET_ALREADY_EXISTS,
     FACET_NOT_FOUND,
+    FILE_NOT_FOUND,
     FILE_READ_FAILED,
     INVALID_CONFIG_VALUE,
     INVALID_JSON_REQUEST,
@@ -84,7 +84,6 @@ from solstone.think.streams import list_streams
 from solstone.think.utils import (
     CorruptConfigError,
     get_journal,
-    get_project_root,
     now_ms,
 )
 from solstone.think.utils import get_config as get_journal_config
@@ -226,7 +225,7 @@ def get_config() -> Any:
         return _settings_operation_failed()
 
 
-@settings_bp.route("/api/config", methods=["PUT"])
+@settings_bp.route("/api/config", methods=["PUT", "POST"])
 def update_config() -> Any:
     """Update the journal configuration.
 
@@ -453,15 +452,6 @@ def update_config() -> Any:
                 params={"changed_fields": log_fields},
             )
 
-        if section in ("agent", "identity") and changed_fields:
-            project_root = Path(get_project_root())
-            subprocess.run(
-                ["make", "skills"],
-                cwd=project_root,
-                check=False,
-                capture_output=True,
-            )
-
         key_validation = config.get("providers", {}).get("key_validation", {})
         return jsonify(
             {
@@ -474,6 +464,101 @@ def update_config() -> Any:
         raise
     except Exception:
         logger.exception("error updating config")
+        return _settings_operation_failed()
+
+
+def _network_access_enabled(config: dict[str, Any]) -> bool:
+    return bool(config.get("convey", {}).get("allow_network_access", False))
+
+
+def _trust_localhost_enabled(config: dict[str, Any]) -> bool:
+    return bool(config.get("convey", {}).get("trust_localhost", True))
+
+
+def _host_url_status_value(config: dict[str, Any]) -> str:
+    from solstone.think.pairing.config import get_host_url
+
+    pairing_host_url = config.get("pairing", {}).get("host_url")
+    if isinstance(pairing_host_url, str) and pairing_host_url.strip():
+        return f"{get_host_url()} (manual override)"
+    if _network_access_enabled(config):
+        return f"{get_host_url()} (auto-detected)"
+    return f"{get_host_url()} (localhost — network access off)"
+
+
+@settings_bp.route("/api/convey/host-url", methods=["GET", "POST"])
+def convey_host_url() -> Any:
+    """Read or update the host URL advertised to remote devices."""
+
+    from solstone.think.pairing.config import (
+        InvalidHostUrl,
+        clear_host_url,
+        get_host_url,
+        set_host_url,
+        validate_host_url,
+    )
+
+    try:
+        if request.method == "GET":
+            return jsonify({"host_url": get_host_url()})
+
+        request_data = request.get_json()
+        if not isinstance(request_data, dict):
+            return error_response(
+                INVALID_REQUEST_VALUE,
+                detail="Expected JSON object with url or auto",
+            )
+
+        has_url = "url" in request_data and request_data.get("url") is not None
+        auto = bool(request_data.get("auto", False))
+        if sum((has_url, auto)) != 1:
+            return error_response(
+                INVALID_REQUEST_VALUE,
+                detail="Provide exactly one of url or auto",
+            )
+
+        if auto:
+            clear_host_url()
+            return jsonify({"host_url": get_host_url(), "cleared": True})
+
+        raw_url = request_data.get("url")
+        if not isinstance(raw_url, str):
+            return error_response(INVALID_REQUEST_VALUE, detail="url must be a string")
+        try:
+            canonical = validate_host_url(raw_url)
+        except InvalidHostUrl as exc:
+            return error_response(INVALID_CONFIG_VALUE, detail=str(exc))
+        set_host_url(canonical)
+        return jsonify({"host_url": canonical})
+    except Exception:
+        logger.exception("error updating convey host url")
+        return _settings_operation_failed()
+
+
+@settings_bp.route("/api/convey/status")
+def convey_status() -> Any:
+    """Return formatted Convey network and host URL status."""
+
+    try:
+        from solstone.convey.cli import _resolve_bind_host
+        from solstone.think.service import DEFAULT_SERVICE_PORT
+        from solstone.think.utils import read_service_port
+
+        config = get_journal_config()
+        bind_host = _resolve_bind_host()
+        port = read_service_port("convey") or DEFAULT_SERVICE_PORT
+        status_text = settings_copy.format_convey_status(
+            bind=f"{bind_host}:{port}",
+            host_url=_host_url_status_value(config),
+            network_access="on"
+            if _network_access_enabled(config)
+            else "localhost only",
+            password="set" if _convey_password_is_set(config) else "not set",
+            trust_localhost="yes" if _trust_localhost_enabled(config) else "no",
+        )
+        return jsonify({"status_text": status_text})
+    except Exception:
+        logger.exception("error loading convey status")
         return _settings_operation_failed()
 
 
@@ -913,68 +998,78 @@ def get_local_provider_status() -> Any:
         return _settings_operation_failed()
 
 
-@settings_bp.route("/api/validate-keys", methods=["POST"])
+def _compute_key_validation(config: dict[str, Any]) -> dict[str, Any]:
+    """Validate configured provider and service keys without mutating config."""
+
+    from solstone.think.providers import PROVIDER_METADATA
+    from solstone.think.providers import validate_key as _validate_key
+
+    env_config = config.get("env", {})
+
+    # Build reverse map: env_key -> provider name
+    env_to_provider = {
+        meta["env_key"]: name
+        for name, meta in PROVIDER_METADATA.items()
+        if "env_key" in meta
+    }
+
+    key_validation = {}
+
+    for env_var, provider in env_to_provider.items():
+        api_key = env_config.get(env_var, "")
+        if api_key:
+            result = _validate_key(provider, api_key)
+            result["timestamp"] = datetime.now(timezone.utc).isoformat()
+            key_validation[provider] = result
+
+    # Validate service tokens (Rev.ai, Plaud)
+    service_token_validators = {
+        "REVAI_ACCESS_TOKEN": ("revai", "solstone.observe.transcribe.revai"),
+        "PLAUD_ACCESS_TOKEN": ("plaud", "solstone.think.importers.plaud"),
+    }
+    for env_var, (val_key, module_path) in service_token_validators.items():
+        api_key = env_config.get(env_var, "")
+        if api_key:
+            import importlib
+
+            mod = importlib.import_module(module_path)
+            result = mod.validate_token(api_key)
+            result["timestamp"] = datetime.now(timezone.utc).isoformat()
+            key_validation[val_key] = result
+
+    # Validate vertex credentials if configured
+    providers_config = config.get("providers", {})
+    if providers_config.get("google_backend") == "vertex" and providers_config.get(
+        "vertex_credentials"
+    ):
+        from solstone.think.providers.google import validate_vertex_credentials
+
+        result = validate_vertex_credentials(
+            providers_config["vertex_credentials"],
+        )
+        result["timestamp"] = datetime.now(timezone.utc).isoformat()
+        key_validation["google"] = result
+
+    return key_validation
+
+
+@settings_bp.route("/api/validate-keys", methods=["GET", "POST"])
 def validate_all_keys() -> Any:
     """Re-validate all configured provider API keys.
 
     Reads keys from journal.json config (not environment), validates each
-    against the provider API, and stores results in providers.key_validation.
+    against the provider API, and stores results on POST only.
     """
     try:
-        from solstone.think.providers import PROVIDER_METADATA
-        from solstone.think.providers import validate_key as _validate_key
-
         config = get_journal_config()
-        env_config = config.get("env", {})
+        key_validation = _compute_key_validation(config)
 
-        # Build reverse map: env_key -> provider name
-        env_to_provider = {
-            meta["env_key"]: name
-            for name, meta in PROVIDER_METADATA.items()
-            if "env_key" in meta
-        }
+        if request.method == "GET":
+            return jsonify({"key_validation": key_validation})
 
         if "providers" not in config:
             config["providers"] = {}
-        key_validation = {}
-
-        for env_var, provider in env_to_provider.items():
-            api_key = env_config.get(env_var, "")
-            if api_key:
-                result = _validate_key(provider, api_key)
-                result["timestamp"] = datetime.now(timezone.utc).isoformat()
-                key_validation[provider] = result
-
-        # Validate service tokens (Rev.ai, Plaud)
-        SERVICE_TOKEN_VALIDATORS = {
-            "REVAI_ACCESS_TOKEN": ("revai", "solstone.observe.transcribe.revai"),
-            "PLAUD_ACCESS_TOKEN": ("plaud", "solstone.think.importers.plaud"),
-        }
-        for env_var, (val_key, module_path) in SERVICE_TOKEN_VALIDATORS.items():
-            api_key = env_config.get(env_var, "")
-            if api_key:
-                import importlib
-
-                mod = importlib.import_module(module_path)
-                result = mod.validate_token(api_key)
-                result["timestamp"] = datetime.now(timezone.utc).isoformat()
-                key_validation[val_key] = result
-
-        # Validate vertex credentials if configured
-        providers_config = config.get("providers", {})
-        if providers_config.get("google_backend") == "vertex" and providers_config.get(
-            "vertex_credentials"
-        ):
-            from solstone.think.providers.google import validate_vertex_credentials
-
-            result = validate_vertex_credentials(
-                providers_config["vertex_credentials"],
-            )
-            result["timestamp"] = datetime.now(timezone.utc).isoformat()
-            key_validation["google"] = result
-
         config["providers"]["key_validation"] = key_validation
-
         write_journal_config(config)
 
         return jsonify({"success": True, "key_validation": key_validation})
@@ -983,7 +1078,7 @@ def validate_all_keys() -> Any:
         return _settings_operation_failed()
 
 
-@settings_bp.route("/api/providers", methods=["PUT"])
+@settings_bp.route("/api/providers", methods=["PUT", "POST"])
 def update_providers() -> Any:
     """Update providers configuration.
 
@@ -1249,6 +1344,65 @@ def update_providers() -> Any:
 
     except Exception:
         logger.exception("error saving providers")
+        return _settings_operation_failed()
+
+
+@settings_bp.route("/api/vertex-credentials/import", methods=["POST"])
+def import_vertex_credentials() -> Any:
+    """Import Vertex service-account credentials from a server-side path."""
+
+    try:
+        request_data = request.get_json()
+        if not isinstance(request_data, dict):
+            return error_response(MISSING_REQUEST_BODY, detail="No data provided")
+
+        raw_path = request_data.get("path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            return error_response(MISSING_REQUIRED_FIELD, detail="path")
+
+        source = Path(raw_path)
+        if not source.exists():
+            return error_response(FILE_NOT_FOUND, detail=raw_path)
+
+        try:
+            creds_data = json.loads(source.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return error_response(INVALID_JSON_REQUEST, detail=raw_path)
+        except OSError:
+            return error_response(FILE_READ_FAILED, detail=raw_path)
+
+        required_fields = ("type", "project_id", "client_email", "private_key")
+        missing = [field for field in required_fields if field not in creds_data]
+        if missing:
+            return error_response(
+                MISSING_REQUIRED_FIELD,
+                detail=", ".join(missing),
+            )
+
+        creds_file = save_vertex_credentials(creds_data, Path(get_journal()))
+        config = get_journal_config()
+        config.setdefault("providers", {})
+        config["providers"]["vertex_credentials"] = str(creds_file)
+
+        validation = None
+        if not bool(request_data.get("skip_validation", False)):
+            validation = validate_vertex_credentials(str(creds_file))
+            validation["timestamp"] = datetime.now(timezone.utc).isoformat()
+            config["providers"].setdefault("key_validation", {})
+            config["providers"]["key_validation"]["google_vertex"] = validation
+
+        write_journal_config(config)
+
+        return jsonify(
+            {
+                "configured": True,
+                "email": creds_data.get("client_email", ""),
+                "path": str(creds_file),
+                "validation": validation,
+            }
+        )
+    except Exception:
+        logger.exception("error importing vertex credentials")
         return _settings_operation_failed()
 
 
@@ -1635,7 +1789,7 @@ def get_observe() -> Any:
         return _settings_operation_failed()
 
 
-@settings_bp.route("/api/observe", methods=["PUT"])
+@settings_bp.route("/api/observe", methods=["PUT", "POST"])
 def update_observe() -> Any:
     """Update observe configuration.
 

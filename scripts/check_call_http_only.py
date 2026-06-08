@@ -122,8 +122,11 @@ SHUTIL_FS_FUNCS: frozenset[str] = frozenset(
 ALLOWLIST: dict[tuple[str, str], int] = {
     ("solstone/apps/import/call.py", "fs"): 17,
     ("solstone/apps/import/call.py", "import"): 8,
-    ("solstone/apps/settings/call.py", "fs"): 3,
-    ("solstone/apps/settings/call.py", "import"): 27,
+    # Settings keeps only convey network-access enable/disable in-process:
+    # these are convey server-lifecycle operations that restart Convey to
+    # change its bind host, not journal-data access. Every other settings
+    # verb must use the Convey HTTP client.
+    ("solstone/apps/settings/call.py", "import"): 4,
     ("solstone/apps/support/call.py", "import"): 14,
     ("solstone/apps/timeline/call.py", "fs"): 4,
     ("solstone/apps/timeline/call.py", "import"): 3,

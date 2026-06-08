@@ -18,15 +18,6 @@ CONVEY_NETWORK_DISABLE_DONE = (
 CONVEY_RESTART_TIMEOUT = (
     "warning: restart did not complete in 15 seconds. check status with: sol status"
 )
-CONVEY_TRUST_ENABLE_DONE = (
-    "localhost trust enabled. localhost requests skip the password."
-)
-CONVEY_TRUST_DISABLE_DONE = (
-    "localhost trust disabled. localhost requests now require the password."
-)
-CONVEY_HOST_URL_SET_DONE = "host url set: {url}"
-CONVEY_HOST_URL_CLEARED = "host url cleared. auto-detect is active."
-CONVEY_HOST_URL_FLAG_CONFLICT = "error: choose exactly one of <url>, --auto, or --show"
 FACET_DETAIL_SUCCESS_HEADING = "{title} is ready"
 FACET_DETAIL_VALUE_FRAMING = (
     "{title} gathers the people, places, and things that share this context. "
@@ -58,9 +49,6 @@ def format_convey_status(
 
 
 __all__ = [
-    "CONVEY_HOST_URL_CLEARED",
-    "CONVEY_HOST_URL_FLAG_CONFLICT",
-    "CONVEY_HOST_URL_SET_DONE",
     "CONVEY_NETWORK_DISABLE_DONE",
     "CONVEY_NETWORK_DISABLE_PROGRESS",
     "CONVEY_NETWORK_ENABLE_DONE",
@@ -68,8 +56,6 @@ __all__ = [
     "CONVEY_REFUSE_NO_PASSWORD_NETWORK",
     "CONVEY_REFUSE_NO_PASSWORD_TRUST",
     "CONVEY_RESTART_TIMEOUT",
-    "CONVEY_TRUST_DISABLE_DONE",
-    "CONVEY_TRUST_ENABLE_DONE",
     "FACET_DETAIL_PRIMARY_CTA",
     "FACET_DETAIL_SECONDARY_CTA",
     "FACET_DETAIL_SUCCESS_HEADING",
