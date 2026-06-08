@@ -20,6 +20,7 @@ import signal
 from pathlib import Path
 from typing import Any, Callable
 
+from solstone.think.cogitate_contract import COGITATE_RUNTIME_PREAMBLE
 from solstone.think.providers.shared import JSONEventCallback, safe_raw
 from solstone.think.utils import get_project_root, now_ms
 
@@ -114,10 +115,11 @@ def assemble_prompt(
     system_instruction = config.get("system_instruction") or None
     if sol_tool_name:
         hint = cogitate_sol_tool_hint(sol_tool_name)
+        parts = [COGITATE_RUNTIME_PREAMBLE.rstrip("\n")]
         if system_instruction:
-            system_instruction = f"{system_instruction}\n\n{hint}"
-        else:
-            system_instruction = hint
+            parts.append(system_instruction)
+        parts.append(hint)
+        system_instruction = "\n\n".join(parts)
     if config.get("read_scope"):
         scope_hint = (
             "Limit filesystem reads to today's segment dir unless the task explicitly requires broader history. "
