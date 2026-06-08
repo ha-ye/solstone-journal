@@ -10,11 +10,13 @@ from importlib import import_module
 from typer.testing import CliRunner
 
 from solstone.apps.link import call as link_call
+from solstone.apps.link import routes as link_routes
 from solstone.apps.observer.utils import (
     load_observer_by_fingerprint,
     mint_pl_observer_record,
     save_observer,
 )
+from solstone.think.convey_client import ConveyClient
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.paths import authorized_clients_path
 
@@ -54,6 +56,11 @@ def _invoke(arg: str):
     return CliRunner().invoke(link_call.app, ["unpair", arg])
 
 
+def _configure_cli(env, monkeypatch) -> None:
+    client = ConveyClient(session=env.client, base_url="")
+    monkeypatch.setattr(link_call, "get_client", lambda: client)
+
+
 def _action_entries(env) -> list[dict]:
     actions_dir = env.journal / "config" / "actions"
     entries = []
@@ -66,8 +73,8 @@ def _action_entries(env) -> list[dict]:
 
 
 def test_unpair_phone_by_fingerprint_removes_authorized(link_env, monkeypatch) -> None:
-    monkeypatch.setattr(link_call, "require_solstone", lambda: None)
-    link_env()
+    env = link_env()
+    _configure_cli(env, monkeypatch)
     _add_authorized(PHONE_FINGERPRINT, "phone")
 
     result = _invoke(PHONE_FINGERPRINT)
@@ -84,10 +91,10 @@ def test_unpair_unknown_role_treats_as_phone_and_warns(
     caplog,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(link_call, "require_solstone", lambda: None)
-    link_env()
+    env = link_env()
+    _configure_cli(env, monkeypatch)
     _add_authorized(UNKNOWN_ROLE_FINGERPRINT, "tablet", role="tablet")
-    caplog.set_level(logging.WARNING, logger="solstone.apps.link.call")
+    caplog.set_level(logging.WARNING, logger="solstone.apps.link.routes")
 
     result = _invoke(UNKNOWN_ROLE_FINGERPRINT)
 
@@ -102,8 +109,8 @@ def test_unpair_observer_revokes_record_and_does_not_double_remove(
     link_env,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(link_call, "require_solstone", lambda: None)
-    link_env()
+    env = link_env()
+    _configure_cli(env, monkeypatch)
     mint_pl_observer_record(
         fingerprint=OBSERVER_FINGERPRINT,
         device_label="observer",
@@ -137,8 +144,8 @@ def test_unpair_observer_already_revoked_removes_authorized_and_warns(
     caplog,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(link_call, "require_solstone", lambda: None)
-    link_env()
+    env = link_env()
+    _configure_cli(env, monkeypatch)
     mint_pl_observer_record(
         fingerprint=OBSERVER_FINGERPRINT,
         device_label="observer-revoked",
@@ -150,7 +157,7 @@ def test_unpair_observer_already_revoked_removes_authorized_and_warns(
     observer["revoked_at"] = 123
     assert save_observer(observer) is True
     _add_authorized(OBSERVER_FINGERPRINT, "observer-revoked", role="observer")
-    caplog.set_level(logging.WARNING, logger="solstone.apps.link.call")
+    caplog.set_level(logging.WARNING, logger="solstone.apps.link.routes")
 
     result = _invoke(OBSERVER_FINGERPRINT)
 
@@ -169,10 +176,10 @@ def test_unpair_observer_missing_record_removes_authorized_and_warns(
     caplog,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(link_call, "require_solstone", lambda: None)
-    link_env()
+    env = link_env()
+    _configure_cli(env, monkeypatch)
     _add_authorized(OBSERVER_FINGERPRINT, "observer-missing", role="observer")
-    caplog.set_level(logging.WARNING, logger="solstone.apps.link.call")
+    caplog.set_level(logging.WARNING, logger="solstone.apps.link.routes")
 
     result = _invoke(OBSERVER_FINGERPRINT)
 
@@ -188,8 +195,8 @@ def test_unpair_observer_save_failure_removes_authorized_and_logs_error(
     caplog,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(link_call, "require_solstone", lambda: None)
-    link_env()
+    env = link_env()
+    _configure_cli(env, monkeypatch)
     mint_pl_observer_record(
         fingerprint=OBSERVER_FINGERPRINT,
         device_label="observer-save-fails",
@@ -200,7 +207,7 @@ def test_unpair_observer_save_failure_removes_authorized_and_logs_error(
         "solstone.apps.observer.utils.save_observer",
         lambda *_a, **_kw: False,
     )
-    caplog.set_level(logging.ERROR, logger="solstone.apps.link.call")
+    caplog.set_level(logging.ERROR, logger="solstone.apps.link.routes")
 
     result = _invoke("observer-save-fails")
 
@@ -219,8 +226,8 @@ def test_unpair_peer_revokes_source_removes_authorized_and_logs_action(
     link_env,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(link_call, "require_solstone", lambda: None)
     env = link_env()
+    _configure_cli(env, monkeypatch)
     mint_pl_journal_source_record(
         fingerprint=PEER_FINGERPRINT,
         device_label="peer",
@@ -253,8 +260,8 @@ def test_unpair_peer_already_revoked_removes_authorized_and_warns(
     caplog,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(link_call, "require_solstone", lambda: None)
     env = link_env()
+    _configure_cli(env, monkeypatch)
     mint_pl_journal_source_record(
         fingerprint=PEER_FINGERPRINT,
         device_label="peer-revoked",
@@ -266,7 +273,7 @@ def test_unpair_peer_already_revoked_removes_authorized_and_warns(
     source["revoked_at"] = 123
     assert save_journal_source(source) is True
     _add_authorized(PEER_FINGERPRINT, "peer-revoked", role="peer")
-    caplog.set_level(logging.WARNING, logger="solstone.apps.link.call")
+    caplog.set_level(logging.WARNING, logger="solstone.apps.link.routes")
 
     result = _invoke(PEER_FINGERPRINT)
 
@@ -286,10 +293,10 @@ def test_unpair_peer_missing_source_removes_authorized_and_warns(
     caplog,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(link_call, "require_solstone", lambda: None)
-    link_env()
+    env = link_env()
+    _configure_cli(env, monkeypatch)
     _add_authorized(PEER_FINGERPRINT, "peer-missing", role="peer")
-    caplog.set_level(logging.WARNING, logger="solstone.apps.link.call")
+    caplog.set_level(logging.WARNING, logger="solstone.apps.link.routes")
 
     result = _invoke(PEER_FINGERPRINT)
 
@@ -305,16 +312,16 @@ def test_unpair_peer_save_failure_removes_authorized_and_logs_error(
     caplog,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(link_call, "require_solstone", lambda: None)
     env = link_env()
+    _configure_cli(env, monkeypatch)
     mint_pl_journal_source_record(
         fingerprint=PEER_FINGERPRINT,
         device_label="peer-save-fails",
         paired_at=PAIRED_AT,
     )
     _add_authorized(PEER_FINGERPRINT, "peer-save-fails", role="peer")
-    monkeypatch.setattr(link_call, "save_journal_source", lambda *_a, **_kw: False)
-    caplog.set_level(logging.ERROR, logger="solstone.apps.link.call")
+    monkeypatch.setattr(link_routes, "save_journal_source", lambda *_a, **_kw: False)
+    caplog.set_level(logging.ERROR, logger="solstone.apps.link.routes")
 
     result = _invoke("peer-save-fails")
 

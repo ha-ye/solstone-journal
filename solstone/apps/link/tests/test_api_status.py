@@ -10,6 +10,8 @@ from typer.testing import CliRunner
 
 from solstone.apps.link import call as link_call
 from solstone.apps.link import routes as link_routes
+from solstone.convey import create_app
+from solstone.think.convey_client import ConveyClient
 from solstone.think.link.local_endpoints import LocalEndpoint
 from solstone.think.link.paths import LinkState
 from solstone.think.link.window import read_posture
@@ -389,8 +391,27 @@ def test_api_status_does_not_provision(link_env, monkeypatch) -> None:
 def test_cli_status_unprovisioned_does_not_write_state(tmp_path, monkeypatch) -> None:
     journal = tmp_path / "journal"
     journal.mkdir()
+    config_dir = journal / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "journal.json").write_text(
+        json.dumps(
+            {
+                "convey": {"trust_localhost": True},
+                "setup": {"completed_at": 1700000000000},
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    monkeypatch.setattr(link_call, "require_solstone", lambda: None)
+    app = create_app(journal=str(journal))
+    app.config["TESTING"] = True
+    test_client = app.test_client()
+    with test_client.session_transaction() as session:
+        session["logged_in"] = True
+        session.permanent = True
+    client = ConveyClient(session=test_client, base_url="")
+    monkeypatch.setattr(link_call, "get_client", lambda: client)
 
     def fail_save(self) -> None:
         raise AssertionError("LinkState.save should not be called by status")
