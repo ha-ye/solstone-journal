@@ -171,6 +171,11 @@ ACTIVITY_NOT_FOUND = Reason(
     "I couldn't find that activity in the facet.",
     404,
 )
+ACTIVITY_ALREADY_EXISTS = Reason(
+    "activity_already_exists",
+    "I couldn't create that activity because it already exists.",
+    409,
+)
 ACTIVITY_PROTECTED = Reason(
     "activity_protected",
     "I can't remove that always-on activity.",

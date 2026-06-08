@@ -12,6 +12,9 @@ from flask import Blueprint, jsonify, redirect, render_template, request, url_fo
 
 from solstone.convey import state
 from solstone.convey.reasons import (
+    ACTIVITIES_BUSY,
+    ACTIVITY_ALREADY_EXISTS,
+    ACTIVITY_NOT_FOUND,
     FILE_NOT_FOUND,
     FILE_READ_FAILED,
     INVALID_DAY,
@@ -25,13 +28,24 @@ from solstone.convey.utils import (
     respond_collection,
 )
 from solstone.think.activities import (
+    append_activity_record,
+    append_edit,
     estimate_duration_minutes,
+    format_activities,
     get_activity_by_id,
+    get_activity_record,
     get_default_activity_by_id,
     load_activity_records,
+    make_activity_id,
+    mute_activity_record,
+    unmute_activity_record,
+    update_activity_record,
 )
-from solstone.think.facets import get_facets
-from solstone.think.utils import segment_parse
+from solstone.think.entities.loading import load_entities
+from solstone.think.entities.matching import find_matching_entity
+from solstone.think.facets import get_facets, log_call_action
+from solstone.think.journal_io import LockTimeout
+from solstone.think.utils import now_ms, segment_parse
 
 activities_bp = Blueprint(
     "app:activities",
@@ -100,6 +114,203 @@ def activities_stats(month: str) -> Any:
             INVALID_MONTH,
             detail="Invalid month format, expected YYYYMM",
         )
+
+
+def _record_payload(record: dict[str, Any]) -> dict[str, Any]:
+    chunks, _meta = format_activities([record])
+    return {"record": record, "markdown": chunks[0]["markdown"]}
+
+
+def _resolve_participation_entity_ids(
+    entries: list[dict[str, Any]], *, facet: str, day: str
+) -> list[dict[str, Any]]:
+    entities_list = load_entities(facet=facet, day=day)
+
+    resolved_entries = []
+    for entry in entries:
+        resolved = dict(entry)
+        match = find_matching_entity(resolved["name"], entities_list)
+        resolved["entity_id"] = match.get("id") if match else None
+        resolved_entries.append(resolved)
+
+    return resolved_entries
+
+
+@activities_bp.route("/api/day/<day>/records")
+def activities_day_records(day: str) -> Any:
+    """Return CLI-facing activity records plus per-record markdown."""
+    facet_filter = request.args.get("facet")
+    include_hidden = request.args.get("include_hidden") == "1"
+    facet_names = [facet_filter] if facet_filter else list(get_facets().keys())
+
+    items = []
+    for facet in facet_names:
+        for record in load_activity_records(facet, day, include_hidden=include_hidden):
+            rec = {**record, "facet": facet, "day": day}
+            items.append(_record_payload(rec))
+    return jsonify({"items": items})
+
+
+@activities_bp.route("/api/day/<day>/record/<span_id>")
+def activities_get_record(day: str, span_id: str) -> Any:
+    """Return one CLI-facing activity record plus markdown."""
+    facet = request.args.get("facet") or ""
+    record = get_activity_record(facet, day, span_id)
+    if record is None:
+        return error_response(ACTIVITY_NOT_FOUND, detail=span_id)
+    return jsonify(_record_payload(record))
+
+
+@activities_bp.route("/api/day/<day>/records", methods=["POST"])
+def activities_create_record(day: str) -> Any:
+    """Create one CLI-facing activity record."""
+    facet = request.args.get("facet") or ""
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        body = {}
+
+    title = str(body.get("title") or "").strip()
+    activity_type = str(body.get("activity") or "").strip()
+    if not get_activity_by_id(facet, activity_type):
+        return error_response(ACTIVITY_NOT_FOUND, detail=activity_type)
+
+    if "since_segment" in body and body["since_segment"] is not None:
+        anchor = str(body["since_segment"])
+        segments = [anchor]
+    else:
+        anchor = f"user_{now_ms()}"
+        segments = []
+
+    description = str(body.get("description") or title).strip() or title
+    details = str(body.get("details") or "")
+    source = str(body.get("source") or "user")
+    participation_provided = "participation" in body
+    participation: list[dict[str, Any]] = []
+    if participation_provided:
+        raw_participation = body.get("participation")
+        participation = raw_participation if isinstance(raw_participation, list) else []
+        participation = _resolve_participation_entity_ids(
+            participation, facet=facet, day=day
+        )
+
+    actor = "cogitate:activities" if source == "cogitate" else "cli:create"
+    span_id = make_activity_id(activity_type, anchor)
+    record: dict[str, Any] = {
+        "id": span_id,
+        "activity": activity_type,
+        "title": title,
+        "description": description,
+        "details": details,
+        "segments": segments,
+        "active_entities": [],
+        "created_at": now_ms(),
+        "source": source,
+        "hidden": False,
+        "edits": [],
+    }
+    if participation_provided:
+        record["participation"] = participation
+
+    edit_fields = ["activity", "title", "description", "details", "source"]
+    if participation_provided:
+        edit_fields.append("participation")
+
+    record = append_edit(
+        record,
+        actor=actor,
+        fields=edit_fields,
+        note="created",
+    )
+
+    try:
+        created = append_activity_record(facet, day, record)
+    except LockTimeout:
+        return error_response(ACTIVITIES_BUSY)
+
+    if not created:
+        return error_response(ACTIVITY_ALREADY_EXISTS, detail=span_id)
+
+    log_call_action(
+        facet=facet,
+        action="activity_create",
+        params={"id": span_id, "activity": activity_type, "source": source},
+        day=day,
+    )
+    return jsonify(_record_payload(record))
+
+
+@activities_bp.route("/api/day/<day>/record/<span_id>/update", methods=["POST"])
+def activities_update_record(day: str, span_id: str) -> Any:
+    """Update one CLI-facing activity record."""
+    facet = request.args.get("facet") or ""
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        body = {}
+    patch = body.get("patch")
+    note = body.get("note")
+    patch = patch if isinstance(patch, dict) else {}
+    note = str(note or "")
+
+    try:
+        updated = update_activity_record(
+            facet,
+            day,
+            span_id,
+            patch,
+            actor="cli:update",
+            note=note,
+        )
+    except LockTimeout:
+        return error_response(ACTIVITIES_BUSY)
+    if updated is None:
+        return error_response(ACTIVITY_NOT_FOUND, detail=span_id)
+
+    log_call_action(
+        facet=facet,
+        action="activity_update",
+        params={"id": span_id, "fields": sorted(patch)},
+        day=day,
+    )
+    return jsonify(_record_payload(updated))
+
+
+def _set_record_muted(day: str, span_id: str, *, hidden: bool) -> Any:
+    facet = request.args.get("facet") or ""
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        body = {}
+    raw_reason = body.get("reason")
+    reason = raw_reason if isinstance(raw_reason, str) else None
+    actor = "cli:mute" if hidden else "cli:unmute"
+    action = "activity_mute" if hidden else "activity_unmute"
+    mutator = mute_activity_record if hidden else unmute_activity_record
+
+    try:
+        record = mutator(facet, day, span_id, actor=actor, reason=reason)
+    except LockTimeout:
+        return error_response(ACTIVITIES_BUSY)
+    if record is None:
+        return error_response(ACTIVITY_NOT_FOUND, detail=span_id)
+
+    log_call_action(
+        facet=facet,
+        action=action,
+        params={"id": span_id, "reason": reason},
+        day=day,
+    )
+    return jsonify(_record_payload(record))
+
+
+@activities_bp.route("/api/day/<day>/record/<span_id>/mute", methods=["POST"])
+def activities_mute_record(day: str, span_id: str) -> Any:
+    """Mute one CLI-facing activity record."""
+    return _set_record_muted(day, span_id, hidden=True)
+
+
+@activities_bp.route("/api/day/<day>/record/<span_id>/unmute", methods=["POST"])
+def activities_unmute_record(day: str, span_id: str) -> Any:
+    """Unmute one CLI-facing activity record."""
+    return _set_record_muted(day, span_id, hidden=False)
 
 
 def _enrich_activity_record(
