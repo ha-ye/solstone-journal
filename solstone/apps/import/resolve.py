@@ -26,7 +26,6 @@ from solstone.think.journal_config import write_journal_config
 from solstone.think.journal_io import atomic_replace
 from solstone.think.utils import get_config, get_journal
 
-from .facet_ingest import _parse_path, _remap_entity_ids, _serialize_jsonl
 from .ingest import _append_decision, _categorize_field, _write_state_atomic
 
 
@@ -186,6 +185,8 @@ def _parse_jsonl_text(source_data: str) -> list[dict[str, Any]]:
 def _append_jsonl_items(target_path: Path, items: list[dict[str, Any]]) -> None:
     if not items:
         return
+    from .facet_ingest import _serialize_jsonl
+
     target_path.parent.mkdir(parents=True, exist_ok=True)
     with open(target_path, "ab") as handle:
         handle.write(_serialize_jsonl(items))
@@ -411,6 +412,8 @@ def resolve_staged_facet(
 
         source_path = str(payload.get("source_path", ""))
         source_data = str(payload.get("source_data", ""))
+
+        from .facet_ingest import _parse_path, _remap_entity_ids
 
         normalized_path, path_info = _parse_path(source_path, file_type)
         if file_type == "entity_relationship":

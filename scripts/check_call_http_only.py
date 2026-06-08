@@ -120,8 +120,6 @@ SHUTIL_FS_FUNCS: frozenset[str] = frozenset(
 # (posix-relative-path, kind) -> allowed count. Ratchets toward empty: lower a
 # count as occurrences are converted; stale entries fail until lowered/removed.
 ALLOWLIST: dict[tuple[str, str], int] = {
-    ("solstone/apps/import/call.py", "fs"): 17,
-    ("solstone/apps/import/call.py", "import"): 8,
     # Settings keeps only convey network-access enable/disable in-process:
     # these are convey server-lifecycle operations that restart Convey to
     # change its bind host, not journal-data access. Every other settings

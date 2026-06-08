@@ -4,29 +4,36 @@
 from __future__ import annotations
 
 import json
+import os
 from importlib import import_module
 from pathlib import Path
 
 import pytest
+import requests
 from typer.testing import CliRunner
 
 import solstone.convey.state as convey_state
 import solstone.think.utils as think_utils
-from solstone.think.call import call_app
+from solstone.think.convey_client import ConveyClient
 from solstone.think.entities.journal import (
     load_journal_entity,
     save_journal_entity,
 )
 from solstone.think.entities.relationships import load_facet_relationship
+from tests._baseline_harness import make_logged_in_test_client
 
+import_call = import_module("solstone.apps.import.call")
+import_resolve = import_module("solstone.apps.import.resolve")
 journal_sources = import_module("solstone.apps.import.journal_sources")
 
+app = import_call.app
 create_state_directory = journal_sources.create_state_directory
 generate_key = journal_sources.generate_key
 get_state_directory = journal_sources.get_state_directory
 save_journal_source = journal_sources.save_journal_source
-
 runner = CliRunner()
+
+FROZEN_TS = "2026-04-14T00:00:00+00:00"
 
 
 def _source(name="test-source", key=None, **overrides):
@@ -57,6 +64,7 @@ def import_env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(convey_state, "journal_root", str(tmp_path), raising=False)
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setenv("SOL_SKIP_SUPERVISOR_CHECK", "1")
     think_utils._journal_path_cache = None
     (tmp_path / "apps" / "import" / "journal_sources").mkdir(
         parents=True, exist_ok=True
@@ -68,6 +76,16 @@ def import_env(tmp_path, monkeypatch):
     save_journal_source(source)
     key_prefix = key[:8]
     create_state_directory(tmp_path, key_prefix)
+    monkeypatch.setattr(import_resolve, "_now_iso", lambda: FROZEN_TS)
+
+    def _client() -> ConveyClient:
+        journal = Path(os.environ["SOLSTONE_JOURNAL"])
+        return ConveyClient(
+            session=make_logged_in_test_client(journal),
+            base_url="",
+        )
+
+    monkeypatch.setattr("solstone.apps.import.call.get_client", _client)
 
     return {
         "root": tmp_path,
@@ -104,9 +122,7 @@ def _write_entity_state(key_prefix: str, state: dict) -> None:
 
 
 def test_list_staged_empty_state(import_env):
-    result = runner.invoke(
-        call_app, ["import", "list-staged", "--source", "test-source"]
-    )
+    result = runner.invoke(app, ["list-staged", "--source", "test-source"])
 
     assert result.exit_code == 0
     assert result.stdout.strip() == ""
@@ -136,8 +152,8 @@ def test_list_staged_with_staged_entities(import_env):
     )
 
     result = runner.invoke(
-        call_app,
-        ["import", "list-staged", "--source", "test-source", "--area", "entities"],
+        app,
+        ["list-staged", "--source", "test-source", "--area", "entities"],
     )
 
     assert result.exit_code == 0
@@ -174,8 +190,8 @@ def test_list_staged_with_config_diff(import_env):
     )
 
     result = runner.invoke(
-        call_app,
-        ["import", "list-staged", "--source", "test-source", "--area", "config"],
+        app,
+        ["list-staged", "--source", "test-source", "--area", "config"],
     )
 
     assert result.exit_code == 0
@@ -220,8 +236,8 @@ def test_list_staged_with_staged_facets(import_env):
     )
 
     result = runner.invoke(
-        call_app,
-        ["import", "list-staged", "--source", "test-source", "--area", "facets"],
+        app,
+        ["list-staged", "--source", "test-source", "--area", "facets"],
     )
 
     assert result.exit_code == 0
@@ -282,9 +298,8 @@ def test_resolve_entity_merge(import_env):
     )
 
     result = runner.invoke(
-        call_app,
+        app,
         [
-            "import",
             "resolve-entity",
             "test-entity",
             "merge",
@@ -311,6 +326,7 @@ def test_resolve_entity_merge(import_env):
     log_entries = _read_log(
         get_state_directory(import_env["key_prefix"]) / "entities" / "log.jsonl"
     )
+    assert log_entries[-1]["ts"] == FROZEN_TS
     assert log_entries[-1]["action"] == "resolved_merge"
     assert log_entries[-1]["resolved_by"] == "talent"
 
@@ -342,9 +358,8 @@ def test_resolve_entity_create(import_env):
     )
 
     result = runner.invoke(
-        call_app,
+        app,
         [
-            "import",
             "resolve-entity",
             "test-entity",
             "create",
@@ -396,9 +411,8 @@ def test_resolve_entity_create_principal_conflict(import_env):
     )
 
     result = runner.invoke(
-        call_app,
+        app,
         [
-            "import",
             "resolve-entity",
             "new-principal",
             "create",
@@ -435,8 +449,8 @@ def test_resolve_entity_skip(import_env):
     )
 
     result = runner.invoke(
-        call_app,
-        ["import", "resolve-entity", "test-entity", "skip", "--source", "test-source"],
+        app,
+        ["resolve-entity", "test-entity", "skip", "--source", "test-source"],
     )
 
     assert result.exit_code == 0
@@ -446,6 +460,7 @@ def test_resolve_entity_skip(import_env):
     log_entries = _read_log(
         get_state_directory(import_env["key_prefix"]) / "entities" / "log.jsonl"
     )
+    assert log_entries[-1]["ts"] == FROZEN_TS
     assert log_entries[-1]["action"] == "resolved_skip"
     assert log_entries[-1]["resolved_by"] == "talent"
 
@@ -472,9 +487,8 @@ def test_resolve_config_apply(import_env):
     )
 
     result = runner.invoke(
-        call_app,
+        app,
         [
-            "import",
             "resolve-config",
             "identity.name",
             "apply",
@@ -491,6 +505,7 @@ def test_resolve_config_apply(import_env):
     log_entries = _read_log(
         get_state_directory(import_env["key_prefix"]) / "config" / "log.jsonl"
     )
+    assert log_entries[-1]["ts"] == FROZEN_TS
     assert log_entries[-1]["action"] == "config_field_applied"
     assert log_entries[-1]["resolved_by"] == "talent"
 
@@ -516,9 +531,8 @@ def test_resolve_config_keep(import_env):
     )
 
     result = runner.invoke(
-        call_app,
+        app,
         [
-            "import",
             "resolve-config",
             "retention.days",
             "keep",
@@ -563,9 +577,8 @@ def test_resolve_config_all_transferable(import_env):
     )
 
     result = runner.invoke(
-        call_app,
+        app,
         [
-            "import",
             "resolve-config-all",
             "--source",
             "test-source",
@@ -615,9 +628,8 @@ def test_resolve_facet_apply_unmapped_entity(import_env):
     )
 
     result = runner.invoke(
-        call_app,
+        app,
         [
-            "import",
             "resolve-staged-facet",
             staged_file,
             "--apply",
@@ -636,6 +648,7 @@ def test_resolve_facet_apply_unmapped_entity(import_env):
     log_entries = _read_log(
         get_state_directory(import_env["key_prefix"]) / "facets" / "log.jsonl"
     )
+    assert log_entries[-1]["ts"] == FROZEN_TS
     assert log_entries[-1]["action"] == "resolved_apply"
     assert log_entries[-1]["resolved_by"] == "talent"
 
@@ -661,9 +674,8 @@ def test_resolve_facet_apply_facet_json_conflict(import_env):
     )
 
     result = runner.invoke(
-        call_app,
+        app,
         [
-            "import",
             "resolve-staged-facet",
             staged_file,
             "--apply",
@@ -679,6 +691,7 @@ def test_resolve_facet_apply_facet_json_conflict(import_env):
     log_entries = _read_log(
         get_state_directory(import_env["key_prefix"]) / "facets" / "log.jsonl"
     )
+    assert log_entries[-1]["ts"] == FROZEN_TS
     assert log_entries[-1]["action"] == "resolved_apply"
     assert log_entries[-1]["item_id"] == "personal/facet.json"
     assert log_entries[-1]["resolved_by"] == "talent"
@@ -710,9 +723,8 @@ def test_resolve_facet_unmapped_entity_fails_without_mapping(import_env):
     )
 
     result = runner.invoke(
-        call_app,
+        app,
         [
-            "import",
             "resolve-staged-facet",
             staged_file,
             "--apply",
@@ -723,8 +735,8 @@ def test_resolve_facet_unmapped_entity_fails_without_mapping(import_env):
 
     assert result.exit_code == 1
     assert (
-        "Entity source_entity has no mapping yet. Run entity review first."
-        in result.stderr
+        result.stderr
+        == "Error: Entity source_entity has no mapping yet. Run entity review first.\n"
     )
     assert staged_path.exists()
 
@@ -755,9 +767,8 @@ def test_resolve_facet_skip(import_env):
     )
 
     result = runner.invoke(
-        call_app,
+        app,
         [
-            "import",
             "resolve-staged-facet",
             staged_file,
             "--skip",
@@ -790,12 +801,12 @@ def test_resolve_staged_facet_requires_exactly_one_mode_flag(import_env):
     )
 
     result = runner.invoke(
-        call_app,
-        ["import", "resolve-staged-facet", staged_file, "--source", "test-source"],
+        app,
+        ["resolve-staged-facet", staged_file, "--source", "test-source"],
     )
 
     assert result.exit_code == 1
-    assert "Exactly one of --apply or --skip is required." in result.stderr
+    assert result.stderr == "Error: Exactly one of --apply or --skip is required.\n"
 
 
 def test_resolve_staged_facet_rejects_both_apply_and_skip(import_env):
@@ -817,9 +828,8 @@ def test_resolve_staged_facet_rejects_both_apply_and_skip(import_env):
     )
 
     result = runner.invoke(
-        call_app,
+        app,
         [
-            "import",
             "resolve-staged-facet",
             staged_file,
             "--apply",
@@ -830,15 +840,14 @@ def test_resolve_staged_facet_rejects_both_apply_and_skip(import_env):
     )
 
     assert result.exit_code == 1
-    assert "Exactly one of --apply or --skip is required." in result.stderr
+    assert result.stderr == "Error: Exactly one of --apply or --skip is required.\n"
 
 
 def test_resolve_facet_command_removed(import_env):
     legacy_command = "resolve" + "-facet"
     result = runner.invoke(
-        call_app,
+        app,
         [
-            "import",
             legacy_command,
             "personal/facet_json/facet.json.staged.json",
             "--apply",
@@ -852,12 +861,35 @@ def test_resolve_facet_command_removed(import_env):
 
 def test_resolve_source_not_found(import_env):
     result = runner.invoke(
-        call_app,
-        ["import", "list-staged", "--source", "nonexistent"],
+        app,
+        ["list-staged", "--source", "nonexistent"],
     )
 
     assert result.exit_code == 1
     assert (
-        "Import source 'nonexistent' not found. Check available sources in "
-        "~/.local/share/solstone/app-storage/import/journal_sources/."
-    ) in result.stderr
+        result.stderr
+        == "Error: Import source 'nonexistent' not found. Check available sources in "
+        "~/.local/share/solstone/app-storage/import/journal_sources/.\n"
+    )
+
+
+def test_convey_down_prints_require_solstone_message(monkeypatch) -> None:
+    class DownSession:
+        def get(self, _url):
+            raise requests.exceptions.ConnectionError()
+
+        def post(self, _url, json=None):
+            raise requests.exceptions.ConnectionError()
+
+    client = ConveyClient(session=DownSession(), base_url="http://localhost:5015")
+    monkeypatch.setattr("solstone.apps.import.call.get_client", lambda: client)
+    monkeypatch.delenv("SOL_SKIP_SUPERVISOR_CHECK", raising=False)
+    monkeypatch.delenv("SOL_SUPERVISOR_SPAWNED", raising=False)
+
+    result = CliRunner().invoke(app, ["list-staged", "--source", "test-source"])
+
+    assert result.exit_code == 1
+    assert (
+        result.stderr
+        == "sol: solstone isn't running. Start it with 'journal up' and retry.\n"
+    )
