@@ -80,7 +80,6 @@ MODULE_PRIMITIVES: dict[str, frozenset[str]] = {
 
 OWNER_FILES: frozenset[str] = frozenset(
     {
-        "solstone/apps/entities/call.py",
         "solstone/apps/chat/config.py",
         "solstone/convey/config.py",
         "solstone/apps/speakers/attribution.py",

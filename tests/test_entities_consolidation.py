@@ -6,13 +6,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from typer.testing import CliRunner
-
-from solstone.think.call import call_app
 from solstone.think.entities.consolidation import consolidate_detected_entities
 from solstone.think.entities.journal import save_journal_entity
-
-runner = CliRunner()
 
 
 def _seed_detection(
@@ -124,10 +119,3 @@ def test_consolidate_is_idempotent(journal_copy):
 
     assert first == 1
     assert second == 0
-
-
-def test_cli_consolidate_dispatches(journal_copy):
-    result = runner.invoke(call_app, ["entities", "consolidate", "--full"])
-
-    assert result.exit_code == 0
-    assert "Wrote" in result.stdout

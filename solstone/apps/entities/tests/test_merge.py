@@ -6,16 +6,33 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
 import numpy as np
+import pytest
 from typer.testing import CliRunner
 
 from solstone.apps.entities.call import app as entities_app
+from solstone.think.convey_client import ConveyClient
 from solstone.think.entities import merge as merge_mod
 from solstone.think.entities.journal import load_journal_entity
+from tests._baseline_harness import make_logged_in_test_client
 
 runner = CliRunner()
 STREAM = "test"
+
+
+@pytest.fixture(autouse=True)
+def _entities_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    def client() -> ConveyClient:
+        journal = Path(os.environ["SOLSTONE_JOURNAL"])
+        return ConveyClient(
+            session=make_logged_in_test_client(journal),
+            base_url="",
+        )
+
+    monkeypatch.setattr("solstone.apps.entities.call.get_client", client)
 
 
 def _read_json(path):

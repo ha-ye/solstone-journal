@@ -4,104 +4,172 @@
 """CLI commands for entity management.
 
 Auto-discovered by ``think.call`` and mounted as ``sol call entities ...``.
+Every verb reaches the journal only over HTTP via the Convey client; this
+module imports no journal/domain function and performs no filesystem I/O.
 """
 
 import json
+import os
 import re
-import shutil
-from pathlib import Path
 
 import typer
 
-from solstone.convey.reasons import ENTITY_BUSY
-from solstone.think.curation import (
-    accept_entity_candidate,
-    dismiss_entity_candidate,
-    merge_preview_fields,
+from solstone.convey.reasons import (
+    ENTITY_ALIAS_CONFLICT,
+    ENTITY_ALREADY_EXISTS,
+    ENTITY_BLOCKED,
+    ENTITY_BUSY,
+    ENTITY_NOT_FOUND,
+    ENTITY_OPERATION_FAILED,
+    INVALID_ENTITY_TYPE,
+    INVALID_REQUEST_VALUE,
 )
-from solstone.think.entities.consolidation import consolidate_detected_entities
-from solstone.think.entities.core import entity_slug, is_valid_entity_type
-from solstone.think.entities.errors import (
-    AkaConflictError,
-    EntityBlockedError,
-    EntityExistsError,
-    EntityNotFoundError,
-)
-from solstone.think.entities.loading import load_entities
-from solstone.think.entities.matching import resolve_entity
-from solstone.think.entities.observations import (
-    add_observation,
-    load_observations,
-    save_observations,
-)
-from solstone.think.entities.relationships import (
-    entity_memory_path,
-    load_facet_relationship,
-    save_facet_relationship,
-)
-from solstone.think.entities.review_candidates import (
-    find_candidate,
-    load_candidates,
-    locked_modify_candidates,
-    utc_now_iso,
-)
-from solstone.think.entities.saving import (
-    add_entity_aka,
-    attach_or_reactivate_entity,
-    save_detected_entity,
-    update_detected_entity,
-    update_facet_entity_description,
-)
-from solstone.think.facets import log_call_action
-from solstone.think.indexer.journal import search_entities
-from solstone.think.journal_io import LockTimeout
-from solstone.think.utils import (
-    get_journal,
-    require_solstone,
-    resolve_sol_day,
-    resolve_sol_facet,
-)
+from solstone.think.convey_client import ConveyClientError, get_client
 
 app = typer.Typer(help="Entity management.")
 
 
-@app.callback()
-def _require_up() -> None:
-    require_solstone()
+def _get_sol_facet() -> str | None:
+    return os.environ.get("SOL_FACET") or None
 
 
-def _resolve_or_exit(facet: str, entity: str) -> dict:
-    """Resolve entity or exit with CLI error."""
-    resolved, candidates = resolve_entity(facet, entity)
-    if resolved:
-        return resolved
-
-    blocked_match, _ = resolve_entity(facet, entity, include_blocked=True)
-    if blocked_match and blocked_match.get("blocked"):
-        name = blocked_match.get("name", entity)
-        typer.echo(f"Error: Entity '{name}' is blocked.", err=True)
-        raise typer.Exit(1)
-
-    if candidates:
-        names = ", ".join(c.get("name", "") for c in candidates[:3])
-        typer.echo(
-            f"Error: Entity '{entity}' not found. Did you mean: {names}", err=True
-        )
-        raise typer.Exit(1)
-
-    typer.echo(f"Error: Entity '{entity}' not found in facet '{facet}'.", err=True)
+def _resolve_sol_day(arg: str | None) -> str:
+    if arg:
+        return arg
+    env = os.environ.get("SOL_DAY") or None
+    if env:
+        return env
+    typer.echo("Error: day is required (pass as argument or set SOL_DAY).", err=True)
     raise typer.Exit(1)
 
 
-def _validate_facet_or_exit(facet: str, label: str) -> None:
-    """Exit if the facet directory does not exist."""
-    facet_path = Path(get_journal()) / "facets" / facet
-    if not facet_path.is_dir():
-        typer.echo(
-            f"Error: Facet '{facet}' ({label}) does not exist.",
-            err=True,
+def _resolve_sol_facet(arg: str | None) -> str:
+    if arg:
+        return arg
+    env = _get_sol_facet()
+    if env:
+        return env
+    typer.echo(
+        "Error: facet is required (pass as argument or set SOL_FACET).", err=True
+    )
+    raise typer.Exit(1)
+
+
+def _exit_with(message: str) -> None:
+    typer.echo(message, err=True)
+    raise typer.Exit(1)
+
+
+def _params(**values: object) -> dict[str, object]:
+    return {key: value for key, value in values.items() if value is not None}
+
+
+def _request(
+    method: str,
+    path: str,
+    *,
+    params: dict[str, object] | None = None,
+    json_body: dict[str, object] | None = None,
+) -> object:
+    return get_client().request(method, path, params=params, json=json_body)
+
+
+def _handle_entity_error(
+    err: ConveyClientError,
+    *,
+    entity: str | None = None,
+    type_: str | None = None,
+) -> None:
+    detail = err.detail or ""
+    if err.reason_code == ENTITY_BUSY.code:
+        _exit_with(ENTITY_BUSY.message)
+    if err.reason_code == INVALID_ENTITY_TYPE.code and type_ is not None:
+        _exit_with(f"Error: Invalid entity type '{type_}'.")
+    if err.reason_code == ENTITY_BLOCKED.code:
+        name = detail or entity or "entity"
+        _exit_with(f"Error: Entity '{name}' is blocked.")
+    if err.reason_code == ENTITY_NOT_FOUND.code:
+        name = detail or entity or "entity"
+        _exit_with(f"Error: Entity '{name}' not found.")
+    if err.reason_code == ENTITY_ALIAS_CONFLICT.code and detail:
+        _exit_with(f"Error: {detail}")
+    if err.reason_code in {
+        INVALID_REQUEST_VALUE.code,
+        ENTITY_OPERATION_FAILED.code,
+        ENTITY_ALREADY_EXISTS.code,
+    }:
+        if detail:
+            _exit_with(f"Error: {detail}")
+
+    typer.echo(err.error, err=True)
+    raise typer.Exit(1)
+
+
+def _render_resolve_error(facet: str, entity: str, body: dict) -> None:
+    if body.get("blocked"):
+        blocked_name = body.get("blocked_name") or entity
+        _exit_with(f"Error: Entity '{blocked_name}' is blocked.")
+    candidates = body.get("candidates") or []
+    if candidates:
+        names = ", ".join(str(c.get("name", "")) for c in candidates[:3])
+        _exit_with(f"Error: Entity '{entity}' not found. Did you mean: {names}")
+    _exit_with(f"Error: Entity '{entity}' not found in facet '{facet}'.")
+
+
+def _resolved_from_body_or_exit(facet: str, entity: str, body: dict) -> dict:
+    resolved = body.get("resolved")
+    if isinstance(resolved, dict):
+        return resolved
+    _render_resolve_error(facet, entity, body)
+    raise typer.Exit(1)
+
+
+def _resolve_entity_or_exit(facet: str, entity: str) -> dict:
+    try:
+        body = _request(
+            "GET",
+            f"/app/entities/api/{facet}/resolve",
+            params={"name": entity},
         )
-        raise typer.Exit(1)
+    except ConveyClientError as err:
+        _handle_entity_error(err, entity=entity)
+    if not isinstance(body, dict):
+        _exit_with("I couldn't read the journal response.")
+    return _resolved_from_body_or_exit(facet, entity, body)
+
+
+def _echo_merge_candidate_error(result: dict) -> None:
+    typer.echo(f"Error: {result.get('error', 'operation failed')}", err=True)
+    raise typer.Exit(1)
+
+
+def _echo_merge_preview(fields: dict) -> None:
+    typer.echo("Merge preview:")
+    akas = fields["akas_added"]
+    if akas:
+        typer.echo(f"  aliases added: {', '.join(akas)}")
+    else:
+        typer.echo("  aliases added: none")
+    typer.echo(f"  emails added: {fields['emails_added_count']}")
+    typer.echo(
+        "  facet links: "
+        f"{fields['facet_moved_count']} moved, "
+        f"{fields['facet_merged_count']} merged"
+    )
+    typer.echo(f"  observations moved: {fields['observations_appended']}")
+    typer.echo(
+        "  speaker labels updated: "
+        f"{fields['labels_rewritten']} labels, "
+        f"{fields['corrections_rewritten']} corrections"
+    )
+    typer.echo(
+        "  voice samples moved: "
+        f"{fields['voiceprints_added']} added, "
+        f"{fields['voiceprints_target_total']} total"
+    )
+    errors = fields["segment_errors"]
+    if errors:
+        typer.echo(f"  segment update errors: {len(errors)}")
 
 
 @app.command("list")
@@ -112,8 +180,20 @@ def list_entities(
     ),
 ) -> None:
     """List entities for a facet."""
-    facet = resolve_sol_facet(facet)
-    entities = load_entities(facet, day)
+    facet = _resolve_sol_facet(facet)
+    try:
+        if day is None:
+            body = _request("GET", f"/app/entities/api/{facet}")
+            entities = body.get("attached", []) if isinstance(body, dict) else []
+        else:
+            body = _request(
+                "GET",
+                f"/app/entities/api/{facet}/detected",
+                params={"day": day},
+            )
+            entities = body.get("items", []) if isinstance(body, dict) else []
+    except ConveyClientError as err:
+        _handle_entity_error(err)
 
     if not entities:
         typer.echo("No entities found.")
@@ -121,8 +201,12 @@ def list_entities(
 
     label = f"detected for {day}" if day else "attached"
     typer.echo(f"{len(entities)} {label} entities:")
-    for e in entities:
-        typer.echo(f"  - {e.get('name')} ({e.get('type')}): {e.get('description', '')}")
+    for entity in entities:
+        typer.echo(
+            "  - "
+            f"{entity.get('name')} ({entity.get('type')}): "
+            f"{entity.get('description', '')}"
+        )
 
 
 @app.command("move")
@@ -142,58 +226,51 @@ def move_entity(
     ),
 ) -> None:
     """Move an entity from one facet to another."""
-    _validate_facet_or_exit(from_facet, "--from")
-    _validate_facet_or_exit(to_facet, "--to")
-
-    resolved = _resolve_or_exit(from_facet, entity)
-    entity_name = str(resolved.get("name", entity))
-    entity_id = entity_slug(entity_name)
-    src_dir = entity_memory_path(from_facet, entity_name)
-    dst_dir = entity_memory_path(to_facet, entity_name)
-
-    if not src_dir.exists():
-        typer.echo("Error: Entity data directory not found in source facet.", err=True)
-        raise typer.Exit(1)
-
-    if dst_dir.exists() and not merge:
-        typer.echo(
-            "Error: Entity already exists in destination facet. Use --merge to merge.",
-            err=True,
+    try:
+        source_body = _request(
+            "GET",
+            f"/app/entities/api/{from_facet}/resolve",
+            params={"name": entity},
         )
-        raise typer.Exit(1)
+    except ConveyClientError as err:
+        _handle_entity_error(err, entity=entity)
+    if not isinstance(source_body, dict):
+        _exit_with("I couldn't read the journal response.")
 
-    if dst_dir.exists():
-        src_relationship = load_facet_relationship(from_facet, entity_id)
-        dst_relationship = load_facet_relationship(to_facet, entity_id)
-        if src_relationship is not None and dst_relationship is None:
-            save_facet_relationship(to_facet, entity_id, src_relationship)
+    if not source_body.get("facet_exists"):
+        _exit_with(f"Error: Facet '{from_facet}' (--from) does not exist.")
 
-        src_obs = load_observations(from_facet, entity_name)
-        dst_obs = load_observations(to_facet, entity_name)
+    try:
+        target_body = _request(
+            "GET",
+            f"/app/entities/api/{to_facet}/resolve",
+            params={"name": entity},
+        )
+    except ConveyClientError as err:
+        _handle_entity_error(err, entity=entity)
+    if not isinstance(target_body, dict):
+        _exit_with("I couldn't read the journal response.")
 
-        existing_keys = {(o["content"], o.get("observed_at")) for o in dst_obs}
-        merged = list(dst_obs) + [
-            o
-            for o in src_obs
-            if (o["content"], o.get("observed_at")) not in existing_keys
-        ]
-        save_observations(to_facet, entity_name, merged)
+    if not target_body.get("facet_exists"):
+        _exit_with(f"Error: Facet '{to_facet}' (--to) does not exist.")
 
-        shutil.rmtree(str(src_dir))
-    else:
-        dst_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(src_dir), str(dst_dir))
+    resolved = _resolved_from_body_or_exit(from_facet, entity, source_body)
+    entity_name = str(resolved.get("name", entity))
 
-    params: dict[str, object] = {
-        "entity": entity_name,
-        "moved_from": from_facet,
-        "moved_to": to_facet,
-    }
-    if merge:
-        params["merge"] = True
-    if consent:
-        params["consent"] = True
-    log_call_action(facet=from_facet, action="entity_move", params=params)
+    try:
+        _request(
+            "POST",
+            "/app/entities/api/move",
+            json_body={
+                "entity": entity_name,
+                "from_facet": from_facet,
+                "to_facet": to_facet,
+                "merge": merge,
+                "consent": consent,
+            },
+        )
+    except ConveyClientError as err:
+        _handle_entity_error(err, entity=entity_name)
     typer.echo(f"Moved entity '{entity_name}' from '{from_facet}' to '{to_facet}'.")
 
 
@@ -210,43 +287,22 @@ def detect_entity(
     ),
 ) -> None:
     """Record a detected entity for a day in a facet."""
-    facet = resolve_sol_facet(facet)
-    day = resolve_sol_day(day)
-    if not is_valid_entity_type(type_):
-        typer.echo(f"Error: Invalid entity type '{type_}'.", err=True)
-        raise typer.Exit(1)
-
-    resolved, _ = resolve_entity(facet, entity)
-
-    if not resolved:
-        blocked_match, _ = resolve_entity(facet, entity, include_blocked=True)
-        if blocked_match and blocked_match.get("blocked"):
-            name = blocked_match.get("name", entity)
-            typer.echo(f"Error: Entity '{name}' is blocked.", err=True)
-            raise typer.Exit(1)
-
-    name = resolved.get("name", entity) if resolved else entity
-
+    facet = _resolve_sol_facet(facet)
+    day = _resolve_sol_day(day)
     try:
-        save_detected_entity(facet, day, type_, name, description)
-    except ValueError as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(1)
-    except LockTimeout:
-        typer.echo(ENTITY_BUSY.message, err=True)
-        raise typer.Exit(1)
-
-    log_call_action(
-        facet=facet,
-        action="entity_detect",
-        params={
-            "type": type_,
-            "entity": entity,
-            "name": name,
-            "description": description,
-        },
-        day=day,
-    )
+        body = _request(
+            "POST",
+            f"/app/entities/api/{facet}/detected",
+            json_body={
+                "day": day,
+                "type": type_,
+                "entity": entity,
+                "description": description,
+            },
+        )
+    except ConveyClientError as err:
+        _handle_entity_error(err, entity=entity, type_=type_)
+    name = body.get("name", entity) if isinstance(body, dict) else entity
     typer.echo(f"Entity '{name}' detected for {day}.")
 
 
@@ -260,41 +316,22 @@ def attach_entity(
     ),
 ) -> None:
     """Attach an entity permanently to a facet."""
-    facet = resolve_sol_facet(facet)
-    if not is_valid_entity_type(type_):
-        typer.echo(f"Error: Invalid entity type '{type_}'.", err=True)
-        raise typer.Exit(1)
-
+    facet = _resolve_sol_facet(facet)
     try:
-        attach_or_reactivate_entity(
-            facet,
-            entity_type=type_,
-            name=entity,
-            description=description,
+        _request(
+            "POST",
+            f"/app/entities/api/{facet}/attach",
+            json_body={
+                "type": type_,
+                "name": entity,
+                "description": description,
+            },
         )
-    except EntityExistsError:
-        typer.echo(f"Entity '{entity}' already attached.")
-        return
-    except EntityBlockedError:
-        typer.echo(f"Error: Entity '{entity}' is blocked.", err=True)
-        raise typer.Exit(1)
-    except EntityNotFoundError:
-        typer.echo(f"Error: Entity '{entity}' not found.", err=True)
-        raise typer.Exit(1)
-    except LockTimeout:
-        typer.echo(ENTITY_BUSY.message, err=True)
-        raise typer.Exit(1)
-
-    log_call_action(
-        facet=facet,
-        action="entity_attach",
-        params={
-            "type": type_,
-            "entity": entity,
-            "name": entity,
-            "description": description,
-        },
-    )
+    except ConveyClientError as err:
+        if err.reason_code == ENTITY_ALREADY_EXISTS.code:
+            typer.echo(f"Entity '{entity}' already attached.")
+            return
+        _handle_entity_error(err, entity=entity, type_=type_)
     typer.echo(f"Entity '{entity}' attached.")
 
 
@@ -310,48 +347,35 @@ def update_entity(
     ),
 ) -> None:
     """Update an entity description."""
-    facet = resolve_sol_facet(facet)
+    facet = _resolve_sol_facet(facet)
     if day is None:
-        resolved = _resolve_or_exit(facet, entity)
-        resolved_name = resolved.get("name", entity)
-        entity_id = resolved.get("id", entity_slug(resolved_name))
-
+        resolved = _resolve_entity_or_exit(facet, entity)
+        resolved_name = str(resolved.get("name", entity))
+        entity_id = str(resolved.get("id") or "")
         try:
-            update_facet_entity_description(facet, entity_id, description)
-        except EntityNotFoundError:
-            typer.echo(f"Error: Entity '{resolved_name}' not found.", err=True)
-            raise typer.Exit(1)
-        except LockTimeout:
-            typer.echo(ENTITY_BUSY.message, err=True)
-            raise typer.Exit(1)
-
-        log_call_action(
-            facet=facet,
-            action="entity_update",
-            params={
-                "entity": entity,
-                "name": resolved_name,
-                "description": description,
-            },
-        )
+            _request(
+                "POST",
+                f"/app/entities/api/{facet}/update-description",
+                json_body={
+                    "entity_id": entity_id,
+                    "description": description,
+                    "entity": entity,
+                    "name": resolved_name,
+                },
+            )
+        except ConveyClientError as err:
+            _handle_entity_error(err, entity=resolved_name)
         typer.echo(f"Entity '{resolved_name}' updated.")
         return
 
     try:
-        update_detected_entity(facet, day, entity, description)
-    except ValueError as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(1)
-    except LockTimeout:
-        typer.echo(ENTITY_BUSY.message, err=True)
-        raise typer.Exit(1)
-
-    log_call_action(
-        facet=facet,
-        action="entity_update",
-        params={"entity": entity, "description": description},
-        day=day,
-    )
+        _request(
+            "POST",
+            f"/app/entities/api/{facet}/update-detected",
+            json_body={"day": day, "entity": entity, "description": description},
+        )
+    except ConveyClientError as err:
+        _handle_entity_error(err, entity=entity)
     typer.echo(f"Entity '{entity}' updated for {day}.")
 
 
@@ -364,9 +388,9 @@ def add_aka(
     ),
 ) -> None:
     """Add an alias to an attached entity."""
-    facet = resolve_sol_facet(facet)
-    resolved = _resolve_or_exit(facet, entity)
-    resolved_name = resolved.get("name", "")
+    facet = _resolve_sol_facet(facet)
+    resolved = _resolve_entity_or_exit(facet, entity)
+    resolved_name = str(resolved.get("name", ""))
 
     base_name = re.sub(r"\s*\([^)]+\)", "", resolved_name).strip()
     first_word = base_name.split()[0] if base_name else None
@@ -384,32 +408,20 @@ def add_aka(
         typer.echo(f"Alias '{aka_value}' already exists for '{resolved_name}'.")
         return
 
-    entity_id = resolved.get("id", entity_slug(resolved_name))
+    entity_id = str(resolved.get("id") or "")
     try:
-        add_entity_aka(
-            facet,
-            entity_id,
-            aka_value,
-            exclude_name=resolved_name,
+        _request(
+            "POST",
+            f"/app/entities/api/{facet}/aka",
+            json_body={
+                "entity_id": entity_id,
+                "aka": aka_value,
+                "exclude_name": resolved_name,
+                "entity": entity,
+            },
         )
-    except AkaConflictError as exc:
-        typer.echo(
-            f"Error: Alias '{exc.alias}' conflicts with entity '{exc.conflict_name}'.",
-            err=True,
-        )
-        raise typer.Exit(1)
-    except EntityNotFoundError:
-        typer.echo(f"Error: Entity '{resolved_name}' not found.", err=True)
-        raise typer.Exit(1)
-    except LockTimeout:
-        typer.echo(ENTITY_BUSY.message, err=True)
-        raise typer.Exit(1)
-
-    log_call_action(
-        facet=facet,
-        action="entity_add_aka",
-        params={"entity": entity, "name": resolved_name, "aka": aka_value},
-    )
+    except ConveyClientError as err:
+        _handle_entity_error(err, entity=resolved_name)
     typer.echo(f"Added alias '{aka_value}' to '{resolved_name}'.")
 
 
@@ -418,8 +430,16 @@ def consolidate(
     full: bool = typer.Option(False, "--full", help="Scan all days, not just today."),
 ) -> None:
     """Consolidate segment-detected entities into journal identities."""
-    n = consolidate_detected_entities(get_journal(), full=full)
-    typer.echo(f"Wrote {n} new entities.")
+    try:
+        body = _request(
+            "POST",
+            "/app/entities/api/consolidate",
+            json_body={"full": full},
+        )
+    except ConveyClientError as err:
+        _handle_entity_error(err)
+    count = body.get("count", 0) if isinstance(body, dict) else 0
+    typer.echo(f"Wrote {count} new entities.")
 
 
 @app.command("record-merge-candidate")
@@ -451,70 +471,32 @@ def record_merge_candidate(
     ),
 ) -> None:
     """Record a proposed entity merge (source variant -> canonical target)."""
-    facet = resolve_sol_facet(facet)
-    day = resolve_sol_day(day)
-    source_slug = entity_slug(source)
-    target_slug = entity_slug(target)
-
-    if source_slug == target_slug:
-        typer.echo("Error: source and target resolve to the same entity.", err=True)
-        raise typer.Exit(1)
-
-    row: dict | None = None
-    created = False
-
-    def mutate(rows: list[dict]) -> list[dict]:
-        nonlocal row, created
-        existing = find_candidate(rows, facet, source_slug, target_slug)
-        now = utc_now_iso()
-        if existing is None:
-            row = {
-                "facet": facet,
-                "source": source,
-                "source_slug": source_slug,
-                "target": target,
-                "target_slug": target_slug,
-                "status": "open",
-                "evidence": {
-                    "basis": basis,
-                    "summary": evidence,
-                    "detection_count": detections,
-                    "needs": needs,
-                },
-                "first_surfaced": day,
-                "last_surfaced": day,
-                "created_at": now,
-                "updated_at": now,
-            }
-            created = True
-            return list(rows) + [row]
-
-        ev = existing.setdefault("evidence", {})
-        ev["basis"] = basis
-        ev["summary"] = evidence
-        if detections is not None:
-            ev["detection_count"] = detections
-        if needs is not None:
-            ev["needs"] = needs
-        existing["last_surfaced"] = day
-        existing["updated_at"] = now
-        row = existing
-        created = False
-        return rows
-
+    facet = _resolve_sol_facet(facet)
+    day = _resolve_sol_day(day)
     try:
-        locked_modify_candidates(mutate)
-    except LockTimeout:
-        typer.echo(ENTITY_BUSY.message, err=True)
-        raise typer.Exit(1)
-
-    if row is None:  # pragma: no cover - defensive assertion
-        raise RuntimeError("record-merge-candidate produced no row")
-
+        body = _request(
+            "POST",
+            "/app/entities/api/record-merge-candidate",
+            json_body={
+                "facet": facet,
+                "day": day,
+                "source": source,
+                "target": target,
+                "evidence": evidence,
+                "basis": basis,
+                "detections": detections,
+                "needs": needs,
+            },
+        )
+    except ConveyClientError as err:
+        _handle_entity_error(err)
+    if not isinstance(body, dict):
+        _exit_with("I couldn't read the journal response.")
+    row = body["row"]
     if json_output:
         typer.echo(json.dumps(row, indent=2, ensure_ascii=False))
         return
-    if created:
+    if body.get("created"):
         typer.echo(f"merge candidate recorded: {source} -> {target}")
         return
     typer.echo(
@@ -529,11 +511,15 @@ def list_merge_candidates(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """List recorded entity merge candidates."""
-    rows = load_candidates()
-    if facet is not None:
-        rows = [row for row in rows if row.get("facet") == facet]
-    if status is not None:
-        rows = [row for row in rows if row.get("status") == status]
+    try:
+        body = _request(
+            "GET",
+            "/app/entities/api/merge-candidates",
+            params=_params(facet=facet, status=status),
+        )
+    except ConveyClientError as err:
+        _handle_entity_error(err)
+    rows = body.get("items", []) if isinstance(body, dict) else []
 
     if json_output:
         typer.echo(json.dumps(rows, indent=2, ensure_ascii=False))
@@ -554,41 +540,6 @@ def list_merge_candidates(
         )
 
 
-def _echo_merge_candidate_error(result: dict) -> None:
-    typer.echo(f"Error: {result.get('error', 'operation failed')}", err=True)
-    raise typer.Exit(1)
-
-
-def _echo_merge_preview(result: dict) -> None:
-    fields = merge_preview_fields(result["merge"])
-    typer.echo("Merge preview:")
-    akas = fields["akas_added"]
-    if akas:
-        typer.echo(f"  aliases added: {', '.join(akas)}")
-    else:
-        typer.echo("  aliases added: none")
-    typer.echo(f"  emails added: {fields['emails_added_count']}")
-    typer.echo(
-        "  facet links: "
-        f"{fields['facet_moved_count']} moved, "
-        f"{fields['facet_merged_count']} merged"
-    )
-    typer.echo(f"  observations moved: {fields['observations_appended']}")
-    typer.echo(
-        "  speaker labels updated: "
-        f"{fields['labels_rewritten']} labels, "
-        f"{fields['corrections_rewritten']} corrections"
-    )
-    typer.echo(
-        "  voice samples moved: "
-        f"{fields['voiceprints_added']} added, "
-        f"{fields['voiceprints_target_total']} total"
-    )
-    errors = fields["segment_errors"]
-    if errors:
-        typer.echo(f"  segment update errors: {len(errors)}")
-
-
 @app.command("accept-merge-candidate")
 def accept_merge_candidate(
     source_slug: str = typer.Argument(help="Source entity slug to merge from."),
@@ -599,22 +550,27 @@ def accept_merge_candidate(
     commit: bool = typer.Option(False, "--commit/--no-commit"),
 ) -> None:
     """Preview or accept one recorded entity merge candidate."""
-    facet = resolve_sol_facet(facet)
+    facet = _resolve_sol_facet(facet)
     try:
-        result = accept_entity_candidate(
-            facet,
-            source_slug,
-            target_slug,
-            commit=commit,
+        result = _request(
+            "POST",
+            "/app/entities/api/accept-merge-candidate",
+            json_body={
+                "facet": facet,
+                "source_slug": source_slug,
+                "target_slug": target_slug,
+                "commit": commit,
+            },
         )
-    except LockTimeout:
-        typer.echo(ENTITY_BUSY.message, err=True)
-        raise typer.Exit(1)
+    except ConveyClientError as err:
+        _handle_entity_error(err)
+    if not isinstance(result, dict):
+        _exit_with("I couldn't read the journal response.")
     status = result.get("status")
     if status == "error":
         _echo_merge_candidate_error(result)
     if status == "preview":
-        _echo_merge_preview(result)
+        _echo_merge_preview(result["fields"])
         return
     if status == "accepted":
         typer.echo(f"Accepted merge candidate: {source_slug} -> {target_slug}")
@@ -634,12 +590,21 @@ def dismiss_merge_candidate(
     ),
 ) -> None:
     """Dismiss one recorded entity merge candidate."""
-    facet = resolve_sol_facet(facet)
+    facet = _resolve_sol_facet(facet)
     try:
-        result = dismiss_entity_candidate(facet, source_slug, target_slug)
-    except LockTimeout:
-        typer.echo(ENTITY_BUSY.message, err=True)
-        raise typer.Exit(1)
+        result = _request(
+            "POST",
+            "/app/entities/api/dismiss-merge-candidate",
+            json_body={
+                "facet": facet,
+                "source_slug": source_slug,
+                "target_slug": target_slug,
+            },
+        )
+    except ConveyClientError as err:
+        _handle_entity_error(err)
+    if not isinstance(result, dict):
+        _exit_with("I couldn't read the journal response.")
     status = result.get("status")
     if status == "error":
         _echo_merge_candidate_error(result)
@@ -663,17 +628,23 @@ def merge(
     ),
 ) -> None:
     """Plan or commit a journal-entity merge."""
-    from solstone.think.entities import merge_entity
-
-    result = merge_entity(
-        source_slug,
-        target_slug,
-        keep_source_as_aka=keep_source_as_aka,
-        commit=commit,
-        caller="entities.merge",
-    )
-    output = json.dumps(result, indent=2, default=str)
-    if "error" in result:
+    try:
+        body = _request(
+            "POST",
+            "/app/entities/api/merge",
+            json_body={
+                "source_slug": source_slug,
+                "target_slug": target_slug,
+                "commit": commit,
+                "keep_source_as_aka": keep_source_as_aka,
+            },
+        )
+    except ConveyClientError as err:
+        _handle_entity_error(err)
+    if not isinstance(body, dict):
+        _exit_with("I couldn't read the journal response.")
+    output = json.dumps(body, indent=2, default=str)
+    if "error" in body:
         typer.echo(output, err=True)
         raise typer.Exit(1)
     typer.echo(output)
@@ -687,18 +658,26 @@ def list_observations(
     ),
 ) -> None:
     """List observations for an attached entity."""
-    facet = resolve_sol_facet(facet)
-    resolved = _resolve_or_exit(facet, entity)
-    resolved_name = resolved.get("name", "")
-    obs = load_observations(facet, resolved_name)
+    facet = _resolve_sol_facet(facet)
+    resolved = _resolve_entity_or_exit(facet, entity)
+    resolved_name = str(resolved.get("name", ""))
+    try:
+        body = _request(
+            "GET",
+            f"/app/entities/api/{facet}/observations",
+            params={"name": resolved_name},
+        )
+    except ConveyClientError as err:
+        _handle_entity_error(err, entity=resolved_name)
+    obs = body.get("items", []) if isinstance(body, dict) else []
 
     if not obs:
         typer.echo(f"No observations for '{resolved_name}'.")
         return
 
     typer.echo(f"{len(obs)} observations for '{resolved_name}':")
-    for i, o in enumerate(obs, 1):
-        typer.echo(f"  {i}. {o.get('content', '')}")
+    for i, observation in enumerate(obs, 1):
+        typer.echo(f"  {i}. {observation.get('content', '')}")
 
 
 @app.command("observe")
@@ -711,28 +690,22 @@ def observe_entity(
     source_day: str | None = typer.Option(None, "--source-day", help="Day (YYYYMMDD)."),
 ) -> None:
     """Add an observation to an attached entity."""
-    facet = resolve_sol_facet(facet)
-    resolved = _resolve_or_exit(facet, entity)
-    resolved_name = resolved.get("name", "")
-
+    facet = _resolve_sol_facet(facet)
+    resolved = _resolve_entity_or_exit(facet, entity)
+    resolved_name = str(resolved.get("name", ""))
     try:
-        add_observation(facet, resolved_name, content, source_day)
-    except ValueError as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(1)
-    except LockTimeout:
-        typer.echo(ENTITY_BUSY.message, err=True)
-        raise typer.Exit(1)
-
-    log_call_action(
-        facet=facet,
-        action="entity_observe",
-        params={
-            "entity": entity,
-            "name": resolved_name,
-            "content": content,
-        },
-    )
+        _request(
+            "POST",
+            f"/app/entities/api/{facet}/observe",
+            json_body={
+                "name": resolved_name,
+                "content": content,
+                "source_day": source_day,
+                "entity": entity,
+            },
+        )
+    except ConveyClientError as err:
+        _handle_entity_error(err, entity=resolved_name)
     typer.echo(f"Observation added to '{resolved_name}'.")
 
 
@@ -745,19 +718,27 @@ def entity_search(
     limit: int = typer.Option(20, "--limit", "-n", help="Max results."),
 ) -> None:
     """Search entities by text, type, facet, or activity."""
-    results = search_entities(
-        query=query,
-        entity_type=type_,
-        facet=facet,
-        since=since,
-        limit=limit,
-    )
+    try:
+        body = _request(
+            "GET",
+            "/app/entities/api/search",
+            params=_params(
+                query=query,
+                type=type_,
+                facet=facet,
+                since=since,
+                limit=limit,
+            ),
+        )
+    except ConveyClientError as err:
+        _handle_entity_error(err)
+    results = body.get("items", []) if isinstance(body, dict) else []
     if not results:
         typer.echo("No entities found.")
         return
     typer.echo(f"{len(results)} entities:")
-    for e in results:
-        facets = ", ".join(e.get("facets", []))
-        typer.echo(f"  - {e['name']} ({e['type']}): {e['description']}")
+    for entity in results:
+        facets = ", ".join(entity.get("facets", []))
+        typer.echo(f"  - {entity['name']} ({entity['type']}): {entity['description']}")
         if facets:
             typer.echo(f"    facets: {facets}")
