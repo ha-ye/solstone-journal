@@ -6,6 +6,8 @@ import json
 from typer.testing import CliRunner
 
 from solstone.apps.activities.call import app
+from solstone.think.convey_client import ConveyClient
+from tests._baseline_harness import make_logged_in_test_client
 
 runner = CliRunner()
 
@@ -21,11 +23,36 @@ def _write_detected_entities(tmp_path, facet: str, day: str, rows: list[dict]) -
 
 def _configure_cli_env(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setenv("SOL_SKIP_SUPERVISOR_CHECK", "1")
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "journal.json").write_text(
+        json.dumps(
+            {
+                "convey": {"trust_localhost": True},
+                "setup": {"completed_at": 1700000000000},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    facet_dir = tmp_path / "facets" / "work"
+    activities_dir = facet_dir / "activities"
+    activities_dir.mkdir(parents=True, exist_ok=True)
+    (facet_dir / "facet.json").write_text(
+        json.dumps({"title": "Test work", "description": "Test facet"}) + "\n",
+        encoding="utf-8",
+    )
+    (activities_dir / "activities.jsonl").write_text(
+        json.dumps({"id": "meeting"}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
 
     import solstone.think.utils as think_utils
 
     think_utils._journal_path_cache = None
+    client = ConveyClient(session=make_logged_in_test_client(tmp_path), base_url="")
+    monkeypatch.setattr("solstone.apps.activities.call.get_client", lambda: client)
 
 
 def _base_payload() -> dict:

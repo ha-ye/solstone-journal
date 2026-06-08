@@ -120,7 +120,6 @@ SHUTIL_FS_FUNCS: frozenset[str] = frozenset(
 # (posix-relative-path, kind) -> allowed count. Ratchets toward empty: lower a
 # count as occurrences are converted; stale entries fail until lowered/removed.
 ALLOWLIST: dict[tuple[str, str], int] = {
-    ("solstone/apps/activities/call.py", "import"): 6,
     ("solstone/apps/entities/call.py", "fs"): 3,
     ("solstone/apps/entities/call.py", "import"): 15,
     ("solstone/apps/import/call.py", "fs"): 17,

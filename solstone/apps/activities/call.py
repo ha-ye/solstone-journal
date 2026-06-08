@@ -4,43 +4,18 @@
 """CLI commands for completed activity record management.
 
 Auto-discovered by ``think.call`` and mounted as ``sol call activities ...``.
+Every verb reaches the journal only over HTTP via the Convey client.
 """
 
-from __future__ import annotations
-
 import json
+import os
 import sys
 from datetime import datetime, timedelta
-from typing import Any
 
 import typer
 
-from solstone.convey.reasons import ACTIVITIES_BUSY
-from solstone.think.activities import (
-    append_activity_record,
-    append_edit,
-    format_activities,
-    get_activity_by_id,
-    get_activity_record,
-    load_activity_records,
-    make_activity_id,
-    mute_activity_record,
-    unmute_activity_record,
-    update_activity_record,
-)
-from solstone.think.entities.loading import load_entities
-from solstone.think.entities.matching import find_matching_entity
-from solstone.think.facets import get_facets, log_call_action
-from solstone.think.journal_io import LockTimeout
-from solstone.think.utils import (
-    get_sol_facet,
-    now_ms,
-    require_solstone,
-    resolve_sol_day,
-    resolve_sol_day_or_today,
-    resolve_sol_facet,
-    segment_parse,
-)
+from solstone.convey.reasons import ACTIVITY_ALREADY_EXISTS, ACTIVITY_NOT_FOUND
+from solstone.think.convey_client import ConveyClientError, convey_cli, get_client
 
 _PARTICIPATION_ROLES = {"attendee", "mentioned"}
 _PARTICIPATION_SOURCES = {"voice", "speaker_label", "transcript", "screen", "other"}
@@ -48,12 +23,58 @@ _PARTICIPATION_SOURCES = {"voice", "speaker_label", "transcript", "screen", "oth
 app = typer.Typer(help="Completed activity record management.")
 
 
-@app.callback()
-def _require_up() -> None:
-    require_solstone()
+def _get_sol_day() -> str | None:
+    return os.environ.get("SOL_DAY") or None
 
 
-def _read_stdin_json() -> dict[str, Any]:
+def _get_sol_facet() -> str | None:
+    return os.environ.get("SOL_FACET") or None
+
+
+def _resolve_sol_day(arg: str | None) -> str:
+    if arg:
+        return arg
+    env = _get_sol_day()
+    if env:
+        return env
+    typer.echo("Error: day is required (pass as argument or set SOL_DAY).", err=True)
+    raise typer.Exit(1)
+
+
+def _resolve_sol_day_or_today(arg: str | None) -> str:
+    if arg:
+        return arg
+    env = _get_sol_day()
+    if env:
+        return env
+    return datetime.now().strftime("%Y%m%d")
+
+
+def _resolve_sol_facet(arg: str | None) -> str:
+    if arg:
+        return arg
+    env = _get_sol_facet()
+    if env:
+        return env
+    typer.echo(
+        "Error: facet is required (pass as argument or set SOL_FACET).", err=True
+    )
+    raise typer.Exit(1)
+
+
+def _valid_segment_key(segment: str) -> bool:
+    if "_" not in segment:
+        return False
+    time_part, len_part = segment.split("_", 1)
+    if len(time_part) != 6 or not time_part.isdigit() or not len_part.isdigit():
+        return False
+    hour = int(time_part[:2])
+    minute = int(time_part[2:4])
+    second = int(time_part[4:6])
+    return 0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59
+
+
+def _read_stdin_json() -> dict[str, object]:
     """Parse a single JSON object from stdin."""
     raw = sys.stdin.read().strip()
     if not raw:
@@ -72,16 +93,7 @@ def _read_stdin_json() -> dict[str, Any]:
     return payload
 
 
-def _echo_records(records: list[dict[str, Any]]) -> None:
-    """Render activity records using the formatter text output."""
-    chunks, _meta = format_activities(records)
-    if not chunks:
-        typer.echo("No activities found.")
-        return
-    typer.echo("\n\n".join(chunk["markdown"] for chunk in chunks))
-
-
-def _echo_json(payload: Any) -> None:
+def _echo_json(payload: object) -> None:
     typer.echo(json.dumps(payload, indent=2, ensure_ascii=False))
 
 
@@ -111,34 +123,12 @@ def _iter_days(start_day: str, end_day: str) -> list[str]:
     return days
 
 
-def _resolve_list_facets(facet: str | None) -> list[str]:
-    if facet:
-        return [facet]
-
-    env_facet = get_sol_facet()
-    if env_facet:
-        return [env_facet]
-
-    return sorted(get_facets())
-
-
-def _validate_segment_key(segment: str) -> str:
-    start, end = segment_parse(segment)
-    if start is None or end is None:
-        typer.echo(
-            f"Error: invalid --since-segment '{segment}' (expected HHMMSS_LEN)",
-            err=True,
-        )
-        raise typer.Exit(1)
-    return segment
-
-
-def _validate_participation(value: Any) -> list[dict[str, Any]]:
+def _validate_participation(value: object) -> list[dict[str, object]]:
     if not isinstance(value, list):
         typer.echo("Error: participation must be an array", err=True)
         raise typer.Exit(1)
 
-    cleaned_entries: list[dict[str, Any]] = []
+    cleaned_entries: list[dict[str, object]] = []
     for i, entry in enumerate(value):
         if not isinstance(entry, dict):
             typer.echo(f"Error: participation[{i}] must be an object", err=True)
@@ -197,65 +187,52 @@ def _validate_participation(value: Any) -> list[dict[str, Any]]:
     return cleaned_entries
 
 
-def _resolve_participation_entity_ids(
-    entries: list[dict[str, Any]], *, facet: str, day: str
-) -> list[dict[str, Any]]:
-    entities_list = load_entities(facet=facet, day=day)
-
-    resolved_entries = []
-    for entry in entries:
-        resolved = dict(entry)
-        match = find_matching_entity(resolved["name"], entities_list)
-        resolved["entity_id"] = match.get("id") if match else None
-        resolved_entries.append(resolved)
-
-    return resolved_entries
-
-
-def _list_records_for_days(
-    facets: list[str],
-    days: list[str],
+def _filter_items(
+    items: list[dict[str, object]],
     *,
     activity: str | None,
     entity: str | None,
     source: str | None,
-    include_hidden: bool,
-) -> list[dict[str, Any]]:
-    matches: list[dict[str, Any]] = []
+) -> list[dict[str, object]]:
+    matches: list[dict[str, object]] = []
     entity_query = entity.lower() if entity else None
-    for facet_name in facets:
-        for day in days:
-            for record in load_activity_records(
-                facet_name, day, include_hidden=include_hidden
+    for item in items:
+        record = item["record"]
+        if not isinstance(record, dict):
+            continue
+        if activity and record.get("activity") != activity:
+            continue
+        if source and record.get("source") != source:
+            continue
+        if entity_query:
+            active_entities = record.get("active_entities", [])
+            if not any(
+                entity_query in str(active_entity).lower()
+                for active_entity in active_entities
             ):
-                if activity and record.get("activity") != activity:
-                    continue
-                if source and record.get("source") != source:
-                    continue
-                if entity_query:
-                    active_entities = record.get("active_entities", [])
-                    if not any(
-                        entity_query in str(active_entity).lower()
-                        for active_entity in active_entities
-                    ):
-                        continue
-                enriched = dict(record)
-                enriched["facet"] = facet_name
-                enriched["day"] = day
-                matches.append(enriched)
-
-    matches.sort(
-        key=lambda record: (
-            record.get("day", ""),
-            record.get("facet", ""),
-            int(record.get("created_at", 0) or 0),
-            str(record.get("id", "")),
-        )
-    )
+                continue
+        matches.append(item)
     return matches
 
 
+def _sort_item_key(item: dict[str, object]) -> tuple[str, str, int, str]:
+    record = item["record"]
+    if not isinstance(record, dict):
+        return ("", "", 0, "")
+    return (
+        str(record.get("day", "")),
+        str(record.get("facet", "")),
+        int(record.get("created_at", 0) or 0),
+        str(record.get("id", "")),
+    )
+
+
+def _echo_item_markdown(item: dict[str, object]) -> None:
+    typer.echo(item["markdown"])
+
+
 @app.command("list")
+@convey_cli
 def list_records(
     day: str | None = typer.Option(
         None,
@@ -308,13 +285,13 @@ def list_records(
         raise typer.Exit(1)
 
     if day:
-        resolved_days = [resolve_sol_day(day)]
+        resolved_days = [_resolve_sol_day(day)]
     elif from_day or to_day:
-        start_day = from_day or resolve_sol_day_or_today(None)
+        start_day = from_day or _resolve_sol_day_or_today(None)
         end_day = to_day or start_day
         resolved_days = _iter_days(start_day, end_day)
     else:
-        resolved_days = [resolve_sol_day_or_today(None)]
+        resolved_days = [_resolve_sol_day_or_today(None)]
 
     if source and source not in {"anticipated", "cogitate", "user"}:
         typer.echo(
@@ -323,23 +300,31 @@ def list_records(
         )
         raise typer.Exit(1)
 
-    facets = _resolve_list_facets(facet)
-    records = _list_records_for_days(
-        facets,
-        resolved_days,
-        activity=activity,
-        entity=entity,
-        source=source,
-        include_hidden=include_all,
-    )
+    client = get_client()
+    facet_param = facet or _get_sol_facet() or None
+    items: list[dict[str, object]] = []
+    for resolved_day in resolved_days:
+        params = {"include_hidden": "1" if include_all else "0"}
+        if facet_param is not None:
+            params["facet"] = facet_param
+        body = client.request(
+            "GET", f"/app/activities/api/day/{resolved_day}/records", params=params
+        )
+        items.extend(body["items"])
+
+    items = _filter_items(items, activity=activity, entity=entity, source=source)
+    items.sort(key=_sort_item_key)
 
     if json_output:
-        _echo_json(records)
+        _echo_json([item["record"] for item in items])
+    elif not items:
+        typer.echo("No activities found.")
     else:
-        _echo_records(records)
+        typer.echo("\n\n".join(str(item["markdown"]) for item in items))
 
 
 @app.command("get")
+@convey_cli
 def get_record(
     span_id: str = typer.Argument(help="Activity record ID."),
     facet: str | None = typer.Option(
@@ -357,20 +342,28 @@ def get_record(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Fetch one activity record by ID."""
-    resolved_facet = resolve_sol_facet(facet)
-    resolved_day = resolve_sol_day(day)
-    record = get_activity_record(resolved_facet, resolved_day, span_id)
-    if record is None:
-        typer.echo(f"activity not found: {span_id}", err=True)
-        raise typer.Exit(1)
+    resolved_facet = _resolve_sol_facet(facet)
+    resolved_day = _resolve_sol_day(day)
+    try:
+        body = get_client().request(
+            "GET",
+            f"/app/activities/api/day/{resolved_day}/record/{span_id}",
+            params={"facet": resolved_facet},
+        )
+    except ConveyClientError as err:
+        if err.reason_code == ACTIVITY_NOT_FOUND.code:
+            typer.echo(f"activity not found: {span_id}", err=True)
+            raise typer.Exit(1) from err
+        raise
 
     if json_output:
-        _echo_json(record)
+        _echo_json(body["record"])
     else:
-        _echo_records([record])
+        _echo_item_markdown(body)
 
 
 @app.command("create")
+@convey_cli
 def create_record(
     facet: str | None = typer.Option(
         None,
@@ -401,8 +394,8 @@ def create_record(
         typer.echo("Error: --source must be 'cogitate' or 'user'.", err=True)
         raise typer.Exit(1)
 
-    resolved_facet = resolve_sol_facet(facet)
-    resolved_day = resolve_sol_day(day)
+    resolved_facet = _resolve_sol_facet(facet)
+    resolved_day = _resolve_sol_day(day)
     payload = _read_stdin_json()
     participation_provided = "participation" in payload
 
@@ -416,82 +409,54 @@ def create_record(
         typer.echo("Error: activity is required.", err=True)
         raise typer.Exit(1)
 
-    if not get_activity_by_id(resolved_facet, activity_type):
+    if since_segment is not None and not _valid_segment_key(since_segment):
         typer.echo(
-            f"Error: unknown activity for facet '{resolved_facet}': {activity_type}",
+            f"Error: invalid --since-segment '{since_segment}' (expected HHMMSS_LEN)",
             err=True,
         )
         raise typer.Exit(1)
 
-    if since_segment is not None:
-        anchor = _validate_segment_key(since_segment)
-        segments = [anchor]
-    else:
-        anchor = f"user_{now_ms()}"
-        segments = []
-
-    description = str(payload.get("description") or title).strip() or title
-    details = str(payload.get("details") or "")
-    participation: list[dict[str, Any]] = []
-    if participation_provided:
-        participation = _validate_participation(payload["participation"])
-        participation = _resolve_participation_entity_ids(
-            participation, facet=resolved_facet, day=resolved_day
-        )
-
-    actor = "cogitate:activities" if source == "cogitate" else "cli:create"
-    span_id = make_activity_id(activity_type, anchor)
-    record = {
-        "id": span_id,
-        "activity": activity_type,
+    body: dict[str, object] = {
         "title": title,
-        "description": description,
-        "details": details,
-        "segments": segments,
-        "active_entities": [],
-        "created_at": now_ms(),
+        "activity": activity_type,
         "source": source,
-        "hidden": False,
-        "edits": [],
     }
+    if "description" in payload:
+        body["description"] = payload["description"]
+    if "details" in payload:
+        body["details"] = payload["details"]
+    if since_segment is not None:
+        body["since_segment"] = since_segment
     if participation_provided:
-        record["participation"] = participation
-
-    edit_fields = ["activity", "title", "description", "details", "source"]
-    if participation_provided:
-        edit_fields.append("participation")
-
-    record = append_edit(
-        record,
-        actor=actor,
-        fields=edit_fields,
-        note="created",
-    )
+        body["participation"] = _validate_participation(payload["participation"])
 
     try:
-        created = append_activity_record(resolved_facet, resolved_day, record)
-    except LockTimeout:
-        typer.echo(ACTIVITIES_BUSY.message, err=True)
-        raise typer.Exit(1)
-
-    if not created:
-        typer.echo(f"Error: activity already exists: {span_id}", err=True)
-        raise typer.Exit(1)
-
-    log_call_action(
-        facet=resolved_facet,
-        action="activity_create",
-        params={"id": span_id, "activity": activity_type, "source": source},
-        day=resolved_day,
-    )
+        response = get_client().request(
+            "POST",
+            f"/app/activities/api/day/{resolved_day}/records",
+            params={"facet": resolved_facet},
+            json=body,
+        )
+    except ConveyClientError as err:
+        if err.reason_code == ACTIVITY_NOT_FOUND.code:
+            typer.echo(
+                f"Error: unknown activity for facet '{resolved_facet}': {activity_type}",
+                err=True,
+            )
+            raise typer.Exit(1) from err
+        if err.reason_code == ACTIVITY_ALREADY_EXISTS.code:
+            typer.echo(f"Error: activity already exists: {err.detail}", err=True)
+            raise typer.Exit(1) from err
+        raise
 
     if json_output:
-        _echo_json(record)
+        _echo_json(response["record"])
     else:
-        _echo_records([record])
+        _echo_item_markdown(response)
 
 
 @app.command("update")
+@convey_cli
 def update_record_command(
     span_id: str = typer.Argument(help="Activity record ID."),
     facet: str | None = typer.Option(
@@ -510,8 +475,8 @@ def update_record_command(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Apply a shallow JSON patch to one activity record."""
-    resolved_facet = resolve_sol_facet(facet)
-    resolved_day = resolve_sol_day(day)
+    resolved_facet = _resolve_sol_facet(facet)
+    resolved_day = _resolve_sol_day(day)
     payload = _read_stdin_json()
 
     patch = {
@@ -532,35 +497,56 @@ def update_record_command(
 
     note_text = note or f"updated fields: {', '.join(sorted(patch))}"
     try:
-        updated = update_activity_record(
-            resolved_facet,
-            resolved_day,
-            span_id,
-            patch,
-            actor="cli:update",
-            note=note_text,
+        body = get_client().request(
+            "POST",
+            f"/app/activities/api/day/{resolved_day}/record/{span_id}/update",
+            params={"facet": resolved_facet},
+            json={"patch": patch, "note": note_text},
         )
-    except LockTimeout:
-        typer.echo(ACTIVITIES_BUSY.message, err=True)
-        raise typer.Exit(1)
-    if updated is None:
-        typer.echo(f"activity not found: {span_id}", err=True)
-        raise typer.Exit(1)
-
-    log_call_action(
-        facet=resolved_facet,
-        action="activity_update",
-        params={"id": span_id, "fields": sorted(patch)},
-        day=resolved_day,
-    )
+    except ConveyClientError as err:
+        if err.reason_code == ACTIVITY_NOT_FOUND.code:
+            typer.echo(f"activity not found: {span_id}", err=True)
+            raise typer.Exit(1) from err
+        raise
 
     if json_output:
-        _echo_json(updated)
+        _echo_json(body["record"])
     else:
-        _echo_records([updated])
+        _echo_item_markdown(body)
+
+
+def _set_mute_state(
+    span_id: str,
+    *,
+    facet: str | None,
+    day: str | None,
+    reason: str | None,
+    json_output: bool,
+    verb: str,
+) -> None:
+    resolved_facet = _resolve_sol_facet(facet)
+    resolved_day = _resolve_sol_day(day)
+    try:
+        body = get_client().request(
+            "POST",
+            f"/app/activities/api/day/{resolved_day}/record/{span_id}/{verb}",
+            params={"facet": resolved_facet},
+            json={"reason": reason},
+        )
+    except ConveyClientError as err:
+        if err.reason_code == ACTIVITY_NOT_FOUND.code:
+            typer.echo(f"activity not found: {span_id}", err=True)
+            raise typer.Exit(1) from err
+        raise
+
+    if json_output:
+        _echo_json(body["record"])
+    else:
+        _echo_item_markdown(body)
 
 
 @app.command("mute")
+@convey_cli
 def mute_record(
     span_id: str = typer.Argument(help="Activity record ID."),
     facet: str | None = typer.Option(
@@ -579,37 +565,18 @@ def mute_record(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Hide an activity record without deleting it."""
-    resolved_facet = resolve_sol_facet(facet)
-    resolved_day = resolve_sol_day(day)
-    try:
-        record = mute_activity_record(
-            resolved_facet,
-            resolved_day,
-            span_id,
-            actor="cli:mute",
-            reason=reason,
-        )
-    except LockTimeout:
-        typer.echo(ACTIVITIES_BUSY.message, err=True)
-        raise typer.Exit(1)
-    if record is None:
-        typer.echo(f"activity not found: {span_id}", err=True)
-        raise typer.Exit(1)
-
-    log_call_action(
-        facet=resolved_facet,
-        action="activity_mute",
-        params={"id": span_id, "reason": reason},
-        day=resolved_day,
+    _set_mute_state(
+        span_id,
+        facet=facet,
+        day=day,
+        reason=reason,
+        json_output=json_output,
+        verb="mute",
     )
-
-    if json_output:
-        _echo_json(record)
-    else:
-        _echo_records([record])
 
 
 @app.command("unmute")
+@convey_cli
 def unmute_record(
     span_id: str = typer.Argument(help="Activity record ID."),
     facet: str | None = typer.Option(
@@ -628,31 +595,11 @@ def unmute_record(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Restore a previously hidden activity record."""
-    resolved_facet = resolve_sol_facet(facet)
-    resolved_day = resolve_sol_day(day)
-    try:
-        record = unmute_activity_record(
-            resolved_facet,
-            resolved_day,
-            span_id,
-            actor="cli:unmute",
-            reason=reason,
-        )
-    except LockTimeout:
-        typer.echo(ACTIVITIES_BUSY.message, err=True)
-        raise typer.Exit(1)
-    if record is None:
-        typer.echo(f"activity not found: {span_id}", err=True)
-        raise typer.Exit(1)
-
-    log_call_action(
-        facet=resolved_facet,
-        action="activity_unmute",
-        params={"id": span_id, "reason": reason},
-        day=resolved_day,
+    _set_mute_state(
+        span_id,
+        facet=facet,
+        day=day,
+        reason=reason,
+        json_output=json_output,
+        verb="unmute",
     )
-
-    if json_output:
-        _echo_json(record)
-    else:
-        _echo_records([record])
