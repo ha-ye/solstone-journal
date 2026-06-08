@@ -7,6 +7,7 @@ import importlib
 import threading
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -735,12 +736,77 @@ def test_local_worker_resets_progress_between_binary_and_model(
     monkeypatch.setattr(
         local_bootstrap.local_install, "install_model", fake_install_model
     )
+    monkeypatch.setattr(local_bootstrap, "callosum_send", Mock(return_value=True))
 
     local_bootstrap._run_bootstrap_worker(LOCAL_MODEL)
 
     assert observed["install_state"] == "downloading"
     assert observed["progress_bytes_total"] is None
     assert observed["progress_bytes_received"] is None
+
+
+@pytest.mark.parametrize(
+    "send_behavior",
+    ["success", "false", "raise"],
+)
+def test_local_worker_success_requests_local_server_start(
+    settings_env, monkeypatch, send_behavior
+):
+    settings_env(_settings_config())
+    _write_local_status("downloading", last_progress_at=_fresh_progress_iso())
+
+    def fake_install_model(model):
+        assert model == LOCAL_MODEL
+        status = read_install_status(scope="bundled", name="local")
+        write_install_status(
+            transition_state(status, new_state="installed"),
+            scope="bundled",
+        )
+
+    if send_behavior == "raise":
+        callosum_send = Mock(side_effect=RuntimeError("callosum broke"))
+    else:
+        callosum_send = Mock(return_value=send_behavior == "success")
+
+    monkeypatch.setattr(
+        local_bootstrap.local_install, "install_llama_server", lambda: None
+    )
+    monkeypatch.setattr(
+        local_bootstrap.local_install, "install_model", fake_install_model
+    )
+    monkeypatch.setattr(local_bootstrap, "callosum_send", callosum_send)
+
+    local_bootstrap._run_bootstrap_worker(LOCAL_MODEL)
+
+    callosum_send.assert_called_once_with("supervisor", "start_local")
+    status = read_install_status(scope="bundled", name="local")
+    assert status["install_state"] == "installed"
+    assert status["install_error"] is None
+
+
+def test_local_worker_install_model_failure_does_not_request_local_server_start(
+    settings_env, monkeypatch
+):
+    settings_env(_settings_config())
+    _write_local_status("downloading", last_progress_at=_fresh_progress_iso())
+    callosum_send = Mock(return_value=True)
+
+    monkeypatch.setattr(
+        local_bootstrap.local_install, "install_llama_server", lambda: None
+    )
+    monkeypatch.setattr(
+        local_bootstrap.local_install,
+        "install_model",
+        Mock(side_effect=RuntimeError("model download broke")),
+    )
+    monkeypatch.setattr(local_bootstrap, "callosum_send", callosum_send)
+
+    local_bootstrap._run_bootstrap_worker(LOCAL_MODEL)
+
+    callosum_send.assert_not_called()
+    status = read_install_status(scope="bundled", name="local")
+    assert status["install_state"] == "failed"
+    assert status["install_error"] == "model download broke"
 
 
 def test_local_worker_cleans_registered_thread(settings_env, monkeypatch):
@@ -763,6 +829,7 @@ def test_local_worker_cleans_registered_thread(settings_env, monkeypatch):
     monkeypatch.setattr(
         local_bootstrap.local_install, "install_model", fake_install_model
     )
+    monkeypatch.setattr(local_bootstrap, "callosum_send", Mock(return_value=True))
 
     local_bootstrap._run_bootstrap_worker(LOCAL_MODEL)
 

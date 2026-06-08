@@ -1830,6 +1830,40 @@ def test_start_local_server_skips_missing_artifacts(monkeypatch):
     launch.assert_not_called()
 
 
+class _LocalManagedStub:
+    def __init__(self, *, name="llama-server", running=True):
+        self.name = name
+        self.is_running = MagicMock(return_value=running)
+
+
+def test_handle_start_local_request_starts_and_appends(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    managed = _LocalManagedStub()
+    start_local_server = MagicMock(return_value=managed)
+    monkeypatch.setattr(mod, "_managed_procs", [])
+    monkeypatch.setattr(mod, "_is_remote_mode", False)
+    monkeypatch.setattr(mod, "start_local_server", start_local_server)
+
+    mod._handle_callosum_message({"tract": "supervisor", "event": "start_local"})
+
+    start_local_server.assert_called_once_with()
+    assert mod._managed_procs == [managed]
+
+
+def test_handle_start_local_request_noops_when_local_server_running(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    running = _LocalManagedStub()
+    start_local_server = MagicMock()
+    monkeypatch.setattr(mod, "_managed_procs", [running])
+    monkeypatch.setattr(mod, "_is_remote_mode", False)
+    monkeypatch.setattr(mod, "start_local_server", start_local_server)
+
+    mod._handle_callosum_message({"tract": "supervisor", "event": "start_local"})
+
+    start_local_server.assert_not_called()
+    assert mod._managed_procs == [running]
+
+
 def test_handle_runner_exits_restarts_llama_server_by_managed_name(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     mod._SERVICE_STATE.clear()

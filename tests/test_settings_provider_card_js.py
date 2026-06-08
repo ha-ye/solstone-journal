@@ -118,6 +118,82 @@ def test_provider_card_helpers_are_coherent():
     subprocess.run([node, "-e", script], check=True, text=True)
 
 
+def test_providers_anchor_focuses_panel_and_handles_same_hash():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not available")
+
+    source = WORKSPACE.read_text(encoding="utf-8")
+    assert 'id="providersPanel" class="providers-panel" tabindex="-1"' in source
+    functions = "\n".join(
+        _extract_function(source, name)
+        for name in (
+            "focusProvidersPanel",
+            "handleProvidersAnchorClick",
+            "switchSection",
+        )
+    )
+    script = (
+        "const VALID_SECTIONS = ['profile', 'providers'];\n"
+        "let scrollCalls = [];\n"
+        "let focusCalls = [];\n"
+        "let historyCalls = [];\n"
+        "function assert(condition, message) { if (!condition) throw new Error(message); }\n"
+        "function classListStub() { return { calls: [], toggle(name, value) { this.calls.push([name, value]); this[name] = value; } }; }\n"
+        "const providersPanel = {\n"
+        "  scrollIntoView(options) { scrollCalls.push(options); },\n"
+        "  focus(options) { focusCalls.push(options); },\n"
+        "};\n"
+        "const navSelect = { value: 'profile' };\n"
+        "const navItems = [\n"
+        "  { dataset: { section: 'profile' }, classList: classListStub(), attrs: {}, setAttribute(name, value) { this.attrs[name] = value; } },\n"
+        "  { dataset: { section: 'providers' }, classList: classListStub(), attrs: {}, setAttribute(name, value) { this.attrs[name] = value; } },\n"
+        "];\n"
+        "const sections = [\n"
+        "  { id: 'section-profile', classList: classListStub() },\n"
+        "  { id: 'section-providers', classList: classListStub() },\n"
+        "];\n"
+        "global.window = { selectedFacet: null, location: { pathname: '/app/settings/', hash: '#providers' } };\n"
+        "global.history = { replaceState(_state, _title, hash) { historyCalls.push(hash); window.location.hash = hash; } };\n"
+        "global.document = {\n"
+        "  getElementById(id) {\n"
+        "    if (id === 'providersPanel') return providersPanel;\n"
+        "    if (id === 'navSelect') return navSelect;\n"
+        "    throw new Error('unexpected id ' + id);\n"
+        "  },\n"
+        "  querySelectorAll(selector) {\n"
+        "    if (selector === '.settings-nav-item') return navItems;\n"
+        "    if (selector === '.settings-section') return sections;\n"
+        "    throw new Error('unexpected selector ' + selector);\n"
+        "  },\n"
+        "};\n"
+        f"{functions}\n"
+        "switchSection('providers');\n"
+        "assert(scrollCalls.length === 1, 'providers switch should scroll panel');\n"
+        "assert(scrollCalls[0].behavior === 'smooth' && scrollCalls[0].block === 'start', 'scroll options should match');\n"
+        "assert(focusCalls.length === 1 && focusCalls[0].preventScroll === true, 'providers switch should focus panel');\n"
+        "assert(navSelect.value === 'providers', 'mobile select should track providers');\n"
+        "assert(historyCalls[0] === '#providers', 'providers switch should update hash');\n"
+        "assert(navItems[1].classList.active === true && navItems[1].attrs['aria-selected'] === 'true', 'providers tab should activate');\n"
+        "assert(sections[1].classList.active === true, 'providers section should activate');\n"
+        "let prevented = 0;\n"
+        "handleProvidersAnchorClick({\n"
+        "  target: { closest(selector) { assert(selector === 'a', 'anchor lookup should be narrow'); return { pathname: '/app/settings/', hash: '#providers' }; } },\n"
+        "  preventDefault() { prevented += 1; },\n"
+        "});\n"
+        "assert(prevented === 1, 'same-document providers link should be intercepted');\n"
+        "assert(scrollCalls.length === 2 && focusCalls.length === 2, 'same-hash click should refocus providers panel');\n"
+        "handleProvidersAnchorClick({\n"
+        "  target: { closest() { return { pathname: '/other', hash: '#providers' }; } },\n"
+        "  preventDefault() { prevented += 1; },\n"
+        "});\n"
+        "assert(prevented === 1, 'different path should not be intercepted');\n"
+        "assert(scrollCalls.length === 2 && focusCalls.length === 2, 'different path should not refocus panel');\n"
+    )
+
+    subprocess.run([node, "-e", script], check=True, text=True)
+
+
 def test_context_groups_render_with_type_specific_provider_defaults():
     node = shutil.which("node")
     if node is None:

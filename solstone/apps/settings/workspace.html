@@ -2419,7 +2419,7 @@ button:focus:not(:focus-visible) {
     <section class="settings-section" id="section-providers" role="tabpanel" aria-labelledby="tab-providers">
       <h2>providers</h2>
       <p class="settings-section-desc">configure ai providers separately for generation (text analysis) and cogitate (tool-calling agents).</p>
-      <div id="providersPanel" class="providers-panel"></div>
+      <div id="providersPanel" class="providers-panel" tabindex="-1"></div>
 
       <form class="settings-form" onsubmit="return false;">
 
@@ -3545,6 +3545,23 @@ setupModalAccessibility('cleanupModal');
 // ========== NAVIGATION ==========
 const VALID_SECTIONS = ['profile', 'agent', 'providers', 'apikeys', 'transcription', 'observer', 'vision', 'insights', 'sol-voice', 'chat', 'security', 'sync', 'storage', 'support', 'facets', 'facet-appearance', 'facet-activities', 'facet-activity'];
 
+function focusProvidersPanel() {
+  const panel = document.getElementById('providersPanel');
+  if (!panel) return;
+  panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  panel.focus({ preventScroll: true });
+}
+
+function handleProvidersAnchorClick(e) {
+  const anchor = e.target.closest('a');
+  if (!anchor) return;
+  if (anchor.pathname !== window.location.pathname || anchor.hash !== '#providers') {
+    return;
+  }
+  e.preventDefault();
+  switchSection('providers');
+}
+
 function switchSection(sectionId, updateHash = true) {
   // Validate section exists
   if (!VALID_SECTIONS.includes(sectionId)) {
@@ -3571,6 +3588,10 @@ function switchSection(sectionId, updateHash = true) {
   document.querySelectorAll('.settings-section').forEach(section => {
     section.classList.toggle('active', section.id === 'section-' + sectionId);
   });
+
+  if (sectionId === 'providers') {
+    focusProvidersPanel();
+  }
 
   if (sectionId === 'facets') {
     loadAllFacets();
@@ -3750,6 +3771,8 @@ async function loadMutedFacets() {
 document.querySelectorAll('.settings-nav-item').forEach(btn => {
   btn.addEventListener('click', () => switchSection(btn.dataset.section));
 });
+
+document.addEventListener('click', handleProvidersAnchorClick);
 
 // Keyboard navigation for settings nav tabs
 document.getElementById('settingsNav').addEventListener('keydown', (e) => {

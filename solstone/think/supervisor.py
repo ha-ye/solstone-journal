@@ -1164,6 +1164,24 @@ def _handle_supervisor_drain(message: dict) -> None:
         run_catchup_drain()
 
 
+def _handle_supervisor_start_local(message: dict) -> None:
+    """Handle incoming local server start requests."""
+    if message.get("tract") != "supervisor" or message.get("event") != "start_local":
+        return
+    if _is_remote_mode:
+        return
+
+    for proc in _managed_procs:
+        if proc.name in _LOCAL_SERVER_PROCTITLES and proc.is_running():
+            logging.info("local server already running; ignoring start_local request")
+            return
+
+    proc = start_local_server()
+    if proc is not None:
+        _managed_procs.append(proc)
+        logging.info("started local server from start_local request")
+
+
 def get_task_status(ref: str) -> dict:
     """Get status of a task.
 
@@ -1904,6 +1922,7 @@ def _handle_callosum_message(message: dict) -> None:
     _handle_task_request(message)
     _handle_supervisor_request(message)
     _handle_supervisor_drain(message)
+    _handle_supervisor_start_local(message)
     _handle_segment_observed(message)
     _handle_activity_recorded(message)
     _handle_think_daily_complete(message)
