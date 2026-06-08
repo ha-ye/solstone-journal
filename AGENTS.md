@@ -197,6 +197,7 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Todos (`facets/*/todos/*.jsonl`) | `solstone/apps/todos/todo.py` |
 | Chronicle chat stream (`chronicle/**/chat/<seg>/chat.jsonl`) | `solstone/convey/chat_stream.py` |
 | Config (`config/journal.json`) | `solstone/think/journal_config.py` |
+| Schedules (`config/schedules.json`) | `solstone/think/schedule_config.py` |
 | Push devices (`config/push_devices.json`) | `solstone/think/push/devices.py` |
 | Convey config (`config/convey.json`) | `solstone/convey/config.py` + `solstone/think/facets.py` |
 | Chat config (`config/chat.json`) | `solstone/apps/chat/config.py` |

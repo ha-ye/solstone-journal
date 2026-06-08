@@ -1345,8 +1345,8 @@ class TestHeartbeatSchedule:
         mod.register_defaults()
 
         monkeypatch.setattr(
-            mod.tempfile,
-            "mkstemp",
+            mod,
+            "set_schedule_entries",
             lambda *args, **kwargs: pytest.fail("register_defaults rewrote config"),
         )
 

@@ -10,11 +10,10 @@ maintenance windows when the user is consistently inactive.
 import json
 import logging
 import re
-import tempfile
 from datetime import datetime, timedelta
-from pathlib import Path
 
-from solstone.think.utils import get_journal, iter_segments
+from solstone.think.schedule_config import set_schedule_metadata
+from solstone.think.utils import iter_segments
 
 
 def _parse_segment(folder_name: str) -> tuple[datetime, int] | None:
@@ -200,33 +199,6 @@ def post_process(result: str, context: dict) -> str | None:
         logger.warning("daily_schedule: invalid primary time format: %s", primary)
         return None
 
-    # Atomic read-modify-write of config/schedules.json
-    config_path = Path(get_journal()) / "config" / "schedules.json"
-
-    try:
-        if config_path.exists():
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-        else:
-            config = {}
-    except (json.JSONDecodeError, OSError):
-        config = {}
-
-    config["daily_time"] = primary
-
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=config_path.parent, suffix=".tmp", prefix=".schedules_"
-    )
-    tmp_file = Path(tmp_path)
-    try:
-        with open(fd, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2)
-            f.write("\n")
-        tmp_file.replace(config_path)
-    except BaseException:
-        tmp_file.unlink(missing_ok=True)
-        raise
-
+    set_schedule_metadata({"daily_time": primary})
     logger.info("daily_schedule: saved daily_time=%s to schedules config", primary)
     return None

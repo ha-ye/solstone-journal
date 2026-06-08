@@ -79,6 +79,20 @@ Unit=sol-think.service
 WantedBy=timers.target
 ```
 
+### config/schedules.json contract
+
+`config/schedules.json` stores scheduler metadata and named schedule entries in
+one top-level JSON object. Reserved metadata keys are `daily_time`, `weekly_day`,
+and `weekly_time`; every other top-level key is a named entry with `cmd` and
+`every`, plus optional `enabled` and `max_runtime`.
+
+The scheduler's runtime reader, `load_config`, is forgiving: malformed entries
+are skipped, reserved metadata is extracted separately, and invalid per-entry
+data is not fatal. Writes go through `solstone/think/schedule_config.py`, the
+sole write owner for the file. That owner is fail-visible for whole-file
+malformation: malformed JSON or a non-object top-level value raises instead of
+clobbering existing bytes.
+
 ## Agent System
 
 ### Unified Priority Execution

@@ -80,6 +80,7 @@ from solstone.think.retention import (
     load_retention_config,
     purge,
 )
+from solstone.think.schedule_config import read_schedules, set_schedule_entries
 from solstone.think.streams import list_streams
 from solstone.think.utils import (
     CorruptConfigError,
@@ -2426,17 +2427,9 @@ def update_sync() -> Any:
         if not request_data:
             return error_response(MISSING_REQUEST_BODY, detail="No data provided")
 
-        config_dir = Path(state.journal_root) / "config"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        schedules_path = config_dir / "schedules.json"
-
-        # Load existing schedules
-        schedules = {}
-        if schedules_path.exists():
-            with open(schedules_path, "r", encoding="utf-8") as f:
-                schedules = json.load(f)
-
+        schedules = read_schedules()
         changed_fields = {}
+        changed_entries: dict[str, dict[str, Any]] = {}
 
         # Handle plaud sync toggle
         if "plaud" in request_data:
@@ -2467,6 +2460,7 @@ def update_sync() -> Any:
                         }
                     schedules["sync:plaud"]["enabled"] = enabled
                     changed_fields["plaud.enabled"] = enabled
+                    changed_entries["sync:plaud"] = schedules["sync:plaud"]
 
         # Handle granola sync toggle
         if "granola" in request_data:
@@ -2502,6 +2496,7 @@ def update_sync() -> Any:
                         }
                     schedules["sync:granola"]["enabled"] = enabled
                     changed_fields["granola.enabled"] = enabled
+                    changed_entries["sync:granola"] = schedules["sync:granola"]
 
         # Handle obsidian sync toggle
         if "obsidian" in request_data:
@@ -2537,11 +2532,10 @@ def update_sync() -> Any:
                         }
                     schedules["sync:obsidian"]["enabled"] = enabled
                     changed_fields["obsidian.enabled"] = enabled
+                    changed_entries["sync:obsidian"] = schedules["sync:obsidian"]
 
         if changed_fields:
-            with open(schedules_path, "w", encoding="utf-8") as f:
-                json.dump(schedules, f, indent=2, ensure_ascii=False)
-                f.write("\n")
+            set_schedule_entries(changed_entries)
 
             log_app_action(
                 app="settings",

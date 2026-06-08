@@ -21,6 +21,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from solstone.think.schedule_config import (
+    RESERVED_METADATA_KEYS,
+    read_schedules,
+    set_schedule_entries,
+)
 from solstone.think.utils import (
     get_journal,
     now_ms,
@@ -84,13 +89,13 @@ def load_config() -> dict[str, dict[str, Any]]:
         return {}
 
     # Extract daily_time metadata (not a schedule entry)
-    _daily_time = raw.pop("daily_time", None)
+    _daily_time = raw.get("daily_time", None)
     if _daily_time is not None and not isinstance(_daily_time, str):
         logger.warning("schedules.json: daily_time must be a string, ignoring")
         _daily_time = None
 
     # Extract weekly_day metadata
-    _weekly_day = raw.pop("weekly_day", None)
+    _weekly_day = raw.get("weekly_day", None)
     if _weekly_day is not None and not isinstance(_weekly_day, str):
         logger.warning("schedules.json: weekly_day must be a string, ignoring")
         _weekly_day = None
@@ -101,13 +106,16 @@ def load_config() -> dict[str, dict[str, Any]]:
         _weekly_day = None
 
     # Extract weekly_time metadata
-    _weekly_time = raw.pop("weekly_time", None)
+    _weekly_time = raw.get("weekly_time", None)
     if _weekly_time is not None and not isinstance(_weekly_time, str):
         logger.warning("schedules.json: weekly_time must be a string, ignoring")
         _weekly_time = None
 
     entries: dict[str, dict[str, Any]] = {}
     for name, entry in raw.items():
+        if name in RESERVED_METADATA_KEYS:
+            continue
+
         if not isinstance(entry, dict):
             logger.warning("Schedule '%s': expected object, skipping", name)
             continue
@@ -355,74 +363,46 @@ def register_defaults() -> None:
     ):
         return
 
-    # Read raw config (preserving daily_time and other entries)
-    config_dir = Path(get_journal()) / "config"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / "schedules.json"
-
-    raw: dict[str, Any] = {}
-    if config_path.exists():
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    if not isinstance(raw, dict):
-        raw = {}
-
-    changed = False
+    raw = read_schedules()
+    additions: dict[str, dict[str, Any]] = {}
 
     if need_heartbeat and "heartbeat" not in raw:
-        raw["heartbeat"] = {
+        additions["heartbeat"] = {
             "cmd": ["journal", "heartbeat"],
             "every": "daily",
             "enabled": True,
             "max_runtime": "10m",
         }
-        changed = True
 
     if need_weekly and "weekly-agents" not in raw:
-        raw["weekly-agents"] = {
+        additions["weekly-agents"] = {
             "cmd": ["journal", "think", "--weekly", "-v"],
             "every": "weekly",
             "enabled": True,
             "max_runtime": "30m",
         }
-        changed = True
 
     if need_providers and "providers" not in raw:
-        raw["providers"] = {
+        additions["providers"] = {
             "cmd": ["journal", "providers", "check"],
             "every": "daily",
             "enabled": True,
             "max_runtime": "5m",
         }
-        changed = True
 
     if need_facet_candidates and "facet-candidates" not in raw:
-        raw["facet-candidates"] = {
+        additions["facet-candidates"] = {
             "cmd": ["journal", "facet-candidates"],
             "every": "weekly",
             "enabled": True,
             "max_runtime": "10m",
         }
-        changed = True
 
-    if not changed:
+    if not additions:
         return
 
-    # Atomic write
-    fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".tmp", prefix=".schedules_")
-    tmp_file = Path(tmp_path)
-    try:
-        with open(fd, "w", encoding="utf-8") as f:
-            json.dump(raw, f, indent=2)
-        tmp_file.replace(config_path)
-        logger.info("Auto-registered default schedule(s) in config/schedules.json")
-    except BaseException:
-        tmp_file.unlink(missing_ok=True)
-        raise
+    set_schedule_entries(additions)
+    logger.info("Auto-registered default schedule(s) in config/schedules.json")
 
     # Reload to pick up the new entry
     _entries = load_config()
@@ -663,14 +643,19 @@ def main() -> None:
             print(f"Error reading {config_path}: {exc}")
             return
 
-    # Extract daily_time metadata before processing entries
+    # Extract scheduling metadata before processing entries.
     global _daily_time, _weekly_day, _weekly_time
-    raw_daily_time = config.pop("daily_time", None)
+    raw_daily_time = config.get("daily_time", None)
     _daily_time = raw_daily_time if isinstance(raw_daily_time, str) else None
-    raw_weekly_day = config.pop("weekly_day", None)
-    raw_weekly_time = config.pop("weekly_time", None)
+    raw_weekly_day = config.get("weekly_day", None)
+    raw_weekly_time = config.get("weekly_time", None)
     _weekly_day = raw_weekly_day if isinstance(raw_weekly_day, str) else None
     _weekly_time = raw_weekly_time if isinstance(raw_weekly_time, str) else None
+    config = {
+        name: entry
+        for name, entry in config.items()
+        if name not in RESERVED_METADATA_KEYS
+    }
 
     if not config:
         print("No schedules configured.")

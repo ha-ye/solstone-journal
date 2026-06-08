@@ -109,6 +109,7 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/think/facets.py",
         "solstone/think/identity.py",
         "solstone/think/journal_config.py",
+        "solstone/think/schedule_config.py",
         "solstone/think/push/devices.py",
         # Host-config mechanic only; writes ~/.config/solstone/.last-start-version, not journal domain state.
         "solstone/think/start.py",

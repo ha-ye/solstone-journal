@@ -8,11 +8,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import tempfile
 from dataclasses import dataclass
-from pathlib import Path
 
-from solstone.think.utils import get_journal, setup_cli
+from solstone.think.journal_io.errors import LockTimeout, MalformedDataError
+from solstone.think.schedule_config import get_schedules_path, set_schedule_entries
+from solstone.think.utils import setup_cli
 
 
 @dataclass
@@ -34,9 +34,9 @@ def _is_dream_schedule_cmd(value: object) -> bool:
     )
 
 
-def run_migration(journal_path: Path, *, dry_run: bool) -> MigrationSummary:
+def run_migration(*, dry_run: bool) -> MigrationSummary:
     summary = MigrationSummary()
-    schedules_path = journal_path / "config" / "schedules.json"
+    schedules_path = get_schedules_path()
 
     if not schedules_path.exists():
         summary.skipped_reason = "no file"
@@ -63,6 +63,7 @@ def run_migration(journal_path: Path, *, dry_run: bool) -> MigrationSummary:
         summary.skipped_reason = "unparseable"
         return summary
 
+    rewritten_names: list[str] = []
     for name, value in raw.items():
         if _is_dream_schedule_cmd(value):
             old_cmd = value["cmd"][:]
@@ -70,6 +71,7 @@ def run_migration(journal_path: Path, *, dry_run: bool) -> MigrationSummary:
             new_cmd[0] = "journal"
             new_cmd[1] = "think"
             value["cmd"] = new_cmd
+            rewritten_names.append(name)
             summary.discovered += 1
             summary.rewritten += 1
             print(
@@ -85,20 +87,8 @@ def run_migration(journal_path: Path, *, dry_run: bool) -> MigrationSummary:
         return summary
 
     try:
-        config_dir = schedules_path.parent
-        # Atomic write
-        fd, tmp_path = tempfile.mkstemp(
-            dir=config_dir, suffix=".tmp", prefix=".schedules_"
-        )
-        tmp_file = Path(tmp_path)
-        try:
-            with open(fd, "w", encoding="utf-8") as f:
-                json.dump(raw, f, indent=2)
-            tmp_file.replace(schedules_path)
-        except BaseException:
-            tmp_file.unlink(missing_ok=True)
-            raise
-    except Exception as exc:
+        set_schedule_entries({name: raw[name] for name in rewritten_names})
+    except (OSError, MalformedDataError, LockTimeout) as exc:
         summary.errors += 1
         print(f"[ERROR] write failed: {schedules_path}: {exc}")
 
@@ -126,8 +116,7 @@ def main() -> None:
     )
     args = setup_cli(parser)
 
-    journal_path = Path(get_journal())
-    summary = run_migration(journal_path, dry_run=args.dry_run)
+    summary = run_migration(dry_run=args.dry_run)
 
     _print_summary(summary)
     if summary.errors:

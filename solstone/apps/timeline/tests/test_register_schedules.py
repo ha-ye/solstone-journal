@@ -24,7 +24,7 @@ def test_adds_both_entries_when_missing(timeline_journal):
     """AC#11."""
     write_json(_schedules_path(timeline_journal), {})
 
-    summary = mod.run_registration(timeline_journal)
+    summary = mod.run_registration()
 
     data = json.loads(_schedules_path(timeline_journal).read_text())
     assert summary.added == 2
@@ -38,10 +38,10 @@ def test_idempotent_no_rewrite_when_present(timeline_journal, monkeypatch):
     """AC#12."""
     write_json(_schedules_path(timeline_journal), mod.EXPECTED_ENTRIES)
     monkeypatch.setattr(
-        mod, "_atomic_write_json", lambda *args, **kwargs: pytest.fail("rewrite")
+        mod, "set_schedule_entries", lambda *args, **kwargs: pytest.fail("rewrite")
     )
 
-    summary = mod.run_registration(timeline_journal)
+    summary = mod.run_registration()
 
     assert summary.added == 0
     assert summary.preserved == 2
@@ -59,10 +59,10 @@ def test_warns_and_preserves_divergent_cmd(timeline_journal, monkeypatch):
     }
     write_json(_schedules_path(timeline_journal), data)
     monkeypatch.setattr(
-        mod, "_atomic_write_json", lambda *args, **kwargs: pytest.fail("rewrite")
+        mod, "set_schedule_entries", lambda *args, **kwargs: pytest.fail("rewrite")
     )
 
-    summary = mod.run_registration(timeline_journal)
+    summary = mod.run_registration()
 
     assert summary.warnings == 1
     assert json.loads(_schedules_path(timeline_journal).read_text()) == data
@@ -79,10 +79,10 @@ def test_preserves_disabled_entry(timeline_journal, monkeypatch):
     }
     write_json(_schedules_path(timeline_journal), data)
     monkeypatch.setattr(
-        mod, "_atomic_write_json", lambda *args, **kwargs: pytest.fail("rewrite")
+        mod, "set_schedule_entries", lambda *args, **kwargs: pytest.fail("rewrite")
     )
 
-    summary = mod.run_registration(timeline_journal)
+    summary = mod.run_registration()
 
     assert summary.preserved == 2
     assert (
@@ -103,8 +103,22 @@ def test_malformed_json_exits_nonzero(timeline_journal, monkeypatch):
     assert exc.value.code == 1
 
 
+def test_dry_run_does_not_write(timeline_journal, monkeypatch):
+    schedules_path = _schedules_path(timeline_journal)
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("dry-run wrote schedules")
+
+    monkeypatch.setattr(mod, "set_schedule_entries", fail_if_called)
+
+    summary = mod.run_registration(dry_run=True)
+
+    assert summary.added == 2
+    assert not schedules_path.exists()
+
+
 def test_creates_schedules_json_when_missing(timeline_journal):
-    summary = mod.run_registration(timeline_journal)
+    summary = mod.run_registration()
 
     assert summary.added == 2
     assert _schedules_path(timeline_journal).is_file()

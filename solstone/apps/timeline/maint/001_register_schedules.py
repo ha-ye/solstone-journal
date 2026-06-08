@@ -8,14 +8,13 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import sys
-import tempfile
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-from solstone.think.utils import get_journal, setup_cli
+from solstone.think.journal_io.errors import LockTimeout, MalformedDataError
+from solstone.think.schedule_config import get_schedules_path, set_schedule_entries
+from solstone.think.utils import setup_cli
 
 logger = logging.getLogger(__name__)
 
@@ -42,37 +41,13 @@ class RegistrationSummary:
     skipped_reason: str | None = None
 
 
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_name: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=path.parent,
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            tmp_name = handle.name
-            handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_name, path)
-    except BaseException:
-        if tmp_name:
-            Path(tmp_name).unlink(missing_ok=True)
-        raise
-
-
 def _matches_expected(existing: dict[str, Any], expected: dict[str, Any]) -> bool:
     return all(existing.get(key) == value for key, value in expected.items())
 
 
-def run_registration(
-    journal_path: Path, *, dry_run: bool = False
-) -> RegistrationSummary:
+def run_registration(*, dry_run: bool = False) -> RegistrationSummary:
     summary = RegistrationSummary()
-    schedules_path = journal_path / "config" / "schedules.json"
+    schedules_path = get_schedules_path()
 
     if schedules_path.exists():
         try:
@@ -101,10 +76,12 @@ def run_registration(
         raw = {}
 
     changed = False
+    added: dict[str, dict[str, Any]] = {}
     for name, expected in EXPECTED_ENTRIES.items():
         existing = raw.get(name)
         if existing is None:
-            raw[name] = dict(expected)
+            added[name] = dict(expected)
+            raw[name] = added[name]
             summary.added += 1
             changed = True
             continue
@@ -121,8 +98,8 @@ def run_registration(
         return summary
 
     try:
-        _atomic_write_json(schedules_path, raw)
-    except OSError as exc:
+        set_schedule_entries(added)
+    except (OSError, MalformedDataError, LockTimeout) as exc:
         logger.warning("Failed to write %s: %s", schedules_path, exc)
         summary.errors += 1
 
@@ -148,7 +125,7 @@ def main() -> None:
     )
     args = setup_cli(parser)
 
-    summary = run_registration(Path(get_journal()), dry_run=args.dry_run)
+    summary = run_registration(dry_run=args.dry_run)
     _print_summary(summary)
     if summary.errors:
         sys.exit(1)

@@ -2,10 +2,17 @@ import importlib
 import json
 from pathlib import Path
 
+import pytest
+
 mod = importlib.import_module(
     "solstone.apps.sol.maint.005_migrate_dream_to_think_schedules"
 )
 DREAM = "dream"
+
+
+@pytest.fixture(autouse=True)
+def _use_tmp_journal(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
 
 def _write_schedules(journal: Path, data: object) -> Path:
@@ -29,7 +36,7 @@ def test_happy_path_rewrites_weekly_agents(tmp_path):
         },
     )
 
-    summary = mod.run_migration(tmp_path, dry_run=False)
+    summary = mod.run_migration(dry_run=False)
 
     assert summary.discovered == 1
     assert summary.rewritten == 1
@@ -54,7 +61,7 @@ def test_custom_dream_entry_is_rewritten(tmp_path):
         },
     )
 
-    summary = mod.run_migration(tmp_path, dry_run=False)
+    summary = mod.run_migration(dry_run=False)
 
     assert summary.discovered == 1
     assert summary.rewritten == 1
@@ -89,7 +96,7 @@ def test_non_dream_entries_preserved_byte_for_byte(tmp_path):
     }
     schedules_path = _write_schedules(tmp_path, initial)
 
-    summary = mod.run_migration(tmp_path, dry_run=False)
+    summary = mod.run_migration(dry_run=False)
 
     assert summary.discovered == 1
     assert summary.rewritten == 1
@@ -114,7 +121,7 @@ def test_idempotent_rerun(tmp_path):
     before_bytes = schedules_path.read_bytes()
     before_mtime_ns = schedules_path.stat().st_mtime_ns
 
-    summary = mod.run_migration(tmp_path, dry_run=False)
+    summary = mod.run_migration(dry_run=False)
 
     assert summary.discovered == 0
     assert summary.rewritten == 0
@@ -130,7 +137,7 @@ def test_missing_file(tmp_path):
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    summary = mod.run_migration(tmp_path, dry_run=False)
+    summary = mod.run_migration(dry_run=False)
 
     assert summary.skipped_reason == "no file"
     assert summary.errors == 0
@@ -144,7 +151,7 @@ def test_empty_file(tmp_path):
     schedules_path = config_dir / "schedules.json"
     schedules_path.write_text("", encoding="utf-8")
 
-    summary = mod.run_migration(tmp_path, dry_run=False)
+    summary = mod.run_migration(dry_run=False)
 
     assert summary.skipped_reason == "empty file"
     assert summary.errors == 0
@@ -158,7 +165,7 @@ def test_malformed_json(tmp_path):
     schedules_path = config_dir / "schedules.json"
     schedules_path.write_text("{not json", encoding="utf-8")
 
-    summary = mod.run_migration(tmp_path, dry_run=False)
+    summary = mod.run_migration(dry_run=False)
 
     assert summary.skipped_reason == "unparseable"
     assert summary.errors == 0
@@ -166,7 +173,7 @@ def test_malformed_json(tmp_path):
     assert schedules_path.read_text(encoding="utf-8") == "{not json"
 
 
-def test_dry_run_does_not_write(tmp_path):
+def test_dry_run_does_not_write(tmp_path, monkeypatch):
     schedules_path = _write_schedules(
         tmp_path,
         {
@@ -178,19 +185,22 @@ def test_dry_run_does_not_write(tmp_path):
         },
     )
     before_bytes = schedules_path.read_bytes()
-    config_dir = tmp_path / "config"
 
-    summary = mod.run_migration(tmp_path, dry_run=True)
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("dry-run wrote schedules")
+
+    monkeypatch.setattr(mod, "set_schedule_entries", fail_if_called)
+
+    summary = mod.run_migration(dry_run=True)
 
     assert summary.discovered == 1
     assert summary.rewritten == 1
     assert summary.preserved == 0
     assert summary.errors == 0
     assert schedules_path.read_bytes() == before_bytes
-    assert list(config_dir.glob(".schedules_*.tmp")) == []
 
 
-def test_atomic_write_failure_cleans_up_tmpfile(tmp_path, monkeypatch):
+def test_owner_write_failure_preserves_existing_bytes(tmp_path, monkeypatch):
     schedules_path = _write_schedules(
         tmp_path,
         {
@@ -202,15 +212,13 @@ def test_atomic_write_failure_cleans_up_tmpfile(tmp_path, monkeypatch):
         },
     )
     before_bytes = schedules_path.read_bytes()
-    config_dir = tmp_path / "config"
 
-    def _boom(self, target):
+    def _boom(_entries):
         raise OSError("boom")
 
-    monkeypatch.setattr(mod.Path, "replace", _boom)
+    monkeypatch.setattr(mod, "set_schedule_entries", _boom)
 
-    summary = mod.run_migration(tmp_path, dry_run=False)
+    summary = mod.run_migration(dry_run=False)
 
     assert summary.errors >= 1
     assert schedules_path.read_bytes() == before_bytes
-    assert list(config_dir.glob(".schedules_*.tmp")) == []

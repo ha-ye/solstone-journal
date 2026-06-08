@@ -196,3 +196,35 @@ def test_facet_routes_single_audit_log_entry(settings_env):
     entry = json.loads(lines[0])
     assert entry["source"] == "call"
     assert entry["actor"] == "agent"
+
+
+def test_update_sync_preserves_unrelated_schedule_entry(settings_env):
+    journal, client = _settings_client(settings_env)
+    schedules_path = journal / "config" / "schedules.json"
+    unrelated = {"cmd": ["journal", "heartbeat"], "every": "daily"}
+    schedules_path.write_text(
+        json.dumps({"unrelated": unrelated}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    response = client.put(
+        "/app/settings/api/sync",
+        json={"plaud": {"enabled": True}},
+    )
+
+    assert response.status_code == 200
+    raw = json.loads(schedules_path.read_text(encoding="utf-8"))
+    assert raw["unrelated"] == unrelated
+    assert raw["sync:plaud"] == {
+        "cmd": ["sol", "import", "--sync", "plaud", "--save"],
+        "every": "hourly",
+        "enabled": True,
+    }
+
+    payload = response.get_json()
+    assert set(payload) == {"plaud", "granola", "obsidian"}
+    assert set(payload["plaud"]) == {"available", "enabled", "configured"}
+    assert set(payload["granola"]) == {"enabled", "configured"}
+    assert set(payload["obsidian"]) == {"available", "enabled", "configured"}
+    assert payload["plaud"]["enabled"] is True
+    assert payload["plaud"]["configured"] is True
