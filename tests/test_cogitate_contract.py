@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
+from pathlib import Path
+
 from solstone.think.cogitate_contract import (
     COGITATE_ACCESS_TIERS,
     COGITATE_RUNTIME_PREAMBLE,
@@ -75,3 +77,24 @@ def test_cogitate_runtime_preamble_content_guard():
     assert "through a `sol` domain command" in COGITATE_RUNTIME_PREAMBLE
     assert "no MCP tools" in COGITATE_RUNTIME_PREAMBLE
     assert "no bare `journal ...` commands" in COGITATE_RUNTIME_PREAMBLE
+    assert "read_file" in COGITATE_RUNTIME_PREAMBLE
+    assert "list_directory" in COGITATE_RUNTIME_PREAMBLE
+    assert "glob" in COGITATE_RUNTIME_PREAMBLE
+    assert "grep_search" in COGITATE_RUNTIME_PREAMBLE
+    assert "when this run provides a read tool" not in COGITATE_RUNTIME_PREAMBLE
+
+
+def test_cogitate_doc_preamble_block_matches_source_constant():
+    docs_path = Path(__file__).resolve().parents[1] / "docs" / "COGITATE.md"
+    text = docs_path.read_text(encoding="utf-8")
+    heading = "## The in-context preamble (named source constant)"
+    _, heading_found, tail = text.partition(heading)
+    assert heading_found
+    _, verbatim_found, tail = tail.partition("verbatim text:")
+    assert verbatim_found
+    _, fence_found, tail = tail.partition("```\n")
+    assert fence_found
+    block, closing_fence, _tail = tail.partition("\n```")
+    assert closing_fence
+
+    assert block == COGITATE_RUNTIME_PREAMBLE.rstrip("\n")

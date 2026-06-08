@@ -791,6 +791,7 @@ async def run_cogitate(
         read_call_budget = int(
             config.get("read_call_budget", DEFAULT_READ_CALL_BUDGET) or 0
         )
+        journal = Path(get_journal())
         llm = _build_llm(provider, model)
         usage_start = _usage_snapshot(llm)
         sol_tools, _executor = _build_sol_tools(
@@ -805,6 +806,16 @@ async def run_cogitate(
         # reference it by name.
         register_tool("sol", sol_tools[0])
         tool_specs = [Tool(name="sol")]
+        from .read_tools import build_read_tools
+
+        # Per-tier gating is later; bounded reads register for every run today.
+        read_tools = build_read_tools(
+            journal=journal,
+            read_call_budget=read_call_budget,
+        )
+        for read_tool in read_tools:
+            register_tool(read_tool.name, read_tool)
+            tool_specs.append(Tool(name=read_tool.name))
         default_tools = ["FinishTool"]
         if expects_emit_final:
             from .emit_final_tool import build_emit_final_tools
@@ -821,7 +832,6 @@ async def run_cogitate(
             system_prompt=system_instruction,
         )
 
-        journal = Path(get_journal())
         persistence_dir = journal / ".cache" / "cogitate-history" / session_id
         persistence_dir.mkdir(parents=True, exist_ok=True)
         translator = _OpenHandsTranslator(

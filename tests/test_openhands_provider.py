@@ -404,7 +404,14 @@ def test_run_cogitate_uses_emit_final_branch_for_output_path(
 
     conversation = fake_openhands.Conversation.instances[0]
     assert result is None
-    assert [tool.name for tool in conversation.agent.tools] == ["sol", "emit_final"]
+    assert [tool.name for tool in conversation.agent.tools] == [
+        "sol",
+        "read_file",
+        "list_directory",
+        "glob",
+        "grep_search",
+        "emit_final",
+    ]
     assert conversation.agent.include_default_tools == []
     error_events = [event for event in events if event["event"] == "error"]
     assert len(error_events) == 1
@@ -471,7 +478,13 @@ def test_run_cogitate_keeps_finish_branch_without_output_path(
 
     conversation = fake_openhands.Conversation.instances[0]
     assert result is None
-    assert [tool.name for tool in conversation.agent.tools] == ["sol"]
+    assert [tool.name for tool in conversation.agent.tools] == [
+        "sol",
+        "read_file",
+        "list_directory",
+        "glob",
+        "grep_search",
+    ]
     assert conversation.agent.include_default_tools == ["FinishTool"]
     finish_events = [event for event in events if event["event"] == "finish"]
     assert len(finish_events) == 1
@@ -491,7 +504,14 @@ def test_run_cogitate_uses_emit_final_branch_for_daily_no_output(
 
     conversation = fake_openhands.Conversation.instances[0]
     assert not config.get("output_path")
-    assert [tool.name for tool in conversation.agent.tools] == ["sol", "emit_final"]
+    assert [tool.name for tool in conversation.agent.tools] == [
+        "sol",
+        "read_file",
+        "list_directory",
+        "glob",
+        "grep_search",
+        "emit_final",
+    ]
     assert conversation.agent.include_default_tools == []
     error_events = [event for event in events if event["event"] == "error"]
     assert len(error_events) == 1

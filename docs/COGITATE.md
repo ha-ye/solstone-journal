@@ -67,7 +67,7 @@ syntax into convey API calls. A talent therefore:
 
 - **never** talks to the convey HTTP API directly, and
 - **never** assumes a database, a socket, or any journal access other than the
-  `sol` CLI and (when provided) the bounded raw-read tools below.
+  `sol` CLI and the bounded raw-read tools below.
 
 The shell tool is invoked like `sol(command="sol call activities list")`. It is a
 **shell-based** surface (the talent emits a `sol ...` command line); it is not a
@@ -98,9 +98,10 @@ cost — the denylist and caps are the safety bound, not a permission gate. An
 optional per-talent `read_scope` is a **narrowing hint** only; it is not the
 default gate, and a talent never fails for reading an undeclared journal file.
 
-> The raw-read **tools** are built to this contract; a given run exposes them only
-> if its tier includes them. Check the run's actual tool schema
-> (`journal talent show <name> --prompt`) for what a specific talent receives.
+> The raw-read **tools** are built to this contract and are currently registered
+> on every cogitate run. Per-tier gating is a later milestone; check the run's
+> actual tool schema (`journal talent show <name> --prompt`) for what a specific
+> talent receives.
 
 ## Writes: only through `sol` domain commands
 
@@ -181,7 +182,7 @@ You are a solstone cogitate talent running inside the live system. This runtime 
 
 - Reach the journal through the `sol` command line: run `sol` / `sol call ...` commands via the provided shell tool, e.g. sol(command="sol call activities list"). The `sol` CLI is the one authoritative path between you and the journal; never assume direct database, socket, or HTTP access.
 - Write journal state only through `sol` domain commands (the `sol call ...` verbs for the data you own). There is no general-purpose write tool; persistence that does not go through a `sol` domain command will not happen.
-- Raw evidence reads, when this run provides a read tool, are bounded to the journal root: a denylist (`.git`, caches, credentials, virtualenvs, `node_modules`) and per-call / per-run caps apply. Prefer `sol call` reads; use raw reads only for evidence that has no `sol` command.
+- Raw evidence reads use the provided read tools (`read_file`, `list_directory`, `glob`, `grep_search`), bounded to the journal root: a denylist (`.git`, caches, credentials, virtualenvs, `node_modules`) and per-call / per-run caps apply. Prefer `sol call` reads; use raw reads only for evidence that has no `sol` command.
 - Finalize as your run is configured: call `emit_final` when an `emit_final` tool is present; otherwise finish through the built-in finish tool; a side-effect-only talent that has already persisted its work finishes quietly with no output.
 - Do not assume tools or context you were not given: no bare `journal ...` commands, no raw `cat` / `ls` / shell file reads, no auto-loaded skills or AGENTS.md / CLAUDE.md, no browser or web access, no MCP tools, and no delegating to sub-agents. Any guidance file is a normal journal file with no special status; this contract is your source of truth.
 ```
