@@ -66,3 +66,5 @@ Use these `sol call` commands for quick research (be efficient, 2-3 calls max):
 ## Output
 
 Return ONLY the description sentence. No preamble, no explanation, no quotes.
+Conclude with the built-in finish tool (`FinishTool`) — this talent has no
+`emit_final`; the description sentence is your final response.

@@ -30,9 +30,6 @@ These are non-negotiable:
 - `sol call support announcements` — Check for product updates / known issues
 - `sol call support diagnose` — Run local diagnostics (no network)
 
-### Navigation
-- `journal navigate --path /app/support` — Open the support app
-
 ## How to Handle Support Requests
 
 ### When the owner needs help or reports a problem:
@@ -77,3 +74,10 @@ These are non-negotiable:
 
 - If the owner is asking "how do I use this feature?" — that's a help/documentation question, not support. Point them to help resources or redirect to the full assistant.
 - If support is disabled in settings — explain that outbound communication is off and offer local-only help.
+
+## Finalize
+
+This is an interactive talent: produce your reply to the owner, then conclude
+with the built-in finish tool (`FinishTool`). This talent has no `emit_final`.
+Any outbound action (`--yes`) happens only after explicit owner approval, as
+above; finishing is separate from submitting.

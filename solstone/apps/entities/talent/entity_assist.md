@@ -28,7 +28,7 @@ You receive:
 SOL_FACET is set in your environment. Entity and journal commands default to the current facet — only pass explicit values to override.
 
 Facet Context - always do this first:
-- `sol call journal facet`
+- `sol call journal facet show`
 
 Entity operations:
 - `sol call entities list` - check if entity already attached (returns entities with entity_id)
@@ -134,7 +134,8 @@ sol call entities attach Person "Alice Johnson" "Senior engineer on the platform
 
 Note: If the entity already exists, `sol call entities attach` will return it with `created: false`.
 
-Report success:
+Report success, then conclude with the built-in finish tool (`FinishTool`) —
+this talent has no `emit_final`; the confirmation line is your final response:
 "✓ Added {name} ({type}) to {facet}"
 
 ## Quality Guidelines

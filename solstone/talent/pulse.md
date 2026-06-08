@@ -20,12 +20,12 @@ This is not a conversation. Gather context, write the pulse, done.
 
 ## Gather context
 
-Read current state using these tools:
+Read current state. Use the `read_file` tool for the identity files (relative to the journal root); use `sol call` for indexed data:
 
-1. `journal identity pulse` — previous pulse (may not exist yet; that's fine)
-2. `journal identity self` — who the owner is
-3. `journal identity partner` — behavioral profile of the owner
-4. `journal identity awareness` — current situational awareness (calendar, routines, activity, entities)
+1. `read_file` `identity/pulse.md` — previous pulse (may not exist yet; that's fine)
+2. `read_file` `identity/self.md` — who the owner is
+3. `read_file` `identity/partner.md` — behavioral profile of the owner
+4. `read_file` `identity/awareness.md` — current situational awareness (calendar, routines, activity, entities)
 5. `sol call todos list` — pending action items
 6. `sol call entities search` — recent entity activity
 
@@ -77,7 +77,14 @@ source: pulse-cogitate
 ```
 
 The `updated` field must be an ISO 8601 datetime (no timezone). The `segment`
-field is the current segment key from $SOL_SEGMENT.
+field is the current segment key from $SOL_SEGMENT. This write is the talent's
+only persistence path — `journal identity pulse --write` is the owned write
+command for `pulse.md` (there is no `sol call` verb for it yet).
+
+## Finalize
+
+This talent is side-effect-only: once the pulse is written with the command
+above, finish **quietly** with no further output (do not emit a final message).
 
 ## Guidelines
 

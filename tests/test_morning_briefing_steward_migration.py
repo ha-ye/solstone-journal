@@ -11,7 +11,12 @@ def _briefing_prompt() -> str:
 def test_morning_briefing_reads_steward_health_surface():
     prompt = _briefing_prompt()
 
-    assert "`journal identity health`" in prompt
+    # C3/C4: the steward health surface is now read via the raw-read tool
+    # (`identity/health.md`) rather than the bare `journal identity health`
+    # command — the runtime contract routes no-`sol call`-verb evidence through
+    # the read tools.
+    assert "`identity/health.md`" in prompt
+    assert "`journal identity health`" not in prompt
     assert "`sol call health pipeline --yesterday`" not in prompt
 
 

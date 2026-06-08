@@ -67,7 +67,8 @@ sol call import resolve-entity SOURCE_ID skip --source SOURCE
 
 Run `sol call import list-staged --source SOURCE --area entities` again to confirm the queue is clear or identify any remaining items.
 
-Report:
+Report, then conclude with the built-in finish tool (`FinishTool`) — this talent
+has no `emit_final`; your final response is the report:
 - How many entities were merged
 - How many were created
 - How many were skipped

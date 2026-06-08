@@ -63,7 +63,8 @@ sol call import resolve-config FIELD keep --source SOURCE
 
 ### Step 5: Report
 
-Report:
+Report, then conclude with the built-in finish tool (`FinishTool`) — this talent
+has no `emit_final`; your final response is the report:
 - How many transferable fields were applied in batch
 - How many preference fields were applied
 - How many preference fields were kept

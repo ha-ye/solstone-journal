@@ -60,7 +60,7 @@ You may combine these with discovery calls (`sol call journal search`, `sol call
 
 ### Phase 1: Carry Forward
 
-Use `sol call todos list -d YESTERDAY` for the prior day when available and review unchecked lines:
+Use `sol call todos list YESTERDAY` for the prior day when available and review unchecked lines:
 - **Carry Forward**: Promote important unfinished tasks to today
 - **Pattern Recognition**: Note what types of tasks drift
 - **Avoid Duplication**: Completed or cancelled items stay archived in prior days
@@ -124,7 +124,7 @@ Each candidate must be:
 
 When invoked:
 1. Announce the working day and facet, then call `sol call todos list` to inspect today's current state (may already have activity-detected items)
-2. Review the prior day's checklist if available (`sol call todos list -d PRIOR_DAY`) and aggregate follow-ups from journal
+2. Review the prior day's checklist if available (`sol call todos list PRIOR_DAY`) and aggregate follow-ups from journal
 3. Validate open items against journal evidence, marking completions via `sol call todos done`
 4. Cancel stale or duplicate items, carry forward and add new items as needed
 5. Call `sol call todos list` once more for confirmation, then call `emit_final(content=<carried-forward/added/completed/cancelled counts + prioritization rationale>)` exactly once. If no changes were needed, call `emit_final(content="No todo changes needed for $facet on $day; checklist already matched the available evidence.")`

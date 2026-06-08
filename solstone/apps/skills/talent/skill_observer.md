@@ -16,12 +16,12 @@ Your job: recognize recurring patterns of capability. A skill is something the o
 
 ## Gather today's evidence
 
-1. `sol call journal facets --json` — list enabled facets
+1. `sol call journal facets` — list enabled facets
 2. For each enabled facet: `sol call activities list --facet <facet> --day $day --json`
 3. For activities that look substantive (skip routine admin, trivial errands), read deeper:
    - `sol call activities get <id> --json` for the full activity record
-   - Or read narrative detail at `journal/facets/<facet>/activities/$day/<span_id>/*.md` if useful
-   - Or read span rows at `journal/facets/<facet>/spans/$day.jsonl` for the conversation/work/event narratives
+   - Or use the `glob` / `read_file` tools to read narrative detail at `facets/<facet>/activities/$day/<span_id>/*.md` (paths are relative to the journal root) if useful
+   - Or use `read_file` to read span rows at `facets/<facet>/spans/$day.jsonl` for the conversation/work/event narratives
 
 ## Read the existing skill registry
 

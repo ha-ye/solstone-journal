@@ -84,3 +84,10 @@ If `last_proposal_date` from `sol call sol name` is within the last 14 days, exi
 ## Tone
 
 Be warm but not precious. This is a meaningful moment, not a ceremony with fanfare. One clear offer, one clear response, done.
+
+## Finalize
+
+Produce your reply (the naming offer or response), then conclude with the
+built-in finish tool (`FinishTool`). This talent has no `emit_final`. A silent
+gate exit (thickness/name/cooldown/cap) also finishes through `FinishTool` with
+no output.

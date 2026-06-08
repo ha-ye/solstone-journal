@@ -46,14 +46,16 @@ If nothing is staged, report `Nothing to review` and exit.
 
 ### Step 3: Review Entities
 
-Process all staged entities using the same decision logic as the entity review workflow:
-- merge when the match is clearly correct
-- create when the entity is valid but distinct
-- skip only when the staged record should be discarded
+Process all staged entities with this decision logic:
+- **merge** (`resolve-entity SOURCE_ID merge --target TARGET_ID`) when the staged record clearly refers to an entity that already exists
+- **create** (`resolve-entity SOURCE_ID create`) when the entity is valid but genuinely distinct from anything already in the journal
+- **skip** (`resolve-entity SOURCE_ID skip`) only when the staged record should be discarded (noise, a non-entity, or a duplicate not worth merging)
 
 ### Step 4: Review Facets
 
-Only start facet review after entity staging is clear. Then process staged facet items using the facet review workflow.
+Only start facet review after entity staging is clear. Then process each staged facet item with this decision logic:
+- **apply** (`resolve-staged-facet STAGED_FILE --apply`) when the staged facet is a genuine new facet or a correct update to an existing one
+- **skip** (`resolve-staged-facet STAGED_FILE --skip`) when it duplicates an existing facet or is not worth keeping
 
 ### Step 5: Review Config
 
@@ -67,7 +69,9 @@ Run `sol call import list-staged --source SOURCE` again and confirm whether anyt
 
 ### Step 7: Report
 
-Report a complete summary:
+Report a complete summary, then conclude with the built-in finish tool
+(`FinishTool`) — this talent has no `emit_final`; your final response is the
+report:
 - entities merged / created / skipped
 - facet items applied / skipped
 - config fields applied / kept

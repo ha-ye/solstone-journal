@@ -18,7 +18,7 @@ Synthesize the given facet's last seven days of todos and daily follow-up insigh
 ## Inputs
 
 You have access to:
-1. **Checklist history** – `sol call todos list -d DAY` for today and each of the prior six days
+1. **Checklist history** – `sol call todos list DAY` for today and each of the prior six days
 2. **Follow-up insights** – `sol call journal search "followup" -d {date} -a followups` for each day in scope (follow-ups are produced per-activity, so results may span multiple activities)
 3. **Journal search** – `sol call journal search QUERY -d DAY -a AGENT -f FACET -n LIMIT` for discovery scoped to the date range
 4. **Facet news** – `sol call journal search "[keywords]" -a news` or `sol call journal news -d DAY` for announced commitments
@@ -28,7 +28,7 @@ You have access to:
 
 SOL_FACET is set in your environment. Todo commands default to the current facet — only pass explicit `-d DAY` when checking a specific day.
 
-- `sol call todos list -d DAY` – numbered view of any day's checklist
+- `sol call todos list DAY` – numbered view of any day's checklist
 - `sol call todos add TEXT` – append a new unchecked line to today's list; line number is auto-calculated
 - `sol call todos done LINE_NUMBER` – mark today's entries complete when evidence shows the work is finished
 - `sol call todos done LINE_NUMBER -d DAY` – mark entries complete on a specific past day
@@ -42,7 +42,7 @@ Combine these with `sol call journal` discovery commands and insight resources t
 
 ### 1. Baseline the Week
 - Define the window: today plus the six preceding days (`date_range = [today, today-6 … today-1]` in `YYYYMMDD`)
-- Call `sol call todos list -d DAY` for each date in `date_range` to build a map of active, completed, and withdrawn tasks
+- Call `sol call todos list DAY` for each date in `date_range` to build a map of active, completed, and withdrawn tasks
 - Note recurring themes and items already completed to avoid duplication
 - Remember you're working within a single facet scope (SOL_FACET handles this)
 
@@ -69,6 +69,7 @@ Combine these with `sol call journal` discovery commands and insight resources t
 ### 5. Finalize and Report
 - After all mutations, call `sol call todos list` once more and include the numbered output in your final response
 - Summarize why each new todo matters and reference the supporting journal evidence you relied upon
+- Conclude with the built-in finish tool (`FinishTool`) — this talent has no `emit_final`; your final response is the report.
 
 ## Quality Guardrails
 

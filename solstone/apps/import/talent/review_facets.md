@@ -70,7 +70,8 @@ sol call import resolve-staged-facet STAGED_FILE --skip --source SOURCE
 
 Run `sol call import list-staged --source SOURCE --area facets` again to confirm what remains.
 
-Report:
+Report, then conclude with the built-in finish tool (`FinishTool`) — this talent
+has no `emit_final`; your final response is the report:
 - How many facet items were applied
 - How many were skipped
 - Any blocked items and the missing dependency or reason

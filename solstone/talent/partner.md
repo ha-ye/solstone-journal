@@ -18,16 +18,11 @@ This is not a conversation. Gather data, observe patterns, update the profile, t
 
 ## Step 1: Read current state
 
-```bash
-journal identity partner
-```
+Read `identity/partner.md` with the `read_file` tool.
 
 Note which sections have real observations vs `[observing]` placeholders.
-Also read your own identity for context:
-
-```bash
-journal identity self
-```
+Also read your own identity for context with the `read_file` tool:
+`identity/self.md`.
 
 ## Step 2: Gather recent data
 
@@ -36,7 +31,7 @@ and query each source. If a source returns empty or errors, skip it — gaps are
 
 1. For each of the past 7 days:
    - `sol call activities list --source anticipated --day YYYYMMDD` — scheduled activity patterns
-   - `sol call todos list -d YYYYMMDD` — task patterns
+   - `sol call todos list YYYYMMDD` — task patterns
 2. For each active facet (from `sol call journal facets`):
    - `sol call journal news FACET --day YYYYMMDD` (most recent day available) — work themes
 3. `sol call journal search "" --day-from YYYYMMDD -a pulse -n 10` — pulse narratives for behavioral patterns
@@ -46,7 +41,8 @@ and query each source. If a source returns empty or errors, skip it — gaps are
 
 For each of the five profile sections, analyze the gathered data and write
 observations if you have sufficient evidence. Use `journal identity partner --update-section`
-for each section you update.
+for each section you update — it is the owned write command for `partner.md`
+(there is no `sol call` verb for it yet).
 
 ### Section guidance
 

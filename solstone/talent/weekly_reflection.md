@@ -18,11 +18,24 @@ This is not a conversation. Gather what you need, synthesize the week, and retur
 
 `$day_YYYYMMDD` is the canonical Sunday that starts the week under review. Cover that Sunday through the following Saturday.
 
-Follow the provenance pattern from `solstone/talent/patterns/provenance.md`, including:
-- a coverage preamble with source counts and gaps
-- `sol://` attribution for consequential claims
-- confidence-graded language that distinguishes observation from inference
-- safe handling of tool errors and missing data
+Apply these provenance rules — they keep the reflection honest about what is
+well-sourced versus inferred:
+
+- **Coverage preamble** — open with source counts and gaps (the `sources:`
+  frontmatter plus a 1–2 sentence summary). Name every source that returned zero
+  results or errored as a gap.
+- **Source attribution** — give high-consequence claims (commitments, decisions,
+  deadlines) an inline `sol://` link to their origin. Don't attribute
+  self-evident items or general syntheses.
+- **Confidence-graded language** — match wording to evidence strength. High
+  (multiple corroborating sources, explicit statement, or upstream confidence
+  ≥ 0.85): assert plainly. Medium (single clear source, or 0.50–0.84): attribute
+  and state directly. Low (inference, single passing mention, or < 0.50): hedge
+  ("appears to," "may," "possible"). Never hedge strong evidence; never assert
+  weak evidence.
+- **Tool-error guard** — if a tool errors, record it as a gap; never treat the
+  error text as data; continue with whatever data succeeded; never fabricate to
+  fill a gap.
 
 ## Gather
 
