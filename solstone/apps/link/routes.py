@@ -425,6 +425,42 @@ def local_endpoints() -> Any:
 # ---------------------------------------------------------------------------
 
 
+def _request_host_port() -> int | None:
+    _, _, port = request.host.rpartition(":")
+    return int(port) if port.isdigit() else None
+
+
+@link_bp.route("/api/pair/mint", methods=["POST"])
+def api_pair_mint() -> Any:
+    payload = request.get_json(silent=True) or {}
+    device_label = payload.get("device_label")
+    role = payload.get("role")
+
+    value = generate_nonce()
+    manual = generate_manual_code()
+    _nonces().add(
+        value,
+        str(device_label or ""),
+        role=str(role or ""),
+        manual_code=normalize_manual_code(manual),
+    )
+    ca_fp = load_or_generate_ca(ca_dir()).fingerprint_sha256()
+    return jsonify(
+        {
+            "nonce": value,
+            "manual_code": manual,
+            "ca_fingerprint": ca_fp,
+            "port": _request_host_port(),
+        }
+    )
+
+
+@link_bp.route("/api/pair/nonce-status")
+def api_pair_nonce_status() -> Any:
+    entry = _nonces().peek(request.args.get("nonce", ""))
+    return jsonify({"present": entry is not None, "used": bool(entry and entry.used)})
+
+
 @link_bp.route("/pair-start", methods=["POST"])
 def pair_start() -> Any:
     """Generate a single-use 5-minute nonce and return link-ready payload."""
