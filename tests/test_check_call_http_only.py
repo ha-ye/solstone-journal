@@ -142,6 +142,27 @@ def test_stale_allowlist_entries_are_reported_for_vanished_keys(
     assert "call-http-only: STALE allowlist entries:" in result.stderr
 
 
+def test_excluded_file_with_violations_is_not_flagged(tmp_path: Path) -> None:
+    root = tmp_path / "excluded"
+    excluded_rel = "solstone/apps/support/call.py"
+    assert excluded_rel in ccho.EXCLUDED_FILES
+    _write_file(
+        root,
+        excluded_rel,
+        "from solstone.think.utils import get_journal\n\n"
+        "def f():\n"
+        "    open('x')\n"
+        "    return get_journal()\n",
+    )
+
+    # Excluded file is skipped by discover_modules, so its import+fs violations
+    # never reach `live`; with an empty allowlist nothing is over/stale/tracked.
+    over, stale, tracked = ccho.evaluate(root, {})
+    assert over == []
+    assert stale == []
+    assert tracked == []
+
+
 def test_repo_tree_is_green() -> None:
     result = _run(REPO_ROOT)
     assert result.returncode == 0, result.stdout + result.stderr

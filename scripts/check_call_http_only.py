@@ -26,6 +26,12 @@ deleted/renamed/now-clean file with live count 0) fails as a stale entry. The
 gate iterates the union of discovered keys and allowlist keys so stale entries
 for vanished files are still visited.
 
+``EXCLUDED_FILES`` lists ``call.py`` surfaces that are not journal-data command
+surfaces — the invariant does not apply to them. ``discover_modules`` skips
+them, so they are neither scanned nor allowlisted; a file must be both skipped
+here and absent from ``ALLOWLIST`` to be invisible to the union self-check. Each
+retained exclusion is a documented architectural exception, not an evasion.
+
 Explicitly not flagged: ``subprocess.*`` (residual subprocess filesystem access
 is a cutover-review judgment, not this gate's job), ``os.environ`` /
 ``os.getenv`` (neither a journal import nor a filesystem mechanic), pure path
@@ -116,18 +122,36 @@ SHUTIL_FS_FUNCS: frozenset[str] = frozenset(
     }
 )
 
+# Out-of-scope CLIs: not journal-data command surfaces, so the HTTP-only
+# invariant does not apply. Skipped by discover_modules — neither scanned nor
+# allowlisted. Each retained file is a documented, principled exception.
+EXCLUDED_FILES: frozenset[str] = frozenset(
+    {
+        # External support-portal CLI (httpx to support.solstone.app). Its only
+        # journal touches are incidental config/identity/diagnostics reads, not
+        # journal-data operations — not a Convey-HTTP cutover target.
+        "solstone/apps/support/call.py",
+        # rollup-day / rollup-master are a scheduler-invoked multi-minute Gemini
+        # batch rollup engine with no owner/route; converting requires a separate
+        # async-job-trigger architecture (out of this initiative). Follow-up
+        # tracked. (timeline/call.py also legitimately owns timeline.json writes
+        # — see AGENTS.md §7 L2.)
+        "solstone/apps/timeline/call.py",
+    }
+)
+
+EXCLUDED_PREFIXES: tuple[str, ...] = ()
+
 # Committed allowlist of current direct app-call violations, keyed by
 # (posix-relative-path, kind) -> allowed count. Ratchets toward empty: lower a
 # count as occurrences are converted; stale entries fail until lowered/removed.
 ALLOWLIST: dict[tuple[str, str], int] = {
     # Settings keeps only convey network-access enable/disable in-process:
     # these are convey server-lifecycle operations that restart Convey to
-    # change its bind host, not journal-data access. Every other settings
-    # verb must use the Convey HTTP client.
+    # change its bind host, not journal-data access. Convey cannot restart
+    # itself over HTTP and return a response. Every other settings verb must
+    # use the Convey HTTP client.
     ("solstone/apps/settings/call.py", "import"): 4,
-    ("solstone/apps/support/call.py", "import"): 14,
-    ("solstone/apps/timeline/call.py", "fs"): 4,
-    ("solstone/apps/timeline/call.py", "import"): 3,
 }
 
 
@@ -135,6 +159,13 @@ def _is_under_namespace(module: str) -> bool:
     return any(
         module == namespace or module.startswith(f"{namespace}.")
         for namespace in FLAGGED_NAMESPACES
+    )
+
+
+def _is_excluded(rel: Path) -> bool:
+    rel_str = rel.as_posix()
+    return rel_str in EXCLUDED_FILES or any(
+        rel_str.startswith(prefix) for prefix in EXCLUDED_PREFIXES
     )
 
 
@@ -148,6 +179,8 @@ def discover_modules(root: Path) -> list[Path]:
     for path in sorted(apps_dir.glob("*/call.py")):
         rel = path.relative_to(root)
         if "__pycache__" in rel.parts:
+            continue
+        if _is_excluded(rel):
             continue
         found.append(rel)
     return found

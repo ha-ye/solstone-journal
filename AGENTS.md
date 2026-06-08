@@ -212,6 +212,19 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 
 If you're about to write to a domain from a module not in this table, stop and route through the owner.
 
+**`sol call <app> <verb>` handlers are pure Convey HTTP clients.** Each
+journal-data `solstone/apps/*/call.py` reaches the journal only over the Convey
+HTTP client (`solstone.think.convey_client`) — never importing a journal/domain
+module or touching the filesystem directly. `scripts/check_call_http_only.py`
+enforces this with exactly three documented exceptions: `timeline/call.py` (a
+scheduler-invoked Gemini rollup engine with no owner/route — and, per the table
+above, the one `call.py` that legitimately owns timeline writes), `support/call.py`
+(an external support-portal CLI over httpx with only incidental config/identity
+reads), and the `settings/call.py` `network-access enable`/`disable` verbs (Convey
+server-lifecycle restarts it cannot perform over HTTP and return a response). The
+first two are excluded from the gate's scan; the third is its single allowlist
+residual.
+
 ### L3 — Naming is a contract
 
 Function and CLI-subcommand verbs signal read vs. write intent.
