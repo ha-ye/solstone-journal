@@ -8,13 +8,9 @@ from __future__ import annotations
 import json
 
 import numpy as np
-from typer.testing import CliRunner
 
 from solstone.apps.speakers.bootstrap import merge_names
-from solstone.apps.speakers.call import app as speakers_app
 from solstone.think.entities.journal import load_journal_entity, scan_journal_entities
-
-_runner = CliRunner()
 
 # Match conftest default stream
 STREAM = "test"
@@ -741,40 +737,3 @@ def test_resolve_name_variants_dry_run_unchanged(speakers_env):
     # Dry run: both entities still exist
     assert load_journal_entity("bob") is not None
     assert load_journal_entity("bob_smith") is not None
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
-
-def test_cli_error_missing_entity(speakers_env):
-    """CLI merge-names outputs error JSON and exits 1 for unknown entity."""
-    speakers_env()
-    result = _runner.invoke(speakers_app, ["merge-names", "Nobody", "Also Nobody"])
-    assert result.exit_code == 1
-
-
-def test_cli_success(speakers_env):
-    """CLI merge-names outputs JSON with deep merge fields on success."""
-    env = speakers_env()
-    entity_a = env.create_entity("Alice Alias")
-    entity_b = env.create_entity("Alice Canonical")
-
-    emb_a = np.random.default_rng(42).standard_normal((3, 256)).astype(np.float32)
-    emb_b = np.random.default_rng(99).standard_normal((3, 256)).astype(np.float32)
-    meta_a = np.array([json.dumps({"key": f"a_{i}"}) for i in range(3)], dtype=str)
-    meta_b = np.array([json.dumps({"key": f"b_{i}"}) for i in range(3)], dtype=str)
-    np.savez_compressed(entity_a / "voiceprints.npz", embeddings=emb_a, metadata=meta_a)
-    np.savez_compressed(entity_b / "voiceprints.npz", embeddings=emb_b, metadata=meta_b)
-
-    result = _runner.invoke(
-        speakers_app, ["merge-names", "Alice Alias", "Alice Canonical"]
-    )
-    assert result.exit_code == 0
-    data = json.loads(result.output)
-    assert data["merged"] is True
-    assert data["canonical_name"] == "Alice Canonical"
-    assert data["alias_id"] == "alice_alias"
-    assert "segments_scanned" in data
-    assert "facets_merged" in data

@@ -8,13 +8,9 @@ from __future__ import annotations
 import json
 
 import numpy as np
-from typer.testing import CliRunner
 
 from solstone.apps.speakers.bootstrap import link_import, seed_from_imports
-from solstone.apps.speakers.call import app as speakers_app
 from solstone.think.entities.journal import load_journal_entity
-
-_runner = CliRunner()
 
 
 def _normalized_vector(seed: int) -> np.ndarray:
@@ -207,37 +203,3 @@ def test_seed_from_imports_empty_speaker(speakers_env, monkeypatch):
 
     assert result["embeddings_saved"] == 1
     assert result["speakers_found"] == {"Alice Test": 1}
-
-
-def test_link_import_cli_json_success(speakers_env):
-    env = speakers_env()
-    env.create_entity("Alice Test")
-
-    result = _runner.invoke(
-        speakers_app,
-        ["link-import", "Alice Imported", "--entity-id", "alice_test"],
-    )
-
-    assert result.exit_code == 0
-    data = json.loads(result.output)
-    assert data["linked"] is True
-    assert data["entity_id"] == "alice_test"
-
-
-def test_seed_from_imports_cli_json_success(speakers_env, monkeypatch):
-    env = speakers_env()
-    env.create_entity("Alice Test")
-    embeddings = np.vstack([_normalized_vector(i) for i in range(2)]).astype(np.float32)
-    env.create_import_segment(
-        "20240101",
-        "120000_300",
-        [("Alice Test", "Hello")] * 2,
-        embeddings=embeddings,
-    )
-    _mock_owner(monkeypatch, _normalized_vector(22), threshold=0.99)
-
-    result = _runner.invoke(speakers_app, ["seed-from-imports", "--commit", "--json"])
-
-    assert result.exit_code == 0
-    data = json.loads(result.output)
-    assert data["embeddings_saved"] == 2

@@ -7,9 +7,7 @@ import json
 from pathlib import Path
 
 import numpy as np
-from typer.testing import CliRunner
 
-from solstone.apps.speakers.call import app
 from solstone.apps.speakers.suggest import (
     _parse_meetings,
     format_suggestions,
@@ -289,13 +287,3 @@ def test_parse_meetings_missing_file(tmp_path):
 
 def test_format_suggestions_empty():
     assert format_suggestions([]) == "No speaker curation suggestions found."
-
-
-def test_suggest_cli_json(speakers_env):
-    speakers_env()
-    runner = CliRunner()
-
-    result = runner.invoke(app, ["suggest", "--json"])
-
-    assert result.exit_code == 0
-    assert json.loads(result.stdout) == []

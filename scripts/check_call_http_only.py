@@ -126,7 +126,6 @@ ALLOWLIST: dict[tuple[str, str], int] = {
     ("solstone/apps/import/call.py", "import"): 8,
     ("solstone/apps/settings/call.py", "fs"): 3,
     ("solstone/apps/settings/call.py", "import"): 27,
-    ("solstone/apps/speakers/call.py", "import"): 21,
     ("solstone/apps/support/call.py", "import"): 14,
     ("solstone/apps/timeline/call.py", "fs"): 4,
     ("solstone/apps/timeline/call.py", "import"): 3,

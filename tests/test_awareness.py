@@ -557,31 +557,6 @@ class TestOwnerDetectionReady:
         assert result["ready"] is True
 
 
-class TestOwnerReadyCLI:
-    """Tests for the owner-ready CLI command in apps/speakers/call.py."""
-
-    def test_owner_ready_command_returns_json(self):
-        from typer.testing import CliRunner
-
-        from solstone.apps.speakers.call import app
-
-        mock_result = {
-            "ready": True,
-            "reason": "candidate_found",
-            "cluster_size": 88,
-            "streams_represented": 2,
-            "samples": [],
-        }
-        with unittest.mock.patch(
-            "solstone.think.awareness.owner_detection_ready", return_value=mock_result
-        ):
-            result = CliRunner().invoke(app, ["owner-ready"])
-        assert result.exit_code == 0
-        data = json.loads(result.output)
-        assert data["ready"] is True
-        assert data["reason"] == "candidate_found"
-
-
 class TestEnsureIdentityDirectory:
     """Tests for ensure_identity_directory()."""
 

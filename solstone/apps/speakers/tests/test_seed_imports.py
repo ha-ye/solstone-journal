@@ -1,19 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Tests for link-import and seed-from-imports CLI commands."""
+"""Tests for import-linking and import-based voiceprint seeding."""
 
 from __future__ import annotations
 
 import json
 
 import numpy as np
-from typer.testing import CliRunner
 
-from solstone.apps.speakers.call import app as speakers_app
-
-_runner = CliRunner()
-
+from solstone.apps.speakers.bootstrap import link_import, seed_from_imports
 
 # --- link-import tests ---
 
@@ -23,16 +19,11 @@ def test_link_import_success(speakers_env):
     env = speakers_env()
     env.create_entity("Sarah Chen")
 
-    result = _runner.invoke(
-        speakers_app,
-        ["link-import", "Sarah C", "--entity-id", "sarah_chen"],
-    )
-    assert result.exit_code == 0
-    data = json.loads(result.output)
-    assert data["linked"] is True
-    assert data["entity_id"] == "sarah_chen"
-    assert data["name_added"] == "Sarah C"
-    assert data["already_present"] is False
+    result = link_import("Sarah C", "sarah_chen")
+    assert result["linked"] is True
+    assert result["entity_id"] == "sarah_chen"
+    assert result["name_added"] == "Sarah C"
+    assert result["already_present"] is False
 
     # Verify entity was actually updated
     entity_path = env.journal / "entities" / "sarah_chen" / "entity.json"
@@ -51,23 +42,15 @@ def test_link_import_already_present(speakers_env):
     entity["aka"] = ["Sarah C"]
     entity_path.write_text(json.dumps(entity))
 
-    result = _runner.invoke(
-        speakers_app,
-        ["link-import", "Sarah C", "--entity-id", "sarah_chen"],
-    )
-    assert result.exit_code == 0
-    data = json.loads(result.output)
-    assert data["already_present"] is True
+    result = link_import("Sarah C", "sarah_chen")
+    assert result["already_present"] is True
 
 
 def test_link_import_entity_not_found(speakers_env):
     """link-import exits 1 with error JSON for missing entity."""
     speakers_env()
-    result = _runner.invoke(
-        speakers_app,
-        ["link-import", "Nobody", "--entity-id", "nonexistent"],
-    )
-    assert result.exit_code == 1
+    result = link_import("Nobody", "nonexistent")
+    assert "error" in result
 
 
 def test_link_import_collision(speakers_env):
@@ -76,13 +59,8 @@ def test_link_import_collision(speakers_env):
     env.create_entity("Alice Johnson")
     env.create_entity("Bob Smith")
 
-    result = _runner.invoke(
-        speakers_app,
-        ["link-import", "Bob Smith", "--entity-id", "alice_johnson"],
-    )
-    assert result.exit_code == 1
-    data = json.loads(result.output)
-    assert "conflicts" in data["error"]
+    result = link_import("Bob Smith", "alice_johnson")
+    assert "conflicts" in result["error"]
 
 
 # --- seed-from-imports tests ---
@@ -133,13 +111,11 @@ def test_seed_from_imports_happy_path(speakers_env):
         embeddings=embs,
     )
 
-    result = _runner.invoke(speakers_app, ["seed-from-imports", "--commit", "--json"])
-    assert result.exit_code == 0, result.output
-    data = json.loads(result.output)
-    assert data["segments_scanned"] >= 1
-    assert data["segments_with_speakers"] >= 1
-    assert data["embeddings_saved"] == 3
-    assert "Alice Johnson" in data["speakers_found"]
+    result = seed_from_imports(dry_run=False)
+    assert result["segments_scanned"] >= 1
+    assert result["segments_with_speakers"] >= 1
+    assert result["embeddings_saved"] == 3
+    assert "Alice Johnson" in result["speakers_found"]
 
 
 def test_seed_from_imports_skips_generic_speakers(speakers_env):
@@ -162,11 +138,9 @@ def test_seed_from_imports_skips_generic_speakers(speakers_env):
         embeddings=embs,
     )
 
-    result = _runner.invoke(speakers_app, ["seed-from-imports", "--json"])
-    assert result.exit_code == 0
-    data = json.loads(result.output)
-    assert data["embeddings_saved"] == 0
-    assert data["segments_with_speakers"] == 0
+    result = seed_from_imports(dry_run=True)
+    assert result["embeddings_saved"] == 0
+    assert result["segments_with_speakers"] == 0
 
 
 def test_seed_from_imports_skips_unmatched_speakers(speakers_env):
@@ -185,10 +159,8 @@ def test_seed_from_imports_skips_unmatched_speakers(speakers_env):
         embeddings=embs,
     )
 
-    result = _runner.invoke(speakers_app, ["seed-from-imports", "--json"])
-    assert result.exit_code == 0
-    data = json.loads(result.output)
-    assert data["embeddings_saved"] == 0
+    result = seed_from_imports(dry_run=True)
+    assert result["embeddings_saved"] == 0
 
 
 def test_seed_from_imports_owner_contamination(speakers_env):
@@ -208,11 +180,9 @@ def test_seed_from_imports_owner_contamination(speakers_env):
         embeddings=embs,
     )
 
-    result = _runner.invoke(speakers_app, ["seed-from-imports", "--json"])
-    assert result.exit_code == 0
-    data = json.loads(result.output)
-    assert data["embeddings_skipped_owner"] == 1
-    assert data["embeddings_saved"] == 0
+    result = seed_from_imports(dry_run=True)
+    assert result["embeddings_skipped_owner"] == 1
+    assert result["embeddings_saved"] == 0
 
 
 def test_seed_from_imports_dedup(speakers_env):
@@ -232,17 +202,13 @@ def test_seed_from_imports_dedup(speakers_env):
     )
 
     # First run
-    result1 = _runner.invoke(speakers_app, ["seed-from-imports", "--commit", "--json"])
-    assert result1.exit_code == 0
-    data1 = json.loads(result1.output)
-    assert data1["embeddings_saved"] == 1
+    result1 = seed_from_imports(dry_run=False)
+    assert result1["embeddings_saved"] == 1
 
     # Second run — should be all duplicates
-    result2 = _runner.invoke(speakers_app, ["seed-from-imports", "--commit", "--json"])
-    assert result2.exit_code == 0
-    data2 = json.loads(result2.output)
-    assert data2["embeddings_saved"] == 0
-    assert data2["embeddings_skipped_duplicate"] == 1
+    result2 = seed_from_imports(dry_run=False)
+    assert result2["embeddings_saved"] == 0
+    assert result2["embeddings_skipped_duplicate"] == 1
 
 
 def test_seed_from_imports_default_is_preview(speakers_env):
@@ -261,13 +227,8 @@ def test_seed_from_imports_default_is_preview(speakers_env):
         embeddings=embs,
     )
 
-    result = _runner.invoke(
-        speakers_app,
-        ["seed-from-imports", "--json"],
-    )
-    assert result.exit_code == 0
-    data = json.loads(result.output)
-    assert data["embeddings_saved"] == 1  # Would-be saved count
+    result = seed_from_imports(dry_run=True)
+    assert result["embeddings_saved"] == 1  # Would-be saved count
 
     # Verify nothing was actually written
     vp_path = env.journal / "entities" / "alice_johnson" / "voiceprints.npz"
@@ -278,8 +239,8 @@ def test_seed_from_imports_no_owner_centroid(speakers_env):
     """seed-from-imports errors when no owner centroid exists."""
     speakers_env()
 
-    result = _runner.invoke(speakers_app, ["seed-from-imports", "--json"])
-    assert result.exit_code == 1
+    result = seed_from_imports(dry_run=True)
+    assert "error" in result
 
 
 def test_seed_from_imports_no_import_segments(speakers_env):
@@ -287,8 +248,6 @@ def test_seed_from_imports_no_import_segments(speakers_env):
     env = speakers_env()
     _create_owner_centroid(env)
 
-    result = _runner.invoke(speakers_app, ["seed-from-imports", "--json"])
-    assert result.exit_code == 0
-    data = json.loads(result.output)
-    assert data["segments_scanned"] == 0
-    assert data["embeddings_saved"] == 0
+    result = seed_from_imports()
+    assert result["segments_scanned"] == 0
+    assert result["embeddings_saved"] == 0

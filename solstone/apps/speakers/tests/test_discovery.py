@@ -9,9 +9,7 @@ import json
 from pathlib import Path
 
 import numpy as np
-from typer.testing import CliRunner
 
-from solstone.apps.speakers.call import app as speakers_app
 from solstone.apps.speakers.discovery import (
     _discovery_cache_path,
     _discovery_resolved_path,
@@ -19,8 +17,6 @@ from solstone.apps.speakers.discovery import (
     identify_cluster,
 )
 from solstone.apps.speakers.owner import OWNER_THRESHOLD
-
-_runner = CliRunner()
 
 
 def _make_speaker_embeddings(
@@ -276,27 +272,3 @@ def test_identify_contamination_guard(speakers_env):
 
     assert result["voiceprints_saved"] == 0
     assert not (env.journal / "entities" / "bob_smith" / "voiceprints.npz").exists()
-
-
-def test_identify_cli_success(speakers_env):
-    """CLI identify outputs JSON to stdout on success."""
-    env = speakers_env()
-    _setup_owner_centroid(env.journal, [0.0, 1.0])
-    embeddings = _make_speaker_embeddings([1.0, 0.0], 5)
-    _create_cluster_segments(env, embeddings)
-
-    scan_result = discover_unknown_speakers()
-    cluster_id = scan_result["clusters"][0]["cluster_id"]
-
-    result = _runner.invoke(speakers_app, ["identify", str(cluster_id), "Bob Smith"])
-    assert result.exit_code == 0
-    data = json.loads(result.output)
-    assert data["status"] == "identified"
-    assert data["entity_id"] == "bob_smith"
-
-
-def test_identify_cli_error_no_cache(speakers_env):
-    """CLI identify outputs error JSON to stderr and exits 1 when no cache."""
-    speakers_env()
-    result = _runner.invoke(speakers_app, ["identify", "0", "Nobody"])
-    assert result.exit_code == 1

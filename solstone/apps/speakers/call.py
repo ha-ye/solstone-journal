@@ -3,6 +3,10 @@
 
 """CLI interface for speaker voiceprint management.
 
+Auto-discovered by ``think.call`` and mounted as ``sol call speakers ...``.
+Every verb reaches the journal only over HTTP via the Convey client; this
+module imports no journal/domain function and performs no filesystem I/O.
+
 Speaker writer commands preview by default; pass ``--commit`` to persist.
 For ``attribute-segment``, ``--save`` / ``--accumulate`` only take effect
 when ``--commit`` is also passed.
@@ -27,11 +31,17 @@ Commands:
     sol call speakers owner-ready
 """
 
-from __future__ import annotations
+import json
+import time
+from typing import Any
 
 import typer
 
-from solstone.think.utils import require_solstone
+from solstone.convey.reasons import (
+    SPEAKER_COMMAND_FAILED,
+    SPEAKER_OWNER_CENTROID_REQUIRED,
+)
+from solstone.think.convey_client import ConveyClientError, convey_cli, get_client
 
 app = typer.Typer(
     name="speakers",
@@ -40,12 +50,28 @@ app = typer.Typer(
 )
 
 
-@app.callback()
-def _require_up() -> None:
-    require_solstone()
+def _request(
+    method: str,
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+    json_body: dict[str, Any] | None = None,
+) -> Any:
+    return get_client().request(method, path, params=params, json=json_body)
+
+
+def _exit_owner_centroid_required(err: ConveyClientError) -> None:
+    typer.echo(f"Error: {err.detail}", err=True)
+    raise typer.Exit(1) from err
+
+
+def _exit_speaker_command_failed(err: ConveyClientError) -> None:
+    typer.echo(err.detail, err=True)
+    raise typer.Exit(1) from err
 
 
 @app.command("status")
+@convey_cli
 def status(
     section: str | None = typer.Argument(
         None,
@@ -56,15 +82,19 @@ def status(
     ),
 ) -> None:
     """Show speaker subsystem status as JSON."""
-    import json as json_mod
-
-    from solstone.apps.speakers.status import get_speakers_status
-
-    result = get_speakers_status(section=section)
-    typer.echo(json_mod.dumps(result, indent=2, default=str))
+    body = _request("GET", "/app/speakers/api/status")
+    valid = ["embeddings", "owner", "speakers", "clusters", "imports", "attribution"]
+    if section is None:
+        result = body
+    elif section in valid:
+        result = body[section]
+    else:
+        result = {"error": f"Unknown section '{section}'. Valid: {', '.join(valid)}"}
+    typer.echo(json.dumps(result, indent=2, default=str))
 
 
 @app.command("bootstrap")
+@convey_cli
 def bootstrap(
     commit: bool = typer.Option(
         False,
@@ -82,22 +112,22 @@ def bootstrap(
     speaker. Saves them as voiceprints using the owner centroid for
     owner subtraction.
     """
-    from solstone.apps.speakers.bootstrap import bootstrap_voiceprints
-
     if not commit and not json_output:
         typer.echo("REPORT ONLY — pass --commit to persist.\n")
 
     if not json_output:
         typer.echo("Bootstrapping voiceprints from single-speaker segments...")
-    stats = bootstrap_voiceprints(dry_run=not commit)
+    try:
+        stats = _request(
+            "POST", "/app/speakers/api/bootstrap", json_body={"commit": commit}
+        )
+    except ConveyClientError as err:
+        if err.reason_code == SPEAKER_OWNER_CENTROID_REQUIRED.code:
+            _exit_owner_centroid_required(err)
+        raise
 
-    if "error" in stats:
-        typer.echo(f"Error: {stats['error']}", err=True)
-        raise typer.Exit(1)
     if json_output:
-        import json as json_mod
-
-        typer.echo(json_mod.dumps(stats, indent=2, default=str))
+        typer.echo(json.dumps(stats, indent=2, default=str))
         return
 
     typer.echo(f"\nSegments scanned: {stats['segments_scanned']}")
@@ -127,6 +157,7 @@ def bootstrap(
 
 
 @app.command("resolve-names")
+@convey_cli
 def resolve_names(
     commit: bool = typer.Option(
         False,
@@ -144,19 +175,17 @@ def resolve_names(
     (short name is first word of full name) are auto-merged by adding the
     short name as an aka on the canonical entity.
     """
-    from solstone.apps.speakers.bootstrap import resolve_name_variants
-
     if not commit and not json_output:
         typer.echo("REPORT ONLY — pass --commit to persist.\n")
 
     if not json_output:
         typer.echo("Resolving speaker name variants...")
-    stats = resolve_name_variants(dry_run=not commit)
+    stats = _request(
+        "POST", "/app/speakers/api/resolve-names", json_body={"commit": commit}
+    )
 
     if json_output:
-        import json as json_mod
-
-        typer.echo(json_mod.dumps(stats, indent=2, default=str))
+        typer.echo(json.dumps(stats, indent=2, default=str))
         return
 
     typer.echo(f"\nEntities with voiceprints: {stats['entities_with_voiceprints']}")
@@ -185,6 +214,7 @@ def resolve_names(
 
 
 @app.command("attribute-segment")
+@convey_cli
 def attribute_segment_cmd(
     day: str = typer.Argument(..., help="Day in YYYYMMDD format."),
     stream: str = typer.Argument(..., help="Stream name."),
@@ -210,31 +240,41 @@ def attribute_segment_cmd(
     and acoustic voiceprint matching.  Optionally writes speaker_labels.json
     and accumulates high-confidence voiceprints.
     """
-    import json as json_mod
-
-    from solstone.apps.speakers.attribution import (
-        accumulate_voiceprints,
-        attribute_segment,
-        save_speaker_labels,
-    )
-    from solstone.think.utils import segment_path
-
-    result = attribute_segment(day, stream, segment)
+    error_detail = None
+    try:
+        wrap = _request(
+            "POST",
+            "/app/speakers/api/attribute-segment",
+            json_body={
+                "day": day,
+                "stream": stream,
+                "segment": segment,
+                "commit": commit,
+                "save": save,
+                "accumulate": accumulate,
+            },
+        )
+    except ConveyClientError as err:
+        if err.reason_code == SPEAKER_OWNER_CENTROID_REQUIRED.code:
+            wrap = None
+            error_detail = err.detail
+        else:
+            raise
 
     if not commit and not json_output:
         typer.echo("REPORT ONLY — pass --commit to persist.\n")
 
-    if result.get("error"):
-        typer.echo(f"Error: {result['error']}", err=True)
+    if error_detail is not None:
+        typer.echo(f"Error: {error_detail}", err=True)
         raise typer.Exit(1)
 
+    result = wrap["result"]
     labels = result.get("labels", [])
     unmatched = result.get("unmatched", [])
     source = result.get("source")
-    metadata = result.get("metadata", {})
 
     if json_output:
-        typer.echo(json_mod.dumps(result, indent=2))
+        typer.echo(json.dumps(result, indent=2))
     else:
         resolved = sum(1 for lab in labels if lab["speaker"] is not None)
         typer.echo(f"Sentences: {len(labels)}")
@@ -249,14 +289,11 @@ def attribute_segment_cmd(
         for method, count in sorted(methods.items()):
             typer.echo(f"  {method}: {count}")
 
-    if commit and save:
-        seg_dir = segment_path(day, segment, stream)
-        out_path = save_speaker_labels(seg_dir, labels, metadata)
-        if not json_output:
-            typer.echo(f"\nWrote: {out_path}")
+    if commit and save and not json_output:
+        typer.echo(f"\nWrote: {wrap['written_path']}")
 
     if commit and accumulate and source:
-        saved = accumulate_voiceprints(day, stream, segment, labels, source)
+        saved = wrap.get("accumulated")
         if saved and not json_output:
             typer.echo("\nAccumulated voiceprints:")
             for eid, count in saved.items():
@@ -264,6 +301,7 @@ def attribute_segment_cmd(
 
 
 @app.command("backfill")
+@convey_cli
 def backfill(
     commit: bool = typer.Option(
         False,
@@ -279,10 +317,6 @@ def backfill(
     Processes segments oldest-first for progressive voiceprint building.
     Skips segments that already have speaker_labels.json (safe to re-run).
     """
-    import time
-
-    from solstone.apps.speakers.attribution import backfill_segments
-
     if not commit and not json_output:
         typer.echo("REPORT ONLY — pass --commit to persist.\n")
 
@@ -290,30 +324,11 @@ def backfill(
         typer.echo("Scanning journal for segments with embeddings...")
 
     start = time.monotonic()
-    last_day = ""
-
-    def on_progress(
-        processed: int, total: int, day: str, stream: str, seg_key: str
-    ) -> None:
-        nonlocal last_day
-        if day != last_day:
-            typer.echo(f"\n  {day} ", nl=False)
-            last_day = day
-        typer.echo(".", nl=False)
-        if processed % 100 == 0 or processed == total:
-            typer.echo(f" [{processed}/{total}]", nl=False)
-
-    stats = backfill_segments(
-        dry_run=not commit,
-        progress_callback=None if not commit or json_output else on_progress,
-    )
-
+    stats = _request("POST", "/app/speakers/api/backfill", json_body={"commit": commit})
     elapsed = time.monotonic() - start
 
     if json_output:
-        import json as json_mod
-
-        typer.echo(json_mod.dumps(stats, indent=2, default=str))
+        typer.echo(json.dumps(stats, indent=2, default=str))
         return
 
     typer.echo("\n")
@@ -342,6 +357,7 @@ def backfill(
 
 
 @app.command("backfill-last-seen")
+@convey_cli
 def backfill_last_seen_cmd(
     commit: bool = typer.Option(
         False,
@@ -353,17 +369,15 @@ def backfill_last_seen_cmd(
     ),
 ) -> None:
     """Backfill last_seen_ts on existing voiceprint metadata rows."""
-    from solstone.apps.speakers.attribution import backfill_last_seen
-
     if not commit and not json_output:
         typer.echo("REPORT ONLY — pass --commit to persist.\n")
 
-    stats = backfill_last_seen(dry_run=not commit)
+    stats = _request(
+        "POST", "/app/speakers/api/backfill-last-seen", json_body={"commit": commit}
+    )
 
     if json_output:
-        import json as json_mod
-
-        typer.echo(json_mod.dumps(stats, indent=2, default=str))
+        typer.echo(json.dumps(stats, indent=2, default=str))
         return
 
     typer.echo(f"Speaker label files read: {stats['labels_read']}")
@@ -385,6 +399,7 @@ def backfill_last_seen_cmd(
 
 
 @app.command()
+@convey_cli
 def wipe(
     commit: bool = typer.Option(
         False,
@@ -402,62 +417,55 @@ def wipe(
     speaker labels/corrections, per-entity voiceprints, owner centroids,
     and the owner-candidate snapshot.
     """
-    import json as json_mod
-
-    from solstone.apps.speakers.wipe import wipe_speaker_artifacts
-
     if not commit and not json_output:
         typer.echo("REPORT ONLY — pass --commit to persist.\n")
 
-    report = wipe_speaker_artifacts(dry_run=not commit)
+    report = _request("POST", "/app/speakers/api/wipe", json_body={"commit": commit})
 
     if json_output:
-        typer.echo(json_mod.dumps(report.to_dict(), indent=2, default=str))
+        typer.echo(json.dumps(report, indent=2, default=str))
         return
 
     typer.echo(
-        f"segment_embeddings : {report.segment_embeddings.count} files "
-        f"({report.segment_embeddings.bytes} B)"
+        f"segment_embeddings : {report['segment_embeddings']['count']} files "
+        f"({report['segment_embeddings']['bytes']} B)"
     )
     typer.echo(
-        f"speaker_labels     : {report.speaker_labels.count} files "
-        f"({report.speaker_labels.bytes} B)"
+        f"speaker_labels     : {report['speaker_labels']['count']} files "
+        f"({report['speaker_labels']['bytes']} B)"
     )
     typer.echo(
-        f"speaker_corrections: {report.speaker_corrections.count} files "
-        f"({report.speaker_corrections.bytes} B)"
+        f"speaker_corrections: {report['speaker_corrections']['count']} files "
+        f"({report['speaker_corrections']['bytes']} B)"
     )
     typer.echo(
-        f"entity_voiceprints : {report.entity_voiceprints.count} files "
-        f"({report.entity_voiceprints.bytes} B)"
+        f"entity_voiceprints : {report['entity_voiceprints']['count']} files "
+        f"({report['entity_voiceprints']['bytes']} B)"
     )
     typer.echo(
-        f"owner_centroids    : {report.owner_centroids.count} files "
-        f"({report.owner_centroids.bytes} B)"
+        f"owner_centroids    : {report['owner_centroids']['count']} files "
+        f"({report['owner_centroids']['bytes']} B)"
     )
     typer.echo(
-        f"owner_candidate    : {report.owner_candidate.count} files "
-        f"({report.owner_candidate.bytes} B)"
+        f"owner_candidate    : {report['owner_candidate']['count']} files "
+        f"({report['owner_candidate']['bytes']} B)"
     )
     typer.echo(
-        f"total              : {report.total_files} files ({report.total_bytes} B)"
+        f"total              : {report['total_files']} files ({report['total_bytes']} B)"
     )
 
 
 @app.command()
+@convey_cli
 def discover(
     json_output: bool = typer.Option(
         False, "--json", help="Output full result as JSON."
     ),
 ) -> None:
     """Discover recurring unknown speakers across segments."""
-    import json as json_mod
-
-    from solstone.apps.speakers.discovery import discover_unknown_speakers
-
-    result = discover_unknown_speakers()
+    result = _request("POST", "/app/speakers/api/discovery/scan")
     if json_output:
-        typer.echo(json_mod.dumps(result, indent=2, default=str))
+        typer.echo(json.dumps(result, indent=2, default=str))
         return
     clusters = result.get("clusters", [])
 
@@ -481,6 +489,7 @@ def discover(
 
 
 @app.command()
+@convey_cli
 def identify(
     cluster_id: int = typer.Argument(..., help="Cluster ID from discovery output."),
     name: str = typer.Argument(..., help="Speaker name to assign."),
@@ -489,55 +498,61 @@ def identify(
     ),
 ) -> None:
     """Identify a discovered unknown speaker cluster."""
-    import json
-
-    from solstone.apps.speakers.discovery import identify_cluster
-
-    result = identify_cluster(cluster_id, name, entity_id=entity_id)
-    output = json.dumps(result, indent=2, default=str)
-    if "error" in result:
-        typer.echo(output, err=True)
-        raise typer.Exit(1)
-    typer.echo(output)
+    try:
+        result = _request(
+            "POST",
+            "/app/speakers/api/discovery/identify-cli",
+            json_body={"cluster_id": cluster_id, "name": name, "entity_id": entity_id},
+        )
+    except ConveyClientError as err:
+        if err.reason_code == SPEAKER_COMMAND_FAILED.code:
+            _exit_speaker_command_failed(err)
+        raise
+    typer.echo(json.dumps(result, indent=2, default=str))
 
 
 @app.command("merge-names")
+@convey_cli
 def merge_names_cmd(
     alias: str = typer.Argument(..., help="Alias/variant speaker name to merge from."),
     canonical: str = typer.Argument(..., help="Canonical speaker name to merge into."),
 ) -> None:
     """Merge a speaker name variant into a canonical entity."""
-    import json
-
-    from solstone.apps.speakers.bootstrap import merge_names
-
-    result = merge_names(alias, canonical)
-    output = json.dumps(result, indent=2, default=str)
-    if "error" in result:
-        typer.echo(output, err=True)
-        raise typer.Exit(1)
-    typer.echo(output)
+    try:
+        result = _request(
+            "POST",
+            "/app/speakers/api/merge-names",
+            json_body={"alias": alias, "canonical": canonical},
+        )
+    except ConveyClientError as err:
+        if err.reason_code == SPEAKER_COMMAND_FAILED.code:
+            _exit_speaker_command_failed(err)
+        raise
+    typer.echo(json.dumps(result, indent=2, default=str))
 
 
 @app.command("link-import")
+@convey_cli
 def link_import_cmd(
     name: str = typer.Argument(..., help="Import participant name to link."),
     entity_id: str = typer.Option(..., "--entity-id", help="Entity ID to link to."),
 ) -> None:
     """Link an import participant name as an aka on an existing entity."""
-    import json
-
-    from solstone.apps.speakers.bootstrap import link_import
-
-    result = link_import(name, entity_id)
-    output = json.dumps(result, indent=2, default=str)
-    if "error" in result:
-        typer.echo(output, err=True)
-        raise typer.Exit(1)
-    typer.echo(output)
+    try:
+        result = _request(
+            "POST",
+            "/app/speakers/api/link-import",
+            json_body={"name": name, "entity_id": entity_id},
+        )
+    except ConveyClientError as err:
+        if err.reason_code == SPEAKER_COMMAND_FAILED.code:
+            _exit_speaker_command_failed(err)
+        raise
+    typer.echo(json.dumps(result, indent=2, default=str))
 
 
 @app.command("seed-from-imports")
+@convey_cli
 def seed_from_imports_cmd(
     commit: bool = typer.Option(
         False,
@@ -555,22 +570,24 @@ def seed_from_imports_cmd(
     via time-based alignment, matches speakers to existing entities, and saves
     embeddings as voiceprints with owner contamination guard.
     """
-    from solstone.apps.speakers.bootstrap import seed_from_imports
-
     if not commit and not json_output:
         typer.echo("REPORT ONLY — pass --commit to persist.\n")
 
     if not json_output:
         typer.echo("Seeding voiceprints from import segments...")
-    stats = seed_from_imports(dry_run=not commit)
+    try:
+        stats = _request(
+            "POST",
+            "/app/speakers/api/seed-from-imports",
+            json_body={"commit": commit},
+        )
+    except ConveyClientError as err:
+        if err.reason_code == SPEAKER_OWNER_CENTROID_REQUIRED.code:
+            _exit_owner_centroid_required(err)
+        raise
 
-    if "error" in stats:
-        typer.echo(f"Error: {stats['error']}", err=True)
-        raise typer.Exit(1)
     if json_output:
-        import json as json_mod
-
-        typer.echo(json_mod.dumps(stats, indent=2, default=str))
+        typer.echo(json.dumps(stats, indent=2, default=str))
         return
 
     typer.echo(f"\nSegments scanned: {stats['segments_scanned']}")
@@ -602,6 +619,7 @@ def seed_from_imports_cmd(
 
 
 @app.command()
+@convey_cli
 def suggest(
     limit: int = typer.Option(
         5, "--limit", "-n", help="Maximum suggestions to return."
@@ -609,34 +627,26 @@ def suggest(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON array."),
 ) -> None:
     """Suggest speaker curation opportunities."""
-    import json as json_mod
-
-    from solstone.apps.speakers.suggest import suggest_opportunities
-
-    results = suggest_opportunities(limit=limit)
+    body = _request("GET", "/app/speakers/api/suggest", params={"limit": limit})
     if json_output:
-        typer.echo(json_mod.dumps(results, indent=2, default=str))
+        typer.echo(json.dumps(body["items"], indent=2, default=str))
         return
 
-    from solstone.apps.speakers.suggest import format_suggestions
-
-    typer.echo(format_suggestions(results))
+    typer.echo(body["markdown"])
 
 
 @app.command("detect")
+@convey_cli
 def detect_cmd(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """Run owner voice candidate detection."""
-    import json as json_mod
-
-    from solstone.apps.speakers.owner import detect_owner_candidate
-
-    result = detect_owner_candidate()
-    typer.echo(json_mod.dumps(result, indent=2, default=str))
+    result = _request("POST", "/app/speakers/api/owner/detect")
+    typer.echo(json.dumps(result, indent=2, default=str))
 
 
 @app.command("confirm-owner")
+@convey_cli
 def confirm_owner_cmd(
     backfill_after: bool = typer.Option(
         True,
@@ -650,14 +660,12 @@ def confirm_owner_cmd(
     By default, automatically runs attribution backfill on all segments
     after saving the centroid.
     """
-    import json as json_mod
-
-    from solstone.apps.speakers.owner import confirm_owner_candidate
-
-    result = confirm_owner_candidate()
-    if "error" in result:
-        typer.echo(json_mod.dumps(result, indent=2), err=True)
-        raise typer.Exit(1)
+    try:
+        result = _request("POST", "/app/speakers/api/owner/confirm-cli")
+    except ConveyClientError as err:
+        if err.reason_code == SPEAKER_COMMAND_FAILED.code:
+            _exit_speaker_command_failed(err)
+        raise
 
     if not json_output:
         typer.echo(
@@ -666,12 +674,12 @@ def confirm_owner_cmd(
         )
 
     if backfill_after:
-        from solstone.apps.speakers.attribution import backfill_segments
-
         if not json_output:
             typer.echo("Running attribution backfill...")
 
-        stats = backfill_segments(dry_run=False)
+        stats = _request(
+            "POST", "/app/speakers/api/backfill", json_body={"commit": True}
+        )
 
         if json_output:
             result["backfill"] = stats
@@ -682,26 +690,20 @@ def confirm_owner_cmd(
             )
 
     if json_output:
-        typer.echo(json_mod.dumps(result, indent=2, default=str))
+        typer.echo(json.dumps(result, indent=2, default=str))
 
 
 @app.command("reject-owner")
+@convey_cli
 def reject_owner_cmd() -> None:
     """Reject the owner voice candidate and enter 14-day cooldown."""
-    import json as json_mod
-
-    from solstone.apps.speakers.owner import reject_owner_candidate
-
-    result = reject_owner_candidate()
-    typer.echo(json_mod.dumps(result, indent=2, default=str))
+    result = _request("POST", "/app/speakers/api/owner/reject-cli")
+    typer.echo(json.dumps(result, indent=2, default=str))
 
 
 @app.command("owner-ready")
+@convey_cli
 def owner_ready_cmd() -> None:
     """Check if owner voice detection should be surfaced to the user."""
-    import json as json_mod
-
-    from solstone.think.awareness import owner_detection_ready
-
-    result = owner_detection_ready()
-    typer.echo(json_mod.dumps(result, indent=2, default=str))
+    result = _request("POST", "/app/speakers/api/owner/ready")
+    typer.echo(json.dumps(result, indent=2, default=str))
