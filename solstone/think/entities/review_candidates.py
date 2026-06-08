@@ -119,6 +119,70 @@ def utc_now_iso() -> str:
     )
 
 
+def record_merge_candidate(
+    *,
+    facet: str,
+    day: str,
+    source: str,
+    source_slug: str,
+    target: str,
+    target_slug: str,
+    evidence: str,
+    basis: str = "name-variant",
+    detections: int | None = None,
+    needs: int | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Create or update one entity merge candidate."""
+    row: dict[str, Any] | None = None
+    created = False
+
+    def mutate(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        nonlocal row, created
+        existing = find_candidate(rows, facet, source_slug, target_slug)
+        now = utc_now_iso()
+        if existing is None:
+            row = {
+                "facet": facet,
+                "source": source,
+                "source_slug": source_slug,
+                "target": target,
+                "target_slug": target_slug,
+                "status": "open",
+                "evidence": {
+                    "basis": basis,
+                    "summary": evidence,
+                    "detection_count": detections,
+                    "needs": needs,
+                },
+                "first_surfaced": day,
+                "last_surfaced": day,
+                "created_at": now,
+                "updated_at": now,
+            }
+            created = True
+            return list(rows) + [row]
+
+        ev = existing.setdefault("evidence", {})
+        ev["basis"] = basis
+        ev["summary"] = evidence
+        if detections is not None:
+            ev["detection_count"] = detections
+        if needs is not None:
+            ev["needs"] = needs
+        existing["last_surfaced"] = day
+        existing["updated_at"] = now
+        row = existing
+        created = False
+        return rows
+
+    locked_modify_candidates(mutate)
+
+    if row is None:  # pragma: no cover - defensive assertion
+        raise RuntimeError("record-merge-candidate produced no row")
+
+    return row, created
+
+
 def touch_updated(row: dict[str, Any]) -> None:
     """Update a candidate row's updated_at timestamp in place."""
     row["updated_at"] = utc_now_iso()

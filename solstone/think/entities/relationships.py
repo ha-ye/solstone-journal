@@ -16,8 +16,10 @@ since they are identity-specific, not facet-specific.
 import json
 import shutil
 from pathlib import Path
+from typing import Any
 
 from solstone.think.entities.core import EntityDict, entity_slug
+from solstone.think.entities.errors import EntityExistsError, EntityNotFoundError
 from solstone.think.journal_io import atomic_replace
 from solstone.think.utils import get_journal
 
@@ -264,3 +266,59 @@ def rename_entity_memory(facet: str, old_name: str, new_name: str) -> bool:
 
     shutil.move(str(old_folder), str(new_folder))
     return True
+
+
+def move_facet_entity(
+    *,
+    entity_name: str,
+    from_facet: str,
+    to_facet: str,
+    merge: bool = False,
+) -> dict[str, Any]:
+    """Move or merge an entity's facet-scoped memory between facets."""
+    entity_id = entity_slug(entity_name)
+    src_dir = entity_memory_path(from_facet, entity_name)
+    dst_dir = entity_memory_path(to_facet, entity_name)
+
+    if not src_dir.exists():
+        raise EntityNotFoundError(entity_name)
+
+    if dst_dir.exists() and not merge:
+        raise EntityExistsError(entity_name)
+
+    if dst_dir.exists():
+        from solstone.think.entities.observations import (
+            load_observations,
+            save_observations,
+        )
+
+        src_relationship = load_facet_relationship(from_facet, entity_id)
+        dst_relationship = load_facet_relationship(to_facet, entity_id)
+        if src_relationship is not None and dst_relationship is None:
+            save_facet_relationship(to_facet, entity_id, src_relationship)
+
+        src_obs = load_observations(from_facet, entity_name)
+        dst_obs = load_observations(to_facet, entity_name)
+
+        existing_keys = {(o["content"], o.get("observed_at")) for o in dst_obs}
+        merged = list(dst_obs) + [
+            o
+            for o in src_obs
+            if (o["content"], o.get("observed_at")) not in existing_keys
+        ]
+        save_observations(to_facet, entity_name, merged)
+
+        shutil.rmtree(str(src_dir))
+        did_merge = True
+    else:
+        dst_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src_dir), str(dst_dir))
+        did_merge = False
+
+    return {
+        "entity": entity_name,
+        "entity_id": entity_id,
+        "moved_from": from_facet,
+        "moved_to": to_facet,
+        "merged": did_merge,
+    }

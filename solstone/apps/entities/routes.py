@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -31,19 +32,32 @@ from solstone.convey.reasons import (
     ENTITY_NOT_FOUND,
     ENTITY_OPERATION_FAILED,
     INVALID_ENTITY_TYPE,
+    INVALID_REQUEST_VALUE,
     MISSING_REQUEST_BODY,
     MISSING_REQUIRED_FIELD,
     OPERATION_NO_LONGER_AVAILABLE,
     PRINCIPAL_ENTITY_PROTECTED,
     PROVIDER_KEY_MISSING,
 )
-from solstone.convey.utils import created, error_response, success_response
+from solstone.convey.utils import (
+    created,
+    error_response,
+    respond_collection,
+    success_response,
+)
+from solstone.think.curation import (
+    accept_entity_candidate,
+    dismiss_entity_candidate,
+    merge_preview_fields,
+)
 from solstone.think.entities import (
     AkaConflictError,
     EntityBlockedError,
     EntityDict,
     EntityExistsError,
     EntityNotFoundError,
+    add_entity_aka,
+    add_observation,
     attach_or_reactivate_entity,
     block_journal_entity,
     count_observations,
@@ -59,13 +73,26 @@ from solstone.think.entities import (
     load_entities,
     load_facet_relationship,
     load_observations,
+    merge_entity,
+    resolve_entity,
+    save_detected_entity,
     save_journal_entity,
     unblock_journal_entity,
+    update_detected_entity,
     update_facet_entity_description,
     update_facet_entity_identity,
 )
+from solstone.think.entities.consolidation import consolidate_detected_entities
 from solstone.think.entities.journal import delete_journal_entity, load_journal_entity
-from solstone.think.facets import get_facets
+from solstone.think.entities.relationships import move_facet_entity
+from solstone.think.entities.review_candidates import (
+    load_candidates,
+)
+from solstone.think.entities.review_candidates import (
+    record_merge_candidate as record_entity_merge_candidate,
+)
+from solstone.think.facets import get_facets, log_call_action
+from solstone.think.indexer.journal import search_entities
 from solstone.think.journal_io import LockTimeout
 from solstone.think.utils import now_ms
 
@@ -124,6 +151,52 @@ def get_facet_entities_data(facet_name: str) -> dict:
     return {"attached": attached, "detected": detected}
 
 
+def _json_body() -> dict[str, Any]:
+    payload = request.get_json(silent=True) or {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _body_str(payload: dict[str, Any], name: str) -> str | None:
+    value = payload.get(name)
+    if value is None:
+        return None
+    return str(value)
+
+
+def _required_body_str(payload: dict[str, Any], name: str) -> tuple[str | None, Any]:
+    value = _body_str(payload, name)
+    if value is None:
+        return None, error_response(
+            MISSING_REQUIRED_FIELD,
+            detail=f"{name} is required",
+        )
+    return value, None
+
+
+def _body_bool(
+    payload: dict[str, Any],
+    name: str,
+    *,
+    default: bool = False,
+) -> bool:
+    value = payload.get(name)
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in {"1", "true", "yes", "on"}
+
+
+def _body_int_or_none(payload: dict[str, Any], name: str) -> int | None:
+    value = payload.get(name)
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 @entities_bp.route("/api/<facet_name>")
 def get_entities(facet_name: str) -> Any:
     """Get entities for a specific facet (attached and detected)."""
@@ -132,6 +205,557 @@ def get_entities(facet_name: str) -> Any:
         return jsonify(data)
     except Exception as e:
         return error_response(ENTITY_OPERATION_FAILED, detail=str(e))
+
+
+@entities_bp.route("/api/<facet_name>/resolve")
+def resolve_facet_entity(facet_name: str) -> Any:
+    """Resolve an entity name for the CLI without mutating state."""
+    name = request.args.get("name", "").strip()
+    if not name:
+        return error_response(MISSING_REQUIRED_FIELD, detail="name is required")
+
+    facet_exists = (Path(state.journal_root) / "facets" / facet_name).is_dir()
+    resolved, candidates = resolve_entity(facet_name, name)
+    blocked = False
+    blocked_name: str | None = None
+    if resolved is None:
+        blocked_match, _ = resolve_entity(facet_name, name, include_blocked=True)
+        if blocked_match and blocked_match.get("blocked"):
+            blocked = True
+            blocked_name = str(blocked_match.get("name") or name)
+
+    return jsonify(
+        {
+            "facet_exists": facet_exists,
+            "resolved": resolved,
+            "candidates": candidates or [],
+            "blocked": blocked,
+            "blocked_name": blocked_name,
+        }
+    )
+
+
+@entities_bp.route("/api/<facet_name>/detected", methods=["GET"])
+def get_detected_entities(facet_name: str) -> Any:
+    """Return detected entities for one facet day."""
+    day = request.args.get("day", "")
+    if not day:
+        return error_response(MISSING_REQUIRED_FIELD, detail="day is required")
+    return respond_collection(load_entities(facet_name, day))
+
+
+@entities_bp.route("/api/<facet_name>/detected", methods=["POST"])
+def detect_entity_route(facet_name: str) -> Any:
+    """Record a detected entity for the CLI."""
+    data = _json_body()
+    day, error = _required_body_str(data, "day")
+    if error is not None:
+        return error
+    type_, error = _required_body_str(data, "type")
+    if error is not None:
+        return error
+    entity, error = _required_body_str(data, "entity")
+    if error is not None:
+        return error
+    description, error = _required_body_str(data, "description")
+    if error is not None:
+        return error
+
+    assert day is not None
+    assert type_ is not None
+    assert entity is not None
+    assert description is not None
+
+    if not is_valid_entity_type(type_):
+        return error_response(
+            INVALID_ENTITY_TYPE,
+            detail=f"Invalid entity type '{type_}'",
+        )
+
+    resolved, _ = resolve_entity(facet_name, entity)
+    if resolved is None:
+        blocked_match, _ = resolve_entity(facet_name, entity, include_blocked=True)
+        if blocked_match and blocked_match.get("blocked"):
+            return error_response(
+                ENTITY_BLOCKED,
+                detail=str(blocked_match.get("name") or entity),
+            )
+    name = str(resolved.get("name", entity)) if resolved else entity
+
+    try:
+        save_detected_entity(facet_name, day, type_, name, description)
+    except ValueError as exc:
+        return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
+    except LockTimeout:
+        return error_response(ENTITY_BUSY)
+
+    log_call_action(
+        facet=facet_name,
+        action="entity_detect",
+        params={
+            "type": type_,
+            "entity": entity,
+            "name": name,
+            "description": description,
+        },
+        day=day,
+    )
+    return success_response({"name": name})
+
+
+@entities_bp.route("/api/<facet_name>/attach", methods=["POST"])
+def attach_entity_for_call(facet_name: str) -> Any:
+    """Attach an entity for the CLI with call audit identity."""
+    data = _json_body()
+    if not data:
+        return error_response(MISSING_REQUEST_BODY, detail="No data provided")
+
+    type_, error = _required_body_str(data, "type")
+    if error is not None:
+        return error
+    name, error = _required_body_str(data, "name")
+    if error is not None:
+        return error
+    description = _body_str(data, "description") or ""
+    assert type_ is not None
+    assert name is not None
+
+    if not is_valid_entity_type(type_):
+        return error_response(
+            INVALID_ENTITY_TYPE,
+            detail=f"Invalid entity type '{type_}'",
+        )
+
+    try:
+        relationship, reattached = attach_or_reactivate_entity(
+            facet_name,
+            entity_type=type_,
+            name=name,
+            description=description,
+        )
+    except EntityExistsError:
+        return error_response(ENTITY_ALREADY_EXISTS)
+    except EntityBlockedError:
+        return error_response(ENTITY_BLOCKED)
+    except EntityNotFoundError:
+        return error_response(ENTITY_NOT_FOUND)
+    except LockTimeout:
+        return error_response(ENTITY_BUSY)
+
+    log_call_action(
+        facet=facet_name,
+        action="entity_attach",
+        params={
+            "type": type_,
+            "entity": name,
+            "name": name,
+            "description": description,
+        },
+    )
+    if reattached:
+        return success_response()
+    return created(
+        {
+            "id": relationship["entity_id"],
+            "name": name,
+            "type": type_,
+            "description": relationship["description"],
+            "attached_at": relationship["attached_at"],
+            "updated_at": relationship["updated_at"],
+        }
+    )
+
+
+@entities_bp.route("/api/<facet_name>/update-description", methods=["POST"])
+def update_description_for_call(facet_name: str) -> Any:
+    """Update a facet entity description for the CLI."""
+    data = _json_body()
+    entity_id, error = _required_body_str(data, "entity_id")
+    if error is not None:
+        return error
+    description, error = _required_body_str(data, "description")
+    if error is not None:
+        return error
+    assert entity_id is not None
+    assert description is not None
+
+    resolved_name = _body_str(data, "name") or entity_id
+    original_query = _body_str(data, "entity") or resolved_name
+    try:
+        relationship = update_facet_entity_description(
+            facet_name,
+            entity_id,
+            description,
+        )
+    except EntityNotFoundError:
+        return error_response(ENTITY_NOT_FOUND, detail=resolved_name)
+    except LockTimeout:
+        return error_response(ENTITY_BUSY)
+
+    log_call_action(
+        facet=facet_name,
+        action="entity_update",
+        params={
+            "entity": original_query,
+            "name": resolved_name,
+            "description": description,
+        },
+    )
+    return success_response({"entity": relationship})
+
+
+@entities_bp.route("/api/<facet_name>/update-detected", methods=["POST"])
+def update_detected_for_call(facet_name: str) -> Any:
+    """Update a detected entity description for the CLI."""
+    data = _json_body()
+    day, error = _required_body_str(data, "day")
+    if error is not None:
+        return error
+    entity, error = _required_body_str(data, "entity")
+    if error is not None:
+        return error
+    description, error = _required_body_str(data, "description")
+    if error is not None:
+        return error
+    assert day is not None
+    assert entity is not None
+    assert description is not None
+
+    try:
+        updated = update_detected_entity(facet_name, day, entity, description)
+    except ValueError as exc:
+        return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
+    except LockTimeout:
+        return error_response(ENTITY_BUSY)
+
+    log_call_action(
+        facet=facet_name,
+        action="entity_update",
+        params={"entity": entity, "description": description},
+        day=day,
+    )
+    return success_response({"entity": updated})
+
+
+@entities_bp.route("/api/move", methods=["POST"])
+def move_entity_for_call() -> Any:
+    """Move a resolved entity between facets for the CLI."""
+    data = _json_body()
+    entity, error = _required_body_str(data, "entity")
+    if error is not None:
+        return error
+    from_facet, error = _required_body_str(data, "from_facet")
+    if error is not None:
+        return error
+    to_facet, error = _required_body_str(data, "to_facet")
+    if error is not None:
+        return error
+    assert entity is not None
+    assert from_facet is not None
+    assert to_facet is not None
+
+    merge = _body_bool(data, "merge")
+    consent = _body_bool(data, "consent")
+    try:
+        result = move_facet_entity(
+            entity_name=entity,
+            from_facet=from_facet,
+            to_facet=to_facet,
+            merge=merge,
+        )
+    except EntityNotFoundError:
+        return error_response(
+            ENTITY_OPERATION_FAILED,
+            detail="Entity data directory not found in source facet.",
+        )
+    except EntityExistsError:
+        return error_response(
+            ENTITY_ALREADY_EXISTS,
+            detail="Entity already exists in destination facet. Use --merge to merge.",
+        )
+
+    params: dict[str, object] = {
+        "entity": entity,
+        "moved_from": from_facet,
+        "moved_to": to_facet,
+    }
+    if merge:
+        params["merge"] = True
+    if consent:
+        params["consent"] = True
+    log_call_action(facet=from_facet, action="entity_move", params=params)
+    return success_response(
+        {
+            "entity": entity,
+            "moved_from": from_facet,
+            "moved_to": to_facet,
+            "merged": bool(result["merged"]),
+        }
+    )
+
+
+@entities_bp.route("/api/<facet_name>/aka", methods=["POST"])
+def add_aka_for_call(facet_name: str) -> Any:
+    """Add one entity alias for the CLI."""
+    data = _json_body()
+    entity_id, error = _required_body_str(data, "entity_id")
+    if error is not None:
+        return error
+    aka, error = _required_body_str(data, "aka")
+    if error is not None:
+        return error
+    exclude_name, error = _required_body_str(data, "exclude_name")
+    if error is not None:
+        return error
+    assert entity_id is not None
+    assert aka is not None
+    assert exclude_name is not None
+
+    original_query = _body_str(data, "entity") or exclude_name
+    try:
+        aka_list = add_entity_aka(
+            facet_name,
+            entity_id,
+            aka,
+            exclude_name=exclude_name,
+        )
+    except AkaConflictError as exc:
+        return error_response(
+            ENTITY_ALIAS_CONFLICT,
+            detail=f"Alias '{exc.alias}' conflicts with entity '{exc.conflict_name}'.",
+        )
+    except EntityNotFoundError:
+        return error_response(ENTITY_NOT_FOUND, detail=exclude_name)
+    except LockTimeout:
+        return error_response(ENTITY_BUSY)
+
+    log_call_action(
+        facet=facet_name,
+        action="entity_add_aka",
+        params={"entity": original_query, "name": exclude_name, "aka": aka},
+    )
+    return success_response({"aka": aka_list})
+
+
+@entities_bp.route("/api/consolidate", methods=["POST"])
+def consolidate_entities_for_call() -> Any:
+    """Consolidate detected entities for the CLI."""
+    data = _json_body()
+    full = _body_bool(data, "full")
+    try:
+        count = consolidate_detected_entities(state.journal_root, full=full)
+    except Exception as exc:
+        return error_response(ENTITY_OPERATION_FAILED, detail=str(exc))
+    return success_response({"count": count})
+
+
+@entities_bp.route("/api/record-merge-candidate", methods=["POST"])
+def record_merge_candidate_for_call() -> Any:
+    """Record or update an entity merge candidate for the CLI."""
+    data = _json_body()
+    facet, error = _required_body_str(data, "facet")
+    if error is not None:
+        return error
+    day, error = _required_body_str(data, "day")
+    if error is not None:
+        return error
+    source, error = _required_body_str(data, "source")
+    if error is not None:
+        return error
+    target, error = _required_body_str(data, "target")
+    if error is not None:
+        return error
+    evidence, error = _required_body_str(data, "evidence")
+    if error is not None:
+        return error
+    assert facet is not None
+    assert day is not None
+    assert source is not None
+    assert target is not None
+    assert evidence is not None
+
+    source_slug = entity_slug(source)
+    target_slug = entity_slug(target)
+    if source_slug == target_slug:
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail="source and target resolve to the same entity.",
+        )
+
+    try:
+        row, created_row = record_entity_merge_candidate(
+            facet=facet,
+            day=day,
+            source=source,
+            source_slug=source_slug,
+            target=target,
+            target_slug=target_slug,
+            evidence=evidence,
+            basis=_body_str(data, "basis") or "name-variant",
+            detections=_body_int_or_none(data, "detections"),
+            needs=_body_int_or_none(data, "needs"),
+        )
+    except LockTimeout:
+        return error_response(ENTITY_BUSY)
+    return success_response({"row": row, "created": created_row})
+
+
+@entities_bp.route("/api/merge-candidates")
+def get_merge_candidates_for_call() -> Any:
+    """Return entity merge candidates for the CLI."""
+    facet = request.args.get("facet")
+    status = request.args.get("status")
+    rows = load_candidates()
+    if facet:
+        rows = [row for row in rows if row.get("facet") == facet]
+    if status:
+        rows = [row for row in rows if row.get("status") == status]
+    return respond_collection(rows)
+
+
+@entities_bp.route("/api/accept-merge-candidate", methods=["POST"])
+def accept_merge_candidate_for_call() -> Any:
+    """Preview or accept one entity merge candidate for the CLI."""
+    data = _json_body()
+    facet, error = _required_body_str(data, "facet")
+    if error is not None:
+        return error
+    source_slug, error = _required_body_str(data, "source_slug")
+    if error is not None:
+        return error
+    target_slug, error = _required_body_str(data, "target_slug")
+    if error is not None:
+        return error
+    assert facet is not None
+    assert source_slug is not None
+    assert target_slug is not None
+
+    try:
+        result = accept_entity_candidate(
+            facet,
+            source_slug,
+            target_slug,
+            commit=_body_bool(data, "commit"),
+        )
+    except LockTimeout:
+        return error_response(ENTITY_BUSY)
+    if result.get("status") == "preview":
+        fields = merge_preview_fields(result["merge"])
+        body = {
+            "status": result.get("status"),
+            "kind": result.get("kind"),
+            "key": result.get("key"),
+            "fields": fields,
+        }
+        return jsonify(body)
+    coerced = json.loads(json.dumps(result, default=str))
+    return jsonify(coerced)
+
+
+@entities_bp.route("/api/dismiss-merge-candidate", methods=["POST"])
+def dismiss_merge_candidate_for_call() -> Any:
+    """Dismiss one entity merge candidate for the CLI."""
+    data = _json_body()
+    facet, error = _required_body_str(data, "facet")
+    if error is not None:
+        return error
+    source_slug, error = _required_body_str(data, "source_slug")
+    if error is not None:
+        return error
+    target_slug, error = _required_body_str(data, "target_slug")
+    if error is not None:
+        return error
+    assert facet is not None
+    assert source_slug is not None
+    assert target_slug is not None
+
+    try:
+        result = dismiss_entity_candidate(facet, source_slug, target_slug)
+    except LockTimeout:
+        return error_response(ENTITY_BUSY)
+    coerced = json.loads(json.dumps(result, default=str))
+    return jsonify(coerced)
+
+
+@entities_bp.route("/api/merge", methods=["POST"])
+def merge_entities_for_call() -> Any:
+    """Merge two journal entities for the CLI."""
+    data = _json_body()
+    source_slug, error = _required_body_str(data, "source_slug")
+    if error is not None:
+        return error
+    target_slug, error = _required_body_str(data, "target_slug")
+    if error is not None:
+        return error
+    assert source_slug is not None
+    assert target_slug is not None
+
+    result = merge_entity(
+        source_slug,
+        target_slug,
+        keep_source_as_aka=_body_bool(data, "keep_source_as_aka", default=True),
+        commit=_body_bool(data, "commit"),
+        caller="entities.merge",
+    )
+    coerced = json.loads(json.dumps(result, default=str))
+    return jsonify(coerced)
+
+
+@entities_bp.route("/api/<facet_name>/observations")
+def get_observations_for_call(facet_name: str) -> Any:
+    """Return observations for one resolved entity name."""
+    name = request.args.get("name", "")
+    if not name:
+        return error_response(MISSING_REQUIRED_FIELD, detail="name is required")
+    return respond_collection(load_observations(facet_name, name))
+
+
+@entities_bp.route("/api/<facet_name>/observe", methods=["POST"])
+def observe_entity_for_call(facet_name: str) -> Any:
+    """Add an observation for the CLI."""
+    data = _json_body()
+    name, error = _required_body_str(data, "name")
+    if error is not None:
+        return error
+    content, error = _required_body_str(data, "content")
+    if error is not None:
+        return error
+    assert name is not None
+    assert content is not None
+
+    source_day = _body_str(data, "source_day")
+    original_query = _body_str(data, "entity") or name
+    try:
+        result = add_observation(facet_name, name, content, source_day)
+    except ValueError as exc:
+        return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
+    except LockTimeout:
+        return error_response(ENTITY_BUSY)
+
+    log_call_action(
+        facet=facet_name,
+        action="entity_observe",
+        params={"entity": original_query, "name": name, "content": content},
+    )
+    return success_response({"result": result})
+
+
+@entities_bp.route("/api/search")
+def search_entities_for_call() -> Any:
+    """Search entities for the CLI."""
+    limit = 20
+    try:
+        limit = int(request.args.get("limit", "20"))
+    except ValueError:
+        limit = 20
+    results = search_entities(
+        query=request.args.get("query") or None,
+        entity_type=request.args.get("type") or None,
+        facet=request.args.get("facet") or None,
+        since=request.args.get("since") or None,
+        limit=limit,
+    )
+    return respond_collection(results)
 
 
 @entities_bp.route("/api/<facet_name>/entity/<entity_id>")
