@@ -83,7 +83,7 @@ def test_delete_journal_entity_route_returns_pending_response_shape(
     entity_id = "pending-delete-test"
     today = datetime.now().strftime("%Y%m%d")
     _create_journal_entity(entity_id)
-    monkeypatch.setattr("solstone.apps.entities.routes.ENTITY_DELETE_TTL", 0.05)
+    monkeypatch.setattr("solstone.apps.entities.routes.ENTITY_DELETE_TTL", 1.0)
     before_ms = int(time.time() * 1000)
 
     response = client.delete(f"/app/entities/api/journal/entity/{entity_id}")
@@ -92,7 +92,7 @@ def test_delete_journal_entity_route_returns_pending_response_shape(
     data = response.get_json()
     assert data["success"] is True
     assert re.fullmatch(r"[0-9a-f]{32}", data["pending"])
-    assert data["ttl_seconds"] == 0.05
+    assert data["ttl_seconds"] == 1.0
     assert data["commit_at_ms"] >= before_ms
     assert (journal_copy / "entities" / entity_id).exists()
     rows = _action_log_rows(journal_copy, today)
@@ -102,7 +102,8 @@ def test_delete_journal_entity_route_returns_pending_response_shape(
         and row["params"].get("phase") == "pending"
         for row in rows
     )
-    time.sleep(0.2)
+    cancel_response = client.post(f"/app/entities/api/cancel-delete/{data['pending']}")
+    assert cancel_response.status_code == 200
 
 
 def test_cancel_delete_journal_entity_within_window_keeps_entity(
