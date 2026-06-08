@@ -1123,3 +1123,45 @@ def test_reject_owner_candidate(speakers_env):
     state = get_current()
     assert state["voiceprint"]["status"] == "rejected"
     assert "rejected_at" in state["voiceprint"]
+
+
+def test_reject_owner_candidate_enforces_detection_cooldown(speakers_env, monkeypatch):
+    from solstone.apps.speakers.owner import reject_owner_candidate
+    from solstone.think.awareness import owner_detection_ready
+
+    env = speakers_env()
+    candidate_path = _candidate_path(env.journal)
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    candidate_path.write_bytes(b"test")
+
+    reject_owner_candidate()
+    rejected_at = get_current()["voiceprint"]["rejected_at"]
+    assert rejected_at.endswith("Z")
+
+    detection_calls = []
+
+    def fake_detect_owner_candidate():
+        detection_calls.append(True)
+        return {
+            "status": "candidate",
+            "recommendation": "ready",
+            "cluster_size": 88,
+            "streams_represented": 2,
+            "samples": [],
+        }
+
+    monkeypatch.setattr(
+        "solstone.apps.speakers.owner.load_owner_centroid",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "solstone.apps.speakers.owner.detect_owner_candidate",
+        fake_detect_owner_candidate,
+    )
+
+    result = owner_detection_ready()
+
+    assert result["ready"] is False
+    assert result["reason"] == "cooldown"
+    assert result["days_remaining"] == 14
+    assert detection_calls == []

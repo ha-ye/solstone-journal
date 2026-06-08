@@ -339,7 +339,8 @@ def owner_detection_ready() -> dict[str, Any]:
     if rejected_at:
         try:
             rejection_time = datetime.fromisoformat(rejected_at)
-            days_since = (datetime.now() - rejection_time).days
+            now = datetime.now(rejection_time.tzinfo)
+            days_since = (now - rejection_time).days
             if days_since < 14:
                 return {
                     "ready": False,
