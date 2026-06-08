@@ -4,53 +4,143 @@
 """CLI commands for todo management.
 
 Auto-discovered by ``think.call`` and mounted as ``sol call todos ...``.
+Every verb reaches the journal only over HTTP via the Convey client; this
+module imports no journal/domain function and performs no filesystem I/O.
 """
 
 import json
+import os
 import subprocess
 from datetime import datetime
-from pathlib import Path
+from typing import Any
 
 import typer
 
-from solstone.apps.todos import todo
-from solstone.apps.todos.todo import TodoMovePartialError, TodoNotMovableError
-from solstone.think.facets import log_call_action
-from solstone.think.journal_io.errors import LockTimeout
-from solstone.think.utils import get_journal, require_solstone
+from solstone.convey.reasons import (
+    INVALID_DAY,
+    INVALID_REQUEST_VALUE,
+    OPERATION_NO_LONGER_AVAILABLE,
+    TODO_BUSY,
+    TODO_OPERATION_FAILED,
+)
+from solstone.think.convey_client import ConveyClientError, get_client
 
 app = typer.Typer(help="Todo checklist management.")
 
 
-@app.callback()
-def _require_up() -> None:
-    require_solstone()
+def _get_sol_facet() -> str | None:
+    return os.environ.get("SOL_FACET") or None
 
 
-def _print_day_facet(day: str, facet: str) -> bool:
-    """Print todos for a single day+facet. Returns True if any items exist."""
-    checklist = todo.TodoChecklist.load(day, facet)
-    if not checklist.items:
-        return False
-    typer.echo(checklist.display())
-    return True
-
-
-def _validate_facet_or_exit(facet: str, label: str) -> None:
-    """Exit if the facet directory does not exist."""
-    facet_path = Path(get_journal()) / "facets" / facet
-    if not facet_path.is_dir():
-        typer.echo(
-            f"Error: Facet '{facet}' ({label}) does not exist.",
-            err=True,
-        )
-        raise typer.Exit(1)
-
-
-def _exit_todo_busy() -> None:
-    """Map a lock-timeout to the standard CLI error surface."""
-    typer.echo("Error: todo list is busy, try again.", err=True)
+def _resolve_sol_day(arg: str | None) -> str:
+    if arg:
+        return arg
+    env = os.environ.get("SOL_DAY") or None
+    if env:
+        return env
+    typer.echo("Error: day is required (pass as argument or set SOL_DAY).", err=True)
     raise typer.Exit(1)
+
+
+def _resolve_sol_day_or_today(arg: str | None) -> str:
+    if arg:
+        return arg
+    env = os.environ.get("SOL_DAY") or None
+    if env:
+        return env
+    return datetime.now().strftime("%Y%m%d")
+
+
+def _resolve_sol_facet(arg: str | None) -> str:
+    if arg:
+        return arg
+    env = _get_sol_facet()
+    if env:
+        return env
+    typer.echo(
+        "Error: facet is required (pass as argument or set SOL_FACET).", err=True
+    )
+    raise typer.Exit(1)
+
+
+def _exit_with(message: str) -> None:
+    typer.echo(message, err=True)
+    raise typer.Exit(1)
+
+
+def _handle_todo_error(
+    err: ConveyClientError,
+    *,
+    from_facet: str | None = None,
+    to_facet: str | None = None,
+    warn_operation_failed: bool = False,
+) -> None:
+    detail = err.detail or ""
+    if err.reason_code == TODO_BUSY.code:
+        _exit_with("Error: todo list is busy, try again.")
+    if err.reason_code == INVALID_REQUEST_VALUE.code and detail:
+        if from_facet is not None and to_facet is not None:
+            if detail == from_facet:
+                _exit_with(f"Error: Facet '{detail}' (--from) does not exist.")
+            if detail == to_facet:
+                _exit_with(f"Error: Facet '{detail}' (--to) does not exist.")
+        _exit_with(f"Error: {detail}")
+    if err.reason_code in {INVALID_DAY.code, OPERATION_NO_LONGER_AVAILABLE.code}:
+        if detail:
+            _exit_with(f"Error: {detail}")
+    if err.reason_code == TODO_OPERATION_FAILED.code:
+        if detail and warn_operation_failed:
+            typer.echo(f"Warning: {detail}", err=True)
+            raise typer.Exit(1)
+        if detail:
+            _exit_with(f"Error: {detail}")
+
+    typer.echo(err.error, err=True)
+    raise typer.Exit(1)
+
+
+def _request(
+    method: str,
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+    json_body: dict[str, Any] | None = None,
+) -> Any:
+    return get_client().request(method, path, params=params, json=json_body)
+
+
+def _print_checklist_response(body: dict[str, Any]) -> None:
+    if body["mode"] == "range":
+        facet_count = int(body["facet_count"])
+        for section in body["sections"]:
+            if facet_count > 1:
+                typer.echo(f"## {section['facet']}")
+            for day_entry in section["days"]:
+                if day_entry["has_items"]:
+                    typer.echo(f"### {day_entry['day']}")
+                    typer.echo(day_entry["display"])
+                    typer.echo()
+        return
+
+    day = body["day"]
+    facets = body["facets"]
+    if not facets:
+        typer.echo(f"No todos found for {day}.")
+        return
+
+    if len(facets) == 1:
+        entry = facets[0]
+        if not entry["has_items"]:
+            typer.echo(f"No todos found for {day}.")
+            return
+        typer.echo(entry["display"])
+        return
+
+    for entry in facets:
+        typer.echo(f"## {entry['facet']}")
+        if entry["has_items"]:
+            typer.echo(entry["display"])
+        typer.echo()
 
 
 @app.command("list")
@@ -66,58 +156,24 @@ def list_todos(
     ),
 ) -> None:
     """Show the todo checklist for a day (or date range)."""
-    from solstone.think.utils import (
-        get_journal,
-        get_sol_facet,
-        resolve_sol_day_or_today,
-    )
-
-    get_journal()
-    day = resolve_sol_day_or_today(day)
+    day = _resolve_sol_day_or_today(day)
     if facet is None:
-        facet = get_sol_facet()
+        facet = _get_sol_facet()
 
     if to is not None and to < day:
-        typer.echo(f"Error: --to ({to}) must not be before day ({day})", err=True)
-        raise typer.Exit(1)
+        _exit_with(f"Error: --to ({to}) must not be before day ({day})")
 
-    # Range query
-    if to is not None and to != day:
-        # Use all facets for range — get_facets_with_todos only checks the start day
-        from solstone.think.facets import get_facets
+    params: dict[str, Any] = {"day": day}
+    if facet is not None:
+        params["facet"] = facet
+    if to is not None:
+        params["to"] = to
 
-        facets = [facet] if facet else sorted(get_facets())
-
-        for f in facets:
-            days_with_todos = todo.get_todo_days_in_range(f, day, to)
-            if not days_with_todos:
-                continue
-            if len(facets) > 1:
-                typer.echo(f"## {f}")
-            for day_str in days_with_todos:
-                checklist = todo.TodoChecklist.load(day_str, f)
-                if checklist.items:
-                    typer.echo(f"### {day_str}")
-                    typer.echo(checklist.display())
-                    typer.echo()
-        return
-
-    # Single day
-    facets = [facet] if facet else todo.get_facets_with_todos(day)
-
-    if not facets:
-        typer.echo(f"No todos found for {day}.")
-        return
-
-    if len(facets) == 1:
-        if not _print_day_facet(day, facets[0]):
-            typer.echo(f"No todos found for {day}.")
-        return
-
-    for f in facets:
-        typer.echo(f"## {f}")
-        _print_day_facet(day, f)
-        typer.echo()
+    try:
+        body = _request("GET", "/app/todos/api/checklist", params=params)
+    except ConveyClientError as err:
+        _handle_todo_error(err)
+    _print_checklist_response(body)
 
 
 @app.command("add")
@@ -140,63 +196,41 @@ def add_todo(
     ),
 ) -> None:
     """Add a new todo item."""
-    from datetime import datetime
-
-    from solstone.think.utils import get_journal, resolve_sol_day, resolve_sol_facet
-
-    get_journal()
-    day = resolve_sol_day(day)
-    facet = resolve_sol_facet(facet)
+    day = _resolve_sol_day(day)
+    facet = _resolve_sol_facet(facet)
 
     try:
         datetime.strptime(day, "%Y%m%d")
     except ValueError:
-        typer.echo(f"Error: invalid day format '{day}'", err=True)
-        raise typer.Exit(1)
-
-    # Parse nudge if provided
-    parsed_nudge: str | None = None
-    if nudge is not None:
-        try:
-            parsed_nudge = todo.parse_nudge(nudge, day)
-        except ValueError as exc:
-            typer.echo(f"Error: {exc}", err=True)
-            raise typer.Exit(1) from None
-
-    # Cross-facet duplicate check
-    if not force:
-        matches = todo.find_cross_facet_matches(text, day, exclude_facet=facet)
-        if matches:
-            typer.echo(f"Duplicate detected for: {text}", err=True)
-            for match in matches:
-                typer.echo(
-                    f"  [{match['score']:.0f}%] {match['facet']}/{match['day']} "
-                    f"line {match['line']}: {match['text']}",
-                    err=True,
-                )
-            typer.echo("Use --force to add anyway.", err=True)
-            raise typer.Exit(1)
+        _exit_with(f"Error: invalid day format '{day}'")
 
     try:
-
-        def _add(checklist: todo.TodoChecklist) -> todo.TodoChecklist:
-            checklist.append_entry(text, nudge=parsed_nudge)
-            return checklist
-
-        checklist = todo.TodoChecklist.locked_modify(day, facet, _add)
-        item = checklist.items[-1]
-        log_call_action(
-            facet=facet,
-            action="todo_add",
-            params={"line_number": item.index, "text": item.text},
-            day=day,
+        body = _request(
+            "POST",
+            "/app/todos/api/add",
+            json_body={
+                "text": text,
+                "day": day,
+                "facet": facet,
+                "nudge": nudge,
+                "force": force,
+            },
         )
-        typer.echo(checklist.display())
-    except todo.TodoEmptyTextError:
-        typer.echo("Error: todo text cannot be empty", err=True)
+    except ConveyClientError as err:
+        _handle_todo_error(err)
+
+    if body.get("status") == "duplicate":
+        typer.echo(f"Duplicate detected for: {text}", err=True)
+        for match in body["matches"]:
+            typer.echo(
+                f"  [{match['score']:.0f}%] {match['facet']}/{match['day']} "
+                f"line {match['line']}: {match['text']}",
+                err=True,
+            )
+        typer.echo("Use --force to add anyway.", err=True)
         raise typer.Exit(1)
-    except LockTimeout:
-        _exit_todo_busy()
+
+    typer.echo(body["display"])
 
 
 @app.command("done")
@@ -210,34 +244,18 @@ def done_todo(
     ),
 ) -> None:
     """Mark a todo item as done."""
-    from solstone.think.utils import get_journal, resolve_sol_day, resolve_sol_facet
-
-    get_journal()
-    day = resolve_sol_day(day)
-    facet = resolve_sol_facet(facet)
+    day = _resolve_sol_day(day)
+    facet = _resolve_sol_facet(facet)
 
     try:
-
-        def _done(checklist: todo.TodoChecklist) -> tuple:
-            item = checklist.mark_done(line_number)
-            return checklist, item
-
-        checklist, item = todo.TodoChecklist.locked_modify(day, facet, _done)
-        log_call_action(
-            facet=facet,
-            action="todo_done",
-            params={"line_number": line_number, "text": item.text},
-            day=day,
+        body = _request(
+            "POST",
+            "/app/todos/api/done",
+            json_body={"day": day, "facet": facet, "line_number": line_number},
         )
-        typer.echo(checklist.display())
-    except FileNotFoundError:
-        typer.echo(f"Error: no todos found for facet '{facet}' on {day}", err=True)
-        raise typer.Exit(1)
-    except IndexError as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(1)
-    except LockTimeout:
-        _exit_todo_busy()
+    except ConveyClientError as err:
+        _handle_todo_error(err)
+    typer.echo(body["display"])
 
 
 @app.command("cancel")
@@ -251,34 +269,18 @@ def cancel_todo(
     ),
 ) -> None:
     """Cancel a todo item."""
-    from solstone.think.utils import get_journal, resolve_sol_day, resolve_sol_facet
-
-    get_journal()
-    day = resolve_sol_day(day)
-    facet = resolve_sol_facet(facet)
+    day = _resolve_sol_day(day)
+    facet = _resolve_sol_facet(facet)
 
     try:
-
-        def _cancel(checklist: todo.TodoChecklist) -> tuple:
-            item = checklist.cancel_entry(line_number)
-            return checklist, item
-
-        checklist, item = todo.TodoChecklist.locked_modify(day, facet, _cancel)
-        log_call_action(
-            facet=facet,
-            action="todo_cancel",
-            params={"line_number": line_number, "text": item.text},
-            day=day,
+        body = _request(
+            "POST",
+            "/app/todos/api/cancel",
+            json_body={"day": day, "facet": facet, "line_number": line_number},
         )
-        typer.echo(checklist.display())
-    except FileNotFoundError:
-        typer.echo(f"Error: no todos found for facet '{facet}' on {day}", err=True)
-        raise typer.Exit(1)
-    except IndexError as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(1)
-    except LockTimeout:
-        _exit_todo_busy()
+    except ConveyClientError as err:
+        _handle_todo_error(err)
+    typer.echo(body["display"])
 
 
 @app.command("move")
@@ -296,83 +298,30 @@ def move_todo(
     ),
 ) -> None:
     """Move an open todo from one facet to another."""
-    from datetime import datetime
-
-    _validate_facet_or_exit(from_facet, "--from")
-    _validate_facet_or_exit(to_facet, "--to")
-
     try:
-        datetime.strptime(day, "%Y%m%d")
-    except ValueError:
-        typer.echo(
-            f"Error: Invalid day format '{day}', expected YYYYMMDD.",
-            err=True,
+        body = _request(
+            "POST",
+            "/app/todos/api/move",
+            json_body={
+                "day": day,
+                "from_facet": from_facet,
+                "to_facet": to_facet,
+                "line_number": line_number,
+                "consent": consent,
+            },
         )
-        raise typer.Exit(1)
-
-    if from_facet == to_facet:
-        typer.echo("Error: source and destination facet are the same.", err=True)
-        raise typer.Exit(1)
-
-    try:
-        source_checklist = todo.TodoChecklist.load(day, from_facet)
-        if not source_checklist.exists:
-            raise FileNotFoundError()
-        todo.validate_line_number(line_number, len(source_checklist.items))
-        item = source_checklist.items[line_number - 1]
-        # Completion is enforced pre-call; move_entry intentionally stays policy-neutral.
-        if item.completed:
-            raise todo.TodoError("Cannot move a completed todo.")
-        if item.cancelled:
-            raise todo.TodoError("Cannot move an already cancelled todo.")
-    except FileNotFoundError:
-        typer.echo(
-            f"Error: No todos found for day {day} in facet '{from_facet}'.",
-            err=True,
+    except ConveyClientError as err:
+        _handle_todo_error(
+            err,
+            from_facet=from_facet,
+            to_facet=to_facet,
+            warn_operation_failed=True,
         )
-        raise typer.Exit(1)
-    except IndexError as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(1)
-    except todo.TodoError as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(1)
 
-    try:
-        new_item, cancelled = todo.TodoChecklist.move_entry(
-            day, from_facet, line_number, day, to_facet
-        )
-    except (IndexError, TodoNotMovableError) as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(1)
-    except LockTimeout:
-        _exit_todo_busy()
-    except TodoMovePartialError:
-        typer.echo(
-            f"Warning: Item was appended to '{to_facet}' but could not cancel source in '{from_facet}'. Cancel it manually with: sol call todos cancel {line_number} --day {day} --facet {from_facet}",
-            err=True,
-        )
-        raise typer.Exit(1)
-
-    params_out: dict[str, object] = {
-        "moved_from": from_facet,
-        "moved_to": to_facet,
-        "line_number": line_number,
-        "text": cancelled.text,
-    }
-    params_in: dict[str, object] = {
-        "moved_from": from_facet,
-        "moved_to": to_facet,
-        "line_number": new_item.index,
-        "text": new_item.text,
-    }
-    if consent:
-        params_out["consent"] = True
-        params_in["consent"] = True
-    log_call_action(facet=from_facet, action="todo_move_out", params=params_out)
-    log_call_action(facet=to_facet, action="todo_move_in", params=params_in)
+    cancelled = body["cancelled"]
     typer.echo(
-        f"Moved todo {line_number} ('{cancelled.text}') from '{from_facet}' to '{to_facet}'."
+        f"Moved todo {line_number} ('{cancelled['text']}') "
+        f"from '{from_facet}' to '{to_facet}'."
     )
 
 
@@ -384,51 +333,17 @@ def upcoming_todos(
     ),
 ) -> None:
     """Show upcoming todos across future days."""
-    from solstone.think.utils import get_journal, get_sol_facet
-
-    get_journal()
     if facet is None:
-        facet = get_sol_facet()
+        facet = _get_sol_facet()
 
-    result = todo.upcoming(limit=limit, facet=facet)
-    typer.echo(result)
-
-
-def _due_nudges(
-    facet: str | None,
-) -> list[tuple[str, todo.TodoChecklist, todo.TodoItem]]:
-    """Return due, unnotified nudges for today without mutating state."""
-    from solstone.think.utils import get_journal, resolve_sol_facet
-
-    journal = get_journal()
-    today = datetime.now().strftime("%Y%m%d")
-    now_str = datetime.now().strftime("%Y%m%dT%H:%M")
-
-    facets_dir = Path(journal) / "facets"
-    if not facets_dir.is_dir():
-        return []
-
+    params: dict[str, Any] = {"limit": limit}
     if facet is not None:
-        facet = resolve_sol_facet(facet)
-        facet_names = [facet]
-    else:
-        facet_names = [d.name for d in facets_dir.iterdir() if d.is_dir()]
-
-    due: list[tuple[str, todo.TodoChecklist, todo.TodoItem]] = []
-    for facet_name in facet_names:
-        checklist = todo.TodoChecklist.load(today, facet_name)
-        if not checklist.exists:
-            continue
-        for item in checklist.items:
-            if (
-                item.nudge
-                and item.nudge <= now_str
-                and not item.notified
-                and not item.completed
-                and not item.cancelled
-            ):
-                due.append((facet_name, checklist, item))
-    return due
+        params["facet"] = facet
+    try:
+        body = _request("GET", "/app/todos/api/upcoming", params=params)
+    except ConveyClientError as err:
+        _handle_todo_error(err)
+    typer.echo(body["upcoming"])
 
 
 @app.command("list-nudges-due")
@@ -442,41 +357,47 @@ def list_nudges_due(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
     """List due, unnotified todo nudges."""
-    due = _due_nudges(facet)
-    now = datetime.now()
+    params: dict[str, Any] = {}
+    if facet is not None:
+        params["facet"] = facet
+    try:
+        body = _request("GET", "/app/todos/api/nudges-due", params=params)
+    except ConveyClientError as err:
+        _handle_todo_error(err)
+    items = body["items"]
+
     if json_output:
         payload = [
             {
-                "day": datetime.now().strftime("%Y%m%d"),
-                "facet": facet_name,
-                "index": item.index,
-                "text": item.text,
-                "nudge": item.nudge,
-                "nudge_display": todo.format_nudge(item.nudge or "", now=now),
+                "day": item["day"],
+                "facet": item["facet"],
+                "index": item["index"],
+                "text": item["text"],
+                "nudge": item["nudge"],
+                "nudge_display": item["nudge_display"],
             }
-            for facet_name, _checklist, item in due
+            for item in items
         ]
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         return
 
-    if not due:
+    if not items:
         typer.echo("No nudges due.")
         return
 
-    grouped: dict[str, list[todo.TodoItem]] = {}
-    for facet_name, _checklist, item in due:
-        grouped.setdefault(facet_name, []).append(item)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        grouped.setdefault(item["facet"], []).append(item)
 
     if len(grouped) == 1:
-        items = next(iter(grouped.values()))
-        for item in items:
-            typer.echo(f"{item.index}: {item.display_line()}")
+        for item in next(iter(grouped.values())):
+            typer.echo(f"{item['index']}: {item['display_line']}")
         return
 
-    for facet_name, items in grouped.items():
+    for facet_name, facet_items in grouped.items():
         typer.echo(f"## {facet_name}")
-        for item in items:
-            typer.echo(f"{item.index}: {item.display_line()}")
+        for item in facet_items:
+            typer.echo(f"{item['index']}: {item['display_line']}")
         typer.echo()
 
 
@@ -490,47 +411,22 @@ def dispatch_nudges(
     ),
 ) -> None:
     """Dispatch due, unnotified todo nudges."""
-    due = _due_nudges(facet)
-    today = datetime.now().strftime("%Y%m%d")
-    now_str = datetime.now().strftime("%Y%m%dT%H:%M")
+    body: dict[str, Any]
+    json_body: dict[str, Any] = {}
+    if facet is not None:
+        json_body["facet"] = facet
+    try:
+        body = _request("POST", "/app/todos/api/dispatch-nudges", json_body=json_body)
+    except ConveyClientError as err:
+        _handle_todo_error(err)
 
-    facet_names = sorted({facet_name for facet_name, _checklist, _item in due})
-    dispatched: list[tuple[str, str]] = []  # (facet_name, text)
-
-    for facet_name in facet_names:
-
-        def _mark(checklist: todo.TodoChecklist) -> list[str]:
-            texts: list[str] = []
-            for item in checklist.items:
-                if (
-                    item.nudge
-                    and item.nudge <= now_str
-                    and not item.notified
-                    and not item.completed
-                    and not item.cancelled
-                ):
-                    item.notified = True
-                    texts.append(item.text)
-            if texts:
-                checklist.save()
-            return texts
-
-        try:
-            texts = todo.TodoChecklist.locked_modify(today, facet_name, _mark)
-        except LockTimeout:
-            # Busy facet: skip this run; the lock holder handles it and the
-            # next dispatch retries (idempotent). Do not abort other facets.
-            continue
-        for text in texts:
-            dispatched.append((facet_name, text))
-
-    for facet_name, text in dispatched:
+    for item in body["items"]:
         try:
             subprocess.run(
                 [
                     "sol",
                     "notify",
-                    text,
+                    item["text"],
                     "--title",
                     "Todo Reminder",
                     "--icon",
@@ -538,9 +434,9 @@ def dispatch_nudges(
                     "--app",
                     "todos",
                     "--facet",
-                    facet_name,
+                    item["facet"],
                     "--action",
-                    f"/app/todos/{today}",
+                    f"/app/todos/{body['day']}",
                 ],
                 check=False,
                 capture_output=True,
@@ -548,4 +444,4 @@ def dispatch_nudges(
         except FileNotFoundError:
             pass
 
-    typer.echo(f"dispatched {len(dispatched)} nudge(s)")
+    typer.echo(f"dispatched {len(body['items'])} nudge(s)")

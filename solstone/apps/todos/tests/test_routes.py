@@ -12,6 +12,7 @@ from typer.testing import CliRunner
 from solstone.apps.todos.todo import TodoChecklist
 from solstone.convey import create_app
 from solstone.think.call import call_app
+from solstone.think.convey_client import ConveyClient
 
 runner = CliRunner()
 STABLE_KEYS = (
@@ -175,6 +176,8 @@ def test_edit_move_route_cli_byte_parity(
     _write_todo(cli_journal, "work", day, entry)
     _ensure_facet(cli_journal, "personal")
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(cli_journal))
+    convey_client = ConveyClient(session=_client_for_journal(cli_journal), base_url="")
+    monkeypatch.setattr("solstone.apps.todos.call.get_client", lambda: convey_client)
     cli_result = runner.invoke(
         call_app,
         [

@@ -90,7 +90,6 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/apps/settings/vertex_credentials.py",
         "solstone/apps/timeline/call.py",
         "solstone/apps/timeline/talent/segment_summary.py",
-        "solstone/apps/todos/call.py",
         "solstone/apps/todos/todo.py",
         "solstone/apps/import/ingest.py",
         "solstone/apps/import/call.py",
