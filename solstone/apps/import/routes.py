@@ -25,7 +25,12 @@ from solstone.convey.reasons import (
     JOURNAL_SOURCE_PROBLEM,
     MISSING_REQUIRED_FIELD,
 )
-from solstone.convey.utils import error_response, load_json, respond_collection
+from solstone.convey.utils import (
+    error_response,
+    load_json,
+    respond_collection,
+    success_response,
+)
 from solstone.think.detect_created import detect_created
 from solstone.think.importers.utils import (
     build_import_info,
@@ -53,6 +58,14 @@ from .journal_sources import (
     list_journal_sources,
     require_journal_source,
     save_journal_source,
+)
+from .resolve import (
+    ResolveInvalid,
+    ResolveNotFound,
+    resolve_config,
+    resolve_config_all,
+    resolve_entity,
+    resolve_staged_facet,
 )
 
 import_bp = Blueprint(
@@ -1067,6 +1080,95 @@ def api_journal_source_staged(name: str) -> Any:
             items.append({"area": "config", "diff": diff})
 
     return respond_collection(items)
+
+
+@import_bp.route("/api/journal-sources/<name>/resolve-entity", methods=["POST"])
+def api_journal_source_resolve_entity(name: str) -> Any:
+    source = find_journal_source_by_name(name)
+    if not source:
+        return error_response(
+            JOURNAL_SOURCE_PROBLEM,
+            status=404,
+            detail=f"Journal source '{name}' not found",
+        )
+    state_dir = get_state_directory(journal_source_state_prefix(source))
+    data = request.get_json(force=True)
+
+    try:
+        result = resolve_entity(
+            state_dir,
+            data["source_id"],
+            data["action"],
+            data.get("target"),
+        )
+    except ResolveNotFound as exc:
+        return error_response(IMPORT_NOT_FOUND, detail=str(exc))
+    except ResolveInvalid as exc:
+        return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
+    return jsonify(result)
+
+
+@import_bp.route("/api/journal-sources/<name>/resolve-facet", methods=["POST"])
+def api_journal_source_resolve_facet(name: str) -> Any:
+    source = find_journal_source_by_name(name)
+    if not source:
+        return error_response(
+            JOURNAL_SOURCE_PROBLEM,
+            status=404,
+            detail=f"Journal source '{name}' not found",
+        )
+    state_dir = get_state_directory(journal_source_state_prefix(source))
+    data = request.get_json(force=True)
+
+    try:
+        resolve_staged_facet(state_dir, data["staged_file"], data["mode"])
+    except ResolveNotFound as exc:
+        return error_response(IMPORT_NOT_FOUND, detail=str(exc))
+    except (ResolveInvalid, ValueError) as exc:
+        return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
+    return success_response()
+
+
+@import_bp.route("/api/journal-sources/<name>/resolve-config", methods=["POST"])
+def api_journal_source_resolve_config(name: str) -> Any:
+    source = find_journal_source_by_name(name)
+    if not source:
+        return error_response(
+            JOURNAL_SOURCE_PROBLEM,
+            status=404,
+            detail=f"Journal source '{name}' not found",
+        )
+    state_dir = get_state_directory(journal_source_state_prefix(source))
+    data = request.get_json(force=True)
+
+    try:
+        resolve_config(state_dir, data["field"], data["action"])
+    except ResolveNotFound as exc:
+        return error_response(IMPORT_NOT_FOUND, detail=str(exc))
+    except ResolveInvalid as exc:
+        return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
+    return success_response()
+
+
+@import_bp.route("/api/journal-sources/<name>/resolve-config-all", methods=["POST"])
+def api_journal_source_resolve_config_all(name: str) -> Any:
+    source = find_journal_source_by_name(name)
+    if not source:
+        return error_response(
+            JOURNAL_SOURCE_PROBLEM,
+            status=404,
+            detail=f"Journal source '{name}' not found",
+        )
+    state_dir = get_state_directory(journal_source_state_prefix(source))
+    data = request.get_json(force=True)
+
+    try:
+        count = resolve_config_all(state_dir, data["category"])
+    except ResolveNotFound as exc:
+        return error_response(IMPORT_NOT_FOUND, detail=str(exc))
+    except ResolveInvalid as exc:
+        return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
+    return jsonify({"count": count})
 
 
 @import_bp.route("/journal/<key_prefix>/manifest/<area>")
