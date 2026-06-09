@@ -100,6 +100,17 @@ def persist(path, arrays, transform):
 """
 
 
+WRITE_NPZ_SUBMODULE_IMPORT = """\
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+from solstone.think.journal_io.npz import write_npz
+
+
+def persist(path, arrays):
+    write_npz(path, arrays, expected_keys=("data",))
+"""
+
+
 def _write_file(root: Path, rel: str, content: str) -> None:
     path = root / rel
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -177,6 +188,13 @@ def test_npz_submodule_write_imports_are_flagged():
     assert [(primitive, bound_name) for _lineno, primitive, bound_name in findings] == [
         ("save_npz", "save_npz"),
         ("update_npz", "update_npz"),
+    ]
+
+
+def test_write_npz_submodule_import_is_flagged():
+    findings = cja.scan_source(WRITE_NPZ_SUBMODULE_IMPORT)
+    assert ("write_npz", "write_npz") in [
+        (primitive, bound_name) for _lineno, primitive, bound_name in findings
     ]
 
 

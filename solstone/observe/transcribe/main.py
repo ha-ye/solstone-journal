@@ -100,6 +100,8 @@ from solstone.observe.vad import (
     run_vad,
 )
 from solstone.think.callosum import callosum_send
+from solstone.think.journal_io import write_text
+from solstone.think.journal_io.npz import write_npz
 from solstone.think.media import AUDIO_EXTENSIONS as SUPPORTED_AUDIO_FORMATS
 from solstone.think.providers.memory import gb, read_available_bytes
 from solstone.think.utils import (
@@ -747,13 +749,17 @@ def process_audio(
         )
 
         # Write JSONL
-        jsonl_path.write_text("\n".join(jsonl_lines) + "\n")
+        write_text(jsonl_path, "\n".join(jsonl_lines) + "\n")
         logging.info(f"Transcribed {raw_path} -> {jsonl_path}")
 
         # Save embeddings
         if embeddings_data:
             embeddings_path = _get_embeddings_path(raw_path)
-            np.savez_compressed(embeddings_path, **embeddings_data)
+            write_npz(
+                embeddings_path,
+                embeddings_data,
+                expected_keys=tuple(embeddings_data.keys()),
+            )
             logging.info(f"Saved embeddings: {embeddings_path}")
         else:
             logging.warning(f"No embeddings generated for {raw_path}")

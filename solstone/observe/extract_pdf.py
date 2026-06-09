@@ -11,6 +11,7 @@ from pathlib import Path
 
 from solstone.observe.utils import get_segment_key
 from solstone.think.importers.documents import extract_pdf_text
+from solstone.think.journal_io import write_jsonl
 from solstone.think.utils import require_solstone, setup_cli
 
 logger = logging.getLogger(__name__)
@@ -51,9 +52,7 @@ def run(pdf_path: Path, *, redo: bool = False) -> Path | None:
     header["page_count"] = meta["page_count"]
     header["extraction_method"] = meta["extraction_method"]
     entry = {"start": "00:00:00", "text": text}
-    output_path.write_text(
-        json.dumps(header) + "\n" + json.dumps(entry) + "\n", encoding="utf-8"
-    )
+    write_jsonl(output_path, [header, entry])
     return output_path
 
 

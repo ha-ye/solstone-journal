@@ -55,6 +55,35 @@ def test_run_writes_document_jsonl_with_header_metadata(tmp_path, monkeypatch):
     assert entry == {"start": "00:00:00", "text": "Document text"}
 
 
+def test_run_writes_document_jsonl_bytes_unchanged(tmp_path, monkeypatch):
+    pdf_path = _segment_pdf(tmp_path)
+    monkeypatch.setenv("OBSERVER_NAME", "desk")
+    monkeypatch.setenv(
+        "SEGMENT_META", json.dumps({"stream": "default", "facet": "work"})
+    )
+    text = "café — naïve"
+    monkeypatch.setattr(
+        extract_pdf,
+        "extract_pdf_text",
+        lambda path: (text, _meta(page_count=4, extraction_method="vision")),
+    )
+
+    output_path = extract_pdf.run(pdf_path)
+
+    header = {
+        "raw": "report.pdf",
+        "kind": "document",
+        "observer": "desk",
+        "stream": "default",
+        "facet": "work",
+        "page_count": 4,
+        "extraction_method": "vision",
+    }
+    entry = {"start": "00:00:00", "text": text}
+    expected = (json.dumps(header) + "\n" + json.dumps(entry) + "\n").encode("utf-8")
+    assert output_path.read_bytes() == expected
+
+
 def test_run_skips_existing_output_unless_redo(tmp_path, monkeypatch):
     pdf_path = _segment_pdf(tmp_path)
     output_path = pdf_path.with_suffix(".jsonl")

@@ -49,6 +49,33 @@ def test_run_writes_image_jsonl_with_header_metadata(tmp_path, monkeypatch):
     assert entry == {"start": "00:00:00", "text": "A concise image description"}
 
 
+def test_run_writes_image_jsonl_bytes_unchanged(tmp_path, monkeypatch):
+    image_path = _segment_image(tmp_path)
+    monkeypatch.setenv("OBSERVER_NAME", "camera")
+    monkeypatch.setenv(
+        "SEGMENT_META", json.dumps({"stream": "default", "facet": "personal"})
+    )
+    description = "café — naïve"
+
+    def fake_generate(*, contents, context):
+        return description
+
+    monkeypatch.setattr(depict, "generate", fake_generate)
+
+    output_path = depict.run(image_path)
+
+    header = {
+        "raw": "photo.png",
+        "kind": "image",
+        "observer": "camera",
+        "stream": "default",
+        "facet": "personal",
+    }
+    entry = {"start": "00:00:00", "text": description}
+    expected = (json.dumps(header) + "\n" + json.dumps(entry) + "\n").encode("utf-8")
+    assert output_path.read_bytes() == expected
+
+
 def test_run_skips_existing_output_unless_redo(tmp_path, monkeypatch):
     image_path = _segment_image(tmp_path)
     output_path = image_path.with_suffix(".jsonl")

@@ -64,6 +64,7 @@ GATED_PRIMITIVES: frozenset[str] = frozenset(
         "update_npz",
         "write_json",
         "write_jsonl",
+        "write_npz",
         "write_text",
     }
 )
@@ -75,7 +76,7 @@ MODULE_PRIMITIVES: dict[str, frozenset[str]] = {
         {"atomic_replace", "install_file", "write_json", "write_jsonl", "write_text"}
     ),
     "solstone.think.journal_io.locking": frozenset({"hold_lock"}),
-    "solstone.think.journal_io.npz": frozenset({"save_npz", "update_npz"}),
+    "solstone.think.journal_io.npz": frozenset({"save_npz", "update_npz", "write_npz"}),
 }
 
 OWNER_FILES: frozenset[str] = frozenset(
@@ -127,6 +128,7 @@ OWNER_FILES: frozenset[str] = frozenset(
         # intentionally omitted.
         "solstone/observe/depict.py",
         "solstone/observe/describe.py",
+        "solstone/observe/extract_pdf.py",
         "solstone/observe/transcribe/main.py",
         "solstone/observe/transfer.py",
         "solstone/think/importers/cli.py",

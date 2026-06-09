@@ -8,6 +8,7 @@ import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import av
 import numpy as np
@@ -25,8 +26,10 @@ from solstone.observe.transcribe import (
     build_statements_from_acoustic,
 )
 from solstone.observe.transcribe.main import EMBEDDER_NAME, _statements_to_jsonl
-from solstone.observe.utils import load_audio
+from solstone.observe.utils import SAMPLE_RATE, load_audio
 from solstone.observe.vad import VadResult
+from solstone.think.journal_io.errors import MalformedDataError
+from solstone.think.journal_io.npz import load_npz
 from solstone.think.media import AUDIO_EXTENSIONS
 
 
@@ -485,6 +488,143 @@ class TestEmbeddingsFormat:
         """Statement IDs should be unique."""
         statement_ids = np.array([1, 2, 3, 4, 5], dtype=np.int32)
         assert len(statement_ids) == len(np.unique(statement_ids))
+
+
+def test_process_audio_failed_embeddings_write_emits_failed_event(tmp_path):
+    from solstone.observe.transcribe.main import process_audio
+
+    raw_path = (
+        tmp_path / "chronicle" / "20260416" / "default" / "120000_300" / "audio.m4a"
+    )
+    raw_path.parent.mkdir(parents=True)
+    raw_path.touch()
+    audio_buffer = np.zeros(10 * SAMPLE_RATE, dtype=np.float32)
+    vad_result = VadResult(
+        duration=10.0,
+        speech_duration=5.0,
+        has_speech=True,
+        speech_segments=[(1.0, 6.0)],
+    )
+    statements = [{"id": 0, "start": 0.0, "end": 1.0, "text": "hi"}]
+    backend_module = MagicMock()
+    backend_module.get_model_info.return_value = {
+        "model": "medium.en",
+        "device": "cpu",
+        "compute_type": "int8",
+    }
+    embeddings_path = raw_path.with_suffix(".npz")
+    embeddings_data = {
+        "embeddings": np.zeros((1, 256), dtype=np.float32),
+        "statement_ids": np.zeros((1,), dtype=np.int32),
+        "durations_s": np.zeros((1,), dtype=np.float32),
+        "encoder": np.array("test"),
+    }
+
+    with (
+        patch(
+            "solstone.observe.transcribe.main.get_journal",
+            return_value=str(raw_path.parents[4]),
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_config",
+            return_value={"transcribe": {"preserve_all": False, "enrich": False}},
+        ),
+        patch(
+            "solstone.observe.transcribe.main.stt_transcribe", return_value=statements
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_backend", return_value=backend_module
+        ),
+        patch(
+            "solstone.observe.transcribe.main._embed_statements",
+            return_value=embeddings_data,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.compute_overlap_fraction",
+            return_value=0.0,
+        ),
+        patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
+        patch(
+            "solstone.observe.transcribe.main.write_npz",
+            side_effect=MalformedDataError(embeddings_path),
+        ),
+    ):
+        with pytest.raises(SystemExit) as exc:
+            process_audio(raw_path, audio_buffer, vad_result, {}, backend="whisper")
+
+    assert exc.value.code == 1
+    assert mock_send.call_args.args[:2] == ("observe", "transcribed")
+    assert mock_send.call_args.kwargs["outcome"] == "failed"
+    assert "MalformedDataError" in mock_send.call_args.kwargs["error"]
+    assert not embeddings_path.exists()
+
+
+def test_process_audio_embeddings_write_round_trips_without_lock(tmp_path):
+    from solstone.observe.transcribe.main import process_audio
+
+    raw_path = (
+        tmp_path / "chronicle" / "20260416" / "default" / "120000_300" / "audio.m4a"
+    )
+    raw_path.parent.mkdir(parents=True)
+    raw_path.touch()
+    audio_buffer = np.zeros(10 * SAMPLE_RATE, dtype=np.float32)
+    vad_result = VadResult(
+        duration=10.0,
+        speech_duration=5.0,
+        has_speech=True,
+        speech_segments=[(1.0, 6.0)],
+    )
+    statements = [{"id": 0, "start": 0.0, "end": 1.0, "text": "hi"}]
+    backend_module = MagicMock()
+    backend_module.get_model_info.return_value = {
+        "model": "medium.en",
+        "device": "cpu",
+        "compute_type": "int8",
+    }
+    embeddings_path = raw_path.with_suffix(".npz")
+    embeddings_data = {
+        "embeddings": np.zeros((1, 256), dtype=np.float32),
+        "statement_ids": np.zeros((1,), dtype=np.int32),
+        "durations_s": np.zeros((1,), dtype=np.float32),
+        "encoder": np.array("test"),
+    }
+
+    with (
+        patch(
+            "solstone.observe.transcribe.main.get_journal",
+            return_value=str(raw_path.parents[4]),
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_config",
+            return_value={"transcribe": {"preserve_all": False, "enrich": False}},
+        ),
+        patch(
+            "solstone.observe.transcribe.main.stt_transcribe", return_value=statements
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_backend", return_value=backend_module
+        ),
+        patch(
+            "solstone.observe.transcribe.main._embed_statements",
+            return_value=embeddings_data,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.compute_overlap_fraction",
+            return_value=0.0,
+        ),
+        patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
+    ):
+        process_audio(raw_path, audio_buffer, vad_result, {}, backend="whisper")
+
+    loaded = load_npz(embeddings_path)
+    assert embeddings_path.exists()
+    assert loaded is not None
+    assert set(loaded) == {"embeddings", "statement_ids", "durations_s", "encoder"}
+    for key, expected in embeddings_data.items():
+        np.testing.assert_array_equal(loaded[key], expected)
+    assert mock_send.call_args.args[:2] == ("observe", "transcribed")
+    assert mock_send.call_args.kwargs["outcome"] == "transcribed"
+    assert list(embeddings_path.parent.glob("*.lock")) == []
 
 
 class TestJSONLFormat:

@@ -12,6 +12,7 @@ from pathlib import Path
 from PIL import Image
 
 from solstone.observe.utils import get_segment_key, resize_for_vlm
+from solstone.think.journal_io import write_jsonl
 from solstone.think.models import generate
 from solstone.think.utils import require_solstone, setup_cli
 
@@ -57,9 +58,7 @@ def run(image_path: Path, *, redo: bool = False) -> Path | None:
 
     header = _build_header(image_path.name, "image")
     entry = {"start": "00:00:00", "text": description}
-    output_path.write_text(
-        json.dumps(header) + "\n" + json.dumps(entry) + "\n", encoding="utf-8"
-    )
+    write_jsonl(output_path, [header, entry])
     return output_path
 
 

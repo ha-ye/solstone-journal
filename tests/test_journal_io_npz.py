@@ -16,7 +16,7 @@ import pytest
 
 from solstone.think.journal_io.errors import LockTimeout, MalformedDataError
 from solstone.think.journal_io.locking import hold_lock as real_hold_lock
-from solstone.think.journal_io.npz import load_npz, save_npz, update_npz
+from solstone.think.journal_io.npz import load_npz, save_npz, update_npz, write_npz
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VOICEPRINT_KEYS = ("embeddings", "metadata")
@@ -137,6 +137,44 @@ def test_save_npz_owner_candidate_schema_old_reader_compatible(tmp_path) -> None
         np.testing.assert_array_equal(data["centroid"], arrays["centroid"])
         assert int(np.asarray(data["cluster_size"]).item()) == 52
         assert str(np.asarray(data["version"]).item()).endswith("Z")
+
+
+def test_write_npz_round_trip(tmp_path) -> None:
+    path = tmp_path / "voiceprints.npz"
+    arrays = _voiceprint_arrays([1, 2])
+
+    write_npz(path, arrays, expected_keys=VOICEPRINT_KEYS)
+
+    loaded = load_npz(path)
+    assert loaded is not None
+    assert set(loaded) == set(arrays)
+    for key, expected in arrays.items():
+        np.testing.assert_array_equal(loaded[key], expected)
+
+
+def test_write_npz_reload_verify_missing_key_raises_malformed(tmp_path) -> None:
+    path = tmp_path / "broken.npz"
+
+    with pytest.raises(MalformedDataError) as error:
+        write_npz(
+            path,
+            {"embeddings": np.empty((0, 256), dtype=np.float32)},
+            expected_keys=VOICEPRINT_KEYS,
+        )
+
+    assert error.value.path == path
+
+
+def test_write_npz_leaves_no_lock_sidecar(tmp_path) -> None:
+    path = tmp_path / "voiceprints.npz"
+
+    write_npz(path, _voiceprint_arrays([1]), expected_keys=VOICEPRINT_KEYS)
+
+    assert path.exists()
+    assert not (path.parent / f"{path.name}.lock").exists()
+    assert list(path.parent.glob("*.lock")) == []
+    assert list(path.parent.glob(".tmp_*")) == []
+    assert sorted(item.name for item in path.parent.iterdir()) == [path.name]
 
 
 def test_update_npz_append_preserves_embedding_metadata_pairing(tmp_path) -> None:

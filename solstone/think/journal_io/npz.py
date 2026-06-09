@@ -36,6 +36,24 @@ def save_npz(
         _write_npz(path, arrays, expected_keys=expected_keys)
 
 
+def write_npz(
+    path: Path,
+    arrays: Mapping[str, np.ndarray],
+    *,
+    expected_keys: tuple[str, ...],
+) -> None:
+    """Atomically overwrite an NPZ file and verify keys, WITHOUT locking.
+
+    Unlike save_npz, this acquires no <name>.npz.lock sidecar — chosen for
+    single-writer chronicle segment outputs where the cross-process lock
+    protects nothing and a stray .lock file would be swept into peer-sync
+    manifests and export tarballs. Same atomic-replace + reload-verify as
+    save_npz; raises MalformedDataError if the written file fails to reload
+    with all expected keys.
+    """
+    _write_npz(path, arrays, expected_keys=expected_keys)
+
+
 def update_npz(
     path: Path,
     transform: Callable[[dict[str, np.ndarray]], dict[str, np.ndarray] | None],
