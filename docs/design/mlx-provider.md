@@ -166,7 +166,7 @@ Decision: add `mlx-vlm` and `mlx` as top-level dependencies with Darwin arm64 PE
 
 Justification: these are provider runtime dependencies, not optional extras, but non-Apple platforms must skip installation entirely.
 
-Implementation note: add them near existing AI provider dependencies. Use version ranges `mlx-vlm>=0.5.0,<1` and `mlx>=0.31.2,<1`, both gated by `sys_platform == 'darwin' and platform_machine == 'arm64'`.
+Implementation note: add them near existing AI provider dependencies. Use version ranges `mlx-vlm>=0.6.2,<0.7` and `mlx>=0.31.2,<1`, both gated by `sys_platform == 'darwin' and platform_machine == 'arm64'`.
 
 ## D22. `run_cogitate` signature
 
