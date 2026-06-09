@@ -39,6 +39,10 @@
     return el.innerHTML;
   }
 
+  function attr(s) {
+    return esc(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
   function runDiagnostics() {
     const btn = document.getElementById('diagnostics-btn');
     const loading = document.getElementById('diagnostics-loading');
@@ -180,17 +184,18 @@
       }
 
       list.innerHTML = tickets.map(t => {
+        const ticketId = String(t.id || '');
         const statusClass = 'support-status-' + (t.status || 'open').replace(/[^a-z-]/g, '');
         const createdAt = t.created_at
           ? `${window.relativeTime(Date.now() - new Date(t.created_at + (t.created_at.includes('Z') ? '' : 'Z')).getTime())} ago`
           : '';
-        return `<div class="support-ticket" data-id="${t.id}" tabindex="0" role="button">
+        return `<div class="support-ticket" data-id="${attr(ticketId)}" tabindex="0" role="button">
           <div class="support-ticket-header">
             <span class="support-ticket-subject">${esc(t.subject || 'Untitled')}</span>
             <span class="support-status ${statusClass}">${esc(t.status || 'open')}</span>
           </div>
           <div class="support-ticket-meta">
-            <span class="support-ticket-id">#${t.id}</span> &middot;
+            <span class="support-ticket-id">#${esc(ticketId)}</span> &middot;
             ${esc(t.product || '')} &middot;
             ${createdAt}
           </div>

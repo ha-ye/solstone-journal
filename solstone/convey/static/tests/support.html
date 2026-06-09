@@ -196,15 +196,25 @@
     }
 
     resetFixture();
+    const hostileSubject = '<scr' + 'ipt>alert(1)</scr' + 'ipt>';
     await withFetch(async () => response({
-      body: [{ id: 7, subject: 'sync is stuck', status: 'open', product: 'solstone', created_at: '2026-06-01T00:00:00Z' }]
+      body: [{
+        id: '7" onclick="alert(1)',
+        subject: hostileSubject,
+        status: 'open',
+        product: 'solstone',
+        created_at: '2026-06-01T00:00:00Z'
+      }]
     }), async () => {
       await window.SupportUI.loadTickets(deps());
       const badge = document.getElementById('tab-tickets-badge');
+      const ticket = document.querySelector('.support-ticket');
       assert(
         'tickets success-with-tickets',
-        !!document.querySelector('.support-ticket') &&
-          text('.support-ticket-subject') === 'sync is stuck' &&
+        !!ticket &&
+          text('.support-ticket-subject') === hostileSubject &&
+          text('.support-ticket-id') === '#7" onclick="alert(1)' &&
+          !ticket.hasAttribute('onclick') &&
           !!badge &&
           badge.textContent === '1'
       );
