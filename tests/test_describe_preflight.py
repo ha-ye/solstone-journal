@@ -251,6 +251,10 @@ async def test_mid_run_blocker_unlinks_partial_output_and_does_not_retry(
 
     assert exc_info.value.code == EXIT_PROVIDER_BLOCKED
     assert not output_path.exists()
+    assert not any(
+        path.name.startswith(".describe_") or path.name.endswith(".tmp")
+        for path in output_path.parent.iterdir()
+    )
     assert FakeBatch.instances[0].add_count == 1
     assert len(emitted) == 1
     assert emitted[0][2]["key"] == "provider_key_missing:google:"

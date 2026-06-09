@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 import time
 from enum import Enum
 from pathlib import Path
@@ -38,6 +39,7 @@ from solstone.observe.extract import (
 )
 from solstone.observe.utils import get_segment_key, resize_for_vlm
 from solstone.think.callosum import callosum_send
+from solstone.think.journal_io import install_file
 from solstone.think.markdown import bound_extraction_markdown
 from solstone.think.prompts import load_prompt
 from solstone.think.providers import state as provider_state
@@ -265,7 +267,7 @@ def _abort_for_blocking_request(
     req,
     *,
     output_file,
-    output_path: Path | None,
+    temp_path: Path | None,
     work_key: str,
     batch=None,
 ) -> None:
@@ -284,8 +286,8 @@ def _abort_for_blocking_request(
 
     if output_file and not output_file.closed:
         output_file.close()
-    if output_path:
-        output_path.unlink(missing_ok=True)
+    if temp_path:
+        temp_path.unlink(missing_ok=True)
 
     view = present_for_reason(
         reason_code,
@@ -570,8 +572,29 @@ class VideoProcessor:
         # Create batch processor
         batch = Batch(max_concurrent=max_concurrent)
 
-        # Open output file if specified
-        output_file = open(output_path, "w") if output_path else None
+        # Stream output to a same-directory temp, then promote only at terminal points.
+        temp_path: Optional[Path] = None
+        promoted = False
+        if output_path is not None:
+            temp_file = tempfile.NamedTemporaryFile(
+                mode="w",
+                dir=output_path.parent,
+                prefix=".describe_",
+                suffix=".jsonl.tmp",
+                delete=False,
+            )
+            output_file = temp_file
+            temp_path = Path(temp_file.name)
+        else:
+            output_file = None
+
+        def _promote() -> None:
+            nonlocal promoted
+            if output_file is not None and not output_file.closed:
+                output_file.close()
+            if temp_path is not None and output_path is not None:
+                install_file(temp_path, output_path)
+                promoted = True
 
         try:
             # Write metadata header to JSONL file with actual video filename
@@ -597,7 +620,6 @@ class VideoProcessor:
                         )
 
                 output_file.write(json.dumps(metadata) + "\n")
-                output_file.flush()
 
             # Resolve model for frame description (tier from describe.md frontmatter)
             _, frame_model = resolve_provider(FRAME_CONTEXT, "generate")
@@ -678,7 +700,7 @@ class VideoProcessor:
                     _abort_for_blocking_request(
                         req,
                         output_file=output_file,
-                        output_path=output_path,
+                        temp_path=temp_path,
                         work_key=work_key,
                         batch=batch,
                     )
@@ -734,6 +756,7 @@ class VideoProcessor:
                     f"All {total_frames} frame(s) failed categorization. "
                     f"Video left in place for retry. {error_detail}"
                 )
+                _promote()
                 raise RuntimeError(
                     f"All {total_frames} frame(s) failed vision analysis after retries"
                 )
@@ -802,7 +825,6 @@ class VideoProcessor:
                     result_line = json.dumps(result)
                     if output_file:
                         output_file.write(result_line + "\n")
-                        output_file.flush()
                     if logger.isEnabledFor(logging.DEBUG):
                         print(result_line, flush=True)
 
@@ -840,7 +862,6 @@ class VideoProcessor:
                     result_line = json.dumps(result)
                     if output_file:
                         output_file.write(result_line + "\n")
-                        output_file.flush()
                     if logger.isEnabledFor(logging.DEBUG):
                         print(result_line, flush=True)
 
@@ -938,7 +959,7 @@ class VideoProcessor:
                     _abort_for_blocking_request(
                         req,
                         output_file=output_file,
-                        output_path=output_path,
+                        temp_path=temp_path,
                         work_key=work_key,
                         batch=batch,
                     )
@@ -986,7 +1007,6 @@ class VideoProcessor:
                     result_line = json.dumps(result)
                     if output_file:
                         output_file.write(result_line + "\n")
-                        output_file.flush()
                     if logger.isEnabledFor(logging.DEBUG):
                         print(result_line, flush=True)
 
@@ -996,10 +1016,13 @@ class VideoProcessor:
                         frame_images[req.frame_id].close()
                         del frame_images[req.frame_id]
 
+            _promote()
         finally:
-            # Always close output file
-            if output_file:
+            # Close output and discard any unpromoted temp.
+            if output_file is not None and not output_file.closed:
                 output_file.close()
+            if temp_path is not None and not promoted:
+                temp_path.unlink(missing_ok=True)
 
             # Clean up any remaining frame images (in case of exception)
             if "frame_images" in locals():
