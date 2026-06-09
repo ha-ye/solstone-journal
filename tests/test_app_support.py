@@ -5,6 +5,7 @@
 
 import json
 import os
+import re
 from datetime import datetime, timedelta
 
 import pytest
@@ -17,6 +18,13 @@ runner = CliRunner()
 DRY_RUN_BANNER = (
     "DRY RUN — nothing was sent. Re-run with --submit to actually file this."
 )
+_LEAK_NEEDLES = ("private_key", "keypair", "access_token")
+
+
+def _assert_no_credential_leak(serialized: str) -> None:
+    assert not re.search(r"BEGIN.*PRIVATE KEY", serialized)
+    for needle in _LEAK_NEEDLES:
+        assert needle not in serialized, f"leaked {needle!r} in response body"
 
 
 def _health_dir(tmp_path, monkeypatch):
@@ -68,6 +76,137 @@ def _stub_dry_run_context(monkeypatch):
         "solstone.apps.support.portal._get_portal_url_from_settings",
         lambda: "https://support.example.test",
     )
+
+
+def test_config_route_reports_enabled_and_portal_url(support_client, monkeypatch):
+    monkeypatch.setattr("solstone.apps.support.portal.is_enabled", lambda: True)
+    monkeypatch.setattr(
+        "solstone.apps.support.portal._get_portal_url_from_settings",
+        lambda: "https://support.example.test",
+    )
+
+    resp = support_client.get("/app/support/api/config")
+
+    assert resp.status_code == 200
+    assert resp.get_json() == {
+        "enabled": True,
+        "portal_url": "https://support.example.test",
+    }
+    _assert_no_credential_leak(resp.get_data(as_text=True))
+
+
+def test_config_route_ungated_when_disabled(support_client, monkeypatch):
+    monkeypatch.setattr("solstone.apps.support.portal.is_enabled", lambda: False)
+    monkeypatch.setattr(
+        "solstone.apps.support.portal._get_portal_url_from_settings",
+        lambda: "https://support.example.test",
+    )
+
+    resp = support_client.get("/app/support/api/config")
+
+    assert resp.status_code == 200
+    assert resp.get_json()["enabled"] is False
+
+
+def test_article_route_returns_portal_article(support_client, monkeypatch):
+    class ArticleClient:
+        def get_article(self, slug):
+            return {"slug": slug, "title": "Intro", "body": "hello"}
+
+    monkeypatch.setattr("solstone.apps.support.routes._enabled", lambda: True)
+    monkeypatch.setattr(
+        "solstone.apps.support.routes._get_client",
+        lambda: ArticleClient(),
+    )
+
+    resp = support_client.get("/app/support/api/articles/intro")
+
+    assert resp.status_code == 200
+    assert resp.get_json() == {"slug": "intro", "title": "Intro", "body": "hello"}
+    _assert_no_credential_leak(resp.get_data(as_text=True))
+
+
+def test_article_route_disabled_returns_403(support_client, monkeypatch):
+    monkeypatch.setattr("solstone.apps.support.routes._enabled", lambda: False)
+
+    resp = support_client.get("/app/support/api/articles/intro")
+
+    assert resp.status_code == 403
+    assert resp.get_json()["reason_code"] == "feature_unavailable"
+
+
+def test_article_route_portal_failure_returns_500(support_client, monkeypatch):
+    class ArticleClient:
+        def get_article(self, slug):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr("solstone.apps.support.routes._enabled", lambda: True)
+    monkeypatch.setattr(
+        "solstone.apps.support.routes._get_client",
+        lambda: ArticleClient(),
+    )
+
+    resp = support_client.get("/app/support/api/articles/intro")
+
+    assert resp.status_code == 500
+    payload = resp.get_json()
+    assert payload["error"]
+    assert payload["detail"]
+
+
+def test_register_route_returns_handle_only(support_client, monkeypatch):
+    class RegisterClient:
+        def register(self):
+            return {
+                "handle": "solstone-foo",
+                "access_token": "sk-SECRET",
+                "keypair": "kp",
+                "private_key": "-----BEGIN PRIVATE KEY-----abc",
+            }
+
+    monkeypatch.setattr("solstone.apps.support.routes._enabled", lambda: True)
+    monkeypatch.setattr(
+        "solstone.apps.support.routes._get_client",
+        lambda: RegisterClient(),
+    )
+
+    resp = support_client.post("/app/support/api/register")
+
+    assert resp.status_code == 200
+    assert resp.get_json() == {"handle": "solstone-foo"}
+    _assert_no_credential_leak(resp.get_data(as_text=True))
+
+
+def test_register_route_disabled_returns_403(support_client, monkeypatch):
+    monkeypatch.setattr("solstone.apps.support.routes._enabled", lambda: False)
+
+    resp = support_client.post("/app/support/api/register")
+
+    assert resp.status_code == 403
+
+
+def test_register_route_error_does_not_leak_credentials(support_client, monkeypatch):
+    class RegisterClient:
+        def register(self):
+            raise RuntimeError(
+                "POST https://support.solstone.app/api/signup — 500: "
+                '{"access_token": "sk-LEAKED", '
+                '"private_key": "-----BEGIN PRIVATE KEY-----xyz"}'
+            )
+
+    monkeypatch.setattr("solstone.apps.support.routes._enabled", lambda: True)
+    monkeypatch.setattr(
+        "solstone.apps.support.routes._get_client",
+        lambda: RegisterClient(),
+    )
+
+    resp = support_client.post("/app/support/api/register")
+    serialized = resp.get_data(as_text=True)
+
+    assert resp.status_code == 500
+    _assert_no_credential_leak(serialized)
+    assert "sk-LEAKED" not in serialized
+    assert resp.get_json()["detail"] == "Registration with the support portal failed."
 
 
 def test_badge_count_enabled_empty(support_client, monkeypatch):

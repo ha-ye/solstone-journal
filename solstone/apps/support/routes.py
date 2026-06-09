@@ -45,6 +45,36 @@ def _enabled() -> bool:
     return is_enabled()
 
 
+# -- Config & Registration ---------------------------------------------------
+
+
+@support_bp.route("/api/config", methods=["GET"])
+def config() -> Any:
+    """Report whether support is enabled and the external portal URL (non-secret)."""
+    from solstone.apps.support.portal import _get_portal_url_from_settings, is_enabled
+
+    return jsonify(
+        {"enabled": is_enabled(), "portal_url": _get_portal_url_from_settings()}
+    )
+
+
+@support_bp.route("/api/register", methods=["POST"])
+def register() -> Any:
+    """Register with the support portal and return the handle."""
+    if not _enabled():
+        return error_response(FEATURE_UNAVAILABLE, detail="Support is disabled")
+    try:
+        client = _get_client()
+        signup = client.register()
+        return jsonify({"handle": signup.get("handle", "")})
+    except Exception as exc:
+        logger.exception("Failed to register with support portal", exc_info=exc)
+        return error_response(
+            SUPPORT_PORTAL_FAILED,
+            detail="Registration with the support portal failed.",
+        )
+
+
 # -- Tickets -----------------------------------------------------------------
 
 
@@ -243,6 +273,20 @@ def search_articles() -> Any:
         return jsonify(articles)
     except Exception as exc:
         logger.exception("Failed to search articles")
+        return error_response(SUPPORT_PORTAL_FAILED, detail=str(exc))
+
+
+@support_bp.route("/api/articles/<slug>", methods=["GET"])
+def get_article(slug: str) -> Any:
+    """Read a single KB article from the portal."""
+    if not _enabled():
+        return error_response(FEATURE_UNAVAILABLE, detail="Support is disabled")
+    try:
+        client = _get_client()
+        article = client.get_article(slug)
+        return jsonify(article)
+    except Exception as exc:
+        logger.exception("Failed to read article %s", slug)
         return error_response(SUPPORT_PORTAL_FAILED, detail=str(exc))
 
 

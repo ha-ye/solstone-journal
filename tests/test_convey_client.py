@@ -15,8 +15,10 @@ from solstone.think import convey_client
 from solstone.think.convey_client import (
     MALFORMED_RESPONSE_MESSAGE,
     SERVER_ERROR_MESSAGE,
+    UNREACHABLE_MESSAGE,
     ConveyClient,
     ConveyClientError,
+    ConveyUnreachableError,
     convey_cli,
     resolve_base_url,
 )
@@ -40,6 +42,12 @@ class FakeSession:
         return self._next()
 
     def post(self, url: str, **kwargs: Any) -> FakeResponse:
+        if "files" in kwargs:
+            recorded_files = {
+                field: (filename, handle.read(), content_type)
+                for field, (filename, handle, content_type) in kwargs["files"].items()
+            }
+            kwargs = {**kwargs, "files": recorded_files}
         self.calls.append(("POST", url, kwargs))
         return self._next()
 
@@ -194,6 +202,29 @@ def test_convey_client_reuses_single_session() -> None:
     assert client._session is fake
 
 
+def test_upload_posts_multipart_files_and_data(tmp_path) -> None:
+    file_path = tmp_path / "shot.png"
+    file_path.write_bytes(b"known image bytes")
+    fake = FakeSession([_json_response(201, {"id": "att-1"})])
+    client = ConveyClient(session=fake, base_url="http://localhost:5015")
+
+    body = client.upload(
+        "/app/support/api/tickets/1/attachments",
+        files={"file": ("shot.png", str(file_path), "image/png")},
+        data={"k": "v"},
+    )
+
+    assert body == {"id": "att-1"}
+    assert len(fake.calls) == 1
+    method, url, kwargs = fake.calls[0]
+    assert method == "POST"
+    assert url == "http://localhost:5015/app/support/api/tickets/1/attachments"
+    assert kwargs["files"] == {"file": ("shot.png", b"known image bytes", "image/png")}
+    assert kwargs["data"] == {"k": "v"}
+    assert "json" not in kwargs
+    assert "headers" not in kwargs
+
+
 def test_transport_failure_uses_require_solstone_message(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -234,6 +265,28 @@ def test_transport_failure_falls_through_when_service_probe_returns(
     assert err.detail
 
 
+def test_require_service_false_raises_unreachable_without_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probed: list[str] = []
+    monkeypatch.setattr(
+        convey_client,
+        "require_solstone",
+        lambda: probed.append("require_solstone"),
+    )
+    client = ConveyClient(
+        session=FakeSession([requests.exceptions.ConnectionError("refused")]),
+        base_url="http://localhost:5015",
+        require_service=False,
+    )
+
+    with pytest.raises(ConveyUnreachableError) as excinfo:
+        client.request("GET", "/api/x")
+
+    assert probed == []
+    assert excinfo.value.error == UNREACHABLE_MESSAGE
+
+
 def test_convey_cli_preserves_typer_exit_code() -> None:
     app = typer.Typer()
 
@@ -245,3 +298,17 @@ def test_convey_cli_preserves_typer_exit_code() -> None:
     result = CliRunner().invoke(app)
 
     assert result.exit_code == 2
+
+
+def test_convey_cli_handles_unreachable_subclass() -> None:
+    app = typer.Typer()
+
+    @app.command()
+    @convey_cli
+    def command() -> None:
+        raise ConveyUnreachableError(UNREACHABLE_MESSAGE)
+
+    result = CliRunner().invoke(app)
+
+    assert result.exit_code == 1
+    assert result.stderr.strip() == UNREACHABLE_MESSAGE

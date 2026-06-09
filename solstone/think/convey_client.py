@@ -10,11 +10,12 @@ only selects the local/plain requests transport today.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import json
 import logging
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any, NoReturn, TypeVar
 from urllib.parse import urlencode
 
 import requests
@@ -49,6 +50,10 @@ class ConveyClientError(Exception):
         super().__init__(error)
 
 
+class ConveyUnreachableError(ConveyClientError):
+    """Raised when the convey HTTP transport itself fails (service down/unreachable)."""
+
+
 def resolve_base_url() -> str:
     override = get_host_url_override()
     if override is not None:
@@ -58,9 +63,21 @@ def resolve_base_url() -> str:
 
 
 class ConveyClient:
-    def __init__(self, *, session: Any = None, base_url: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        session: Any = None,
+        base_url: str | None = None,
+        require_service: bool = True,
+    ) -> None:
         self._base_url = base_url or resolve_base_url()
         self._session = session or requests.Session()
+        self._require_service = require_service
+
+    def _handle_unreachable(self, exc: Exception) -> NoReturn:
+        if self._require_service:
+            require_solstone()
+        raise ConveyUnreachableError(UNREACHABLE_MESSAGE, detail=str(exc)) from exc
 
     def request(
         self,
@@ -87,9 +104,24 @@ class ConveyClient:
             else:
                 response = self._session.post(url, json=json)
         except requests.exceptions.RequestException as exc:
-            require_solstone()
-            raise ConveyClientError(UNREACHABLE_MESSAGE, detail=str(exc)) from exc
+            self._handle_unreachable(exc)
 
+        return self._decode(response)
+
+    def upload(self, path: str, *, files: dict[str, Any], data: Any = None) -> Any:
+        if not path.startswith("/"):
+            raise ValueError("convey path must start with '/'")
+        url = self._base_url.rstrip("/") + path
+
+        with contextlib.ExitStack() as stack:
+            opened = {}
+            for field, (filename, file_path, content_type) in files.items():
+                handle = stack.enter_context(open(file_path, "rb"))
+                opened[field] = (filename, handle, content_type)
+            try:
+                response = self._session.post(url, files=opened, data=data)
+            except requests.exceptions.RequestException as exc:
+                self._handle_unreachable(exc)
         return self._decode(response)
 
     def _decode(self, response: Any) -> Any:
