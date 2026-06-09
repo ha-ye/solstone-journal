@@ -72,6 +72,15 @@ SCENARIOS: list[dict[str, Any]] = [
             },
         ],
     },
+    {
+        "app": "support",
+        "name": "static-js",
+        "steps": [
+            {"do": "navigate", "path": "/static/tests/support.html"},
+            {"do": "wait", "ms": 500},
+            {"do": "assert_text", "text": "PASS summary"},
+        ],
+    },
     # smoke scenarios
     {
         "app": "sol",
