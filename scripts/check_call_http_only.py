@@ -124,15 +124,10 @@ SHUTIL_FS_FUNCS: frozenset[str] = frozenset(
 
 # Out-of-scope CLIs: not journal-data command surfaces, so the HTTP-only
 # invariant does not apply. Skipped by discover_modules — neither scanned nor
-# allowlisted. Each retained file is a documented, principled exception.
-EXCLUDED_FILES: frozenset[str] = frozenset(
-    {
-        # External support-portal CLI (httpx to support.solstone.app). Its only
-        # journal touches are incidental config/identity/diagnostics reads, not
-        # journal-data operations — not a Convey-HTTP cutover target.
-        "solstone/apps/support/call.py",
-    }
-)
+# allowlisted. Each retained file would be a documented, principled exception;
+# the set is currently empty (support graduated to a pure Convey HTTP client,
+# timeline rollups moved off sol-call onto journal maintenance).
+EXCLUDED_FILES: frozenset[str] = frozenset()
 
 EXCLUDED_PREFIXES: tuple[str, ...] = ()
 

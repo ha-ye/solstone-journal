@@ -217,9 +217,8 @@ If you're about to write to a domain from a module not in this table, stop and r
 journal-data `solstone/apps/*/call.py` reaches the journal only over the Convey
 HTTP client (`solstone.think.convey_client`) — never importing a journal/domain
 module or touching the filesystem directly. `scripts/check_call_http_only.py`
-enforces this with exactly one documented exception: `support/call.py` (an
-external support-portal CLI over httpx with only incidental config/identity
-reads). It is excluded from the gate's scan; there is no allowlist residual.
+enforces this for every journal-data `call.py` with no documented exceptions:
+the gate's excluded-file set and its allowlist are both empty.
 
 ### L3 — Naming is a contract
 

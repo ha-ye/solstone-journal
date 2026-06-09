@@ -155,9 +155,15 @@ def test_subprocess_reports_new_violations(tmp_path: Path) -> None:
     assert "solstone/apps/badapp/call.py" in result.stderr
 
 
-def test_excluded_file_with_violations_is_not_flagged(tmp_path: Path) -> None:
+def test_excluded_file_with_violations_is_not_flagged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root = tmp_path / "excluded"
-    excluded_rel = "solstone/apps/support/call.py"
+    # EXCLUDED_FILES is currently empty (every journal-data call.py is a pure
+    # Convey HTTP client), so inject a synthetic exclusion to exercise the
+    # skip-an-excluded-file mechanism itself.
+    excluded_rel = "solstone/apps/excluded_app/call.py"
+    monkeypatch.setattr(ccho, "EXCLUDED_FILES", frozenset({excluded_rel}))
     assert excluded_rel in ccho.EXCLUDED_FILES
     _write_file(
         root,

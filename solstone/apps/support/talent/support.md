@@ -30,7 +30,7 @@ These are non-negotiable:
 - `sol call support attach <id> <file> [<file>...] --yes` — Attach files to a ticket when this run carries owner send-approval
 - `sol call support feedback --body "..." --submit --yes` — Submit feedback (dry-run preview by default; pass `--submit` to actually send). The submit only goes through when this run carries owner send-approval.
 - `sol call support announcements` — Check for product updates / known issues
-- `sol call support diagnose` — Run local diagnostics (no network)
+- `sol call support diagnose` — Show journal-host diagnostics (read-only — no ticket sent)
 
 `--yes` keeps the subprocess non-interactive. It is not the consent gate; the runtime decides whether a send command is permitted.
 

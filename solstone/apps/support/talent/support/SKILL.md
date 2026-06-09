@@ -109,7 +109,7 @@ sol call support attach 42 screenshot.png --yes
 
 Upload files to an existing ticket. Show each file name and size to the owner before upload. Attachments are a follow-up action — create the ticket first, then attach files.
 
-**Limits:** max 10 MB per file, max 5 files per upload.
+**Limits:** max 10 MB per file.
 
 **Supported formats:** `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.pdf`, `.txt`, `.csv`, `.html`, `.md`, `.xml`, `.json`
 
@@ -138,7 +138,7 @@ sol call support diagnose
 sol call support diagnose --json
 ```
 
-Runs locally — no network, no data sent. Shows:
+Reflects the journal host (read-only — no support ticket is sent). Shows:
 - solstone version
 - OS/platform info
 - Active services and their status

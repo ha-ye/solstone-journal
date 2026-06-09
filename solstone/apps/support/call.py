@@ -11,10 +11,21 @@ ticket management, feedback, announcements, and local diagnostics.
 
 from __future__ import annotations
 
+import functools
 import json
+import platform
+import subprocess
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 import typer
+
+from solstone.think.convey_client import (
+    ConveyClient,
+    ConveyClientError,
+    ConveyUnreachableError,
+)
 
 app = typer.Typer(help="Support tools — file tickets, search KB, give feedback.")
 
@@ -24,18 +35,44 @@ app = typer.Typer(help="Support tools — file tickets, search KB, give feedback
 # ---------------------------------------------------------------------------
 
 
+def get_client() -> ConveyClient:
+    return ConveyClient(require_service=False)
+
+
+def _emit_unreachable_notice() -> None:
+    typer.echo(
+        "I couldn't reach support because solstone isn't reachable right now.",
+        err=True,
+    )
+    typer.echo("To file a support ticket, visit https://support.solstone.app", err=True)
+
+
+def _support_cli(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except ConveyUnreachableError:
+            _emit_unreachable_notice()
+            raise typer.Exit(1) from None
+        except ConveyClientError as err:
+            typer.echo(err.error, err=True)
+            raise typer.Exit(1) from err
+
+    return wrapper
+
+
 def _json_out(data: object) -> None:
     """Pretty-print JSON to stdout."""
     typer.echo(json.dumps(data, indent=2, default=str))
 
 
-def _check_enabled() -> None:
-    """Exit early if support is disabled in settings."""
-    from solstone.apps.support.portal import is_enabled
-
-    if not is_enabled():
+def _check_enabled(client: ConveyClient) -> dict:
+    config = client.request("GET", "/app/support/api/config")
+    if not config.get("enabled"):
         typer.echo("Support agent is disabled in settings.", err=True)
         raise typer.Exit(1)
+    return config
 
 
 def _print_dry_run_preview(
@@ -68,31 +105,61 @@ def _print_dry_run_preview(
     typer.echo("--- End dry run ---")
 
 
+def _local_build_identity() -> dict:
+    try:
+        ver = _pkg_version("solstone")
+    except PackageNotFoundError:
+        ver = None
+    # parents[2] of solstone/apps/support/call.py is the solstone package dir;
+    # git rev-parse walks up from there to the checkout .git. Never raises.
+    package_dir = Path(__file__).parents[2]
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=package_dir,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        rev = result.stdout.strip() if result.returncode == 0 else None
+    except Exception:
+        rev = None
+    return {
+        "version": ver,
+        "revision": rev,
+        "platform": {
+            "system": platform.system(),
+            "release": platform.release(),
+            "machine": platform.machine(),
+            "python": platform.python_version(),
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
 
 
 @app.command("register")
+@_support_cli
 def register() -> None:
     """(Re-)register with the support portal."""
-    _check_enabled()
-    from solstone.apps.support.portal import get_client
-
     client = get_client()
-    result = client.register()
+    _check_enabled(client)
+    result = client.request("POST", "/app/support/api/register")
     typer.echo(f"Registered as: {result.get('handle', '?')}")
 
 
 @app.command("search")
+@_support_cli
 def search(
     query: str = typer.Argument(..., help="Search query for KB articles."),
 ) -> None:
     """Search knowledge base articles."""
-    _check_enabled()
-    from solstone.apps.support.tools import support_search
-
-    articles = support_search(query)
+    client = get_client()
+    _check_enabled(client)
+    articles = client.request("GET", "/app/support/api/articles", params={"q": query})
     if not articles:
         typer.echo("No articles found.")
         return
@@ -105,19 +172,15 @@ def search(
 
 
 @app.command("article")
+@_support_cli
 def article(
     slug: str = typer.Argument(..., help="Article slug."),
     as_json: bool = typer.Option(False, "--json", help="Output raw JSON."),
 ) -> None:
     """Read a KB article."""
-    _check_enabled()
-    from solstone.apps.support.tools import support_article
-
-    try:
-        data = support_article(slug)
-    except Exception as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(1) from None
+    client = get_client()
+    _check_enabled(client)
+    data = client.request("GET", f"/app/support/api/articles/{slug}")
 
     if as_json:
         _json_out(data)
@@ -127,6 +190,7 @@ def article(
 
 
 @app.command("create")
+@_support_cli
 def create(
     subject: str = typer.Option(..., "--subject", "-s", help="Ticket subject."),
     description: str = typer.Option(
@@ -156,12 +220,10 @@ def create(
     ),
 ) -> None:
     """File a support ticket (KB-first flow with consent gate)."""
-    _check_enabled()
+    client = get_client()
+    config = _check_enabled(client)
     if not submit:
-        from solstone.apps.support.diagnostics import collect_all
-        from solstone.apps.support.portal import _get_portal_url_from_settings
-
-        diagnostics = collect_all()
+        diagnostics = client.request("GET", "/app/support/api/diagnostics")
         _print_dry_run_preview(
             subject=subject,
             product=product,
@@ -169,17 +231,16 @@ def create(
             category=category,
             body=description,
             diagnostics=diagnostics,
-            portal_url=_get_portal_url_from_settings(),
+            portal_url=config["portal_url"],
         )
         return
-
-    from solstone.apps.support.diagnostics import collect_all
-    from solstone.apps.support.tools import support_create, support_search
 
     # Step 1: KB-first — search before filing
     if not skip_kb:
         typer.echo("Searching knowledge base...")
-        articles = support_search(subject)
+        articles = client.request(
+            "GET", "/app/support/api/articles", params={"q": subject}
+        )
         if articles:
             typer.echo(f"\nFound {len(articles)} related article(s):")
             for a in articles:
@@ -195,7 +256,7 @@ def create(
                     return
 
     # Step 2: Collect diagnostics
-    diagnostics = collect_all()
+    diagnostics = client.request("GET", "/app/support/api/diagnostics")
 
     # Step 3: Present draft for review (consent gate)
     typer.echo("\n--- Ticket Draft ---")
@@ -216,33 +277,34 @@ def create(
             return
 
     # Step 4: Submit
-    try:
-        result = support_create(
-            subject=subject,
-            description=description,
-            product=product,
-            severity=severity,
-            category=category,
-            user_context=diagnostics,
-            auto_context=False,
-            anonymous=anonymous,
-        )
-        typer.echo(f"Ticket created: #{result.get('id', '?')}")
-    except Exception as exc:
-        typer.echo(f"Error submitting ticket: {exc}", err=True)
-        raise typer.Exit(1) from None
+    result = client.request(
+        "POST",
+        "/app/support/api/tickets",
+        json={
+            "subject": subject,
+            "description": description,
+            "product": product,
+            "severity": severity,
+            "category": category,
+            "user_context": diagnostics,
+            "auto_context": False,
+            "anonymous": anonymous,
+        },
+    )
+    typer.echo(f"Ticket created: #{result.get('id', '?')}")
 
 
 @app.command("list")
+@_support_cli
 def list_tickets(
     status: str | None = typer.Option(None, "--status", help="Filter by status."),
     as_json: bool = typer.Option(False, "--json", help="Output raw JSON."),
 ) -> None:
     """List your support tickets."""
-    _check_enabled()
-    from solstone.apps.support.tools import support_list
-
-    tickets = support_list(status=status)
+    client = get_client()
+    _check_enabled(client)
+    params = {"status": status} if status else None
+    tickets = client.request("GET", "/app/support/api/tickets", params=params)
     if as_json:
         _json_out(tickets)
         return
@@ -260,19 +322,15 @@ def list_tickets(
 
 
 @app.command("show")
+@_support_cli
 def show(
     ticket_id: int = typer.Argument(..., help="Ticket ID."),
     as_json: bool = typer.Option(False, "--json", help="Output raw JSON."),
 ) -> None:
     """View a ticket with its message thread."""
-    _check_enabled()
-    from solstone.apps.support.tools import support_check
-
-    try:
-        data = support_check(ticket_id)
-    except Exception as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(1) from None
+    client = get_client()
+    _check_enabled(client)
+    data = client.request("GET", f"/app/support/api/tickets/{ticket_id}")
 
     if as_json:
         _json_out(data)
@@ -306,14 +364,15 @@ def show(
 
 
 @app.command("reply")
+@_support_cli
 def reply(
     ticket_id: int = typer.Argument(..., help="Ticket ID."),
     body: str = typer.Option(..., "--body", "-b", help="Reply content."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
 ) -> None:
     """Reply to a ticket."""
-    _check_enabled()
-    from solstone.apps.support.tools import support_reply
+    client = get_client()
+    _check_enabled(client)
 
     if not yes:
         typer.echo(f"Reply to ticket #{ticket_id}:\n{body}\n")
@@ -321,37 +380,30 @@ def reply(
             typer.echo("Cancelled.")
             return
 
-    try:
-        support_reply(ticket_id, body)
-        typer.echo(f"Reply sent to ticket #{ticket_id}.")
-    except Exception as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(1) from None
+    client.request(
+        "POST",
+        f"/app/support/api/tickets/{ticket_id}/reply",
+        json={"content": body},
+    )
+    typer.echo(f"Reply sent to ticket #{ticket_id}.")
 
 
 @app.command("attach")
+@_support_cli
 def attach(
     ticket_id: int = typer.Argument(..., help="Ticket ID to attach files to."),
     files: list[Path] = typer.Argument(..., help="File(s) to attach."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
 ) -> None:
     """Attach file(s) to a ticket."""
-    _check_enabled()
-    from solstone.apps.support.portal import PortalClient
-    from solstone.apps.support.tools import support_attach
+    client = get_client()
+    _check_enabled(client)
 
     # Validate files up front
     for f in files:
         if not f.is_file():
             typer.echo(f"Error: file not found: {f}", err=True)
             raise typer.Exit(1)
-
-    if len(files) > PortalClient.MAX_ATTACHMENTS_PER_MESSAGE:
-        typer.echo(
-            f"Error: max {PortalClient.MAX_ATTACHMENTS_PER_MESSAGE} files per upload.",
-            err=True,
-        )
-        raise typer.Exit(1)
 
     # Consent gate — show what will be uploaded
     typer.echo(f"\n--- Attachment Review (ticket #{ticket_id}) ---")
@@ -372,18 +424,20 @@ def attach(
             typer.echo("Cancelled — nothing was sent.")
             return
 
+    path = f"/app/support/api/tickets/{ticket_id}/attachments"
     for f in files:
         try:
-            result = support_attach(ticket_id, str(f))
-            typer.echo(f"Attached: {f.name} (id: {result.get('id', '?')})")
-        except ValueError as exc:
-            typer.echo(f"Skipped {f.name}: {exc}", err=True)
-        except Exception as exc:
-            typer.echo(f"Error uploading {f.name}: {exc}", err=True)
-            raise typer.Exit(1) from None
+            result = client.upload(path, files={"file": (f.name, str(f), None)})
+        except ConveyUnreachableError:
+            raise
+        except ConveyClientError as err:
+            typer.echo(f"Skipped {f.name}: {err.error}", err=True)
+            continue
+        typer.echo(f"Attached: {f.name} (id: {result.get('id', '?')})")
 
 
 @app.command("feedback")
+@_support_cli
 def feedback(
     body: str = typer.Option(..., "--body", "-b", help="Your feedback."),
     product: str = typer.Option("solstone", "--product", "-p", help="Product name."),
@@ -399,14 +453,12 @@ def feedback(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
 ) -> None:
     """Submit feedback (lower friction than a full ticket)."""
-    _check_enabled()
+    client = get_client()
+    config = _check_enabled(client)
     if not submit:
-        from solstone.apps.support.diagnostics import collect_all
-        from solstone.apps.support.portal import _get_portal_url_from_settings
-
         # Fixed display values mirror tools.support_feedback (source of truth):
         # subject="User feedback", severity="low", category="feedback".
-        diagnostics = collect_all()
+        diagnostics = client.request("GET", "/app/support/api/diagnostics")
         _print_dry_run_preview(
             subject="User feedback",
             product=product,
@@ -414,11 +466,9 @@ def feedback(
             category="feedback",
             body=body,
             diagnostics=diagnostics,
-            portal_url=_get_portal_url_from_settings(),
+            portal_url=config["portal_url"],
         )
         return
-
-    from solstone.apps.support.tools import support_feedback
 
     if not yes:
         typer.echo(f"Feedback:\n{body}\n")
@@ -427,23 +477,23 @@ def feedback(
             typer.echo("Cancelled.")
             return
 
-    try:
-        result = support_feedback(body=body, product=product, anonymous=anonymous)
-        typer.echo(f"Feedback submitted: #{result.get('id', '?')}")
-    except Exception as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(1) from None
+    result = client.request(
+        "POST",
+        "/app/support/api/feedback",
+        json={"body": body, "product": product, "anonymous": anonymous},
+    )
+    typer.echo(f"Feedback submitted: #{result.get('id', '?')}")
 
 
 @app.command("announcements")
+@_support_cli
 def announcements(
     as_json: bool = typer.Option(False, "--json", help="Output raw JSON."),
 ) -> None:
     """Check for product updates and known issues."""
-    _check_enabled()
-    from solstone.apps.support.tools import support_announcements
-
-    items = support_announcements()
+    client = get_client()
+    _check_enabled(client)
+    items = client.request("GET", "/app/support/api/announcements")
     if as_json:
         _json_out(items)
         return
@@ -464,10 +514,30 @@ def announcements(
 def diagnose(
     as_json: bool = typer.Option(False, "--json", help="Output raw JSON."),
 ) -> None:
-    """Run local diagnostics (no network)."""
-    from solstone.apps.support.tools import support_diagnose
+    """Show journal-host diagnostics (read-only)."""
+    client = get_client()
+    try:
+        data = client.request("GET", "/app/support/api/diagnostics")
+    except ConveyUnreachableError:
+        identity = _local_build_identity()
+        if as_json:
+            _json_out(identity)
+        else:
+            typer.echo("# Local Diagnostics\n")
+            typer.echo(f"Version:  {identity.get('version') or 'unknown'}")
+            typer.echo(f"Revision: {identity.get('revision') or 'none'}")
+            plat = identity.get("platform", {})
+            typer.echo(
+                f"Platform: {plat.get('system', '?')} {plat.get('release', '')} "
+                f"({plat.get('machine', '')})"
+            )
+            typer.echo(f"Python:   {plat.get('python', '?')}")
+        _emit_unreachable_notice()
+        raise typer.Exit(1) from None
+    except ConveyClientError as err:
+        typer.echo(err.error, err=True)
+        raise typer.Exit(1) from err
 
-    data = support_diagnose()
     if as_json:
         _json_out(data)
     else:

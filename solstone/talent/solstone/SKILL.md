@@ -94,7 +94,7 @@ Check if solstone is running and how much data exists.
 # Journal storage summary (days, facets, size)
 sol call journal storage-summary
 
-# Local diagnostics (no network)
+# Journal-host diagnostics (read-only)
 sol call support diagnose
 ```
 
@@ -157,6 +157,6 @@ If `sol` is not found on PATH or returns an error:
 
 - **"command not found: sol"** — solstone is not installed. The user needs to run `journal setup` in their solstone project.
 - **"journal not found"** or empty output — the journal directory doesn't exist or has no data yet. solstone may be installed but not yet initialized.
-- **Connection errors from `sol call support`** — `diagnose` is local-only and should always work. Other support commands (`search`, `article`) contact the support portal and may fail if offline.
+- **Connection errors from `sol call support`** — every support command needs the local solstone service reachable; if it isn't, the command reports that and `diagnose` falls back to showing local build identity. Portal-backed commands (`search`, `article`) can additionally fail when the journal host is offline.
 
 Do not retry failed commands. Report the error clearly so the user can investigate.
