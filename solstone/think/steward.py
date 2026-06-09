@@ -129,6 +129,14 @@ def load_steward_log() -> list[dict]:
     return rows
 
 
+def load_latest_pass_event() -> dict | None:
+    """Return the most recent deterministic steward pass event."""
+    for row in reversed(load_steward_log()):
+        if row.get("event") == "pass":
+            return row
+    return None
+
+
 def _load_jsonl(path: Path) -> list[dict]:
     rows: list[dict] = []
     with path.open(encoding="utf-8") as handle:

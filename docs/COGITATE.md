@@ -129,10 +129,10 @@ enforcement are layered on top of it.
 Policy denies support send verbs (`create`, `reply`, `attach`, `feedback`) for
 `normal` / `system-read` runs and allows them for `outbound` runs.
 
-**There is no `repair` tier in cogitate.** Health fact-gathering *and* repair are a
-deterministic supervisor/system workflow (explicitly launched and logged) — they do
-not need an LLM, and a talent that diagnoses must not also mutate state. The
-owner-facing health narrative is `steward`'s job (`system-read`).
+**There is no `repair` tier in cogitate.** Health fact-gathering and repair run
+through the deterministic `journal heartbeat` workflow, explicitly launched and
+logged without an LLM. The only cogitate health surface is `steward` (`system-read`),
+which owns the owner-facing health narrative.
 
 `code-agent` is a **documented future tier**, not part of the current cogitate
 runtime. A code agent needs write access, broad tools (read / edit / write / shell /

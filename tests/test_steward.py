@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
+import dataclasses
 import json
 import os
 import time
@@ -16,12 +17,15 @@ from solstone.think.identity import (
     ensure_identity_directory,
 )
 from solstone.think.steward import (
+    STALE_PENDING_RECIPE,
     RecipeOutcome,
     StalePendingTarget,
     _modality_signals,
+    append_steward_event,
     detect_stale_pending_segments,
     load_steward_log,
     read_steward_health,
+    release_steward_lock,
     run_recipe_pass,
     validate_steward_health,
     write_health_md,
@@ -87,6 +91,29 @@ def _recipe_row(target: str, outcome: str, ts: int) -> dict:
         "outcome": outcome,
         "detail": None,
     }
+
+
+def _fixed_synthesis_context(errors: list[str] | None = None) -> dict:
+    return {
+        "health_report": "{}",
+        "pipeline_day": "{}",
+        "recipe_outcomes_7d": "[]",
+        "escalated_targets": "[]",
+        "data_source_errors": json.dumps(
+            [] if errors is None else errors,
+            indent=2,
+            sort_keys=True,
+            default=str,
+        ),
+        "generated_at": "2026-06-07T00:00:00Z",
+        "status_lead_constraints": "fixed",
+    }
+
+
+def _release_pre_process_lock(config: dict) -> None:
+    fd = config.pop("_steward_lock_fd", None)
+    if isinstance(fd, int):
+        release_steward_lock(fd)
 
 
 def test_recipe_detects_stale_pending_segment(tmp_path, monkeypatch):
@@ -285,6 +312,137 @@ def test_escalation_resets_after_success(tmp_path, monkeypatch):
 
     assert result["escalated_targets"] == []
     assert result["fired"][0].target == target
+
+
+def test_pre_process_uses_pass_event_without_refiring_recipes(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+    today = "20260607"
+    _seed_stale_pending_segment(
+        tmp_path, today, "local", "120000_300", "audio", 7 * 60 * 60
+    )
+    _seed_stale_pending_segment(
+        tmp_path, today, "local", "130000_300", "screen", 7 * 60 * 60
+    )
+    fired_targets = []
+
+    def fake_fire(target: StalePendingTarget, *, port: int) -> RecipeOutcome:
+        fired_targets.append(target.target)
+        return RecipeOutcome(
+            recipe=STALE_PENDING_RECIPE,
+            target=target.target,
+            outcome="success",
+            detail=None,
+            ts=now_ms(),
+        )
+
+    monkeypatch.setattr("solstone.think.steward.fire_stale_pending_recipe", fake_fire)
+
+    result = run_recipe_pass(today)
+    append_steward_event(
+        "pass",
+        fired=[dataclasses.asdict(outcome) for outcome in result["fired"]],
+        escalated_targets=result["escalated_targets"],
+        data_source_errors=result["data_source_errors"],
+    )
+
+    assert len(fired_targets) == 2
+
+    import solstone.talent.steward as steward_hook
+
+    monkeypatch.setattr(
+        steward_hook,
+        "build_synthesis_context",
+        lambda day: _fixed_synthesis_context(),
+    )
+    config = {"day": today}
+    try:
+        hook_result = steward_hook.pre_process(config)
+    finally:
+        _release_pre_process_lock(config)
+
+    assert hook_result is not None
+    assert "template_vars" in hook_result
+    assert len(fired_targets) == 2
+
+
+def test_pre_process_reconstructs_pass_event_fields_byte_identically(
+    tmp_path, monkeypatch
+):
+    _set_journal(monkeypatch, tmp_path)
+    fired = [
+        dataclasses.asdict(
+            RecipeOutcome(
+                recipe=STALE_PENDING_RECIPE,
+                target="20260607/local/seg1:audio",
+                outcome="failure",
+                detail="boom",
+                ts=123,
+            )
+        )
+    ]
+    append_steward_event(
+        "pass",
+        fired=fired,
+        escalated_targets=["20260607/local/seg2:screen"],
+        data_source_errors=["convey port: x"],
+    )
+
+    import solstone.talent.steward as steward_hook
+
+    monkeypatch.setattr(
+        steward_hook,
+        "build_synthesis_context",
+        lambda day: _fixed_synthesis_context(["health_report: y"]),
+    )
+    config = {"day": "20260607"}
+    try:
+        result = steward_hook.pre_process(config)
+    finally:
+        _release_pre_process_lock(config)
+
+    assert result is not None
+    template_vars = result["template_vars"]
+    assert template_vars["escalated_targets"] == json.dumps(
+        ["20260607/local/seg2:screen"],
+        indent=2,
+        sort_keys=True,
+        default=str,
+    )
+    assert template_vars["recipe_outcomes_this_run"] == json.dumps(
+        fired,
+        indent=2,
+        sort_keys=True,
+        default=str,
+    )
+    assert template_vars["data_source_errors"] == json.dumps(
+        ["health_report: y", "convey port: x"],
+        indent=2,
+        sort_keys=True,
+        default=str,
+    )
+
+
+def test_pre_process_fresh_journal_is_well_eligible(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+
+    import solstone.talent.steward as steward_hook
+
+    monkeypatch.setattr(
+        steward_hook,
+        "build_synthesis_context",
+        lambda day: _fixed_synthesis_context(),
+    )
+    config = {"day": "20260607"}
+    try:
+        result = steward_hook.pre_process(config)
+    finally:
+        _release_pre_process_lock(config)
+
+    assert result is not None
+    template_vars = result["template_vars"]
+    assert template_vars["escalated_targets"] == "[]"
+    assert template_vars["recipe_outcomes_this_run"] == "[]"
+    assert template_vars["data_source_errors"] == "[]"
 
 
 def test_validator_rejects_missing_section():

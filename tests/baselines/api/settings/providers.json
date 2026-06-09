@@ -373,14 +373,6 @@
       "tier": 2,
       "type": "cogitate"
     },
-    "talent.system.heartbeat": {
-      "disabled": false,
-      "group": "Think",
-      "label": "Heartbeat",
-      "schedule": "none",
-      "tier": 2,
-      "type": "cogitate"
-    },
     "talent.system.morning_briefing": {
       "disabled": false,
       "group": "Think",

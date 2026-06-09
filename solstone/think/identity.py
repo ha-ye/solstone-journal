@@ -19,7 +19,7 @@ _AGENCY_MD = """\
 # agency
 
 things I'm tracking, acting on, or watching. I update this as I notice things
-and resolve them. the heartbeat reviews this periodically.
+and resolve them. this is reviewed periodically.
 
 ## curation
 [nothing yet — building initial picture of journal health]

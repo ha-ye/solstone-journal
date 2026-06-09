@@ -214,17 +214,6 @@
       "title": "Facet Newsletter Generator",
       "type": "cogitate"
     },
-    "heartbeat": {
-      "app": null,
-      "color": "#6c757d",
-      "description": "Sol's periodic self-awareness — journal health, agency tending, curation scan",
-      "multi_facet": false,
-      "output_format": null,
-      "schedule": "none",
-      "source": "system",
-      "title": "Heartbeat",
-      "type": "cogitate"
-    },
     "import:review": {
       "app": "import",
       "color": "#37474f",

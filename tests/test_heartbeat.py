@@ -16,20 +16,28 @@ def journal_path(tmp_path, monkeypatch):
 
 @pytest.fixture
 def heartbeat_mocks(monkeypatch):
+    state = {"run_calls": [], "append_calls": []}
+
+    def fake_run_recipe_pass(today):
+        state["run_calls"].append(today)
+        return {"fired": [], "escalated_targets": [], "data_source_errors": []}
+
+    def fake_append_steward_event(event, **fields):
+        state["append_calls"].append((event, fields))
+
     monkeypatch.setattr(
         "solstone.think.heartbeat.setup_cli",
         lambda parser: argparse.Namespace(force=False),
     )
     monkeypatch.setattr(
-        "solstone.think.heartbeat.ensure_identity_directory", lambda: None
+        "solstone.think.heartbeat.run_recipe_pass",
+        fake_run_recipe_pass,
     )
     monkeypatch.setattr(
-        "solstone.think.heartbeat.cortex_request", lambda *args, **kwargs: "agent-123"
+        "solstone.think.heartbeat.append_steward_event",
+        fake_append_steward_event,
     )
-    monkeypatch.setattr(
-        "solstone.think.heartbeat.wait_for_uses",
-        lambda *args, **kwargs: ({"agent-123": "finish"}, []),
-    )
+    return state
 
 
 def test_heartbeat_command_mapping():
@@ -47,23 +55,21 @@ def test_heartbeat_main_is_callable():
 
 
 def test_pid_guard_live_process_exits_zero(journal_path, heartbeat_mocks):
-    """When PID file contains current process PID, main() exits 0 without cortex."""
+    """When PID file contains current process PID, main() exits 0 without a pass."""
     import solstone.think.heartbeat as mod
 
     pid_file = journal_path / "health" / "heartbeat.pid"
     pid_file.write_text(str(os.getpid()))
 
-    mod.cortex_request = lambda *a, **kw: pytest.fail(
-        "cortex_request should not be called"
-    )
-
     with pytest.raises(SystemExit) as exc_info:
         mod.main()
     assert exc_info.value.code == 0
+    assert heartbeat_mocks["run_calls"] == []
+    assert heartbeat_mocks["append_calls"] == []
 
 
 def test_pid_guard_dead_process_removes_stale_pid(journal_path, heartbeat_mocks):
-    """When PID file contains a dead PID, main() removes it and proceeds to cortex."""
+    """When PID file contains a dead PID, main() removes it and runs the pass."""
     import solstone.think.heartbeat as mod
 
     pid_file = journal_path / "health" / "heartbeat.pid"
@@ -76,34 +82,29 @@ def test_pid_guard_dead_process_removes_stale_pid(journal_path, heartbeat_mocks)
 
     pid_file.write_text(str(dead_pid))
 
-    cortex_called = []
-
-    def fake_cortex(*args, **kwargs):
-        cortex_called.append(True)
-        return "agent-123"
-
-    mod.cortex_request = fake_cortex
-
     with pytest.raises(SystemExit) as exc_info:
         mod.main()
     assert exc_info.value.code == 0
-    assert len(cortex_called) == 1
+    assert len(heartbeat_mocks["run_calls"]) == 1
+    assert not pid_file.exists()
 
 
-def test_pid_file_created_and_removed_on_success(journal_path, heartbeat_mocks):
+def test_pid_file_created_and_removed_on_success(
+    journal_path, heartbeat_mocks, monkeypatch
+):
     """PID file exists during execution and is removed after main() completes."""
     import solstone.think.heartbeat as mod
 
     pid_file = journal_path / "health" / "heartbeat.pid"
     pid_during_run = []
 
-    def capture_pid_cortex(*args, **kwargs):
+    def capture_pid_run(today):
         pid_during_run.append(pid_file.exists())
         if pid_file.exists():
             pid_during_run.append(pid_file.read_text().strip())
-        return "agent-123"
+        return {"fired": [], "escalated_targets": [], "data_source_errors": []}
 
-    mod.cortex_request = capture_pid_cortex
+    monkeypatch.setattr(mod, "run_recipe_pass", capture_pid_run)
 
     with pytest.raises(SystemExit):
         mod.main()
@@ -113,30 +114,23 @@ def test_pid_file_created_and_removed_on_success(journal_path, heartbeat_mocks):
     assert not pid_file.exists()
 
 
-def test_pid_file_removed_on_error(journal_path, heartbeat_mocks):
-    """PID file is removed even when cortex_request returns None (error path)."""
+def test_pid_file_removed_on_error(journal_path, heartbeat_mocks, monkeypatch):
+    """PID file is removed when the deterministic pass raises."""
     import solstone.think.heartbeat as mod
 
     pid_file = journal_path / "health" / "heartbeat.pid"
-    mod.cortex_request = lambda *a, **kw: None
+
+    def fail_run(today):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(mod, "run_recipe_pass", fail_run)
 
     with pytest.raises(SystemExit) as exc_info:
         mod.main()
     assert exc_info.value.code == 1
     assert not pid_file.exists()
-
-
-def test_pid_file_removed_on_timeout(journal_path, heartbeat_mocks):
-    """PID file is removed on timeout path."""
-    import solstone.think.heartbeat as mod
-
-    pid_file = journal_path / "health" / "heartbeat.pid"
-    mod.wait_for_uses = lambda *a, **kw: ({}, ["agent-123"])
-
-    with pytest.raises(SystemExit) as exc_info:
-        mod.main()
-    assert exc_info.value.code == 2
-    assert not pid_file.exists()
+    content = (journal_path / "health" / "heartbeat.log").read_text()
+    assert "outcome=error" in content
 
 
 def test_log_run_appends_line(journal_path):
@@ -173,29 +167,67 @@ def test_log_written_after_successful_run(journal_path, heartbeat_mocks):
     assert "outcome=success" in content
 
 
-def test_cortex_prompt_does_not_contain_journal_path(journal_path, heartbeat_mocks):
-    """cortex_request prompt must not leak filesystem paths."""
+def test_pass_runs_once_and_no_cortex_path(journal_path, heartbeat_mocks):
+    """A normal run invokes one deterministic pass and has no cortex symbols."""
     import solstone.think.heartbeat as mod
 
-    captured_kwargs = {}
-
-    def capture_cortex(*args, **kwargs):
-        captured_kwargs.update(kwargs)
-        if args:
-            captured_kwargs["_positional"] = args
-        return "agent-123"
-
-    mod.cortex_request = capture_cortex
-
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as exc_info:
         mod.main()
+    assert exc_info.value.code == 0
 
-    prompt = captured_kwargs.get("prompt", "")
-    assert str(journal_path) not in prompt, "prompt must not leak filesystem paths"
+    assert len(heartbeat_mocks["run_calls"]) == 1
+    assert not hasattr(mod, "cortex_request")
+    assert not hasattr(mod, "wait_for_uses")
+
+
+def test_pass_event_persisted(journal_path, heartbeat_mocks, monkeypatch):
+    """A successful run records the deterministic pass result."""
+    import solstone.think.heartbeat as mod
+    from solstone.think.steward import RecipeOutcome
+
+    outcome = RecipeOutcome(
+        recipe="stale_pending_segment_reprocess",
+        target="20260607/local/seg1:audio",
+        outcome="success",
+        detail=None,
+        ts=123,
+    )
+    monkeypatch.setattr(
+        mod,
+        "run_recipe_pass",
+        lambda today: {
+            "fired": [outcome],
+            "escalated_targets": ["20260607/local/seg2:screen"],
+            "data_source_errors": ["convey port: x"],
+        },
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mod.main()
+    assert exc_info.value.code == 0
+
+    assert heartbeat_mocks["append_calls"] == [
+        (
+            "pass",
+            {
+                "fired": [
+                    {
+                        "recipe": "stale_pending_segment_reprocess",
+                        "target": "20260607/local/seg1:audio",
+                        "outcome": "success",
+                        "detail": None,
+                        "ts": 123,
+                    }
+                ],
+                "escalated_targets": ["20260607/local/seg2:screen"],
+                "data_source_errors": ["convey port: x"],
+            },
+        )
+    ]
 
 
 def test_recency_check_skips_recent_heartbeat(journal_path, heartbeat_mocks):
-    """When heartbeat.log has a recent success, main() exits 0 without cortex."""
+    """When heartbeat.log has a recent success, main() exits 0 without a pass."""
     from datetime import datetime
 
     import solstone.think.heartbeat as mod
@@ -205,17 +237,15 @@ def test_recency_check_skips_recent_heartbeat(journal_path, heartbeat_mocks):
     recent_ts = datetime.now().isoformat(timespec="seconds")
     log_file.write_text(f"{recent_ts} duration=5s outcome=success\n")
 
-    mod.cortex_request = lambda *a, **kw: pytest.fail(
-        "cortex_request should not be called"
-    )
-
     with pytest.raises(SystemExit) as exc_info:
         mod.main()
     assert exc_info.value.code == 0
+    assert heartbeat_mocks["run_calls"] == []
+    assert heartbeat_mocks["append_calls"] == []
 
 
 def test_recency_check_runs_after_old_heartbeat(journal_path, heartbeat_mocks):
-    """When heartbeat.log success is older than the window, main() runs cortex."""
+    """When heartbeat.log success is older than the window, main() runs the pass."""
     from datetime import datetime, timedelta
 
     import solstone.think.heartbeat as mod
@@ -225,33 +255,18 @@ def test_recency_check_runs_after_old_heartbeat(journal_path, heartbeat_mocks):
     old_ts = (datetime.now() - timedelta(hours=24)).isoformat(timespec="seconds")
     log_file.write_text(f"{old_ts} duration=5s outcome=success\n")
 
-    cortex_called = []
-
-    def fake_cortex(*args, **kwargs):
-        cortex_called.append(True)
-        return "agent-123"
-
-    mod.cortex_request = fake_cortex
-
     with pytest.raises(SystemExit):
         mod.main()
-    assert len(cortex_called) == 1
+    assert len(heartbeat_mocks["run_calls"]) == 1
 
 
-def test_force_flag_bypasses_recency_check(journal_path, monkeypatch):
+def test_force_flag_bypasses_recency_check(journal_path, heartbeat_mocks, monkeypatch):
     """--force runs full check even with a recent success."""
     import solstone.think.heartbeat as mod
 
     monkeypatch.setattr(
         "solstone.think.heartbeat.setup_cli",
         lambda parser: argparse.Namespace(force=True),
-    )
-    monkeypatch.setattr(
-        "solstone.think.heartbeat.ensure_identity_directory", lambda: None
-    )
-    monkeypatch.setattr(
-        "solstone.think.heartbeat.wait_for_uses",
-        lambda *args, **kwargs: ({"agent-123": "finish"}, []),
     )
 
     # Write a recent success entry
@@ -261,17 +276,9 @@ def test_force_flag_bypasses_recency_check(journal_path, monkeypatch):
     recent_ts = datetime.now().isoformat(timespec="seconds")
     log_file.write_text(f"{recent_ts} duration=5s outcome=success\n")
 
-    cortex_called = []
-
-    def fake_cortex(*args, **kwargs):
-        cortex_called.append(True)
-        return "agent-123"
-
-    mod.cortex_request = fake_cortex
-
     with pytest.raises(SystemExit):
         mod.main()
-    assert len(cortex_called) == 1
+    assert len(heartbeat_mocks["run_calls"]) == 1
 
 
 def test_last_success_time_parses_log(journal_path):
@@ -308,7 +315,7 @@ def test_last_success_time_returns_none_for_no_successes(journal_path):
     log_file = health_dir / "heartbeat.log"
     log_file.write_text(
         "2026-03-19T08:00:00 duration=5s outcome=error\n"
-        "2026-03-19T12:00:00 duration=5s outcome=timeout\n"
+        "2026-03-19T12:00:00 duration=5s outcome=error\n"
     )
 
     result = _last_success_time(health_dir)

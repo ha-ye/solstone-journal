@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import logging
 from datetime import datetime
@@ -13,8 +12,8 @@ from datetime import datetime
 from solstone.think.steward import (
     acquire_steward_lock,
     build_synthesis_context,
+    load_latest_pass_event,
     release_steward_lock,
-    run_recipe_pass,
     write_health_md,
 )
 
@@ -46,7 +45,19 @@ def pre_process(config: dict) -> dict | None:
     config["_steward_lock_fd"] = fd
     today = _today_from_config(config)
     try:
-        recipe_result = run_recipe_pass(today)
+        pass_event = load_latest_pass_event()
+        if pass_event is None:
+            recipe_result = {
+                "fired": [],
+                "escalated_targets": [],
+                "data_source_errors": [],
+            }
+        else:
+            recipe_result = {
+                "fired": pass_event.get("fired", []),
+                "escalated_targets": pass_event.get("escalated_targets", []),
+                "data_source_errors": pass_event.get("data_source_errors", []),
+            }
         context = build_synthesis_context(today)
 
         errors = _load_json_list(str(context.get("data_source_errors", "[]")))
@@ -61,7 +72,7 @@ def pre_process(config: dict) -> dict | None:
             default=str,
         )
         context["recipe_outcomes_this_run"] = json.dumps(
-            [dataclasses.asdict(outcome) for outcome in recipe_result.get("fired", [])],
+            recipe_result.get("fired", []),
             indent=2,
             sort_keys=True,
             default=str,

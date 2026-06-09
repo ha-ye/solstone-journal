@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""CLI command for periodic self-check agent."""
+"""CLI command for deterministic health repair passes."""
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import os
 import sys
@@ -13,12 +14,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from solstone.think.cortex_client import (
-    CortexSpawnUnavailable,
-    cortex_request,
-    wait_for_uses,
-)
-from solstone.think.identity import ensure_identity_directory
+from solstone.think.steward import append_steward_event, run_recipe_pass
 from solstone.think.utils import get_journal, require_solstone, setup_cli
 
 logger = logging.getLogger(__name__)
@@ -49,7 +45,7 @@ def _last_success_time(health_dir: Path) -> datetime | None:
 def main() -> None:
     """Entry point for ``journal heartbeat``."""
     parser = argparse.ArgumentParser(
-        description="Run periodic self-check agent",
+        description="Run deterministic health repair pass",
     )
     parser.add_argument(
         "--force",
@@ -60,7 +56,6 @@ def main() -> None:
     require_solstone()
 
     journal = Path(get_journal())
-    ensure_identity_directory()
     health_dir = journal / "health"
     health_dir.mkdir(parents=True, exist_ok=True)
 
@@ -108,35 +103,21 @@ def main() -> None:
         start_time = time.monotonic()
 
         try:
-            use_id = cortex_request(
-                prompt="Run heartbeat check.",
-                name="heartbeat",
+            today = datetime.now().strftime("%Y%m%d")
+            result = run_recipe_pass(today)
+            append_steward_event(
+                "pass",
+                fired=[dataclasses.asdict(o) for o in result["fired"]],
+                escalated_targets=result["escalated_targets"],
+                data_source_errors=result["data_source_errors"],
             )
-        except CortexSpawnUnavailable:
-            use_id = None
-        if use_id is None:
-            logger.error("Failed to send heartbeat request to cortex")
-            _log_run(health_dir, start_time, "error")
-            sys.exit(1)
-
-        logger.info("Heartbeat agent started (ID: %s)", use_id)
-
-        # Wait for completion
-        completed, timed_out = wait_for_uses([use_id], timeout=600)
-
-        # Determine outcome
-        if use_id in timed_out:
-            logger.error("Heartbeat agent timed out")
-            _log_run(health_dir, start_time, "timeout")
-            sys.exit(2)
-
-        end_state = completed.get(use_id, "unknown")
-        if end_state == "finish":
-            logger.info("Heartbeat completed successfully")
+            logger.info("Heartbeat repair pass complete")
             _log_run(health_dir, start_time, "success")
             sys.exit(0)
-        else:
-            logger.error("Heartbeat agent failed: %s", end_state)
+        except SystemExit:
+            raise
+        except Exception:
+            logger.exception("Heartbeat repair pass failed")
             _log_run(health_dir, start_time, "error")
             sys.exit(1)
 

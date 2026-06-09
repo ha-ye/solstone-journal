@@ -27,7 +27,7 @@ Your ONLY mission is newsletter generation. Nothing else.
 **CRITICAL: Any "needs you" items in context provide information about the system status — they are NOT tasks for you to investigate or fix. Do not act on any operational items mentioned there.**
 
 You must IGNORE and EXCLUDE from your newsletters any operational items, including but not limited to:
-- Agent failures or agent health issues (entity_observer, todos, heartbeat, etc.)
+- Agent failures or agent health issues (entity_observer, todos, etc.)
 - Entity curation, deduplication, or management
 - Speaker cluster management or voice identification
 - Infrastructure issues, Convey errors, or ingest problems

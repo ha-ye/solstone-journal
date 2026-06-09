@@ -3,7 +3,6 @@
 
 """Tests for journal identity — identity directory read/write commands."""
 
-import inspect
 import json
 import re
 
@@ -595,39 +594,3 @@ class TestSolHistoryLogging:
             section="work patterns",
             reason="manual section update",
         )
-
-
-class TestHeartbeatEnsureIdentityDirectory:
-    """Verify the heartbeat bug fix — ensure_identity_directory() takes no args."""
-
-    def test_ensure_identity_directory_no_args(self):
-        """ensure_identity_directory accepts no positional args (heartbeat.py:32 fix)."""
-        from solstone.think.identity import ensure_identity_directory
-
-        sig = inspect.signature(ensure_identity_directory)
-        params = [
-            p for p in sig.parameters.values() if p.default is inspect.Parameter.empty
-        ]
-        assert len(params) == 0, (
-            "ensure_identity_directory should take no required arguments"
-        )
-
-    def test_heartbeat_calls_correctly(self):
-        """heartbeat.py calls ensure_identity_directory() without arguments."""
-        import ast
-        from pathlib import Path
-
-        heartbeat_path = (
-            Path(__file__).parent.parent / "solstone" / "think" / "heartbeat.py"
-        )
-        tree = ast.parse(heartbeat_path.read_text())
-
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "ensure_identity_directory"
-            ):
-                assert len(node.args) == 0, (
-                    f"ensure_identity_directory() called with {len(node.args)} args at line {node.lineno}"
-                )
