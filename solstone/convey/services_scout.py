@@ -15,8 +15,15 @@ import webbrowser
 from dataclasses import dataclass, field
 from typing import Any
 
-from flask import Blueprint, Response, abort, jsonify, request, stream_with_context
+from flask import Blueprint, Response, jsonify, request, stream_with_context
 
+from solstone.convey.reasons import (
+    SCOUT_ALREADY_ENABLED,
+    SCOUT_MANUAL_KEY_PRESENT,
+    SCOUT_SESSION_NOT_FOUND,
+    SETUP_ALREADY_COMPLETE,
+)
+from solstone.convey.utils import error_response
 from solstone.think.services import portal_client
 from solstone.think.services.scout import (
     JournalNotInitializedError,
@@ -209,11 +216,20 @@ def start() -> tuple[Response, int] | Response:
     from solstone.convey.root import _is_setup_complete
 
     if _is_setup_complete():
-        abort(404)
+        return error_response(
+            SETUP_ALREADY_COMPLETE,
+            detail="setup is already complete",
+        )
     if is_scout_enabled():
-        return jsonify({"error": "already_enabled"}), 409
+        return error_response(
+            SCOUT_ALREADY_ENABLED,
+            detail="scout is already enabled on this machine",
+        )
     if is_manual_key_present():
-        return jsonify({"error": "manual_key_present"}), 409
+        return error_response(
+            SCOUT_MANUAL_KEY_PRESENT,
+            detail="a manual Gemini key is already present",
+        )
 
     with _REGISTRY_LOCK:
         _sweep_expired_locked()
@@ -245,17 +261,23 @@ def start() -> tuple[Response, int] | Response:
 
 
 @bp.route("/status", methods=["GET"])
-def status() -> Response:
+def status() -> tuple[Response, int] | Response:
     from solstone.convey.root import _is_setup_complete
 
     if _is_setup_complete():
-        abort(404)
+        return error_response(
+            SETUP_ALREADY_COMPLETE,
+            detail="setup is already complete",
+        )
     nonce_id = request.args.get("nonce_id", "")
     with _REGISTRY_LOCK:
         _sweep_expired_locked()
         entry = _REGISTRY.get(nonce_id)
     if entry is None:
-        abort(404)
+        return error_response(
+            SCOUT_SESSION_NOT_FOUND,
+            detail="no active scout session for that id",
+        )
 
     def generate():
         disconnect_event = request.environ.get("pl.disconnect_event")

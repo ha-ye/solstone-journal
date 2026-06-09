@@ -380,11 +380,11 @@
         }
         subscribeScoutStream(result.subscribe_url, result.portal_url);
       } catch (err) {
-        if (err && err.status === 409 && err.serverMessage === 'already_enabled') {
+        if (err && err.status === 409 && err.reasonCode === 'already_enabled') {
           renderScoutState('success');
           return;
         }
-        if (err && err.status === 409 && err.serverMessage === 'manual_key_present') {
+        if (err && err.status === 409 && err.reasonCode === 'manual_key_present') {
           renderScoutState('error', {
             reason: 'manual_key_present',
             message: MANUAL_KEY_PRESENT_COPY,

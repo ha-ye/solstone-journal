@@ -1,0 +1,127 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+INIT_HTML = Path(__file__).resolve().parents[1] / "templates" / "init.html"
+
+
+def _extract_function(source: str, name: str) -> str:
+    start = source.index(f"function {name}(")
+    if source[start - 6 : start] == "async ":
+        start -= 6
+    brace_start = source.index("{", start)
+    depth = 0
+    in_string: str | None = None
+    escaped = False
+    for index in range(brace_start, len(source)):
+        char = source[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == in_string:
+                in_string = None
+            continue
+        if char in {"'", '"', "`"}:
+            in_string = char
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1]
+    raise AssertionError(f"could not extract {name}")
+
+
+def test_enable_scout_branches_on_reason_code() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not available")
+
+    source = INIT_HTML.read_text(encoding="utf-8")
+    enable_scout = _extract_function(source, "enableScout")
+    script = (
+        """
+let renderCalls = [];
+function renderScoutState(state, opts = {}) { renderCalls.push([state, opts]); }
+let portalUnreachableShown = 0;
+function showPortalUnreachable() { portalUnreachableShown += 1; }
+function hidePortalUnreachable() {}
+function closeScoutStream() {}
+function subscribeScoutStream() {}
+const MANUAL_KEY_PRESENT_COPY = 'manual-key-copy-sentinel';
+const button = { disabled: false, textContent: '' };
+global.document = {
+  getElementById(id) {
+    return id === 'scout-enable' ? button : null;
+  }
+};
+let thrown = null;
+global.window = { apiJson: async () => { throw thrown; } };
+"""
+        + enable_scout
+        + """
+
+function assert(c, m) { if (!c) throw new Error(m); }
+(async () => {
+  // already_enabled: owner copy in serverMessage, slug only in reasonCode
+  renderCalls = [];
+  thrown = {
+    status: 409,
+    serverMessage: "I couldn't enable scout because it's already on.",
+    reasonCode: 'already_enabled'
+  };
+  await enableScout();
+  let last = renderCalls[renderCalls.length - 1];
+  assert(
+    last[0] === 'success',
+    'already_enabled reason_code must render success, got ' + last[0]
+  );
+
+  // manual_key_present
+  renderCalls = [];
+  thrown = {
+    status: 409,
+    serverMessage:
+      "I couldn't enable scout because a Gemini key is " +
+      "already on this machine.",
+    reasonCode: 'manual_key_present'
+  };
+  await enableScout();
+  last = renderCalls[renderCalls.length - 1];
+  assert(last[0] === 'error', 'manual_key_present must render error state');
+  assert(
+    last[1].reason === 'manual_key_present',
+    'reason opt must be manual_key_present'
+  );
+  assert(last[1].message === MANUAL_KEY_PRESENT_COPY, 'must use manual-key copy');
+  assert(last[1].retry === false, 'retry must be hidden');
+
+  // adversarial: old shape (slug in serverMessage, no reasonCode) must NOT
+  // be treated as a match
+  renderCalls = [];
+  portalUnreachableShown = 0;
+  thrown = { status: 409, serverMessage: 'already_enabled', reasonCode: null };
+  await enableScout();
+  last = renderCalls[renderCalls.length - 1];
+  assert(
+    last[0] === 'idle',
+    'slug-in-serverMessage must fall through to the generic path, not success'
+  );
+  assert(
+    portalUnreachableShown === 1,
+    'generic fallback must show portal-unreachable'
+  );
+})().catch(e => { console.error(e); process.exit(1); });
+"""
+    )
+    subprocess.run([node, "-e", script], check=True, text=True)

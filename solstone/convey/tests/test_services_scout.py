@@ -156,7 +156,10 @@ def test_start_returns_409_already_enabled(convey_env_setup_pending) -> None:
     response = _start(env.client)
 
     assert response.status_code == 409
-    assert response.get_json() == {"error": "already_enabled"}
+    body = response.get_json()
+    assert body["reason_code"] == "already_enabled"
+    assert isinstance(body["detail"], str)
+    assert body["error"] and body["error"] != "already_enabled"
 
 
 def test_start_returns_409_manual_key_present(convey_env_setup_pending) -> None:
@@ -169,7 +172,10 @@ def test_start_returns_409_manual_key_present(convey_env_setup_pending) -> None:
     response = _start(env.client)
 
     assert response.status_code == 409
-    assert response.get_json() == {"error": "manual_key_present"}
+    body = response.get_json()
+    assert body["reason_code"] == "manual_key_present"
+    assert isinstance(body["detail"], str)
+    assert body["error"] and body["error"] != "manual_key_present"
 
 
 def test_start_returns_404_after_setup_complete(convey_env) -> None:
@@ -178,6 +184,22 @@ def test_start_returns_404_after_setup_complete(convey_env) -> None:
     response = _start(env.client)
 
     assert response.status_code == 404
+    body = response.get_json()
+    assert body["reason_code"] == "setup_already_complete"
+    assert isinstance(body["detail"], str)
+    assert body["error"] and body["error"] != "setup_already_complete"
+
+
+def test_status_returns_404_after_setup_complete(convey_env) -> None:
+    env = convey_env()
+
+    response = _status(env.client, "missing")
+
+    assert response.status_code == 404
+    body = response.get_json()
+    assert body["reason_code"] == "setup_already_complete"
+    assert isinstance(body["detail"], str)
+    assert body["error"] and body["error"] != "setup_already_complete"
 
 
 def test_double_post_is_idempotent(
@@ -250,6 +272,10 @@ def test_status_unknown_nonce_returns_404(convey_env_setup_pending) -> None:
     response = _status(env.client, "missing")
 
     assert response.status_code == 404
+    body = response.get_json()
+    assert body["reason_code"] == "scout_session_not_found"
+    assert isinstance(body["detail"], str)
+    assert body["error"] and body["error"] != "scout_session_not_found"
 
 
 def test_status_replays_terminal_event_for_late_subscriber(
@@ -288,6 +314,10 @@ def test_status_after_grace_returns_404(
     response = _status(env.client, nonce_id)
 
     assert response.status_code == 404
+    body = response.get_json()
+    assert body["reason_code"] == "scout_session_not_found"
+    assert isinstance(body["detail"], str)
+    assert body["error"] and body["error"] != "scout_session_not_found"
 
 
 @pytest.mark.parametrize(
@@ -499,7 +529,10 @@ def test_direct_provision_restart_recovery(convey_env_setup_pending) -> None:
     response = _start(env.client)
 
     assert response.status_code == 409
-    assert response.get_json() == {"error": "already_enabled"}
+    body = response.get_json()
+    assert body["reason_code"] == "already_enabled"
+    assert isinstance(body["detail"], str)
+    assert body["error"] and body["error"] != "already_enabled"
 
 
 def test_services_portal_url_env_override(
