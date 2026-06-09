@@ -463,7 +463,11 @@ apps/my_app/talent/my-skill/
 
 ---
 
-### 11. `maint/` - Maintenance Tasks
+### 11. App Maintenance
+
+Apps have two maintenance surfaces with different lifecycles.
+
+#### One-time `maint/` tasks
 
 Define one-time maintenance scripts that run automatically when supervisor starts.
 
@@ -479,6 +483,17 @@ Define one-time maintenance scripts that run automatically when supervisor start
 **Reference implementations:**
 - Example task: `solstone/apps/entities/maint/001_migrate_to_journal_entities.py` - real migration task demonstrating maint patterns
 - Discovery logic: `solstone/think/maint.py` - `discover_tasks()`, `run_task()`
+
+#### Recurring `maintenance.py` routines
+
+For app-owned recurring jobs, create `solstone/apps/<app>/maintenance.py` and
+export `ROUTINES = [MaintenanceRoutine(...)]`. These routines are surfaced via
+`journal maintenance list|sync|run <app:name> [-- args]` and registered into
+`config/schedules.json` at supervisor startup.
+
+**Reference implementations:**
+- Infrastructure: `solstone/think/maintenance.py` and `solstone/think/maintenance_cli.py`
+- App routine: `solstone/apps/timeline/maintenance.py`
 
 ---
 

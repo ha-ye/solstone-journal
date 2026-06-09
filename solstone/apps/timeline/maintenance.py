@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""CLI commands for timeline rollups."""
+"""App-owned scheduled maintenance routines for timeline day/master rollups."""
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import logging
@@ -13,14 +14,13 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import typer
-
 from solstone.apps.timeline.rollup import (
     MODEL,
     pick_top_events_async,
     pick_top_events_batch,
 )
 from solstone.think.journal_io import atomic_replace
+from solstone.think.maintenance import MaintenanceRoutine
 from solstone.think.utils import (
     EXIT_EMPTY,
     get_journal,
@@ -30,15 +30,8 @@ from solstone.think.utils import (
 
 logger = logging.getLogger(__name__)
 
-app = typer.Typer(help="Timeline rollup tools.")
-
 SEGMENT_RE = re.compile(r"^(\d{2})(\d{2})(\d{2})_\d{1,6}$")
 DAY_RE = re.compile(r"^\d{8}$")
-
-
-@app.callback()
-def _require_up() -> None:
-    require_solstone()
 
 
 def _default_day() -> str:
@@ -47,7 +40,7 @@ def _default_day() -> str:
 
 def _parse_day(value: str) -> str:
     if not DAY_RE.fullmatch(value):
-        raise typer.BadParameter("day must be YYYYMMDD")
+        raise argparse.ArgumentTypeError("day must be YYYYMMDD")
     return value
 
 
@@ -120,17 +113,17 @@ def group_by_hour(segments: list[dict]) -> dict[str, list[dict]]:
 
 def _show_day_dry_run(day: str, segments: list[dict]) -> None:
     by_hour = group_by_hour(segments)
-    typer.echo(f"\n== {day} ==  segments: {len(segments)}  hours: {len(by_hour)}")
+    print(f"\n== {day} ==  segments: {len(segments)}  hours: {len(by_hour)}")
     for hh in sorted(by_hour):
         rows = by_hour[hh]
-        typer.echo(f"  {hh}h  ({len(rows)} segs)")
+        print(f"  {hh}h  ({len(rows)} segs)")
         for row in rows[:6]:
-            typer.echo(
+            print(
                 f"      {row['segment']:20s}  {row['title']}  -  "
                 f"{row['description'][:70]}"
             )
         if len(rows) > 6:
-            typer.echo(f"      ... +{len(rows) - 6} more")
+            print(f"      ... +{len(rows) - 6} more")
 
 
 async def _rollup_day(
@@ -140,24 +133,24 @@ async def _rollup_day(
     jobs: int,
     dry_run: bool,
     force: bool,
-) -> dict | None:
+) -> int:
     out_path = journal / "chronicle" / day / "timeline.json"
     if out_path.exists() and not force and not dry_run:
-        typer.echo(
+        print(
             f"  [skip] {day}: timeline.json already exists (use --force to overwrite)"
         )
-        return None
+        return 0
 
     segments = load_day_segments(journal, day)
     if not segments:
-        typer.echo(f"  [empty] {day}: no segment timeline.json found")
-        raise typer.Exit(EXIT_EMPTY)
+        print(f"  [empty] {day}: no segment timeline.json found")
+        return EXIT_EMPTY
 
     by_hour = group_by_hour(segments)
 
     if dry_run:
         _show_day_dry_run(day, segments)
-        return None
+        return 0
 
     jobs_in = []
     for hh in sorted(by_hour):
@@ -172,7 +165,7 @@ async def _rollup_day(
         jobs_in.append({"key": hh, "events": events})
 
     t0 = time.time()
-    typer.echo(
+    print(
         f"  rolling up {day}: {len(segments)} segs across {len(by_hour)} hours, "
         f"top={top}, jobs={jobs}"
     )
@@ -193,7 +186,7 @@ async def _rollup_day(
             logger.warning(
                 "timeline day %s hour %s rollup failed: %s", day, hh, result["error"]
             )
-            typer.echo(f"    [hour-err {hh}h] {result['error'][:120]}")
+            print(f"    [hour-err {hh}h] {result['error'][:120]}")
             hours_out[hh] = {
                 "segment_count": len(rec["events"]),
                 "picks": [],
@@ -228,14 +221,14 @@ async def _rollup_day(
                 t_total,
                 exc,
             )
-            typer.echo(
+            print(
                 f"  [day-err {day}] day-level rollup failed in "
                 f"{t_total:.1f}s: {str(exc)[:160]}"
             )
-            typer.echo(
+            print(
                 f"  [day-err {day}] no timeline.json written; re-run will retry this day"
             )
-            return None
+            return 0
         day_top = day_result["picks"]
         day_rationale = day_result["rationale"]
 
@@ -252,11 +245,9 @@ async def _rollup_day(
     }
 
     atomic_replace(out_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-    typer.echo(
-        f"  [ok {day}] hour-rollup {t_hr:.1f}s  total {t_total:.1f}s  → {out_path}"
-    )
-    typer.echo(f"      day_top: {[p['title'] for p in day_top]}")
-    return payload
+    print(f"  [ok {day}] hour-rollup {t_hr:.1f}s  total {t_total:.1f}s  → {out_path}")
+    print(f"      day_top: {[p['title'] for p in day_top]}")
+    return 0
 
 
 def load_day_rollups(journal: Path) -> dict[str, dict]:
@@ -293,20 +284,20 @@ def group_by_month(day_rollups: dict[str, dict]) -> dict[str, list[str]]:
 def _show_master_dry_run(
     day_rollups: dict[str, dict], by_month: dict[str, list[str]]
 ) -> None:
-    typer.echo("\n== dry run ==")
-    typer.echo(f"days with day-level timeline.json: {len(day_rollups)}")
-    typer.echo(f"months covered                   : {len(by_month)}")
-    typer.echo()
+    print("\n== dry run ==")
+    print(f"days with day-level timeline.json: {len(day_rollups)}")
+    print(f"months covered                   : {len(by_month)}")
+    print()
     for ym in sorted(by_month):
         days = by_month[ym]
         cands = sum(len(day_rollups[d].get("day_top") or []) for d in days)
-        typer.echo(f"  {ym}  {len(days):3d} days, {cands:4d} day_top candidates")
+        print(f"  {ym}  {len(days):3d} days, {cands:4d} day_top candidates")
         for day in days[:3]:
             top0 = day_rollups[day]["day_top"][0]
-            typer.echo(f"      {day}  {top0.get('title', '')}")
+            print(f"      {day}  {top0.get('title', '')}")
         if len(days) > 3:
-            typer.echo(f"      ... +{len(days) - 3} more")
-    typer.echo()
+            print(f"      ... +{len(days) - 3} more")
+    print()
 
 
 async def _rollup_master(
@@ -319,21 +310,21 @@ async def _rollup_master(
 ) -> int:
     out_path = journal / "timeline.json"
     if out_path.exists() and not force and not dry_run:
-        typer.echo(f"  [skip] {out_path}: already exists (use --force to overwrite)")
+        print(f"  [skip] {out_path}: already exists (use --force to overwrite)")
         return 0
 
     day_rollups = load_day_rollups(journal)
     if not day_rollups:
-        typer.echo(
+        print(
             f"  [empty] no day-level timeline.json found under {journal}/chronicle/*/"
         )
-        raise typer.Exit(EXIT_EMPTY)
+        return EXIT_EMPTY
 
     by_month = group_by_month(day_rollups)
     if months_filter:
         by_month = {ym: ds for ym, ds in by_month.items() if ym in months_filter}
         if not by_month:
-            typer.echo(
+            print(
                 f"  [empty] no overlap between --months {sorted(months_filter)} and journal"
             )
             return 0
@@ -358,10 +349,10 @@ async def _rollup_master(
             jobs_in.append({"key": ym, "events": events})
 
     if not jobs_in:
-        typer.echo("  [empty] no month candidates found")
+        print("  [empty] no month candidates found")
         return 0
 
-    typer.echo(
+    print(
         f"rolling up {len(jobs_in)} month(s) with model={MODEL} top={top} jobs={jobs}"
     )
     t0 = time.time()
@@ -379,7 +370,7 @@ async def _rollup_master(
             for job in jobs_in
         ]
     t_total = time.time() - t0
-    typer.echo(f"month-rollup done in {t_total:.1f}s")
+    print(f"month-rollup done in {t_total:.1f}s")
 
     months_out: dict[str, dict] = {}
     year_top: list[dict] = []
@@ -390,7 +381,7 @@ async def _rollup_master(
 
         if "error" in result:
             logger.warning("timeline month %s rollup failed: %s", ym, result["error"])
-            typer.echo(f"  [month-err {ym}] {result['error'][:120]}")
+            print(f"  [month-err {ym}] {result['error'][:120]}")
             month_top = []
             month_rationale = f"ERROR: {result['error'][:200]}"
         else:
@@ -425,76 +416,91 @@ async def _rollup_master(
 
     atomic_replace(out_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     size_kb = out_path.stat().st_size / 1024
-    typer.echo(f"\n[ok] wrote {out_path} ({size_kb:.1f} KB)")
-    typer.echo(f"  months: {len(months_out)}")
-    typer.echo(f"  year_top: {len(year_top)}")
-    typer.echo("  year_top headlines:")
+    print(f"\n[ok] wrote {out_path} ({size_kb:.1f} KB)")
+    print(f"  months: {len(months_out)}")
+    print(f"  year_top: {len(year_top)}")
+    print("  year_top headlines:")
     for ev in year_top:
-        typer.echo(f"    {ev['month']}  {ev['title']:25s}  ({ev.get('origin', '')})")
+        print(f"    {ev['month']}  {ev['title']:25s}  ({ev.get('origin', '')})")
     return 0
 
 
-@app.command("rollup-day")
-def rollup_day(
-    day: str | None = typer.Argument(
-        None, metavar="DAY", help="Day to roll up (YYYYMMDD)."
-    ),
-    top: int = typer.Option(4, "--top", help="Top-N per hour and per day."),
-    force: bool = typer.Option(
-        False, "--force", help="Overwrite existing day timeline."
-    ),
-    jobs: int = typer.Option(5, "--jobs", help="Parallel hour-rollup calls."),
-    dry_run: bool = typer.Option(
-        False, "--dry-run", help="List work without calling Gemini."
-    ),
-) -> None:
-    """Roll segment timelines up into one day timeline."""
-    resolved_day = _parse_day(day or _default_day())
-    asyncio.run(
-        _rollup_day(
-            journal=Path(get_journal()),
-            day=resolved_day,
-            top=top,
-            jobs=jobs,
-            dry_run=dry_run,
-            force=force,
-        )
+def run_rollup_day(args: list[str]) -> int:
+    require_solstone()
+    parser = argparse.ArgumentParser(prog="journal maintenance run timeline:rollup-day")
+    parser.add_argument(
+        "day",
+        nargs="?",
+        default=None,
+        type=_parse_day,
+        metavar="DAY",
+        help="Day to roll up (YYYYMMDD); default yesterday.",
+    )
+    parser.add_argument(
+        "--top", type=int, default=4, help="Top-N per hour and per day."
+    )
+    parser.add_argument(
+        "--jobs", type=int, default=5, help="Parallel hour-rollup calls."
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="Overwrite existing day timeline."
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="List work without calling Gemini."
+    )
+    ns = parser.parse_args(args)
+    day = ns.day or _default_day()
+    return asyncio.run(
+        _rollup_day(Path(get_journal()), day, ns.top, ns.jobs, ns.dry_run, ns.force)
     )
 
 
-@app.command("rollup-master")
-def rollup_master(
-    top: int = typer.Option(4, "--top", help="Top-N per month."),
-    force: bool = typer.Option(
-        False, "--force", help="Overwrite existing master timeline."
-    ),
-    jobs: int = typer.Option(5, "--jobs", help="Parallel month-rollup calls."),
-    dry_run: bool = typer.Option(
-        False, "--dry-run", help="List work without calling Gemini."
-    ),
-    months: str = typer.Option(
-        "",
+def run_rollup_master(args: list[str]) -> int:
+    require_solstone()
+    parser = argparse.ArgumentParser(
+        prog="journal maintenance run timeline:rollup-master"
+    )
+    parser.add_argument("--top", type=int, default=4, help="Top-N per month.")
+    parser.add_argument(
+        "--jobs", type=int, default=5, help="Parallel month-rollup calls."
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="Overwrite existing master timeline."
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="List work without calling Gemini."
+    )
+    parser.add_argument(
         "--months",
+        default="",
         help="Optional comma-separated YYYYMM filter, empty means all.",
-    ),
-) -> None:
-    """Roll day timelines up into the journal master timeline."""
-    months_filter = {item.strip() for item in months.split(",") if item.strip()} or None
+    )
+    ns = parser.parse_args(args)
+    months_filter = {m.strip() for m in ns.months.split(",") if m.strip()} or None
     if months_filter:
-        invalid = sorted(
-            item for item in months_filter if not re.fullmatch(r"\d{6}", item)
-        )
+        invalid = sorted(m for m in months_filter if not re.fullmatch(r"\d{6}", m))
         if invalid:
-            raise typer.BadParameter(
-                f"--months must be comma-separated YYYYMM values: {invalid}"
-            )
-    asyncio.run(
+            parser.error(f"--months must be comma-separated YYYYMM values: {invalid}")
+    return asyncio.run(
         _rollup_master(
-            journal=Path(get_journal()),
-            top=top,
-            jobs=jobs,
-            dry_run=dry_run,
-            force=force,
-            months_filter=months_filter,
+            Path(get_journal()), ns.top, ns.jobs, ns.dry_run, ns.force, months_filter
         )
     )
+
+
+ROUTINES = [
+    MaintenanceRoutine(
+        name="rollup-day",
+        description="Roll segment timelines up into one day timeline.",
+        every="daily",
+        run=run_rollup_day,
+        max_runtime="30m",
+    ),
+    MaintenanceRoutine(
+        name="rollup-master",
+        description="Roll day timelines up into the journal master timeline.",
+        every="daily",
+        run=run_rollup_master,
+        max_runtime="30m",
+    ),
+]

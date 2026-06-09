@@ -188,7 +188,7 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Facets (`facets/*/facet.json`, `facets/*/relationships/`) | `solstone/think/facets.py` + `solstone/apps/facets/*` (if/when created) |
 | Observations (`observations.jsonl`) | `solstone/think/entities/observations.py` |
 | Activities (`facets/*/activities/*.jsonl`) | `solstone/think/activities.py` |
-| Timeline (`chronicle/<day>/timeline.json`, `chronicle/**/<seg>/timeline.json`, root `timeline.json`) | `solstone/apps/timeline/call.py` + `solstone/apps/timeline/talent/segment_summary.py` |
+| Timeline (`chronicle/<day>/timeline.json`, `chronicle/**/<seg>/timeline.json`, root `timeline.json`) | `solstone/apps/timeline/maintenance.py` + `solstone/apps/timeline/talent/segment_summary.py` |
 | Per-segment sense outputs (`chronicle/**/<seg>/talents/{sense.json,facets.json,speakers.json,density.json,activity.md,sense.md}`) | `solstone/think/sense_splitter.py` |
 | Skills (`skills/patterns.jsonl`, `skills/edit_requests.jsonl`, `skills/{slug}.md`) | `solstone/think/skills.py` |
 | Awareness (`awareness/current.json`, `awareness/YYYYMMDD.jsonl`) | `solstone/think/awareness.py` |
@@ -217,12 +217,9 @@ If you're about to write to a domain from a module not in this table, stop and r
 journal-data `solstone/apps/*/call.py` reaches the journal only over the Convey
 HTTP client (`solstone.think.convey_client`) — never importing a journal/domain
 module or touching the filesystem directly. `scripts/check_call_http_only.py`
-enforces this with exactly two documented exceptions: `timeline/call.py` (a
-scheduler-invoked Gemini rollup engine with no owner/route — and, per the table
-above, the one `call.py` that legitimately owns timeline writes), and
-`support/call.py` (an external support-portal CLI over httpx with only incidental
-config/identity reads). Both are excluded from the gate's scan; there is no
-allowlist residual.
+enforces this with exactly one documented exception: `support/call.py` (an
+external support-portal CLI over httpx with only incidental config/identity
+reads). It is excluded from the gate's scan; there is no allowlist residual.
 
 ### L3 — Naming is a contract
 

@@ -131,12 +131,6 @@ EXCLUDED_FILES: frozenset[str] = frozenset(
         # journal touches are incidental config/identity/diagnostics reads, not
         # journal-data operations — not a Convey-HTTP cutover target.
         "solstone/apps/support/call.py",
-        # rollup-day / rollup-master are a scheduler-invoked multi-minute Gemini
-        # batch rollup engine with no owner/route; converting requires a separate
-        # async-job-trigger architecture (out of this initiative). Follow-up
-        # tracked. (timeline/call.py also legitimately owns timeline.json writes
-        # — see AGENTS.md §7 L2.)
-        "solstone/apps/timeline/call.py",
     }
 )
 

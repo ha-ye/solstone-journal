@@ -3,7 +3,9 @@ Timeline background service: listens for rollup completion and refreshes
 the visible view in place. Emit signatures verified against:
   - cortex finish:      solstone/think/cortex.py:436-458
   - supervisor stopped: solstone/think/supervisor.py:496-504
-  - scheduler ref:      solstone/think/scheduler.py:465-475
+  - scheduler ref:      solstone/think/scheduler.py:418
+                        sched:<schedule-name>:<now_ms>
+                        schedule-name is maintenance:timeline:rollup-day
 */
 AppServices.register("timeline", {
   _initialized: false,
@@ -24,7 +26,7 @@ AppServices.register("timeline", {
     window.appEvents.listen("supervisor", (msg) => {
       if (!msg || msg.event !== "stopped" || msg.exit_code !== 0) return;
       const ref = msg.ref || "";
-      if (/^sched:timeline-rollup-day:/.test(ref)) {
+      if (/^sched:maintenance:timeline:rollup-day:/.test(ref)) {
         fetch("/app/timeline/api/index", { cache: "no-store" })
           .then((r) => (r.ok ? r.json() : null))
           .then((idx) => {
@@ -45,7 +47,7 @@ AppServices.register("timeline", {
           .catch(() => {});
         return;
       }
-      if (/^sched:timeline-rollup-master:/.test(ref)) {
+      if (/^sched:maintenance:timeline:rollup-master:/.test(ref)) {
         window.timelineRefresh?.index?.();
       }
     });

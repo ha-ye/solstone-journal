@@ -404,7 +404,7 @@ solstone/
 
 | Group | Commands |
 |-------|----------|
-| Think (processing) | `import`, `think`, `planner`, `indexer`, `supervisor`, `schedule`, `top`, `health`, `callosum`, `notify`, `heartbeat` |
+| Think (processing) | `import`, `think`, `planner`, `indexer`, `supervisor`, `schedule`, `maintenance`, `top`, `health`, `callosum`, `notify`, `heartbeat` |
 | Service | `service` (+ aliases `up`, `down`, `start`), `navigate`, `routines`, `identity`, `settings`, `install-provider` |
 | Observe (capture) | `transcribe`, `describe`, `sense`, `transfer`, `observer` |
 | Talent (AI agents) | `agents`, `cortex`, `talent`, `call`, `engage`, `providers` |
@@ -414,6 +414,8 @@ solstone/
 | Help | `help`, `chat` |
 
 `reprocess` is the on-demand single-day reprocess command: process-now by default; `--from-scratch` re-runs already-complete units.
+
+`journal maintenance list|sync|run <app:name> [-- args]` manages app-owned recurring routines discovered from `apps/*/maintenance.py`.
 
 ### Call (`sol call <app> <cmd>`)
 
