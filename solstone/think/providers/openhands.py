@@ -24,7 +24,10 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
-from solstone.think.cogitate_contract import capabilities_for_access_tier
+from solstone.think.cogitate_contract import (
+    capabilities_for_access_tier,
+    expects_emit_final,
+)
 from solstone.think.cogitate_policy import (
     DEFAULT_READ_CALL_BUDGET,
     MAX_TURNS,
@@ -778,9 +781,7 @@ async def run_cogitate(
         from openhands.sdk.tool.registry import register_tool
         from openhands.sdk.tool.spec import Tool
 
-        expects_emit_final = bool(config.get("output_path")) or config.get(
-            "schedule"
-        ) in {"daily", "weekly", "activity"}
+        wants_emit_final = expects_emit_final(config)
         max_turns = int(config.get("max_turns", MAX_TURNS) or MAX_TURNS)
         session_id, conversation_id = _session_identity(config.get("session_id"))
         prompt_body, system_instruction = assemble_prompt(
@@ -827,7 +828,7 @@ async def run_cogitate(
                 register_tool(read_tool.name, read_tool)
                 tool_specs.append(Tool(name=read_tool.name))
         default_tools = ["FinishTool"]
-        if expects_emit_final:
+        if wants_emit_final:
             from .emit_final_tool import build_emit_final_tools
 
             emit_final_tools = build_emit_final_tools()
@@ -849,7 +850,7 @@ async def run_cogitate(
             provider=provider,
             model=_prefixed_model(provider, model),
             max_turns=max_turns,
-            expects_emit_final=expects_emit_final,
+            expects_emit_final=wants_emit_final,
         )
         conversation = Conversation(
             agent=agent,
@@ -872,7 +873,7 @@ async def run_cogitate(
             )
 
         result = translator.result()
-        if expects_emit_final and not (result and result.strip()):
+        if wants_emit_final and not (result and result.strip()):
             callback.emit(
                 {
                     "event": "error",

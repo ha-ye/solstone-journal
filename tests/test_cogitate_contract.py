@@ -8,9 +8,11 @@ import pytest
 from solstone.think import cogitate_contract
 from solstone.think.cogitate_contract import (
     COGITATE_ACCESS_TIERS,
+    COGITATE_READ_TOOL_NAMES,
     COGITATE_RUNTIME_PREAMBLE,
     FUTURE_ACCESS_TIERS,
     TALENT_FINALIZATION_MODES,
+    expects_emit_final,
 )
 from solstone.think.providers.cli import assemble_prompt
 
@@ -65,6 +67,12 @@ def test_prompt_body_unchanged_under_cogitate_injection():
 
 def test_cogitate_vocabulary_lock():
     assert COGITATE_ACCESS_TIERS == ("normal", "system-read", "outbound")
+    assert COGITATE_READ_TOOL_NAMES == (
+        "read_file",
+        "list_directory",
+        "glob",
+        "grep_search",
+    )
     assert FUTURE_ACCESS_TIERS == ("code-agent",)
     assert TALENT_FINALIZATION_MODES == ("emit_final", "FinishTool", "quiet")
     assert "repair" not in COGITATE_ACCESS_TIERS
@@ -75,6 +83,22 @@ def test_access_tier_capability_mapping_matches_vocabulary():
     assert set(cogitate_contract._ACCESS_TIER_CAPABILITIES) == set(
         COGITATE_ACCESS_TIERS
     )
+
+
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        ({"output_path": "/tmp/out.md"}, True),
+        ({"schedule": "daily"}, True),
+        ({"schedule": "weekly"}, True),
+        ({"schedule": "activity"}, True),
+        ({"schedule": "segment"}, False),
+        ({"schedule": "none"}, False),
+        ({}, False),
+    ],
+)
+def test_expects_emit_final(config, expected):
+    assert expects_emit_final(config) is expected
 
 
 @pytest.mark.parametrize(

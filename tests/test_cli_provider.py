@@ -595,7 +595,7 @@ class TestCLIRunnerExitCode:
                 "tool": "read_file",
                 "budget": 200,
                 "count": 201,
-                "read_tools": ["read_file", "glob", "list_directory", "grep_search"],
+                "read_tools": ["read_file", "list_directory", "glob", "grep_search"],
                 "ts": exhausted[0]["ts"],
             }
         ]

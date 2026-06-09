@@ -11,6 +11,7 @@ from typing import Any
 
 from solstone.think.cogitate_contract import (
     COGITATE_ACCESS_TIERS,
+    COGITATE_READ_TOOL_NAMES,
     capabilities_for_access_tier,
 )
 
@@ -21,7 +22,7 @@ _SOL_INVOCATION_RE = re.compile(r"(^sol\s|\bsol call\b)")
 _JOURNAL_COMMANDS = {"identity", "routines", "health", "talent"}
 _SHELL_CONTROL_TOKENS = {";", "&&", "||", "|", ">", ">>", "<", "<<", "$(", "`"}
 _WRITE_TOOLS = {"write_file", "replace"}
-_READ_TOOLS = {"read_file", "glob", "list_directory", "grep_search"}
+_READ_TOOLS = frozenset(COGITATE_READ_TOOL_NAMES)
 _SUBMIT_TIERS = tuple(
     tier for tier in COGITATE_ACCESS_TIERS if capabilities_for_access_tier(tier).submit
 )

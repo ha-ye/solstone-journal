@@ -13,6 +13,7 @@ re-typing the contract.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 COGITATE_RUNTIME_PREAMBLE = """\
 You are a solstone cogitate talent running inside the live system. This runtime contract is authoritative; do not assume capabilities beyond it.
@@ -37,6 +38,9 @@ FUTURE_ACCESS_TIERS = ("code-agent",)
 
 # The finalization mode a talent uses to signal completion.
 TALENT_FINALIZATION_MODES = ("emit_final", "FinishTool", "quiet")
+
+# Structured source for the read-tool names enumerated in the runtime preamble.
+COGITATE_READ_TOOL_NAMES = ("read_file", "list_directory", "glob", "grep_search")
 
 
 @dataclass(frozen=True)
@@ -70,11 +74,22 @@ def capabilities_for_access_tier(tier: str) -> AccessCapabilities:
         raise ValueError(f"unknown access_tier: {tier}") from exc
 
 
+def expects_emit_final(config: dict[str, Any]) -> bool:
+    """Select emit_final vs the built-in finish tool for providers and inventory."""
+    return bool(config.get("output_path")) or config.get("schedule") in {
+        "daily",
+        "weekly",
+        "activity",
+    }
+
+
 __all__ = [
     "AccessCapabilities",
     "COGITATE_RUNTIME_PREAMBLE",
     "COGITATE_ACCESS_TIERS",
+    "COGITATE_READ_TOOL_NAMES",
     "FUTURE_ACCESS_TIERS",
     "TALENT_FINALIZATION_MODES",
     "capabilities_for_access_tier",
+    "expects_emit_final",
 ]
