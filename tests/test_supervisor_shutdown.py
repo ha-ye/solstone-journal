@@ -39,9 +39,7 @@ def test_reap_terminates_and_kills_survivor(monkeypatch):
     stuck = FakeManaged("stuck", exits_after_terminate=False)
     monkeypatch.setattr(supervisor, "_managed_procs", [well_behaved, stuck])
     monkeypatch.setattr(supervisor, "shutdown_requested", False)
-    times = iter([0.0, 3.5])
-    monkeypatch.setattr(supervisor.time, "monotonic", lambda: next(times))
-    monkeypatch.setattr(supervisor.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(supervisor, "HANDLE_SHUTDOWN_REAP_S", 0.0)
 
     with pytest.raises(KeyboardInterrupt):
         supervisor.handle_shutdown(15, None)
@@ -56,8 +54,7 @@ def test_reap_idempotent_on_second_call(monkeypatch):
     proc = FakeManaged("svc", exits_after_terminate=True)
     monkeypatch.setattr(supervisor, "_managed_procs", [proc])
     monkeypatch.setattr(supervisor, "shutdown_requested", False)
-    monkeypatch.setattr(supervisor.time, "monotonic", lambda: 0.0)
-    monkeypatch.setattr(supervisor.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(supervisor, "HANDLE_SHUTDOWN_REAP_S", 0.0)
 
     with pytest.raises(KeyboardInterrupt):
         supervisor.handle_shutdown(15, None)
@@ -81,9 +78,7 @@ def test_reap_swallows_oserror_on_kill(monkeypatch, caplog):
     bad.process.kill.side_effect = OSError("permission denied")
     monkeypatch.setattr(supervisor, "_managed_procs", [bad])
     monkeypatch.setattr(supervisor, "shutdown_requested", False)
-    times = iter([0.0, 3.5])
-    monkeypatch.setattr(supervisor.time, "monotonic", lambda: next(times))
-    monkeypatch.setattr(supervisor.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(supervisor, "HANDLE_SHUTDOWN_REAP_S", 0.0)
     caplog.set_level("ERROR")
 
     with pytest.raises(KeyboardInterrupt):
