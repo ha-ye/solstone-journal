@@ -3,6 +3,7 @@
 
 """Tests for observe/transfer.py - day archive export, import, and send."""
 
+import inspect
 import json
 import logging
 import tarfile
@@ -333,6 +334,190 @@ class TestTransferImport:
         assert segment_dir.exists()
         assert (segment_dir / "audio.flac").read_bytes() == audio_content
         assert (segment_dir / "audio.jsonl").read_bytes() == jsonl_content
+
+    def test_import_archive_preserves_content_and_mtime(self, tmp_path, monkeypatch):
+        """Test import_archive preserves file bytes and tar member mtime."""
+        import io
+
+        from solstone.observe.transfer import import_archive
+        from solstone.observe.utils import compute_bytes_sha256
+
+        archive_path = tmp_path / "test.tgz"
+        content = b"known audio bytes"
+        mtime = 1700000000
+        manifest = {
+            "version": 1,
+            "day": "20250101",
+            "created_at": 1704067200000,
+            "host": "test-host",
+            "segments": {
+                "120000_300": {
+                    "files": [
+                        {
+                            "name": "audio.flac",
+                            "sha256": compute_bytes_sha256(content),
+                            "size": len(content),
+                        }
+                    ]
+                }
+            },
+        }
+
+        with tarfile.open(archive_path, "w:gz") as tar:
+            file_info = tarfile.TarInfo(name="120000_300/audio.flac")
+            file_info.size = len(content)
+            file_info.mtime = mtime
+            tar.addfile(file_info, io.BytesIO(content))
+
+            manifest_json = json.dumps(manifest).encode()
+            manifest_info = tarfile.TarInfo(name="manifest.json")
+            manifest_info.size = len(manifest_json)
+            tar.addfile(manifest_info, io.BytesIO(manifest_json))
+
+        journal_path = tmp_path / "journal"
+        journal_path.mkdir()
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_path))
+
+        import solstone.think.utils as think_utils
+
+        think_utils._journal_path_cache = None
+
+        result = import_archive(archive_path)
+
+        target_path = (
+            journal_path / "chronicle" / "20250101" / "120000_300" / "audio.flac"
+        )
+        assert result["status"] == "imported"
+        assert target_path.read_bytes() == content
+        assert int(target_path.stat().st_mtime) == mtime
+
+    def test_import_archive_installs_zero_byte_member(self, tmp_path, monkeypatch):
+        """Test import_archive installs empty regular-file members."""
+        from solstone.observe.transfer import import_archive
+
+        archive_path = self._create_test_archive(
+            tmp_path,
+            {"120000_300": {"audio.flac": b""}},
+        )
+
+        journal_path = tmp_path / "journal"
+        journal_path.mkdir()
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_path))
+
+        import solstone.think.utils as think_utils
+
+        think_utils._journal_path_cache = None
+
+        result = import_archive(archive_path)
+
+        target_path = (
+            journal_path / "chronicle" / "20250101" / "120000_300" / "audio.flac"
+        )
+        assert target_path.exists()
+        assert target_path.stat().st_size == 0
+        assert "120000_300" in result["imported"]
+
+    def test_import_archive_deconflict_installs_into_new_segment(
+        self, tmp_path, monkeypatch
+    ):
+        """Test deconflicted imports install into the generated segment."""
+        from solstone.observe.transfer import import_archive
+
+        original_content = b"existing different data"
+        new_content = b"new content"
+        archive_path = self._create_test_archive(
+            tmp_path,
+            {"120000_300": {"audio.flac": new_content}},
+        )
+
+        journal_path = tmp_path / "journal"
+        original_path = (
+            journal_path / "chronicle" / "20250101" / "120000_300" / "audio.flac"
+        )
+        original_path.parent.mkdir(parents=True)
+        original_path.write_bytes(original_content)
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_path))
+
+        import solstone.think.utils as think_utils
+
+        think_utils._journal_path_cache = None
+
+        with patch("subprocess.run"):
+            result = import_archive(archive_path)
+
+        day_dir = journal_path / "chronicle" / "20250101"
+        deconflicted_paths = [
+            path
+            for path in day_dir.iterdir()
+            if path.is_dir()
+            and path.name != "120000_300"
+            and (path / "audio.flac").read_bytes() == new_content
+        ]
+
+        assert result["deconflicted"]
+        assert deconflicted_paths
+        assert original_path.read_bytes() == original_content
+
+    def test_import_archive_mid_extract_failure_cleans_temp_files(
+        self, tmp_path, monkeypatch
+    ):
+        """Test import_archive removes temp files when a later promote fails."""
+        import solstone.observe.transfer as transfer
+
+        archive_path = self._create_test_archive(
+            tmp_path,
+            {
+                "120000_300": {"audio.flac": b"first content"},
+                "130000_300": {"audio.flac": b"second content"},
+            },
+        )
+
+        journal_path = tmp_path / "journal"
+        journal_path.mkdir()
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_path))
+
+        import solstone.think.utils as think_utils
+
+        think_utils._journal_path_cache = None
+
+        real_install_file = transfer.install_file
+        calls = 0
+
+        def failing_second_install(temp_path, target_path, *, mode=None):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                real_install_file(temp_path, target_path, mode=mode)
+                return
+            raise RuntimeError("simulated install failure")
+
+        with patch(
+            "solstone.observe.transfer.install_file",
+            side_effect=failing_second_install,
+        ):
+            with pytest.raises(RuntimeError, match="simulated install failure"):
+                transfer.import_archive(archive_path)
+
+        day_dir = journal_path / "chronicle" / "20250101"
+        first_path = day_dir / "120000_300" / "audio.flac"
+        assert first_path.read_bytes() == b"first content"
+        assert list(day_dir.rglob("*.tmp")) == []
+
+    def test_import_archive_routes_member_writes_through_install_file(self):
+        """Test import_archive has no raw durable member write path."""
+        from solstone.observe import transfer
+
+        src = inspect.getsource(transfer.import_archive)
+
+        assert "install_file(" in src
+        assert "open(target_path" not in src
+        assert ".write(source" not in src
+        assert "write_bytes" not in src
+        assert "write_text" not in src
 
     def test_import_archive_dry_run(self, tmp_path, monkeypatch):
         """Test import_archive dry run doesn't modify filesystem."""

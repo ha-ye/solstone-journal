@@ -25,7 +25,9 @@ import logging
 import os
 import platform
 import re
+import shutil
 import tarfile
+import tempfile
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -37,6 +39,7 @@ from solstone.observe import protocol
 from solstone.observe.peer_lookup import PeerInfo, PeerLookupError, resolve_peer
 from solstone.observe.pl_http import PlHttpSession
 from solstone.think.callosum import callosum_send
+from solstone.think.journal_io import install_file
 from solstone.think.link.bundle import load_client_identity
 from solstone.think.link.dialer import TunnelClient, TunnelRequestError
 from solstone.think.link.paths import relay_url
@@ -359,11 +362,29 @@ def import_archive(
                     # Extract file content
                     source = tar.extractfile(member)
                     if source:
-                        with open(target_path, "wb") as f:
-                            f.write(source.read())
-
-                        # Preserve modification time
-                        os.utime(target_path, (member.mtime, member.mtime))
+                        temp_path = None
+                        temp_handle = None
+                        promoted = False
+                        try:
+                            temp_handle = tempfile.NamedTemporaryFile(
+                                mode="wb",
+                                dir=target_dir,
+                                prefix=".import_",
+                                suffix=".tmp",
+                                delete=False,
+                            )
+                            temp_path = Path(temp_handle.name)
+                            shutil.copyfileobj(source, temp_handle)
+                            temp_handle.close()
+                            install_file(temp_path, target_path)
+                            promoted = True
+                            # Preserve modification time (install_file does not)
+                            os.utime(target_path, (member.mtime, member.mtime))
+                        finally:
+                            if temp_handle is not None and not temp_handle.closed:
+                                temp_handle.close()
+                            if temp_path is not None and not promoted:
+                                temp_path.unlink(missing_ok=True)
 
             if original_arc_key != target_arc_key:
                 logger.info(f"  Imported: {original_arc_key} -> {target_arc_key}")
