@@ -240,6 +240,11 @@ def agency_cmd(
         "-w",
         help="Overwrite agency.md (content via --value or stdin).",
     ),
+    update_section: str | None = typer.Option(
+        None,
+        "--update-section",
+        help="Update a specific ## section of agency.md (content via --value or stdin).",
+    ),
     value: str | None = typer.Option(
         None, "--value", help="Content to write (alternative to stdin)."
     ),
@@ -247,6 +252,21 @@ def agency_cmd(
     """Read or write identity/agency.md."""
     identity_dir = _identity_dir()
     agency_path = identity_dir / "agency.md"
+
+    if update_section:
+        content = _resolve_content(value)
+        if update_identity_section(
+            "agency.md",
+            update_section,
+            content.strip(),
+            actor=_actor_for_cmd("agency", "--update-section <heading>"),
+            reason="manual section update",
+        ):
+            typer.echo(f"Updated ## {update_section} in agency.md.")
+        else:
+            typer.echo(f"Error: section '## {update_section}' not found.", err=True)
+            raise typer.Exit(1)
+        return
 
     if write:
         content = _resolve_content(value)

@@ -31,6 +31,17 @@ def _read_history(journal_path):
     return [json.loads(line) for line in history.read_text().splitlines()]
 
 
+def _section_body(content: str, heading: str) -> str:
+    lines = content.splitlines()
+    target = f"## {heading}"
+    start = lines.index(target) + 1
+    end = next(
+        (index for index in range(start, len(lines)) if lines[index].startswith("## ")),
+        len(lines),
+    )
+    return "\n".join(lines[start:end]).strip()
+
+
 def _assert_history_record(record, *, file_name, actor, op, section, reason):
     assert list(record) == _HISTORY_FIELDS
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", record["ts"])
@@ -90,11 +101,17 @@ things I'm tracking, acting on, or watching.
 ## curation
 [nothing yet]
 
-    ## observations
-    [watching and learning]
+## observations
+[watching and learning]
+
+## follow-throughs
+[none yet]
 
 ## system
 [monitoring]
+
+## self-improvement
+[learning what works]
 """
     (identity_dir / "agency.md").write_text(agency_md)
 
@@ -310,6 +327,80 @@ class TestSolAgencyWrite:
         result = runner.invoke(app, ["agency", "--write"], input="")
         assert result.exit_code == 1
         assert "no content" in result.output
+
+    def test_update_section_system_with_value(self, journal_with_identity):
+        agency_path = journal_with_identity / "identity" / "agency.md"
+        before = agency_path.read_text()
+        original_curation = _section_body(before, "curation")
+
+        result = runner.invoke(
+            app,
+            [
+                "agency",
+                "--update-section",
+                "system",
+                "--value",
+                "Investigate recurring daily talent errors.",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "Updated ## system in agency.md" in result.output
+        content = agency_path.read_text()
+        assert (
+            _section_body(content, "system")
+            == "Investigate recurring daily talent errors."
+        )
+        assert _section_body(content, "curation") == original_curation
+
+    def test_update_section_not_found(self, journal_with_identity):
+        result = runner.invoke(
+            app,
+            ["agency", "--update-section", "nonexistent"],
+            input="content",
+        )
+
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+    def test_update_section_empty_stdin(self, journal_with_identity):
+        result = runner.invoke(
+            app,
+            ["agency", "--update-section", "system"],
+            input="",
+        )
+
+        assert result.exit_code == 1
+        assert "no content" in result.output
+
+    def test_update_section_disjoint_writes_preserve_other_sections(
+        self, journal_with_identity
+    ):
+        agency_path = journal_with_identity / "identity" / "agency.md"
+        before = agency_path.read_text()
+        original_observations = _section_body(before, "observations")
+        original_follow_throughs = _section_body(before, "follow-throughs")
+        original_self_improvement = _section_body(before, "self-improvement")
+        system_text = "Investigate recurring daily talent errors."
+        curation_text = "Possible speaker cleanup needs owner review."
+
+        system_result = runner.invoke(
+            app,
+            ["agency", "--update-section", "system", "--value", system_text],
+        )
+        curation_result = runner.invoke(
+            app,
+            ["agency", "--update-section", "curation", "--value", curation_text],
+        )
+
+        assert system_result.exit_code == 0
+        assert curation_result.exit_code == 0
+        content = agency_path.read_text()
+        assert _section_body(content, "system") == system_text
+        assert _section_body(content, "curation") == curation_text
+        assert _section_body(content, "observations") == original_observations
+        assert _section_body(content, "follow-throughs") == original_follow_throughs
+        assert _section_body(content, "self-improvement") == original_self_improvement
 
 
 class TestSolPulseRead:

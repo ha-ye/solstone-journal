@@ -485,6 +485,24 @@ def test_run_cogitate_emits_finish_when_emit_final_has_content(
     ] == ["finish"]
 
 
+def test_run_cogitate_daily_no_output_finishes_when_emit_final_has_content(
+    fake_openhands,
+    monkeypatch,
+    tmp_path,
+):
+    _install_emit_final_arun(fake_openhands, "no changes")
+    config = _run_config(monkeypatch, tmp_path, schedule="daily")
+    events: list[dict] = []
+
+    result = asyncio.run(openhands.run_cogitate(config, events.append))
+
+    assert result == "no changes"
+    finish_events = [event for event in events if event["event"] == "finish"]
+    assert len(finish_events) == 1
+    assert finish_events[0]["result"] == "no changes"
+    assert [event for event in events if event["event"] == "error"] == []
+
+
 def test_run_cogitate_keeps_finish_branch_without_output_path(
     fake_openhands,
     monkeypatch,
@@ -656,7 +674,7 @@ def test_schedule_gated_cogitate_prompts_use_emit_final():
         or (name.endswith(":todo") and config.get("schedule") == "activity")
     }
 
-    assert len(converted) == 9
+    assert len(converted) == 12
     assert artifact_names == {"steward", "todos:todo"}
 
     for name, config in converted.items():

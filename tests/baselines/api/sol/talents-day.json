@@ -49,6 +49,17 @@
       "title": "Activities Review",
       "type": "cogitate"
     },
+    "agency": {
+      "app": null,
+      "color": "#6c757d",
+      "description": "Tends non-health agency items in identity/agency.md.",
+      "multi_facet": false,
+      "output_format": null,
+      "schedule": "daily",
+      "source": "system",
+      "title": "Agency",
+      "type": "cogitate"
+    },
     "awareness_tender": {
       "app": null,
       "color": "#6c757d",
@@ -81,6 +92,17 @@
       "source": "system",
       "title": "Conversation Story",
       "type": "generate"
+    },
+    "curation_scout": {
+      "app": null,
+      "color": "#6c757d",
+      "description": "Suggests cross-facet curation opportunities in identity/agency.md.",
+      "multi_facet": false,
+      "output_format": null,
+      "schedule": "daily",
+      "source": "system",
+      "title": "Curation Scout",
+      "type": "cogitate"
     },
     "daily_schedule": {
       "app": null,
@@ -356,6 +378,17 @@
       "source": "system",
       "title": "Screen Record",
       "type": "generate"
+    },
+    "self_observer": {
+      "app": null,
+      "color": "#6c757d",
+      "description": "Tends durable self observations in identity/self.md.",
+      "multi_facet": false,
+      "output_format": null,
+      "schedule": "daily",
+      "source": "system",
+      "title": "Self Observer",
+      "type": "cogitate"
     },
     "sense": {
       "app": null,

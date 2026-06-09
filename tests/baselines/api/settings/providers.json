@@ -295,6 +295,14 @@
       "tier": 2,
       "type": "cogitate"
     },
+    "talent.system.agency": {
+      "disabled": false,
+      "group": "Think",
+      "label": "Agency",
+      "schedule": "daily",
+      "tier": 2,
+      "type": "cogitate"
+    },
     "talent.system.awareness_tender": {
       "disabled": false,
       "group": "Think",
@@ -317,6 +325,14 @@
       "schedule": "activity",
       "tier": 2,
       "type": "generate"
+    },
+    "talent.system.curation_scout": {
+      "disabled": false,
+      "group": "Think",
+      "label": "Curation Scout",
+      "schedule": "daily",
+      "tier": 2,
+      "type": "cogitate"
     },
     "talent.system.daily_schedule": {
       "disabled": false,
@@ -442,6 +458,14 @@
       "schedule": "segment",
       "tier": 2,
       "type": "generate"
+    },
+    "talent.system.self_observer": {
+      "disabled": false,
+      "group": "Think",
+      "label": "Self Observer",
+      "schedule": "daily",
+      "tier": 2,
+      "type": "cogitate"
     },
     "talent.system.sense": {
       "disabled": false,
