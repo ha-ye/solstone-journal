@@ -1302,7 +1302,7 @@ def step_service(ctx: SetupContext, step_index: int) -> StepResult:
     from solstone.think.service import _up
 
     narrate(ctx, f"[step {step_index}/{TOTAL_STEPS}] running service up...")
-    up_rc = int(_up(port=ctx.port))
+    up_rc = int(_up())
     if up_rc != 0:
         return step_result(
             "service",
@@ -1657,7 +1657,7 @@ def print_plan(ctx: SetupContext, *, dry_run: bool) -> None:
         narrate(ctx, "  skipped: --skip-service")
     else:
         narrate(ctx, f"  would run: {format_command(service_install_command(ctx))}")
-        narrate(ctx, f"  would call: solstone.think.service._up(port={ctx.port})")
+        narrate(ctx, "  would call: solstone.think.service._up()")
 
 
 def print_failure(ctx: SetupContext, result: StepResult) -> None:

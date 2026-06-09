@@ -13,7 +13,7 @@ Usage:
     journal service logs                   View service logs
     journal service logs -f                Follow service logs
 
-    journal up                             Install (if needed), start, and show status
+    journal up                             Start (if not running) and show status — service must already be installed
     journal down                           Stop the background service
 
 Default convey port for installed services is 5015.
@@ -861,9 +861,7 @@ def _status() -> int:
 
     if not service_is_installed():
         print("Service: not installed")
-        print(
-            "Run 'journal service install' to install, or 'journal up' to install and start."
-        )
+        print("Run 'journal setup' or 'journal service install' to install it.")
         return 1
 
     print("Service: installed")
@@ -912,13 +910,15 @@ def _logs(follow: bool = False) -> int:
         return 0
 
 
-def _up(port: int = DEFAULT_SERVICE_PORT) -> int:
-    """Install if needed, start if not running, show status."""
+def _up() -> int:
+    """Start if not running and show status. Requires an installed service unit."""
     if not service_is_installed():
-        print("Installing service...")
-        rc = _install(port=port)
-        if rc != 0:
-            return rc
+        print(
+            "Error: service not installed. Run 'journal setup' or "
+            "'journal service install' to install it first.",
+            file=sys.stderr,
+        )
+        return 1
 
     if not service_is_running():
         print("Starting service...")
@@ -966,7 +966,9 @@ def _print_usage() -> None:
         "       journal service restart [--if-installed]  "
         "(restart; --if-installed noops if not installed)"
     )
-    print("       journal up [--port PORT]               (install + start + status)")
+    print(
+        "       journal up                             (start + status; service must be installed)"
+    )
     print("       journal down                           (stop)")
 
 
@@ -1010,7 +1012,7 @@ def main() -> None:
     if subcmd == "install":
         sys.exit(_install(port=_parse_port(rest)))
     elif subcmd == "up":
-        sys.exit(_up(port=_parse_port(rest)))
+        sys.exit(_up())
     elif subcmd == "restart":
         if_installed = "--if-installed" in rest
         sys.exit(_restart(if_installed=if_installed))

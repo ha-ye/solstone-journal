@@ -496,6 +496,31 @@ class TestRestart:
 
 
 class TestUp:
+    @pytest.mark.parametrize("platform", ["darwin", "linux"])
+    def test_up_errors_when_not_installed(self, monkeypatch, capsys, platform):
+        monkeypatch.setattr(sys, "platform", platform)
+        monkeypatch.setattr(service, "service_is_installed", lambda: False)
+        install = MagicMock()
+        start = MagicMock()
+        clear_ready = MagicMock()
+        wait_ready = MagicMock()
+        status = MagicMock()
+        monkeypatch.setattr(service, "_install", install)
+        monkeypatch.setattr(service, "_start", start)
+        monkeypatch.setattr(service, "clear_ready", clear_ready)
+        monkeypatch.setattr(service, "wait_ready", wait_ready)
+        monkeypatch.setattr(service, "_status", status)
+
+        assert service._up() == 1
+        install.assert_not_called()
+        start.assert_not_called()
+        clear_ready.assert_not_called()
+        wait_ready.assert_not_called()
+        status.assert_not_called()
+        err = capsys.readouterr().err
+        assert "journal setup" in err
+        assert "journal service install" in err
+
     def test_up_waits_for_readiness_after_start(self, monkeypatch):
         monkeypatch.setattr(service, "_platform", lambda: "darwin")
         monkeypatch.setattr(service, "service_is_installed", lambda: True)
@@ -509,7 +534,7 @@ class TestUp:
         monkeypatch.setattr(service, "wait_ready", wait_ready)
         monkeypatch.setattr(service, "_status", status)
 
-        assert service._up(port=5015) == 0
+        assert service._up() == 0
         start.assert_called_once_with()
         clear_ready.assert_called_once_with()
         wait_ready.assert_called_once_with(timeout=service.READY_TIMEOUT_SECONDS)
@@ -528,7 +553,7 @@ class TestUp:
         monkeypatch.setattr(service, "wait_ready", wait_ready)
         monkeypatch.setattr(service, "_status", status)
 
-        assert service._up(port=5015) == 0
+        assert service._up() == 0
         start.assert_called_once_with()
         clear_ready.assert_called_once_with()
         wait_ready.assert_called_once_with(timeout=service.READY_TIMEOUT_SECONDS)
@@ -547,7 +572,7 @@ class TestUp:
         monkeypatch.setattr(service, "wait_ready", wait_ready)
         monkeypatch.setattr(service, "_status", status)
 
-        assert service._up(port=5015) == 7
+        assert service._up() == 7
         start.assert_called_once_with()
         clear_ready.assert_called_once_with()
         wait_ready.assert_called_once_with(timeout=service.READY_TIMEOUT_SECONDS)
@@ -564,7 +589,7 @@ class TestUp:
         monkeypatch.setattr(service, "wait_ready", wait_ready)
         monkeypatch.setattr(service, "_status", status)
 
-        assert service._up(port=5015) == 0
+        assert service._up() == 0
         clear_ready.assert_not_called()
         wait_ready.assert_called_once_with(timeout=service.READY_TIMEOUT_SECONDS)
         status.assert_called_once_with()
