@@ -27,6 +27,8 @@ support_bp = Blueprint(
     "app:support",
     __name__,
     url_prefix="/app/support",
+    static_folder="static",
+    static_url_path="/static",
 )
 
 

@@ -515,7 +515,7 @@
 <div class="workspace-content" id="support-root">
   <div id="support-disabled" class="support-disabled" style="display:none;">
     <p>Support agent is disabled. Enable it in Settings to file tickets and give feedback.</p>
-    <p style="font-size:0.85rem;">Local help and diagnostics are still available via <code>sol call support diagnose</code>.</p>
+    <p style="font-size:0.85rem;">tickets, feedback, and diagnostics all live here once it's on.</p>
   </div>
 
   <div id="support-main">
@@ -576,19 +576,19 @@
       </div>
       <div class="support-help-card">
         <h3>🔍 search the knowledge base</h3>
-        <p>Run <code>sol call support search "your question"</code> to find answers in our knowledge base before filing a ticket.</p>
+        <p>ask your question in the chat bar. your sol will search the knowledge base and bring back the most relevant help.</p>
       </div>
       <div class="support-help-card">
         <h3>🩺 run diagnostics</h3>
         <p class="support-diagnostics-desc">Check your system health locally — no data is sent anywhere.</p>
-        <button class="support-btn" id="diagnostics-btn" onclick="window._supportRunDiagnostics()">run diagnostics</button>
+        <button class="support-btn" id="diagnostics-btn">run diagnostics</button>
         <div class="support-diagnostics-loading" id="diagnostics-loading">running diagnostics…</div>
         <div class="support-diagnostics-error" id="diagnostics-error"></div>
         <div class="support-diagnostics-results" id="diagnostics-results"></div>
       </div>
       <div class="support-help-card">
         <h3>📢 announcements</h3>
-        <p>Run <code>sol call support announcements</code> to check for product updates and known issues.</p>
+        <p>product updates and known issues appear in the announcements area at the top of this panel when there's something new.</p>
       </div>
       <div class="support-help-card">
         <h3>🔒 privacy</h3>
@@ -598,9 +598,9 @@
   </div>
 </div>
 
+<script src="{{ url_for('app:support.static', filename='support.js') }}"></script>
 <script>
 (function() {
-  let ticketCount = 0;
   let announcementsFirstPaintDone = false;
   let announcementsLastSuccessAt = null;
 
@@ -622,7 +622,7 @@
     // Update tab badge visibility
     const badge = document.getElementById('tab-tickets-badge');
     if (badge) {
-      const show = sectionName !== 'tickets' && ticketCount > 0;
+      const show = sectionName !== 'tickets' && (parseInt(badge.textContent, 10) || 0) > 0;
       badge.style.opacity = show ? '1' : '0';
       badge.style.pointerEvents = show ? 'auto' : 'none';
     }
@@ -650,92 +650,6 @@
     tabs[next].focus();
     activateTab(tabs[next].dataset.section);
   });
-
-  // Load tickets
-  async function loadTickets() {
-    const list = document.getElementById('tickets-list');
-    try {
-      const resp = await fetch('/app/support/api/tickets');
-      if (!resp.ok) {
-        if (resp.status === 403) {
-          document.getElementById('support-main').style.display = 'none';
-          document.getElementById('support-disabled').style.display = '';
-          return;
-        }
-        throw new Error('Failed to load tickets');
-      }
-      const tickets = await resp.json();
-
-      if (!tickets.length) {
-        ticketCount = 0;
-        list.innerHTML = '<div class="support-empty">' +
-          '<div class="support-empty-icon">🛟</div>' +
-          '<div class="support-empty-heading">no tickets yet — that\'s a good thing</div>' +
-          '<div class="support-empty-hint">if something comes up, check the help tab for ways to get support</div>' +
-          '<button class="support-empty-action" id="empty-help-btn">browse help &amp; guidance</button>' +
-        '</div>';
-        const helpBtn = document.getElementById('empty-help-btn');
-        if (helpBtn) helpBtn.addEventListener('click', () => activateTab('help'));
-        activateTab('help');
-        return;
-      }
-
-      list.innerHTML = tickets.map(t => {
-        const statusClass = 'support-status-' + (t.status || 'open').replace(/[^a-z-]/g, '');
-        const createdAt = t.created_at
-          ? `${relativeTime(Date.now() - new Date(t.created_at + (t.created_at.includes('Z') ? '' : 'Z')).getTime())} ago`
-          : '';
-        return `<div class="support-ticket" data-id="${t.id}" tabindex="0" role="button">
-          <div class="support-ticket-header">
-            <span class="support-ticket-subject">${esc(t.subject || 'Untitled')}</span>
-            <span class="support-status ${statusClass}">${esc(t.status || 'open')}</span>
-          </div>
-          <div class="support-ticket-meta">
-            <span class="support-ticket-id">#${t.id}</span> &middot;
-            ${esc(t.product || '')} &middot;
-            ${createdAt}
-          </div>
-        </div>`;
-      }).join('');
-
-      // Click to open detail
-      list.querySelectorAll('.support-ticket').forEach(el => {
-        el.addEventListener('click', () => openTicket(parseInt(el.dataset.id)));
-      });
-      list.querySelectorAll('.support-ticket').forEach(el => {
-        el.addEventListener('keydown', e => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            openTicket(parseInt(el.dataset.id));
-          }
-        });
-      });
-      // Update ticket count and inject badge
-      ticketCount = tickets.length;
-      let badge = document.getElementById('tab-tickets-badge');
-      if (!badge) {
-        badge = document.createElement('span');
-        badge.id = 'tab-tickets-badge';
-        badge.className = 'support-tab-badge';
-        document.getElementById('tab-tickets').appendChild(badge);
-      }
-      badge.textContent = ticketCount;
-      // Show badge if user already switched away from tickets tab
-      const activeTab = document.querySelector('.support-nav button.active');
-      const show = activeTab && activeTab.dataset.section !== 'tickets';
-      badge.style.opacity = show ? '1' : '0';
-      badge.style.pointerEvents = show ? 'auto' : 'none';
-    } catch (e) {
-      list.innerHTML = '<div class="support-empty">' +
-        '<div class="support-empty-icon">⚠️</div>' +
-        '<div class="support-empty-heading">unable to load tickets</div>' +
-        '<div class="support-empty-hint">check your connection and try refreshing</div>' +
-        '<button class="support-empty-action" id="retry-tickets-btn">try again</button>' +
-      '</div>';
-      const retryBtn = document.getElementById('retry-tickets-btn');
-      if (retryBtn) retryBtn.addEventListener('click', () => loadTickets());
-    }
-  }
 
   // Open ticket detail
   async function openTicket(id) {
@@ -1150,119 +1064,9 @@
     }
   }
 
-  // Diagnostics
-  function runDiagnostics() {
-    const btn = document.getElementById('diagnostics-btn');
-    const loading = document.getElementById('diagnostics-loading');
-    const results = document.getElementById('diagnostics-results');
-    const errorEl = document.getElementById('diagnostics-error');
-
-    btn.disabled = true;
-    results.style.display = 'none';
-    results.innerHTML = '';
-    errorEl.style.display = 'none';
-    errorEl.innerHTML = '';
-    loading.style.display = '';
-
-    fetch('/app/support/api/diagnostics')
-      .then(function(r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      })
-      .then(function(data) {
-        loading.style.display = 'none';
-        renderDiagnostics(data, results);
-        results.style.display = '';
-        btn.disabled = false;
-      })
-      .catch(function(err) {
-        loading.style.display = 'none';
-        errorEl.innerHTML = esc('Could not run diagnostics: ' + err.message) +
-          '<br><span style="color:#666;">Try the CLI instead: <code>sol call support diagnose</code></span>';
-        errorEl.style.display = '';
-        btn.disabled = false;
-      });
-  }
-
-  function renderDiagnostics(data, container) {
-    var html = '';
-
-    // Summary line
-    var services = data.services || {};
-    var serviceNames = Object.keys(services);
-    var runningCount = serviceNames.filter(function(k) { return services[k] === 'running'; }).length;
-    var errorCount = (data.recent_errors || []).length;
-    html += '<div class="support-diagnostics-summary">' +
-      esc(runningCount + ' of ' + serviceNames.length + ' services running') +
-      (errorCount > 0 ? ', ' + esc(errorCount + ' recent error' + (errorCount !== 1 ? 's' : '')) : ', no recent errors') +
-      '</div>';
-
-    // Version + Platform section
-    var versionPlatformRows = '';
-    if (data.version) {
-      versionPlatformRows += '<div class="support-diagnostics-row"><span class="support-diagnostics-label">version</span><span>' + esc(String(data.version)) + '</span></div>';
-    }
-    if (data.platform) {
-      var p = data.platform;
-      if (p.system) versionPlatformRows += '<div class="support-diagnostics-row"><span class="support-diagnostics-label">system</span><span>' + esc(String(p.system)) + ' ' + esc(String(p.release || '')) + '</span></div>';
-      if (p.machine) versionPlatformRows += '<div class="support-diagnostics-row"><span class="support-diagnostics-label">machine</span><span>' + esc(String(p.machine)) + '</span></div>';
-      if (p.python) versionPlatformRows += '<div class="support-diagnostics-row"><span class="support-diagnostics-label">python</span><span>' + esc(String(p.python)) + '</span></div>';
-    }
-    if (versionPlatformRows) {
-      html += '<details class="support-diagnostics-section"><summary>version &amp; platform</summary>' +
-        '<div class="support-diagnostics-body">' + versionPlatformRows + '</div></details>';
-    }
-
-    // Services section
-    if (serviceNames.length > 0) {
-      var svcRows = '';
-      serviceNames.forEach(function(name) {
-        var status = services[name] || 'unknown';
-        var dotClass = status === 'running' ? 'support-diagnostics-running' : status === 'stopped' ? 'support-diagnostics-stopped' : 'support-diagnostics-unknown';
-        svcRows += '<div class="support-diagnostics-row"><span class="support-diagnostics-label">' + esc(String(name)) + '</span>' +
-          '<span><span class="support-diagnostics-dot ' + dotClass + '"></span>' + esc(String(status)) + '</span></div>';
-      });
-      html += '<details class="support-diagnostics-section"><summary>services</summary>' +
-        '<div class="support-diagnostics-body">' + svcRows + '</div></details>';
-    }
-
-    // Recent errors section
-    if (data.recent_errors && data.recent_errors.length > 0) {
-      var errRows = '';
-      data.recent_errors.forEach(function(e) {
-        var t = e.time ? (e.time_approximate ? '~' + e.time : e.time) : '';
-        errRows += '<div style="padding:0.2rem 0;">' +
-          (t ? '<span style="color:#888;">' + esc(String(t)) + '</span> ' : '') +
-          '<strong>' + esc(String(e.service || 'unknown')) + '</strong>: ' +
-          esc(String(e.message || '')) + '</div>';
-      });
-      html += '<details class="support-diagnostics-section" open><summary>recent errors (' + esc(String(data.recent_errors.length)) + ')</summary>' +
-        '<div class="support-diagnostics-body">' + errRows + '</div></details>';
-    }
-
-    // Config section
-    if (data.config && Object.keys(data.config).length > 0) {
-      var cfgRows = '';
-      Object.keys(data.config).forEach(function(key) {
-        cfgRows += '<div class="support-diagnostics-row"><span class="support-diagnostics-label">' + esc(String(key)) + '</span>' +
-          '<span>' + esc(String(data.config[key])) + '</span></div>';
-      });
-      html += '<details class="support-diagnostics-section"><summary>config</summary>' +
-        '<div class="support-diagnostics-body">' + cfgRows + '</div></details>';
-    }
-
-    // If nothing rendered beyond summary
-    if (!versionPlatformRows && serviceNames.length === 0 && (!data.recent_errors || data.recent_errors.length === 0) && (!data.config || Object.keys(data.config).length === 0)) {
-      html += '<div style="font-size:0.85rem;color:#666;">No diagnostic data available.</div>';
-    }
-
-    container.innerHTML = html;
-  }
-
-  window._supportRunDiagnostics = runDiagnostics;
-
   function initSupport() {
-    loadTickets();
+    document.getElementById('diagnostics-btn').addEventListener('click', window.SupportUI.runDiagnostics);
+    window.SupportUI.loadTickets({ openTicket, activateTab });
     loadAnnouncements();
   }
 
