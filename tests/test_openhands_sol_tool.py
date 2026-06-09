@@ -27,7 +27,7 @@ def _sol_tool_and_executor(
     events: list[dict],
     read_call_budget: int = 200,
 ):
-    policy = CogitatePolicy(allowed_roots=[tmp_path])
+    policy = CogitatePolicy(allowed_roots=[tmp_path], access_tier="normal")
     tools, executor = openhands._build_sol_tools(
         policy=policy,
         callback=JSONEventCallback(events.append),

@@ -10,6 +10,12 @@ import pytest
 from solstone.think import cogitate_policy
 
 
+def _policy(tmp_path, access_tier: str = "normal"):
+    return cogitate_policy.CogitatePolicy(
+        allowed_roots=[tmp_path], access_tier=access_tier
+    )
+
+
 def test_resolve_read_scope_defaults_to_current_day_chronicle():
     assert cogitate_policy.resolve_read_scope({}, "20260427") == ["chronicle/20260427"]
 
@@ -29,7 +35,7 @@ def test_resolve_read_scope_span_is_inclusive():
 
 
 def test_policy_denies_write_tools(tmp_path):
-    policy = cogitate_policy.CogitatePolicy(allowed_roots=[tmp_path])
+    policy = _policy(tmp_path)
 
     allowed, reason = policy.check("write_file", {"file_path": "x"})
 
@@ -50,7 +56,7 @@ def test_policy_denies_write_tools(tmp_path):
     ],
 )
 def test_policy_allows_approved_journal_invocations(tmp_path, command):
-    policy = cogitate_policy.CogitatePolicy(allowed_roots=[tmp_path])
+    policy = _policy(tmp_path)
 
     allowed, reason = policy.check("run_shell_command", {"command": command})
 
@@ -70,12 +76,129 @@ def test_policy_allows_approved_journal_invocations(tmp_path, command):
     ],
 )
 def test_policy_denies_unapproved_journal_invocations(tmp_path, command):
-    policy = cogitate_policy.CogitatePolicy(allowed_roots=[tmp_path])
+    policy = _policy(tmp_path)
 
     allowed, reason = policy.check("run_shell_command", {"command": command})
 
     assert allowed is False
     assert reason.startswith("policy_deny:")
+
+
+@pytest.mark.parametrize("access_tier", ["normal", "system-read"])
+@pytest.mark.parametrize("verb", ["create", "reply", "attach", "feedback"])
+def test_policy_denies_support_send_verbs_without_submit_tier(
+    tmp_path, access_tier, verb
+):
+    policy = _policy(tmp_path, access_tier)
+
+    allowed, reason = policy.check(
+        "run_shell_command",
+        {"command": f"sol call support {verb} --subject x --description y"},
+    )
+
+    assert allowed is False
+    assert reason.startswith("policy_deny:")
+    assert "outbound" in reason
+    assert access_tier in reason
+
+
+@pytest.mark.parametrize("verb", ["create", "reply", "attach", "feedback"])
+def test_policy_allows_support_send_verbs_for_outbound(tmp_path, verb):
+    policy = _policy(tmp_path, "outbound")
+
+    allowed, reason = policy.check(
+        "run_shell_command",
+        {"command": f"sol call support {verb} --subject x --description y"},
+    )
+
+    assert allowed is True
+    assert reason == "ok"
+
+
+@pytest.mark.parametrize("access_tier", ["normal", "system-read", "outbound"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sol call support register",
+        "sol call support search foo",
+        "sol call support article getting-started",
+        "sol call support list",
+        "sol call support show 42",
+        "sol call support announcements",
+        "sol call support diagnose",
+    ],
+)
+def test_policy_allows_support_read_verbs_for_all_tiers(tmp_path, access_tier, command):
+    policy = _policy(tmp_path, access_tier)
+
+    allowed, reason = policy.check("run_shell_command", {"command": command})
+
+    assert allowed is True
+    assert reason == "ok"
+
+
+def test_policy_denies_chained_support_send_for_normal(tmp_path):
+    policy = _policy(tmp_path, "normal")
+
+    allowed, reason = policy.check(
+        "run_shell_command",
+        {
+            "command": (
+                "sol call support search foo && sol call support create "
+                "--subject x --description y"
+            )
+        },
+    )
+
+    assert allowed is False
+    assert "requires access_tier" in reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo $(sol call support create --subject x)",
+        "sol call support search foo | grep bar",
+    ],
+)
+def test_policy_denies_wrapped_or_chained_support_command_for_normal(tmp_path, command):
+    policy = _policy(tmp_path, "normal")
+
+    allowed, reason = policy.check("run_shell_command", {"command": command})
+
+    assert allowed is False
+    assert reason == (
+        "policy_deny: support commands may not be chained or wrapped with "
+        "shell-control operators (run them one at a time)"
+    )
+
+
+def test_policy_allows_non_support_chain_for_normal(tmp_path):
+    policy = _policy(tmp_path, "normal")
+
+    allowed, reason = policy.check(
+        "run_shell_command",
+        {"command": "sol call activities list && sol call todos list"},
+    )
+
+    assert allowed is True
+    assert reason == "ok"
+
+
+def test_policy_allows_chained_support_send_for_outbound(tmp_path):
+    policy = _policy(tmp_path, "outbound")
+
+    allowed, reason = policy.check(
+        "run_shell_command",
+        {
+            "command": (
+                "sol call support search foo && sol call support create --subject x"
+            )
+        },
+    )
+
+    assert allowed is True
+    assert reason == "ok"
 
 
 def test_cogitate_toml_removed_and_build_policy_import_fails():

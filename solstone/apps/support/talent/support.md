@@ -1,5 +1,6 @@
 {
   "type": "cogitate",
+  "access_tier": "outbound",
   "title": "Support",
   "description": "Files and monitors support requests with sol pbc — consent-gated, never sends data without explicit owner approval",
   "color": "#0288d1"

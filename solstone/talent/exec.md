@@ -1,5 +1,6 @@
 {
   "type": "cogitate",
+  "access_tier": "outbound",
   "title": "Exec",
   "description": "Sol — the journal itself, as a conversational partner",
   "hook": {"pre": "exec_context"}

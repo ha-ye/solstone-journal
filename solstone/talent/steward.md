@@ -4,6 +4,7 @@
   "title": "Steward",
   "description": "Synthesizes federated health signals into identity/health.md.",
   "schedule": "daily",
+  "access_tier": "system-read",
   "priority": 45,
   "hook": {"pre": "steward", "post": "steward"},
   "max_output_tokens": 900,

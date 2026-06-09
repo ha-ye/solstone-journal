@@ -29,6 +29,7 @@ from typing import Any, Callable
 import frontmatter
 from jsonschema import Draft202012Validator, SchemaError
 
+from solstone.think.cogitate_contract import COGITATE_ACCESS_TIERS
 from solstone.think.facets import get_facets
 
 # Import core prompt utilities from solstone.think.prompts
@@ -83,6 +84,27 @@ def _validate_write(raw_write: Any, talent_type: Any, key: str) -> None:
             f"Prompt '{key}' declares unsupported 'write: true' "
             "(cogitate runs are read-only)"
         )
+
+
+def _validate_access_tier(raw: Any, talent_type: Any, key: str) -> str | None:
+    """Validate and normalize the optional cogitate access tier."""
+    if talent_type == "cogitate":
+        if raw is None:
+            return "normal"
+        if raw in COGITATE_ACCESS_TIERS:
+            return raw
+        raise ValueError(
+            f"Prompt '{key}' has invalid 'access_tier' value '{raw}' "
+            f"(must be one of {COGITATE_ACCESS_TIERS})"
+        )
+
+    if raw is not None:
+        raise ValueError(
+            f"Prompt '{key}' sets 'access_tier' but access_tier is only valid "
+            "for type: cogitate"
+        )
+
+    return None
 
 
 def key_to_context(key: str) -> str:
@@ -333,9 +355,16 @@ def get_talent_configs(
                     f'(activity types to match, or ["*"] for all types).'
                 )
 
-    # Validate: cwd is only valid for cogitate prompts and defaults there
+    # Validate: cogitate-only runtime fields and defaults
     for key, info in configs.items():
         _validate_write(info.get("write"), info.get("type"), key)
+        normalized_access_tier = _validate_access_tier(
+            info.get("access_tier"), info.get("type"), key
+        )
+        if normalized_access_tier is None:
+            info.pop("access_tier", None)
+        else:
+            info["access_tier"] = normalized_access_tier
         normalized_cwd = _validate_cwd(info.get("cwd"), info.get("type"), key)
         if normalized_cwd is None:
             info.pop("cwd", None)
@@ -595,6 +624,13 @@ def get_talent(
     post = frontmatter.load(md_path)
     config = dict(post.metadata) if post.metadata else {}
     _validate_write(config.get("write"), config.get("type"), name)
+    normalized_access_tier = _validate_access_tier(
+        config.get("access_tier"), config.get("type"), name
+    )
+    if normalized_access_tier is None:
+        config.pop("access_tier", None)
+    else:
+        config["access_tier"] = normalized_access_tier
     normalized_cwd = _validate_cwd(config.get("cwd"), config.get("type"), name)
     if normalized_cwd is None:
         config.pop("cwd", None)

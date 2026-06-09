@@ -9,11 +9,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from solstone.think.cogitate_contract import AccessCapabilities
 from solstone.think.cogitate_policy import MAX_TURNS, MaxTurnsExhausted
 from solstone.think.providers import openhands
 from solstone.think.providers.shared import USAGE_KEYS, JSONEventCallback
-from solstone.think.talent import get_talent_configs
-from tests.openhands_fakes import install_fake_openhands
+from solstone.think.talent import get_talent, get_talent_configs
+from tests.openhands_fakes import _REGISTERED_TOOLS, install_fake_openhands
 
 
 @pytest.fixture
@@ -47,6 +48,24 @@ def _run_config(monkeypatch, tmp_path, **overrides):
     }
     config.update(overrides)
     return config
+
+
+def _real_talent_config(monkeypatch, tmp_path, name: str, **overrides):
+    config = get_talent(name)
+    config.update(_run_config(monkeypatch, tmp_path, **overrides))
+    return config
+
+
+def _run_and_capture_tool_state(fake_openhands, config: dict, events: list[dict]):
+    fake_openhands.Conversation.instances = []
+    fake_openhands.Conversation.arun_impl = None
+    _REGISTERED_TOOLS.clear()
+
+    result = asyncio.run(openhands.run_cogitate(config, events.append))
+    conversation = fake_openhands.Conversation.instances[0]
+    agent_tool_names = {tool.name for tool in conversation.agent.tools}
+    registered_tool_names = set(_REGISTERED_TOOLS)
+    return result, conversation, agent_tool_names, registered_tool_names
 
 
 def _emit_final_action(fake_openhands, content: str):
@@ -521,6 +540,104 @@ def test_run_cogitate_uses_emit_final_branch_for_daily_no_output(
     assert [
         event["event"] for event in events if event["event"] in ("finish", "error")
     ] == ["error"]
+
+
+def test_run_cogitate_skips_read_tool_registration_when_tier_caps_disable_reads(
+    fake_openhands,
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(
+        openhands,
+        "capabilities_for_access_tier",
+        lambda _tier: AccessCapabilities(sol=True, reads=False, submit=False),
+    )
+    config = _run_config(monkeypatch, tmp_path, access_tier="normal")
+    events: list[dict] = []
+
+    _result, conversation, agent_tool_names, registered_tool_names = (
+        _run_and_capture_tool_state(fake_openhands, config, events)
+    )
+
+    read_tool_names = {"read_file", "list_directory", "glob", "grep_search"}
+    assert "sol" in agent_tool_names
+    assert "sol" in registered_tool_names
+    assert agent_tool_names.isdisjoint(read_tool_names)
+    assert registered_tool_names.isdisjoint(read_tool_names)
+    assert conversation.agent.include_default_tools == ["FinishTool"]
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_access_tier", "expected_agent_tools", "expected_default_tools"),
+    [
+        (
+            "steward",
+            "system-read",
+            {"sol", "read_file", "list_directory", "glob", "grep_search", "emit_final"},
+            [],
+        ),
+        (
+            "support:support",
+            "outbound",
+            {"sol", "read_file", "list_directory", "glob", "grep_search"},
+            ["FinishTool"],
+        ),
+        (
+            "exec",
+            "outbound",
+            {"sol", "read_file", "list_directory", "glob", "grep_search"},
+            ["FinishTool"],
+        ),
+        (
+            "reflection",
+            "normal",
+            {"sol", "read_file", "list_directory", "glob", "grep_search"},
+            ["FinishTool"],
+        ),
+    ],
+)
+def test_run_cogitate_real_talent_access_tiers_register_expected_tools(
+    fake_openhands,
+    monkeypatch,
+    tmp_path,
+    name,
+    expected_access_tier,
+    expected_agent_tools,
+    expected_default_tools,
+):
+    config = _real_talent_config(monkeypatch, tmp_path, name)
+    events: list[dict] = []
+
+    _result, conversation, agent_tool_names, registered_tool_names = (
+        _run_and_capture_tool_state(fake_openhands, config, events)
+    )
+
+    assert config["access_tier"] == expected_access_tier
+    assert agent_tool_names == expected_agent_tools
+    assert registered_tool_names == expected_agent_tools
+    assert conversation.agent.include_default_tools == expected_default_tools
+
+
+def test_run_cogitate_exec_outbound_tool_surface_matches_normal_talent(
+    fake_openhands,
+    monkeypatch,
+    tmp_path,
+):
+    exec_config = _real_talent_config(monkeypatch, tmp_path, "exec")
+    normal_config = _real_talent_config(monkeypatch, tmp_path, "reflection")
+
+    exec_events: list[dict] = []
+    _result, _conversation, exec_tool_names, _registered = _run_and_capture_tool_state(
+        fake_openhands, exec_config, exec_events
+    )
+    normal_events: list[dict] = []
+    _result, _conversation, normal_tool_names, _registered = (
+        _run_and_capture_tool_state(fake_openhands, normal_config, normal_events)
+    )
+
+    assert exec_config["access_tier"] == "outbound"
+    assert normal_config["access_tier"] == "normal"
+    assert exec_tool_names == normal_tool_names
 
 
 def test_schedule_gated_cogitate_prompts_use_emit_final():

@@ -10,8 +10,10 @@ import pytest
 
 import solstone.think.talent as talent_module
 from solstone.think.talent import (
+    _validate_access_tier,
     _validate_cwd,
     get_talent,
+    get_talent_configs,
     get_talent_filter,
     source_is_enabled,
     source_is_required,
@@ -105,6 +107,33 @@ def test_validate_cwd_rejects_invalid_value():
         _validate_cwd("home", "cogitate", "test-agent")
 
 
+def test_validate_access_tier_defaults_cogitate_to_normal():
+    assert _validate_access_tier(None, "cogitate", "test-agent") == "normal"
+
+
+def test_validate_access_tier_accepts_known_tier():
+    assert _validate_access_tier("outbound", "cogitate", "test-agent") == "outbound"
+
+
+def test_validate_access_tier_rejects_unknown_tier():
+    with pytest.raises(
+        ValueError,
+        match="Prompt 'test-agent' has invalid 'access_tier' value 'repair'",
+    ):
+        _validate_access_tier("repair", "cogitate", "test-agent")
+
+
+def test_validate_access_tier_rejects_generate_with_access_tier():
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Prompt 'test-agent' sets 'access_tier' but access_tier is only valid "
+            "for type: cogitate"
+        ),
+    ):
+        _validate_access_tier("normal", "generate", "test-agent")
+
+
 def test_get_agent_normalizes_cwd_for_cogitate():
     config = get_talent("chat")
     assert config["type"] == "generate"
@@ -124,6 +153,89 @@ def test_get_agent_rejects_cogitate_write_true(tmp_path, monkeypatch):
         match="Prompt 'writer' declares unsupported 'write: true'",
     ):
         get_talent("writer")
+
+
+def test_get_talent_defaults_cogitate_access_tier_to_normal(tmp_path, monkeypatch):
+    monkeypatch.setattr(talent_module, "TALENT_DIR", tmp_path)
+    _write_talent_file(tmp_path, "agent", {"type": "cogitate"})
+
+    config = get_talent("agent")
+
+    assert config["access_tier"] == "normal"
+
+
+def test_get_talent_preserves_valid_access_tier(tmp_path, monkeypatch):
+    monkeypatch.setattr(talent_module, "TALENT_DIR", tmp_path)
+    _write_talent_file(
+        tmp_path,
+        "agent",
+        {"type": "cogitate", "access_tier": "system-read"},
+    )
+
+    config = get_talent("agent")
+
+    assert config["access_tier"] == "system-read"
+
+
+def test_get_talent_rejects_invalid_access_tier(tmp_path, monkeypatch):
+    monkeypatch.setattr(talent_module, "TALENT_DIR", tmp_path)
+    _write_talent_file(
+        tmp_path,
+        "agent",
+        {"type": "cogitate", "access_tier": "code-agent"},
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Prompt 'agent' has invalid 'access_tier' value 'code-agent'",
+    ):
+        get_talent("agent")
+
+
+def test_get_talent_rejects_non_cogitate_access_tier(tmp_path, monkeypatch):
+    monkeypatch.setattr(talent_module, "TALENT_DIR", tmp_path)
+    _write_talent_file(
+        tmp_path,
+        "generator",
+        {"type": "generate", "output": "md", "access_tier": "normal"},
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Prompt 'generator' sets 'access_tier' but access_tier is only valid "
+            "for type: cogitate"
+        ),
+    ):
+        get_talent("generator")
+
+
+def test_get_talent_configs_defaults_cogitate_access_tier_to_normal(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(talent_module, "TALENT_DIR", tmp_path)
+    monkeypatch.setattr(talent_module, "APPS_DIR", tmp_path / "apps")
+    _write_talent_file(tmp_path, "agent", {"type": "cogitate"})
+
+    configs = get_talent_configs(include_disabled=True)
+
+    assert configs["agent"]["access_tier"] == "normal"
+
+
+def test_get_talent_configs_rejects_invalid_access_tier(tmp_path, monkeypatch):
+    monkeypatch.setattr(talent_module, "TALENT_DIR", tmp_path)
+    monkeypatch.setattr(talent_module, "APPS_DIR", tmp_path / "apps")
+    _write_talent_file(
+        tmp_path,
+        "agent",
+        {"type": "cogitate", "access_tier": "bogus"},
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Prompt 'agent' has invalid 'access_tier' value 'bogus'",
+    ):
+        get_talent_configs(include_disabled=True)
 
 
 def test_get_talent_defaults_to_chat():

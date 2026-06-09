@@ -3,6 +3,9 @@
 
 from pathlib import Path
 
+import pytest
+
+from solstone.think import cogitate_contract
 from solstone.think.cogitate_contract import (
     COGITATE_ACCESS_TIERS,
     COGITATE_RUNTIME_PREAMBLE,
@@ -66,6 +69,32 @@ def test_cogitate_vocabulary_lock():
     assert TALENT_FINALIZATION_MODES == ("emit_final", "FinishTool", "quiet")
     assert "repair" not in COGITATE_ACCESS_TIERS
     assert "repair" not in FUTURE_ACCESS_TIERS
+
+
+def test_access_tier_capability_mapping_matches_vocabulary():
+    assert set(cogitate_contract._ACCESS_TIER_CAPABILITIES) == set(
+        COGITATE_ACCESS_TIERS
+    )
+
+
+@pytest.mark.parametrize(
+    ("tier", "expected"),
+    [
+        ("normal", (True, True, False)),
+        ("system-read", (True, True, False)),
+        ("outbound", (True, True, True)),
+    ],
+)
+def test_capabilities_for_access_tier_real_tiers(tier, expected):
+    caps = cogitate_contract.capabilities_for_access_tier(tier)
+
+    assert (caps.sol, caps.reads, caps.submit) == expected
+
+
+@pytest.mark.parametrize("tier", ["repair", "code-agent", "bogus"])
+def test_capabilities_for_access_tier_unknown_names_tier(tier):
+    with pytest.raises(ValueError, match=tier):
+        cogitate_contract.capabilities_for_access_tier(tier)
 
 
 def test_cogitate_runtime_preamble_content_guard():

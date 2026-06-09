@@ -98,10 +98,9 @@ cost — the denylist and caps are the safety bound, not a permission gate. An
 optional per-talent `read_scope` is a **narrowing hint** only; it is not the
 default gate, and a talent never fails for reading an undeclared journal file.
 
-> The raw-read **tools** are built to this contract and are currently registered
-> on every cogitate run. Per-tier gating is a later milestone; check the run's
-> actual tool schema (`journal talent show <name> --prompt`) for what a specific
-> talent receives.
+> The raw-read **tools** are built to this contract and registered per resolved
+> access tier. Check the run's actual tool schema
+> (`journal talent show <name> --prompt`) for what a specific talent receives.
 
 ## Writes: only through `sol` domain commands
 
@@ -124,8 +123,11 @@ enforcement are layered on top of it.
 | Tier | Purpose | Surface |
 |---|---|---|
 | `normal` | default cogitate talents | the `sol` tool (`sol` / `sol call`), the bounded raw-read tier, a finalization tool |
-| `system-read` | diagnostics that also read scoped operational evidence (e.g. `steward`) | `normal` plus scoped reads of health / talent / log evidence |
-| `outbound` | comms-like talents that may submit something that leaves the machine (e.g. `support`) | `normal` reads / drafts; **submit is gated on an explicit, real per-send human approval supplied to the run** — never an agent self-grant, a static template, or a scheduled inject |
+| `system-read` | diagnostics boundary for scoped operational evidence (e.g. `steward`) | today its tool surface equals `normal`; the tier is the declared diagnostics boundary and extension point, with scoped evidence arriving through the talent pre-hook rather than an extra model read tool |
+| `outbound` | comms-like talents that may submit something that leaves the machine (e.g. `support`) | `normal` reads / drafts plus submit-capable support commands; until the per-send human-approval lode lands, an outbound run can still auto-submit via `--yes` — this tier only narrows who may submit |
+
+Policy denies support send verbs (`create`, `reply`, `attach`, `feedback`) for
+`normal` / `system-read` runs and allows them for `outbound` runs.
 
 **There is no `repair` tier in cogitate.** Health fact-gathering *and* repair are a
 deterministic supervisor/system workflow (explicitly launched and logged) — they do

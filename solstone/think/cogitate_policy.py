@@ -9,14 +9,23 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from solstone.think.cogitate_contract import (
+    COGITATE_ACCESS_TIERS,
+    capabilities_for_access_tier,
+)
+
 MAX_TURNS = 60
 DEFAULT_READ_CALL_BUDGET = 200
 
 _SOL_INVOCATION_RE = re.compile(r"(^sol\s|\bsol call\b)")
 _JOURNAL_COMMANDS = {"identity", "routines", "health", "talent"}
-_SHELL_CONTROL_TOKENS = {";", "&&", "||", "|", ">", ">>", "<", "<<"}
+_SHELL_CONTROL_TOKENS = {";", "&&", "||", "|", ">", ">>", "<", "<<", "$(", "`"}
 _WRITE_TOOLS = {"write_file", "replace"}
 _READ_TOOLS = {"read_file", "glob", "list_directory", "grep_search"}
+_SUBMIT_TIERS = tuple(
+    tier for tier in COGITATE_ACCESS_TIERS if capabilities_for_access_tier(tier).submit
+)
+_SUPPORT_SEND_VERBS = {"create", "reply", "attach", "feedback"}
 
 
 def _is_approved_journal_invocation(command: str) -> bool:
@@ -42,10 +51,12 @@ class MaxTurnsExhausted(RuntimeError):
 class CogitatePolicy:
     """In-process policy gate for cogitate tool calls."""
 
-    def __init__(self, *, allowed_roots: list[Path]) -> None:
+    def __init__(self, *, allowed_roots: list[Path], access_tier: str) -> None:
         self.allowed_roots = [
             Path(root).expanduser().resolve() for root in allowed_roots
         ]
+        self.access_tier = access_tier
+        self.submit_allowed = capabilities_for_access_tier(access_tier).submit
 
     def check(self, tool: str, args: dict[str, Any]) -> tuple[bool, str]:
         if tool in _WRITE_TOOLS:
@@ -53,21 +64,60 @@ class CogitatePolicy:
 
         if tool == "run_shell_command":
             command = str(args.get("command", ""))
-            if not (
-                _SOL_INVOCATION_RE.search(command)
-                or _is_approved_journal_invocation(command)
-            ):
+            is_sol_invocation = _SOL_INVOCATION_RE.search(command) is not None
+            is_approved_journal_invocation = _is_approved_journal_invocation(command)
+            if not (is_sol_invocation or is_approved_journal_invocation):
                 return (
                     False,
                     "policy_deny: run_shell_command restricted to sol"
                     " or approved journal invocations",
                 )
+            if is_sol_invocation and not self.submit_allowed:
+                send_verb = _support_send_verb(command)
+                if send_verb:
+                    required = " or ".join(_SUBMIT_TIERS)
+                    return (
+                        False,
+                        f"policy_deny: 'sol call support {send_verb}' requires "
+                        f"access_tier {required!r}; this run is {self.access_tier!r}",
+                    )
+                if _support_command_has_shell_control(command):
+                    return (
+                        False,
+                        "policy_deny: support commands may not be chained or wrapped "
+                        "with shell-control operators (run them one at a time)",
+                    )
             return True, "ok"
 
         if tool in _READ_TOOLS:
             return True, "ok"
 
         return True, "ok"
+
+
+def _command_tokens(command: str) -> list[str]:
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return command.split()
+
+
+def _support_send_verb(command: str) -> str | None:
+    tokens = _command_tokens(command)
+    for index in range(len(tokens) - 3):
+        if tokens[index : index + 3] != ["sol", "call", "support"]:
+            continue
+        verb = tokens[index + 3]
+        if verb in _SUPPORT_SEND_VERBS:
+            return verb
+    return None
+
+
+def _support_command_has_shell_control(command: str) -> bool:
+    lower_command = command.lower()
+    if "support" not in lower_command:
+        return False
+    return any(token in command for token in _SHELL_CONTROL_TOKENS)
 
 
 def _normalize_day(day: date | str) -> str:

@@ -24,6 +24,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
+from solstone.think.cogitate_contract import capabilities_for_access_tier
 from solstone.think.cogitate_policy import (
     DEFAULT_READ_CALL_BUDGET,
     MAX_TURNS,
@@ -787,35 +788,39 @@ async def run_cogitate(
             sol_tool_name="sol",
         )
         allowed_roots = _resolve_allowed_roots(config)
-        policy = CogitatePolicy(allowed_roots=allowed_roots)
+        access_tier = str(config.get("access_tier", "normal"))
+        caps = capabilities_for_access_tier(access_tier)
+        policy = CogitatePolicy(allowed_roots=allowed_roots, access_tier=access_tier)
         read_call_budget = int(
             config.get("read_call_budget", DEFAULT_READ_CALL_BUDGET) or 0
         )
         journal = Path(get_journal())
         llm = _build_llm(provider, model)
         usage_start = _usage_snapshot(llm)
-        sol_tools, _executor = _build_sol_tools(
-            policy=policy,
-            callback=callback,
-            read_call_budget=read_call_budget,
-        )
-        # openhands-sdk v1.23 resolves Agent.tools by spec name via the
-        # registry; passing ToolDefinition instances directly fails pydantic
-        # validation. Re-register the per-run SolTool instance (its executor
-        # closure captures this run's policy / callback / budget) and
-        # reference it by name.
-        register_tool("sol", sol_tools[0])
-        tool_specs = [Tool(name="sol")]
+        tool_specs = []
+        if caps.sol:
+            sol_tools, _executor = _build_sol_tools(
+                policy=policy,
+                callback=callback,
+                read_call_budget=read_call_budget,
+            )
+            # openhands-sdk v1.23 resolves Agent.tools by spec name via the
+            # registry; passing ToolDefinition instances directly fails pydantic
+            # validation. Re-register the per-run SolTool instance (its executor
+            # closure captures this run's policy / callback / budget) and
+            # reference it by name.
+            register_tool("sol", sol_tools[0])
+            tool_specs.append(Tool(name="sol"))
         from .read_tools import build_read_tools
 
-        # Per-tier gating is later; bounded reads register for every run today.
-        read_tools = build_read_tools(
-            journal=journal,
-            read_call_budget=read_call_budget,
-        )
-        for read_tool in read_tools:
-            register_tool(read_tool.name, read_tool)
-            tool_specs.append(Tool(name=read_tool.name))
+        if caps.reads:
+            read_tools = build_read_tools(
+                journal=journal,
+                read_call_budget=read_call_budget,
+            )
+            for read_tool in read_tools:
+                register_tool(read_tool.name, read_tool)
+                tool_specs.append(Tool(name=read_tool.name))
         default_tools = ["FinishTool"]
         if expects_emit_final:
             from .emit_final_tool import build_emit_final_tools

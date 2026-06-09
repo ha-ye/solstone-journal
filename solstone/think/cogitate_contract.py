@@ -12,6 +12,8 @@ re-typing the contract.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 COGITATE_RUNTIME_PREAMBLE = """\
 You are a solstone cogitate talent running inside the live system. This runtime contract is authoritative; do not assume capabilities beyond it.
 
@@ -36,9 +38,43 @@ FUTURE_ACCESS_TIERS = ("code-agent",)
 # The finalization mode a talent uses to signal completion.
 TALENT_FINALIZATION_MODES = ("emit_final", "FinishTool", "quiet")
 
+
+@dataclass(frozen=True)
+class AccessCapabilities:
+    sol: bool
+    reads: bool
+    submit: bool
+
+
+_ACCESS_TIER_CAPABILITIES: dict[str, AccessCapabilities] = {
+    "normal": AccessCapabilities(sol=True, reads=True, submit=False),
+    "system-read": AccessCapabilities(sol=True, reads=True, submit=False),
+    "outbound": AccessCapabilities(sol=True, reads=True, submit=True),
+}
+
+_missing_access_tiers = set(COGITATE_ACCESS_TIERS) - set(_ACCESS_TIER_CAPABILITIES)
+if _missing_access_tiers:
+    missing = ", ".join(sorted(_missing_access_tiers))
+    raise RuntimeError(f"missing access tier capability mapping for: {missing}")
+
+_stray_access_tiers = set(_ACCESS_TIER_CAPABILITIES) - set(COGITATE_ACCESS_TIERS)
+if _stray_access_tiers:
+    stray = ", ".join(sorted(_stray_access_tiers))
+    raise RuntimeError(f"stray access tier capability mapping for: {stray}")
+
+
+def capabilities_for_access_tier(tier: str) -> AccessCapabilities:
+    try:
+        return _ACCESS_TIER_CAPABILITIES[tier]
+    except KeyError as exc:
+        raise ValueError(f"unknown access_tier: {tier}") from exc
+
+
 __all__ = [
+    "AccessCapabilities",
     "COGITATE_RUNTIME_PREAMBLE",
     "COGITATE_ACCESS_TIERS",
     "FUTURE_ACCESS_TIERS",
     "TALENT_FINALIZATION_MODES",
+    "capabilities_for_access_tier",
 ]
