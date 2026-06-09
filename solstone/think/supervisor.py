@@ -17,7 +17,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -63,6 +63,9 @@ MAX_UPDATED_CATCHUP = 4
 TEMPFAIL_DELAY = 15  # seconds to wait before retrying a tempfail exit
 STOPPED_TICKS_THRESHOLD = 2
 LOCAL_SERVER_PROCESS_NAME = "llama-server"
+LOCAL_WEDGE_THRESHOLD = 3
+LOCAL_WEDGE_RECYCLE_GRACE_S = 120.0
+LOCAL_WEDGE_PROVIDER_MAP_CAP = 512
 LOCAL_SERVER_READY_TIMEOUT_S = 300.0
 LOCAL_SERVER_HEALTH_POLL_INTERVAL_S = 1.0
 LOCAL_MODEL_WARMING_UP_COPY = "Local model is warming up..."
@@ -779,6 +782,14 @@ _recovery_state = {
     "local_server_down": False,
 }
 
+# State for local provider wedge detection
+_wedge_state: dict[str, Any] = {
+    "providers": OrderedDict(),
+    "failures": set(),
+    "cooldown_until": 0.0,
+    "awaiting_recovery": False,
+}
+
 # Timeout before flushing stale segments (seconds)
 FLUSH_TIMEOUT = 3600
 
@@ -1180,6 +1191,89 @@ def _handle_supervisor_start_local(message: dict) -> None:
     if proc is not None:
         _managed_procs.append(proc)
         logging.info("started local server from start_local request")
+
+
+def _handle_cortex_outcome(message: dict) -> None:
+    """Recycle a wedged local model server after sustained generation failures."""
+    if message.get("tract") != "cortex":
+        return
+    event = message.get("event")
+    if event not in {"start", "finish", "error"}:
+        return
+    if _is_remote_mode:
+        return
+
+    use_id = message.get("use_id")
+    if not use_id:
+        return
+
+    if event == "start":
+        providers = _wedge_state["providers"]
+        providers[use_id] = message.get("provider")
+        while len(providers) > LOCAL_WEDGE_PROVIDER_MAP_CAP:
+            providers.popitem(last=False)
+        return
+
+    provider = _wedge_state["providers"].get(use_id)
+    if provider != "local":
+        return
+
+    if time.monotonic() < _wedge_state["cooldown_until"]:
+        return
+
+    failures = _wedge_state["failures"]
+    if event == "finish":
+        if _wedge_state["awaiting_recovery"]:
+            logging.info("local server wedge: recovered after recycle")
+            _wedge_state["awaiting_recovery"] = False
+        failures.clear()
+        return
+
+    if message.get("reason_code") != "provider_unavailable":
+        return
+
+    failures.add(use_id)
+    if len(failures) < LOCAL_WEDGE_THRESHOLD:
+        return
+
+    logging.warning(
+        "local server wedge: declared after %d local provider_unavailable failures "
+        "(use_ids=%s)",
+        len(failures),
+        sorted(failures),
+    )
+    port = read_service_port("local")
+    if port is None:
+        logging.warning(
+            "local server wedge: recycle deferred; local service port unavailable"
+        )
+        failures.clear()
+        return
+
+    from solstone.think.providers import local_server
+
+    state, _ = local_server._probe_health(port)
+    if state != local_server.STATE_READY:
+        logging.warning(
+            "local server wedge: recycle deferred; health state=%s",
+            state,
+        )
+        failures.clear()
+        return
+
+    proctitle = (
+        MLX_SERVER_PROCESS_NAME
+        if sys.platform == "darwin"
+        else LOCAL_SERVER_PROCESS_NAME
+    )
+    if _restart_service(proctitle):
+        logging.warning("local server wedge: recycling %s", proctitle)
+        failures.clear()
+        _wedge_state["awaiting_recovery"] = True
+        _wedge_state["cooldown_until"] = time.monotonic() + LOCAL_WEDGE_RECYCLE_GRACE_S
+    else:
+        logging.warning("local server wedge: recycle deferred; service not running")
+        failures.clear()
 
 
 def get_task_status(ref: str) -> dict:
@@ -1927,6 +2021,7 @@ def _handle_callosum_message(message: dict) -> None:
     _handle_activity_recorded(message)
     _handle_think_daily_complete(message)
     _handle_segment_event_log(message)
+    _handle_cortex_outcome(message)
 
 
 def _run_sync_tick(now: float) -> bool:
