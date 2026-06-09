@@ -63,17 +63,11 @@ def test_talent_label_for_unknown_values_raise():
         chat_copy.talent_label_for("exec", "queued")
 
 
-def test_liveness_and_retry_copy_bytes():
-    assert chat_copy.CHAT_LIVENESS_THINKING == "Sol is thinking…"
+def test_liveness_and_error_detail_copy_bytes():
+    assert chat_copy.CHAT_LIVENESS_THINKING == "sol is thinking…"
     assert chat_copy.CHAT_LIVENESS_TASK_FORMAT == "{label} {task}"
-    assert chat_copy.CHAT_ERROR_RETRY_LABEL == "Try again"
-    assert chat_copy.CHAT_ERROR_RETRY_ARIA_FORMAT == "Try again — re-send: {excerpt}"
-
-
-def test_chat_error_retry_excerpt():
-    assert chat_copy.chat_error_retry_excerpt("hi") == "hi"
-    assert chat_copy.chat_error_retry_excerpt("a" * 60) == "a" * 60
-    assert chat_copy.chat_error_retry_excerpt("a" * 61) == ("a" * 60) + "…"
+    assert chat_copy.CHAT_ERROR_DETAIL_EXPANDER_LABEL == "Show details"
+    assert chat_copy.CHAT_ERROR_DETAIL_COLLAPSER_LABEL == "Hide details"
 
 
 def test_thinking_copy_bytes():
@@ -83,7 +77,7 @@ CHAT_THINKING_SETTING_LABEL = "Thinking surfaces"
 CHAT_THINKING_OPT_ON_TAP = "Show on tap"
 CHAT_THINKING_OPT_ALWAYS = "Always show"
 CHAT_THINKING_OPT_NEVER = "Never show"
-CHAT_THINKING_SETTING_HELP = "Sol does some thinking before replying. Choose how much you want to see."
+CHAT_THINKING_SETTING_HELP = "sol does some thinking before replying. Choose how much you want to see."
 """
     actual = "\n".join(
         [
@@ -132,9 +126,13 @@ def test_js_parity():
     )
     assert f'CHAT_LIVENESS_THINKING: "{chat_copy.CHAT_LIVENESS_THINKING}"' in text
     assert f'CHAT_LIVENESS_TASK_FORMAT: "{chat_copy.CHAT_LIVENESS_TASK_FORMAT}"' in text
-    assert f'CHAT_ERROR_RETRY_LABEL: "{chat_copy.CHAT_ERROR_RETRY_LABEL}"' in text
     assert (
-        f'CHAT_ERROR_RETRY_ARIA_FORMAT: "{chat_copy.CHAT_ERROR_RETRY_ARIA_FORMAT}"'
+        "CHAT_ERROR_DETAIL_EXPANDER_LABEL: "
+        f'"{chat_copy.CHAT_ERROR_DETAIL_EXPANDER_LABEL}"'
+    ) in text
+    assert (
+        "CHAT_ERROR_DETAIL_COLLAPSER_LABEL: "
+        f'"{chat_copy.CHAT_ERROR_DETAIL_COLLAPSER_LABEL}"'
     ) in text
     expected_js_thinking = """CHAT_THINKING_EXPANDER_LABEL: "Show thinking",
 CHAT_THINKING_COLLAPSER_LABEL: "Hide thinking",
@@ -142,11 +140,10 @@ CHAT_THINKING_SETTING_LABEL: "Thinking surfaces",
 CHAT_THINKING_OPT_ON_TAP: "Show on tap",
 CHAT_THINKING_OPT_ALWAYS: "Always show",
 CHAT_THINKING_OPT_NEVER: "Never show",
-CHAT_THINKING_SETTING_HELP: "Sol does some thinking before replying. Choose how much you want to see.",
+CHAT_THINKING_SETTING_HELP: "sol does some thinking before replying. Choose how much you want to see.",
 """
     for expected_line in expected_js_thinking.splitlines():
         assert expected_line in text
-    assert "function chatErrorRetryExcerpt(text)" in text
 
 
 def test_closer_constants_byte_parity():

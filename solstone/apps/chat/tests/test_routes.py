@@ -213,15 +213,16 @@ def test_chat_day_renders_all_event_kinds(journal_copy, monkeypatch):
     assert "I couldn&#39;t reach the network" in html
 
 
-def test_chat_error_retry_backfills_owner_text(journal_copy, monkeypatch):
+def test_chat_error_detail_replaces_retry_button_without_mutating_events(
+    journal_copy, monkeypatch
+):
     day = "20990102"
     _set_today(monkeypatch, "20990103")
     env = _make_env(journal_copy, monkeypatch)
-    owner_text = "retry <this> & that"
     append_chat_event(
         "owner_message",
         ts=_ms(2099, 1, 2, 9, 0),
-        text=owner_text,
+        text="owner text",
         app="chat",
         path=f"/app/chat/{day}",
         facet="work",
@@ -230,65 +231,28 @@ def test_chat_error_retry_backfills_owner_text(journal_copy, monkeypatch):
         "chat_error",
         ts=_ms(2099, 1, 2, 9, 1),
         reason="network_unreachable",
-        use_id="use-retry-1",
-        detail="provider detail",
+        use_id="use-error-detail-1",
+        detail="provider <detail> & context",
     )
 
     response = env.client.get(f"/app/chat/{day}")
     html = response.get_data(as_text=True)
-    retry_aria = chat_copy.CHAT_ERROR_RETRY_ARIA_FORMAT.format(
-        excerpt=chat_copy.chat_error_retry_excerpt(owner_text)
-    )
 
     assert response.status_code == 200
-    assert 'class="chat-error-retry"' in html
-    assert f'data-retry-text="{markupsafe_escape(owner_text)}"' in html
-    assert f'aria-label="{markupsafe_escape(retry_aria)}"' in html
-    assert f">{chat_copy.CHAT_ERROR_RETRY_LABEL}</button>" in html
-    assert html.index("chat-error-detail") < html.index("chat-error-retry")
+    assert 'class="chat-error-detail-expander"' in html
+    assert 'aria-expanded="false"' in html
+    assert 'data-error-detail-id="chat-error-detail-1"' in html
+    retry_class = "-".join(("chat", "error", "retry"))
+    assert f'class="{retry_class}"' not in html
+    assert "data-retry-text" not in html
+    expected_content = (
+        '<div class="chat-error-detail-content" id="chat-error-detail-1" hidden>'
+        f"<code>{markupsafe_escape('provider <detail> & context')}</code></div>"
+    )
+    assert expected_content in html
     events = read_chat_events(day)
-    assert all("retry_text" not in event for event in events)
-
-
-def test_chat_error_retry_backfill_uses_fifo(journal_copy, monkeypatch):
-    day = "20990102"
-    _set_today(monkeypatch, "20990103")
-    env = _make_env(journal_copy, monkeypatch)
-    for index, text in enumerate(("first turn", "second turn")):
-        append_chat_event(
-            "owner_message",
-            ts=_ms(2099, 1, 2, 9, index),
-            text=text,
-            app="chat",
-            path=f"/app/chat/{day}",
-            facet="work",
-        )
-    append_chat_event(
-        "chat_error",
-        ts=_ms(2099, 1, 2, 9, 3),
-        reason="unknown",
-        use_id="use-retry-fifo",
-    )
-
-    response = env.client.get(f"/app/chat/{day}")
-    html = response.get_data(as_text=True)
-
-    assert response.status_code == 200
-    assert 'data-retry-text="first turn"' in html
-    assert 'data-retry-text="second turn"' not in html
-
-
-def test_build_chat_error_retry_texts_consumes_on_terminals():
-    from solstone.apps.chat.routes import _build_chat_error_retry_texts
-
-    events = [
-        {"kind": "owner_message", "text": "answered"},
-        {"kind": "sol_message", "text": "done"},
-        {"kind": "owner_message", "text": "failed"},
-        {"kind": "chat_error", "reason": "unknown"},
-    ]
-
-    assert _build_chat_error_retry_texts(events) == {3: "failed"}
+    retry_key = "".join(("retry", "_text"))
+    assert all(retry_key not in event for event in events)
 
 
 def test_chat_day_renders_owner_language_talent_labels(journal_copy, monkeypatch):
@@ -565,6 +529,55 @@ def test_chat_thinking_live_js_handler_is_wired():
     assert "button.dataset.thinkingId" in source
     assert "content.textContent = contentText" in source
     assert "innerHTML = contentText" not in source
+
+
+def test_chat_error_detail_renders_expander_on_tap(journal_copy, monkeypatch):
+    day = "20990102"
+    _set_today(monkeypatch, "20990103")
+    env = _make_env(journal_copy, monkeypatch)
+    detail = "Raw provider <detail>"
+    append_chat_event(
+        "chat_error",
+        ts=_ms(2099, 1, 2, 9, 1),
+        reason="unknown",
+        use_id="use-error-detail",
+        detail=detail,
+    )
+
+    html = env.client.get(f"/app/chat/{day}").get_data(as_text=True)
+
+    assert 'class="chat-error-detail-expander"' in html
+    assert 'aria-expanded="false"' in html
+    assert 'data-error-detail-id="chat-error-detail-0"' in html
+    assert f">{chat_copy.CHAT_ERROR_DETAIL_EXPANDER_LABEL}</button>" in html
+    expected_content = (
+        '<div class="chat-error-detail-content" id="chat-error-detail-0" hidden>'
+        f"<code>{markupsafe_escape(detail)}</code></div>"
+    )
+    assert expected_content in html
+    retry_class = "-".join(("chat", "error", "retry"))
+    assert f'class="{retry_class}"' not in html
+
+
+def test_chat_error_detail_css_selector_is_wired():
+    css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
+
+    assert ".chat-error-detail-content" in css
+    assert "opacity: 0.7" in css
+    assert "font-style: italic" in css
+    assert "white-space: pre-wrap" in css
+
+
+def test_chat_error_detail_live_js_handler_is_wired():
+    source = Path("solstone/apps/chat/workspace.html").read_text(encoding="utf-8")
+
+    assert "button.chat-error-detail-expander" in source
+    assert "toggleErrorDetailSurface(errorDetailExpander)" in source
+    assert "button.dataset.errorDetailId" in source
+    assert "detail: msg.detail || ''" in source
+    assert "provider: msg.provider || ''" in source
+    assert "code.textContent = detailText" in source
+    assert "innerHTML = detailText" not in source
 
 
 def test_chat_invalid_days_return_404(journal_copy, monkeypatch):

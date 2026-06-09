@@ -220,7 +220,7 @@ def test_http_error_message_falls_back_for_non_json_body() -> None:
         (
             {"tract": "cortex", "event": "start", "provider": "google"},
             False,
-            "Sol is thinking…",
+            "sol is thinking…",
         ),
         (
             {"tract": "cortex", "event": "start", "provider": "google"},
@@ -230,7 +230,7 @@ def test_http_error_message_falls_back_for_non_json_body() -> None:
         (
             {"tract": "cortex", "event": "thinking", "summary": "reading context"},
             False,
-            "Sol is thinking…",
+            "sol is thinking…",
         ),
         (
             {"tract": "cortex", "event": "thinking", "summary": "reading context"},
@@ -322,7 +322,7 @@ def test_render_progress_lines_are_deduped_by_caller_pattern() -> None:
             lines.append(line)
             last = line
 
-    assert lines == ["Sol is thinking…"]
+    assert lines == ["sol is thinking…"]
 
 
 def test_persisted_terminal_returns_last_finish(tmp_path, monkeypatch) -> None:
@@ -402,7 +402,7 @@ def test_terminal_error_message_uses_chat_view_for_known_reason() -> None:
             use_id="",
             day=DAY,
         )
-        == "chat took too long — try again"
+        == "chat took too long"
     )
 
 
@@ -504,7 +504,7 @@ def test_main_persisted_chat_error_maps_to_chat_view(
     assert exc_info.value.code == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err == "sol: chat took too long — try again\n"
+    assert captured.err == "sol: chat took too long\n"
 
 
 def test_main_empty_result_is_error(tmp_path, monkeypatch, capsys) -> None:
@@ -743,4 +743,4 @@ def test_main_live_proxy_progress_and_finish(tmp_path, monkeypatch, capsys) -> N
     assert outcome == {}
     captured = capsys.readouterr()
     assert captured.out == "Live answer\n"
-    assert captured.err == "Sol is thinking…\n"
+    assert captured.err == "sol is thinking…\n"

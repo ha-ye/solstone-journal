@@ -150,7 +150,7 @@ def test_render_unknown_with_empty_or_unknown_provider():
     for provider in ("", "weirdslug"):
         assert chat_view("unknown", provider) == {
             "code": "unknown",
-            "message": "chat had trouble — try again",
+            "message": "chat had trouble",
             "action": None,
         }
 

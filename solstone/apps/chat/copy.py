@@ -18,12 +18,8 @@ CHAT_QUEUE_INDICATOR_PLURAL_FORMAT = "{count} messages waiting"
 CHAT_QUEUE_DEPTH_CAP_MESSAGE = "Give sol a moment to catch up — you have 10 messages waiting."
 
 # T1.1 — liveness placeholder bubble
-CHAT_LIVENESS_THINKING = "Sol is thinking…"
+CHAT_LIVENESS_THINKING = "sol is thinking…"
 CHAT_LIVENESS_TASK_FORMAT = "{label} {task}"
-
-# T1.2 — chat error retry button
-CHAT_ERROR_RETRY_LABEL = "Try again"
-CHAT_ERROR_RETRY_ARIA_FORMAT = "Try again — re-send: {excerpt}"
 
 # T2.2 — closer framing (CPO LOCKED)
 CHAT_CLOSER_LOOP_EXHAUSTED_PREFIX = "Here's what I have so far:"
@@ -34,28 +30,16 @@ CHAT_CLOSER_TALENT_ERRORED_GENERIC = "I couldn't finish that lookup. Want to try
 # T2.4 — thinking summary surfaces (CPO LOCKED)
 CHAT_THINKING_EXPANDER_LABEL = "Show thinking"
 CHAT_THINKING_COLLAPSER_LABEL = "Hide thinking"
+CHAT_ERROR_DETAIL_EXPANDER_LABEL = "Show details"
+CHAT_ERROR_DETAIL_COLLAPSER_LABEL = "Hide details"
 CHAT_THINKING_SETTING_LABEL = "Thinking surfaces"
 CHAT_THINKING_OPT_ON_TAP = "Show on tap"
 CHAT_THINKING_OPT_ALWAYS = "Always show"
 CHAT_THINKING_OPT_NEVER = "Never show"
-CHAT_THINKING_SETTING_HELP = "Sol does some thinking before replying. Choose how much you want to see."
+CHAT_THINKING_SETTING_HELP = "sol does some thinking before replying. Choose how much you want to see."
 # fmt: on
 
 from typing import Literal
-
-_CHAT_ERROR_RETRY_EXCERPT_LIMIT = 60
-
-
-def chat_error_retry_excerpt(text: str) -> str:
-    """Truncate owner text for the retry button aria-label.
-
-    Returns up to 60 source code points; appends U+2026 when truncated.
-    """
-    source = text or ""
-    if len(source) <= _CHAT_ERROR_RETRY_EXCERPT_LIMIT:
-        return source
-    return source[:_CHAT_ERROR_RETRY_EXCERPT_LIMIT] + "…"
-
 
 _TALENT_LABELS: dict[tuple[str, str], str] = {
     ("exec", "running"): TALENT_LABEL_EXEC_RUNNING,

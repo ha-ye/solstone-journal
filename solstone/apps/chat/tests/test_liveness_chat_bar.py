@@ -53,6 +53,8 @@ def test_chat_bar_sets_phase_one_from_owner_message(chat_html):
         "setStatus(window.solChatCopy.CHAT_LIVENESS_THINKING, "
         "window.solChatCopy.CHAT_LIVENESS_THINKING);"
     ) in chat_html
+    assert "statusWrap.classList.add('chat-bar-status--thinking');" in chat_html
+    assert "statusWrap.classList.remove('chat-bar-status--error');" in chat_html
 
 
 def test_chat_bar_sets_phase_two_without_blocking_talent_tray(chat_html):
@@ -66,6 +68,16 @@ def test_chat_bar_sets_phase_two_without_blocking_talent_tray(chat_html):
     assert "setStatus(composed, composed);" in chat_html
 
 
+def test_chat_bar_enter_submits(chat_html):
+    assert "function handleComposerKeydown(event)" in chat_html
+    assert "event.isComposing === true || event.keyCode === 229" in chat_html
+    assert "event.key === 'Enter' && event.shiftKey" in chat_html
+    assert "event.key === 'Enter'" in chat_html
+    assert "form.requestSubmit()" in chat_html
+    assert "input.addEventListener('keydown', handleComposerKeydown);" in chat_html
+    assert chat_html.count("input.addEventListener('keydown'") == 1
+
+
 def test_chat_bar_terminal_overwrites_liveness_without_retry_button(chat_html):
     assert (
         "if (chatBarPendingPlaceholders.length > 0) chatBarPendingPlaceholders.shift();"
@@ -73,10 +85,16 @@ def test_chat_bar_terminal_overwrites_liveness_without_retry_button(chat_html):
     )
     assert "setStatus(msg.text || '', msg.notes || msg.text || '');" in chat_html
     assert (
-        "setStatus(renderedReason.message, detail, renderedReason.action);" in chat_html
+        "setStatus(renderedReason.message, renderedReason.message, renderedReason.action);"
+        in chat_html
     )
+    assert "statusWrap.classList.remove('chat-bar-status--thinking');" in chat_html
+    assert "statusWrap.classList.add('chat-bar-status--error');" in chat_html
+    assert "statusErrorActive = true;" in chat_html
+    assert "window.location.href = '/app/chat/';" in chat_html
 
     app_template = Path("solstone/convey/templates/app.html").read_text(
         encoding="utf-8"
     )
-    assert "chat-error-retry" not in app_template
+    retry_class = "-".join(("chat", "error", "retry"))
+    assert retry_class not in app_template

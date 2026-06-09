@@ -1715,6 +1715,10 @@ body.menu-all .menu-bar {
   cursor: pointer;
 }
 
+.chat-bar-status--error {
+  cursor: pointer;
+}
+
 .chat-bar-status #chatBarStatusText {
   display: block;
   min-width: 0;
@@ -1724,6 +1728,24 @@ body.menu-all .menu-bar {
   color: #888;
   font-size: 13px;
   line-height: 1.4;
+}
+
+.chat-bar-status--thinking #chatBarStatusText {
+  color: var(--facet-color, #b06a1a);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.chat-bar-status--thinking #chatBarStatusText::after {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  vertical-align: middle;
+  animation: sol-ping-pulse 1.2s ease-in-out infinite;
 }
 
 .chat-bar-queue {
@@ -2840,6 +2862,8 @@ body.has-date-nav .chat-app {
 
 .chat-thinking-content { opacity: 0.7; font-style: italic; white-space: pre-wrap; }
 
+.chat-error-detail-content { opacity: 0.7; font-style: italic; white-space: pre-wrap; }
+
 .chat-origin-tag {
   max-width: 70%;
   color: #6b7280;
@@ -2981,13 +3005,6 @@ body.has-date-nav .chat-app {
   padding: 10px 12px;
   border: 1px solid rgba(180, 35, 24, 0.2);
   border-radius: 14px;
-}
-
-.chat-error-detail {
-  margin-top: 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 11px;
-  color: #7f1d1d;
 }
 
 .surface-state {

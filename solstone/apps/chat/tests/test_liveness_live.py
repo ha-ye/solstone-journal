@@ -70,19 +70,4 @@ def test_live_script_removes_placeholder_on_terminal_events(chat_html):
     assert (
         "placeholder.element.parentNode.removeChild(placeholder.element)" in chat_html
     )
-    assert "msg._retryText = placeholder.ownerText;" in chat_html
-
-
-def test_live_script_renders_and_delegates_retry(chat_html):
-    assert "button.className = 'chat-error-retry';" in chat_html
-    assert "button.dataset.retryText = event._retryText;" in chat_html
-    assert "window.solChatCopy.CHAT_ERROR_RETRY_ARIA_FORMAT" in chat_html
-    assert "window.solChatCopy.CHAT_ERROR_RETRY_LABEL" in chat_html
-    assert "transcript.addEventListener('click'" in chat_html
-    assert "button.chat-error-retry" in chat_html
-    assert "fetch('/api/chat'" in chat_html
-    assert "if (!response.ok) retryButton.disabled = false;" in chat_html
-    assert "message: text" in chat_html
-    assert "app: 'chat'" in chat_html
-    assert "path: window.location.pathname" in chat_html
-    assert "facet: window.selectedFacet || null" in chat_html
+    assert "detail: msg.detail || ''" in chat_html

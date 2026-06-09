@@ -43,7 +43,7 @@
       "action": null
     },
     "local_server_unhealthy": {
-      "template": "the local model server is not responding",
+      "template": "the local model isn't responding",
       "action": {"label": "Open Local Model Setup", "href": "/app/settings/#providers"}
     },
     "unsupported_platform": {
@@ -67,7 +67,7 @@
       "action": {"label": "Open Settings", "href": "/app/settings/#providers"}
     },
     "provider_quota_exceeded": {
-      "template": "your {provider} quota is spent — try again later",
+      "template": "your {provider} quota is spent",
       "action": null
     },
     "network_unreachable": {
@@ -79,23 +79,23 @@
       "action": null
     },
     "provider_unavailable": {
-      "template": "{provider} is having trouble — try again",
+      "template": "{provider} is having trouble right now",
       "action": null
     },
     "chat_pipeline_unavailable": {
-      "template": "the chat pipeline isn't ready yet — try again in a moment",
+      "template": "the chat pipeline isn't ready yet",
       "action": null
     },
     "chat_timeout": {
-      "template": "chat took too long — try again",
+      "template": "chat took too long",
       "action": null
     },
     "no_output": {
-      "template": "I didn't get a response — try again",
+      "template": "I didn't get a response",
       "action": null
     },
     "unknown": {
-      "template": "chat had trouble — try again",
+      "template": "chat had trouble",
       "action": null
     }
   });
