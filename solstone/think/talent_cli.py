@@ -10,9 +10,12 @@ Usage:
     journal talent                          List all prompts grouped by schedule
     journal talent list --schedule daily    Filter by schedule type
     journal talent list --json              Output all configs as JSONL
+    journal talent inventory                List cogitate talent runtime surfaces
+    journal talent inventory --json         Output cogitate inventory as JSON
     journal talent show <name>              Show details for a specific prompt
     journal talent show <name> --json       Output a single prompt as JSONL
-    journal talent show <name> --prompt     Show full prompt context (dry-run)
+    journal talent show <name> --prompt     Cogitate: show effective prompt + tools
+                                            Others: show dry-run context
     journal talent logs                     Show recent talent runs
     journal talent logs <agent> -c 5        Show last 5 runs for a talent
     journal talent log <id>                 Show events for a talent run
@@ -35,9 +38,18 @@ from typing import Any
 
 import frontmatter
 
+from solstone.think.cogitate_contract import (
+    COGITATE_ACCESS_TIERS,
+    COGITATE_READ_TOOL_NAMES,
+    capabilities_for_access_tier,
+    expects_emit_final,
+)
+from solstone.think.providers.cli import assemble_prompt
 from solstone.think.talent import (
+    APPS_DIR,
     TALENT_DIR,
     _load_prompt_metadata,
+    get_talent,
     get_talent_configs,
 )
 from solstone.think.utils import day_path, setup_cli
@@ -370,6 +382,241 @@ def json_output(
 
     for key, info in sorted(configs.items()):
         print(json.dumps(_to_jsonl_record(key, info), default=str))
+
+
+def _tier_summary(*, submit: bool) -> str:
+    """Return the compact capability summary shown beside a tier."""
+    if submit:
+        return "sol+reads+submit"
+    return "sol+reads, no submit"
+
+
+def _tool_names_for_row(row: dict[str, Any]) -> list[str]:
+    """Build display tool names from row capability booleans."""
+    tools: list[str] = []
+    if row.get("sol"):
+        tools.append("sol")
+    if row.get("reads"):
+        tools.extend(COGITATE_READ_TOOL_NAMES)
+    return tools
+
+
+def _tool_surface_line(config: dict[str, Any]) -> str:
+    """Build the per-talent tool/finalizer/tier summary line."""
+    access_tier = str(config.get("access_tier", "normal"))
+    caps = capabilities_for_access_tier(access_tier)
+    row = {
+        "sol": caps.sol,
+        "reads": caps.reads,
+    }
+    tools = ", ".join(_tool_names_for_row(row))
+    finalize = "emit_final" if expects_emit_final(config) else "FinishTool"
+    return (
+        f"tools: {tools}; finalize: {finalize}; tier: {access_tier} "
+        f"({_tier_summary(submit=caps.submit)})"
+    )
+
+
+def show_effective_prompt(
+    name: str,
+    *,
+    facet: str | None = None,
+    full: bool = False,
+) -> None:
+    """Show the static effective prompt assembled for a cogitate talent."""
+    try:
+        config = get_talent(name, facet=facet)
+    except FileNotFoundError:
+        print(f"Prompt not found: {name}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as exc:
+        print(f"Failed to load talent config: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    access_tier = str(config.get("access_tier", "normal"))
+    prompt_body, system_instruction = assemble_prompt(config, sol_tool_name="sol")
+
+    print(f"\n  Effective prompt for: {name}  tier: {access_tier}")
+    _format_section("SYSTEM INSTRUCTION", system_instruction or "", full=full)
+    _format_section("INSTRUCTION", prompt_body, full=full)
+    print(_tool_surface_line(config))
+    print()
+
+
+def _discover_cogitate_keys() -> list[str]:
+    """Discover enabled cogitate talent keys without eager global validation."""
+    keys: list[str] = []
+
+    if TALENT_DIR.is_dir():
+        for md_path in sorted(TALENT_DIR.glob("*.md")):
+            info = _load_prompt_metadata(md_path)
+            if info.get("type") == "cogitate" and not info.get("disabled", False):
+                keys.append(md_path.stem)
+
+    if APPS_DIR.is_dir():
+        for app_path in sorted(APPS_DIR.iterdir()):
+            if not app_path.is_dir() or app_path.name.startswith("_"):
+                continue
+            app_talent_dir = app_path / "talent"
+            if not app_talent_dir.is_dir():
+                continue
+            for md_path in sorted(app_talent_dir.glob("*.md")):
+                info = _load_prompt_metadata(md_path)
+                if info.get("type") == "cogitate" and not info.get("disabled", False):
+                    keys.append(f"{app_path.name}:{md_path.stem}")
+
+    return sorted(keys)
+
+
+def _scan_command_examples(body: str, *, cap: int = 6) -> list[str]:
+    """Scan prompt body text for command examples."""
+    pattern = re.compile(
+        r"`(?P<cmd>(?:sol\s+call\s+[^\n`]+|journal\s+"
+        r"(?:identity|routines|health|talent)\b[^\n`]*))`"
+    )
+    seen: set[str] = set()
+    result: list[str] = []
+    for match in pattern.finditer(body):
+        command = " ".join(match.group("cmd").split()).rstrip(".,;:")
+        if command in seen:
+            continue
+        seen.add(command)
+        result.append(command)
+        if len(result) >= cap:
+            break
+    return result
+
+
+def _normalize_schedule(value: Any) -> str:
+    """Fold absent and explicit none schedules into one rendered value."""
+    if value is None or value == "none":
+        return "-"
+    return str(value)
+
+
+def _build_inventory_rows() -> list[dict[str, Any]]:
+    """Build normalized cogitate inventory rows."""
+    rows: list[dict[str, Any]] = []
+    for key in _discover_cogitate_keys():
+        try:
+            config = get_talent(key)
+            access_tier = str(config.get("access_tier", "normal"))
+            caps = capabilities_for_access_tier(access_tier)
+            rows.append(
+                {
+                    "name": key,
+                    "schedule": _normalize_schedule(config.get("schedule")),
+                    "cwd": str(config.get("cwd", "journal")),
+                    "write": "ro",
+                    "output": str(config.get("output") or "-"),
+                    "access_tier": access_tier,
+                    "finalize": (
+                        "emit_final" if expects_emit_final(config) else "FinishTool"
+                    ),
+                    "sol": caps.sol,
+                    "reads": caps.reads,
+                    "submit": caps.submit,
+                    "command_examples": _scan_command_examples(
+                        config.get("user_instruction", "")
+                    ),
+                    "error": None,
+                }
+            )
+        except Exception as exc:
+            rows.append(
+                {
+                    "name": key,
+                    "schedule": "-",
+                    "cwd": "-",
+                    "write": "-",
+                    "output": "-",
+                    "access_tier": "-",
+                    "finalize": "-",
+                    "sol": False,
+                    "reads": False,
+                    "submit": False,
+                    "command_examples": [],
+                    "error": str(exc),
+                }
+            )
+    return rows
+
+
+def _tier_inventory() -> dict[str, dict[str, Any]]:
+    """Build access-tier capability inventory."""
+    tiers: dict[str, dict[str, Any]] = {}
+    for tier in COGITATE_ACCESS_TIERS:
+        caps = capabilities_for_access_tier(tier)
+        tiers[tier] = {
+            "sol": caps.sol,
+            "reads": caps.reads,
+            "submit": caps.submit,
+            "tools": ["sol", *COGITATE_READ_TOOL_NAMES],
+        }
+    return tiers
+
+
+def _render_inventory_table(rows: list[dict[str, Any]]) -> None:
+    """Print cogitate inventory rows as a compact table."""
+    if not rows:
+        print("No cogitate talents found.")
+        return
+
+    name_width = max(max(len(str(row["name"])) for row in rows), 10)
+    schedule_width = 8
+    tier_width = 12
+    finalize_width = 10
+    examples_width = 36
+    header = (
+        f"  {'NAME':<{name_width}}  {'SCHEDULE':<{schedule_width}}  "
+        f"{'TIER':<{tier_width}}  {'CWD':<7}  {'WRITE':<5}  {'OUTPUT':<6}  "
+        f"{'FINALIZE':<{finalize_width}}  EXAMPLES"
+    )
+    print(header)
+    print()
+
+    for row in rows:
+        if row["error"]:
+            print(f"  {row['name']:<{name_width}}  ERROR: {row['error']}")
+            continue
+
+        examples = "; ".join(row["command_examples"]) or "-"
+        print(
+            f"  {row['name']:<{name_width}}  "
+            f"{row['schedule']:<{schedule_width}}  "
+            f"{row['access_tier']:<{tier_width}}  "
+            f"{row['cwd']:<7}  "
+            f"{row['write']:<5}  "
+            f"{row['output']:<6}  "
+            f"{row['finalize']:<{finalize_width}}  "
+            f"{examples[:examples_width]}"
+        )
+
+    tiers = _tier_inventory()
+    print()
+    print("tiers:")
+    for tier, info in tiers.items():
+        print(
+            f"  {tier}: tools={', '.join(info['tools'])}; "
+            f"{_tier_summary(submit=bool(info['submit']))}"
+        )
+
+
+def _render_inventory_json(
+    rows: list[dict[str, Any]],
+    tiers: dict[str, dict[str, Any]],
+) -> None:
+    """Print cogitate inventory rows and tier data as JSON."""
+    print(json.dumps({"talents": rows, "tiers": tiers}, default=str))
+
+
+def inventory(*, as_json: bool = False) -> None:
+    """Print cogitate talent inventory."""
+    rows = _build_inventory_rows()
+    if as_json:
+        _render_inventory_json(rows, _tier_inventory())
+        return
+    _render_inventory_table(rows)
 
 
 def _truncate_content(text: str, max_lines: int = 100) -> tuple[str, int]:
@@ -1140,6 +1387,12 @@ def main() -> None:
     )
     list_parser.add_argument("--json", action="store_true", help="Output as JSONL")
 
+    # --- inventory subcommand ---
+    inventory_parser = subparsers.add_parser(
+        "inventory", help="List cogitate talent runtime surfaces"
+    )
+    inventory_parser.add_argument("--json", action="store_true", help="Output as JSON")
+
     # --- show subcommand ---
     show_parser = subparsers.add_parser(
         "show", help="Show details for a specific prompt"
@@ -1201,17 +1454,30 @@ def main() -> None:
 
     if args.subcommand == "show":
         if args.prompt:
-            show_prompt_context(
-                args.name,
-                day=args.day,
-                segment=args.segment,
-                facet=args.facet,
-                activity=args.activity,
-                query=args.query,
-                full=args.full,
-            )
+            md_path = _resolve_md_path(args.name)
+            if (
+                md_path.exists()
+                and _load_prompt_metadata(md_path).get("type") == "cogitate"
+            ):
+                if args.day or args.segment or args.activity or args.query:
+                    print(
+                        "Static cogitate prompt view ignores runtime args except --facet."
+                    )
+                show_effective_prompt(args.name, facet=args.facet, full=args.full)
+            else:
+                show_prompt_context(
+                    args.name,
+                    day=args.day,
+                    segment=args.segment,
+                    facet=args.facet,
+                    activity=args.activity,
+                    query=args.query,
+                    full=args.full,
+                )
         else:
             show_prompt(args.name, as_json=args.json)
+    elif args.subcommand == "inventory":
+        inventory(as_json=args.json)
     elif args.subcommand == "logs":
         logs_runs(
             agent=args.agent,
