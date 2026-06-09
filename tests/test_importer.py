@@ -5,6 +5,7 @@ import datetime as dt
 import hashlib
 import importlib
 import json
+import os
 import subprocess
 import time
 import zipfile
@@ -14,6 +15,7 @@ from unittest.mock import ANY, MagicMock, patch
 import pytest
 
 from solstone.think.importers.file_importer import ImportPreview, ImportResult
+from solstone.think.importers.shared import install_source_file
 from solstone.think.utils import day_path
 
 
@@ -451,6 +453,58 @@ def test_write_markdown_segments(tmp_path, monkeypatch):
     assert second_md.exists()
 
     assert segments == [("20260301", "120000_300"), ("20260302", "090000_300")]
+
+
+def test_install_source_file_preserves_content_and_mtime(tmp_path):
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"\x00source bytes\xff")
+    os.utime(src, (1_600_000_000, 1_600_000_000))
+    dest = tmp_path / "dest" / "original.bin"
+
+    install_source_file(src, dest)
+
+    assert dest.read_bytes() == src.read_bytes()
+    assert dest.stat().st_mtime == src.stat().st_mtime
+
+
+def test_install_source_file_drops_source_mode(tmp_path):
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"source bytes")
+    os.chmod(src, 0o700)
+    dest = tmp_path / "dest" / "original.bin"
+
+    install_source_file(src, dest)
+
+    assert dest.stat().st_mode & 0o777 != 0o700
+
+
+def test_install_source_file_failure_clean(tmp_path, monkeypatch):
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"source bytes")
+    dest = tmp_path / "dest" / "original.bin"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"existing bytes")
+
+    def fail_install_file(*args, **kwargs):
+        raise RuntimeError("install failed")
+
+    monkeypatch.setattr(
+        "solstone.think.importers.shared.install_file",
+        fail_install_file,
+    )
+
+    with pytest.raises(RuntimeError):
+        install_source_file(src, dest)
+
+    assert list(dest.parent.glob(".tmp_*")) == []
+    assert dest.read_bytes() == b"existing bytes"
+
+    missing_dest = tmp_path / "missing" / "original.bin"
+    with pytest.raises(RuntimeError):
+        install_source_file(src, missing_dest)
+
+    assert list(missing_dest.parent.glob(".tmp_*")) == []
+    assert not missing_dest.exists()
 
 
 def test_chatgpt_importer_segments(tmp_path, monkeypatch):

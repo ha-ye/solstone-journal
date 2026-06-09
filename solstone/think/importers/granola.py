@@ -14,7 +14,6 @@ No network calls — reads local files only.
 import datetime as dt
 import logging
 import re
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +22,7 @@ import frontmatter
 from solstone.think.entities.seeding import seed_entities
 from solstone.think.importers.shared import (
     _window_messages,
+    install_source_file,
     write_segment,
 )
 from solstone.think.importers.sync import load_sync_state, save_sync_state
@@ -252,7 +252,7 @@ def _import_transcript(
 
             seg_dir = os.path.dirname(json_path)
             source_dest = os.path.join(seg_dir, "source.md")
-            shutil.copy2(str(md_file), source_dest)
+            install_source_file(md_file, Path(source_dest))
             created_files.append(source_dest)
             source_copied = True
 

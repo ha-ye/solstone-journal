@@ -8,7 +8,6 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import re
-import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -18,7 +17,8 @@ if TYPE_CHECKING:
 from solstone.think.entities.seeding import seed_entities
 from solstone.think.features import require_extra
 from solstone.think.importers.file_importer import ImportPreview, ImportResult
-from solstone.think.importers.shared import write_content_manifest
+from solstone.think.importers.shared import install_source_file, write_content_manifest
+from solstone.think.journal_io import write_text
 from solstone.think.models import generate
 from solstone.think.utils import day_path
 
@@ -277,14 +277,14 @@ class DocumentImporter:
                 segment_dir.mkdir(parents=True, exist_ok=True)
 
                 original_path = segment_dir / "original.pdf"
-                shutil.copy2(pdf_path, original_path)
+                install_source_file(pdf_path, original_path)
                 md_path = segment_dir / "document_transcript.md"
                 md_text = _render_document_markdown(
                     title,
                     text,
                     {"page_count": page_count, "date": date_str},
                 )
-                md_path.write_text(md_text, encoding="utf-8")
+                write_text(md_path, md_text)
 
                 created_files.append(str(md_path))
                 segments.append((day, seg_key))

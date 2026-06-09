@@ -9,11 +9,12 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
 from solstone.think.importers.utils import save_import_file, write_import_metadata
-from solstone.think.journal_io import atomic_replace
+from solstone.think.journal_io import atomic_replace, install_file, write_text
 from solstone.think.media import MIME_TYPES
 from solstone.think.utils import day_path, get_journal, now_ms
 
@@ -85,8 +86,7 @@ def _write_import_jsonl(
             entry = {**entry, "source": "import"}
         jsonl_lines.append(json.dumps(entry))
 
-    with open(file_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(jsonl_lines) + "\n")
+    write_text(Path(file_path), "\n".join(jsonl_lines) + "\n")
 
 
 def write_segment(
@@ -273,11 +273,41 @@ def write_markdown_segments(
         segment_dir = day_path(day) / f"import.{source}" / seg_key
         segment_dir.mkdir(parents=True, exist_ok=True)
         md_path = segment_dir / filename
-        md_path.write_text(render(items) + "\n", encoding="utf-8")
+        write_text(md_path, render(items) + "\n")
         created_files.append(str(md_path))
         segments.append((day, seg_key))
 
     return created_files, segments
+
+
+def install_source_file(src: Path, dest: Path) -> None:
+    """Install an original source file onto dest atomically, preserving mtime.
+
+    Streams src into a same-directory temp in dest.parent, then promotes it via
+    journal_io.install_file. The installed file takes the journal default mode
+    (mkstemp-derived), NOT src's mode -- a deliberate, conservative choice for
+    arbitrary user-supplied originals (unlike shutil.copy2, which copies mode).
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    src_mtime = src.stat().st_mtime
+    temp_handle = tempfile.NamedTemporaryFile(
+        mode="wb", dir=dest.parent, prefix=".tmp_", suffix=".tmp", delete=False
+    )
+    temp_path = Path(temp_handle.name)
+    promoted = False
+    try:
+        with open(src, "rb") as src_handle:
+            shutil.copyfileobj(src_handle, temp_handle)
+        temp_handle.close()
+        install_file(temp_path, dest)
+        promoted = True
+    finally:
+        if not temp_handle.closed:
+            temp_handle.close()
+        if not promoted:
+            temp_path.unlink(missing_ok=True)
+    # install_file does not preserve mtime; restore it from the source.
+    os.utime(dest, (src_mtime, src_mtime))
 
 
 # MIME type mapping for import metadata

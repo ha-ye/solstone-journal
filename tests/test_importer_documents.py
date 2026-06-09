@@ -3,6 +3,7 @@
 
 import datetime as dt
 import importlib
+import os
 
 from solstone.think.importers.file_importer import FILE_IMPORTER_REGISTRY
 
@@ -183,6 +184,8 @@ def test_process_creates_original_pdf(tmp_path, monkeypatch):
     mod = importlib.import_module("solstone.think.importers.documents")
     pdf = tmp_path / "original.pdf"
     pdf.write_bytes(b"%PDF-1.4 fake")
+    os.utime(pdf, (1_600_000_000, 1_600_000_000))
+    pdf_mtime = pdf.stat().st_mtime
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     monkeypatch.setattr("pypdf.PdfReader", MockPdfReader)
     monkeypatch.setattr(mod, "day_path", lambda day: tmp_path / "chronicle" / day)
@@ -205,6 +208,7 @@ def test_process_creates_original_pdf(tmp_path, monkeypatch):
     )
     assert copied.exists()
     assert copied.read_bytes() == b"%PDF-1.4 fake"
+    assert copied.stat().st_mtime == pdf_mtime
     assert str(copied) not in result.files_created
 
 
