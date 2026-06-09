@@ -3,10 +3,14 @@
 
 """Tests for health app routes."""
 
+import json
 import os
+import re
+import time
 from datetime import date
 
 from solstone.convey.reasons import REPROCESS_ALREADY_COMPLETE
+from solstone.think.talent_runs import AgentFailure, AgentFailureScan
 
 DAY = "20250115"
 SEGMENT = "120000_300"
@@ -114,6 +118,37 @@ class TestLogRoute:
 
 
 class TestInfoRoute:
+    def test_build_agent_error_seed_shape(self):
+        from solstone.apps.health.routes import _build_agent_error_seed
+
+        scan = AgentFailureScan(
+            [
+                AgentFailure(
+                    use_id="agent-1",
+                    name="flow",
+                    ts=1770000000000,
+                    reason_code="provider_key_missing",
+                    provider="anthropic",
+                    model="claude-test",
+                )
+            ],
+            ok=True,
+        )
+
+        assert _build_agent_error_seed(scan) == [
+            {
+                "type": "agent",
+                "id": "agent-1",
+                "name": "flow",
+                "ts": 1770000000000,
+                "service": "cortex",
+                "error": "agent error",
+                "reason_code": "provider_key_missing",
+                "provider": "anthropic",
+                "model": "claude-test",
+            }
+        ]
+
     def test_returns_hostname_and_readiness(self, health_env, monkeypatch):
         snapshot = _readiness_snapshot("blocker")
         monkeypatch.setattr(
@@ -159,6 +194,65 @@ class TestInfoRoute:
         html = response.get_data(as_text=True)
         assert "window.HEALTH_READINESS" in html
         assert "provider_key_missing:anthropic:" in html
+
+    def test_index_injects_agent_error_bootstrap(self, health_env):
+        env = health_env()
+        today = date.today().strftime("%Y%m%d")
+        now_ms = int(time.time() * 1000)
+        talents = env.journal / "talents"
+        talents.mkdir()
+        (talents / f"{today}.jsonl").write_text(
+            json.dumps(
+                {
+                    "use_id": "agent-1",
+                    "name": "flow",
+                    "day": today,
+                    "ts": now_ms,
+                    "status": "error",
+                    "reason_code": "provider_key_missing",
+                    "provider": "anthropic",
+                    "model": "claude-test",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        response = env.client.get("/app/health/")
+
+        assert response.status_code == 200
+        html = response.get_data(as_text=True)
+        assert "window.HEALTH_AGENT_ERRORS" in html
+        assert "window.HEALTH_AGENT_ERRORS_OK = true" in html
+        assert '"id": "agent-1"' in html
+        assert '"name": "flow"' in html
+        assert '"service": "cortex"' in html
+        assert '"error": "agent error"' in html
+        assert '"reason_code": "provider_key_missing"' in html
+        assert re.search(r'id="glanceErrorsValue">1</span>', html)
+
+    def test_index_agent_error_scan_degraded_bootstrap(self, health_env, monkeypatch):
+        monkeypatch.setattr(
+            "solstone.apps.health.routes.read_unresolved_agent_failures",
+            lambda: AgentFailureScan([], ok=False),
+        )
+        env = health_env()
+
+        response = env.client.get("/app/health/")
+
+        assert response.status_code == 200
+        html = response.get_data(as_text=True)
+        assert "window.HEALTH_AGENT_ERRORS = []" in html
+        assert "window.HEALTH_AGENT_ERRORS_OK = false" in html
+        assert re.search(r'id="glanceErrorsValue">—</span>', html)
+        assert "couldn't check agent errors today." in html
+        assert not re.search(r'id="glanceErrorsValue">0</span>', html)
+        assert (
+            "empty.textContent = !state.agentErrorsOk\n"
+            '        ? "couldn\'t check agent errors today."\n'
+            "        : (state.recentErrorsFilter ? 'no matching recent errors yet.' : "
+            "'no recent errors.');"
+        ) in html
 
     def test_index_readiness_degrades_when_snapshot_raises(
         self, health_env, monkeypatch

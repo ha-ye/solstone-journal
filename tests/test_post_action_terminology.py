@@ -6,12 +6,20 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
+from pathlib import Path
 
-from solstone.apps.home.needs_you import classify_needs_you
+from solstone.apps.home.needs_you import (
+    DISABLED_EMPTY_PROMPT_REASON,
+    DISABLED_INVALID_ROUTE_REASON,
+    classify_needs_you,
+)
 from solstone.apps.settings import copy as settings_copy
-from solstone.convey import create_app
+from solstone.convey import backlog_copy, create_app
 
-BANNED_RE = re.compile(r"\b(watch|capture|monitor|track|collect)\b", re.IGNORECASE)
+BANNED_RE = re.compile(
+    r"\b(watch|capture|record|monitor|track|collect)\b",
+    re.IGNORECASE,
+)
 
 
 def _assert_clean(text: str) -> None:
@@ -103,6 +111,7 @@ def test_home_needs_you_strings_use_allowed_terms(journal_copy, monkeypatch):
     )
     for item in classifier_items:
         _assert_clean(item.text)
+        _assert_clean(item.reason)
         for value in item.payload.values():
             if isinstance(value, str):
                 _assert_clean(value)
@@ -116,3 +125,36 @@ def test_home_needs_you_strings_use_allowed_terms(journal_copy, monkeypatch):
     start = html.index('<div class="pulse-needs"')
     end = html.index("<script>", start)
     _assert_clean(html[start:end])
+
+
+def test_dashboard_truthfulness_strings_use_allowed_terms():
+    health_workspace = (
+        Path(__file__).resolve().parents[1]
+        / "solstone"
+        / "apps"
+        / "health"
+        / "workspace.html"
+    )
+    health_source = health_workspace.read_text(encoding="utf-8")
+    health_strings = [
+        "couldn't check agent errors today.",
+        "this host's stream isn't reporting yet — showing",
+        "this host is unknown — showing",
+        "log updates may be delayed",
+    ]
+    strings = [
+        backlog_copy.BACKLOG_VERDICT_PENDING_ONLY_PLURAL,
+        backlog_copy.BACKLOG_VERDICT_PENDING_ONLY_SINGULAR,
+        backlog_copy.BACKLOG_VERDICT_MIXED_STUCK_PLURAL,
+        backlog_copy.BACKLOG_VERDICT_MIXED_STUCK_SINGULAR,
+        backlog_copy.BACKLOG_VERDICT_MIXED_PENDING_PLURAL,
+        backlog_copy.BACKLOG_VERDICT_MIXED_PENDING_SINGULAR,
+        DISABLED_INVALID_ROUTE_REASON,
+        DISABLED_EMPTY_PROMPT_REASON,
+        *health_strings,
+    ]
+
+    for text in strings:
+        _assert_clean(text)
+    for text in health_strings:
+        assert text in health_source

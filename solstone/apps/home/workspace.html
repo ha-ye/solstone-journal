@@ -386,6 +386,16 @@
   vertical-align: baseline;
 }
 
+.pulse-needs-item-disabled {
+  color: #64748b;
+  cursor: default;
+}
+
+.pulse-needs-reason {
+  color: #92400e;
+  font-size: 0.78rem;
+}
+
 /* Click-to-converse interactive elements */
 [data-conversation] {
   cursor: pointer;
@@ -1284,7 +1294,11 @@
     <div class="pulse-section-body">
     <div class="pulse-needs-list">
       {% for item in needs_you_items %}
+      {% if item.disabled %}
+      <div class="pulse-needs-item pulse-needs-item-disabled">{{ item.text }}{% if item.reason %}<span class="pulse-needs-reason">{{ item.reason }}</span>{% endif %}</div>
+      {% else %}
       <div class="pulse-needs-item" role="button" tabindex="0" data-needs-you-item='{{ item|tojson }}'>{{ item.text }}</div>
+      {% endif %}
       {% endfor %}
     </div>
     {% if todos|length > 7 %}
@@ -1384,8 +1398,12 @@
   }
 
   function needsYouItemHtml(item) {
-    var encoded = esc(JSON.stringify(item || {}));
     var text = item && typeof item.text === 'string' ? item.text : '';
+    if (item && item.disabled) {
+      var reason = typeof item.reason === 'string' && item.reason ? '<span class="pulse-needs-reason">' + esc(item.reason) + '</span>' : '';
+      return '<div class="pulse-needs-item pulse-needs-item-disabled">' + esc(text) + reason + '</div>';
+    }
+    var encoded = esc(JSON.stringify(item || {}));
     return '<div class="pulse-needs-item" role="button" tabindex="0" data-needs-you-item="' + encoded + '">' + esc(text) + '</div>';
   }
 
@@ -1402,9 +1420,10 @@
 
   function dispatchNeedsYouItem(item) {
     if (!item || typeof item !== 'object') return;
+    if (item.disabled) return;
     var payload = item.payload || {};
     if (item.kind === 'chat') {
-      if (typeof payload.prompt !== 'string' || !payload.prompt) return;
+      if (typeof payload.prompt !== 'string' || !payload.prompt.trim()) return;
       try {
         sessionStorage.setItem(NEEDS_YOU_PENDING_KEY, JSON.stringify({
           prompt: payload.prompt,

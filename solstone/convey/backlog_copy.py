@@ -15,12 +15,12 @@ BACKLOG_QUEUED_FEEDBACK = "queued — processing now"
 BACKLOG_VERDICT_CAUGHT_UP = "your journal's all caught up."
 BACKLOG_VERDICT_STUCK_ONLY_PLURAL = "caught up except {stuck_n} days that need a hand."
 BACKLOG_VERDICT_STUCK_ONLY_SINGULAR = "caught up except 1 day that needs a hand."
-BACKLOG_VERDICT_PENDING_ONLY_PLURAL = "caught up — {pending_n} days still catching up."
-BACKLOG_VERDICT_PENDING_ONLY_SINGULAR = "caught up — 1 day still catching up."
-BACKLOG_VERDICT_BOTH_PLURAL = (
-    "caught up except {stuck_n} days that need a hand — "
-    "{pending_n} more still catching up."
-)
+BACKLOG_VERDICT_PENDING_ONLY_PLURAL = "{pending_n} days are still catching up."
+BACKLOG_VERDICT_PENDING_ONLY_SINGULAR = "1 day is still catching up."
+BACKLOG_VERDICT_MIXED_STUCK_PLURAL = "{stuck_n} days need a hand"
+BACKLOG_VERDICT_MIXED_STUCK_SINGULAR = "1 day needs a hand"
+BACKLOG_VERDICT_MIXED_PENDING_PLURAL = "{pending_n} more days are still catching up"
+BACKLOG_VERDICT_MIXED_PENDING_SINGULAR = "1 more day is still catching up"
 BACKLOG_VERDICT_CANT_TELL = (
     "still checking — give me a moment to see where your journal stands."
 )
@@ -59,9 +59,12 @@ __all__ = [
     "BACKLOG_REASON_FAILING_STEP",
     "BACKLOG_REASON_MISSING_CONFIG",
     "BACKLOG_REASON_PROVIDER_DOWN",
-    "BACKLOG_VERDICT_BOTH_PLURAL",
     "BACKLOG_VERDICT_CANT_TELL",
     "BACKLOG_VERDICT_CAUGHT_UP",
+    "BACKLOG_VERDICT_MIXED_PENDING_PLURAL",
+    "BACKLOG_VERDICT_MIXED_PENDING_SINGULAR",
+    "BACKLOG_VERDICT_MIXED_STUCK_PLURAL",
+    "BACKLOG_VERDICT_MIXED_STUCK_SINGULAR",
     "BACKLOG_VERDICT_PENDING_ONLY_PLURAL",
     "BACKLOG_VERDICT_PENDING_ONLY_SINGULAR",
     "BACKLOG_VERDICT_STUCK_ONLY_PLURAL",

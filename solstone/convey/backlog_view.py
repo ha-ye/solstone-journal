@@ -87,18 +87,18 @@ def verdict(backlog: dict | None) -> str:
         )
 
     stuck_arm = _fmt(
-        backlog_copy.BACKLOG_VERDICT_STUCK_ONLY_SINGULAR
+        backlog_copy.BACKLOG_VERDICT_MIXED_STUCK_SINGULAR
         if s == 1
-        else backlog_copy.BACKLOG_VERDICT_STUCK_ONLY_PLURAL,
+        else backlog_copy.BACKLOG_VERDICT_MIXED_STUCK_PLURAL,
         stuck=s,
-    ).removesuffix(".")
-    separator_and_tail = backlog_copy.BACKLOG_VERDICT_BOTH_PLURAL.removeprefix(
-        backlog_copy.BACKLOG_VERDICT_STUCK_ONLY_PLURAL.removesuffix(".")
     )
-    tail_start = separator_and_tail.index("{pending_n}")
-    separator = separator_and_tail[:tail_start]
-    pending_tail = _fmt(separator_and_tail[tail_start:], pending=p)
-    return stuck_arm + separator + pending_tail
+    pending_arm = _fmt(
+        backlog_copy.BACKLOG_VERDICT_MIXED_PENDING_SINGULAR
+        if p == 1
+        else backlog_copy.BACKLOG_VERDICT_MIXED_PENDING_PLURAL,
+        pending=p,
+    )
+    return f"{stuck_arm} — {pending_arm}."
 
 
 def _error_for_day(day: dict, backlog: dict) -> object | None:

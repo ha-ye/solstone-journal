@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 
 import pytest
 
 from solstone.convey import backlog_copy
+
+DASHBOARD_JS_PATH = Path(__file__).resolve().parents[1] / "static" / "dashboard.js"
 
 BACKLOG_COPY_KEYS = [
     "BACKLOG_ACTION_PROCESS_NOW",
@@ -19,7 +22,10 @@ BACKLOG_COPY_KEYS = [
     "BACKLOG_VERDICT_STUCK_ONLY_SINGULAR",
     "BACKLOG_VERDICT_PENDING_ONLY_PLURAL",
     "BACKLOG_VERDICT_PENDING_ONLY_SINGULAR",
-    "BACKLOG_VERDICT_BOTH_PLURAL",
+    "BACKLOG_VERDICT_MIXED_STUCK_PLURAL",
+    "BACKLOG_VERDICT_MIXED_STUCK_SINGULAR",
+    "BACKLOG_VERDICT_MIXED_PENDING_PLURAL",
+    "BACKLOG_VERDICT_MIXED_PENDING_SINGULAR",
     "BACKLOG_VERDICT_CANT_TELL",
     "BACKLOG_BUCKET_HEADING",
     "BACKLOG_BUCKET_DESCRIPTION",
@@ -51,14 +57,14 @@ BACKLOG_COPY_LITERALS = {
     "BACKLOG_VERDICT_STUCK_ONLY_SINGULAR": (
         "caught up except 1 day that needs a hand."
     ),
-    "BACKLOG_VERDICT_PENDING_ONLY_PLURAL": (
-        "caught up — {pending_n} days still catching up."
+    "BACKLOG_VERDICT_PENDING_ONLY_PLURAL": ("{pending_n} days are still catching up."),
+    "BACKLOG_VERDICT_PENDING_ONLY_SINGULAR": "1 day is still catching up.",
+    "BACKLOG_VERDICT_MIXED_STUCK_PLURAL": "{stuck_n} days need a hand",
+    "BACKLOG_VERDICT_MIXED_STUCK_SINGULAR": "1 day needs a hand",
+    "BACKLOG_VERDICT_MIXED_PENDING_PLURAL": (
+        "{pending_n} more days are still catching up"
     ),
-    "BACKLOG_VERDICT_PENDING_ONLY_SINGULAR": ("caught up — 1 day still catching up."),
-    "BACKLOG_VERDICT_BOTH_PLURAL": (
-        "caught up except {stuck_n} days that need a hand — "
-        "{pending_n} more still catching up."
-    ),
+    "BACKLOG_VERDICT_MIXED_PENDING_SINGULAR": ("1 more day is still catching up"),
     "BACKLOG_VERDICT_CANT_TELL": (
         "still checking — give me a moment to see where your journal stands."
     ),
@@ -158,9 +164,30 @@ def test_backlog_copy_script_carries_all_keys(stats_env):
     }
 
 
-def test_backlog_both_plural_composes_from_locked_parts():
-    assert backlog_copy.BACKLOG_VERDICT_BOTH_PLURAL == (
-        backlog_copy.BACKLOG_VERDICT_STUCK_ONLY_PLURAL.rstrip(".")
-        + " — "
-        + backlog_copy.BACKLOG_VERDICT_BOTH_PLURAL.split(" — ")[1]
+def test_backlog_mixed_arm_constants_are_literal():
+    assert backlog_copy.BACKLOG_VERDICT_MIXED_STUCK_SINGULAR == "1 day needs a hand"
+    assert (
+        backlog_copy.BACKLOG_VERDICT_MIXED_STUCK_PLURAL == "{stuck_n} days need a hand"
     )
+    assert (
+        backlog_copy.BACKLOG_VERDICT_MIXED_PENDING_SINGULAR
+        == "1 more day is still catching up"
+    )
+    assert (
+        backlog_copy.BACKLOG_VERDICT_MIXED_PENDING_PLURAL
+        == "{pending_n} more days are still catching up"
+    )
+
+
+def test_dashboard_backlog_verdict_uses_mixed_arms_without_string_surgery():
+    source = DASHBOARD_JS_PATH.read_text(encoding="utf-8")
+    start = source.index("function backlogVerdict(stats)")
+    end = source.index("function backlogDepth", start)
+    body = source[start:end]
+
+    assert ".split(" not in body
+    assert "VERDICT_" + "BOTH_PLURAL" not in body
+    assert "VERDICT_MIXED_STUCK_SINGULAR" in body
+    assert "VERDICT_MIXED_STUCK_PLURAL" in body
+    assert "VERDICT_MIXED_PENDING_SINGULAR" in body
+    assert "VERDICT_MIXED_PENDING_PLURAL" in body

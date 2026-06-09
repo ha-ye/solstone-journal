@@ -10,6 +10,8 @@ from typing import Any, Literal
 logger = logging.getLogger(__name__)
 
 NeedsYouKind = Literal["chat", "confirm", "route"]
+DISABLED_INVALID_ROUTE_REASON = "this link isn't available from here."
+DISABLED_EMPTY_PROMPT_REASON = "this item needs a prompt before chat can open."
 
 
 @dataclass(frozen=True)
@@ -17,12 +19,16 @@ class NeedsYouItem:
     text: str
     kind: NeedsYouKind
     payload: dict[str, Any]
+    disabled: bool = False
+    reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "text": self.text,
             "kind": self.kind,
             "payload": self.payload,
+            "disabled": self.disabled,
+            "reason": self.reason,
         }
 
 
@@ -96,11 +102,12 @@ def _classify_generated_item(
 ) -> NeedsYouItem | None:
     text = _require_text(item.get("text"), "generated item text")
     kind = item.get("kind")
-    payload = item.get("payload") or {}
-    if not isinstance(payload, dict):
-        raise TypeError("generated item payload must be an object")
+    raw_payload = item.get("payload") or {}
 
     if kind == "chat":
+        if not isinstance(raw_payload, dict):
+            raise TypeError("generated item payload must be an object")
+        payload = raw_payload
         prompt = payload.get("prompt")
         if not isinstance(prompt, str) or not prompt.strip():
             prompt = default_prompt(text)
@@ -110,9 +117,9 @@ def _classify_generated_item(
         return _chat_item(text, default_prompt(text))
 
     if kind == "route":
-        route_payload = _normalize_route_payload(payload)
+        route_payload = _normalize_route_payload(raw_payload)
         if route_payload is None:
-            return None
+            return _disabled_item(text, "route", DISABLED_INVALID_ROUTE_REASON)
         return NeedsYouItem(text=text, kind="route", payload=route_payload)
 
     raise ValueError(f"unknown kind: {kind}")
@@ -120,17 +127,23 @@ def _classify_generated_item(
 
 def _normalize_route_payload(payload: Any) -> dict[str, str] | None:
     if not isinstance(payload, dict):
-        logger.warning("omitting needs-you route with malformed payload")
+        logger.warning("needs-you route unavailable with malformed payload")
         return None
     href = payload.get("href")
     if not isinstance(href, str) or not href.startswith("/") or href.startswith("//"):
-        logger.warning("omitting needs-you route with off-origin href: %r", href)
+        logger.warning("needs-you route unavailable with off-origin href: %r", href)
         return None
     return {"href": href}
 
 
 def _chat_item(text: str, prompt: str) -> NeedsYouItem:
+    if not isinstance(prompt, str) or not prompt.strip():
+        return _disabled_item(text, "chat", DISABLED_EMPTY_PROMPT_REASON)
     return NeedsYouItem(text=text, kind="chat", payload={"prompt": prompt})
+
+
+def _disabled_item(text: str, kind: NeedsYouKind, reason: str) -> NeedsYouItem:
+    return NeedsYouItem(text=text, kind=kind, payload={}, disabled=True, reason=reason)
 
 
 def _require_text(value: Any, label: str) -> str:

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from solstone.convey import backlog_copy
-from solstone.convey.backlog_view import stuck_rows
+from solstone.convey.backlog_view import stuck_rows, verdict
 
 
 def test_stuck_rows_maps_readiness_reasons_and_carries_operator_fields():
@@ -84,3 +84,31 @@ def test_stuck_rows_maps_readiness_reasons_and_carries_operator_fields():
             "depth": 1,
         },
     ]
+
+
+def test_verdict_pending_only_copy_does_not_claim_caught_up():
+    assert (
+        verdict({"pending_days": 1, "stuck_days": 0}) == "1 day is still catching up."
+    )
+    assert (
+        verdict({"pending_days": 3, "stuck_days": 0}) == "3 days are still catching up."
+    )
+
+
+def test_verdict_mixed_copy_uses_independent_arms():
+    assert (
+        verdict({"pending_days": 1, "stuck_days": 1})
+        == "1 day needs a hand — 1 more day is still catching up."
+    )
+    assert (
+        verdict({"pending_days": 1, "stuck_days": 2})
+        == "2 days need a hand — 1 more day is still catching up."
+    )
+    assert (
+        verdict({"pending_days": 3, "stuck_days": 1})
+        == "1 day needs a hand — 3 more days are still catching up."
+    )
+    assert (
+        verdict({"pending_days": 3, "stuck_days": 2})
+        == "2 days need a hand — 3 more days are still catching up."
+    )

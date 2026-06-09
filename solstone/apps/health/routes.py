@@ -38,6 +38,7 @@ from solstone.think.reprocess import (
     reprocess_day,
 )
 from solstone.think.streams import stream_name
+from solstone.think.talent_runs import AgentFailureScan, read_unresolved_agent_failures
 
 logger = logging.getLogger(__name__)
 
@@ -82,14 +83,36 @@ def _safe_readiness_snapshot() -> dict:
         return unavailable_snapshot()
 
 
+def _build_agent_error_seed(scan: AgentFailureScan) -> list[dict]:
+    return [
+        {
+            "type": "agent",
+            "id": failure.use_id,
+            "name": failure.name,
+            "ts": failure.ts,
+            "service": "cortex",
+            "error": "agent error",
+            "reason_code": failure.reason_code,
+            "provider": failure.provider,
+            "model": failure.model,
+        }
+        for failure in scan.failures
+    ]
+
+
 @health_bp.route("/")
 def index():
     backlog = _load_backlog()
+    agent_failure_scan = read_unresolved_agent_failures()
+    agent_error_seed = _build_agent_error_seed(agent_failure_scan)
     return render_template(
         "app.html",
         health_backlog_verdict=verdict(backlog),
         health_stuck_rows=stuck_rows(backlog),
         health_readiness=_safe_readiness_snapshot(),
+        health_agent_errors=agent_error_seed,
+        health_agent_errors_ok=agent_failure_scan.ok,
+        health_agent_errors_count=len(agent_error_seed),
     )
 
 

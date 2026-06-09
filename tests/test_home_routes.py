@@ -15,6 +15,8 @@ def test_api_pulse_includes_needs_you_items_json_shape(journal_copy, monkeypatch
         "text": "Review the launch checklist",
         "kind": "chat",
         "payload": {"prompt": "let's dig into Review the launch checklist"},
+        "disabled": False,
+        "reason": "",
     }
 
     monkeypatch.setattr(
@@ -34,4 +36,10 @@ def test_api_pulse_includes_needs_you_items_json_shape(journal_copy, monkeypatch
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["needs_you_items"] == [needs_you_item]
-    assert list(payload["needs_you_items"][0]) == ["kind", "payload", "text"]
+    assert list(payload["needs_you_items"][0]) == [
+        "disabled",
+        "kind",
+        "payload",
+        "reason",
+        "text",
+    ]

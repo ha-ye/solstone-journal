@@ -44,6 +44,7 @@ EXPECTED_STATE_KEYS = [
     "todayCostUSD",
     "observers",
     "recentErrors",
+    "agentErrorsOk",
     "recentErrorsFilter",
     "pendingRecentErrorsFocus",
     "pendingLogAnchor",
@@ -145,7 +146,7 @@ def test_state_only_adds_today_cost_usd():
     )
 
     assert keys == EXPECTED_STATE_KEYS
-    assert len(keys) == 32
+    assert len(keys) == 33
 
 
 def test_filter_handlers_preserve_collapsed_services():
@@ -174,3 +175,50 @@ def test_level_filter_is_nested_severity_ladder():
         "if (state.logLevelFilter === 'info') return level === 'error' || level === 'warning' || level === 'info';"
         in source
     )
+
+
+def test_observe_best_available_fallback_is_labeled_and_finite():
+    source = _workspace_source()
+    start = source.index("function updateObserve()")
+    end = source.index("  // Update observers", start)
+    body = source[start:end]
+
+    assert "observeSourceNote" in source
+    assert ".filter(([stream]) => !stream.endsWith('.tmux'))" in body
+    assert (
+        "const tmux = displayedStream ? state.observers.get(displayedStream + '.tmux') : null;"
+        in body
+    )
+    assert "this host's stream isn't reporting yet — showing" in body
+    assert "this host is unknown — showing" in body
+    assert "updateObserveMode(primary);" in body
+    assert "if (!state.localHost || !primary)" not in body
+    assert "ch.statusEl.textContent = 'waiting...';" not in body
+
+
+def test_log_follow_scroll_pause_and_gated_autoscroll_are_wired():
+    source = _workspace_source()
+    start = source.index("function renderLogs(newService, newRecord)")
+    end = source.index("  // Event handlers by tract", start)
+    render_logs = source[start:end]
+
+    assert "let programmaticScroll = false;" in source
+    assert "function isAtBottom(viewport, tol = 50)" in source
+    assert "function scrollLogsToBottom(viewport = elements.logsViewport)" in source
+    assert "elements.logsViewport.addEventListener('scroll'" in source
+    assert "if (programmaticScroll) return;" in source
+    assert "state.logFollow = false;" in source
+    assert "elements.logFollowBtn.classList.remove('active');" in source
+    assert "const atBottom = isAtBottom(viewport);" in render_logs
+    assert "if (state.logFollow && atBottom)" in render_logs
+    assert "const wasAtBottom = isAtBottom(viewport);" in render_logs
+    assert "if (state.logFollow && wasAtBottom)" in render_logs
+    assert "wasAtBottom || state.logFollow" not in render_logs
+
+
+def test_log_stream_delay_notice_is_visible_near_logs():
+    source = _workspace_source()
+
+    assert 'id="logsConnectionNote"' in source
+    assert "log updates may be delayed" in source
+    assert "elements.logsConnectionNote.classList.remove('hidden');" in source

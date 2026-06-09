@@ -362,6 +362,211 @@ class TestAttentionResolution:
         result = _resolve_attention({})
         assert result is None
 
+    def test_p0_counts_unresolved_occurrences_not_distinct_names(
+        self, tmp_path, monkeypatch
+    ):
+        """Multiple unresolved errors for one agent count as multiple occurrences."""
+        import json
+        from datetime import datetime
+
+        from solstone.convey.apps import _resolve_attention
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+        today = datetime.now().strftime("%Y%m%d")
+        agents_dir = tmp_path / "talents"
+        agents_dir.mkdir()
+        day_index = agents_dir / f"{today}.jsonl"
+        day_index.write_text(
+            json.dumps(
+                {
+                    "use_id": "1",
+                    "name": "flow",
+                    "day": today,
+                    "ts": 1000,
+                    "status": "error",
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "use_id": "2",
+                    "name": "flow",
+                    "day": today,
+                    "ts": 2000,
+                    "status": "error",
+                }
+            )
+            + "\n"
+        )
+
+        result = _resolve_attention({})
+        assert result is not None
+        assert result.placeholder_text == "2 agent errors today — ask what happened"
+        assert result.context_lines == [
+            "System health: 2 unresolved agent error(s) today: flow. If user asks "
+            "what needs attention, summarize which agents failed."
+        ]
+
+    def test_p0_later_success_resolves_earlier_occurrences_only(
+        self, tmp_path, monkeypatch
+    ):
+        """Later same-agent errors after a success remain unresolved."""
+        import json
+        from datetime import datetime
+
+        from solstone.convey.apps import _resolve_attention
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+        today = datetime.now().strftime("%Y%m%d")
+        agents_dir = tmp_path / "talents"
+        agents_dir.mkdir()
+        day_index = agents_dir / f"{today}.jsonl"
+        day_index.write_text(
+            json.dumps(
+                {
+                    "use_id": "1",
+                    "name": "flow",
+                    "day": today,
+                    "ts": 1000,
+                    "status": "error",
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "use_id": "2",
+                    "name": "flow",
+                    "day": today,
+                    "ts": 2000,
+                    "status": "completed",
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "use_id": "3",
+                    "name": "flow",
+                    "day": today,
+                    "ts": 3000,
+                    "status": "error",
+                }
+            )
+            + "\n"
+        )
+
+        result = _resolve_attention({})
+        assert result is not None
+        assert result.placeholder_text == "1 agent error today — ask what happened"
+
+    def test_p0_home_attention_count_matches_health_seed_count(
+        self, tmp_path, monkeypatch
+    ):
+        """Home attention and health seed use the same occurrence count."""
+        import json
+        import time
+        from datetime import datetime
+
+        from solstone.apps.health.routes import _build_agent_error_seed
+        from solstone.convey.apps import _resolve_attention
+        from solstone.think.talent_runs import read_unresolved_agent_failures
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+        today = datetime.now().strftime("%Y%m%d")
+        now_ms = int(time.time() * 1000)
+        agents_dir = tmp_path / "talents"
+        agents_dir.mkdir()
+        day_index = agents_dir / f"{today}.jsonl"
+        day_index.write_text(
+            json.dumps(
+                {
+                    "use_id": "1",
+                    "name": "flow",
+                    "day": today,
+                    "ts": now_ms,
+                    "status": "error",
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "use_id": "2",
+                    "name": "flow",
+                    "day": today,
+                    "ts": now_ms + 1,
+                    "status": "error",
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "use_id": "3",
+                    "name": "meetings",
+                    "day": today,
+                    "ts": now_ms + 2,
+                    "status": "error",
+                }
+            )
+            + "\n"
+        )
+
+        scan = read_unresolved_agent_failures()
+        attention = _resolve_attention({})
+
+        assert attention is not None
+        assert attention.placeholder_text == "3 agent errors today — ask what happened"
+        home_count = int(attention.placeholder_text.split(" ", 1)[0])
+        assert (
+            home_count == len(_build_agent_error_seed(scan)) == len(scan.failures) == 3
+        )
+
+    def test_p0_readiness_branch_uses_latest_error_per_name(
+        self, tmp_path, monkeypatch
+    ):
+        """An older blocker does not mask a later unresolved non-blocking error."""
+        import json
+        from datetime import datetime
+
+        from solstone.convey.apps import _resolve_attention
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+        today = datetime.now().strftime("%Y%m%d")
+        agents_dir = tmp_path / "talents"
+        agents_dir.mkdir()
+        day_index = agents_dir / f"{today}.jsonl"
+        day_index.write_text(
+            json.dumps(
+                {
+                    "use_id": "1",
+                    "name": "flow",
+                    "day": today,
+                    "ts": 1000,
+                    "status": "error",
+                    "reason_code": "provider_key_missing",
+                    "provider": "anthropic",
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "use_id": "2",
+                    "name": "flow",
+                    "day": today,
+                    "ts": 2000,
+                    "status": "error",
+                    "reason_code": "no_output",
+                }
+            )
+            + "\n"
+        )
+
+        result = _resolve_attention({})
+        assert result is not None
+        assert result.placeholder_text == "2 agent errors today — ask what happened"
+
     def test_priority_p0_over_p1_imports(self, tmp_path, monkeypatch):
         """P0 (cortex errors) takes priority over P1 (recent import)."""
         import json

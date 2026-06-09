@@ -510,6 +510,16 @@
   display: none;
 }
 
+.observe-source-note {
+  color: #92400e;
+  font-size: 0.82em;
+  margin: -0.45em 0 0.85em;
+}
+
+.observe-source-note.hidden {
+  display: none;
+}
+
 .observe-section {
   display: flex;
   flex-direction: column;
@@ -854,6 +864,16 @@
 }
 
 .logs-error-badge.hidden {
+  display: none;
+}
+
+.logs-connection-note {
+  color: #d97706;
+  font-size: 0.85em;
+  font-weight: 500;
+}
+
+.logs-connection-note.hidden {
   display: none;
 }
 
@@ -1356,7 +1376,7 @@
         <span class="glance-metric-label">last hour</span>
       </div>
       <a class="glance-metric glance-metric-errors" href="#focus=recent-errors" id="glanceErrors">
-        <span class="glance-metric-value" id="glanceErrorsValue">0</span>
+        <span class="glance-metric-value" id="glanceErrorsValue">{{ health_agent_errors_count if health_agent_errors_ok else "—" }}</span>
         <span class="glance-metric-label">errors today</span>
       </a>
     </div>
@@ -1434,6 +1454,7 @@
         <span id="observeModeLabel">waiting...</span>
       </div>
     </div>
+    <div class="observe-source-note hidden" id="observeSourceNote"></div>
     <div id="observeEmpty">
       <div class="surface-state surface-state--empty">
         <h2 class="surface-state-heading">no observations active</h2>
@@ -1573,6 +1594,7 @@
       <div class="logs-title">service logs</div>
       <span class="logs-summary-badge" id="logsSummaryBadge" aria-live="polite"></span>
       <span class="logs-error-badge hidden" id="logErrorBadge"></span>
+      <span class="logs-connection-note hidden" id="logsConnectionNote"></span>
       <span class="logs-collapse-indicator" id="logsCollapseIndicator">▶ show</span>
       <div class="logs-controls">
         <label for="logServiceFilter">{{ health_copy.LOGS_SERVICE_FILTER_LABEL }}</label>
@@ -1621,6 +1643,8 @@
         HEALTH_GLANCE_READINESS_UNKNOWN: {{ health_copy.HEALTH_GLANCE_READINESS_UNKNOWN | tojson }},
       };
       window.HEALTH_READINESS = {{ health_readiness | tojson }};
+      window.HEALTH_AGENT_ERRORS = {{ health_agent_errors | tojson }};
+      window.HEALTH_AGENT_ERRORS_OK = {{ health_agent_errors_ok | tojson }};
     </script>
   </div>
 </div>
@@ -1692,6 +1716,7 @@
     todayCostUSD: null,
     observers: new Map(),       // keyed by stream name
     recentErrors: [],
+    agentErrorsOk: window.HEALTH_AGENT_ERRORS_OK !== false,
     recentErrorsFilter: null,
     pendingRecentErrorsFocus: false,
     pendingLogAnchor: null,
@@ -1726,6 +1751,7 @@
     describeDetail: document.getElementById('describeDetail'),
     transcribeStatus: document.getElementById('transcribeStatus'),
     transcribeDetail: document.getElementById('transcribeDetail'),
+    observeSourceNote: document.getElementById('observeSourceNote'),
     observersCard: document.getElementById('observersCard'),
     observersGrid: document.getElementById('observersGrid'),
     registeredObserversCard: document.getElementById('registeredObserversCard'),
@@ -1757,6 +1783,7 @@
     logFollowBtn: document.getElementById('logFollowBtn'),
     logClearBtn: document.getElementById('logClearBtn'),
     logErrorBadge: document.getElementById('logErrorBadge'),
+    logsConnectionNote: document.getElementById('logsConnectionNote'),
     logsSummaryBadge: document.getElementById('logsSummaryBadge'),
     logsAnnouncer: document.getElementById('logsAnnouncer'),
     logsCollapseIndicator: document.getElementById('logsCollapseIndicator'),
@@ -1768,6 +1795,7 @@
   };
 
   let timeoutFired = false;
+  let programmaticScroll = false;
   const STALE_MS = 30000;
   const HEALTH_GLANCE_COPY = window.HEALTH_GLANCE_COPY;
   const BACKLOG_QUEUED_FEEDBACK = {{ backlog_copy.BACKLOG_QUEUED_FEEDBACK | tojson }};
@@ -2032,8 +2060,12 @@
     elements.glanceActivityValue.textContent = String(recentActivity);
 
     const today = todayKey();
-    const errorsToday = state.recentErrors.filter(error => dayKeyFromTimestamp(error.ts) === today).length;
-    elements.glanceErrorsValue.textContent = String(errorsToday);
+    if (!state.agentErrorsOk) {
+      elements.glanceErrorsValue.textContent = '—';
+    } else {
+      const errorsToday = state.recentErrors.filter(error => dayKeyFromTimestamp(error.ts) === today).length;
+      elements.glanceErrorsValue.textContent = String(errorsToday);
+    }
   }
 
   function updateAllQuiet() {
@@ -2068,7 +2100,10 @@
 
     const errCount = state.recentErrors.length;
     const errEl = ensureChild(idx++);
-    if (errCount > 0) {
+    if (!state.agentErrorsOk) {
+      errEl.textContent = "couldn't check agent errors today.";
+      errEl.style.color = '#92400e';
+    } else if (errCount > 0) {
       errEl.textContent = errCount + ' recent error' + (errCount !== 1 ? 's' : '');
       errEl.style.color = '#dc2626';
     } else {
@@ -2104,6 +2139,18 @@
     elements.logsSummaryBadge.textContent = text;
   }
   updateLogsBadge();
+
+  function isAtBottom(viewport, tol = 50) {
+    return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= tol;
+  }
+
+  function scrollLogsToBottom(viewport = elements.logsViewport) {
+    programmaticScroll = true;
+    viewport.scrollTop = viewport.scrollHeight;
+    requestAnimationFrame(() => {
+      programmaticScroll = false;
+    });
+  }
 
   function recentErrorGroupKey(entry) {
     if (entry.key) return entry.key;
@@ -2165,13 +2212,23 @@
   }
 
   function appendRecentError(entry) {
+    if (entry?.id) {
+      const dedupeIdx = state.recentErrors.findIndex(existing =>
+        existing?.id === entry.id && (existing.type || '') === (entry.type || '')
+      );
+      if (dedupeIdx !== -1) {
+        state.recentErrors[dedupeIdx] = { ...state.recentErrors[dedupeIdx], ...entry };
+        updateErrorSummary();
+        return;
+      }
+    }
     state.recentErrors.push(entry);
     if (state.recentErrors.length > 50) state.recentErrors.shift();
     updateErrorSummary();
   }
 
   function updateErrorSummary() {
-    if (state.recentErrors.length === 0 && !state.recentErrorsFilter) {
+    if (state.recentErrors.length === 0 && !state.recentErrorsFilter && state.agentErrorsOk) {
       elements.errorSummary.classList.add('hidden');
       return;
     }
@@ -2201,6 +2258,13 @@
       if (!child.getAttribute('data-key')) container.removeChild(child);
     }
 
+    if (!state.agentErrorsOk && entries.length > 0) {
+      const degraded = document.createElement('div');
+      degraded.style.cssText = 'padding: 0.3em 0; font-size: 0.85em; color: #92400e;';
+      degraded.textContent = "couldn't check agent errors today.";
+      container.appendChild(degraded);
+    }
+
     if (state.recentErrorsFilter) {
       const filter = state.recentErrorsFilter;
       const label = document.createElement('div');
@@ -2222,7 +2286,9 @@
     if (entries.length === 0) {
       const empty = document.createElement('div');
       empty.style.cssText = 'padding: 0.3em 0; font-size: 0.85em; color: #6b7280;';
-      empty.textContent = state.recentErrorsFilter ? 'no matching recent errors yet.' : 'no recent errors.';
+      empty.textContent = !state.agentErrorsOk
+        ? "couldn't check agent errors today."
+        : (state.recentErrorsFilter ? 'no matching recent errors yet.' : 'no recent errors.');
       container.appendChild(empty);
       if (state.pendingRecentErrorsFocus) {
         state.pendingRecentErrorsFocus = false;
@@ -2730,14 +2796,14 @@
   }
 
   // Update observe mode badge
-  function updateObserveMode() {
+  function updateObserveMode(displayedObserver = null) {
     if (state.observers.size === 0) {
       elements.observeModeBadge.className = 'health-badge idle';
       elements.observeModeLabel.textContent = 'idle';
       return;
     }
 
-    const mode = state.observers.get(state.localHost)?.mode;
+    const mode = (displayedObserver || state.observers.get(state.localHost))?.mode;
     const badge = elements.observeModeBadge;
     const label = elements.observeModeLabel;
 
@@ -2752,7 +2818,7 @@
       label.textContent = 'idle';
     } else {
       badge.className = 'health-badge idle';
-      label.textContent = 'waiting...';
+      label.textContent = 'idle';
     }
   }
 
@@ -2761,6 +2827,8 @@
     if (state.observers.size === 0) {
       elements.observeEmpty.classList.remove('hidden');
       elements.observeContent.classList.add('hidden');
+      elements.observeSourceNote.classList.add('hidden');
+      elements.observeSourceNote.textContent = '';
       updateObserveMode();
       updateStatusSummary();
       return;
@@ -2768,15 +2836,30 @@
     elements.observeEmpty.classList.add('hidden');
     elements.observeContent.classList.remove('hidden');
 
-    const primary = state.localHost ? state.observers.get(state.localHost) : null;
-    const tmux = state.localHost ? state.observers.get(state.localHost + '.tmux') : null;
+    const confirmedPrimary = state.localHost ? state.observers.get(state.localHost) : null;
+    const fallbackEntry = Array.from(state.observers.entries())
+      .filter(([stream]) => !stream.endsWith('.tmux'))
+      .sort((a, b) => (b[1].lastSeen || 0) - (a[1].lastSeen || 0))[0] || null;
+    const displayedStream = confirmedPrimary ? state.localHost : (fallbackEntry ? fallbackEntry[0] : null);
+    const primary = confirmedPrimary || (fallbackEntry ? fallbackEntry[1] : null);
+    const tmux = displayedStream ? state.observers.get(displayedStream + '.tmux') : null;
+    const confirmedLocal = Boolean(state.localHost && confirmedPrimary && displayedStream === state.localHost);
+    if (!confirmedLocal && displayedStream) {
+      elements.observeSourceNote.textContent = state.localHost
+        ? `this host's stream isn't reporting yet — showing ${displayedStream}`
+        : `this host is unknown — showing ${displayedStream}`;
+      elements.observeSourceNote.classList.remove('hidden');
+    } else {
+      elements.observeSourceNote.textContent = '';
+      elements.observeSourceNote.classList.add('hidden');
+    }
     const channels = [
       {
         statusEl: elements.screencastStatus,
         detailEl: elements.screencastDetail,
         idleText: 'Not recording',
         extract: () => {
-          if (!primary.screencast) return null;
+          if (!primary?.screencast) return null;
           const recording = primary.screencast.recording;
           if (!recording) return { status: 'Not recording' };
           const streams = primary.screencast.streams || [];
@@ -2814,7 +2897,7 @@
         detailEl: elements.audioDetail,
         idleText: 'Listening (quiet)',
         extract: () => {
-          if (!primary.audio) return null;
+          if (!primary?.audio) return null;
           const hits = primary.audio.threshold_hits || 0;
           const willSave = primary.audio.will_save ? ' · saving' : '';
           return {
@@ -2829,7 +2912,7 @@
         detailEl: elements.activityDetail,
         idleText: 'idle',
         extract: () => {
-          if (!primary.activity) return null;
+          if (!primary?.activity) return null;
           const idleMs = primary.activity.idle_time_ms || 0;
           if (primary.activity.power_save) return { status: 'Power saving' };
           if (primary.activity.screen_locked) return { status: 'Screen locked' };
@@ -2842,7 +2925,7 @@
         detailEl: elements.describeDetail,
         idleText: 'idle',
         extract: () => {
-          if (!primary.describe) return null;
+          if (!primary?.describe) return null;
           return { processor: primary.describe };
         },
       },
@@ -2851,23 +2934,13 @@
         detailEl: elements.transcribeDetail,
         idleText: 'idle',
         extract: () => {
-          if (!primary.transcribe) return null;
+          if (!primary?.transcribe) return null;
           return { processor: primary.transcribe };
         },
       },
     ];
 
-    updateObserveMode();
-
-    if (!state.localHost || !primary) {
-      channels.forEach(ch => {
-        ch.statusEl.textContent = 'waiting...';
-        ch.statusEl.classList.remove('idle');
-        ch.detailEl.textContent = '';
-      });
-      updateStatusSummary();
-      return;
-    }
+    updateObserveMode(primary);
 
     channels.forEach(ch => {
       const result = ch.extract();
@@ -3602,9 +3675,10 @@
     const serviceFilter = elements.logServiceFilter.value;
     const viewport = elements.logsViewport;
     const filterKey = serviceFilter + ':' + elements.logStreamFilter.value + ':' + state.logLevelFilter;
+    const atBottom = isAtBottom(viewport);
 
     // Incremental append: when following, filters unchanged, and we have a new record
-    if (newRecord && state.logFollow && state.lastLogFilter === filterKey && viewport.children.length > 0) {
+    if (newRecord && state.lastLogFilter === filterKey && viewport.children.length > 0) {
       const serviceMatch = serviceFilter === 'all' || serviceFilter === newService;
       const streamMatch = elements.logStreamFilter.value === 'all' || elements.logStreamFilter.value === newRecord.stream;
       const levelMatch = logLevelMatchesFilter(classifyLogLevel(newRecord.stream, newRecord.line));
@@ -3617,7 +3691,9 @@
           viewport.appendChild(makeLogServiceHeader(newService, filteredLogRecords(state.serviceLogs.get(newService) || [])));
         }
         appendLogLine(viewport, newService, newRecord);
-        viewport.scrollTop = viewport.scrollHeight;
+        if (state.logFollow && atBottom) {
+          scrollLogsToBottom(viewport);
+        }
         return;
       }
     }
@@ -3625,7 +3701,7 @@
     state.lastLogFilter = filterKey;
 
     // Check if user has scrolled away from bottom before updating
-    const wasAtBottom = state.logFollow && (viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 50);
+    const wasAtBottom = isAtBottom(viewport);
 
     const fragment = document.createDocumentFragment();
     const services = serviceFilter === 'all'
@@ -3648,8 +3724,8 @@
     viewport.appendChild(fragment);
 
     // Auto-scroll if following
-    if (wasAtBottom || state.logFollow) {
-      viewport.scrollTop = viewport.scrollHeight;
+    if (state.logFollow && wasAtBottom) {
+      scrollLogsToBottom(viewport);
     }
     applyPendingLogAnchor();
   }
@@ -3891,6 +3967,13 @@
   elements.logStreamFilter.addEventListener('change', () => {
     renderLogs();
   });
+  elements.logsViewport.addEventListener('scroll', () => {
+    if (programmaticScroll) return;
+    if (!isAtBottom(elements.logsViewport)) {
+      state.logFollow = false;
+      elements.logFollowBtn.classList.remove('active');
+    }
+  });
   function toggleLogsCollapse() {
     state.logsCollapsed = !state.logsCollapsed;
     const card = document.querySelector('.logs-card');
@@ -3915,7 +3998,7 @@
     state.logFollow = !state.logFollow;
     elements.logFollowBtn.classList.toggle('active', state.logFollow);
     if (state.logFollow) {
-      elements.logsViewport.scrollTop = elements.logsViewport.scrollHeight;
+      scrollLogsToBottom(elements.logsViewport);
     }
   });
   elements.logClearBtn.addEventListener('click', () => {
@@ -4047,6 +4130,13 @@
 	    state.pendingRecentErrorsFocus = true;
 	    updateErrorSummary();
 	  }
+	  function seedAgentErrors() {
+	    const seed = Array.isArray(window.HEALTH_AGENT_ERRORS) ? window.HEALTH_AGENT_ERRORS : [];
+	    seed.forEach(entry => appendRecentError(entry));
+	    if (seed.length === 0) updateErrorSummary();
+	    updateStatusSummary();
+	  }
+	  seedAgentErrors();
 	  focusRecentErrors();
 	  window.addEventListener('hashchange', focusRecentErrors);
 
@@ -4092,6 +4182,8 @@
     if (!state.lastEventTs) {
       el.textContent = '';
       el.className = 'connection-indicator';
+      elements.logsConnectionNote.textContent = '';
+      elements.logsConnectionNote.classList.add('hidden');
       return;
     }
     const ago = Math.floor((Date.now() - state.lastEventTs) / 1000);
@@ -4099,12 +4191,18 @@
     if (ago >= 60) {
       el.textContent = `⚠ Disconnected (${agoText})`;
       el.className = 'connection-indicator disconnected';
+      elements.logsConnectionNote.textContent = 'log updates may be delayed';
+      elements.logsConnectionNote.classList.remove('hidden');
     } else if (ago >= 30) {
       el.textContent = `Stale (${agoText})`;
       el.className = 'connection-indicator stale';
+      elements.logsConnectionNote.textContent = 'log updates may be delayed';
+      elements.logsConnectionNote.classList.remove('hidden');
     } else {
       el.textContent = `Updated ${agoText} ago`;
       el.className = 'connection-indicator';
+      elements.logsConnectionNote.textContent = '';
+      elements.logsConnectionNote.classList.add('hidden');
     }
   }
 

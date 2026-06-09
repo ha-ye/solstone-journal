@@ -179,6 +179,45 @@ def test_health_glance_copy_script_carries_all_keys(health_env):
     }
 
 
+def test_agent_error_seed_bootstrap_and_dedupe_are_wired(health_env):
+    rendered = _render_health_workspace(health_env)
+
+    assert "window.HEALTH_AGENT_ERRORS" in rendered
+    assert "window.HEALTH_AGENT_ERRORS_OK" in rendered
+    assert "agentErrorsOk: window.HEALTH_AGENT_ERRORS_OK !== false" in rendered
+    assert "function seedAgentErrors()" in rendered
+    assert "seed.forEach(entry => appendRecentError(entry));" in rendered
+    assert (
+        "existing?.id === entry.id && (existing.type || '') === (entry.type || '')"
+        in rendered
+    )
+
+
+def test_agent_error_degraded_copy_is_wired(health_env):
+    rendered = _render_health_workspace(health_env)
+
+    assert "couldn't check agent errors today." in rendered
+    assert "elements.glanceErrorsValue.textContent = '—';" in rendered
+    assert (
+        "state.recentErrors.length === 0 && !state.recentErrorsFilter && "
+        "state.agentErrorsOk"
+    ) in rendered
+
+
+def test_agent_error_seed_live_metric_and_grouping_share_recent_errors(health_env):
+    rendered = _render_health_workspace(health_env)
+
+    assert "seed.forEach(entry => appendRecentError(entry));" in rendered
+    assert "state.recentErrors.push(entry);" in rendered
+    assert "const key = recentErrorGroupKey(entry);" in rendered
+    assert "existing.count += 1;" in rendered
+    assert "countSpan.textContent = `×${count} `;" in rendered
+    assert (
+        "const errorsToday = state.recentErrors.filter(error => "
+        "dayKeyFromTimestamp(error.ts) === today).length;"
+    ) in rendered
+
+
 def test_select_glance_sentence_exists(health_env):
     rendered = _render_health_workspace(health_env)
 
@@ -232,6 +271,7 @@ def test_backlog_verdict_pending_only_singular_and_plural(health_env):
 
     assert _verdict_text(rendered) == backlog_copy.BACKLOG_VERDICT_PENDING_ONLY_SINGULAR
     assert "1 day(s)" not in _section_by_id(rendered, "backlogVerdict")
+    assert "caught up" not in _verdict_text(rendered)
 
     rendered = _render_health_workspace_with_stats(
         health_env,
@@ -242,6 +282,7 @@ def test_backlog_verdict_pending_only_singular_and_plural(health_env):
         "BACKLOG_VERDICT_PENDING_ONLY_PLURAL",
         pending=4,
     )
+    assert "caught up" not in _verdict_text(rendered)
 
 
 def test_backlog_verdict_stuck_only_singular_and_plural(health_env):
@@ -263,7 +304,7 @@ def test_backlog_verdict_stuck_only_singular_and_plural(health_env):
     )
 
 
-def test_backlog_verdict_both_does_not_render_sum(health_env):
+def test_backlog_verdict_mixed_uses_independent_arms(health_env):
     rendered = _render_health_workspace_with_stats(
         health_env,
         {"backlog": _backlog(pending_days=3, stuck_days=2)},
@@ -273,6 +314,11 @@ def test_backlog_verdict_both_does_not_render_sum(health_env):
     backlog_region = verdict_region + _optional_section_by_id(
         rendered, "backlogNeedsHand"
     )
+    assert (
+        _verdict_text(rendered)
+        == "2 days need a hand — 3 more days are still catching up."
+    )
+    assert "caught up" not in _verdict_text(rendered)
     assert "2" in verdict_region
     assert "3" in verdict_region
     assert "5" not in backlog_region
@@ -419,10 +465,9 @@ def test_backlog_copy_constants_render_from_shared_source(health_env):
         },
     )
 
-    assert _verdict_text(rendered) == _copy(
-        "BACKLOG_VERDICT_BOTH_PLURAL",
-        pending=3,
-        stuck=2,
+    assert (
+        _verdict_text(rendered)
+        == "2 days need a hand — 3 more days are still catching up."
     )
     section = _section_by_id(rendered, "backlogNeedsHand")
     assert re.search(r"<h2>(?P<text>.*?)</h2>", section).group("text") == getattr(

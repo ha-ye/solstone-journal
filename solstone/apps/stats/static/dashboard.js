@@ -572,9 +572,9 @@ const Dashboard = (function() {
       return fmt(p === 1 ? C.VERDICT_PENDING_ONLY_SINGULAR : C.VERDICT_PENDING_ONLY_PLURAL, {pending: p});
     }
 
-    const stuckArm = fmt(s === 1 ? C.VERDICT_STUCK_ONLY_SINGULAR : C.VERDICT_STUCK_ONLY_PLURAL, {stuck: s}).replace(/\.$/, '');
-    const pendingTail = fmt((C.VERDICT_BOTH_PLURAL || '').split(' — ')[1], {pending: p});
-    return stuckArm + ' — ' + pendingTail;
+    const stuckArm = fmt(s === 1 ? C.VERDICT_MIXED_STUCK_SINGULAR : C.VERDICT_MIXED_STUCK_PLURAL, {stuck: s});
+    const pendingArm = fmt(p === 1 ? C.VERDICT_MIXED_PENDING_SINGULAR : C.VERDICT_MIXED_PENDING_PLURAL, {pending: p});
+    return stuckArm + ' — ' + pendingArm + '.';
   }
 
   function backlogDepth(day) {
