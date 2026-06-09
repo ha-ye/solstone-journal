@@ -29,6 +29,14 @@ Flagged mechanics:
   containing ``LOCK_EX`` and not ``LOCK_NB`` are flagged. ``LOCK_UN`` and
   ``LOCK_EX | LOCK_NB`` are not violations.
 
+  D4 - raw write calls. ``open(write)``, ``Path.open(write)``,
+  ``Path.write_text``, and ``Path.write_bytes`` are flagged only when the target
+  is statically traceable to a ``get_journal()``-derived journal-DATA path:
+  root plus L2 anchor, with one-hop local alias tracking. Producers such as
+  ``day_path()``, ``segment_path()``, ``resolve_journal_path()``, and
+  ``contained_path()`` are deliberately not roots, and non-DATA anchors are
+  deliberately ignored.
+
 The check ships green with an empty allowlist. The allowlist is keyed by
 ``(file, kind)`` with an allowed count so it can ratchet down, matching the
 existing journal_io access check.
@@ -45,7 +53,36 @@ ROOT = Path(__file__).resolve().parent.parent
 
 PATH_TEMP_METHODS: frozenset[str] = frozenset({"with_suffix", "with_name", "with_stem"})
 VIOLATION_KINDS: frozenset[str] = frozenset(
-    {"os.replace", "Path.replace", "flock(LOCK_EX)"}
+    {
+        "os.replace",
+        "Path.replace",
+        "flock(LOCK_EX)",
+        "open(write)",
+        "Path.open(write)",
+        "Path.write_text",
+        "Path.write_bytes",
+    }
+)
+
+# Derived from the §7 L2 table. Runtime/cache/ops dirs (`logs`, `health`,
+# `indexer`, `tokens`, `push`, `maint`, `stats.json`) are deliberately omitted.
+JOURNAL_DATA_ANCHORS: frozenset[str] = frozenset(
+    {
+        ".config",
+        "awareness",
+        "chronicle",
+        "config",
+        "entities",
+        "facets",
+        "identity",
+        "imports",
+        "link",
+        "observations.jsonl",
+        "skills",
+        "streams",
+        "talents",
+        "timeline.json",
+    }
 )
 
 EXCLUDED_FILES: frozenset[str] = frozenset(
@@ -173,6 +210,140 @@ def _iter_target_names(target: ast.AST) -> list[str]:
             names.extend(_iter_target_names(elt))
         return names
     return []
+
+
+# Narrow by design: only get_journal()/Path(get_journal()) and one-hop local
+# aliases are roots. day_path(), segment_path(), resolve_journal_path(), and
+# contained_path() are intentionally not treated as roots.
+def _is_get_journal_call(expr: ast.AST) -> bool:
+    if not isinstance(expr, ast.Call):
+        return False
+    func = expr.func
+    return (isinstance(func, ast.Name) and func.id == "get_journal") or (
+        isinstance(func, ast.Attribute) and func.attr == "get_journal"
+    )
+
+
+def _is_path_of_get_journal(expr: ast.AST) -> bool:
+    return (
+        isinstance(expr, ast.Call)
+        and isinstance(expr.func, ast.Name)
+        and expr.func.id == "Path"
+        and len(expr.args) == 1
+        and _is_get_journal_call(expr.args[0])
+    )
+
+
+def _is_journal_root(expr: ast.AST, root_names: set[str]) -> bool:
+    return (
+        _is_get_journal_call(expr)
+        or _is_path_of_get_journal(expr)
+        or (isinstance(expr, ast.Name) and expr.id in root_names)
+    )
+
+
+def _journal_data_path(expr: ast.AST, root_names: set[str]) -> bool:
+    if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Div):
+        bottom = expr
+        while isinstance(bottom.left, ast.BinOp) and isinstance(
+            bottom.left.op, ast.Div
+        ):
+            bottom = bottom.left
+        return (
+            _is_journal_root(bottom.left, root_names)
+            and isinstance(bottom.right, ast.Constant)
+            and isinstance(bottom.right.value, str)
+            and bottom.right.value in JOURNAL_DATA_ANCHORS
+        )
+
+    return (
+        isinstance(expr, ast.Call)
+        and isinstance(expr.func, ast.Name)
+        and expr.func.id == "Path"
+        and len(expr.args) >= 2
+        and _is_journal_root(expr.args[0], root_names)
+        and isinstance(expr.args[1], ast.Constant)
+        and isinstance(expr.args[1].value, str)
+        and expr.args[1].value in JOURNAL_DATA_ANCHORS
+    )
+
+
+def _is_journal_data_target(
+    expr: ast.AST,
+    root_names: set[str],
+    target_names: set[str],
+) -> bool:
+    return _journal_data_path(expr, root_names) or (
+        isinstance(expr, ast.Name) and expr.id in target_names
+    )
+
+
+def _collect_journal_path_vars(tree: ast.AST) -> tuple[set[str], set[str]]:
+    root_names: set[str] = set()
+    target_names: set[str] = set()
+
+    for node in _iter_scope_assignments(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if _is_get_journal_call(node.value) or _is_path_of_get_journal(node.value):
+            for target in targets:
+                root_names.update(_iter_target_names(target))
+
+    for node in _iter_scope_assignments(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if _journal_data_path(node.value, root_names):
+            for target in targets:
+                target_names.update(_iter_target_names(target))
+
+    return root_names, target_names
+
+
+_SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+
+def _iter_scope_assignments(scope: ast.AST) -> list[ast.Assign | ast.AnnAssign]:
+    assignments: list[ast.Assign | ast.AnnAssign] = []
+
+    def visit(node: ast.AST) -> None:
+        if node is not scope and isinstance(node, _SCOPE_NODES):
+            return
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            assignments.append(node)
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+
+    visit(scope)
+    return assignments
+
+
+def _collect_parent_map(tree: ast.AST) -> dict[ast.AST, ast.AST]:
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+    return parents
+
+
+def _nearest_scope(
+    node: ast.AST,
+    tree: ast.AST,
+    parents: dict[ast.AST, ast.AST],
+) -> ast.AST:
+    current = parents.get(node)
+    while current is not None:
+        if current is tree or isinstance(current, _SCOPE_NODES):
+            return current
+        current = parents.get(current)
+    return tree
+
+
+def _iter_scopes(tree: ast.AST) -> list[ast.AST]:
+    scopes = [tree]
+    scopes.extend(node for node in ast.walk(tree) if isinstance(node, _SCOPE_NODES))
+    return scopes
 
 
 def _collect_bindings(
@@ -317,17 +488,39 @@ def _is_bare_lock_ex(node: ast.Call) -> bool:
     return "LOCK_EX" in lock_names and "LOCK_NB" not in lock_names
 
 
+def _open_mode_arg(node: ast.Call, pos_index: int) -> ast.AST | None:
+    if len(node.args) > pos_index:
+        return node.args[pos_index]
+    for keyword in node.keywords:
+        if keyword.arg == "mode":
+            return keyword.value
+    return None
+
+
+def _mode_is_write(mode_arg: ast.AST | None) -> bool:
+    return (
+        isinstance(mode_arg, ast.Constant)
+        and isinstance(mode_arg.value, str)
+        and mode_arg.value.startswith(("w", "a"))
+    )
+
+
 def scan_source(source: str, filename: str = "<source>") -> list[tuple[int, str, str]]:
     """Return ``(lineno, kind, detail)`` mechanic violations for source."""
     tree = ast.parse(source, filename=filename)
     os_aliases, os_replace_names, fcntl_aliases, flock_names, temp_names = (
         _collect_bindings(tree)
     )
+    parents = _collect_parent_map(tree)
+    scope_vars = {
+        id(scope): _collect_journal_path_vars(scope) for scope in _iter_scopes(tree)
+    }
 
     findings: list[tuple[int, str, str]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
+        root_names, target_names = scope_vars[id(_nearest_scope(node, tree, parents))]
 
         if _is_os_replace_call(node.func, os_aliases, os_replace_names):
             findings.append((node.lineno, "os.replace", _call_detail(node.func)))
@@ -341,6 +534,42 @@ def scan_source(source: str, filename: str = "<source>") -> list[tuple[int, str,
             node
         ):
             findings.append((node.lineno, "flock(LOCK_EX)", _call_detail(node.func)))
+            continue
+
+        if isinstance(node.func, ast.Name) and node.func.id == "open":
+            mode = _open_mode_arg(node, 1)
+            if (
+                node.args
+                and _mode_is_write(mode)
+                and _is_journal_data_target(node.args[0], root_names, target_names)
+            ):
+                findings.append((node.lineno, "open(write)", _call_detail(node.func)))
+            continue
+
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "open":
+            mode = _open_mode_arg(node, 0)
+            if _mode_is_write(mode) and _is_journal_data_target(
+                node.func.value,
+                root_names,
+                target_names,
+            ):
+                findings.append(
+                    (node.lineno, "Path.open(write)", _call_detail(node.func))
+                )
+            continue
+
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "write_text":
+            if _is_journal_data_target(node.func.value, root_names, target_names):
+                findings.append(
+                    (node.lineno, "Path.write_text", _call_detail(node.func))
+                )
+            continue
+
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "write_bytes":
+            if _is_journal_data_target(node.func.value, root_names, target_names):
+                findings.append(
+                    (node.lineno, "Path.write_bytes", _call_detail(node.func))
+                )
 
     findings.sort()
     return findings

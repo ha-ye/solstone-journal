@@ -162,6 +162,46 @@ def _run(root: Path) -> subprocess.CompletedProcess:
             "from fcntl import flock, LOCK_EX\n\ndef lock(f):\n    flock(f, LOCK_EX)\n",
             "flock(LOCK_EX)",
         ),
+        (
+            "from solstone.think.utils import get_journal\n"
+            "from pathlib import Path\n\n"
+            "def f():\n"
+            '    open(Path(get_journal()) / "config" / "schedules.json", "w")\n',
+            "open(write)",
+        ),
+        (
+            "from solstone.think.utils import get_journal\n"
+            "from pathlib import Path\n\n"
+            "def f(facet):\n"
+            "    journal = Path(get_journal())\n"
+            '    target = journal / "facets" / facet / "facet.json"\n'
+            '    target.write_text("x")\n',
+            "Path.write_text",
+        ),
+        (
+            "from solstone.think.utils import get_journal\n"
+            "from pathlib import Path\n\n"
+            "def f():\n"
+            '    Path(get_journal(), "talents", "day.jsonl").open("a")\n',
+            "Path.open(write)",
+        ),
+        (
+            "from solstone.think.utils import get_journal\n"
+            "from pathlib import Path\n\n"
+            "def f(day, seg):\n"
+            '    (Path(get_journal()) / "chronicle" / day / seg / "x.bin")'
+            '.write_bytes(b"x")\n',
+            "Path.write_bytes",
+        ),
+        (
+            "from solstone.think.utils import get_journal\n"
+            "from pathlib import Path\n\n"
+            "def f():\n"
+            "    root = get_journal()\n"
+            '    with open(Path(root, "config", "x.json"), "w") as fh:\n'
+            '        fh.write("x")\n',
+            "open(write)",
+        ),
     ],
 )
 def test_scan_source_flags_raw_mechanics(source: str, kind: str) -> None:
@@ -184,6 +224,63 @@ def test_scan_source_flags_raw_mechanics(source: str, kind: str) -> None:
             "    with tempfile.NamedTemporaryFile(delete=False) as tmp:\n"
             "        tmp.write(b'ok')\n"
             "    install_file(tmp.name, dest)\n"
+        ),
+        (
+            "from solstone.think.journal_io import write_text\n"
+            "from solstone.think.utils import get_journal\n"
+            "from pathlib import Path\n\n"
+            "def f(x):\n"
+            '    write_text(Path(get_journal()) / "facets" / x / "f.json", "data")\n'
+        ),
+        (
+            "from solstone.think import journal_io\n"
+            "from solstone.think.utils import get_journal\n"
+            "from pathlib import Path\n\n"
+            "def f(x):\n"
+            '    journal_io.write_text(Path(get_journal()) / "facets" / x, "data")\n'
+        ),
+        (
+            "from solstone.think.utils import get_journal\n"
+            "from pathlib import Path\n\n"
+            "def f():\n"
+            '    open(Path(get_journal()) / "logs" / "audit.jsonl", "a")\n'
+        ),
+        (
+            "from solstone.think.utils import get_journal\n"
+            "from pathlib import Path\n\n"
+            "def f():\n"
+            '    (Path(get_journal()) / "health" / "service.port")'
+            '.write_text("5015")\n'
+        ),
+        (
+            "from solstone.think.utils import get_journal\n"
+            "from pathlib import Path\n\n"
+            "def f():\n"
+            '    open(Path(get_journal()) / "config" / "x.json", "r")\n'
+        ),
+        (
+            "from solstone.think.utils import get_journal\n"
+            "from pathlib import Path\n\n"
+            "def f():\n"
+            '    Path(get_journal()).write_text("x")\n'
+        ),
+        "def save(path, data):\n    path.write_text(data)\n",
+        (
+            "def save(path, data):\n"
+            '    tmp = path.with_suffix(".tmp")\n'
+            "    tmp.write_text(data)\n"
+        ),
+        (
+            "from solstone.think.journal_io import contained_path\n"
+            "from solstone.think.utils import get_journal\n\n"
+            "def f(x):\n"
+            '    p = contained_path(get_journal(), "facets", x)\n'
+            '    p.write_text("data")\n'
+        ),
+        (
+            "from solstone.think.utils import day_path\n\n"
+            "def f(day):\n"
+            '    (day_path(day) / "timeline.json").write_text("x")\n'
         ),
     ],
 )

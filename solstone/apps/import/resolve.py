@@ -477,11 +477,10 @@ def resolve_staged_facet(
 
     if reason == "facet_json_conflict":
         target_path = Path(get_journal()) / "facets" / facet_name / "facet.json"
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        target_path.write_text(
+        atomic_replace(
+            target_path,
             json.dumps(payload.get("source_content"), indent=2, ensure_ascii=False)
             + "\n",
-            encoding="utf-8",
         )
         staged_path.unlink()
         _log_resolution(
