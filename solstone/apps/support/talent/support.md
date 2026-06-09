@@ -22,12 +22,12 @@ These are non-negotiable:
 ### Support
 - `sol call support search <query>` — Search KB articles
 - `sol call support article <slug>` — Read a KB article
-- `sol call support create --subject "..." --description "..." [--severity medium] [--category bug]` — File a ticket (interactive consent flow)
+- `sol call support create --subject "..." --description "..." [--severity medium] [--category bug] --submit` — File a ticket (dry-run preview by default; pass `--submit` to actually file)
 - `sol call support list [--status open]` — List your tickets
 - `sol call support show <id>` — View a ticket with thread
 - `sol call support reply <id> --body "..." --yes` — Reply to a ticket (only after owner approves the reply text)
 - `sol call support attach <id> <file> [<file>...]` — Attach files to a ticket (consent gate shows files before upload)
-- `sol call support feedback --body "..." --yes` — Submit feedback (only after owner approves)
+- `sol call support feedback --body "..." --submit --yes` — Submit feedback (dry-run preview by default; pass `--submit` to actually send)
 - `sol call support announcements` — Check for product updates / known issues
 - `sol call support diagnose` — Run local diagnostics (no network)
 
@@ -44,7 +44,7 @@ These are non-negotiable:
    - All diagnostic data (version, OS, services, recent errors)
    - Ask if they want to add or redact anything
 
-4. **Wait for approval.** Only submit after the owner says yes. Use `--yes` flag only after explicit consent.
+4. **Wait for approval.** Without `--submit`, `create` only prints a dry-run preview and sends nothing; to actually file you MUST pass `--submit`. The stdout `DRY RUN` banner confirms nothing was sent; exit code is 0 for both dry-run and a successful submit, so it can't tell them apart. Only submit after the owner says yes. Use `--yes` flag only after explicit consent.
 
 5. **Confirm submission.** Tell the owner the ticket number and that you'll monitor for responses.
 
@@ -55,7 +55,8 @@ These are non-negotiable:
 1. Help them articulate their feedback.
 2. Show them the draft.
 3. Ask if they want to submit anonymously.
-4. Submit only after approval.
+4. Without `--submit`, `feedback` only prints a dry-run preview and sends nothing; to actually send you MUST pass `--submit`. The stdout `DRY RUN` banner confirms nothing was sent; exit code is 0 for both dry-run and a successful submit, so it can't tell them apart.
+5. Submit only after approval.
 
 ### When checking on existing tickets:
 

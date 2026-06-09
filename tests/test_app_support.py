@@ -14,6 +14,9 @@ from solstone.apps.support.call import app
 from solstone.apps.support.diagnostics import collect_recent_errors
 
 runner = CliRunner()
+DRY_RUN_BANNER = (
+    "DRY RUN — nothing was sent. Re-run with --submit to actually file this."
+)
 
 
 def _health_dir(tmp_path, monkeypatch):
@@ -50,6 +53,21 @@ class _TicketsClient:
         if self.error:
             raise self.error
         return self.tickets
+
+
+def _enable_support_cli(monkeypatch):
+    monkeypatch.setattr("solstone.apps.support.portal.is_enabled", lambda: True)
+
+
+def _stub_dry_run_context(monkeypatch):
+    monkeypatch.setattr(
+        "solstone.apps.support.diagnostics.collect_all",
+        lambda: {"version": "9.9.9", "revision": "abc1234", "sample": "value"},
+    )
+    monkeypatch.setattr(
+        "solstone.apps.support.portal._get_portal_url_from_settings",
+        lambda: "https://support.example.test",
+    )
 
 
 def test_badge_count_enabled_empty(support_client, monkeypatch):
@@ -193,6 +211,135 @@ def test_feedback_anonymous_drops_smuggled_email(support_client, monkeypatch):
     assert resp.status_code == 201
     assert len(captured) == 1
     assert "user_email" not in captured[0]
+
+
+def test_cli_dry_run_never_constructs_portal_client(monkeypatch):
+    tripped: list[str] = []
+
+    class BlockedPortalClient:
+        def __init__(self, *args, **kwargs):
+            tripped.append("PortalClient")
+            raise AssertionError("PortalClient must not be constructed")
+
+    def blocked_get_client(*args, **kwargs):
+        tripped.append("get_client")
+        raise AssertionError("get_client must not be called")
+
+    _enable_support_cli(monkeypatch)
+    _stub_dry_run_context(monkeypatch)
+    monkeypatch.setattr(
+        "solstone.apps.support.portal.PortalClient", BlockedPortalClient
+    )
+    monkeypatch.setattr("solstone.apps.support.portal.get_client", blocked_get_client)
+
+    feedback_result = runner.invoke(app, ["feedback", "-b", "x"])
+    create_result = runner.invoke(app, ["create", "-s", "s", "-d", "d"])
+
+    assert feedback_result.exit_code == 0
+    assert create_result.exit_code == 0
+    assert tripped == []
+
+
+def test_cli_feedback_dry_run_preview_content(monkeypatch):
+    _enable_support_cli(monkeypatch)
+    _stub_dry_run_context(monkeypatch)
+
+    result = runner.invoke(app, ["feedback", "-b", "owner feedback"])
+
+    assert result.exit_code == 0
+    assert result.stdout.splitlines()[0] == DRY_RUN_BANNER
+    assert "Build identity — version:" in result.stdout
+    assert "Body:        owner feedback" in result.stdout
+    assert "Severity:    low" in result.stdout
+    assert "Category:    feedback" in result.stdout
+
+
+def test_cli_create_dry_run_preview_content(monkeypatch):
+    _enable_support_cli(monkeypatch)
+    _stub_dry_run_context(monkeypatch)
+
+    result = runner.invoke(app, ["create", "-s", "subj", "-d", "desc"])
+
+    assert result.exit_code == 0
+    assert result.stdout.splitlines()[0] == DRY_RUN_BANNER
+    assert "Build identity — version:" in result.stdout
+    assert "Subject:     subj" in result.stdout
+
+
+def test_cli_feedback_yes_without_submit_is_still_dry_run(monkeypatch):
+    _enable_support_cli(monkeypatch)
+    _stub_dry_run_context(monkeypatch)
+
+    result = runner.invoke(app, ["feedback", "-b", "x", "-y"])
+
+    assert result.exit_code == 0
+    assert result.stdout.splitlines()[0] == DRY_RUN_BANNER
+
+
+def test_cli_feedback_submit_calls_tool(monkeypatch):
+    captured: list[dict] = []
+
+    def recorder(**kwargs):
+        captured.append(kwargs)
+        return {"id": 1}
+
+    _enable_support_cli(monkeypatch)
+    monkeypatch.setattr("solstone.apps.support.tools.support_feedback", recorder)
+
+    result = runner.invoke(app, ["feedback", "-b", "hello", "--submit", "-y"])
+
+    assert result.exit_code == 0
+    assert len(captured) == 1
+    assert captured[0]["body"] == "hello"
+
+
+def test_cli_create_submit_calls_tool(monkeypatch):
+    captured: list[dict] = []
+
+    def recorder(**kwargs):
+        captured.append(kwargs)
+        return {"id": 1}
+
+    _enable_support_cli(monkeypatch)
+    monkeypatch.setattr(
+        "solstone.apps.support.diagnostics.collect_all",
+        lambda: {"version": "9.9.9", "revision": "abc1234"},
+    )
+    monkeypatch.setattr("solstone.apps.support.tools.support_create", recorder)
+
+    result = runner.invoke(
+        app, ["create", "-s", "S", "-d", "D", "--skip-kb", "--submit", "-y"]
+    )
+
+    assert result.exit_code == 0
+    assert len(captured) == 1
+    assert captured[0]["subject"] == "S"
+    assert captured[0]["description"] == "D"
+
+
+def test_cli_create_submit_confirm_negative_does_not_call_tool(monkeypatch):
+    captured: list[dict] = []
+
+    def recorder(**kwargs):
+        captured.append(kwargs)
+        return {"id": 1}
+
+    _enable_support_cli(monkeypatch)
+    monkeypatch.setattr(
+        "solstone.apps.support.diagnostics.collect_all",
+        lambda: {"version": "9.9.9", "revision": "abc1234"},
+    )
+    monkeypatch.setattr("solstone.apps.support.tools.support_create", recorder)
+
+    result = runner.invoke(
+        app,
+        ["create", "-s", "S", "-d", "D", "--skip-kb", "--submit"],
+        input="n\n",
+    )
+
+    assert result.exit_code == 0
+    assert captured == []
+    assert "Cancelled — nothing was sent." in result.stdout
 
 
 def test_feedback_identified_empty_email_omits_kwarg(support_client, monkeypatch):

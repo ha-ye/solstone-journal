@@ -50,10 +50,13 @@ sol call support create \
   --subject "Transcription fails on long recordings" \
   --description "Recordings over 2 hours consistently fail with timeout errors. Started after updating to v2.1." \
   --severity medium \
-  --category bug
+  --category bug \
+  --submit
 ```
 
-The `create` command implements a KB-first flow:
+The `create` command is a dry run by default: it prints the would-be payload and sends nothing. Pass `--submit` to actually file the ticket.
+
+The submitted `create` command implements a KB-first flow:
 1. Searches KB for related articles
 2. Shows matches (owner can read them and cancel if resolved)
 3. Collects diagnostics automatically
@@ -67,6 +70,7 @@ The `create` command implements a KB-first flow:
 - `--severity` — low, medium, high, critical (default: medium)
 - `--category` — bug, feature, question, account
 - `--skip-kb` — Skip KB search (not recommended)
+- `--submit` — Actually file the ticket; without it, print a safe dry-run preview
 - `--yes` / `-y` — Skip confirmation (only use with explicit owner consent)
 - `--anonymous` — Strip installation identifiers
 
@@ -114,10 +118,10 @@ When an owner reports a visual bug (UI glitch, rendering issue), proactively sug
 ### Feedback
 
 ```bash
-sol call support feedback --body "The entity search is great but I wish it could filter by date range"
+sol call support feedback --body "The entity search is great but I wish it could filter by date range" --submit
 ```
 
-Lower friction than a full ticket. Feedback is submitted as a ticket with category "feedback". Supports `--anonymous` flag.
+Lower friction than a full ticket. Feedback is dry run by default: it prints the would-be payload and sends nothing. Pass `--submit` to actually send. Feedback is submitted as a ticket with category "feedback". Supports `--anonymous` flag.
 
 ### Announcements
 
@@ -160,14 +164,16 @@ sol call support create \
   --subject "Calendar events not syncing" \
   --description "Google Calendar events imported yesterday aren't showing up in the calendar app. Tried re-importing but same result." \
   --category bug \
-  --severity medium
+  --severity medium \
+  --submit
 
 # Attach a screenshot to the ticket
 sol call support attach 15 ~/screenshot.png
 
 # Owner wants to give feedback
 sol call support feedback \
-  --body "Love the entity detection but it sometimes misidentifies project names as people"
+  --body "Love the entity detection but it sometimes misidentifies project names as people" \
+  --submit
 
 # Check for responses on open tickets
 sol call support list
@@ -177,8 +183,11 @@ sol call support show 15
 sol call support diagnose
 ```
 
+Running `create` or `feedback` without `--submit` produces a safe dry-run preview.
+
 ## Gotchas
 
+- **`create`/`feedback` are dry-run by default.** Re-run with `--submit` to actually send. The `DRY RUN` banner in stdout is the signal that nothing was sent; exit code is 0 in both cases.
 - **KB-first is automatic on `create`.** The `create` command always searches the KB and shows matches for owner review before filing. Pass `--skip-kb` only if the issue is clearly unique — it's there for edge cases, not as a speed-up.
 - **`--product` defaults to solstone.** Support handles other sol pbc products too. Confirm with the owner before filing a non-solstone ticket; don't assume the default.
 - **Diagnostics can leak configuration.** The auto-collector strips secrets, but the full diagnostic payload is shown at the consent gate — review before approving.

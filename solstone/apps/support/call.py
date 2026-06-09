@@ -38,6 +38,36 @@ def _check_enabled() -> None:
         raise typer.Exit(1)
 
 
+def _print_dry_run_preview(
+    *,
+    subject: str,
+    product: str,
+    severity: str,
+    category: str | None,
+    body: str,
+    diagnostics: dict,
+    portal_url: str,
+) -> None:
+    """Print the would-be ticket payload for a dry run. No network I/O."""
+    version = diagnostics.get("version") or "unknown"
+    revision = diagnostics.get("revision") or "none"
+    typer.echo(
+        "DRY RUN — nothing was sent. Re-run with --submit to actually file this."
+    )
+    typer.echo(f"Build identity — version: {version}  revision: {revision}")
+    typer.echo("\n--- Would send ---")
+    typer.echo(f"Subject:     {subject}")
+    typer.echo(f"Product:     {product}")
+    typer.echo(f"Severity:    {severity}")
+    if category:
+        typer.echo(f"Category:    {category}")
+    typer.echo(f"Body:        {body}")
+    typer.echo(f"\nuser_context ({len(json.dumps(diagnostics, default=str))} bytes):")
+    typer.echo(json.dumps(diagnostics, indent=2, default=str))
+    typer.echo(f"\nWould POST to: {portal_url}")
+    typer.echo("--- End dry run ---")
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -112,6 +142,14 @@ def create(
     skip_kb: bool = typer.Option(
         False, "--skip-kb", help="Skip KB search before filing."
     ),
+    submit: bool = typer.Option(
+        False,
+        "--submit",
+        help=(
+            "Actually file the ticket with sol pbc. Without --submit this is a "
+            "dry run and nothing is sent."
+        ),
+    ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt."),
     anonymous: bool = typer.Option(
         False, "--anonymous", help="Strip installation identifiers."
@@ -119,6 +157,22 @@ def create(
 ) -> None:
     """File a support ticket (KB-first flow with consent gate)."""
     _check_enabled()
+    if not submit:
+        from solstone.apps.support.diagnostics import collect_all
+        from solstone.apps.support.portal import _get_portal_url_from_settings
+
+        diagnostics = collect_all()
+        _print_dry_run_preview(
+            subject=subject,
+            product=product,
+            severity=severity,
+            category=category,
+            body=description,
+            diagnostics=diagnostics,
+            portal_url=_get_portal_url_from_settings(),
+        )
+        return
+
     from solstone.apps.support.diagnostics import collect_all
     from solstone.apps.support.tools import support_create, support_search
 
@@ -334,10 +388,36 @@ def feedback(
     body: str = typer.Option(..., "--body", "-b", help="Your feedback."),
     product: str = typer.Option("solstone", "--product", "-p", help="Product name."),
     anonymous: bool = typer.Option(False, "--anonymous", help="Submit anonymously."),
+    submit: bool = typer.Option(
+        False,
+        "--submit",
+        help=(
+            "Actually send the feedback to sol pbc. Without --submit this is a "
+            "dry run and nothing is sent."
+        ),
+    ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
 ) -> None:
     """Submit feedback (lower friction than a full ticket)."""
     _check_enabled()
+    if not submit:
+        from solstone.apps.support.diagnostics import collect_all
+        from solstone.apps.support.portal import _get_portal_url_from_settings
+
+        # Fixed display values mirror tools.support_feedback (source of truth):
+        # subject="User feedback", severity="low", category="feedback".
+        diagnostics = collect_all()
+        _print_dry_run_preview(
+            subject="User feedback",
+            product=product,
+            severity="low",
+            category="feedback",
+            body=body,
+            diagnostics=diagnostics,
+            portal_url=_get_portal_url_from_settings(),
+        )
+        return
+
     from solstone.apps.support.tools import support_feedback
 
     if not yes:
