@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -122,6 +123,79 @@ function assert(c, m) { if (!c) throw new Error(m); }
     'generic fallback must show portal-unreachable'
   );
 })().catch(e => { console.error(e); process.exit(1); });
+"""
+    )
+    subprocess.run([node, "-e", script], check=True, text=True)
+
+
+def test_subscribe_scout_stream_retries_then_renders_unreachable() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not available")
+
+    source = INIT_HTML.read_text(encoding="utf-8")
+    close_scout_stream = _extract_function(source, "closeScoutStream")
+    subscribe_scout_stream = _extract_function(source, "subscribeScoutStream")
+    backoff_match = re.search(r"const SCOUT_RETRY_BACKOFF_MS = \[[^\]]*\];", source)
+    assert backoff_match is not None
+    backoff_line = backoff_match.group(0)
+    script = (
+        """
+let renderCalls = [];
+function renderScoutState(state, opts = {}) { renderCalls.push([state, opts]); }
+let portalUnreachableShown = 0;
+function showPortalUnreachable() { portalUnreachableShown += 1; }
+function hidePortalUnreachable() {}
+let scoutStream = null;
+let scoutSubscribed = false;
+let scoutRetryTimer = null;
+"""
+        + backoff_line
+        + """
+const SCOUT_UNREACHABLE_COPY = 'scout-unreachable-copy-sentinel';
+let constructed = [];
+global.EventSource = function EventSource(url) {
+  this.closed = 0;
+  constructed.push(this);
+  this.addEventListener = function () {};
+  this.close = function () { this.closed += 1; };
+  Object.defineProperty(this, 'onerror', {
+    configurable: true,
+    set(fn) { fn(); }
+  });
+};
+global.setTimeout = function (fn, _ms) { fn(); return 'scout-timer'; };
+global.clearTimeout = function () {};
+"""
+        + close_scout_stream
+        + subscribe_scout_stream
+        + """
+
+function assert(c, m) { if (!c) throw new Error(m); }
+subscribeScoutStream('http://stub/subscribe', 'http://stub/portal');
+assert(
+  constructed.length === SCOUT_RETRY_BACKOFF_MS.length + 1,
+  'construction count must equal backoff schedule plus terminal attempt'
+);
+assert(
+  constructed.every(i => i.closed === 1),
+  'each EventSource must be closed exactly once'
+);
+const last = renderCalls[renderCalls.length - 1];
+assert(last[0] === 'error', 'terminal render must be error, got ' + last[0]);
+assert(last[1].reason === 'timeout', 'terminal reason must be timeout');
+assert(
+  last[1].message === SCOUT_UNREACHABLE_COPY,
+  'terminal message must route SCOUT_UNREACHABLE_COPY'
+);
+assert(
+  portalUnreachableShown === 1,
+  'portal-unreachable aside must be shown exactly once'
+);
+assert(
+  renderCalls.every(c => c[0] !== 'waiting' && c[0] !== 'success'),
+  'must never render waiting or success'
+);
 """
     )
     subprocess.run([node, "-e", script], check=True, text=True)
