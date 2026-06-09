@@ -266,6 +266,27 @@ def test_run_cdp_scenario_snapshot_find_input_type_pipeline(
     assert ("Input.insertText", {"text": "romeo"}) in connection.calls
 
 
+def test_needs_you_chat_prefill_selects_by_text() -> None:
+    scenario = next(
+        s for s in vb.SCENARIOS if vb._scenario_id(s) == "home/needs-you-chat-prefill"
+    )
+    expressions = [step.get("expression", "") for step in scenario["steps"]]
+
+    assert any(
+        "textContent.trim()" in expression
+        and "'Review the launch checklist'" in expression
+        for expression in expressions
+    )
+    assert not any(
+        "querySelector('.pulse-needs-item[data-needs-you-item]').click()" in expression
+        for expression in expressions
+    )
+    assert any(
+        "let's dig into Review the launch checklist" in expression
+        for expression in expressions
+    )
+
+
 def test_run_cdp_scenario_missing_variable_in_type_raises() -> None:
     scenario = {
         "app": "x",

@@ -515,6 +515,16 @@ def test_cost_fetch_uses_em_dash_on_failure():
     assert "textContent = '—';" in cost_fetch
 
 
+def test_relative_time_helper_is_locally_defined():
+    source = WORKSPACE_PATH.read_text(encoding="utf-8")
+
+    references = re.findall(r"\brelativeTime\s*\(", source)
+    definitions = re.findall(r"\bfunction\s+relativeTime\s*\(", source)
+
+    assert len(references) > len(definitions)
+    assert len(definitions) == 1
+
+
 def _health_info_catch_block(source: str) -> str:
     fetch_start = source.index("fetch('/app/health/api/info')")
     catch_start = source.index("    .catch(() => {", fetch_start)

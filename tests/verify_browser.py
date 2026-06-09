@@ -100,12 +100,12 @@ SCENARIOS: list[dict[str, Any]] = [
             {"do": "assert_text", "text": "Review the launch checklist"},
             {
                 "do": "wait_for",
-                "expression": "Boolean(document.querySelector('.pulse-needs-item[data-needs-you-item]'))",
+                "expression": "Array.from(document.querySelectorAll('.pulse-needs-item[data-needs-you-item]')).some(node => node.textContent.trim() === 'Review the launch checklist')",
                 "timeout_ms": 10000,
             },
             {
                 "do": "evaluate",
-                "expression": "document.querySelector('.pulse-needs-item[data-needs-you-item]').click()",
+                "expression": "(() => { const match = Array.from(document.querySelectorAll('.pulse-needs-item[data-needs-you-item]')).find(node => node.textContent.trim() === 'Review the launch checklist'); if (match) match.click(); })()",
             },
             {
                 "do": "wait_for",
