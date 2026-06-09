@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import solstone
+from solstone.think.app_supervised import is_app_supervised
 from solstone.think.install_guard import alias_paths, install_wrappers
 from solstone.think.journal_io import atomic_replace
 from solstone.think.service import reconcile_installed_unit
@@ -44,21 +45,24 @@ def _refresh_skill_links() -> None:
         raise RuntimeError(f"skill refresh failed with {report.error_count} error(s)")
 
 
-def _refresh_for_version_marker() -> None:
+def _refresh_for_version_marker(skip_reconcile: bool = False) -> None:
     marker_path = _version_marker_path()
     if _version_marker_is_current(marker_path):
         return
 
     _install_current_wrappers()
-    reconcile_installed_unit()
+    if not skip_reconcile:
+        reconcile_installed_unit()
     _refresh_skill_links()
     atomic_replace(marker_path, f"{solstone.__version__}\n")
 
 
 def main() -> None:
+    app_supervised = is_app_supervised(sys.argv)
     try:
-        reconcile_installed_unit()
-        _refresh_for_version_marker()
+        if not app_supervised:
+            reconcile_installed_unit()
+        _refresh_for_version_marker(skip_reconcile=app_supervised)
     except Exception:
         logger.exception("journal start failed during service reconciliation")
         sys.exit(1)

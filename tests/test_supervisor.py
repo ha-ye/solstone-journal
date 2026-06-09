@@ -149,6 +149,20 @@ def test_parse_args_remote_flag_optional():
     assert args.remote is None
 
 
+def test_parse_args_app_supervised_flag():
+    mod = importlib.reload(importlib.import_module("solstone.think.supervisor"))
+
+    parser = mod.parse_args()
+    args = parser.parse_args(
+        ["5016", "--app-supervised", "--no-daily", "--no-schedule"]
+    )
+
+    assert args.port == 5016
+    assert args.app_supervised is True
+    assert args.no_daily is True
+    assert args.no_schedule is True
+
+
 def test_parse_args_lifecycle_verb_hint(monkeypatch, capsys):
     mod = importlib.reload(importlib.import_module("solstone.think.supervisor"))
     monkeypatch.setattr(sys, "argv", ["sol", "supervisor", "stop"])
@@ -224,7 +238,7 @@ def test_graceful_shutdown_calls_stop_process_for_each_managed_proc(
     monkeypatch.setattr(mod, "_sweep_orphaned_sol_processes", lambda *_a, **_k: 0)
     monkeypatch.setattr(mod.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(mod, "start_callosum_in_process", lambda: None)
-    monkeypatch.setattr(mod, "stop_callosum_in_process", lambda: None)
+    monkeypatch.setattr(mod, "stop_callosum_in_process", lambda **_kwargs: None)
     monkeypatch.setattr(mod, "wait_for_convey_ready", lambda _proc: True)
     monkeypatch.setattr(mod, "_maybe_submit_startup_digest", lambda *, no_cortex: None)
 
@@ -262,7 +276,7 @@ def test_graceful_shutdown_calls_stop_process_for_each_managed_proc(
     monkeypatch.setattr(
         mod,
         "_stop_process",
-        lambda managed: stop_order.append(managed.name),
+        lambda managed, **_kwargs: stop_order.append(managed.name),
     )
 
     def interrupt_supervise(coro):
@@ -277,6 +291,151 @@ def test_graceful_shutdown_calls_stop_process_for_each_managed_proc(
         os.environ.pop("SOL_SUPERVISOR_SPAWNED", None)
 
     assert stop_order == ["spl", "cortex", "sense", "convey"]
+
+
+def _run_supervisor_main_for_shutdown_knobs(tmp_path, monkeypatch, *, argv):
+    mod = importlib.reload(importlib.import_module("solstone.think.supervisor"))
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.delenv("SOL_SUPERVISOR_SPAWNED", raising=False)
+    monkeypatch.delenv("SOLSTONE_APP_SUPERVISED", raising=False)
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(mod, "run_pending_tasks", lambda *a, **k: (0, 0))
+    monkeypatch.setattr(mod, "_sweep_orphaned_sol_processes", lambda *_a, **_k: 0)
+    monkeypatch.setattr(mod.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(mod, "start_callosum_in_process", lambda: None)
+    monkeypatch.setattr(mod, "is_local_provider_needed", lambda: False)
+    monkeypatch.setattr(mod, "_maybe_submit_startup_digest", lambda *, no_cortex: None)
+
+    class FakeCallosumConnection:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self, *args, **kwargs):
+            pass
+
+        def emit(self, *args, **kwargs):
+            pass
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(mod, "CallosumConnection", FakeCallosumConnection)
+
+    managed = _TaskManagedStub(cmd=["journal", "sense"])
+    managed.name = "sense"
+    monkeypatch.setattr(mod, "start_sense", lambda: managed)
+
+    events: list[str] = []
+    captures: dict[str, list] = {
+        "task_shutdown": [],
+        "stop_process": [],
+        "callosum_join": [],
+    }
+
+    class FakeTaskQueue:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def set_ready(self):
+            pass
+
+        def shutdown(self, *, timeout):
+            captures["task_shutdown"].append(timeout)
+
+    monkeypatch.setattr(mod, "TaskQueue", FakeTaskQueue)
+    monkeypatch.setattr(mod, "signal_ready", lambda: events.append("ready"))
+
+    def record_watcher_start():
+        events.append("watcher")
+        assert mod._managed_procs == [managed]
+
+    monkeypatch.setattr(mod, "start_parent_death_watcher", record_watcher_start)
+    monkeypatch.setattr(
+        mod,
+        "_stop_process",
+        lambda proc, *, timeout_cap=None: captures["stop_process"].append(
+            (proc.name, timeout_cap)
+        ),
+    )
+    monkeypatch.setattr(
+        mod,
+        "stop_callosum_in_process",
+        lambda *, join_timeout=5.0: captures["callosum_join"].append(join_timeout),
+    )
+    exit_now = MagicMock()
+    monkeypatch.setattr(mod.os, "_exit", exit_now)
+
+    def interrupt_supervise(coro):
+        events.append("run")
+        coro.close()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(mod.asyncio, "run", interrupt_supervise)
+
+    try:
+        mod.main()
+    finally:
+        os.environ.pop("SOL_SUPERVISOR_SPAWNED", None)
+
+    return mod, captures, events, exit_now
+
+
+def test_app_supervised_main_uses_watcher_and_compressed_shutdown_knobs(
+    tmp_path, monkeypatch
+):
+    from solstone.think import install_guard, service, skills_cli
+
+    reconcile = MagicMock()
+    install_wrappers = MagicMock()
+    install_project = MagicMock()
+    monkeypatch.setattr(service, "reconcile_installed_unit", reconcile)
+    monkeypatch.setattr(install_guard, "install_wrappers", install_wrappers)
+    monkeypatch.setattr(skills_cli, "install_project", install_project)
+
+    mod, captures, events, exit_now = _run_supervisor_main_for_shutdown_knobs(
+        tmp_path,
+        monkeypatch,
+        argv=[
+            "supervisor",
+            "0",
+            "--app-supervised",
+            "--no-daily",
+            "--no-schedule",
+            "--no-convey",
+            "--no-cortex",
+            "--no-spl",
+        ],
+    )
+
+    assert events == ["ready", "watcher", "run"]
+    assert captures["task_shutdown"] == [mod.APP_SUPERVISED_TASK_DRAIN_S]
+    assert captures["stop_process"] == [("sense", mod.APP_SUPERVISED_CHILD_STOP_S)]
+    assert captures["callosum_join"] == [mod.APP_SUPERVISED_CALLOSUM_JOIN_S]
+    exit_now.assert_not_called()
+    reconcile.assert_not_called()
+    install_wrappers.assert_not_called()
+    install_project.assert_not_called()
+
+
+def test_default_main_uses_default_shutdown_knobs(tmp_path, monkeypatch):
+    mod, captures, events, _exit_now = _run_supervisor_main_for_shutdown_knobs(
+        tmp_path,
+        monkeypatch,
+        argv=[
+            "supervisor",
+            "0",
+            "--no-daily",
+            "--no-schedule",
+            "--no-convey",
+            "--no-cortex",
+            "--no-spl",
+        ],
+    )
+
+    assert events == ["ready", "run"]
+    assert captures["task_shutdown"] == [10]
+    assert captures["stop_process"] == [("sense", None)]
+    assert captures["callosum_join"] == [5.0]
 
 
 def test_get_command_name():

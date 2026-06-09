@@ -159,9 +159,9 @@ def test_finally_clears_self_heartbeat_on_normal_shutdown(tmp_path, monkeypatch)
         ],
     )
     monkeypatch.setattr(mod, "start_callosum_in_process", lambda: None)
-    monkeypatch.setattr(mod, "stop_callosum_in_process", lambda: None)
+    monkeypatch.setattr(mod, "stop_callosum_in_process", lambda **_kwargs: None)
     monkeypatch.setattr(mod, "start_sense", lambda: SimpleNamespace(name="sense"))
-    monkeypatch.setattr(mod, "_stop_process", lambda _managed: None)
+    monkeypatch.setattr(mod, "_stop_process", lambda _managed, **_kwargs: None)
 
     class FakeCallosumConnection:
         def __init__(self, *args, **kwargs):
@@ -210,9 +210,9 @@ def test_finally_does_not_clear_self_heartbeat_after_mid_run_conflict(
         ],
     )
     monkeypatch.setattr(mod, "start_callosum_in_process", lambda: None)
-    monkeypatch.setattr(mod, "stop_callosum_in_process", lambda: None)
+    monkeypatch.setattr(mod, "stop_callosum_in_process", lambda **_kwargs: None)
     monkeypatch.setattr(mod, "start_sense", lambda: SimpleNamespace(name="sense"))
-    monkeypatch.setattr(mod, "_stop_process", lambda _managed: None)
+    monkeypatch.setattr(mod, "_stop_process", lambda _managed, **_kwargs: None)
 
     class FakeCallosumConnection:
         def __init__(self, *args, **kwargs):

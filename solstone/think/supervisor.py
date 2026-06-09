@@ -6,12 +6,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import concurrent.futures
+import fcntl
 import getpass
 import json
 import logging
 import os
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -20,11 +22,12 @@ import time
 from collections import OrderedDict, deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, NoReturn
 
 import psutil
 
 from solstone.think import routines, scheduler
+from solstone.think.app_supervised import FLAG, is_app_supervised, resolve_parent_fd
 from solstone.think.callosum import CallosumConnection, CallosumServer
 from solstone.think.maint import run_pending_tasks
 from solstone.think.models import LOCAL_MODEL, is_local_provider_needed
@@ -61,6 +64,12 @@ DEFAULT_THRESHOLD = 60
 CHECK_INTERVAL = 30
 MAX_UPDATED_CATCHUP = 4
 TEMPFAIL_DELAY = 15  # seconds to wait before retrying a tempfail exit
+HANDLE_SHUTDOWN_REAP_S = 3.0
+APP_SUPERVISED_SHUTDOWN_CEILING_S = 10.0
+APP_SUPERVISED_TASK_DRAIN_S = 2.0
+APP_SUPERVISED_CHILD_STOP_S = 2.0
+APP_SUPERVISED_CALLOSUM_JOIN_S = 2.0
+PARENT_DEATH_POLL_INTERVAL_S = 1.0
 STOPPED_TICKS_THRESHOLD = 2
 LOCAL_SERVER_PROCESS_NAME = "llama-server"
 LOCAL_WEDGE_THRESHOLD = 3
@@ -88,6 +97,16 @@ _sync_conflict_shutdown: bool = False
 # Supervisor identity (set in main() once ref is assigned)
 _supervisor_ref: str | None = None
 _supervisor_start: float | None = None
+_parent_death_sigterm_sent = threading.Event()
+
+
+def app_supervised_graceful_budget_s() -> float:
+    """Worst-case non-wedge graceful time after watcher self-SIGTERM."""
+    return (
+        HANDLE_SHUTDOWN_REAP_S
+        + APP_SUPERVISED_TASK_DRAIN_S
+        + APP_SUPERVISED_CALLOSUM_JOIN_S
+    )
 
 
 def _sd_notify(state: str) -> None:
@@ -101,6 +120,101 @@ def _sd_notify(state: str) -> None:
             s.sendto(state.encode(), addr)
     except OSError as exc:
         logging.warning("sd_notify failed: %s", exc)
+
+
+def _parent_fd_is_usable(fd: int) -> bool:
+    try:
+        mode = os.fstat(fd).st_mode
+        flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+    except OSError:
+        return False
+    access_mode = flags & os.O_ACCMODE
+    return stat.S_ISFIFO(mode) and access_mode in (os.O_RDONLY, os.O_RDWR)
+
+
+def wait_until_parent_gone(
+    parent_fd: int, *, poll_interval: float = PARENT_DEATH_POLL_INTERVAL_S
+) -> str:
+    if _parent_fd_is_usable(parent_fd):
+        while True:
+            try:
+                data = os.read(parent_fd, 4096)
+            except OSError:
+                return "fd-error"
+            if data == b"":
+                return "eof"
+
+    while True:
+        if os.getppid() == 1:
+            return "orphaned"
+        time.sleep(poll_interval)
+
+
+def enforce_parent_death_shutdown_deadline(
+    reason: str,
+    *,
+    ceiling: float = APP_SUPERVISED_SHUTDOWN_CEILING_S,
+    managed_procs: Iterable[RunnerManagedProcess] | None = None,
+    sent_event: "threading.Event | None" = None,
+    kill: Callable[[int, int], None] | None = None,
+    exit_now: Callable[[int], NoReturn] | None = None,
+    sleep: Callable[[float], None] | None = None,
+) -> None:
+    del reason
+    kill_fn = kill or os.kill
+    exit_now_fn = exit_now or os._exit
+    sleep_fn = sleep or time.sleep
+    sigterm_sent = sent_event if sent_event is not None else _parent_death_sigterm_sent
+
+    if not sigterm_sent.is_set():
+        sigterm_sent.set()
+        kill_fn(os.getpid(), signal.SIGTERM)
+
+    sleep_fn(ceiling)
+
+    procs = managed_procs if managed_procs is not None else _managed_procs
+    for managed in procs:
+        if not managed.is_running():
+            continue
+        try:
+            managed.process.kill()
+        except Exception:
+            logger.exception(
+                "parent-death backstop: SIGKILL failed for %s", managed.name
+            )
+
+    exit_now_fn(1)
+
+
+def _parent_death_watcher_main(
+    parent_fd: int,
+    *,
+    poll_interval: float = PARENT_DEATH_POLL_INTERVAL_S,
+    ceiling: float = APP_SUPERVISED_SHUTDOWN_CEILING_S,
+) -> None:
+    reason = wait_until_parent_gone(parent_fd, poll_interval=poll_interval)
+    logger.warning(
+        "parent-death detected (%s); converging to graceful shutdown", reason
+    )
+    enforce_parent_death_shutdown_deadline(reason, ceiling=ceiling)
+
+
+def start_parent_death_watcher(
+    parent_fd: int | None = None,
+    *,
+    poll_interval: float = PARENT_DEATH_POLL_INTERVAL_S,
+    ceiling: float = APP_SUPERVISED_SHUTDOWN_CEILING_S,
+) -> threading.Thread:
+    fd = parent_fd if parent_fd is not None else resolve_parent_fd()
+    thread = threading.Thread(
+        target=_parent_death_watcher_main,
+        args=(fd,),
+        kwargs={"poll_interval": poll_interval, "ceiling": ceiling},
+        name="parent-death-watcher",
+        daemon=True,
+    )
+    thread.start()
+    return thread
 
 
 def _candidate_journal(proc: "psutil.Process") -> Path | None:
@@ -970,8 +1084,12 @@ def _start_termination_thread(
         thread.start()
 
 
-def _stop_process(managed: RunnerManagedProcess) -> None:
+def _stop_process(
+    managed: RunnerManagedProcess, *, timeout_cap: float | None = None
+) -> None:
     timeout = _SERVICE_STATE.get(managed.name, {}).get("shutdown_timeout", 15)
+    if timeout_cap is not None:
+        timeout = min(timeout, timeout_cap)
     _terminate_managed(managed, timeout, reason="shutdown")
     managed.cleanup()
 
@@ -1557,7 +1675,7 @@ def wait_for_convey_ready(
     return False
 
 
-def stop_callosum_in_process() -> None:
+def stop_callosum_in_process(join_timeout: float = 5.0) -> None:
     """Stop the in-process Callosum server."""
     global _callosum_server, _callosum_thread
 
@@ -1566,7 +1684,7 @@ def stop_callosum_in_process() -> None:
         _callosum_server.stop()
 
     if _callosum_thread:
-        _callosum_thread.join(timeout=5)
+        _callosum_thread.join(timeout=join_timeout)
         if _callosum_thread.is_alive():
             logging.warning("Callosum server thread did not stop cleanly")
 
@@ -2184,6 +2302,14 @@ def parse_args() -> argparse.ArgumentParser:
         help="Disable periodic task scheduler",
     )
     parser.add_argument(
+        FLAG,
+        action="store_true",
+        help=(
+            "App-supervised mode: skip all service-unit work and self-exit when "
+            "the parent process dies (used by the macOS app)."
+        ),
+    )
+    parser.add_argument(
         "--remote",
         type=str,
         help="Remote mode: URL for segment transfer (not yet implemented)",
@@ -2206,7 +2332,7 @@ def handle_shutdown(signum, frame):
                 except Exception:
                     logger.exception("shutdown: terminate failed for %s", managed.name)
 
-            deadline = time.monotonic() + 3.0
+            deadline = time.monotonic() + HANDLE_SHUTDOWN_REAP_S
             while time.monotonic() < deadline:
                 if all(not managed.is_running() for managed in live):
                     break
@@ -2258,6 +2384,7 @@ def main() -> None:
     journal_info = get_journal_info()
 
     args = setup_cli(parser)
+    app_supervised = is_app_supervised(sys.argv)
     _ensure_venv_bin_on_path()
 
     journal_path = _get_journal_path()
@@ -2285,7 +2412,6 @@ def main() -> None:
     health_dir = journal_path / "health"
     lock_path = health_dir / "supervisor.lock"
     pid_path = health_dir / "supervisor.pid"
-    import fcntl
 
     lock_fd = open(lock_path, "w")
     try:
@@ -2499,6 +2625,8 @@ def main() -> None:
         print("  Supervisor ready", flush=True)
         _sd_notify("READY=1")
         signal_ready()
+        if app_supervised:
+            start_parent_death_watcher()
         asyncio.run(
             supervise(
                 daily=daily_enabled,
@@ -2523,11 +2651,13 @@ def main() -> None:
         print("\nShutting down gracefully (this may take a moment)...", flush=True)
 
         if _task_queue:
-            _task_queue.shutdown(timeout=10)
+            task_drain_timeout = APP_SUPERVISED_TASK_DRAIN_S if app_supervised else 10
+            _task_queue.shutdown(timeout=task_drain_timeout)
 
         # Stop services in reverse order
+        child_stop_timeout = APP_SUPERVISED_CHILD_STOP_S if app_supervised else None
         for managed in reversed(procs):
-            _stop_process(managed)
+            _stop_process(managed, timeout_cap=child_stop_timeout)
 
         if schedule_enabled:
             try:
@@ -2541,7 +2671,10 @@ def main() -> None:
             logging.info("Supervisor disconnected from Callosum")
 
         # Stop in-process Callosum server last
-        stop_callosum_in_process()
+        callosum_join_timeout = (
+            APP_SUPERVISED_CALLOSUM_JOIN_S if app_supervised else 5.0
+        )
+        stop_callosum_in_process(join_timeout=callosum_join_timeout)
 
         logging.info("Supervisor shutdown complete.")
         print("Shutdown complete.", flush=True)
