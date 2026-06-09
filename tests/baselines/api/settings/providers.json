@@ -244,34 +244,6 @@
       "tier": 2,
       "type": "generate"
     },
-    "talent.import.review": {
-      "disabled": false,
-      "group": "Import",
-      "label": "Import Review",
-      "tier": 2,
-      "type": "cogitate"
-    },
-    "talent.import.review_config": {
-      "disabled": false,
-      "group": "Import",
-      "label": "Import Config Reviewer",
-      "tier": 2,
-      "type": "cogitate"
-    },
-    "talent.import.review_entities": {
-      "disabled": false,
-      "group": "Import",
-      "label": "Import Entity Reviewer",
-      "tier": 2,
-      "type": "cogitate"
-    },
-    "talent.import.review_facets": {
-      "disabled": false,
-      "group": "Import",
-      "label": "Import Facet Reviewer",
-      "tier": 2,
-      "type": "cogitate"
-    },
     "talent.skills.skill_editor": {
       "disabled": false,
       "group": "Think",

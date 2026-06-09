@@ -236,50 +236,6 @@
       "title": "Facet Newsletter Generator",
       "type": "cogitate"
     },
-    "import:review": {
-      "app": "import",
-      "color": "#37474f",
-      "description": "Unified import review: resolves staged entities, then facets, then config in dependency order.",
-      "multi_facet": false,
-      "output_format": null,
-      "schedule": null,
-      "source": "app",
-      "title": "Import Review",
-      "type": "cogitate"
-    },
-    "import:review_config": {
-      "app": "import",
-      "color": "#6a1b9a",
-      "description": "Reviews and resolves staged config field differences from journal-to-journal import.",
-      "multi_facet": false,
-      "output_format": null,
-      "schedule": null,
-      "source": "app",
-      "title": "Import Config Reviewer",
-      "type": "cogitate"
-    },
-    "import:review_entities": {
-      "app": "import",
-      "color": "#1565c0",
-      "description": "Reviews and resolves staged entities from journal-to-journal import, handling low-confidence matches, ID collisions, and principal conflicts.",
-      "multi_facet": false,
-      "output_format": null,
-      "schedule": null,
-      "source": "app",
-      "title": "Import Entity Reviewer",
-      "type": "cogitate"
-    },
-    "import:review_facets": {
-      "app": "import",
-      "color": "#2e7d32",
-      "description": "Reviews and resolves staged facet items from journal-to-journal import, handling unmapped entities and facet.json conflicts.",
-      "multi_facet": false,
-      "output_format": null,
-      "schedule": null,
-      "source": "app",
-      "title": "Import Facet Reviewer",
-      "type": "cogitate"
-    },
     "morning_briefing": {
       "app": null,
       "color": "#1565c0",
