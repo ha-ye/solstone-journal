@@ -338,7 +338,10 @@ def run(routine_id: str = typer.Argument(help="Routine ID (or prefix)")) -> None
     full_id = _resolve_id(config, routine_id)
     routine = config[full_id]
     typer.echo(f'Running routine "{routine.get("name", "")}"...')
-    _run_routine(routine)
+    reason = _run_routine(routine)
+    if reason is not None:
+        typer.echo(f"Routine not run: {reason}", err=True)
+        raise typer.Exit(1)
     typer.echo("Done.")
 
 

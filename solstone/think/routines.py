@@ -251,19 +251,66 @@ def _render_upcoming_activity_block(activity: dict | None, facet: str) -> str:
     )
 
 
-def _run_routine(routine: dict, trigger_context: dict | None = None) -> None:
-    """Execute a single routine and persist its outcome."""
+def resolve_routine_access_tier(routine: dict) -> Any:
+    """Return the routine's declared access_tier, defaulting to 'normal' when absent.
+
+    Read-only. Returns the raw declared value — which may be malformed (non-string,
+    empty, unknown) — so the caller's guard can fail loudly rather than silently
+    coercing a bad declaration down to 'normal'. A present-but-null value resolves
+    to None (a guard failure), NOT to the absent default.
+    """
+    return routine.get("access_tier", "normal")
+
+
+def _unsupported_tier_reason(tier: Any) -> str | None:
+    """Reason a routine may not run, or None when the tier is exactly 'normal'.
+
+    Routines are capped at 'normal'. Anything else — a higher declared tier
+    (system-read / outbound / code-agent) or a malformed value (non-string, empty
+    string, list, unknown string) — yields a human-readable failure reason.
+    """
+    if tier == "normal":
+        return None
+    return f"unsupported access_tier {tier!r}; routines are capped at 'normal'"
+
+
+def _tier_log_token(tier: Any) -> str:
+    """A whitespace-free token naming the declared tier for the health-log outcome."""
+    if isinstance(tier, str) and tier and not any(c.isspace() for c in tier):
+        return tier
+    return "malformed"
+
+
+def _tier_failure_marker(name: str, reason: str) -> str:
+    """Self-evident output-file notice written when the access-tier guard blocks a run.
+
+    Worded as an unmistakable non-run so a later run that reads this file as
+    'Previous output:' for continuity will not treat it as task results.
+    """
+    return (
+        "# Routine did not run\n\n"
+        f"Routine **{name}** was not executed: {reason}.\n\n"
+        "Routines run at the `normal` access tier only. Remove the `access_tier` "
+        'field (or set it to `"normal"`) in routines/config.json to let this '
+        "routine run.\n"
+    )
+
+
+def _run_routine(routine: dict, trigger_context: dict | None = None) -> str | None:
+    """Execute a single routine and persist its outcome.
+
+    Returns a human-readable failure reason ONLY when the routine is blocked
+    before dispatch by the access-tier guard, so the manual `run` command can
+    surface it to the operator's terminal. Returns None in every dispatched case
+    (including downstream success/error/timeout); unattended callers (the
+    scheduler) ignore the return value.
+    """
     routine_id = str(routine.get("id", "unknown"))
     name = str(routine.get("name", routine_id))
     start_time = time.monotonic()
     output_path: Path | None = None
 
     try:
-        instruction = str(routine.get("instruction", ""))
-        facets = routine.get("facets") or []
-        _template = routine.get("template")
-        _notify = bool(routine.get("notify", False))
-
         journal = Path(get_journal())
         output_dir = journal / "routines" / routine_id
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -272,6 +319,38 @@ def _run_routine(routine: dict, trigger_context: dict | None = None) -> None:
         output_path = output_dir / f"{now_utc.strftime('%Y%m%d')}.md"
         if output_path.exists():
             output_path = output_dir / f"{now_utc.strftime('%Y%m%d-%H%M%S')}.md"
+
+        # Access-tier guard: routines are capped at 'normal'. Over-declaration or a
+        # malformed value fails loudly here — before any dispatch side effect — and
+        # is recorded on every surface the owner might check.
+        tier = resolve_routine_access_tier(routine)
+        reason = _unsupported_tier_reason(tier)
+        if reason is not None:
+            duration = int(time.monotonic() - start_time)
+            logger.error("Routine %s blocked before dispatch: %s", routine_id, reason)
+            output_path.write_text(_tier_failure_marker(name, reason), encoding="utf-8")
+            _log_health(
+                routine_id,
+                name,
+                duration,
+                f"error-access-tier-{_tier_log_token(tier)}",
+            )
+            callosum_send(
+                "routines",
+                "complete",
+                routine_id=routine_id,
+                name=name,
+                outcome="error",
+                reason=reason,
+                output_path=str(output_path),
+                duration_s=duration,
+            )
+            return reason
+
+        instruction = str(routine.get("instruction", ""))
+        facets = routine.get("facets") or []
+        _template = routine.get("template")
+        _notify = bool(routine.get("notify", False))
 
         previous_outputs = sorted(output_dir.glob("*.md"))
         prev_output_path = str(previous_outputs[-1]) if previous_outputs else None
@@ -322,7 +401,7 @@ def _run_routine(routine: dict, trigger_context: dict | None = None) -> None:
                 output_path=str(output_path),
                 duration_s=duration,
             )
-            return
+            return None
 
         completed, timed_out = wait_for_uses([use_id], timeout=600)
         if use_id in timed_out:
@@ -346,6 +425,7 @@ def _run_routine(routine: dict, trigger_context: dict | None = None) -> None:
             duration_s=duration,
         )
         _log_health(routine_id, name, duration, outcome)
+        return None
     except Exception as exc:
         duration = int(time.monotonic() - start_time)
         logger.exception("Routine %s failed: %s", routine_id, exc)
@@ -365,6 +445,7 @@ def _run_routine(routine: dict, trigger_context: dict | None = None) -> None:
             )
         except Exception:
             logger.exception("Failed to emit routine completion for %s", routine_id)
+        return None
 
 
 def _activity_anticipation_candidate_days(

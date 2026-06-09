@@ -1975,3 +1975,169 @@ class TestActivityAnticipation:
             mod.check()
 
         assert mock_req.call_count == 1
+
+
+class TestAccessTier:
+    def _make_routine(self, **overrides):
+        routine = {
+            "id": "routine-1",
+            "name": "Morning",
+            "instruction": "Do the thing",
+            "cadence": "manual",
+            "facets": [],
+            "template": None,
+            "notify": False,
+        }
+        routine.update(overrides)
+        return routine
+
+    def test_resolve_defaults_to_normal_when_absent(self):
+        assert routines.resolve_routine_access_tier({"id": "x"}) == "normal"
+
+    def test_resolve_returns_raw_declared_value(self):
+        assert (
+            routines.resolve_routine_access_tier({"access_tier": "outbound"})
+            == "outbound"
+        )
+        assert routines.resolve_routine_access_tier({"access_tier": None}) is None
+
+    def test_normal_surface_is_normal_via_contract(self):
+        from solstone.think.cogitate_contract import (
+            AccessCapabilities,
+            capabilities_for_access_tier,
+        )
+
+        assert capabilities_for_access_tier("normal") == AccessCapabilities(
+            sol=True, reads=True, submit=False
+        )
+
+    def test_routine_talent_resolves_to_normal(self):
+        from solstone.think.talent import _validate_access_tier
+
+        path = (
+            Path(__file__).resolve().parents[1] / "solstone" / "talent" / "routine.md"
+        )
+        post = frontmatter.load(path)
+        assert (
+            _validate_access_tier(
+                post.metadata.get("access_tier"),
+                post.metadata.get("type"),
+                "access_tier",
+            )
+            == "normal"
+        )
+
+    def test_default_and_explicit_normal_dispatch_identically(
+        self, journal_path, monkeypatch
+    ):
+        calls = []
+        started = []
+
+        def fake_cortex_request(**kwargs):
+            calls.append(kwargs)
+            return "agent-x"
+
+        def fake_callosum_send(tract, event, **fields):
+            if event == "started":
+                started.append((tract, fields))
+            return True
+
+        monkeypatch.setattr(routines, "cortex_request", fake_cortex_request)
+        monkeypatch.setattr(routines, "callosum_send", fake_callosum_send)
+        monkeypatch.setattr(
+            routines, "wait_for_uses", lambda *a, **k: ({"agent-x": "finish"}, [])
+        )
+
+        assert routines._run_routine(self._make_routine()) is None
+        assert routines._run_routine(self._make_routine(access_tier="normal")) is None
+
+        assert len(calls) == 2
+        assert len(started) == 2
+        for kw in calls:
+            assert kw["name"] == "routine"
+            assert set(kw["config"].keys()) == {"output_path", "output"}
+            assert kw["config"]["output"] == "md"
+            assert "access_tier" not in json.dumps(kw)
+        # absent and explicit-normal dispatch byte-for-byte identically
+        assert calls[0]["config"] == calls[1]["config"]
+
+    @pytest.mark.parametrize(
+        "tier",
+        [
+            "system-read",
+            "outbound",
+            "code-agent",
+            "elevated",
+            "",
+            None,
+            ["outbound"],
+            5,
+        ],
+    )
+    def test_over_declaration_blocks_dispatch_and_records_all_surfaces(
+        self, tier, journal_path, monkeypatch
+    ):
+        cortex_calls = []
+        events = []
+
+        def fake_cortex_request(**kwargs):
+            cortex_calls.append(kwargs)
+            return "agent-x"
+
+        def fake_callosum_send(tract, event, **fields):
+            events.append((tract, event, fields))
+            return True
+
+        monkeypatch.setattr(routines, "cortex_request", fake_cortex_request)
+        monkeypatch.setattr(routines, "wait_for_uses", lambda *a, **k: ({}, []))
+        monkeypatch.setattr(routines, "callosum_send", fake_callosum_send)
+
+        reason = routines._run_routine(self._make_routine(access_tier=tier))
+
+        # dispatch provably never happened
+        assert cortex_calls == []
+        assert all(event != "started" for _t, event, _f in events)
+        assert reason is not None
+
+        # surface 1: health log line names the tier failure
+        log_text = (journal_path / "health" / "routines.log").read_text()
+        expected_token = (
+            tier
+            if (isinstance(tier, str) and tier and not any(c.isspace() for c in tier))
+            else "malformed"
+        )
+        assert f"outcome=error-access-tier-{expected_token}" in log_text
+
+        # surface 2: complete event with outcome=error + tier-naming reason
+        complete = [f for _t, e, f in events if e == "complete"]
+        assert len(complete) == 1
+        assert complete[0]["outcome"] == "error"
+        assert "access_tier" in complete[0]["reason"]
+
+        # surface 3: output file is a self-evident non-run marker naming the routine
+        out_files = sorted((journal_path / "routines" / "routine-1").glob("*.md"))
+        assert len(out_files) == 1
+        marker = out_files[0].read_text()
+        assert "did not run" in marker.lower()
+        assert "was not executed" in marker
+        assert "Morning" in marker
+
+    def test_manual_run_surfaces_tier_failure_to_terminal(
+        self, journal_path, monkeypatch
+    ):
+        cortex_calls = []
+
+        def fake_cortex_request(**kwargs):
+            cortex_calls.append(kwargs)
+            return "agent-x"
+
+        monkeypatch.setattr(routines, "cortex_request", fake_cortex_request)
+        monkeypatch.setattr(routines, "wait_for_uses", lambda *a, **k: ({}, []))
+        monkeypatch.setattr(routines, "callosum_send", lambda *a, **k: True)
+
+        save_config({"routine-1": self._make_routine(access_tier="outbound")})
+        result = runner.invoke(call_app, ["routines", "run", "routine-1"])
+
+        assert result.exit_code == 1
+        assert "outbound" in result.output
+        assert cortex_calls == []
