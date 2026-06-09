@@ -47,6 +47,25 @@ def test_workspace_has_diagnostic_reports_toggle():
     assert "diagnostic reports" in text
 
 
+def test_workspace_network_access_toggle_uses_dedicated_flow():
+    text = _workspace_text()
+
+    match = re.search(r'<input[^>]*\bid="field-network-access"[^>]*>', text)
+    assert match, "network access toggle not found"
+    toggle_tag = match.group(0)
+    assert "data-section" not in toggle_tag
+    assert "data-key" not in toggle_tag
+    assert "{{ settings_copy.CONVEY_NETWORK_ACCESS_LABEL }}" in text
+    assert "settings_copy.CONVEY_NETWORK_ACCESS_HINT" in text
+    assert "api/convey/network-access/capability" in text
+    assert "api/convey/network-access" in text
+    assert "function handleNetworkAccessChange(el)" in text
+    assert "const desired = el.checked" in text
+    assert "el.checked = previous" in text
+    assert "result?.restart_timeout" in text
+    assert "saveConfigValue('convey', 'allow_network_access" not in text
+
+
 def test_workspace_uses_global_convey_config_api():
     text = _workspace_text()
 

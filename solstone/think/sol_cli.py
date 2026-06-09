@@ -91,6 +91,7 @@ COMMANDS: dict[str, Command] = {
     "install-provider": Command("solstone.think.install_provider", "service"),
     "skills": Command("solstone.think.skills_cli", "access"),
     "password": Command("solstone.think.password_cli", "service"),
+    "settings": Command("solstone.think.settings_cli", "service"),
     "streams": Command("solstone.think.streams", "service"),
     "segment": Command("solstone.think.segment", "service"),
     "journal-stats": Command("solstone.think.journal_stats", "service"),

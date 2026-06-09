@@ -137,9 +137,22 @@ def test_stale_allowlist_entries_are_reported_for_vanished_keys(
     assert any("solstone/apps/vanished/call.py" in line for line in stale)
     assert tracked == []
 
+
+def test_subprocess_reports_new_violations(tmp_path: Path) -> None:
+    root = tmp_path / "bad"
+    _write_file(
+        root,
+        "solstone/apps/badapp/call.py",
+        "from solstone.think.utils import get_journal\n\n"
+        "def main():\n"
+        "    return get_journal()\n",
+    )
+
     result = _run(root)
+
     assert result.returncode == 1, result.stdout + result.stderr
-    assert "call-http-only: STALE allowlist entries:" in result.stderr
+    assert "call-http-only: NEW violations:" in result.stderr
+    assert "solstone/apps/badapp/call.py" in result.stderr
 
 
 def test_excluded_file_with_violations_is_not_flagged(tmp_path: Path) -> None:

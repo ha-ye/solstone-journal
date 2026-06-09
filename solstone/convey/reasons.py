@@ -120,6 +120,11 @@ NETWORK_SECURITY_REQUIRES_PASSWORD = Reason(
     "I couldn't change network access until a password is set.",
     400,
 )
+LOCAL_REQUEST_REQUIRED = Reason(
+    "local_request_required",
+    "I couldn't change network access from this request.",
+    403,
+)
 
 # entities
 ENTITY_NOT_FOUND = Reason("entity_not_found", "I couldn't find that entity.", 404)

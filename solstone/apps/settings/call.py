@@ -11,18 +11,6 @@ from typing import Any
 
 import typer
 
-from solstone.apps.settings.copy import (
-    CONVEY_NETWORK_DISABLE_DONE,
-    CONVEY_NETWORK_DISABLE_PROGRESS,
-    CONVEY_NETWORK_ENABLE_DONE,
-    CONVEY_NETWORK_ENABLE_PROGRESS,
-    CONVEY_REFUSE_NO_PASSWORD_NETWORK,
-    CONVEY_RESTART_TIMEOUT,
-)
-from solstone.convey.network_access import (
-    NetworkAccessPasswordRequired,
-    set_network_access,
-)
 from solstone.convey.reasons import (
     FILE_NOT_FOUND,
     INVALID_CONFIG_VALUE,
@@ -31,8 +19,6 @@ from solstone.convey.reasons import (
     NETWORK_SECURITY_REQUIRES_PASSWORD,
 )
 from solstone.think.convey_client import ConveyClientError, convey_cli, get_client
-from solstone.think.service import DEFAULT_SERVICE_PORT
-from solstone.think.utils import read_service_port, require_solstone
 
 # Mirrors solstone.apps.settings.routes.API_KEY_ENV_VARS (the canonical order
 # used in the "Invalid env var" message); reconstructed here rather than
@@ -44,6 +30,12 @@ _API_KEY_ENV_VARS = [
     "REVAI_ACCESS_TOKEN",
     "PLAUD_ACCESS_TOKEN",
 ]
+CONVEY_MOVED_NETWORK_ENABLE = (
+    "moved to `journal settings convey network-access enable` — run that instead."
+)
+CONVEY_MOVED_NETWORK_DISABLE = (
+    "moved to `journal settings convey network-access disable` — run that instead."
+)
 
 app = typer.Typer(
     help="Journal settings — keys, providers, transcription, identity, and observer."
@@ -128,42 +120,20 @@ def _provider_for_env_var(providers: dict[str, Any], env_var: str) -> str | None
     return None
 
 
-def _convey_port() -> int:
-    return read_service_port("convey") or DEFAULT_SERVICE_PORT
-
-
 @network_access_app.command("enable")
 def convey_network_access_enable() -> None:
-    """Enable non-loopback access to Convey and restart it."""
+    """Moved to ``journal settings convey network-access enable``."""
 
-    require_solstone()
-    try:
-        result = set_network_access(
-            enable=True,
-            on_restart=lambda: typer.echo(CONVEY_NETWORK_ENABLE_PROGRESS),
-        )
-    except NetworkAccessPasswordRequired:
-        typer.echo(CONVEY_REFUSE_NO_PASSWORD_NETWORK, err=True)
-        raise typer.Exit(1)
-    if result["restart_timeout"]:
-        typer.echo(CONVEY_RESTART_TIMEOUT, err=True)
-        raise typer.Exit(1)
-    typer.echo(CONVEY_NETWORK_ENABLE_DONE.format(host_url=result["effective_host_url"]))
+    typer.echo(CONVEY_MOVED_NETWORK_ENABLE, err=True)
+    raise typer.Exit(2)
 
 
 @network_access_app.command("disable")
 def convey_network_access_disable() -> None:
-    """Restrict Convey to localhost and restart it."""
+    """Moved to ``journal settings convey network-access disable``."""
 
-    require_solstone()
-    result = set_network_access(
-        enable=False,
-        on_restart=lambda: typer.echo(CONVEY_NETWORK_DISABLE_PROGRESS),
-    )
-    if result["restart_timeout"]:
-        typer.echo(CONVEY_RESTART_TIMEOUT, err=True)
-        raise typer.Exit(1)
-    typer.echo(CONVEY_NETWORK_DISABLE_DONE.format(port=_convey_port()))
+    typer.echo(CONVEY_MOVED_NETWORK_DISABLE, err=True)
+    raise typer.Exit(2)
 
 
 @trust_localhost_app.command("enable")

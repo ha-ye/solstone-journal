@@ -405,7 +405,7 @@ solstone/
 | Group | Commands |
 |-------|----------|
 | Think (processing) | `import`, `think`, `planner`, `indexer`, `supervisor`, `schedule`, `top`, `health`, `callosum`, `notify`, `heartbeat` |
-| Service | `service` (+ aliases `up`, `down`, `start`), `navigate`, `routines`, `identity`, `install-provider` |
+| Service | `service` (+ aliases `up`, `down`, `start`), `navigate`, `routines`, `identity`, `settings`, `install-provider` |
 | Observe (capture) | `transcribe`, `describe`, `sense`, `transfer`, `observer` |
 | Talent (AI agents) | `agents`, `cortex`, `talent`, `call`, `engage`, `providers` |
 | Convey (web UI) | `convey`, `restart-convey`, `maint` |
@@ -427,7 +427,7 @@ solstone/
 | `transcripts` | `solstone/apps/transcripts/call.py` | list, read, segments |
 | `support` | `solstone/apps/support/call.py` | register, search, article, create, list, show, reply, attach, feedback, announcements, diagnose |
 | `sol` | `solstone/apps/sol/call.py` | name, set-name, reset, thickness, set-owner, sol-init |
-| `settings` | `solstone/apps/settings/call.py` | keys (show/set/delete), providers show, provider selection, vertex service-account. Provider install moved to `journal install-provider local`. |
+| `settings` | `solstone/apps/settings/call.py` | keys (show/set/delete), providers show, provider selection, vertex service-account. Provider install moved to `journal install-provider local`; network access moved to `journal settings convey network-access`. |
 | `awareness` | `solstone/apps/awareness/call.py` | status, imports, log, log-read |
 | `journal` | `solstone/think/tools/call.py` | search, events, facets, facet (show/create/update/rename/mute/unmute/delete/merge), news, agents, read, imports, import, retention purge, storage-summary |
 

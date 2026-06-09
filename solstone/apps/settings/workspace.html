@@ -3004,6 +3004,17 @@ button:focus:not(:focus-visible) {
       <div class="settings-field">
         <div class="toggle-container" style="justify-content:flex-start; gap:1em;">
           <label class="toggle-switch toggle-positive">
+            <input type="checkbox" id="field-network-access">
+            <span class="slider"></span>
+          </label>
+          <span>{{ settings_copy.CONVEY_NETWORK_ACCESS_LABEL }}</span>
+        </div>
+        <small id="network-access-status" data-default-text="{{ settings_copy.CONVEY_NETWORK_ACCESS_HINT }}">{{ settings_copy.CONVEY_NETWORK_ACCESS_HINT }}</small>
+      </div>
+
+      <div class="settings-field">
+        <div class="toggle-container" style="justify-content:flex-start; gap:1em;">
+          <label class="toggle-switch toggle-positive">
             <input type="checkbox" id="field-trust-localhost" data-section="convey" data-key="trust_localhost">
             <span class="slider"></span>
           </label>
@@ -3457,6 +3468,7 @@ let logNextCursor = null;
 let insightsData = null;
 let keyValidationData = {};
 let solVoiceData = null;
+let networkAccessCapability = null;
 let solVoiceThrottledTimer = null;
 let transcribeResource = null;
 const escapeHtml = (value) => window.AppServices.escapeHtml(value);
@@ -3471,6 +3483,12 @@ const solVoiceCopy = {
   throttledHeaderOutcome: {{ sol_voice_copy.SOL_VOICE_THROTTLED_LOG_HEADER_OUTCOME | tojson }},
 };
 const solVoiceCategories = {{ sol_voice_copy.CATEGORIES | list | tojson }};
+const networkAccessCopy = {
+  hint: {{ settings_copy.CONVEY_NETWORK_ACCESS_HINT | tojson }},
+  enableProgress: {{ settings_copy.CONVEY_NETWORK_ENABLE_PROGRESS | tojson }},
+  disableProgress: {{ settings_copy.CONVEY_NETWORK_DISABLE_PROGRESS | tojson }},
+  restartTimeout: {{ settings_copy.CONVEY_RESTART_TIMEOUT | tojson }},
+};
 
 // ========== TAB ATTENTION ==========
 
@@ -3878,6 +3896,7 @@ async function loadConfig() {
     configData = journalConfig;
     populateFields(configData);
     populateConveyFields(conveyConfig);
+    await refreshNetworkAccessCapability();
     checkShowSetup();
   } catch (err) {
     console.error('Error loading config:', err);
@@ -4335,6 +4354,84 @@ function renderConveyHostFields(config) {
       ? 'Password set (enter to change)'
       : 'Enter password to protect web access';
   }
+}
+
+function setNetworkAccessStatus(message, isError = false) {
+  const status = document.getElementById('network-access-status');
+  if (!status) return;
+  status.textContent = message || status.dataset.defaultText || networkAccessCopy.hint;
+  status.classList.toggle('status-error', Boolean(isError));
+  status.classList.toggle('status-saved', false);
+}
+
+function renderNetworkAccessCapability(data, options = {}) {
+  networkAccessCapability = data || {};
+  const toggle = document.getElementById('field-network-access');
+  if (!toggle) return;
+
+  const enabled = Boolean(networkAccessCapability.network_access_enabled);
+  const writable = Boolean(networkAccessCapability.can_change_network_access);
+  toggle.checked = enabled;
+  toggle.__lastKnownValue = enabled;
+  toggle.disabled = !writable;
+
+  if (options.message) {
+    setNetworkAccessStatus(options.message, Boolean(options.error));
+  } else if (!writable && networkAccessCapability.reason) {
+    setNetworkAccessStatus(networkAccessCapability.reason, true);
+  } else {
+    setNetworkAccessStatus(networkAccessCopy.hint);
+  }
+}
+
+async function refreshNetworkAccessCapability(options = {}) {
+  try {
+    const data = await window.apiJson('api/convey/network-access/capability');
+    renderNetworkAccessCapability(data, options);
+  } catch (err) {
+    const toggle = document.getElementById('field-network-access');
+    if (toggle) toggle.disabled = true;
+    setNetworkAccessStatus(err?.serverMessage || err?.message || 'Failed to load network access state', true);
+    window.logError(err, { context: 'settings: refreshNetworkAccessCapability failed' });
+  }
+}
+
+async function handleNetworkAccessChange(el) {
+  const desired = el.checked;
+  const previous = Boolean(el.__lastKnownValue);
+  el.checked = previous;
+  el.disabled = true;
+  setNetworkAccessStatus(
+    desired ? networkAccessCopy.enableProgress : networkAccessCopy.disableProgress
+  );
+
+  try {
+    const result = await window.apiJson('api/convey/network-access', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enable: desired })
+    });
+    if (result?.restart_timeout) {
+      await refreshNetworkAccessCapability({
+        message: networkAccessCopy.restartTimeout,
+        error: true
+      });
+      return;
+    }
+    await refreshNetworkAccessCapability();
+  } catch (err) {
+    await refreshNetworkAccessCapability({
+      message: err?.serverMessage || err?.message || 'Save failed',
+      error: true
+    });
+    window.logError(err, { context: 'settings: network access change failed' });
+  }
+}
+
+function setupNetworkAccessToggle() {
+  const toggle = document.getElementById('field-network-access');
+  if (!toggle) return;
+  toggle.addEventListener('change', () => handleNetworkAccessChange(toggle));
 }
 
 async function saveConfigValue(section, key, value) {
@@ -8140,6 +8237,7 @@ function initSettings() {
   loadSync();
   loadStorage();
   setupAutoSave();
+  setupNetworkAccessToggle();
   setupSolVoiceListeners();
   setupChatSettingsListeners();
   setupStorageListeners();

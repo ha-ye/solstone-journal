@@ -145,14 +145,7 @@ EXCLUDED_PREFIXES: tuple[str, ...] = ()
 # Committed allowlist of current direct app-call violations, keyed by
 # (posix-relative-path, kind) -> allowed count. Ratchets toward empty: lower a
 # count as occurrences are converted; stale entries fail until lowered/removed.
-ALLOWLIST: dict[tuple[str, str], int] = {
-    # Settings keeps only convey network-access enable/disable in-process:
-    # these are convey server-lifecycle operations that restart Convey to
-    # change its bind host, not journal-data access. Convey cannot restart
-    # itself over HTTP and return a response. Every other settings verb must
-    # use the Convey HTTP client.
-    ("solstone/apps/settings/call.py", "import"): 4,
-}
+ALLOWLIST: dict[tuple[str, str], int] = {}
 
 
 def _is_under_namespace(module: str) -> bool:

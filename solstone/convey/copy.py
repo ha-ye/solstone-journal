@@ -80,6 +80,26 @@ SETTINGS_PASSWORD_HINT = "used when network access is on, or when localhost trus
 OBSERVER_CALLOSUM_LIVE_LABEL = "live"
 
 
+def format_convey_status(
+    *,
+    network_access: str,
+    bind: str,
+    password: str,
+    trust_localhost: str,
+    host_url: str,
+) -> str:
+    """Return the locked five-line convey status block."""
+
+    return (
+        "convey\n"
+        f"  network access:    {network_access}\n"
+        f"  bind:              {bind}\n"
+        f"  password:          {password}\n"
+        f"  trust localhost:   {trust_localhost}\n"
+        f"  host url:          {host_url}"
+    )
+
+
 __all__ = [
     "CONVEY_ACTION_TRY_AGAIN",
     "CONVEY_ACTION_RELOAD",
@@ -147,4 +167,5 @@ __all__ = [
     "SETTINGS_PASSWORD_HINT",
     "SETTINGS_SECURITY_DESC",
     "SETTINGS_SECURITY_REACH_HINT",
+    "format_convey_status",
 ]

@@ -3,20 +3,21 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
 from solstone.apps.settings.copy import (
-    CONVEY_NETWORK_DISABLE_DONE,
-    CONVEY_NETWORK_DISABLE_PROGRESS,
-    CONVEY_NETWORK_ENABLE_DONE,
-    CONVEY_NETWORK_ENABLE_PROGRESS,
+    CONVEY_MOVED_NETWORK_DISABLE,
+    CONVEY_MOVED_NETWORK_ENABLE,
+    CONVEY_NETWORK_ACCESS_CONFIG_REJECTED,
+    CONVEY_NETWORK_LOCAL_ONLY_REASON,
     CONVEY_REFUSE_NO_PASSWORD_NETWORK,
     CONVEY_REFUSE_NO_PASSWORD_TRUST,
-    CONVEY_RESTART_TIMEOUT,
 )
 from solstone.convey import create_app
 from solstone.think.call import call_app
@@ -48,78 +49,26 @@ def _settings_client(journal_dir: Path):
     return app.test_client()
 
 
-def test_cli_network_access_enable_refuses_without_password(journal_copy):
-    _clear_password(journal_copy)
+def _login(client) -> None:
+    with client.session_transaction() as sess:
+        sess["logged_in"] = True
 
+
+def test_cli_network_access_enable_is_moved_stub(journal_copy):
     result = runner.invoke(call_app, ["settings", "convey", "network-access", "enable"])
 
-    assert result.exit_code == 1
-    assert result.stderr.strip() == CONVEY_REFUSE_NO_PASSWORD_NETWORK
-    assert _read_config(journal_copy)["convey"]["allow_network_access"] is False
+    assert result.exit_code == 2
+    assert result.stderr == CONVEY_MOVED_NETWORK_ENABLE + "\n"
 
 
-def test_cli_network_access_enable_restarts_and_prints_host_url(journal_copy):
-    with (
-        patch(
-            "solstone.convey.restart.wait_for_convey_restart", return_value=(True, [])
-        ) as restart,
-        patch(
-            "solstone.think.pairing.config.get_host_url",
-            return_value="http://192.168.1.44:5015",
-        ),
-    ):
-        result = runner.invoke(
-            call_app, ["settings", "convey", "network-access", "enable"]
-        )
-
-    assert result.exit_code == 0
-    assert result.stdout == (
-        CONVEY_NETWORK_ENABLE_PROGRESS
-        + "\n"
-        + CONVEY_NETWORK_ENABLE_DONE.format(host_url="http://192.168.1.44:5015")
-        + "\n"
+def test_cli_network_access_disable_is_moved_stub(journal_copy):
+    result = runner.invoke(
+        call_app,
+        ["settings", "convey", "network-access", "disable"],
     )
-    restart.assert_called_once_with(timeout=15.0)
-    assert _read_config(journal_copy)["convey"]["allow_network_access"] is True
 
-
-def test_cli_network_access_disable_timeout_exits_nonzero(journal_copy):
-    config = _read_config(journal_copy)
-    config["convey"]["allow_network_access"] = True
-    _write_config(journal_copy, config)
-
-    with patch(
-        "solstone.convey.restart.wait_for_convey_restart", return_value=(False, [])
-    ):
-        result = runner.invoke(
-            call_app, ["settings", "convey", "network-access", "disable"]
-        )
-
-    assert result.exit_code == 1
-    assert result.stdout == CONVEY_NETWORK_DISABLE_PROGRESS + "\n"
-    assert result.stderr.strip() == CONVEY_RESTART_TIMEOUT
-    assert _read_config(journal_copy)["convey"]["allow_network_access"] is False
-
-
-def test_cli_network_access_disable_success_uses_localhost_copy(journal_copy):
-    config = _read_config(journal_copy)
-    config["convey"]["allow_network_access"] = True
-    _write_config(journal_copy, config)
-
-    with patch(
-        "solstone.convey.restart.wait_for_convey_restart", return_value=(True, [])
-    ):
-        result = runner.invoke(
-            call_app, ["settings", "convey", "network-access", "disable"]
-        )
-
-    assert result.exit_code == 0
-    assert result.stdout == (
-        CONVEY_NETWORK_DISABLE_PROGRESS
-        + "\n"
-        + CONVEY_NETWORK_DISABLE_DONE.format(port=5015)
-        + "\n"
-    )
+    assert result.exit_code == 2
+    assert result.stderr == CONVEY_MOVED_NETWORK_DISABLE + "\n"
 
 
 def test_api_get_config_masks_password_without_effective_host_url(journal_copy):
@@ -156,31 +105,41 @@ def test_api_put_corrupt_config_returns_reason_without_writing(journal_copy):
     assert config_path.read_bytes() == before
 
 
-def test_api_put_network_access_refuses_without_password(journal_copy):
-    _clear_password(journal_copy)
+def test_api_put_network_access_key_value_rejected_without_write_or_restart(
+    journal_copy,
+):
     client = _settings_client(journal_copy)
+    before = copy.deepcopy(_read_config(journal_copy))
 
-    response = client.put(
-        "/app/settings/api/config",
-        json={"section": "convey", "key": "allow_network_access", "value": True},
-        content_type="application/json",
-    )
+    with (
+        patch("solstone.apps.settings.routes.set_network_access") as set_network,
+        patch("solstone.convey.restart.wait_for_convey_restart") as restart,
+    ):
+        response = client.put(
+            "/app/settings/api/config",
+            json={"section": "convey", "key": "allow_network_access", "value": True},
+            content_type="application/json",
+        )
 
     assert response.status_code == 400
     payload = response.get_json()
-    assert (
-        payload["error"] == "I couldn't change network access until a password is set."
-    )
-    assert payload["reason_code"] == "network_security_requires_password"
-    assert payload["detail"] == CONVEY_REFUSE_NO_PASSWORD_NETWORK
+    assert payload["reason_code"] == "invalid_config_value"
+    assert payload["detail"] == CONVEY_NETWORK_ACCESS_CONFIG_REJECTED
+    set_network.assert_not_called()
+    restart.assert_not_called()
+    assert _read_config(journal_copy) == before
 
 
-def test_api_put_combined_password_and_network_succeeds(journal_copy):
+def test_api_put_combined_password_and_network_rejected_without_persisting(
+    journal_copy,
+):
     _clear_password(journal_copy)
     client = _settings_client(journal_copy)
+    before = copy.deepcopy(_read_config(journal_copy))
 
-    with patch(
-        "solstone.convey.restart.wait_for_convey_restart", return_value=(True, [])
+    with (
+        patch("solstone.apps.settings.routes.set_network_access") as set_network,
+        patch("solstone.convey.restart.wait_for_convey_restart") as restart,
     ):
         response = client.put(
             "/app/settings/api/config",
@@ -191,50 +150,36 @@ def test_api_put_combined_password_and_network_succeeds(journal_copy):
             content_type="application/json",
         )
 
-    assert response.status_code == 200
-    config = _read_config(journal_copy)
-    assert config["convey"]["password_hash"]
-    assert "password" not in config["convey"]
-    assert config["convey"]["allow_network_access"] is True
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["reason_code"] == "invalid_config_value"
+    assert payload["detail"] == CONVEY_NETWORK_ACCESS_CONFIG_REJECTED
+    set_network.assert_not_called()
+    restart.assert_not_called()
+    assert _read_config(journal_copy) == before
 
 
-def test_api_put_combined_password_too_short_rejected(journal_copy):
-    _clear_password(journal_copy)
+def test_api_put_network_access_data_rejected_without_write_or_restart(journal_copy):
     client = _settings_client(journal_copy)
+    before = copy.deepcopy(_read_config(journal_copy))
 
-    response = client.put(
-        "/app/settings/api/config",
-        json={
-            "section": "convey",
-            "data": {"password": "short", "allow_network_access": True},
-        },
-        content_type="application/json",
-    )
+    with (
+        patch("solstone.apps.settings.routes.set_network_access") as set_network,
+        patch("solstone.convey.restart.wait_for_convey_restart") as restart,
+    ):
+        response = client.put(
+            "/app/settings/api/config",
+            json={"section": "convey", "data": {"allow_network_access": True}},
+            content_type="application/json",
+        )
 
     assert response.status_code == 400
     payload = response.get_json()
     assert payload["reason_code"] == "invalid_config_value"
-    assert "8 characters" in payload["detail"]
-    config = _read_config(journal_copy)
-    assert "password_hash" not in config["convey"]
-    assert config["convey"]["allow_network_access"] is False
-
-
-def test_api_put_network_enable_without_password_field_still_refused(journal_copy):
-    _clear_password(journal_copy)
-    client = _settings_client(journal_copy)
-
-    response = client.put(
-        "/app/settings/api/config",
-        json={"section": "convey", "data": {"allow_network_access": True}},
-        content_type="application/json",
-    )
-
-    assert response.status_code == 400
-    payload = response.get_json()
-    assert payload["reason_code"] == "network_security_requires_password"
-    assert payload["detail"] == CONVEY_REFUSE_NO_PASSWORD_NETWORK
-    assert _read_config(journal_copy)["convey"]["allow_network_access"] is False
+    assert payload["detail"] == CONVEY_NETWORK_ACCESS_CONFIG_REJECTED
+    set_network.assert_not_called()
+    restart.assert_not_called()
+    assert _read_config(journal_copy) == before
 
 
 def test_api_put_trust_localhost_refuses_without_password(journal_copy):
@@ -256,7 +201,7 @@ def test_api_put_trust_localhost_refuses_without_password(journal_copy):
     assert payload["detail"] == CONVEY_REFUSE_NO_PASSWORD_TRUST
 
 
-def test_api_put_network_access_returns_restart_payload(journal_copy):
+def test_api_network_access_loopback_success(journal_copy):
     client = _settings_client(journal_copy)
 
     with (
@@ -268,9 +213,9 @@ def test_api_put_network_access_returns_restart_payload(journal_copy):
             return_value="http://192.168.1.44:5015",
         ),
     ):
-        response = client.put(
-            "/app/settings/api/config",
-            json={"section": "convey", "key": "allow_network_access", "value": True},
+        response = client.post(
+            "/app/settings/api/convey/network-access",
+            json={"enable": True},
             content_type="application/json",
         )
 
@@ -284,7 +229,28 @@ def test_api_put_network_access_returns_restart_payload(journal_copy):
     assert _read_config(journal_copy)["convey"]["allow_network_access"] is True
 
 
-def test_api_put_network_access_timeout_still_saves(journal_copy):
+def test_api_network_access_missing_password_refuses_without_persisting(journal_copy):
+    _clear_password(journal_copy)
+    client = _settings_client(journal_copy)
+    _login(client)
+    before = copy.deepcopy(_read_config(journal_copy))
+
+    with patch("solstone.convey.restart.wait_for_convey_restart") as restart:
+        response = client.post(
+            "/app/settings/api/convey/network-access",
+            json={"enable": True},
+            content_type="application/json",
+        )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["reason_code"] == "network_security_requires_password"
+    assert payload["detail"] == CONVEY_REFUSE_NO_PASSWORD_NETWORK
+    restart.assert_not_called()
+    assert _read_config(journal_copy) == before
+
+
+def test_api_network_access_timeout_still_saves(journal_copy):
     client = _settings_client(journal_copy)
 
     with (
@@ -296,9 +262,9 @@ def test_api_put_network_access_timeout_still_saves(journal_copy):
             return_value="http://localhost:5015",
         ),
     ):
-        response = client.put(
-            "/app/settings/api/config",
-            json={"section": "convey", "data": {"allow_network_access": True}},
+        response = client.post(
+            "/app/settings/api/convey/network-access",
+            json={"enable": True},
             content_type="application/json",
         )
 
@@ -309,3 +275,152 @@ def test_api_put_network_access_timeout_still_saves(journal_copy):
         "restart_timeout": True,
     }
     assert _read_config(journal_copy)["convey"]["allow_network_access"] is True
+
+
+def test_api_network_access_non_loopback_refuses_without_persisting(journal_copy):
+    client = _settings_client(journal_copy)
+    _login(client)
+    before = copy.deepcopy(_read_config(journal_copy))
+
+    with patch("solstone.apps.settings.routes.set_network_access") as set_network:
+        response = client.post(
+            "/app/settings/api/convey/network-access",
+            json={"enable": True},
+            content_type="application/json",
+            environ_base={"REMOTE_ADDR": "192.168.1.5"},
+        )
+
+    assert response.status_code == 403
+    assert response.get_json()["reason_code"] == "local_request_required"
+    set_network.assert_not_called()
+    assert _read_config(journal_copy) == before
+
+
+@pytest.mark.parametrize(
+    ("header", "value"),
+    [
+        ("Forwarded", "for=192.168.1.5"),
+        ("X-Forwarded-For", "192.168.1.5"),
+        ("X-Real-IP", "192.168.1.5"),
+        ("X-Forwarded-Host", "example.test"),
+        ("CF-Connecting-IP", "192.168.1.5"),
+        ("True-Client-IP", "192.168.1.5"),
+        ("Fly-Client-IP", "192.168.1.5"),
+    ],
+)
+def test_api_network_access_forwarded_headers_refuse_without_persisting(
+    journal_copy,
+    header,
+    value,
+):
+    client = _settings_client(journal_copy)
+    _login(client)
+    before = copy.deepcopy(_read_config(journal_copy))
+
+    with patch("solstone.apps.settings.routes.set_network_access") as set_network:
+        response = client.post(
+            "/app/settings/api/convey/network-access",
+            json={"enable": True},
+            content_type="application/json",
+            headers={header: value},
+        )
+
+    assert response.status_code == 403
+    assert response.get_json()["reason_code"] == "local_request_required"
+    set_network.assert_not_called()
+    assert _read_config(journal_copy) == before
+
+
+def test_api_network_access_empty_forwarded_header_refuses_without_persisting(
+    journal_copy,
+):
+    client = _settings_client(journal_copy)
+    _login(client)
+    before = copy.deepcopy(_read_config(journal_copy))
+
+    with patch("solstone.apps.settings.routes.set_network_access") as set_network:
+        response = client.post(
+            "/app/settings/api/convey/network-access",
+            json={"enable": True},
+            content_type="application/json",
+            headers={"X-Forwarded-For": ""},
+        )
+
+    assert response.status_code == 403
+    assert response.get_json()["reason_code"] == "local_request_required"
+    set_network.assert_not_called()
+    assert _read_config(journal_copy) == before
+
+
+@pytest.mark.parametrize(
+    ("body", "reason_code", "detail"),
+    [
+        (None, "missing_request_body", "No data provided"),
+        ({}, "missing_required_field", "enable"),
+        ({"enable": "true"}, "invalid_request_value", "enable must be a boolean"),
+    ],
+)
+def test_api_network_access_validates_request_body(
+    journal_copy, body, reason_code, detail
+):
+    client = _settings_client(journal_copy)
+    kwargs = {"content_type": "application/json"}
+    if body is not None:
+        kwargs["json"] = body
+
+    response = client.post("/app/settings/api/convey/network-access", **kwargs)
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["reason_code"] == reason_code
+    assert payload["detail"] == detail
+
+
+def test_api_network_access_capability_loopback_writable(journal_copy):
+    client = _settings_client(journal_copy)
+
+    response = client.get("/app/settings/api/convey/network-access/capability")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "can_change_network_access": True,
+        "network_access_enabled": False,
+        "reason": None,
+    }
+
+
+def test_api_network_access_capability_non_loopback_disabled(journal_copy):
+    config = _read_config(journal_copy)
+    config["convey"]["allow_network_access"] = True
+    _write_config(journal_copy, config)
+    client = _settings_client(journal_copy)
+    _login(client)
+
+    response = client.get(
+        "/app/settings/api/convey/network-access/capability",
+        environ_base={"REMOTE_ADDR": "192.168.1.5"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "can_change_network_access": False,
+        "network_access_enabled": True,
+        "reason": CONVEY_NETWORK_LOCAL_ONLY_REASON,
+    }
+
+
+def test_api_network_access_capability_forwarded_header_disabled(journal_copy):
+    client = _settings_client(journal_copy)
+    _login(client)
+
+    response = client.get(
+        "/app/settings/api/convey/network-access/capability",
+        headers={"X-Forwarded-For": "192.168.1.5"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "can_change_network_access": False,
+        "network_access_enabled": False,
+        "reason": CONVEY_NETWORK_LOCAL_ONLY_REASON,
+    }

@@ -36,7 +36,6 @@ from solstone.convey import chat_stream, state
 from solstone.convey import copy as convey_copy
 from solstone.convey.network_access import (
     NetworkAccessPasswordRequired,
-    NetworkAccessPasswordTooShort,
     set_network_access,
 )
 from solstone.convey.readiness_snapshot import build_readiness_snapshot
@@ -51,6 +50,7 @@ from solstone.convey.reasons import (
     INVALID_CONFIG_VALUE,
     INVALID_JSON_REQUEST,
     INVALID_REQUEST_VALUE,
+    LOCAL_REQUEST_REQUIRED,
     MISSING_REQUEST_BODY,
     MISSING_REQUIRED_FIELD,
     NETWORK_SECURITY_REQUIRES_PASSWORD,
@@ -101,6 +101,15 @@ settings_bp = Blueprint(
 GENERIC_SETTINGS_ERROR = (
     "something went wrong — try again, and if it persists, check the health dashboard"
 )
+FORWARDED_AUTHORITY_HEADERS = (
+    "Forwarded",
+    "X-Forwarded-For",
+    "X-Real-IP",
+    "X-Forwarded-Host",
+    "CF-Connecting-IP",
+    "True-Client-IP",
+    "Fly-Client-IP",
+)
 
 
 def _settings_operation_failed(detail: str = GENERIC_SETTINGS_ERROR) -> Any:
@@ -150,6 +159,12 @@ def _compute_runtime_label() -> str:
 def _convey_password_is_set(config: dict[str, Any]) -> bool:
     password_hash = config.get("convey", {}).get("password_hash", "")
     return bool(str(password_hash or "").strip())
+
+
+def _request_has_local_authority() -> bool:
+    if request.remote_addr not in {"127.0.0.1", "::1"}:
+        return False
+    return not any(header in request.headers for header in FORWARDED_AUTHORITY_HEADERS)
 
 
 def _project_public_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -232,8 +247,7 @@ def update_config() -> Any:
 
     Accepts JSON with a 'section' key and per-section config fields to update.
     Supported writes include identity and transcribe settings, convey security
-    settings (password, allow_network_access, trust_localhost), and API-key env
-    vars.
+    settings (password, trust_localhost), and API-key env vars.
     """
     try:
         request_data = request.get_json()
@@ -270,7 +284,7 @@ def update_config() -> Any:
                 "timezone",
             ],
             "transcribe": ["backend", "enrich", "preserve_all", "noise_upgrade"],
-            "convey": ["allow_network_access", "password", "trust_localhost"],
+            "convey": ["password", "trust_localhost"],
             "support": ["enabled", "proactive", "anonymous_feedback", "portal_url"],
             "agent": ["name", "name_status", "named_date", "proposal_count"],
             "env": API_KEY_ENV_VARS,
@@ -304,22 +318,10 @@ def update_config() -> Any:
         old_section = old_config.get(section, {})
 
         if section == "convey" and "allow_network_access" in data:
-            try:
-                result = set_network_access(
-                    enable=bool(data["allow_network_access"]),
-                    password=data.get("password"),
-                )
-            except NetworkAccessPasswordRequired:
-                return error_response(
-                    NETWORK_SECURITY_REQUIRES_PASSWORD,
-                    detail=CONVEY_REFUSE_NO_PASSWORD_NETWORK,
-                )
-            except NetworkAccessPasswordTooShort:
-                return error_response(
-                    INVALID_CONFIG_VALUE,
-                    detail="Password must be at least 8 characters",
-                )
-            return jsonify(result)
+            return error_response(
+                INVALID_CONFIG_VALUE,
+                detail=settings_copy.CONVEY_NETWORK_ACCESS_CONFIG_REJECTED,
+            )
 
         if section == "convey" and "password" in data:
             raw_password = data.pop("password") or ""
@@ -536,6 +538,55 @@ def convey_host_url() -> Any:
         return _settings_operation_failed()
 
 
+@settings_bp.route("/api/convey/network-access", methods=["POST"])
+def convey_network_access() -> Any:
+    """Update Convey network access from a local Settings session."""
+
+    request_data = request.get_json(silent=True)
+    if not isinstance(request_data, dict):
+        return error_response(MISSING_REQUEST_BODY, detail="No data provided")
+    if "enable" not in request_data:
+        return error_response(MISSING_REQUIRED_FIELD, detail="enable")
+    enable = request_data.get("enable")
+    if not isinstance(enable, bool):
+        return error_response(INVALID_REQUEST_VALUE, detail="enable must be a boolean")
+    if not _request_has_local_authority():
+        return error_response(LOCAL_REQUEST_REQUIRED)
+
+    try:
+        result = set_network_access(enable=enable, password=None)
+        return jsonify(result)
+    except NetworkAccessPasswordRequired:
+        return error_response(
+            NETWORK_SECURITY_REQUIRES_PASSWORD,
+            detail=CONVEY_REFUSE_NO_PASSWORD_NETWORK,
+        )
+    except Exception:
+        logger.exception("error updating convey network access")
+        return _settings_operation_failed()
+
+
+@settings_bp.route("/api/convey/network-access/capability")
+def convey_network_access_capability() -> Any:
+    """Return whether this request can change Convey network access."""
+
+    try:
+        writable = _request_has_local_authority()
+        config = get_journal_config()
+        return jsonify(
+            {
+                "can_change_network_access": writable,
+                "reason": None
+                if writable
+                else settings_copy.CONVEY_NETWORK_LOCAL_ONLY_REASON,
+                "network_access_enabled": _network_access_enabled(config),
+            }
+        )
+    except Exception:
+        logger.exception("error loading convey network access capability")
+        return _settings_operation_failed()
+
+
 @settings_bp.route("/api/convey/status")
 def convey_status() -> Any:
     """Return formatted Convey network and host URL status."""
@@ -548,7 +599,7 @@ def convey_status() -> Any:
         config = get_journal_config()
         bind_host = _resolve_bind_host()
         port = read_service_port("convey") or DEFAULT_SERVICE_PORT
-        status_text = settings_copy.format_convey_status(
+        status_text = convey_copy.format_convey_status(
             bind=f"{bind_host}:{port}",
             host_url=_host_url_status_value(config),
             network_access="on"
