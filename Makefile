@@ -14,7 +14,7 @@ export TMPDIR := /var/tmp
 PYTEST_BASETEMP_INIT := BASETEMP=$$(mktemp -d /var/tmp/solstone-pytest-XXXXXX); trap 'rm -rf "$$BASETEMP"' EXIT INT TERM;
 PYTEST_BASETEMP_FLAG := --basetemp "$$BASETEMP"
 
-.PHONY: install uninstall test test-cov test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills dev all sandbox sandbox-stop install-pinchtab install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify-browser update-browser-baselines review verify verify-api update-api-baselines service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-call-http-only smoke-cogitate release release-test FORCE
+.PHONY: install uninstall test test-cov test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills dev all sandbox sandbox-stop install-pinchtab install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify-browser update-browser-baselines review verify verify-api update-api-baselines service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-call-http-only check-cogitate-prompts smoke-cogitate release release-test FORCE
 
 # Default target - install package in editable mode
 all: install
@@ -472,6 +472,9 @@ install-checks: .installed
 	@echo "=== Running call-http-only check ==="
 	@$(MAKE) check-call-http-only
 	@echo ""
+	@echo "=== Running cogitate-prompt check ==="
+	@$(MAKE) check-cogitate-prompts
+	@echo ""
 	@echo "=== Checking extras consistency ==="
 	@$(VENV_BIN)/python scripts/check_extras_consistency.py
 	@echo ""
@@ -549,6 +552,10 @@ check-journal-io-mechanic: .installed
 # sol call HTTP-only gate (call.py reaches the journal only over HTTP)
 check-call-http-only: .installed
 	$(VENV_BIN)/python scripts/check_call_http_only.py
+
+# Cogitate-prompt static gate (prompts use only on-contract command forms)
+check-cogitate-prompts: .installed
+	$(VENV_BIN)/python scripts/check_cogitate_prompts.py
 
 # Re-run the live four-backend integrated-façade cogitate smoke. Spawns the
 # archived runner (extro `vpe/workspace/archived/`) against this venv so the
