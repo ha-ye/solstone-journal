@@ -92,6 +92,8 @@ def test_bare_journal_flags_fenced_commands() -> None:
     "body",
     [
         "`journal identity agency --update-section observations --value ok`",
+        "`journal identity pulse --write --value '>'`",
+        "`journal identity pulse --write --value '|'`",
         "`journal routines list`",
         "`journal health`",
         "`journal talent logs --daily`",
@@ -111,6 +113,68 @@ def test_bare_journal_flags_fenced_commands() -> None:
 )
 def test_lint_prompt_ignores_sanctioned_forms(body: str) -> None:
     assert ccp.lint_prompt(body) == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "`sol call journal search x && sol call todos list`",
+        "`echo $(sol call support create --subject x)`",
+        "`bash -lc 'sol call journal search x'`",
+    ],
+)
+def test_lint_prompt_flags_shell_composition(body: str) -> None:
+    findings = ccp.lint_prompt(body)
+    assert [(line, kind) for line, kind, _detail in findings] == [
+        (1, "shell-composition")
+    ]
+
+
+def test_lint_prompt_allows_multiline_pulse_value_example() -> None:
+    body = """```bash
+journal identity pulse --write --value "---
+updated: 2026-03-22T14:35:00
+segment: 143022_300
+source: pulse-cogitate
+---
+
+[Your narrative here]
+
+## needs you
+- Item 1
+- Item 2"
+```
+"""
+
+    findings = ccp.lint_prompt(body)
+
+    assert "shell-composition" not in [kind for _line, kind, _detail in findings]
+
+
+def test_lint_prompt_allows_multiline_partner_value_example() -> None:
+    body = """```bash
+journal identity partner --update-section 'work patterns' --value 'My partner tends to batch meetings before noon and protects afternoon blocks for focused work. Calendar data from March 25-31 shows 85% of meetings before 12:00 (sol://20260328/archon/091500_300).
+
+Deep work sessions typically run 2-3 hours — todo completion spikes correlate with these blocks.'
+```
+"""
+
+    findings = ccp.lint_prompt(body)
+
+    assert "shell-composition" not in [kind for _line, kind, _detail in findings]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "`sol call activities list --source anticipated --from $day_YYYYMMDD --to <+7>`",
+        '`sol call journal search "" --day-to <+6> -a pulse -n 12`',
+    ],
+)
+def test_lint_prompt_allows_angle_placeholder_metavars(body: str) -> None:
+    findings = ccp.lint_prompt(body)
+
+    assert "shell-composition" not in [kind for _line, kind, _detail in findings]
 
 
 def test_prose_is_not_linted_as_command_context() -> None:
@@ -146,6 +210,7 @@ def test_extract_command_spans_scans_fences_per_line_without_inline_double_scan(
     assert [(line, kind) for line, kind, _detail in findings] == [
         (1, "bare-journal"),
         (3, "bare-journal"),
+        (4, "shell-composition"),
     ]
 
 

@@ -51,7 +51,7 @@ misread.
 
 | | Value | What it governs |
 |---|---|---|
-| **Talent subprocess cwd** | the **journal root** (resolved from `cwd: journal`) | the cwd the `sol` shell tool inherits — i.e. where `sol` / `sol call` commands run |
+| **Talent subprocess cwd** | the **journal root** (resolved from `cwd: journal`) | the cwd the `sol` tool inherits — i.e. where `sol` / `sol call` commands run |
 | **OpenHands `Conversation` workspace** | the **repo root** (`get_project_root()`) | SDK bookkeeping and file-based subagent discovery — **not** automatic model context |
 | **Conversation persistence** | `journal/.cache/cogitate-history/<session_id>` | the SDK event/state store for the run |
 
@@ -60,18 +60,19 @@ The journal-root cwd matters operationally because the `sol` tool inherits it, b
 
 ## The `sol` CLI is the authoritative talent-to-journal contract
 
-A talent reaches journal functionality by emitting `sol` / `sol call ...` shell
-commands through the provided shell tool. The `sol` CLI handlers are the **single
-authoritative translation layer** between a talent and the journal: they turn CLI
-syntax into convey API calls. A talent therefore:
+A talent reaches journal functionality by emitting `sol` / `sol call ...`
+command lines. The runtime parses each tool call as one command-line invocation
+and executes that argv directly; it is not an arbitrary shell. The `sol` CLI
+handlers are the **single authoritative translation layer** between a talent and
+the journal: they turn CLI syntax into convey API calls. A talent therefore:
 
 - **never** talks to the convey HTTP API directly, and
 - **never** assumes a database, a socket, or any journal access other than the
   `sol` CLI and the bounded raw-read tools below.
 
-The shell tool is invoked like `sol(command="sol call activities list")`. It is a
-**shell-based** surface (the talent emits a `sol ...` command line); it is not a
-parsed single-call RPC. The command policy (below) constrains what may run.
+The tool call shape is `sol(command="sol call activities list")`. The command
+policy (below) constrains what may run and rejects shell composition such as
+pipes, redirects, chaining, and command substitution.
 
 ## Reads: domain reads vs raw evidence reads
 
@@ -185,11 +186,11 @@ verbatim text:
 ```
 You are a solstone cogitate talent running inside the live system. This runtime contract is authoritative; do not assume capabilities beyond it.
 
-- Reach the journal through the `sol` command line: run `sol` / `sol call ...` commands via the provided shell tool, e.g. sol(command="sol call activities list"). The `sol` CLI is the one authoritative path between you and the journal; never assume direct database, socket, or HTTP access.
+- Reach the journal through the `sol` command line: emit `sol` / `sol call ...` command lines, e.g. sol(command="sol call activities list"). The runtime runs each call as a single parsed command-line invocation, not an arbitrary shell. The `sol` CLI is the one authoritative path between you and the journal; never assume direct database, socket, or HTTP access.
 - Write journal state only through `sol` domain commands (the `sol call ...` verbs for the data you own). There is no general-purpose write tool; persistence that does not go through a `sol` domain command will not happen.
 - Raw evidence reads use the provided read tools (`read_file`, `list_directory`, `glob`, `grep_search`), bounded to the journal root: a denylist (`.git`, caches, credentials, virtualenvs, `node_modules`) and per-call / per-run caps apply. Prefer `sol call` reads; use raw reads only for evidence that has no `sol` command.
 - Finalize as your run is configured: call `emit_final` when an `emit_final` tool is present; otherwise finish through the built-in finish tool; a side-effect-only talent that has already persisted its work finishes quietly with no output.
-- Do not assume tools or context you were not given: no bare `journal ...` commands, no raw `cat` / `ls` / shell file reads, no auto-loaded skills or AGENTS.md / CLAUDE.md, no browser or web access, no MCP tools, and no delegating to sub-agents. Any guidance file is a normal journal file with no special status; this contract is your source of truth.
+- Do not assume tools or context you were not given: no bare `journal ...` commands, no raw `cat` / `ls` / shell file reads, no shell composition (pipes, redirects, chaining, or command substitution; one command per call), no auto-loaded skills or AGENTS.md / CLAUDE.md, no browser or web access, no MCP tools, and no delegating to sub-agents. Any guidance file is a normal journal file with no special status; this contract is your source of truth.
 ```
 
 ## Where this is wired (for maintainers)

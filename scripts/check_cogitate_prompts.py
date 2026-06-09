@@ -55,12 +55,28 @@ READ_TOOLS = frozenset({"read_file", "glob", "list_directory", "grep_search"})
 CLI_AGENT_TOOLS = frozenset({"Read", "Edit", "Write", "Bash", "Glob", "Grep", "Agent"})
 
 SHELL_READ_COMMANDS = frozenset({"cat", "ls", "head", "tail", "less", "more"})
-
-# Mirrors cogitate_policy.py:20; `sol` / `sol call ...` are otherwise allowed.
-_SOL_INVOCATION_RE = re.compile(r"(^sol\s|\bsol call\b)")
+SHELL_OPERATOR_CHARS = frozenset("();<>|&")
+SHELL_WRAPPERS = frozenset(
+    {
+        "bash",
+        "sh",
+        "zsh",
+        "dash",
+        "env",
+        "eval",
+        "exec",
+        "command",
+        "xargs",
+        "sudo",
+        "python",
+        "python3",
+    }
+)
 
 _FENCED_BLOCK_RE = re.compile(r"```[^\n]*\n(.*?)```", re.S)
 _INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+_EMBEDDED_SOL_JOURNAL_RE = re.compile(r"(?<![\w./-])(?:sol|journal)(?![\w/-])")
+_PLACEHOLDER_RE = re.compile(r"<[+A-Za-z0-9_][+A-Za-z0-9_. -]*>")
 
 # Curated, minimal: lowest-confidence class, NOT anchored in cogitate_policy.py.
 # A false entry (flagging a flag the CLI accepts) is worse than omission.
@@ -101,6 +117,67 @@ def command_tokens(command: str) -> list[str]:
         return shlex.split(command)
     except ValueError:
         return command.split()
+
+
+def _shell_syntax_violation(command: str) -> bool:
+    """Return True when command uses shell syntax outside quoted data."""
+    if "$(" in command or "`" in command:
+        return True
+    if "\n" in command or "\r" in command:
+        return True
+    index = 0
+    length = len(command)
+    quote: str | None = None
+    while index < length:
+        char = command[index]
+        if quote == "'":
+            if char == "'":
+                quote = None
+        elif quote == '"':
+            if char == "\\" and index + 1 < length:
+                index += 2
+                continue
+            if char == '"':
+                quote = None
+        else:
+            if char == "\\" and index + 1 < length:
+                index += 2
+                continue
+            if char in ("'", '"'):
+                quote = char
+            elif char in SHELL_OPERATOR_CHARS:
+                return True
+        index += 1
+    # Diverges from the runtime scanner: prompt lint receives per-line spans from
+    # fenced examples, so a legitimate multi-line quoted value can leave the
+    # first line with an open quote. That is documentation, not shell composition.
+    return False
+
+
+def _wrapper_embeds_sol_or_journal(command: str, tokens: list[str]) -> bool:
+    if not tokens or tokens[0] not in SHELL_WRAPPERS:
+        return False
+    return _EMBEDDED_SOL_JOURNAL_RE.search(command) is not None
+
+
+def _raw_substitution_or_multiline(command: str) -> bool:
+    return "$(" in command or "`" in command or "\n" in command or "\r" in command
+
+
+def _mask_placeholders(command: str) -> str:
+    return _PLACEHOLDER_RE.sub("ARG", command)
+
+
+def _shell_composition_finding(command: str, tokens: list[str]) -> bool:
+    if _raw_substitution_or_multiline(command):
+        return True
+    if _wrapper_embeds_sol_or_journal(command, tokens):
+        return True
+    if tokens[0] in {"sol", "journal"} and _shell_syntax_violation(
+        _mask_placeholders(command)
+    ):
+        return True
+    return False
 
 
 def extract_command_spans(body: str) -> list[tuple[int, str]]:
@@ -163,7 +240,17 @@ def classify_span(command: str) -> list[tuple[str, str]]:
 
     findings = _unsupported_flag_findings(tokens)
 
-    if _SOL_INVOCATION_RE.search(command):
+    if _shell_composition_finding(command, tokens):
+        findings.append(
+            (
+                "shell-composition",
+                "forbidden shell composition; use one `sol` or approved `journal` "
+                "command without pipes, redirects, chaining, substitution, or wrappers",
+            )
+        )
+        return findings
+
+    if tokens[0] == "sol":
         return findings
 
     if tokens[0] in READ_TOOLS:

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import shlex
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -18,9 +19,8 @@ from solstone.think.cogitate_contract import (
 MAX_TURNS = 60
 DEFAULT_READ_CALL_BUDGET = 200
 
-_SOL_INVOCATION_RE = re.compile(r"(^sol\s|\bsol call\b)")
 _JOURNAL_COMMANDS = {"identity", "routines", "health", "talent"}
-_SHELL_CONTROL_TOKENS = {";", "&&", "||", "|", ">", ">>", "<", "<<", "$(", "`"}
+_SHELL_OPERATOR_CHARS = frozenset("();<>|&")
 _WRITE_TOOLS = {"write_file", "replace"}
 _READ_TOOLS = frozenset(COGITATE_READ_TOOL_NAMES)
 _SUBMIT_TIERS = tuple(
@@ -28,21 +28,54 @@ _SUBMIT_TIERS = tuple(
 )
 _SUPPORT_SEND_VERBS = {"create", "reply", "attach", "feedback"}
 
+SHELL_COMPOSITION_DENY = (
+    "policy_deny: shell composition is not available; run one `sol` or approved "
+    "`journal` command per call with no pipes, redirects, chaining, or command "
+    "substitution"
+)
+EMPTY_COMMAND_DENY = "policy_deny: empty command"
+RESTRICTED_COMMAND_DENY = (
+    "policy_deny: run_shell_command restricted to sol or approved journal invocations"
+)
 
-def _is_approved_journal_invocation(command: str) -> bool:
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        return False
 
-    if len(tokens) < 2 or tokens[0] != "journal" or tokens[1] not in _JOURNAL_COMMANDS:
-        return False
+@dataclass(frozen=True)
+class CommandDecision:
+    allowed: bool
+    reason: str
+    argv: list[str] | None
 
-    for token in tokens:
-        if token in _SHELL_CONTROL_TOKENS or "$(" in token or "`" in token:
-            return False
 
-    return True
+def _shell_syntax_violation(command: str) -> bool:
+    """Return True when command uses shell syntax outside quoted data."""
+    if "$(" in command or "`" in command:
+        return True
+    if "\n" in command or "\r" in command:
+        return True
+    index = 0
+    length = len(command)
+    quote: str | None = None
+    while index < length:
+        char = command[index]
+        if quote == "'":
+            if char == "'":
+                quote = None
+        elif quote == '"':
+            if char == "\\" and index + 1 < length:
+                index += 2
+                continue
+            if char == '"':
+                quote = None
+        else:
+            if char == "\\" and index + 1 < length:
+                index += 2
+                continue
+            if char in ("'", '"'):
+                quote = char
+            elif char in _SHELL_OPERATOR_CHARS:
+                return True
+        index += 1
+    return quote is not None
 
 
 class MaxTurnsExhausted(RuntimeError):
@@ -71,70 +104,63 @@ class CogitatePolicy:
             return False, f"policy_deny: {tool} not allowed for read-only talents"
 
         if tool == "run_shell_command":
-            command = str(args.get("command", ""))
-            is_sol_invocation = _SOL_INVOCATION_RE.search(command) is not None
-            is_approved_journal_invocation = _is_approved_journal_invocation(command)
-            if not (is_sol_invocation or is_approved_journal_invocation):
-                return (
-                    False,
-                    "policy_deny: run_shell_command restricted to sol"
-                    " or approved journal invocations",
-                )
-            if is_sol_invocation:
-                send_verb = _support_send_verb(command)
-                if not self.submit_allowed:
-                    if send_verb:
-                        required = " or ".join(_SUBMIT_TIERS)
-                        return (
-                            False,
-                            f"policy_deny: 'sol call support {send_verb}' requires "
-                            f"access_tier {required!r}; "
-                            f"this run is {self.access_tier!r}",
-                        )
-                    if _support_command_has_shell_control(command):
-                        return (
-                            False,
-                            "policy_deny: support commands may not be chained or "
-                            "wrapped with shell-control operators "
-                            "(run them one at a time)",
-                        )
-                elif send_verb and not self.outbound_approval:
-                    return (
-                        False,
-                        f"policy_deny: 'sol call support {send_verb}' requires a "
-                        "per-send owner approval; this run was not launched with one",
-                    )
-            return True, "ok"
+            decision = self.classify_command(str(args.get("command", "")))
+            return decision.allowed, decision.reason
 
         if tool in _READ_TOOLS:
             return True, "ok"
 
         return True, "ok"
 
+    def classify_command(self, command: str) -> CommandDecision:
+        if _shell_syntax_violation(command):
+            return CommandDecision(False, SHELL_COMPOSITION_DENY, None)
 
-def _command_tokens(command: str) -> list[str]:
-    try:
-        return shlex.split(command)
-    except ValueError:
-        return command.split()
+        try:
+            argv = shlex.split(command, posix=True)
+        except ValueError:
+            return CommandDecision(False, SHELL_COMPOSITION_DENY, None)
+
+        if not argv:
+            return CommandDecision(False, EMPTY_COMMAND_DENY, None)
+
+        if not (
+            argv[0] == "sol"
+            or (
+                argv[0] == "journal" and len(argv) >= 2 and argv[1] in _JOURNAL_COMMANDS
+            )
+        ):
+            return CommandDecision(False, RESTRICTED_COMMAND_DENY, None)
+
+        send_verb = _support_send_verb(argv)
+        if send_verb and not self.submit_allowed:
+            required = " or ".join(_SUBMIT_TIERS)
+            return CommandDecision(
+                False,
+                f"policy_deny: 'sol call support {send_verb}' requires "
+                f"access_tier {required!r}; this run is {self.access_tier!r}",
+                None,
+            )
+
+        if send_verb and not self.outbound_approval:
+            return CommandDecision(
+                False,
+                f"policy_deny: 'sol call support {send_verb}' requires a "
+                "per-send owner approval; this run was not launched with one",
+                None,
+            )
+
+        return CommandDecision(True, "ok", argv)
 
 
-def _support_send_verb(command: str) -> str | None:
-    tokens = _command_tokens(command)
-    for index in range(len(tokens) - 3):
-        if tokens[index : index + 3] != ["sol", "call", "support"]:
+def _support_send_verb(argv: list[str]) -> str | None:
+    for index in range(len(argv) - 3):
+        if argv[index : index + 3] != ["sol", "call", "support"]:
             continue
-        verb = tokens[index + 3]
+        verb = argv[index + 3]
         if verb in _SUPPORT_SEND_VERBS:
             return verb
     return None
-
-
-def _support_command_has_shell_control(command: str) -> bool:
-    lower_command = command.lower()
-    if "support" not in lower_command:
-        return False
-    return any(token in command for token in _SHELL_CONTROL_TOKENS)
 
 
 def _normalize_day(day: date | str) -> str:

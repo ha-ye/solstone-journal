@@ -49,10 +49,17 @@ def test_read_only_allowed_sol_call_returns_non_error_observation(
         tmp_path=tmp_path,
         events=events,
     )
+
+    seen_argv: list[list[str]] = []
+
+    def fake_run(argv: list[str]):
+        seen_argv.append(argv)
+        return {"text": f"ran: {' '.join(argv)}", "is_error": False}
+
     monkeypatch.setattr(
         openhands,
-        "_run_shell_command",
-        lambda command: {"text": f"ran: {command}", "is_error": False},
+        "_run_command",
+        fake_run,
     )
 
     observation = tool(
@@ -61,6 +68,7 @@ def test_read_only_allowed_sol_call_returns_non_error_observation(
 
     assert observation.text == "ran: sol call journal search x"
     assert observation.is_error is False
+    assert seen_argv == [["sol", "call", "journal", "search", "x"]]
     assert executor.read_call_count == 1
     assert events == []
 
@@ -78,8 +86,8 @@ def test_read_only_policy_deny_is_recoverable_observation(
     )
     monkeypatch.setattr(
         openhands,
-        "_run_shell_command",
-        lambda _command: pytest.fail("denied commands must not run"),
+        "_run_command",
+        lambda _argv: pytest.fail("denied commands must not run"),
     )
 
     observation = tool(tool.action_from_arguments({"command": "rm -rf journal"}))
@@ -104,8 +112,8 @@ def test_read_call_budget_overflow_emits_once_and_denies_recoverably(
     )
     monkeypatch.setattr(
         openhands,
-        "_run_shell_command",
-        lambda command: {"text": f"ran: {command}", "is_error": False},
+        "_run_command",
+        lambda argv: {"text": f"ran: {' '.join(argv)}", "is_error": False},
     )
     action = tool.action_from_arguments({"command": "sol call journal search x"})
 

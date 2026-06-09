@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import sys
 import traceback
 import uuid
@@ -167,7 +168,12 @@ def _ensure_sol_types() -> dict[str, Any]:
     from pydantic import Field
 
     class SolAction(Action):
-        command: str = Field(description="Shell command to run.")
+        command: str = Field(
+            description=(
+                "Single `sol` or approved `journal` command-line invocation to "
+                "run directly, without a shell."
+            )
+        )
 
     class SolObservation(Observation):
         pass
@@ -190,12 +196,9 @@ def _ensure_sol_types() -> dict[str, Any]:
             del conversation
 
             command = str(action.command)
-            ok, reason = self.policy.check(
-                "run_shell_command",
-                {"command": command},
-            )
-            if not ok:
-                return SolObservation.from_text(reason, is_error=True)
+            decision = self.policy.classify_command(command)
+            if not decision.allowed:
+                return SolObservation.from_text(decision.reason, is_error=True)
 
             self.read_call_count += 1
             if self.read_call_count > self.read_call_budget:
@@ -215,7 +218,8 @@ def _ensure_sol_types() -> dict[str, Any]:
                     is_error=True,
                 )
 
-            result = _run_shell_command(command)
+            assert decision.argv is not None
+            result = _run_command(decision.argv)
             return SolObservation.from_text(result["text"], is_error=result["is_error"])
 
     class SolTool(ToolDefinition[SolAction, SolObservation]):
@@ -266,7 +270,10 @@ def _build_sol_tools(
         read_call_budget=read_call_budget,
     )
     tool = sol_tool_cls(
-        description="Run a sol shell command after policy approval.",
+        description=(
+            "Run one policy-approved `sol` or `journal` command-line invocation "
+            "directly, without a shell."
+        ),
         action_type=sol_action,
         observation_type=sol_observation,
         executor=executor,
@@ -281,19 +288,24 @@ def _build_sol_tools(
     return [tool], executor
 
 
-def _run_shell_command(command: str) -> dict[str, Any]:
+def _run_command(argv: list[str]) -> dict[str, Any]:
     import subprocess
+
+    executable = Path(sys.executable).parent / argv[0]
+    resolved = str(executable) if executable.exists() else shutil.which(argv[0])
+    if not resolved:
+        return {"text": f"command_not_found: {argv[0]}", "is_error": True}
 
     try:
         completed = subprocess.run(
-            ["bash", "-lc", command],
+            [resolved, *argv[1:]],
             text=True,
             capture_output=True,
             timeout=_SHELL_TIMEOUT_SECONDS,
             check=False,
         )
     except FileNotFoundError:
-        return {"text": "command_not_found: bash", "is_error": True}
+        return {"text": f"command_not_found: {argv[0]}", "is_error": True}
     except subprocess.TimeoutExpired as exc:
         output = exc.stdout or ""
         error = exc.stderr or ""
@@ -331,7 +343,7 @@ def _format_shell_output(
     if stderr:
         parts.append(f"stderr:\n{_truncate_output(stderr, _SHELL_STDERR_CAP)}")
     if timed_out:
-        parts.append(f"timeout: run_shell_command exceeded {_SHELL_TIMEOUT_SECONDS}s")
+        parts.append(f"timeout: command exceeded {_SHELL_TIMEOUT_SECONDS}s")
     elif returncode is not None and returncode != 0:
         parts.append(f"exit_code: {returncode}")
     if not parts:

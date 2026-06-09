@@ -59,6 +59,8 @@ def test_policy_denies_write_tools(tmp_path):
         "journal health logs --since 1h",
         "journal talent logs --daily -c 10",
         "journal identity pulse --write --value 'a; quoted value'",
+        "journal identity pulse --write --value '>'",
+        "journal identity pulse --write --value '|'",
     ],
 )
 def test_policy_allows_approved_journal_invocations(tmp_path, command):
@@ -88,6 +90,47 @@ def test_policy_denies_unapproved_journal_invocations(tmp_path, command):
 
     assert allowed is False
     assert reason.startswith("policy_deny:")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "journal identity ; rm -rf journal",
+        "journal identity pulse --value $(rm -rf journal)",
+        "journal identity pulse --value '$(rm -rf journal)'",
+        "journal identity pulse --value '`rm -rf journal`'",
+        "sol call journal search x > out",
+        "sol call journal search x 2>&1",
+        "sol call journal search x <(journal health)",
+        "sol call journal search x\nsol call todos list",
+        "sol call journal search 'unterminated",
+    ],
+)
+def test_policy_denies_shell_composition(tmp_path, command):
+    policy = _policy(tmp_path)
+
+    allowed, reason = policy.check("run_shell_command", {"command": command})
+
+    assert allowed is False
+    assert reason == cogitate_policy.SHELL_COMPOSITION_DENY
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "bash -lc 'sol call journal search x'",
+        "env sol call journal search x",
+        "./sol call journal search x",
+        "python -m solstone.think.sol_cli call journal search x",
+    ],
+)
+def test_policy_denies_wrapped_or_nonliteral_sol_invocations(tmp_path, command):
+    policy = _policy(tmp_path)
+
+    allowed, reason = policy.check("run_shell_command", {"command": command})
+
+    assert allowed is False
+    assert reason == cogitate_policy.RESTRICTED_COMMAND_DENY
 
 
 @pytest.mark.parametrize("access_tier", ["normal", "system-read"])
@@ -185,7 +228,7 @@ def test_policy_denies_chained_support_send_for_normal(tmp_path):
     )
 
     assert allowed is False
-    assert "requires access_tier" in reason
+    assert reason == cogitate_policy.SHELL_COMPOSITION_DENY
 
 
 @pytest.mark.parametrize(
@@ -201,10 +244,7 @@ def test_policy_denies_wrapped_or_chained_support_command_for_normal(tmp_path, c
     allowed, reason = policy.check("run_shell_command", {"command": command})
 
     assert allowed is False
-    assert reason == (
-        "policy_deny: support commands may not be chained or wrapped with "
-        "shell-control operators (run them one at a time)"
-    )
+    assert reason == cogitate_policy.SHELL_COMPOSITION_DENY
 
 
 def test_policy_allows_non_support_chain_for_normal(tmp_path):
@@ -215,8 +255,8 @@ def test_policy_allows_non_support_chain_for_normal(tmp_path):
         {"command": "sol call activities list && sol call todos list"},
     )
 
-    assert allowed is True
-    assert reason == "ok"
+    assert allowed is False
+    assert reason == cogitate_policy.SHELL_COMPOSITION_DENY
 
 
 def test_policy_denies_chained_support_send_for_outbound_without_approval(tmp_path):
@@ -232,7 +272,7 @@ def test_policy_denies_chained_support_send_for_outbound_without_approval(tmp_pa
     )
 
     assert allowed is False
-    assert "per-send owner approval" in reason
+    assert reason == cogitate_policy.SHELL_COMPOSITION_DENY
 
 
 def test_policy_allows_chained_support_send_for_outbound_with_approval(tmp_path):
@@ -247,8 +287,8 @@ def test_policy_allows_chained_support_send_for_outbound_with_approval(tmp_path)
         },
     )
 
-    assert allowed is True
-    assert reason == "ok"
+    assert allowed is False
+    assert reason == cogitate_policy.SHELL_COMPOSITION_DENY
 
 
 def test_cogitate_toml_removed_and_build_policy_import_fails():

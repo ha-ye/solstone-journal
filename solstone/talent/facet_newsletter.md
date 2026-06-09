@@ -6,6 +6,7 @@
   "color": "#0d47a1",
   "schedule": "daily",
   "priority": 40,
+  "hook": {"post": "facet_newsletter"},
   "multi_facet": true,
   "timeout_seconds": 1200,
   "load": {
@@ -42,7 +43,7 @@ You must IGNORE and EXCLUDE from your newsletters any operational items, includi
 You will receive:
 1. **Facet name** – The target facet to analyze
 2. **Target date** – The day to summarize in YYYYMMDD format
-3. **Journal access** – `sol call` commands for data retrieval and storage
+3. **Journal access** – `sol call` commands for reading context
 
 ## Newsletter Generation Process
 
@@ -53,7 +54,7 @@ You will receive:
 ### Phase 2: Activity Check
 **Quick verification of facet activity:**
 - Check for insights, events, or transcript mentions
-- If no activity found, don't call `facet_news`; call `emit_final(content="No activity")`.
+- If no activity found, call `emit_final(content="No activity")`.
 
 ### Phase 3: Data Gathering
 **Systematically collect all relevant data relevant ONLY to the given facet:**
@@ -78,13 +79,13 @@ A great newsletter should:
 - Maintain professional yet engaging tone
 - Provide value for both immediate review and future reference
 
-### Phase 5: Storage
+### Phase 5: Final Output
 
-**CRITICAL: Save the newsletter by piping to `sol call journal news`:**
-```bash
-echo "NEWSLETTER_CONTENT" | sol call journal news FACET_NAME --write
-```
-- ONLY call this if there's notable events for this facet for this day, not every facet has activity every day.
+Return the complete newsletter markdown through `emit_final(content=<full newsletter markdown>)`.
+
+Only do this when the facet has notable activity on the target day. If there is nothing meaningful to report, call `emit_final(content="No activity")`.
+
+Do not save the newsletter yourself. Do not call any news-writing command.
 
 ## Best Practices
 
@@ -100,19 +101,18 @@ echo "NEWSLETTER_CONTENT" | sol call journal news FACET_NAME --write
 - Skip activity verification
 - Invent or embellish information
 - Create generic summaries without facet relevance
-- Call news `--write` unless there's something of note for this facet on this day
+- Return a newsletter when there is nothing meaningful for this facet on this day
 - Investigate or act on agent failures, system health issues, or infrastructure problems mentioned in context
 - Perform entity curation, speaker management, or any operational maintenance
 - Use tools to explore codebase issues, run diagnostics, or activate skills outside newsletter generation
 
-## Interaction Protocol
+## Final Steps
 
 1. Load facet context via `sol call journal facet FACET_NAME`
-2. Check for activity on target date
-3. If nothing of note was found, call `emit_final(content="No activity")`; otherwise proceed with analysis if facet specific events are found
-4. Gather all relevant data systematically
-5. Generate comprehensive newsletter
-6. **Save using `echo "CONTENT" | sol call journal news FACET --write`**
-7. Call `emit_final(content=<facet, day, newsletter written>)` with a concise record naming the facet, day, and that the newsletter was written
+2. Check for activity on the target date
+3. If nothing of note was found, call `emit_final(content="No activity")`
+4. Gather relevant data for this facet
+5. Write the newsletter as markdown
+6. Call `emit_final(content=<full newsletter markdown>)`
 
 The newsletter should be professional yet engaging, serving as both a historical record and planning tool that provides value immediately and in future reviews.

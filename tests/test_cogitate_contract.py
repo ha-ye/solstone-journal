@@ -123,6 +123,7 @@ def test_capabilities_for_access_tier_unknown_names_tier(tier):
 
 def test_cogitate_runtime_preamble_content_guard():
     assert "sol call ..." in COGITATE_RUNTIME_PREAMBLE
+    assert "single parsed command-line invocation" in COGITATE_RUNTIME_PREAMBLE
     assert "journal root" in COGITATE_RUNTIME_PREAMBLE
     assert "node_modules" in COGITATE_RUNTIME_PREAMBLE
     assert "emit_final" in COGITATE_RUNTIME_PREAMBLE
@@ -130,6 +131,7 @@ def test_cogitate_runtime_preamble_content_guard():
     assert "through a `sol` domain command" in COGITATE_RUNTIME_PREAMBLE
     assert "no MCP tools" in COGITATE_RUNTIME_PREAMBLE
     assert "no bare `journal ...` commands" in COGITATE_RUNTIME_PREAMBLE
+    assert "no shell composition" in COGITATE_RUNTIME_PREAMBLE
     assert "read_file" in COGITATE_RUNTIME_PREAMBLE
     assert "list_directory" in COGITATE_RUNTIME_PREAMBLE
     assert "glob" in COGITATE_RUNTIME_PREAMBLE
