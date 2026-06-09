@@ -447,6 +447,15 @@ def test_get_command_name():
     assert get(["journal", "indexer", "--rescan"]) == "indexer"
     assert get(["sol", "insight", "20240101"]) == "insight"
     assert get(["journal", "think", "--day", "20240101"]) == "daily"
+    assert get(["journal", "maintenance", "list"]) == "maintenance"
+    assert get(["journal", "maintenance", "run", "foo:bar"]) == "maintenance:foo:bar"
+    assert get(["journal", "maintenance", "run", "baz:qux"]) == "maintenance:baz:qux"
+    assert get(["journal", "maintenance", "run", "foo:bar"]) == get(
+        ["journal", "maintenance", "run", "foo:bar"]
+    )
+    assert get(["journal", "maintenance", "run", "foo:bar"]) != get(
+        ["journal", "maintenance", "run", "baz:qux"]
+    )
 
     # Other commands -> basename
     assert get(["/usr/bin/python", "script.py"]) == "python"
@@ -495,6 +504,8 @@ def test_get_command_name():
         ["journal", "think"],
         ["journal", "indexer", "--rescan"],
         ["journal", "sense", "--day", "20260101"],
+        ["journal", "maintenance", "list"],
+        ["journal", "maintenance", "run", "foo:bar"],
     ],
 )
 def test_command_partition_matches_task_queue_get_command_name(cmd):

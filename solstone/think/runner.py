@@ -200,6 +200,9 @@ def _command_partition(cmd: Sequence[str]) -> str:
                     break
             else:
                 name = "daily"
+        elif name == "maintenance":
+            if len(cmd) >= 4 and cmd[2] == "run":
+                name = f"maintenance:{cmd[3]}"
     else:
         name = Path(cmd[0]).name if cmd else "unknown"
     return name

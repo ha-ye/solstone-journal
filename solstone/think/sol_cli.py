@@ -81,6 +81,7 @@ COMMANDS: dict[str, Command] = {
     "start": Command("solstone.think.start", "service"),
     "supervisor": Command("solstone.think.supervisor", "service"),
     "schedule": Command("solstone.think.scheduler", "service"),
+    "maintenance": Command("solstone.think.maintenance_cli", "service"),
     "top": Command("solstone.think.top", "service"),
     "health": Command("solstone.think.health_cli", "service"),
     "notify": Command("solstone.think.notify_cli", "access"),

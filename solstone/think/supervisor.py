@@ -26,7 +26,7 @@ from typing import Any, Callable, Iterable, NoReturn
 
 import psutil
 
-from solstone.think import routines, scheduler
+from solstone.think import maintenance, routines, scheduler
 from solstone.think.app_supervised import FLAG, is_app_supervised, resolve_parent_fd
 from solstone.think.callosum import CallosumConnection, CallosumServer
 from solstone.think.maint import run_pending_tasks
@@ -2587,6 +2587,10 @@ def main() -> None:
     # Initialize periodic task scheduler
     schedule_enabled = not args.no_schedule and not _is_remote_mode
     if schedule_enabled and _supervisor_callosum:
+        try:
+            maintenance.register_maintenance_schedules()
+        except Exception:
+            logging.error("Failed to register maintenance schedules", exc_info=True)
         scheduler.init(_supervisor_callosum)
         scheduler.register_defaults()
         if _task_queue:
