@@ -3,19 +3,15 @@
 
 from __future__ import annotations
 
-import dataclasses
 import json
-import json as jsonlib
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import NoReturn, Optional
 
 import typer
 
 from solstone.convey.readiness_snapshot import highest_severity_group
+from solstone.think.convey_client import ConveyClientError, get_client
 from solstone.think.pipeline_health import summarize_pipeline_day
-from solstone.think.surfaces import health as health_surface
-from solstone.think.surfaces.types import HealthReport
-from solstone.think.utils import require_solstone
 
 app = typer.Typer(
     help="Health: journal-data trust signals (for infrastructure/service liveness, use `journal health`).",
@@ -23,82 +19,80 @@ app = typer.Typer(
 )
 
 
-@app.callback()
-def callback() -> None:
-    require_solstone()
+def _params(**values: object) -> dict[str, object]:
+    return {key: value for key, value in values.items() if value is not None}
 
 
-def _echo_json(payload: object) -> None:
-    typer.echo(jsonlib.dumps(payload, indent=2, sort_keys=False))
+def _exit_with(message: str) -> NoReturn:
+    typer.echo(message, err=True)
+    raise typer.Exit(1)
 
 
-def _render_summary(report: HealthReport) -> None:
-    typer.echo(f"Range: {report.range[0]} -> {report.range[1]}")
+def _handle_health_error(err: ConveyClientError) -> NoReturn:
+    _exit_with(err.detail or err.error)
+
+
+def _render_summary(report: dict) -> None:
+    capture = report["capture_health"]
+    synthesis = report["synthesis_health"]
+    consumer_signal = report["consumer_signal"]
+
+    typer.echo(f"Range: {report['range'][0]} -> {report['range'][1]}")
     typer.echo("Capture")
-    typer.echo(f"  hours_with_capture: {report.capture_health.hours_with_capture}")
-    typer.echo(f"  hours_total: {report.capture_health.hours_total}")
-    typer.echo(f"  coverage_ratio: {report.capture_health.coverage_ratio}")
+    typer.echo(f"  hours_with_capture: {capture['hours_with_capture']}")
+    typer.echo(f"  hours_total: {capture['hours_total']}")
+    typer.echo(f"  coverage_ratio: {capture['coverage_ratio']}")
     typer.echo(
         "  facets_with_recent_capture: "
-        + ", ".join(report.capture_health.facets_with_recent_capture)
+        + ", ".join(capture["facets_with_recent_capture"])
     )
-    typer.echo(
-        "  facets_silent_24h: " + ", ".join(report.capture_health.facets_silent_24h)
-    )
-    typer.echo(f"  last_segment_at: {report.capture_health.last_segment_at}")
+    typer.echo("  facets_silent_24h: " + ", ".join(capture["facets_silent_24h"]))
+    typer.echo(f"  last_segment_at: {capture['last_segment_at']}")
     typer.echo("Synthesis")
-    typer.echo(f"  activities_count: {report.synthesis_health.activities_count}")
+    typer.echo(f"  activities_count: {synthesis['activities_count']}")
     typer.echo(
         "  activities_with_participation: "
-        + str(report.synthesis_health.activities_with_participation)
+        + str(synthesis["activities_with_participation"])
     )
-    typer.echo(
-        f"  activities_with_story: {report.synthesis_health.activities_with_story}"
-    )
-    typer.echo(
-        f"  activities_user_edited: {report.synthesis_health.activities_user_edited}"
-    )
+    typer.echo(f"  activities_with_story: {synthesis['activities_with_story']}")
+    typer.echo(f"  activities_user_edited: {synthesis['activities_user_edited']}")
     typer.echo(
         "  activities_anticipated_unfilled: "
-        + str(report.synthesis_health.activities_anticipated_unfilled)
+        + str(synthesis["activities_anticipated_unfilled"])
     )
     typer.echo(
-        "  talent_run_failures_24h: "
-        + str(report.synthesis_health.talent_run_failures_24h)
+        "  talent_run_failures_24h: " + str(synthesis["talent_run_failures_24h"])
     )
     typer.echo(
         "  talent_degraded_outputs_24h: "
-        + str(report.synthesis_health.talent_degraded_outputs_24h)
+        + str(synthesis["talent_degraded_outputs_24h"])
     )
     typer.echo(
-        "  indexer_last_rebuild_at: "
-        + str(report.synthesis_health.indexer_last_rebuild_at)
+        "  indexer_last_rebuild_at: " + str(synthesis["indexer_last_rebuild_at"])
     )
-    backlog = report.segment_backlog
-    n = backlog.not_thought
-    m = backlog.days_with_backlog
+    backlog = report["segment_backlog"]
+    n = backlog["not_thought"]
+    m = backlog["days_with_backlog"]
     seg_word = "segment" if n == 1 else "segments"
     day_word = "day" if m == 1 else "days"
-    if backlog.errors and n > 0:
+    if backlog["errors"] and n > 0:
         typer.echo(
             f"  at least {n} {seg_word} across {m} {day_word} "
             "awaiting thinking (status incomplete)"
         )
-    elif backlog.errors:
+    elif backlog["errors"]:
         typer.echo("  Segment thinking status unavailable")
     elif n > 0:
         typer.echo(f"  {n} {seg_word} across {m} {day_word} awaiting thinking")
     typer.echo("Consumer Signals")
     typer.echo(
-        f"  ledger_open_items_total: {report.consumer_signal.ledger_open_items_total}"
+        f"  ledger_open_items_total: {consumer_signal['ledger_open_items_total']}"
     )
     typer.echo(
-        f"  ledger_stale_items_count: {report.consumer_signal.ledger_stale_items_count}"
+        f"  ledger_stale_items_count: {consumer_signal['ledger_stale_items_count']}"
     )
-    typer.echo(
-        f"  profile_entities_total: {report.consumer_signal.profile_entities_total}"
-    )
-    snap = report.provider_readiness
+    typer.echo(f"  profile_entities_total: {consumer_signal['profile_entities_total']}")
+    snap = report["provider_readiness"]
     typer.echo("Provider Readiness")
     if snap.get("unavailable"):
         typer.echo("  readiness status unavailable")
@@ -124,43 +118,45 @@ def _render_summary(report: HealthReport) -> None:
             else:
                 typer.echo(f"  → {recovery['label']}")
     typer.echo("Notes")
-    if not report.notes:
+    if not report["notes"]:
         typer.echo("  none")
         return
-    for note in report.notes:
-        typer.echo(f"  [{note.severity}] {note.category}: {note.message}")
+    for note in report["notes"]:
+        typer.echo(f"  [{note['severity']}] {note['category']}: {note['message']}")
 
 
-def _render_full(report: HealthReport) -> None:
+def _render_full(report: dict) -> None:
     _render_summary(report)
-    if not report.capture_health.facets_silent_24h:
+    if not report["capture_health"]["facets_silent_24h"]:
         return
 
     typer.echo("Silent Facet Detail")
-    for facet in report.capture_health.facets_silent_24h:
+    for facet in report["capture_health"]["facets_silent_24h"]:
         matching = [
             note
-            for note in report.notes
-            if note.category == "capture" and note.message.startswith(f"{facet}:")
+            for note in report["notes"]
+            if note["category"] == "capture" and note["message"].startswith(f"{facet}:")
         ]
         if not matching:
             continue
         for note in matching:
-            typer.echo(f"  {facet}: [{note.severity}] {note.message}")
+            typer.echo(f"  {facet}: [{note['severity']}] {note['message']}")
 
 
 @app.command("summary")
 def summary(
     day: str | None = typer.Option(None, "--day"),
-    json: bool = typer.Option(False, "--json"),
+    json_out: bool = typer.Option(False, "--json"),
 ) -> None:
     """Summarize journal-data trust signals for one day."""
     try:
-        report = health_surface.summary(day=day)
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    if json:
-        _echo_json(dataclasses.asdict(report))
+        report = get_client().request(
+            "GET", "/api/health/summary", params=_params(day=day)
+        )
+    except ConveyClientError as err:
+        _handle_health_error(err)
+    if json_out:
+        typer.echo(json.dumps(report, indent=2))
         return
     _render_summary(report)
 
@@ -168,15 +164,17 @@ def summary(
 @app.command("full")
 def full(
     day: str | None = typer.Option(None, "--day"),
-    json: bool = typer.Option(False, "--json"),
+    json_out: bool = typer.Option(False, "--json"),
 ) -> None:
     """Render the full journal-data trust report for one day."""
     try:
-        report = health_surface.full(day=day)
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    if json:
-        _echo_json(dataclasses.asdict(report))
+        report = get_client().request(
+            "GET", "/api/health/full", params=_params(day=day)
+        )
+    except ConveyClientError as err:
+        _handle_health_error(err)
+    if json_out:
+        typer.echo(json.dumps(report, indent=2))
         return
     _render_full(report)
 
@@ -185,15 +183,19 @@ def full(
 def for_range(
     day_from: str | None = typer.Option(None, "--day-from"),
     day_to: str | None = typer.Option(None, "--day-to"),
-    json: bool = typer.Option(False, "--json"),
+    json_out: bool = typer.Option(False, "--json"),
 ) -> None:
     """Render the journal-data trust report for an inclusive day range."""
     try:
-        report = health_surface.for_range(day_from=day_from, day_to=day_to)
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    if json:
-        _echo_json(dataclasses.asdict(report))
+        report = get_client().request(
+            "GET",
+            "/api/health/range",
+            params=_params(day_from=day_from, day_to=day_to),
+        )
+    except ConveyClientError as err:
+        _handle_health_error(err)
+    if json_out:
+        typer.echo(json.dumps(report, indent=2))
         return
     _render_full(report)
 

@@ -1,34 +1,40 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-import dataclasses
-import json as jsonlib
+import json
+from typing import NoReturn
 
 import typer
 
-from solstone.think.surfaces import ledger as ledger_surface
-from solstone.think.utils import require_solstone
+from solstone.convey.reasons import ACTIVITIES_BUSY, LEDGER_ITEM_NOT_FOUND
+from solstone.think.convey_client import (
+    ConveyClientError,
+    get_client,
+    paginate_collection,
+)
 
 app = typer.Typer(help="Ledger: commitments ↔ closures view", no_args_is_help=True)
 
 
-@app.callback()
-def callback() -> None:
-    require_solstone()
+def _params(**values: object) -> dict[str, object]:
+    return {key: value for key, value in values.items() if value is not None}
 
 
-def _parse_facets_csv(value: str | None) -> list[str] | None:
-    if value is None:
-        return None
-    return [part.strip() for part in value.split(",") if part.strip()]
+def _exit_with(message: str) -> NoReturn:
+    typer.echo(message, err=True)
+    raise typer.Exit(1)
 
 
-def _echo_json(payload: object) -> None:
-    typer.echo(jsonlib.dumps(payload, indent=2, sort_keys=False))
-
-
-def _echo_json_items(items: list[object]) -> None:
-    _echo_json([dataclasses.asdict(item) for item in items])
+def _handle_ledger_error(
+    err: ConveyClientError,
+    *,
+    item_id: str | None = None,
+) -> NoReturn:
+    if err.reason_code == LEDGER_ITEM_NOT_FOUND.code:
+        _exit_with(f"ledger item not found: {item_id}")
+    if err.reason_code == ACTIVITIES_BUSY.code:
+        _exit_with(ACTIVITIES_BUSY.message)
+    _exit_with(err.detail or err.error)
 
 
 def _render_table(headers: list[str], rows: list[list[str]]) -> None:
@@ -48,25 +54,25 @@ def _render_table(headers: list[str], rows: list[list[str]]) -> None:
         )
 
 
-def _item_summary(item: ledger_surface.LedgerItem) -> str:
-    if item.counterparty:
-        return f"{item.owner}: {item.summary} -> {item.counterparty}"
-    return f"{item.owner}: {item.summary}"
+def _item_summary(item: dict) -> str:
+    if item["counterparty"]:
+        return f"{item['owner']}: {item['summary']} -> {item['counterparty']}"
+    return f"{item['owner']}: {item['summary']}"
 
 
-def _render_items(items: list[ledger_surface.LedgerItem]) -> None:
+def _render_items(items: list[dict]) -> None:
     if not items:
         typer.echo("No ledger items found.")
         return
     rows = [
         [
-            item.id,
-            item.state,
-            str(item.age_days),
+            item["id"],
+            item["state"],
+            str(item["age_days"]),
             _item_summary(item),
-            item.when or "",
-            str(item.opened_at),
-            str(item.closed_at or ""),
+            item["when"] or "",
+            str(item["opened_at"]),
+            str(item["closed_at"] or ""),
         ]
         for item in items
     ]
@@ -76,12 +82,13 @@ def _render_items(items: list[ledger_surface.LedgerItem]) -> None:
     )
 
 
-def _render_decisions(items: list[ledger_surface.Decision]) -> None:
+def _render_decisions(items: list[dict]) -> None:
     if not items:
         typer.echo("No decisions found.")
         return
     rows = [
-        [item.id, item.day, item.owner, item.action, item.context] for item in items
+        [item["id"], item["day"], item["owner"], item["action"], item["context"]]
+        for item in items
     ]
     _render_table(["id", "day", "owner", "action", "context"], rows)
 
@@ -96,7 +103,7 @@ def list_cmd(
     top: int | None = typer.Option(None, "--top"),
     sort: str | None = typer.Option(None),
     facets: str | None = typer.Option(None, help="csv"),
-    json: bool = typer.Option(False, "--json"),
+    json_out: bool = typer.Option(False, "--json"),
 ) -> None:
     """List ledger items."""
     if sort is not None and sort not in {
@@ -108,33 +115,37 @@ def list_cmd(
             "sort must be one of age_days_desc, opened_at_desc, closed_at_desc"
         )
     try:
-        items = ledger_surface.list(
-            state=state,
-            owner=owner,
-            counterparty=counterparty,
-            age_days_gte=age_days_gte,
-            closed_since=closed_since,
+        items = paginate_collection(
+            get_client(),
+            "/api/ledger",
+            params=_params(
+                state=state,
+                owner=owner,
+                counterparty=counterparty,
+                age_days_gte=age_days_gte,
+                closed_since=closed_since,
+                sort=sort,
+                facets=facets,
+            ),
             top=top,
-            sort=sort,
-            facets=_parse_facets_csv(facets),
         )
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    if json:
-        _echo_json_items(items)
+    except ConveyClientError as err:
+        _handle_ledger_error(err)
+    if json_out:
+        typer.echo(json.dumps(items, indent=2))
         return
     _render_items(items)
 
 
 @app.command("get")
-def get_cmd(item_id: str, json: bool = typer.Option(False, "--json")) -> None:
+def get_cmd(item_id: str, json_out: bool = typer.Option(False, "--json")) -> None:
     """Fetch one ledger item."""
-    item = ledger_surface.get(item_id)
-    if item is None:
-        typer.echo(f"ledger item not found: {item_id}", err=True)
-        raise typer.Exit(1)
-    if json:
-        _echo_json_items([item])
+    try:
+        item = get_client().request("GET", f"/api/ledger/{item_id}")
+    except ConveyClientError as err:
+        _handle_ledger_error(err, item_id=item_id)
+    if json_out:
+        typer.echo(json.dumps([item], indent=2))
         return
     _render_items([item])
 
@@ -144,20 +155,21 @@ def close_cmd(
     item_id: str,
     note: str = typer.Option(..., "--note"),
     as_state: str = typer.Option("closed", "--as"),
-    json: bool = typer.Option(False, "--json"),
+    json_out: bool = typer.Option(False, "--json"),
 ) -> None:
     """Manually close or drop one ledger item."""
     if as_state not in {"closed", "dropped"}:
         raise typer.BadParameter("as_state must be 'closed' or 'dropped'")
     try:
-        item = ledger_surface.close(item_id, note=note, as_state=as_state)
-    except KeyError:
-        typer.echo(f"ledger item not found: {item_id}", err=True)
-        raise typer.Exit(1) from None
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    if json:
-        _echo_json_items([item])
+        item = get_client().request(
+            "POST",
+            f"/api/ledger/{item_id}/close",
+            json={"note": note, "as_state": as_state},
+        )
+    except ConveyClientError as err:
+        _handle_ledger_error(err, item_id=item_id)
+    if json_out:
+        typer.echo(json.dumps([item], indent=2))
         return
     _render_items([item])
 
@@ -169,20 +181,21 @@ def decisions_cmd(
     involving: str | None = typer.Option(None),
     top: int | None = typer.Option(None),
     facets: str | None = typer.Option(None, help="csv"),
-    json: bool = typer.Option(False, "--json"),
+    json_out: bool = typer.Option(False, "--json"),
 ) -> None:
     """List deduplicated decisions."""
     try:
-        items = ledger_surface.decisions(
-            owner=owner,
-            since=since,
-            involving=involving,
+        items = paginate_collection(
+            get_client(),
+            "/api/ledger/decisions",
+            params=_params(
+                owner=owner, since=since, involving=involving, facets=facets
+            ),
             top=top,
-            facets=_parse_facets_csv(facets),
         )
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    if json:
-        _echo_json_items(items)
+    except ConveyClientError as err:
+        _handle_ledger_error(err)
+    if json_out:
+        typer.echo(json.dumps(items, indent=2))
         return
     _render_decisions(items)

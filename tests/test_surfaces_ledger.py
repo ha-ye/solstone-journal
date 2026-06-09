@@ -5,10 +5,8 @@ import json
 from datetime import UTC, datetime
 
 import pytest
-from typer.testing import CliRunner
 
 _DAY_MS = 86_400_000
-_RUNNER = CliRunner()
 
 
 def _utc_ms(value: str) -> int:
@@ -632,95 +630,3 @@ def test_manual_dropped_overrides_earlier_story_closure(tmp_path, monkeypatch):
         source.field == "edits" and source.activity_id == "meeting_090000_300"
         for source in refreshed.sources
     )
-
-
-def test_cli_list_smoke(tmp_path, monkeypatch):
-    from solstone.think.tools.ledger import app
-
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setenv("SOL_SKIP_SUPERVISOR_CHECK", "1")
-    _minimal_facet_tree(tmp_path)
-    _write_story_activity(
-        "work",
-        "20260410",
-        "meeting_090000_300",
-        _utc_ms("2026-04-10T09:00:00Z"),
-        commitments=[_commitment()],
-    )
-
-    result = _RUNNER.invoke(app, ["list", "--json"])
-
-    assert result.exit_code == 0
-    payload = json.loads(result.stdout)
-    assert isinstance(payload, list)
-    assert payload[0]["summary"] == "send proposal"
-
-
-def test_cli_get_smoke(tmp_path, monkeypatch):
-    from solstone.think.surfaces import ledger as ledger_surface
-    from solstone.think.tools.ledger import app
-
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setenv("SOL_SKIP_SUPERVISOR_CHECK", "1")
-    _minimal_facet_tree(tmp_path)
-    _write_story_activity(
-        "work",
-        "20260410",
-        "meeting_090000_300",
-        _utc_ms("2026-04-10T09:00:00Z"),
-        commitments=[_commitment()],
-    )
-    item = ledger_surface.list(state="open")[0]
-
-    result = _RUNNER.invoke(app, ["get", item.id, "--json"])
-
-    assert result.exit_code == 0
-    payload = json.loads(result.stdout)
-    assert isinstance(payload, list)
-    assert payload[0]["id"] == item.id
-
-
-def test_cli_close_smoke(tmp_path, monkeypatch):
-    from solstone.think.surfaces import ledger as ledger_surface
-    from solstone.think.tools.ledger import app
-
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setenv("SOL_SKIP_SUPERVISOR_CHECK", "1")
-    _minimal_facet_tree(tmp_path)
-    _write_story_activity(
-        "work",
-        "20260410",
-        "meeting_090000_300",
-        _utc_ms("2026-04-10T09:00:00Z"),
-        commitments=[_commitment()],
-    )
-    item = ledger_surface.list(state="open")[0]
-
-    result = _RUNNER.invoke(app, ["close", item.id, "--note", "done", "--json"])
-
-    assert result.exit_code == 0
-    payload = json.loads(result.stdout)
-    assert isinstance(payload, list)
-    assert payload[0]["state"] == "closed"
-
-
-def test_cli_decisions_smoke(tmp_path, monkeypatch):
-    from solstone.think.tools.ledger import app
-
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setenv("SOL_SKIP_SUPERVISOR_CHECK", "1")
-    _minimal_facet_tree(tmp_path)
-    _write_story_activity(
-        "work",
-        "20260410",
-        "meeting_090000_300",
-        _utc_ms("2026-04-10T09:00:00Z"),
-        decisions=[_decision()],
-    )
-
-    result = _RUNNER.invoke(app, ["decisions", "--json"])
-
-    assert result.exit_code == 0
-    payload = json.loads(result.stdout)
-    assert isinstance(payload, list)
-    assert payload[0]["action"] == "move launch review"

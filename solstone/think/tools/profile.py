@@ -2,27 +2,34 @@
 # Copyright (c) 2026 sol pbc
 
 import json
-from dataclasses import asdict
-from typing import Any, Callable
+from typing import Any, Callable, NoReturn
+from urllib.parse import quote
 
 import typer
 
-from solstone.think.surfaces import profile as profile_surface
-from solstone.think.surfaces.types import LedgerItem, Profile
-from solstone.think.utils import require_solstone
+from solstone.convey.reasons import ENTITY_NOT_FOUND
+from solstone.think.convey_client import (
+    ConveyClientError,
+    get_client,
+    paginate_collection,
+)
 
 app = typer.Typer(help="Profile consumer surface.", no_args_is_help=True)
 
 
-@app.callback()
-def callback() -> None:
-    require_solstone()
+def _params(**values: object) -> dict[str, object]:
+    return {key: value for key, value in values.items() if value is not None}
 
 
-def _parse_facets_csv(raw: str | None) -> list[str] | None:
-    if raw is None:
-        return None
-    return [part.strip() for part in raw.split(",") if part.strip()]
+def _exit_with(message: str) -> NoReturn:
+    typer.echo(message, err=True)
+    raise typer.Exit(1)
+
+
+def _handle_profile_error(err: ConveyClientError, *, name: str) -> NoReturn:
+    if err.reason_code == ENTITY_NOT_FOUND.code or err.status == 404:
+        _exit_with(f"profile not found: {name}")
+    _exit_with(err.detail or err.error)
 
 
 def _render_table(
@@ -46,38 +53,39 @@ def _render_table(
         )
 
 
-def _item_summary(item: LedgerItem) -> str:
-    if item.counterparty:
-        return f"{item.owner}: {item.summary} -> {item.counterparty}"
-    return f"{item.owner}: {item.summary}"
+def _item_summary(item: dict) -> str:
+    if item["counterparty"]:
+        return f"{item['owner']}: {item['summary']} -> {item['counterparty']}"
+    return f"{item['owner']}: {item['summary']}"
 
 
-def _render_full(profile: Profile) -> None:
-    facets_label = ",".join(profile.facets) if profile.facets else "-"
+def _render_full(profile: dict) -> None:
+    facets_label = ",".join(profile["facets"]) if profile["facets"] else "-"
     typer.echo(
-        f"{profile.name} · {profile.type} · facets={facets_label} · self={profile.is_self}"
+        f"{profile['name']} · {profile['type']} · "
+        f"facets={facets_label} · self={profile['is_self']}"
     )
     typer.echo("")
+    cadence = profile["cadence"]
     typer.echo("Cadence:")
-    typer.echo(f"  last_seen: {profile.cadence.last_seen}")
+    typer.echo(f"  last_seen: {cadence['last_seen']}")
     typer.echo(
-        "  recent_interactions_count_30d: "
-        f"{profile.cadence.recent_interactions_count_30d}"
+        f"  recent_interactions_count_30d: {cadence['recent_interactions_count_30d']}"
     )
-    typer.echo(f"  avg_interval_days: {profile.cadence.avg_interval_days}")
-    typer.echo(f"  gone_quiet_since: {profile.cadence.gone_quiet_since}")
+    typer.echo(f"  avg_interval_days: {cadence['avg_interval_days']}")
+    typer.echo(f"  gone_quiet_since: {cadence['gone_quiet_since']}")
     typer.echo("")
 
     typer.echo("Open loops")
-    if profile.open_with_them:
+    if profile["open_with_them"]:
         _render_table(
-            list(profile.open_with_them),
+            list(profile["open_with_them"]),
             [
-                ("id", lambda item: item.id),
-                ("state", lambda item: item.state),
-                ("age_days", lambda item: str(item.age_days)),
+                ("id", lambda item: item["id"]),
+                ("state", lambda item: item["state"]),
+                ("age_days", lambda item: str(item["age_days"])),
                 ("summary", _item_summary),
-                ("when", lambda item: item.when or ""),
+                ("when", lambda item: item["when"] or ""),
             ],
         )
     else:
@@ -85,12 +93,12 @@ def _render_full(profile: Profile) -> None:
     typer.echo("")
 
     typer.echo("Closed 30d")
-    if profile.closed_with_them_30d:
+    if profile["closed_with_them_30d"]:
         _render_table(
-            list(profile.closed_with_them_30d),
+            list(profile["closed_with_them_30d"]),
             [
-                ("id", lambda item: item.id),
-                ("closed_at", lambda item: str(item.closed_at or "")),
+                ("id", lambda item: item["id"]),
+                ("closed_at", lambda item: str(item["closed_at"] or "")),
                 ("summary", _item_summary),
             ],
         )
@@ -99,38 +107,38 @@ def _render_full(profile: Profile) -> None:
     typer.echo("")
 
     typer.echo("Decisions")
-    if profile.decisions_involving_them:
+    if profile["decisions_involving_them"]:
         _render_table(
-            list(profile.decisions_involving_them),
+            list(profile["decisions_involving_them"]),
             [
-                ("id", lambda item: item.id),
-                ("day", lambda item: item.day),
-                ("owner", lambda item: item.owner),
-                ("action", lambda item: item.action),
-                ("context", lambda item: item.context),
+                ("id", lambda item: item["id"]),
+                ("day", lambda item: item["day"]),
+                ("owner", lambda item: item["owner"]),
+                ("action", lambda item: item["action"]),
+                ("context", lambda item: item["context"]),
             ],
         )
     else:
         typer.echo("No decisions.")
 
 
-def _render_brief(profile_brief: profile_surface.ProfileBrief) -> None:
-    typer.echo(f"entity_id: {profile_brief.entity_id}")
-    typer.echo(f"name: {profile_brief.name}")
-    typer.echo(f"type: {profile_brief.type}")
-    typer.echo(f"description: {profile_brief.description}")
-    typer.echo(f"last_seen: {profile_brief.last_seen}")
-    typer.echo(f"open_loop_count: {profile_brief.open_loop_count}")
-    typer.echo(f"decisions_count_30d: {profile_brief.decisions_count_30d}")
+def _render_brief(profile_brief: dict) -> None:
+    typer.echo(f"entity_id: {profile_brief['entity_id']}")
+    typer.echo(f"name: {profile_brief['name']}")
+    typer.echo(f"type: {profile_brief['type']}")
+    typer.echo(f"description: {profile_brief['description']}")
+    typer.echo(f"last_seen: {profile_brief['last_seen']}")
+    typer.echo(f"open_loop_count: {profile_brief['open_loop_count']}")
+    typer.echo(f"decisions_count_30d: {profile_brief['decisions_count_30d']}")
 
 
-def _render_cadence(cadence: profile_surface.Cadence) -> None:
+def _render_cadence(cadence: dict) -> None:
     typer.echo(
-        f"recent_interactions_count_30d: {cadence.recent_interactions_count_30d}"
+        f"recent_interactions_count_30d: {cadence['recent_interactions_count_30d']}"
     )
-    typer.echo(f"last_seen: {cadence.last_seen}")
-    typer.echo(f"avg_interval_days: {cadence.avg_interval_days}")
-    typer.echo(f"gone_quiet_since: {cadence.gone_quiet_since}")
+    typer.echo(f"last_seen: {cadence['last_seen']}")
+    typer.echo(f"avg_interval_days: {cadence['avg_interval_days']}")
+    typer.echo(f"gone_quiet_since: {cadence['gone_quiet_since']}")
 
 
 @app.command("full")
@@ -140,28 +148,33 @@ def full_cmd(
     include_mentions: bool = typer.Option(False, "--include-mentions"),
     json_out: bool = typer.Option(False, "--json"),
 ) -> None:
-    profile = profile_surface.full(
-        name,
-        facets=_parse_facets_csv(facets),
-        include_mentions=include_mentions,
-    )
-    if profile is None:
-        typer.echo(f"profile not found: {name}", err=True)
-        raise typer.Exit(1)
+    try:
+        profile = get_client().request(
+            "GET",
+            f"/api/profile/{quote(name, safe='')}",
+            params=_params(
+                facets=facets,
+                include_mentions="true" if include_mentions else None,
+            ),
+        )
+    except ConveyClientError as err:
+        _handle_profile_error(err, name=name)
     if json_out:
-        typer.echo(json.dumps(asdict(profile), default=str))
+        typer.echo(json.dumps(profile))
         return
     _render_full(profile)
 
 
 @app.command("brief")
 def brief_cmd(name: str, json_out: bool = typer.Option(False, "--json")) -> None:
-    profile_brief = profile_surface.brief(name)
-    if profile_brief is None:
-        typer.echo(f"profile not found: {name}", err=True)
-        raise typer.Exit(1)
+    try:
+        profile_brief = get_client().request(
+            "GET", f"/api/profile/{quote(name, safe='')}/brief"
+        )
+    except ConveyClientError as err:
+        _handle_profile_error(err, name=name)
     if json_out:
-        typer.echo(json.dumps(asdict(profile_brief), default=str))
+        typer.echo(json.dumps(profile_brief))
         return
     _render_brief(profile_brief)
 
@@ -172,12 +185,16 @@ def cadence_cmd(
     include_mentions: bool = typer.Option(False, "--include-mentions"),
     json_out: bool = typer.Option(False, "--json"),
 ) -> None:
-    cadence = profile_surface.cadence(name, include_mentions=include_mentions)
-    if cadence is None:
-        typer.echo(f"profile not found: {name}", err=True)
-        raise typer.Exit(1)
+    try:
+        cadence = get_client().request(
+            "GET",
+            f"/api/profile/{quote(name, safe='')}/cadence",
+            params=_params(include_mentions="true" if include_mentions else None),
+        )
+    except ConveyClientError as err:
+        _handle_profile_error(err, name=name)
     if json_out:
-        typer.echo(json.dumps(asdict(cadence), default=str))
+        typer.echo(json.dumps(cadence))
         return
     _render_cadence(cadence)
 
@@ -187,7 +204,14 @@ def list_active(
     window_days: int = typer.Option(30, "--window-days"),
     json_out: bool = typer.Option(False, "--json"),
 ) -> None:
-    ids = profile_surface.list_active(window_days=window_days)
+    try:
+        ids = paginate_collection(
+            get_client(),
+            "/api/profiles/active",
+            params={"window_days": window_days},
+        )
+    except ConveyClientError as err:
+        _exit_with(err.detail or err.error)
     if json_out:
         typer.echo(json.dumps(ids))
         return

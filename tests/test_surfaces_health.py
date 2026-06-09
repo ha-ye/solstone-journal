@@ -14,8 +14,10 @@ from click.testing import Result
 from typer.testing import CliRunner
 
 from solstone.convey.readiness_snapshot import unavailable_snapshot
+from solstone.think.convey_client import ConveyClient
 from solstone.think.pipeline_health import SegmentBacklog, SegmentCompletion
 from solstone.think.surfaces import health as health_surface
+from tests._baseline_harness import make_logged_in_test_client
 
 _RUNNER = CliRunner()
 _SPEC_POINTER = "cpo/specs/in-flight/consumer-surface-health.md"
@@ -275,6 +277,11 @@ def _neutral_readiness_snapshot() -> dict[str, object]:
     }
 
 
+def _patch_health_cli_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = ConveyClient(session=make_logged_in_test_client(tmp_path), base_url="")
+    monkeypatch.setattr("solstone.think.tools.health.get_client", lambda: client)
+
+
 def _invoke_health_summary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -282,6 +289,7 @@ def _invoke_health_summary(
     _configure_env(tmp_path, monkeypatch)
     _set_now(monkeypatch, _utc_dt("20260410"))
     _minimal_facet_tree(tmp_path)
+    _patch_health_cli_client(tmp_path, monkeypatch)
 
     from solstone.think.call import call_app
 
@@ -1146,6 +1154,7 @@ def test_cli_health_summary_full_range_json(tmp_path, monkeypatch):
     _configure_env(tmp_path, monkeypatch)
     _set_now(monkeypatch, _utc_dt("20260410"))
     _minimal_facet_tree(tmp_path)
+    _patch_health_cli_client(tmp_path, monkeypatch)
 
     from solstone.think.call import call_app
 
@@ -1178,7 +1187,7 @@ def test_cli_health_summary_full_range_json(tmp_path, monkeypatch):
             "notes",
             "provider_readiness",
         }
-        assert list(payload)[-1] == "provider_readiness"
+        assert list(payload) == sorted(payload)
 
 
 def test_provider_readiness_carried_through_verbatim_json(tmp_path, monkeypatch):
@@ -1211,6 +1220,7 @@ def test_provider_readiness_carried_through_verbatim_json(tmp_path, monkeypatch)
         "build_readiness_snapshot",
         lambda: sentinel,
     )
+    _patch_health_cli_client(tmp_path, monkeypatch)
 
     from solstone.think.call import call_app
 
@@ -1228,6 +1238,7 @@ def test_other_sections_unchanged_across_readiness_states(tmp_path, monkeypatch)
     monkeypatch.setattr(
         health_surface, "read_segment_backlog", lambda: _segment_backlog({})
     )
+    _patch_health_cli_client(tmp_path, monkeypatch)
 
     from solstone.think.call import call_app
 
@@ -1265,6 +1276,7 @@ def test_human_block_clear(tmp_path, monkeypatch):
         "build_readiness_snapshot",
         _clear_readiness_snapshot,
     )
+    _patch_health_cli_client(tmp_path, monkeypatch)
 
     from solstone.think.call import call_app
 
@@ -1287,6 +1299,7 @@ def test_human_block_neutral(tmp_path, monkeypatch):
         "build_readiness_snapshot",
         _neutral_readiness_snapshot,
     )
+    _patch_health_cli_client(tmp_path, monkeypatch)
 
     from solstone.think.call import call_app
 
@@ -1310,6 +1323,7 @@ def test_human_block_blocked(tmp_path, monkeypatch):
         "build_readiness_snapshot",
         _blocked_readiness_snapshot,
     )
+    _patch_health_cli_client(tmp_path, monkeypatch)
 
     from solstone.think.call import call_app
 
@@ -1335,6 +1349,7 @@ def test_human_block_unavailable(tmp_path, monkeypatch):
         "build_readiness_snapshot",
         unavailable_snapshot,
     )
+    _patch_health_cli_client(tmp_path, monkeypatch)
 
     from solstone.think.call import call_app
 
@@ -1363,6 +1378,7 @@ def test_readiness_degrades_when_builder_raises(tmp_path, monkeypatch):
         "build_readiness_snapshot",
         raise_readiness_error,
     )
+    _patch_health_cli_client(tmp_path, monkeypatch)
 
     from solstone.think.call import call_app
 
@@ -1388,6 +1404,7 @@ def test_backlog_and_readiness_render_independently(tmp_path, monkeypatch):
         "build_readiness_snapshot",
         _blocked_readiness_snapshot,
     )
+    _patch_health_cli_client(tmp_path, monkeypatch)
 
     from solstone.think.call import call_app
 

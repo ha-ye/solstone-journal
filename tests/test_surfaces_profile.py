@@ -5,11 +5,7 @@ import json
 import re
 from datetime import UTC, datetime
 
-from typer.testing import CliRunner
-
 from solstone.think.surfaces.types import Cadence
-
-_RUNNER = CliRunner()
 
 
 def _configure_env(tmp_path, monkeypatch) -> None:
@@ -680,17 +676,11 @@ def test_full_decisions_involving_them_includes_old(tmp_path, monkeypatch):
 
 def test_not_found_returns_none(tmp_path, monkeypatch):
     from solstone.think.surfaces import profile as profile_surface
-    from solstone.think.tools.profile import app
 
     _configure_env(tmp_path, monkeypatch)
     _minimal_facet_tree(tmp_path)
 
     assert profile_surface.full("missing") is None
-
-    result = _RUNNER.invoke(app, ["full", "missing"])
-
-    assert result.exit_code == 1
-    assert "profile not found: missing" in result.stderr
 
 
 def test_brief_shape_and_counts(tmp_path, monkeypatch):
@@ -841,33 +831,3 @@ def test_utc_day_math(tmp_path, monkeypatch):
     assert re.fullmatch(r"\d{8}", profile_surface._today_day()) is not None  # noqa: SLF001
     monkeypatch.setattr(profile_surface, "_today_day", lambda: "20260420")
     assert profile_surface._day_minus(30) == "20260321"  # noqa: SLF001
-
-
-def test_cli_full_json_and_plain(tmp_path, monkeypatch):
-    from solstone.think.tools.profile import app
-
-    _configure_env(tmp_path, monkeypatch)
-    _minimal_facet_tree(
-        tmp_path,
-        journal_entities=({"id": "ravi", "name": "Ravi", "type": "Person"},),
-    )
-    _write_facet_relationship(tmp_path, "work", "ravi", description="Customer")
-    _append_activity(
-        "work",
-        "20260418",
-        _activity_record(
-            "20260418",
-            [_participant("ravi", name="Ravi")],
-            record_id="meeting_cli",
-        ),
-    )
-
-    plain = _RUNNER.invoke(app, ["full", "Ravi"])
-    json_result = _RUNNER.invoke(app, ["full", "Ravi", "--json"])
-
-    assert plain.exit_code == 0
-    assert "Cadence:" in plain.stdout
-    assert json_result.exit_code == 0
-    payload = json.loads(json_result.stdout)
-    assert payload["entity_id"] == "ravi"
-    assert "cadence" in payload

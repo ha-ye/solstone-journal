@@ -132,6 +132,44 @@ def get_client() -> ConveyClient:
     return _client
 
 
+def paginate_collection(
+    client: ConveyClient,
+    path: str,
+    *,
+    params: dict | None = None,
+    page_size: int = 100,
+    top: int | None = None,
+) -> list:
+    collected: list = []
+    offset = 0
+    base_params = dict(params or {})
+
+    while True:
+        page_params = {**base_params, "limit": page_size, "offset": offset}
+        body = client.request("GET", path, params=page_params)
+        if not isinstance(body, dict):
+            raise ConveyClientError(MALFORMED_RESPONSE_MESSAGE)
+
+        items = body.get("items")
+        total = body.get("total")
+        if not isinstance(items, list) or not isinstance(total, int):
+            raise ConveyClientError(MALFORMED_RESPONSE_MESSAGE)
+
+        collected.extend(items)
+        offset += len(items)
+
+        if top is not None and len(collected) >= top:
+            break
+        if len(collected) >= total:
+            break
+        if not items:
+            raise ConveyClientError(MALFORMED_RESPONSE_MESSAGE)
+
+    if top is not None:
+        return collected[:top]
+    return collected
+
+
 def convey_cli(fn: _F) -> _F:
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
