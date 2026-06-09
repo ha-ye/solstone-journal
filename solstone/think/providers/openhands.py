@@ -789,8 +789,13 @@ async def run_cogitate(
         )
         allowed_roots = _resolve_allowed_roots(config)
         access_tier = str(config.get("access_tier", "normal"))
+        outbound_approval = config.get("outbound_approval")
         caps = capabilities_for_access_tier(access_tier)
-        policy = CogitatePolicy(allowed_roots=allowed_roots, access_tier=access_tier)
+        policy = CogitatePolicy(
+            allowed_roots=allowed_roots,
+            access_tier=access_tier,
+            outbound_approval=outbound_approval,
+        )
         read_call_budget = int(
             config.get("read_call_budget", DEFAULT_READ_CALL_BUDGET) or 0
         )

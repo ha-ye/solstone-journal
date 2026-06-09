@@ -489,6 +489,11 @@ def prepare_config(request: dict) -> dict:
 
     # Load complete talent config
     config = get_talent(name, facet=facet, analysis_day=day)
+    if "outbound_approval" in config:
+        raise ValueError(
+            f"talent {name!r} declares 'outbound_approval' in frontmatter; "
+            "this field is launch-config-only and may not come from a talent definition"
+        )
 
     # Config now contains all frontmatter fields plus:
     # - path: Path to the .md file

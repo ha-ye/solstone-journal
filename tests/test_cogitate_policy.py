@@ -10,9 +10,15 @@ import pytest
 from solstone.think import cogitate_policy
 
 
-def _policy(tmp_path, access_tier: str = "normal"):
+def _policy(
+    tmp_path,
+    access_tier: str = "normal",
+    outbound_approval: str | None = None,
+):
     return cogitate_policy.CogitatePolicy(
-        allowed_roots=[tmp_path], access_tier=access_tier
+        allowed_roots=[tmp_path],
+        access_tier=access_tier,
+        outbound_approval=outbound_approval,
     )
 
 
@@ -103,8 +109,36 @@ def test_policy_denies_support_send_verbs_without_submit_tier(
 
 
 @pytest.mark.parametrize("verb", ["create", "reply", "attach", "feedback"])
-def test_policy_allows_support_send_verbs_for_outbound(tmp_path, verb):
+@pytest.mark.parametrize("outbound_approval", [None, ""])
+def test_policy_denies_support_send_verbs_for_outbound_without_approval(
+    tmp_path, verb, outbound_approval
+):
+    policy = _policy(tmp_path, "outbound", outbound_approval=outbound_approval)
+
+    allowed, reason = policy.check(
+        "run_shell_command",
+        {"command": f"sol call support {verb} --subject x --description y"},
+    )
+
+    assert allowed is False
+    assert "per-send owner approval" in reason
+
+
+def test_policy_denies_outbound_support_send_with_yes_without_approval(tmp_path):
     policy = _policy(tmp_path, "outbound")
+
+    allowed, reason = policy.check(
+        "run_shell_command",
+        {"command": ("sol call support feedback --body 'please fix this' --yes")},
+    )
+
+    assert allowed is False
+    assert "per-send owner approval" in reason
+
+
+@pytest.mark.parametrize("verb", ["create", "reply", "attach", "feedback"])
+def test_policy_allows_support_send_verbs_for_outbound_with_approval(tmp_path, verb):
+    policy = _policy(tmp_path, "outbound", outbound_approval="approval-token")
 
     allowed, reason = policy.check(
         "run_shell_command",
@@ -185,8 +219,24 @@ def test_policy_allows_non_support_chain_for_normal(tmp_path):
     assert reason == "ok"
 
 
-def test_policy_allows_chained_support_send_for_outbound(tmp_path):
+def test_policy_denies_chained_support_send_for_outbound_without_approval(tmp_path):
     policy = _policy(tmp_path, "outbound")
+
+    allowed, reason = policy.check(
+        "run_shell_command",
+        {
+            "command": (
+                "sol call support search foo && sol call support create --subject x"
+            )
+        },
+    )
+
+    assert allowed is False
+    assert "per-send owner approval" in reason
+
+
+def test_policy_allows_chained_support_send_for_outbound_with_approval(tmp_path):
+    policy = _policy(tmp_path, "outbound", outbound_approval="approval-token")
 
     allowed, reason = policy.check(
         "run_shell_command",

@@ -533,13 +533,23 @@ def test_chat_watchdog_timeout_evicts_thinking_buffers(chat_client, monkeypatch)
 def test_post_chat_appends_owner_message_and_returns_reserved_use_id(
     chat_client, monkeypatch
 ):
+    import solstone.convey.chat as chat
+
     starts: list[dict] = []
+    approvals: list[str | None] = []
     monkeypatch.setattr(
         "solstone.think.identity.ensure_identity_directory", lambda: None
     )
+
+    def fake_spawn(action):
+        starts.append(action)
+        with chat._state_lock:
+            approvals.append(chat._current_chat_state.get("outbound_approval"))
+        return ChatSpawnResult(ok=True)
+
     monkeypatch.setattr(
         "solstone.convey.chat._spawn_chat_generate",
-        lambda action: starts.append(action) or ChatSpawnResult(ok=True),
+        fake_spawn,
     )
 
     response = chat_client.post(
@@ -557,18 +567,27 @@ def test_post_chat_appends_owner_message_and_returns_reserved_use_id(
     assert payload["queued"] is False
     assert payload["use_id"].isdigit()
     assert starts and starts[-1]["logical_use_id"] == payload["use_id"]
+    assert approvals and approvals[-1]
 
 
 def test_post_chat_dispatches_queued_messages_fifo(chat_client, monkeypatch):
     import solstone.convey.chat as chat
 
     starts: list[dict] = []
+    approvals: list[str | None] = []
     monkeypatch.setattr(
         "solstone.think.identity.ensure_identity_directory", lambda: None
     )
+
+    def fake_spawn(action):
+        starts.append(action)
+        with chat._state_lock:
+            approvals.append(chat._current_chat_state.get("outbound_approval"))
+        return ChatSpawnResult(ok=True)
+
     monkeypatch.setattr(
         "solstone.convey.chat._spawn_chat_generate",
-        lambda action: starts.append(action) or ChatSpawnResult(ok=True),
+        fake_spawn,
     )
     monkeypatch.setattr(
         "solstone.convey.chat._emit_cortex_event", lambda *_args, **_kwargs: None
@@ -611,6 +630,9 @@ def test_post_chat_dispatches_queued_messages_fifo(chat_client, monkeypatch):
         "msg 3",
         "msg 4",
     ]
+    assert len(approvals) == 5
+    assert all(approvals)
+    assert len(set(approvals)) == 5
     events = read_chat_events(date.today().strftime("%Y%m%d"))
     replies = [event["text"] for event in events if event["kind"] == "sol_message"]
     assert replies == [
@@ -844,6 +866,8 @@ def test_session_endpoint_reduces_from_chat_stream(chat_client, monkeypatch):
 
 
 def test_chat_session_retries_unresolved_trigger_when_idle(chat_client, monkeypatch):
+    import solstone.convey.chat as chat
+
     day = "20260420"
     monkeypatch.setattr("solstone.convey.chat._today_day", lambda: day)
     append_chat_event(
@@ -856,9 +880,18 @@ def test_chat_session_retries_unresolved_trigger_when_idle(chat_client, monkeypa
     )
 
     starts: list[dict] = []
+
+    approvals: list[str | None] = []
+
+    def fake_spawn(action):
+        starts.append(action)
+        with chat._state_lock:
+            approvals.append(chat._current_chat_state.get("outbound_approval"))
+        return ChatSpawnResult(ok=True)
+
     monkeypatch.setattr(
         "solstone.convey.chat._spawn_chat_generate",
-        lambda action: starts.append(action) or ChatSpawnResult(ok=True),
+        fake_spawn,
     )
 
     response = chat_client.get("/api/chat/session")
@@ -866,6 +899,7 @@ def test_chat_session_retries_unresolved_trigger_when_idle(chat_client, monkeypa
     assert response.status_code == 200
     assert len(starts) == 1
     assert starts[0]["trigger"]["type"] == "owner_message"
+    assert approvals == [None]
 
 
 def test_chat_session_retries_again_when_spawn_fails_and_trigger_remains_unresolved(

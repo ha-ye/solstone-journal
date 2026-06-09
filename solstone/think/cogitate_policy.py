@@ -51,12 +51,19 @@ class MaxTurnsExhausted(RuntimeError):
 class CogitatePolicy:
     """In-process policy gate for cogitate tool calls."""
 
-    def __init__(self, *, allowed_roots: list[Path], access_tier: str) -> None:
+    def __init__(
+        self,
+        *,
+        allowed_roots: list[Path],
+        access_tier: str,
+        outbound_approval: str | None = None,
+    ) -> None:
         self.allowed_roots = [
             Path(root).expanduser().resolve() for root in allowed_roots
         ]
         self.access_tier = access_tier
         self.submit_allowed = capabilities_for_access_tier(access_tier).submit
+        self.outbound_approval = outbound_approval
 
     def check(self, tool: str, args: dict[str, Any]) -> tuple[bool, str]:
         if tool in _WRITE_TOOLS:
@@ -72,20 +79,29 @@ class CogitatePolicy:
                     "policy_deny: run_shell_command restricted to sol"
                     " or approved journal invocations",
                 )
-            if is_sol_invocation and not self.submit_allowed:
+            if is_sol_invocation:
                 send_verb = _support_send_verb(command)
-                if send_verb:
-                    required = " or ".join(_SUBMIT_TIERS)
+                if not self.submit_allowed:
+                    if send_verb:
+                        required = " or ".join(_SUBMIT_TIERS)
+                        return (
+                            False,
+                            f"policy_deny: 'sol call support {send_verb}' requires "
+                            f"access_tier {required!r}; "
+                            f"this run is {self.access_tier!r}",
+                        )
+                    if _support_command_has_shell_control(command):
+                        return (
+                            False,
+                            "policy_deny: support commands may not be chained or "
+                            "wrapped with shell-control operators "
+                            "(run them one at a time)",
+                        )
+                elif send_verb and not self.outbound_approval:
                     return (
                         False,
-                        f"policy_deny: 'sol call support {send_verb}' requires "
-                        f"access_tier {required!r}; this run is {self.access_tier!r}",
-                    )
-                if _support_command_has_shell_control(command):
-                    return (
-                        False,
-                        "policy_deny: support commands may not be chained or wrapped "
-                        "with shell-control operators (run them one at a time)",
+                        f"policy_deny: 'sol call support {send_verb}' requires a "
+                        "per-send owner approval; this run was not launched with one",
                     )
             return True, "ok"
 

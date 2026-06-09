@@ -5,6 +5,7 @@
 
 import importlib
 import importlib.util
+import json
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -195,6 +196,40 @@ class TestConfigIO:
 
 
 class TestCheck:
+    def test_run_routine_request_config_has_no_outbound_approval(
+        self, journal_path, monkeypatch
+    ):
+        import solstone.think.routines as mod
+
+        captured: dict = {}
+
+        def fake_cortex_request(**kwargs):
+            captured.update(kwargs)
+            return "fake_agent_id"
+
+        monkeypatch.setattr(mod, "cortex_request", fake_cortex_request)
+        monkeypatch.setattr(mod, "wait_for_uses", lambda _use_ids: ({}, []))
+        monkeypatch.setattr(mod, "callosum_send", lambda *_args, **_kwargs: True)
+
+        mod._run_routine(
+            {
+                "id": "routine-1",
+                "name": "Morning",
+                "instruction": "Do the thing",
+                "cadence": "manual",
+                "facets": [],
+                "template": None,
+                "notify": False,
+            }
+        )
+
+        assert captured["name"] == "routine"
+        assert captured["config"] == {
+            "output_path": captured["config"]["output_path"],
+            "output": "md",
+        }
+        assert "outbound_approval" not in json.dumps(captured)
+
     def test_fires_due_routine(self, journal_path):
         import solstone.think.routines as mod
 

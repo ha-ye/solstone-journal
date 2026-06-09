@@ -585,6 +585,33 @@ def test_run_cogitate_skips_read_tool_registration_when_tier_caps_disable_reads(
     assert conversation.agent.include_default_tools == ["FinishTool"]
 
 
+def test_run_cogitate_passes_outbound_approval_to_policy(
+    fake_openhands,
+    monkeypatch,
+    tmp_path,
+):
+    real_policy = openhands.CogitatePolicy
+    approvals: list[str | None] = []
+
+    class CapturingPolicy(real_policy):
+        def __init__(self, *args, **kwargs):
+            approvals.append(kwargs.get("outbound_approval"))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(openhands, "CogitatePolicy", CapturingPolicy)
+    config = _run_config(
+        monkeypatch,
+        tmp_path,
+        access_tier="outbound",
+        outbound_approval="approval-token",
+    )
+    events: list[dict] = []
+
+    _run_and_capture_tool_state(fake_openhands, config, events)
+
+    assert approvals == ["approval-token"]
+
+
 @pytest.mark.parametrize(
     ("name", "expected_access_tier", "expected_agent_tools", "expected_default_tools"),
     [

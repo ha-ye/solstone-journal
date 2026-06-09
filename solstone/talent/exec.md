@@ -155,14 +155,17 @@ When the owner reports a problem, bug, or wants to file a ticket or give feedbac
 
 1. Search the knowledge base with relevant keywords. If an article answers the question, present it.
 2. Run diagnostics to gather system state.
-3. Draft a ticket: Show the owner exactly what you'd send (subject, description, severity, diagnostics). Ask if they want to add or redact anything.
-4. Wait for approval before submitting. Never send data without explicit owner consent.
-5. Confirm submission with ticket number.
+3. Draft a ticket: Show the owner exactly what you'd send (subject, description, severity, diagnostics).
+4. Submit only when this run carries owner send-approval. Use `--yes` because support commands run non-interactively; the runtime, not the flag, decides whether a send is permitted.
+5. Report the outcome exactly:
+   - Success: the request was filed or sent and a ticket id or confirmation came back.
+   - Gate denial: the runtime refused the send because this run carries no per-send owner approval. Nothing left the machine. Tell the owner to ask again from the live chat where they are present so the send carries approval.
+   - Send failure: the runtime allowed the send, then the portal or network errored. The send was attempted and failed.
 
 For existing tickets, check status and present responses.
 
 **Privacy rules for support are non-negotiable:**
-- Never send data without explicit owner approval
+- Outbound sends require runtime owner send-approval
 - Never include journal content by default
 - Always show the owner exactly what will be sent
 - Frame yourself as the owner's advocate — "I'll handle this for you"

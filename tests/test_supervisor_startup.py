@@ -3,6 +3,7 @@
 
 import importlib
 import itertools
+import json
 from types import SimpleNamespace
 from unittest import mock
 
@@ -36,6 +37,7 @@ def test_task_queue_defers_submit_when_not_ready(monkeypatch):
             "scheduler_name": None,
         }
     ]
+    assert "outbound_approval" not in json.dumps(queue._pending)
     assert queue.collect_queue_counts() == {"pending": 1}
 
 
@@ -91,6 +93,7 @@ def test_task_queue_set_ready_dedupes_same_cmd_in_pending(monkeypatch):
             "scheduler_name": None,
         }
     ]
+    assert "outbound_approval" not in json.dumps(queue._queues["indexer"])
 
 
 def test_task_queue_ready_true_default_dispatches_immediately(monkeypatch):

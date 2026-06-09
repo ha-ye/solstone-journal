@@ -237,6 +237,29 @@ def _patch_prepare_config_dependencies(monkeypatch):
     )
 
 
+def test_prepare_config_rejects_frontmatter_outbound_approval(tmp_path, monkeypatch):
+    import solstone.think.talent as talent_module
+    from solstone.think.talents import prepare_config
+
+    monkeypatch.setattr(talent_module, "TALENT_DIR", tmp_path)
+    (tmp_path / "approval_static.md").write_text(
+        "{\n"
+        '  "type": "cogitate",\n'
+        '  "outbound_approval": "static-template-value"\n'
+        "}\n\n"
+        "Prompt body\n"
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "declares 'outbound_approval' in frontmatter; "
+            "this field is launch-config-only"
+        ),
+    ):
+        prepare_config({"name": "approval_static", "prompt": "hello"})
+
+
 def test_preflight_swap_unhealthy_primary(monkeypatch):
     from solstone.think.talents import prepare_config
 

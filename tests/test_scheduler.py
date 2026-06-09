@@ -926,6 +926,7 @@ class TestCheck:
         assert call_kwargs[1]["cmd"] == ["sol", "test-task", "-v"]
         assert call_kwargs[1]["ref"].startswith("sched:a:")
         assert call_kwargs[1]["scheduler_name"] == "a"
+        assert "outbound_approval" not in json.dumps(call_kwargs[1])
 
         assert "a" not in mod._state
         assert not (journal_path / "health" / "scheduler.json").exists()

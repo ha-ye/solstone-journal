@@ -124,10 +124,13 @@ enforcement are layered on top of it.
 |---|---|---|
 | `normal` | default cogitate talents | the `sol` tool (`sol` / `sol call`), the bounded raw-read tier, a finalization tool |
 | `system-read` | diagnostics boundary for scoped operational evidence (e.g. `steward`) | today its tool surface equals `normal`; the tier is the declared diagnostics boundary and extension point, with scoped evidence arriving through the talent pre-hook rather than an extra model read tool |
-| `outbound` | comms-like talents that may submit something that leaves the machine (e.g. `support`) | `normal` reads / drafts plus submit-capable support commands; until the per-send human-approval lode lands, an outbound run can still auto-submit via `--yes` — this tier only narrows who may submit |
+| `outbound` | comms-like talents that may submit something that leaves the machine (e.g. `support`) | `normal` reads / drafts plus submit-capable support commands gated on per-send owner approval supplied only by a human-initiated chat launch |
 
 Policy denies support send verbs (`create`, `reply`, `attach`, `feedback`) for
-`normal` / `system-read` runs and allows them for `outbound` runs.
+`normal` / `system-read` runs. `outbound` runs may use those verbs only when the
+launch config carries runtime owner send-approval. An agent cannot self-grant
+approval through prompt text, static frontmatter, templates, or scheduled
+injection.
 
 **There is no `repair` tier in cogitate.** Health fact-gathering and repair run
 through the deterministic `journal heartbeat` workflow, explicitly launched and
