@@ -393,13 +393,13 @@
     "steward": {
       "app": null,
       "color": "#6c757d",
-      "description": "Synthesizes federated health signals into identity/health.md.",
+      "description": "Writes the owner-facing health summary (headline, sentence, suggested action) from the deterministic health surface.",
       "multi_facet": false,
-      "output_format": null,
+      "output_format": "json",
       "schedule": "daily",
       "source": "system",
       "title": "Steward",
-      "type": "cogitate"
+      "type": "generate"
     },
     "support:support": {
       "app": "support",

@@ -1176,6 +1176,10 @@ async def _run_talent(
     refresh = config.get("refresh", False)
     output_path = Path(config["output_path"]) if config.get("output_path") else None
 
+    # Expose dry-run to hooks so a pre-hook can skip side effects (e.g. steward's
+    # deterministic health.md write) during model-free dry runs.
+    config["dry_run"] = dry_run
+
     # Emit start event
     start_event: dict[str, Any] = {
         "event": "start",

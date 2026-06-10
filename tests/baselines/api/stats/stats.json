@@ -305,6 +305,31 @@
       "title": "Speaker Attribution",
       "type": "generate"
     },
+    "steward": {
+      "color": "#6c757d",
+      "description": "Writes the owner-facing health summary (headline, sentence, suggested action) from the deterministic health surface.",
+      "hook": {
+        "post": "steward",
+        "pre": "steward"
+      },
+      "load": {
+        "percepts": false,
+        "talents": false,
+        "transcripts": false
+      },
+      "max_output_tokens": 400,
+      "mtime": 0,
+      "output": "json",
+      "path": "<PROJECT>/solstone/talent/steward.md",
+      "priority": 45,
+      "schedule": "daily",
+      "schema": "steward.schema.json",
+      "source": "system",
+      "thinking_budget": 1024,
+      "tier": 3,
+      "title": "Steward",
+      "type": "generate"
+    },
     "timeline:segment_summary": {
       "app": "timeline",
       "color": "#6c757d",

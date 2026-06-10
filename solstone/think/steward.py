@@ -48,6 +48,14 @@ logger = logging.getLogger(__name__)
 STALE_PENDING_AGE_MS = 6 * 60 * 60 * 1000
 STALE_PENDING_RECIPE = "stale_pending_segment_reprocess"
 _SEVEN_DAYS_MS = 7 * 86_400_000
+
+# Closed set of summary actions the convey widget can map to an affordance.
+# CPO-named contract (S3); VPE proposes the initial values. Keep it closed so the
+# UI can map each value to a button/link.
+SUGGESTED_ACTIONS: tuple[str, ...] = ("none", "reprocess_stale", "open_health_detail")
+_HEADLINE_MAX = 80
+_SENTENCE_MAX = 280
+_RECIPE_LABELS = {STALE_PENDING_RECIPE: "stale-pending segment reprocess"}
 _GENERATED_AT_RE = re.compile(
     r"^<!-- generated_at: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) -->$"
 )
@@ -548,12 +556,13 @@ def _recipe_outcomes_7d(rows: list[dict]) -> list[dict]:
     return result
 
 
-def _json(value: Any) -> str:
-    return json.dumps(value, indent=2, sort_keys=True, default=str)
+def gather_health_facts(today: str) -> dict:
+    """Gather the deterministic facts the steward surfaces consume.
 
-
-def build_synthesis_context(today: str) -> dict:
-    """Build template variables for the steward talent prompt."""
+    Returns parsed (not JSON-encoded) objects so the deterministic renderer and
+    the summary helpers can use them directly. ``escalated_targets`` is supplied
+    separately by the caller from the latest deterministic repair pass event.
+    """
     yesterday = _previous_day(today)
     errors: list[str] = []
 
@@ -575,18 +584,294 @@ def build_synthesis_context(today: str) -> dict:
 
     rollup = _recipe_outcomes_7d(load_steward_log())
     return {
-        "health_report": _json(health_report),
-        "pipeline_day": _json(pipeline_day),
-        "recipe_outcomes_7d": _json(rollup),
-        "escalated_targets": _json([]),
-        "data_source_errors": _json(errors),
         "generated_at": _utc_now_iso_z(),
-        "status_lead_constraints": (
-            "Use byte-exact 'Sol is well.' only when data_source_errors is empty, "
-            "pipeline_day has no anomalies, escalated_targets is empty, and the "
-            "7-day rollup has no failures."
-        ),
+        "health_report": health_report,
+        "pipeline_day": pipeline_day,
+        "recipe_outcomes_7d": rollup,
+        "data_source_errors": errors,
     }
+
+
+# ---------------------------------------------------------------------------
+# Deterministic health.md renderer (no LLM in the write path)
+# ---------------------------------------------------------------------------
+
+
+def _status_sentence(
+    *,
+    pipeline_day: dict | None,
+    escalated_targets: list,
+    data_source_errors: list,
+    recipe_outcomes_7d: list,
+) -> str:
+    """Pick the single status sentence deterministically.
+
+    ``Sol is well.`` (byte-exact, so ``read_steward_health`` reads healthy) only
+    when nothing is wrong; otherwise one terse factual sentence by priority.
+    """
+    pd = pipeline_day if isinstance(pipeline_day, dict) else {}
+    anomalies = pd.get("anomalies", []) or []
+    rollup_failures = any(
+        int(row.get("failure", 0) or 0) for row in (recipe_outcomes_7d or [])
+    )
+    if (
+        not data_source_errors
+        and not anomalies
+        and not escalated_targets
+        and not rollup_failures
+    ):
+        return "Sol is well."
+    if data_source_errors:
+        return (
+            "Sol has a partial health picture: some health sources could not be read."
+        )
+    if escalated_targets:
+        n = len(escalated_targets)
+        noun = "repair" if n == 1 else "repairs"
+        return f"{n} stale segment {noun} failed twice and need owner attention."
+    if anomalies:
+        return (
+            "Sol detected pipeline issues during yesterday's processing "
+            "that need attention."
+        )
+    return "Recent auto-repairs include failures."
+
+
+def _attention_bullets(
+    *,
+    pipeline_day: dict | None,
+    escalated_targets: list,
+    data_source_errors: list,
+) -> list[str]:
+    """Render the canonical "Needs your attention" bullets deterministically."""
+    bullets: list[str] = []
+    pd = pipeline_day if isinstance(pipeline_day, dict) else {}
+    anomalies = [a for a in (pd.get("anomalies", []) or []) if isinstance(a, dict)]
+    kinds = {a.get("kind") for a in anomalies}
+
+    if "activity_agents_missing" in kinds:
+        n = int((pd.get("activities") or {}).get("detected", 0))
+        bullets.append(
+            f"- **Pipeline gap:** {n} activities ended yesterday but activity "
+            "agents didn't fire — meeting notes, decisions, and follow-ups may "
+            "be missing."
+        )
+
+    failures = [a for a in anomalies if a.get("kind") == "talent_failure"]
+    if failures:
+        n = int((pd.get("talents") or {}).get("failed", len(failures)))
+        names = [str(a.get("name")) for a in failures if a.get("name")]
+        verb = (
+            "timed out"
+            if all(a.get("state") == "timeout" for a in failures)
+            else "failed"
+        )
+        names_str = f" ({', '.join(names)})" if names else ""
+        bullets.append(
+            f"- **Pipeline issue:** {n} agents {verb} during yesterday's "
+            f"processing{names_str}. Some insights may be incomplete."
+        )
+
+    if "daily_agents_missing" in kinds:
+        bullets.append(
+            "- **Pipeline gap:** Daily agents didn't run yesterday despite "
+            "journal data. Facet newsletters and digest may be missing."
+        )
+
+    seg = next((a for a in anomalies if a.get("kind") == "segment_runs_missing"), None)
+    if seg is not None:
+        if seg.get("error"):
+            bullets.append(
+                "- **Pipeline gap:** Segment thinking status could not be determined."
+            )
+        else:
+            n = int(seg.get("not_thought", 0))
+            plural = "s" if n != 1 else ""
+            bullets.append(
+                f"- **Pipeline gap:** {n} segment{plural} sensed yesterday but "
+                "not yet processed."
+            )
+
+    for target in escalated_targets:
+        bullets.append(
+            f"- tried twice, escalating: stale-pending segment reprocess on {target}"
+        )
+
+    for err in data_source_errors:
+        text = str(err).replace("\n", " ").strip()
+        if ": " in text:
+            source, detail = text.split(": ", 1)
+            bullets.append(f"- could not read {source}: {detail}")
+        else:
+            bullets.append(f"- could not read {text}")
+
+    return bullets
+
+
+def _auto_repair_bullets(recipe_outcomes_7d: list) -> list[str]:
+    """Render one bullet per recipe class in the 7-day rollup."""
+    bullets: list[str] = []
+    for row in recipe_outcomes_7d or []:
+        recipe = str(row.get("recipe", ""))
+        label = _RECIPE_LABELS.get(recipe, recipe.replace("_", " "))
+        total = int(row.get("total", 0))
+        success = int(row.get("success", 0))
+        failure = int(row.get("failure", 0))
+        last_iso = row.get("last_iso", "")
+        bullets.append(
+            f"- {label} — {total}x in 7d ({success} succeeded, {failure} failed), "
+            f"last {last_iso}"
+        )
+    return bullets
+
+
+def render_health_body(
+    *,
+    generated_at: str,
+    pipeline_day: dict | None,
+    recipe_outcomes_7d: list,
+    escalated_targets: list,
+    data_source_errors: list,
+) -> str:
+    """Render the byte-exact 4-section health.md body from deterministic facts.
+
+    Output is guaranteed to satisfy ``validate_steward_health``. No LLM is
+    involved; the model only writes the human-friendly summaries (steward.json).
+    """
+    status = _status_sentence(
+        pipeline_day=pipeline_day,
+        escalated_targets=escalated_targets,
+        data_source_errors=data_source_errors,
+        recipe_outcomes_7d=recipe_outcomes_7d,
+    )
+    attention = _attention_bullets(
+        pipeline_day=pipeline_day,
+        escalated_targets=escalated_targets,
+        data_source_errors=data_source_errors,
+    )
+    repairs = _auto_repair_bullets(recipe_outcomes_7d)
+
+    lines = [
+        STEWARD_SECTION_STATUS,
+        f"<!-- generated_at: {generated_at} -->",
+        status,
+        "",
+        STEWARD_SECTION_ATTENTION,
+    ]
+    lines.extend(attention)
+    lines.append("")
+    lines.append(STEWARD_SECTION_AUTO_REPAIRS)
+    lines.extend(repairs)
+    lines.append("")
+    lines.append(STEWARD_SECTION_TRENDS)
+    lines.append("")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Human-friendly summaries (the lite generate talent output)
+# ---------------------------------------------------------------------------
+
+
+def _summary_path(day: str, journal: Path | None = None) -> Path:
+    """Path to a day's steward generate output (the human summaries)."""
+    return _journal_path(journal) / "chronicle" / day / "talents" / "steward.json"
+
+
+def _coerce_summary(raw: str | dict) -> dict | None:
+    """Parse + validate a summary object; return a clean dict or None."""
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    headline = data.get("headline")
+    sentence = data.get("summary_sentence")
+    action = data.get("suggested_action")
+    if not isinstance(headline, str) or not isinstance(sentence, str):
+        return None
+    if not headline.strip() or not sentence.strip():
+        return None
+    if action not in SUGGESTED_ACTIONS:
+        action = "none"
+    return {
+        "headline": headline.strip(),
+        "summary_sentence": sentence.strip(),
+        "suggested_action": action,
+    }
+
+
+def default_summary_from_body(body: str) -> dict:
+    """Deterministic fallback summary derived from a rendered health.md body."""
+    _headings, sections = _parse_sections(body)
+    status_lines = sections.get(STEWARD_SECTION_STATUS, [])
+    attention_lines = sections.get(STEWARD_SECTION_ATTENTION, [])
+    status = _first_status_body_line(status_lines) or "Sol is well."
+    if status.startswith("Sol is well."):
+        return {
+            "headline": "All clear",
+            "summary_sentence": status,
+            "suggested_action": "none",
+        }
+    escalating = any("escalating" in line for line in attention_lines if line.strip())
+    return {
+        "headline": "Needs attention",
+        "summary_sentence": status,
+        "suggested_action": "reprocess_stale" if escalating else "open_health_detail",
+    }
+
+
+def normalize_summary(result: str, default: dict) -> dict:
+    """Clamp an LLM summary to the contract, falling back to ``default``."""
+    summary = _coerce_summary(result)
+    if summary is None:
+        return default
+    summary["headline"] = summary["headline"][:_HEADLINE_MAX] or default["headline"]
+    summary["summary_sentence"] = (
+        summary["summary_sentence"][:_SENTENCE_MAX] or default["summary_sentence"]
+    )
+    return summary
+
+
+def load_previous_summary(today: str, journal: Path | None = None) -> dict | None:
+    """Return the most recent prior-day steward summary (for continuity)."""
+    try:
+        start = datetime.strptime(today, "%Y%m%d")
+    except ValueError:
+        return None
+    for offset in range(1, 8):
+        probe = (start - timedelta(days=offset)).strftime("%Y%m%d")
+        try:
+            raw = _summary_path(probe, journal).read_text(encoding="utf-8")
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        summary = _coerce_summary(raw)
+        if summary is not None:
+            return summary
+    return None
+
+
+def read_steward_summary(
+    journal: Path | None = None, day: str | None = None
+) -> dict | None:
+    """Return the latest human-friendly steward summary for the home widget."""
+    if day is None:
+        day = datetime.now().strftime("%Y%m%d")
+    try:
+        start = datetime.strptime(day, "%Y%m%d")
+    except ValueError:
+        return None
+    for offset in range(0, 8):
+        probe = (start - timedelta(days=offset)).strftime("%Y%m%d")
+        try:
+            raw = _summary_path(probe, journal).read_text(encoding="utf-8")
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        summary = _coerce_summary(raw)
+        if summary is not None:
+            return summary
+    return None
 
 
 def latest_daily_run_complete_ts(today: str) -> int | None:

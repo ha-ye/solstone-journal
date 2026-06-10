@@ -321,22 +321,22 @@ def test_show_prompt_context_day_format_validation(capsys):
     assert "invalid --day format" in output.lower()
 
 
-def test_show_effective_prompt_steward_matches_assembled_prompt(capsys):
+def test_show_effective_prompt_read_scope_matches_assembled_prompt(capsys):
     """Cogitate prompt view renders the same assembled prompt provider receives."""
-    config = get_talent("steward")
+    config = get_talent("agency")
     body, system_instruction = assemble_prompt(config, sol_tool_name="sol")
 
-    show_effective_prompt("steward", full=True)
+    show_effective_prompt("agency", full=True)
     output = capsys.readouterr().out
 
     assert system_instruction is not None
     assert system_instruction.startswith(COGITATE_RUNTIME_PREAMBLE)
     assert "through the `sol` tool" in system_instruction
     assert "Limit filesystem reads to today's segment dir" in system_instruction
-    assert "# Steward" in body
+    assert "# Agency" in body
     assert system_instruction in output
     assert body in output
-    assert "tier: system-read" in output
+    assert "tier: normal" in output
     assert "sol+reads, no submit" in output
 
 
@@ -394,7 +394,9 @@ def test_inventory_rows_normalize_and_lockstep_with_config():
         assert (row["finalize"] == "emit_final") == expects_emit_final(config)
 
     assert by_name["support:support"]["access_tier"] == "outbound"
-    assert by_name["steward"]["access_tier"] == "system-read"
+    # steward is a deterministic + lite-generate talent now, not cogitate, so it
+    # is no longer part of the cogitate inventory.
+    assert "steward" not in by_name
     assert by_name["naming"]["access_tier"] == "normal"
     assert by_name["digest"]["schedule"] == by_name["naming"]["schedule"] == "-"
 
@@ -425,9 +427,9 @@ def test_inventory_json_uses_verbatim_rows_and_table_uses_same_values(capsys):
 
     _render_inventory_table(rows)
     table = capsys.readouterr().out
-    assert "steward" in table
-    assert by_name["steward"]["access_tier"] in table
-    assert by_name["steward"]["finalize"] in table
+    assert "naming" in table
+    assert by_name["naming"]["access_tier"] in table
+    assert by_name["naming"]["finalize"] in table
 
 
 def test_inventory_command_outputs_json(capsys):

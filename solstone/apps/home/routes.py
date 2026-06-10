@@ -27,7 +27,7 @@ from solstone.think.awareness import get_current
 from solstone.think.capture_health import get_capture_health
 from solstone.think.facets import get_enabled_facets, get_facets
 from solstone.think.pipeline_health import summarize_pipeline_day
-from solstone.think.steward import read_steward_health
+from solstone.think.steward import read_steward_health, read_steward_summary
 from solstone.think.utils import get_journal
 
 # Briefing phase thresholds
@@ -1386,6 +1386,13 @@ def _build_pulse_context() -> dict[str, Any]:
         )
 
     pipeline_status = read_steward_health()
+    if pipeline_status is not None:
+        # Enrich the deterministic warning signal with the lite generate talent's
+        # human-friendly summary (headline + sentence + a closed-enum action) when
+        # one is available. Falls back to the raw bullet (message) if not.
+        summary = read_steward_summary()
+        if summary:
+            pipeline_status = {**pipeline_status, **summary}
 
     yesterday_processing = _summarize_yesterday_processing(yesterday, journal_age_days)
 

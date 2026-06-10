@@ -616,12 +616,6 @@ def test_run_cogitate_passes_outbound_approval_to_policy(
     ("name", "expected_access_tier", "expected_agent_tools", "expected_default_tools"),
     [
         (
-            "steward",
-            "system-read",
-            {"sol", "read_file", "list_directory", "glob", "grep_search", "emit_final"},
-            [],
-        ),
-        (
             "support:support",
             "outbound",
             {"sol", "read_file", "list_directory", "glob", "grep_search"},
@@ -697,12 +691,12 @@ def test_schedule_gated_cogitate_prompts_use_emit_final():
     artifact_names = {
         name
         for name, config in converted.items()
-        if name == "steward"
-        or (name.endswith(":todo") and config.get("schedule") == "activity")
+        if name.endswith(":todo") and config.get("schedule") == "activity"
     }
 
-    assert len(converted) == 12
-    assert artifact_names == {"steward", "todos:todo"}
+    # steward is no longer a cogitate talent (deterministic render + lite generate).
+    assert len(converted) == 11
+    assert artifact_names == {"todos:todo"}
 
     for name, config in converted.items():
         body = Path(config["path"]).read_text(encoding="utf-8")

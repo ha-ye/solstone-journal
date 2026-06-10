@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "headline",
+    "summary_sentence",
+    "suggested_action"
+  ],
+  "properties": {
+    "headline": {
+      "type": "string"
+    },
+    "summary_sentence": {
+      "type": "string"
+    },
+    "suggested_action": {
+      "type": "string",
+      "enum": [
+        "none",
+        "reprocess_stale",
+        "open_health_detail"
+      ]
+    }
+  }
+}

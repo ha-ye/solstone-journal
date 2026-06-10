@@ -1,7 +1,7 @@
 # Cogitate runtime contract
 
 The canonical contract for **cogitate talents** — the LLM agents Cortex spawns to
-read and update the journal (chat, pulse, awareness_tender, steward, the entity /
+read and update the journal (chat, pulse, awareness_tender, the entity /
 todo / activity / import talents, and the rest). It is the single place a talent
 author can point at and say what a fresh cogitate run's working directory,
 context, tools, finalization, and persistence are — instead of reverse-engineering
@@ -124,7 +124,7 @@ enforcement are layered on top of it.
 | Tier | Purpose | Surface |
 |---|---|---|
 | `normal` | default cogitate talents | the `sol` tool (`sol` / `sol call`), the bounded raw-read tier, a finalization tool |
-| `system-read` | diagnostics boundary for scoped operational evidence (e.g. `steward`) | today its tool surface equals `normal`; the tier is the declared diagnostics boundary and extension point, with scoped evidence arriving through the talent pre-hook rather than an extra model read tool |
+| `system-read` | diagnostics boundary for scoped operational evidence | no cogitate talent claims it today (steward was demoted to a deterministic renderer + `lite` generate); the tier remains the declared diagnostics boundary and extension point, with scoped evidence arriving through a talent pre-hook rather than an extra model read tool |
 | `outbound` | comms-like talents that may submit something that leaves the machine (e.g. `support`) | `normal` reads / drafts plus submit-capable support commands gated on per-send owner approval supplied only by a human-initiated chat launch |
 
 Policy denies support send verbs (`create`, `reply`, `attach`, `feedback`) for
@@ -135,8 +135,11 @@ injection.
 
 **There is no `repair` tier in cogitate.** Health fact-gathering and repair run
 through the deterministic `journal heartbeat` workflow, explicitly launched and
-logged without an LLM. The only cogitate health surface is `steward` (`system-read`),
-which owns the owner-facing health narrative.
+logged without an LLM. `steward` no longer runs as a cogitate talent at all: the
+owner-facing `health.md` body is rendered **deterministically** in its pre-hook,
+and a tiny `lite` **generate** talent writes only the human-friendly summaries
+(`headline` / `summary_sentence` / a closed-enum `suggested_action`) the home
+widget surfaces. No cogitate health surface remains.
 
 `code-agent` is a **documented future tier**, not part of the current cogitate
 runtime. A code agent needs write access, broad tools (read / edit / write / shell /

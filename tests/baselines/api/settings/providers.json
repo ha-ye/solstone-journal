@@ -460,8 +460,8 @@
       "group": "Think",
       "label": "Steward",
       "schedule": "daily",
-      "tier": 2,
-      "type": "cogitate"
+      "tier": 3,
+      "type": "generate"
     },
     "talent.system.weekly_reflection": {
       "disabled": false,

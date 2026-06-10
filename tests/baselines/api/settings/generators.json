@@ -31,6 +31,14 @@
       "key": "schedule",
       "source": "system",
       "title": "Upcoming Schedule"
+    },
+    {
+      "app": null,
+      "description": "Writes the owner-facing health summary (headline, sentence, suggested action) from the deterministic health surface.",
+      "disabled": false,
+      "key": "steward",
+      "source": "system",
+      "title": "Steward"
     }
   ],
   "segment": [

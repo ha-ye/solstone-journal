@@ -79,6 +79,12 @@
   font-weight: 500;
 }
 
+.pulse-vitals-headline {
+  font-weight: 600;
+  font-size: 0.8rem;
+  color: #b45309;
+}
+
 .pulse-vitals-action {
   display: flex;
   flex-direction: column;
@@ -1039,8 +1045,13 @@
 	    {% if pipeline_status %}
 	    <div class="pulse-vitals-sep"></div>
 	    <div class="pulse-vitals-action" role="button" tabindex="0" data-conversation="explain pipeline health for today.">
-	      <div class="pulse-vitals-item pulse-vitals-attention">{{ pipeline_status.message }}</div>
+	      {% if pipeline_status.headline %}<div class="pulse-vitals-headline">{{ pipeline_status.headline }}</div>{% endif %}
+	      <div class="pulse-vitals-item pulse-vitals-attention">{{ pipeline_status.summary_sentence or pipeline_status.message }}</div>
+	      {% if pipeline_status.suggested_action == 'reprocess_stale' %}
+	      <a class="pulse-vitals-action-link" href="/app/health#focus=recent-errors&day=today">review stale items →</a>
+	      {% elif pipeline_status.suggested_action == 'open_health_detail' or not pipeline_status.suggested_action %}
 	      <a class="pulse-vitals-action-link" href="/app/health#focus=recent-errors&day=today">view details →</a>
+	      {% endif %}
 	    </div>
 	    {% endif %}
 	    <a class="pulse-vitals-health-link" href="/app/health">health →</a>
@@ -1672,7 +1683,16 @@
           html += '<div class="pulse-vitals-sep"></div><div class="pulse-vitals-action" role="button" tabindex="0" data-conversation="explain the current attention items."><div class="pulse-vitals-item pulse-vitals-attention">' + esc(data.attention.placeholder_text) + '</div><a class="pulse-vitals-action-link" href="/app/health#focus=recent-errors&day=today">view details →</a></div>';
         }
         if (data.pipeline_status) {
-          html += '<div class="pulse-vitals-sep"></div><div class="pulse-vitals-action" role="button" tabindex="0" data-conversation="explain pipeline health for today."><div class="pulse-vitals-item pulse-vitals-attention">' + esc(data.pipeline_status.message) + '</div><a class="pulse-vitals-action-link" href="/app/health#focus=recent-errors&day=today">view details →</a></div>';
+          var ps = data.pipeline_status;
+          var headlineHtml = ps.headline ? '<div class="pulse-vitals-headline">' + esc(ps.headline) + '</div>' : '';
+          var sentence = ps.summary_sentence || ps.message || '';
+          var actionHtml = '';
+          if (ps.suggested_action === 'reprocess_stale') {
+            actionHtml = '<a class="pulse-vitals-action-link" href="/app/health#focus=recent-errors&day=today">review stale items →</a>';
+          } else if (ps.suggested_action === 'open_health_detail' || !ps.suggested_action) {
+            actionHtml = '<a class="pulse-vitals-action-link" href="/app/health#focus=recent-errors&day=today">view details →</a>';
+          }
+          html += '<div class="pulse-vitals-sep"></div><div class="pulse-vitals-action" role="button" tabindex="0" data-conversation="explain pipeline health for today.">' + headlineHtml + '<div class="pulse-vitals-item pulse-vitals-attention">' + esc(sentence) + '</div>' + actionHtml + '</div>';
         }
         html += '<a class="pulse-vitals-health-link" href="/app/health">health →</a>';
         el.innerHTML = html;

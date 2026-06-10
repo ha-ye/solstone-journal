@@ -1,7 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Hooks for the steward daily health talent."""
+"""Hooks for the steward daily health talent.
+
+The 4-section health.md body is rendered **deterministically** in the pre-hook
+(no LLM in that write path). The talent itself is a tiny ``lite`` generate that
+writes only the human-friendly summaries the home widget surfaces. Repair is not
+steward's job — it runs in the deterministic overnight ``journal heartbeat``
+(``heartbeat.py``); the pre-hook only *reads* the latest pass event.
+"""
 
 from __future__ import annotations
 
@@ -11,9 +18,13 @@ from datetime import datetime
 
 from solstone.think.steward import (
     acquire_steward_lock,
-    build_synthesis_context,
+    default_summary_from_body,
+    gather_health_facts,
     load_latest_pass_event,
+    load_previous_summary,
+    normalize_summary,
     release_steward_lock,
+    render_health_body,
     write_health_md,
 )
 
@@ -27,76 +38,73 @@ def _today_from_config(config: dict) -> str:
     return datetime.now().strftime("%Y%m%d")
 
 
-def _load_json_list(value: str) -> list:
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError:
-        return []
-    return parsed if isinstance(parsed, list) else []
-
-
 def pre_process(config: dict) -> dict | None:
-    """Run steward recipes and inject synthesis context."""
+    """Render + write health.md deterministically; feed the summary talent.
+
+    Holds the single-flight lock only for the deterministic render+write (the
+    LLM summary step that follows needs no steward lock). Returns the template
+    vars the lite generate consumes: the new health state and the previous run's
+    summary (for run-to-run continuity).
+    """
+    today = _today_from_config(config)
+    dry_run = bool(config.get("dry_run"))
+
     fd = acquire_steward_lock()
     if fd is None:
         return {"skip_reason": "steward already in flight"}
-
-    # If cogitate raises before post_process, process exit releases this flock.
-    config["_steward_lock_fd"] = fd
-    today = _today_from_config(config)
     try:
         pass_event = load_latest_pass_event()
         if pass_event is None:
-            recipe_result = {
-                "fired": [],
-                "escalated_targets": [],
-                "data_source_errors": [],
-            }
+            escalated_targets: list = []
+            pass_errors: list = []
         else:
-            recipe_result = {
-                "fired": pass_event.get("fired", []),
-                "escalated_targets": pass_event.get("escalated_targets", []),
-                "data_source_errors": pass_event.get("data_source_errors", []),
-            }
-        context = build_synthesis_context(today)
+            escalated_targets = list(pass_event.get("escalated_targets", []))
+            pass_errors = list(pass_event.get("data_source_errors", []))
 
-        errors = _load_json_list(str(context.get("data_source_errors", "[]")))
-        errors.extend(recipe_result.get("data_source_errors", []))
-        context["data_source_errors"] = json.dumps(
-            errors, indent=2, sort_keys=True, default=str
+        facts = gather_health_facts(today)
+        data_source_errors = list(facts.get("data_source_errors") or []) + pass_errors
+
+        body = render_health_body(
+            generated_at=facts["generated_at"],
+            pipeline_day=facts.get("pipeline_day"),
+            recipe_outcomes_7d=facts.get("recipe_outcomes_7d") or [],
+            escalated_targets=escalated_targets,
+            data_source_errors=data_source_errors,
         )
-        context["escalated_targets"] = json.dumps(
-            recipe_result.get("escalated_targets", []),
-            indent=2,
-            sort_keys=True,
-            default=str,
-        )
-        context["recipe_outcomes_this_run"] = json.dumps(
-            recipe_result.get("fired", []),
-            indent=2,
-            sort_keys=True,
-            default=str,
-        )
-        return {"template_vars": context}
+
+        if not dry_run:
+            reason = write_health_md(body)
+            if reason is not None:
+                logger.error("steward deterministic render rejected: %s", reason)
+
+        # Stash a deterministic fallback so post_process can recover if the model
+        # output is missing or malformed.
+        config["_steward_default_summary"] = default_summary_from_body(body)
+
+        previous = load_previous_summary(today)
+        return {
+            "template_vars": {
+                "health_state": body,
+                "previous_summary": (
+                    json.dumps(previous, indent=2, sort_keys=True)
+                    if previous is not None
+                    else "(none — first run)"
+                ),
+            }
+        }
     except Exception as exc:
         logger.exception("steward pre-hook failed")
-        release_steward_lock(fd)
-        config.pop("_steward_lock_fd", None)
         return {"skip_reason": f"steward pre-hook failed: {exc}"}
-
-
-def post_process(result: str, config: dict) -> str | None:
-    """Validate and publish the rendered steward health markdown."""
-    fd = config.get("_steward_lock_fd")
-    try:
-        reason = write_health_md(result)
-        if reason is not None:
-            logger.error("steward render rejected: %s", reason)
-        return result
-    except Exception:
-        logger.exception("steward post-hook failed")
-        return result
     finally:
-        if isinstance(fd, int):
-            release_steward_lock(fd)
-            config.pop("_steward_lock_fd", None)
+        release_steward_lock(fd)
+
+
+def post_process(result: str, config: dict) -> str:
+    """Normalize the model's summary JSON to the closed contract."""
+    default = config.get("_steward_default_summary") or {
+        "headline": "Health summary unavailable",
+        "summary_sentence": "Sol could not produce a health summary this run.",
+        "suggested_action": "open_health_detail",
+    }
+    summary = normalize_summary(result, default)
+    return json.dumps(summary, indent=2, sort_keys=True)

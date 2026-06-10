@@ -200,6 +200,10 @@ def _patch_minimal_pulse_context(monkeypatch, pipeline_status):
         lambda: pipeline_status,
     )
     monkeypatch.setattr(
+        "solstone.apps.home.routes.read_steward_summary",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
         "solstone.apps.home.routes._summarize_yesterday_processing",
         lambda yesterday, journal_age_days: {
             "title": "Yesterday's processing",
@@ -699,3 +703,26 @@ def test_build_pulse_context_pipeline_status_surfaces_steward_warning(monkeypatc
     ctx = _build_pulse_context()
 
     assert ctx["pipeline_status"] == status
+
+
+def test_build_pulse_context_pipeline_status_enriched_with_summary(monkeypatch):
+    status = {"status": "warning", "message": "Foo bar"}
+    _patch_minimal_pulse_context(monkeypatch, status)
+    monkeypatch.setattr(
+        "solstone.apps.home.routes.read_steward_summary",
+        lambda *a, **k: {
+            "headline": "Pipeline gap",
+            "summary_sentence": "Two segments awaiting thinking.",
+            "suggested_action": "open_health_detail",
+        },
+    )
+
+    ctx = _build_pulse_context()
+
+    assert ctx["pipeline_status"]["headline"] == "Pipeline gap"
+    assert (
+        ctx["pipeline_status"]["summary_sentence"] == "Two segments awaiting thinking."
+    )
+    assert ctx["pipeline_status"]["suggested_action"] == "open_health_detail"
+    # The deterministic warning signal is preserved.
+    assert ctx["pipeline_status"]["message"] == "Foo bar"

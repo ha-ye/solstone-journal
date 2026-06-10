@@ -22,10 +22,13 @@ from solstone.think.steward import (
     StalePendingTarget,
     _modality_signals,
     append_steward_event,
+    default_summary_from_body,
     detect_stale_pending_segments,
     load_steward_log,
+    normalize_summary,
     read_steward_health,
-    release_steward_lock,
+    read_steward_summary,
+    render_health_body,
     run_recipe_pass,
     validate_steward_health,
     write_health_md,
@@ -93,27 +96,18 @@ def _recipe_row(target: str, outcome: str, ts: int) -> dict:
     }
 
 
-def _fixed_synthesis_context(errors: list[str] | None = None) -> dict:
+def _fixed_facts(
+    errors: list[str] | None = None,
+    pipeline_day: dict | None = None,
+    recipe_outcomes_7d: list | None = None,
+) -> dict:
     return {
-        "health_report": "{}",
-        "pipeline_day": "{}",
-        "recipe_outcomes_7d": "[]",
-        "escalated_targets": "[]",
-        "data_source_errors": json.dumps(
-            [] if errors is None else errors,
-            indent=2,
-            sort_keys=True,
-            default=str,
-        ),
         "generated_at": "2026-06-07T00:00:00Z",
-        "status_lead_constraints": "fixed",
+        "health_report": {},
+        "pipeline_day": pipeline_day if pipeline_day is not None else {"anomalies": []},
+        "recipe_outcomes_7d": recipe_outcomes_7d or [],
+        "data_source_errors": list(errors) if errors else [],
     }
-
-
-def _release_pre_process_lock(config: dict) -> None:
-    fd = config.pop("_steward_lock_fd", None)
-    if isinstance(fd, int):
-        release_steward_lock(fd)
 
 
 def test_recipe_detects_stale_pending_segment(tmp_path, monkeypatch):
@@ -349,25 +343,17 @@ def test_pre_process_uses_pass_event_without_refiring_recipes(tmp_path, monkeypa
 
     import solstone.talent.steward as steward_hook
 
-    monkeypatch.setattr(
-        steward_hook,
-        "build_synthesis_context",
-        lambda day: _fixed_synthesis_context(),
-    )
-    config = {"day": today}
-    try:
-        hook_result = steward_hook.pre_process(config)
-    finally:
-        _release_pre_process_lock(config)
+    monkeypatch.setattr(steward_hook, "gather_health_facts", lambda day: _fixed_facts())
+    hook_result = steward_hook.pre_process({"day": today})
 
     assert hook_result is not None
     assert "template_vars" in hook_result
+    assert "health_state" in hook_result["template_vars"]
+    # The talent never fires repair — only the deterministic heartbeat does.
     assert len(fired_targets) == 2
 
 
-def test_pre_process_reconstructs_pass_event_fields_byte_identically(
-    tmp_path, monkeypatch
-):
+def test_pre_process_renders_pass_event_into_health_body(tmp_path, monkeypatch):
     _set_journal(monkeypatch, tmp_path)
     fired = [
         dataclasses.asdict(
@@ -391,58 +377,58 @@ def test_pre_process_reconstructs_pass_event_fields_byte_identically(
 
     monkeypatch.setattr(
         steward_hook,
-        "build_synthesis_context",
-        lambda day: _fixed_synthesis_context(["health_report: y"]),
+        "gather_health_facts",
+        lambda day: _fixed_facts(["health_report: y"]),
     )
-    config = {"day": "20260607"}
-    try:
-        result = steward_hook.pre_process(config)
-    finally:
-        _release_pre_process_lock(config)
+    result = steward_hook.pre_process({"day": "20260607"})
 
     assert result is not None
-    template_vars = result["template_vars"]
-    assert template_vars["escalated_targets"] == json.dumps(
-        ["20260607/local/seg2:screen"],
-        indent=2,
-        sort_keys=True,
-        default=str,
+    body = result["template_vars"]["health_state"]
+    # Deterministic body folds in both the gathered and pass-event facts.
+    assert (
+        "escalating: stale-pending segment reprocess on 20260607/local/seg2:screen"
+        in body
     )
-    assert template_vars["recipe_outcomes_this_run"] == json.dumps(
-        fired,
-        indent=2,
-        sort_keys=True,
-        default=str,
-    )
-    assert template_vars["data_source_errors"] == json.dumps(
-        ["health_report: y", "convey port: x"],
-        indent=2,
-        sort_keys=True,
-        default=str,
-    )
+    assert "could not read health_report: y" in body
+    assert "could not read convey port: x" in body
+    assert validate_steward_health(body) is None
+    # health.md is written deterministically (no model call in that path).
+    assert read_steward_health(tmp_path) is not None
 
 
-def test_pre_process_fresh_journal_is_well_eligible(tmp_path, monkeypatch):
+def test_pre_process_fresh_journal_writes_well_health(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+
+    import solstone.talent.steward as steward_hook
+
+    monkeypatch.setattr(steward_hook, "gather_health_facts", lambda day: _fixed_facts())
+    result = steward_hook.pre_process({"day": "20260607"})
+
+    assert result is not None
+    body = result["template_vars"]["health_state"]
+    assert "Sol is well." in body
+    assert validate_steward_health(body) is None
+    # Healthy body → home widget hidden.
+    assert read_steward_health(tmp_path) is None
+    assert result["template_vars"]["previous_summary"] == "(none — first run)"
+
+
+def test_pre_process_dry_run_does_not_write_health(tmp_path, monkeypatch):
     _set_journal(monkeypatch, tmp_path)
 
     import solstone.talent.steward as steward_hook
 
     monkeypatch.setattr(
         steward_hook,
-        "build_synthesis_context",
-        lambda day: _fixed_synthesis_context(),
+        "gather_health_facts",
+        lambda day: _fixed_facts(["health_report: y"]),
     )
-    config = {"day": "20260607"}
-    try:
-        result = steward_hook.pre_process(config)
-    finally:
-        _release_pre_process_lock(config)
+    result = steward_hook.pre_process({"day": "20260607", "dry_run": True})
 
     assert result is not None
-    template_vars = result["template_vars"]
-    assert template_vars["escalated_targets"] == "[]"
-    assert template_vars["recipe_outcomes_this_run"] == "[]"
-    assert template_vars["data_source_errors"] == "[]"
+    assert "template_vars" in result
+    # Dry run still renders the body but must not mutate the journal.
+    assert not (tmp_path / "identity" / "health.md").exists()
 
 
 def test_validator_rejects_missing_section():
@@ -563,3 +549,274 @@ def test_health_md_history_has_only_steward_and_bootstrap_writers(
     actors = {row["actor"] for row in rows if row["file"] == "health.md"}
 
     assert actors <= {"steward", "ensure_identity_directory"}
+
+
+# ---------------------------------------------------------------------------
+# Deterministic renderer
+# ---------------------------------------------------------------------------
+
+_GEN_AT = "2026-06-07T00:00:00Z"
+
+
+def test_render_health_body_healthy_is_valid_and_well():
+    body = render_health_body(
+        generated_at=_GEN_AT,
+        pipeline_day={"anomalies": []},
+        recipe_outcomes_7d=[],
+        escalated_targets=[],
+        data_source_errors=[],
+    )
+
+    assert validate_steward_health(body) is None
+    assert f"<!-- generated_at: {_GEN_AT} -->" in body
+    assert "Sol is well." in body
+
+
+def test_render_health_body_healthy_reads_as_none(tmp_path):
+    path = tmp_path / "identity" / "health.md"
+    path.parent.mkdir()
+    path.write_text(
+        render_health_body(
+            generated_at=_GEN_AT,
+            pipeline_day={"anomalies": []},
+            recipe_outcomes_7d=[],
+            escalated_targets=[],
+            data_source_errors=[],
+        ),
+        encoding="utf-8",
+    )
+
+    assert read_steward_health(tmp_path) is None
+
+
+def test_render_health_body_activity_gap_bullet():
+    pipeline_day = {
+        "anomalies": [{"kind": "activity_agents_missing"}],
+        "activities": {"detected": 3},
+    }
+    body = render_health_body(
+        generated_at=_GEN_AT,
+        pipeline_day=pipeline_day,
+        recipe_outcomes_7d=[],
+        escalated_targets=[],
+        data_source_errors=[],
+    )
+
+    assert validate_steward_health(body) is None
+    assert "Sol is well." not in body
+    assert "3 activities ended yesterday" in body
+
+
+def test_render_health_body_talent_failure_timed_out():
+    pipeline_day = {
+        "anomalies": [
+            {"kind": "talent_failure", "name": "entities", "state": "timeout"},
+            {"kind": "talent_failure", "name": "documents", "state": "timeout"},
+        ],
+        "talents": {"failed": 2},
+    }
+    body = render_health_body(
+        generated_at=_GEN_AT,
+        pipeline_day=pipeline_day,
+        recipe_outcomes_7d=[],
+        escalated_targets=[],
+        data_source_errors=[],
+    )
+
+    assert (
+        "2 agents timed out during yesterday's processing (entities, documents)."
+        in (body)
+    )
+
+
+def test_render_health_body_auto_repair_rollup():
+    rollup = [
+        {
+            "recipe": STALE_PENDING_RECIPE,
+            "success": 2,
+            "failure": 1,
+            "total": 3,
+            "last_iso": "2026-06-06T10:00:00Z",
+        }
+    ]
+    body = render_health_body(
+        generated_at=_GEN_AT,
+        pipeline_day={"anomalies": []},
+        recipe_outcomes_7d=rollup,
+        escalated_targets=[],
+        data_source_errors=[],
+    )
+
+    assert validate_steward_health(body) is None
+    # A 7d rollup with a failure means Sol is not "well".
+    assert "Sol is well." not in body
+    assert (
+        "stale-pending segment reprocess — 3x in 7d (2 succeeded, 1 failed), "
+        "last 2026-06-06T10:00:00Z" in body
+    )
+
+
+def test_render_health_body_first_attention_bullet_drives_widget(tmp_path):
+    path = tmp_path / "identity" / "health.md"
+    path.parent.mkdir()
+    path.write_text(
+        render_health_body(
+            generated_at=_GEN_AT,
+            pipeline_day={"anomalies": [{"kind": "daily_agents_missing"}]},
+            recipe_outcomes_7d=[],
+            escalated_targets=[],
+            data_source_errors=[],
+        ),
+        encoding="utf-8",
+    )
+
+    status = read_steward_health(tmp_path)
+    assert status is not None
+    assert status["status"] == "warning"
+    assert "Daily agents didn't run yesterday" in status["message"]
+
+
+# ---------------------------------------------------------------------------
+# Human-friendly summaries
+# ---------------------------------------------------------------------------
+
+
+def _write_summary(journal: Path, day: str, payload: dict | str) -> None:
+    path = journal / "chronicle" / day / "talents" / "steward.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = payload if isinstance(payload, str) else json.dumps(payload)
+    path.write_text(body, encoding="utf-8")
+
+
+def test_read_steward_summary_returns_latest(tmp_path):
+    _write_summary(
+        tmp_path,
+        "20260607",
+        {
+            "headline": "All clear",
+            "summary_sentence": "Sol is well.",
+            "suggested_action": "none",
+        },
+    )
+
+    assert read_steward_summary(tmp_path, day="20260607") == {
+        "headline": "All clear",
+        "summary_sentence": "Sol is well.",
+        "suggested_action": "none",
+    }
+
+
+def test_read_steward_summary_walks_back(tmp_path):
+    _write_summary(
+        tmp_path,
+        "20260605",
+        {
+            "headline": "Pipeline gap",
+            "summary_sentence": "Two segments awaiting thinking.",
+            "suggested_action": "open_health_detail",
+        },
+    )
+
+    summary = read_steward_summary(tmp_path, day="20260607")
+    assert summary is not None
+    assert summary["headline"] == "Pipeline gap"
+
+
+def test_read_steward_summary_missing_returns_none(tmp_path):
+    assert read_steward_summary(tmp_path, day="20260607") is None
+
+
+def test_read_steward_summary_clamps_bad_enum(tmp_path):
+    _write_summary(
+        tmp_path,
+        "20260607",
+        {
+            "headline": "X",
+            "summary_sentence": "Y",
+            "suggested_action": "delete_everything",
+        },
+    )
+
+    summary = read_steward_summary(tmp_path, day="20260607")
+    assert summary is not None
+    assert summary["suggested_action"] == "none"
+
+
+def test_read_steward_summary_malformed_returns_none(tmp_path):
+    _write_summary(tmp_path, "20260607", "not json")
+
+    assert read_steward_summary(tmp_path, day="20260607") is None
+
+
+def test_normalize_summary_passthrough():
+    default = {
+        "headline": "d",
+        "summary_sentence": "d",
+        "suggested_action": "open_health_detail",
+    }
+    summary = normalize_summary(
+        json.dumps(
+            {
+                "headline": "Repairs failing",
+                "summary_sentence": "Two repairs failed twice.",
+                "suggested_action": "reprocess_stale",
+            }
+        ),
+        default,
+    )
+
+    assert summary["headline"] == "Repairs failing"
+    assert summary["suggested_action"] == "reprocess_stale"
+
+
+def test_normalize_summary_falls_back_on_garbage():
+    default = {
+        "headline": "d",
+        "summary_sentence": "d",
+        "suggested_action": "open_health_detail",
+    }
+
+    assert normalize_summary("definitely not json", default) == default
+
+
+def test_normalize_summary_clamps_enum():
+    default = {
+        "headline": "d",
+        "summary_sentence": "d",
+        "suggested_action": "open_health_detail",
+    }
+    summary = normalize_summary(
+        json.dumps(
+            {"headline": "h", "summary_sentence": "s", "suggested_action": "bogus"}
+        ),
+        default,
+    )
+
+    assert summary["suggested_action"] == "none"
+
+
+def test_default_summary_from_body_healthy():
+    body = render_health_body(
+        generated_at=_GEN_AT,
+        pipeline_day={"anomalies": []},
+        recipe_outcomes_7d=[],
+        escalated_targets=[],
+        data_source_errors=[],
+    )
+
+    summary = default_summary_from_body(body)
+    assert summary["headline"] == "All clear"
+    assert summary["suggested_action"] == "none"
+
+
+def test_default_summary_from_body_escalation_suggests_reprocess():
+    body = render_health_body(
+        generated_at=_GEN_AT,
+        pipeline_day={"anomalies": []},
+        recipe_outcomes_7d=[],
+        escalated_targets=["20260607/local/seg2:screen"],
+        data_source_errors=[],
+    )
+
+    summary = default_summary_from_body(body)
+    assert summary["suggested_action"] == "reprocess_stale"
