@@ -2,6 +2,7 @@
 # Copyright (c) 2026 sol pbc
 
 import importlib
+import os
 import sys
 import types
 from pathlib import Path
@@ -127,7 +128,31 @@ from tests._baseline_harness import copytree_tracked
 
 
 @pytest.fixture(autouse=True)
-def set_test_journal_path(monkeypatch):
+def _isolate_os_environ():
+    """Restore os.environ after every test so raw env writes can't leak.
+
+    Production code mutates os.environ by raw assignment (not monkeypatch): the
+    supervisor sets ``SOL_SUPERVISOR_SPAWNED`` and rewrites ``PATH``
+    (``supervisor.py``), talents set ``SOL_SEGMENT`` (``talents.py``), and
+    settings write provider keys (``settings/routes.py``). When a test exercises
+    one of those paths the change persists into every later test in the same
+    worker — the root cause of the ``SOL_SUPERVISOR_SPAWNED`` flake and the
+    reason ~20 test files defensively ``delenv`` it. Snapshotting here makes
+    every test hermetic against that whole class of env leak, so new tests no
+    longer need their own defensive ``delenv``. Defined first so it brackets the
+    other autouse fixtures (notably the monkeypatch env setup below).
+    """
+    saved = dict(os.environ)
+    try:
+        yield
+    finally:
+        if dict(os.environ) != saved:
+            os.environ.clear()
+            os.environ.update(saved)
+
+
+@pytest.fixture(autouse=True)
+def set_test_journal_path(monkeypatch, _isolate_os_environ):
     """Set SOLSTONE_JOURNAL to tests/fixtures/journal for all unit tests.
 
     This ensures all tests have a valid SOLSTONE_JOURNAL without needing

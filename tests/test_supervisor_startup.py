@@ -7,10 +7,6 @@ import json
 from types import SimpleNamespace
 from unittest import mock
 
-import pytest
-
-import solstone.think.utils as utils
-
 
 def test_task_queue_defers_submit_when_not_ready(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
@@ -171,42 +167,9 @@ def test_wait_for_convey_ready_convey_died(caplog):
     assert "Convey process exited during startup" in caplog.text
 
 
-def test_require_solstone_tempfail_when_supervisor_spawned(monkeypatch, capsys):
-    monkeypatch.delenv("SOL_SKIP_SUPERVISOR_CHECK", raising=False)
-    monkeypatch.setenv("SOL_SUPERVISOR_SPAWNED", "1")
-
-    with mock.patch("solstone.think.utils.is_solstone_up", return_value=False):
-        with pytest.raises(SystemExit) as exc_info:
-            utils.require_solstone()
-
-    assert exc_info.value.code == utils.EXIT_TEMPFAIL
-    assert capsys.readouterr().err == ""
-
-
-def test_require_solstone_exit1_when_not_supervisor_spawned(monkeypatch, capsys):
-    monkeypatch.delenv("SOL_SKIP_SUPERVISOR_CHECK", raising=False)
-    monkeypatch.delenv("SOL_SUPERVISOR_SPAWNED", raising=False)
-
-    with mock.patch("solstone.think.utils.is_solstone_up", return_value=False):
-        with pytest.raises(SystemExit) as exc_info:
-            utils.require_solstone()
-
-    assert exc_info.value.code == 1
-    assert (
-        capsys.readouterr().err
-        == "sol: solstone isn't running. Start it with 'journal up' and retry.\n"
-    )
-
-
-def test_require_solstone_skip_env_still_honored(monkeypatch):
-    monkeypatch.setenv("SOL_SKIP_SUPERVISOR_CHECK", "1")
-    monkeypatch.delenv("SOL_SUPERVISOR_SPAWNED", raising=False)
-
-    with mock.patch(
-        "solstone.think.utils.is_solstone_up",
-        side_effect=AssertionError("should not run"),
-    ):
-        assert utils.require_solstone() is None
+# require_solstone branch tests (down/tempfail/up/skip) live with the function in
+# tests/test_think_utils.py::TestSolstoneGuard — they test a utils helper, not
+# supervisor startup, and were a duplicate set here.
 
 
 def test_startup_submits_digest_once():
