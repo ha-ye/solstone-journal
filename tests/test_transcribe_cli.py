@@ -5,6 +5,7 @@
 
 import argparse
 import importlib
+import json
 import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -289,8 +290,17 @@ def test_resolve_default_backend_uses_parakeet_when_memory_fits(monkeypatch):
 
 def test_all_batch_reads_memory_once_and_reuses_default_backend(tmp_path, monkeypatch):
     journal = _make_batch_journal(tmp_path)
+    config_dir = journal / "config"
+    config_dir.mkdir()
+    (config_dir / "journal.json").write_text(
+        json.dumps(
+            {
+                "identity": {"name": "Test"},
+                "env": {"GOOGLE_API_KEY": "test-key"},
+            }
+        )
+    )
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
     monkeypatch.setattr("sys.argv", ["sol transcribe", "--all", "--redo"])
     calls = 0
 

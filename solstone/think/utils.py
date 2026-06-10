@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from timefhuman import timefhuman
 
 from solstone.think.media import MIME_TYPES
+from solstone.think.providers import managed_provider_env_keys
 
 DATE_RE = re.compile(r"\d{8}")
 STREAM_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -905,7 +906,12 @@ def setup_cli(parser: argparse.ArgumentParser, *, parse_known: bool = False):
     The parser will be extended with ``-v``/``--verbose`` and ``-d``/``--debug`` flags.
     The journal path is resolved via get_journal() which auto-creates a default path
     if needed. Environment variables from the journal config's ``env`` section
-    (in ``journal.json``) are loaded as fallbacks for any keys not already set.
+    (in ``journal.json``) are loaded into ``os.environ``. journal.json is the
+    authoritative and exclusive source for managed provider API keys (the
+    provider registry's ``env_key`` values): a managed provider key absent from
+    config is stripped so a shell-set value is never used. Vertex/ADC auth vars
+    are not managed keys and are never stripped; non-managed vars load as
+    declared.
     The parsed arguments are returned. If ``parse_known`` is ``True`` a tuple of
     ``(args, extra)`` is returned using :func:`argparse.ArgumentParser.parse_known_args`.
     """
@@ -933,10 +939,18 @@ def setup_cli(parser: argparse.ArgumentParser, *, parse_known: bool = False):
     # Initialize journal path (auto-creates if needed)
     get_journal()
 
-    # Load config env from journal.json — strict source for API keys
+    # journal.json's `env` section is the authoritative and exclusive source for
+    # managed provider API keys. Load every config-declared var into os.environ,
+    # then strip any managed provider key (registry-derived) that config does not
+    # set, so a stray shell-set provider key is never used. Non-managed vars are
+    # loaded as-is; Vertex/ADC auth vars are not managed keys and are never stripped.
     config = get_config()
-    for key, value in config.get("env", {}).items():
+    config_env = config.get("env", {})
+    for key, value in config_env.items():
         os.environ[key] = str(value)
+    for env_key in managed_provider_env_keys():
+        if not config_env.get(env_key):
+            os.environ.pop(env_key, None)
 
     return (args, extra) if parse_known else args
 

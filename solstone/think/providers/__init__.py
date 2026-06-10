@@ -73,6 +73,21 @@ PROVIDER_METADATA: Dict[str, Dict[str, Any]] = {
 }
 
 
+def managed_provider_env_keys() -> set[str]:
+    """Return the set of managed provider API-key environment-variable names.
+
+    Derived from ``PROVIDER_METADATA``: every non-empty ``env_key`` across the
+    registered providers (currently GOOGLE_API_KEY, OPENAI_API_KEY,
+    ANTHROPIC_API_KEY; ``local`` has no key). These are exactly the keys for which
+    journal config's ``env`` section is the authoritative and exclusive source — a
+    managed key absent from journal config is stripped from ``os.environ`` at CLI
+    startup (see :func:`solstone.think.utils.setup_cli`) so a shell-set value is
+    never used. Vertex/ADC auth vars (``vertex_env_keys``) are deliberately excluded:
+    they are file/ADC credentials a user may legitimately set in the shell.
+    """
+    return {m["env_key"] for m in PROVIDER_METADATA.values() if m.get("env_key")}
+
+
 def get_provider_module(provider: str) -> ModuleType:
     """Get the provider module for the given provider name.
 
@@ -251,4 +266,5 @@ __all__ = [
     "build_provider_status",
     "get_provider_models",
     "validate_key",
+    "managed_provider_env_keys",
 ]

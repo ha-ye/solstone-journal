@@ -2380,7 +2380,8 @@ def _ensure_venv_bin_on_path() -> None:
 def main() -> None:
     parser = parse_args()
 
-    # Capture journal info BEFORE setup_cli() loads .env and pollutes os.environ
+    # Capture journal info before setup_cli() hydrates os.environ from journal
+    # config and strips shell-only managed provider keys.
     journal_info = get_journal_info()
 
     args = setup_cli(parser)

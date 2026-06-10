@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from solstone.think.entities import load_entity_names
+from solstone.think.providers import PROVIDER_METADATA, managed_provider_env_keys
 from solstone.think.utils import (
     DEFAULT_STREAM,
     SolstoneNotConfigured,
@@ -666,6 +667,13 @@ class TestSetupCliConfigEnv:
         Returns a helper function to write config and run setup_cli.
         """
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+        for env_key in managed_provider_env_keys():
+            monkeypatch.delenv(env_key, raising=False)
+        for env_key in (
+            "GOOGLE_GENAI_USE_VERTEXAI",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+        ):
+            monkeypatch.delenv(env_key, raising=False)
         monkeypatch.setattr(sys, "argv", ["test"])
 
         def write_config_and_run(config: dict | None = None):
@@ -724,6 +732,64 @@ class TestSetupCliConfigEnv:
         )
 
         assert os.environ.get("EMPTY_VAR") == "from_config"
+
+    @pytest.mark.parametrize(
+        "env_key", ["GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
+    )
+    def test_managed_shell_only_key_is_stripped(
+        self, monkeypatch, cli_env, env_key: str
+    ):
+        """Test that managed provider keys absent from config are stripped."""
+        monkeypatch.setenv(env_key, "from_shell")
+
+        cli_env({"identity": {"name": "Test"}, "env": {}})
+
+        assert env_key not in os.environ
+
+    def test_managed_key_present_in_config_wins_over_shell(self, monkeypatch, cli_env):
+        """Test that journal config remains authoritative over shell values."""
+        monkeypatch.setenv("GOOGLE_API_KEY", "from_shell")
+
+        cli_env(
+            {
+                "identity": {"name": "Test"},
+                "env": {"GOOGLE_API_KEY": "from_config"},
+            }
+        )
+
+        assert os.environ["GOOGLE_API_KEY"] == "from_config"
+
+    def test_non_managed_shell_only_key_is_not_stripped(self, monkeypatch, cli_env):
+        """Test that managed-key stripping does not affect non-managed vars."""
+        monkeypatch.setenv("MY_TOOL_TOKEN", "from_shell")
+
+        cli_env({"identity": {"name": "Test"}, "env": {}})
+
+        assert os.environ.get("MY_TOOL_TOKEN") == "from_shell"
+
+    def test_vertex_adc_vars_survive_managed_key_strip(self, monkeypatch, cli_env):
+        """Test that Vertex/ADC env vars are not managed provider keys."""
+        monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+        monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/some/path")
+
+        cli_env({"identity": {"name": "Test"}, "env": {}})
+
+        assert os.environ.get("GOOGLE_GENAI_USE_VERTEXAI") == "true"
+        assert os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") == "/some/path"
+
+    def test_empty_config_value_strips_managed_key(self, monkeypatch, cli_env):
+        """Test that empty managed-key config values are treated as absent."""
+        monkeypatch.setenv("GOOGLE_API_KEY", "from_shell")
+
+        cli_env({"identity": {"name": "Test"}, "env": {"GOOGLE_API_KEY": ""}})
+
+        assert "GOOGLE_API_KEY" not in os.environ
+
+    def test_managed_provider_env_keys_matches_registry(self):
+        """Test that the managed-key set is derived from provider metadata."""
+        assert managed_provider_env_keys() == {
+            m["env_key"] for m in PROVIDER_METADATA.values() if m["env_key"]
+        }
 
     def test_missing_env_section_is_safe(self, cli_env):
         """Test that missing env section in config doesn't cause errors."""
