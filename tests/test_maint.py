@@ -18,6 +18,7 @@ from solstone.think.maint import (
     get_state_file,
     get_task_status,
     list_tasks,
+    run_pending_tasks,
     run_task,
 )
 
@@ -246,6 +247,38 @@ class TestFormatDuration:
 
         assert _format_duration(60000) == "1m 0s"
         assert _format_duration(143000) == "2m 23s"
+
+
+class TestRunPendingTasks:
+    """Tests for run_pending_tasks dispatch + skip behavior."""
+
+    def test_successful_maint_task_is_skipped(self, monkeypatch, tmp_path):
+        journal = tmp_path / "journal"
+        config_path = journal / "config" / "convey.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"apps": {"starred": [], "order": []}}
+        config_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+        task_name = "003_seed_default_app_navigation"
+        task = MaintTask(
+            app="settings",
+            name=task_name,
+            script_path=Path("solstone/apps/settings/maint") / f"{task_name}.py",
+        )
+        monkeypatch.setattr("solstone.think.maint.discover_tasks", lambda: [task])
+
+        state_file = get_state_file(journal, "settings", task_name)
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(
+            '{"event": "exec", "ts": 1000}\n'
+            '{"event": "exit", "ts": 2000, "exit_code": 0}\n',
+            encoding="utf-8",
+        )
+
+        ran, succeeded = run_pending_tasks(journal)
+
+        assert (ran, succeeded) == (0, 0)
+        assert json.loads(config_path.read_text("utf-8")) == payload
 
 
 class TestRunTask:

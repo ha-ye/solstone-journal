@@ -3,17 +3,17 @@
 
 from __future__ import annotations
 
+import importlib
 import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
-from solstone.convey.config import DEFAULT_APP_ORDER, DEFAULT_RAIL_APPS
-from solstone.think.maint import MaintTask, get_state_file, run_pending_tasks
+import pytest
 
-TASK_NAME = "003_seed_default_app_navigation"
-TASK_MODULE = f"solstone.apps.settings.maint.{TASK_NAME}"
+from solstone.convey.config import DEFAULT_APP_ORDER, DEFAULT_RAIL_APPS
+
+mod = importlib.import_module(
+    "solstone.apps.settings.maint.003_seed_default_app_navigation"
+)
 
 
 def _write_convey_config(journal: Path, payload: dict) -> None:
@@ -26,97 +26,59 @@ def _read_convey_config(journal: Path) -> dict:
     return json.loads((journal / "config" / "convey.json").read_text("utf-8"))
 
 
-def _task_env(journal: Path) -> dict[str, str]:
-    root = Path(__file__).resolve().parents[4]
-    env = os.environ.copy()
-    env["SOLSTONE_JOURNAL"] = str(journal)
-    env["PYTHONPATH"] = (
-        str(root)
-        if not env.get("PYTHONPATH")
-        else str(root) + os.pathsep + env["PYTHONPATH"]
-    )
-    return env
+def _set_convey_journal(monkeypatch, journal: Path) -> Path:
+    from solstone.convey import state
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    monkeypatch.setattr(state, "journal_root", str(journal))
+    return journal
 
 
-def _run_task(journal: Path, cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, "-m", TASK_MODULE],
-        cwd=cwd,
-        env=_task_env(journal),
-        text=True,
-        capture_output=True,
-        timeout=30,
-        check=False,
-    )
-
-
-def test_seed_task_writes_resolved_journal_not_cwd(tmp_path):
+def test_seed_task_writes_resolved_journal_not_cwd(monkeypatch, tmp_path, capsys):
     journal = tmp_path / "journal"
     cwd = tmp_path / "cwd"
     cwd.mkdir()
 
-    result = _run_task(journal, cwd)
+    _set_convey_journal(monkeypatch, journal)
+    monkeypatch.chdir(cwd)
+    mod.main()
 
-    assert result.returncode == 0, result.stderr
     config = _read_convey_config(journal)
     assert config["apps"]["starred"] == DEFAULT_RAIL_APPS
     assert config["apps"]["order"] == DEFAULT_APP_ORDER
     assert not (cwd / "config" / "convey.json").exists()
 
+    out = capsys.readouterr().out
+    assert "Seeded default app navigation." in out
 
-def test_seed_task_noops_when_keys_present(tmp_path):
+
+def test_seed_task_noops_when_keys_present(monkeypatch, tmp_path, capsys):
     journal = tmp_path / "journal"
-    cwd = tmp_path / "cwd"
-    cwd.mkdir()
+    _set_convey_journal(monkeypatch, journal)
     payload = {"apps": {"starred": [], "order": []}}
     _write_convey_config(journal, payload)
 
-    result = _run_task(journal, cwd)
+    config_path = journal / "config" / "convey.json"
+    before = config_path.read_bytes()
+    mod.main()
 
-    assert result.returncode == 0, result.stderr
-    assert _read_convey_config(journal) == payload
-    assert "already present" in result.stdout
+    assert config_path.read_bytes() == before
+    assert "Default app navigation already present." in capsys.readouterr().out
 
 
-def test_seed_task_write_failure_exits_nonzero(tmp_path):
+def test_seed_task_write_failure_exits_nonzero(monkeypatch, tmp_path, capsys):
     journal = tmp_path / "journal"
-    cwd = tmp_path / "cwd"
-    config_dir = journal / "config"
-    cwd.mkdir()
-    config_dir.mkdir(parents=True)
-    config_dir.chmod(0o500)
+    _set_convey_journal(monkeypatch, journal)
 
-    try:
-        result = _run_task(journal, cwd)
-    finally:
-        config_dir.chmod(0o700)
+    def _raise(*_args, **_kwargs):
+        raise OSError("disk full")
 
-    assert result.returncode != 0
-    assert "PERSIST failed" in result.stderr
-    assert not (config_dir / "convey.json").exists()
+    monkeypatch.setattr(mod, "locked_modify_convey_config", _raise)
 
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
 
-def test_successful_maint_task_is_skipped(monkeypatch, tmp_path):
-    journal = tmp_path / "journal"
-    payload = {"apps": {"starred": [], "order": []}}
-    _write_convey_config(journal, payload)
-
-    task = MaintTask(
-        app="settings",
-        name=TASK_NAME,
-        script_path=Path("solstone/apps/settings/maint") / f"{TASK_NAME}.py",
-    )
-    monkeypatch.setattr("solstone.think.maint.discover_tasks", lambda: [task])
-
-    state_file = get_state_file(journal, "settings", TASK_NAME)
-    state_file.parent.mkdir(parents=True, exist_ok=True)
-    state_file.write_text(
-        '{"event": "exec", "ts": 1000}\n'
-        '{"event": "exit", "ts": 2000, "exit_code": 0}\n',
-        encoding="utf-8",
-    )
-
-    ran, succeeded = run_pending_tasks(journal)
-
-    assert (ran, succeeded) == (0, 0)
-    assert _read_convey_config(journal) == payload
+    assert exc.value.code
+    err = capsys.readouterr().err
+    assert "PERSIST failed" in err
+    assert not (journal / "config" / "convey.json").exists()
