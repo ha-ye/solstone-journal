@@ -52,7 +52,12 @@ _SEVEN_DAYS_MS = 7 * 86_400_000
 # Closed set of summary actions the convey widget can map to an affordance.
 # CPO-named contract (S3); VPE proposes the initial values. Keep it closed so the
 # UI can map each value to a button/link.
-SUGGESTED_ACTIONS: tuple[str, ...] = ("none", "reprocess_stale", "open_health_detail")
+SUGGESTED_ACTIONS: tuple[str, ...] = (
+    "none",
+    "reprocess_stale",
+    "open_health_detail",
+    "open_support",
+)
 _HEADLINE_MAX = 80
 _SENTENCE_MAX = 280
 _RECIPE_LABELS = {STALE_PENDING_RECIPE: "stale-pending segment reprocess"}
@@ -815,10 +820,13 @@ def default_summary_from_body(body: str) -> dict:
             "suggested_action": "none",
         }
     escalating = any("escalating" in line for line in attention_lines if line.strip())
+    # An escalated repair has already failed twice, so the deterministic fallback
+    # points at support rather than another retry. The LLM may still choose
+    # reprocess_stale when a retry looks worthwhile.
     return {
         "headline": "Needs attention",
         "summary_sentence": status,
-        "suggested_action": "reprocess_stale" if escalating else "open_health_detail",
+        "suggested_action": "open_support" if escalating else "open_health_detail",
     }
 
 

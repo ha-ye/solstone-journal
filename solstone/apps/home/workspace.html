@@ -1049,6 +1049,8 @@
 	      <div class="pulse-vitals-item pulse-vitals-attention">{{ pipeline_status.summary_sentence or pipeline_status.message }}</div>
 	      {% if pipeline_status.suggested_action == 'reprocess_stale' %}
 	      <a class="pulse-vitals-action-link" href="/app/health#focus=recent-errors&day=today">review stale items →</a>
+	      {% elif pipeline_status.suggested_action == 'open_support' %}
+	      <a class="pulse-vitals-action-link" href="/app/support">open a support ticket →</a>
 	      {% elif pipeline_status.suggested_action == 'open_health_detail' or not pipeline_status.suggested_action %}
 	      <a class="pulse-vitals-action-link" href="/app/health#focus=recent-errors&day=today">view details →</a>
 	      {% endif %}
@@ -1689,6 +1691,8 @@
           var actionHtml = '';
           if (ps.suggested_action === 'reprocess_stale') {
             actionHtml = '<a class="pulse-vitals-action-link" href="/app/health#focus=recent-errors&day=today">review stale items →</a>';
+          } else if (ps.suggested_action === 'open_support') {
+            actionHtml = '<a class="pulse-vitals-action-link" href="/app/support">open a support ticket →</a>';
           } else if (ps.suggested_action === 'open_health_detail' || !ps.suggested_action) {
             actionHtml = '<a class="pulse-vitals-action-link" href="/app/health#focus=recent-errors&day=today">view details →</a>';
           }

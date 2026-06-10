@@ -34,7 +34,8 @@ Return a JSON object with exactly these keys:
 - `summary_sentence` — one plain sentence an owner can read at a glance. Lean on the previous summary for continuity where it helps ("still clear", "now resolved", "new since yesterday"); otherwise just describe the current state plainly.
 - `suggested_action` — exactly one of:
   - `none` — nothing for the owner to do (use when the state is clear/healthy).
-  - `reprocess_stale` — stale segment repairs have failed or escalated and the owner may want to retry processing.
+  - `reprocess_stale` — stale segment repairs have failed or escalated and a retry looks worthwhile.
   - `open_health_detail` — there is an issue worth viewing on the health page, but no specific retry applies.
+  - `open_support` — Sol already tried and couldn't resolve something (a repair escalated after failing twice, or a persistent issue) and the owner may want help from sol pbc support.
 
 Output only the JSON object.

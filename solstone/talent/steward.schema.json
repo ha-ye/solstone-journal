@@ -18,7 +18,8 @@
       "enum": [
         "none",
         "reprocess_stale",
-        "open_health_detail"
+        "open_health_detail",
+        "open_support"
       ]
     }
   }

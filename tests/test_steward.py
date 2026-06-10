@@ -809,7 +809,7 @@ def test_default_summary_from_body_healthy():
     assert summary["suggested_action"] == "none"
 
 
-def test_default_summary_from_body_escalation_suggests_reprocess():
+def test_default_summary_from_body_escalation_suggests_support():
     body = render_health_body(
         generated_at=_GEN_AT,
         pipeline_day={"anomalies": []},
@@ -819,4 +819,21 @@ def test_default_summary_from_body_escalation_suggests_reprocess():
     )
 
     summary = default_summary_from_body(body)
-    assert summary["suggested_action"] == "reprocess_stale"
+    # An escalated repair already failed twice → point at support, not retry.
+    assert summary["suggested_action"] == "open_support"
+
+
+def test_read_steward_summary_preserves_open_support(tmp_path):
+    _write_summary(
+        tmp_path,
+        "20260607",
+        {
+            "headline": "Repairs failing",
+            "summary_sentence": "Sol couldn't fix two segments after retrying.",
+            "suggested_action": "open_support",
+        },
+    )
+
+    summary = read_steward_summary(tmp_path, day="20260607")
+    assert summary is not None
+    assert summary["suggested_action"] == "open_support"
