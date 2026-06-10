@@ -937,17 +937,21 @@ class TestSolstoneGuard:
             write_service_port("convey", server.getsockname()[1])
             assert is_solstone_up() is True
 
-    def test_require_solstone_exits_with_message_when_down(
-        self, monkeypatch, tmp_path, capsys
-    ):
-        """Guard exits with the expected message when convey is unavailable."""
-        from solstone.think.utils import require_solstone
+    # The require_solstone tests below are pure branch-logic units: they stub
+    # is_solstone_up (its real I/O is covered by the is_solstone_up tests above)
+    # and pin every env input require_solstone reads. SOL_SUPERVISOR_SPAWNED must
+    # be controlled explicitly — supervisor.py sets it in os.environ at runtime,
+    # so it leaks across tests in a full-suite run (the prior flake here).
+    def test_require_solstone_exits_with_message_when_down(self, monkeypatch, capsys):
+        """Guard exits 1 with the friendly message when the stack is down."""
+        import solstone.think.utils as utils
 
         monkeypatch.delenv("SOL_SKIP_SUPERVISOR_CHECK", raising=False)
-        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+        monkeypatch.delenv("SOL_SUPERVISOR_SPAWNED", raising=False)
+        monkeypatch.setattr(utils, "is_solstone_up", lambda timeout=0.2: False)
 
         with pytest.raises(SystemExit) as excinfo:
-            require_solstone()
+            utils.require_solstone()
 
         captured = capsys.readouterr()
         assert excinfo.value.code == 1
@@ -957,20 +961,33 @@ class TestSolstoneGuard:
             == "sol: solstone isn't running. Start it with 'journal up' and retry.\n"
         )
 
-    def test_require_solstone_returns_silently_when_up(
-        self, monkeypatch, tmp_path, capsys
+    def test_require_solstone_tempfail_when_supervisor_spawned(
+        self, monkeypatch, capsys
     ):
-        """Guard returns None without output when convey is reachable."""
-        from solstone.think.utils import require_solstone, write_service_port
+        """Under the supervisor, a down stack exits EXIT_TEMPFAIL silently."""
+        import solstone.think.utils as utils
 
         monkeypatch.delenv("SOL_SKIP_SUPERVISOR_CHECK", raising=False)
-        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+        monkeypatch.setenv("SOL_SUPERVISOR_SPAWNED", "1")
+        monkeypatch.setattr(utils, "is_solstone_up", lambda timeout=0.2: False)
 
-        with socket.socket() as server:
-            server.bind(("127.0.0.1", 0))
-            server.listen(1)
-            write_service_port("convey", server.getsockname()[1])
-            assert require_solstone() is None
+        with pytest.raises(SystemExit) as excinfo:
+            utils.require_solstone()
+
+        captured = capsys.readouterr()
+        assert excinfo.value.code == utils.EXIT_TEMPFAIL
+        assert captured.out == ""
+        assert captured.err == ""
+
+    def test_require_solstone_returns_silently_when_up(self, monkeypatch, capsys):
+        """Guard returns None without output when the stack is reachable."""
+        import solstone.think.utils as utils
+
+        monkeypatch.delenv("SOL_SKIP_SUPERVISOR_CHECK", raising=False)
+        monkeypatch.delenv("SOL_SUPERVISOR_SPAWNED", raising=False)
+        monkeypatch.setattr(utils, "is_solstone_up", lambda timeout=0.2: True)
+
+        assert utils.require_solstone() is None
 
         captured = capsys.readouterr()
         assert captured.out == ""
