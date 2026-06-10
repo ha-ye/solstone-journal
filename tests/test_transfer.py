@@ -569,6 +569,357 @@ class TestTransferImport:
 
         assert result["status"] == "nothing_to_import"
 
+    def test_import_archive_rejects_dotdot_member(self, tmp_path, monkeypatch):
+        """AC#1a: dot-dot member names are rejected before install."""
+        import io
+
+        from solstone.observe.transfer import import_archive
+
+        archive_path = tmp_path / "dotdot-member.tgz"
+        manifest = {
+            "version": 1,
+            "day": "20250101",
+            "created_at": 1704067200000,
+            "host": "test-host",
+            "segments": {"120000_300": {"files": []}},
+        }
+
+        with tarfile.open(archive_path, "w:gz") as tar:
+            file_info = tarfile.TarInfo(name="120000_300/../../../evil")
+            content = b"evil"
+            file_info.size = len(content)
+            tar.addfile(file_info, io.BytesIO(content))
+
+            manifest_json = json.dumps(manifest).encode()
+            manifest_info = tarfile.TarInfo(name="manifest.json")
+            manifest_info.size = len(manifest_json)
+            tar.addfile(manifest_info, io.BytesIO(manifest_json))
+
+        journal_path = tmp_path / "journal"
+        journal_path.mkdir()
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_path))
+
+        import solstone.think.utils as think_utils
+
+        think_utils._journal_path_cache = None
+
+        with pytest.raises(ValueError, match="unsafe member filename"):
+            import_archive(archive_path)
+
+        assert not (journal_path / "evil").exists()
+        assert not (
+            journal_path / "chronicle" / "20250101" / "120000_300" / "evil"
+        ).exists()
+
+    def test_import_archive_rejects_absolute_member(self, tmp_path, monkeypatch):
+        """AC#1b: absolute member filenames are rejected before install."""
+        import io
+
+        from solstone.observe.transfer import import_archive
+
+        archive_path = tmp_path / "absolute-member.tgz"
+        sentinel = tmp_path / "abs_member_sentinel"
+        manifest = {
+            "version": 1,
+            "day": "20250101",
+            "created_at": 1704067200000,
+            "host": "test-host",
+            "segments": {"120000_300": {"files": []}},
+        }
+
+        with tarfile.open(archive_path, "w:gz") as tar:
+            file_info = tarfile.TarInfo(name=f"120000_300/{sentinel.as_posix()}")
+            content = b"evil"
+            file_info.size = len(content)
+            tar.addfile(file_info, io.BytesIO(content))
+
+            manifest_json = json.dumps(manifest).encode()
+            manifest_info = tarfile.TarInfo(name="manifest.json")
+            manifest_info.size = len(manifest_json)
+            tar.addfile(manifest_info, io.BytesIO(manifest_json))
+
+        journal_path = tmp_path / "journal"
+        journal_path.mkdir()
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_path))
+
+        import solstone.think.utils as think_utils
+
+        think_utils._journal_path_cache = None
+
+        with pytest.raises(ValueError, match="unsafe member filename"):
+            import_archive(archive_path)
+
+        assert not sentinel.exists()
+
+    def test_import_archive_prepass_blocks_partial_import(self, tmp_path, monkeypatch):
+        """AC#2: a later unsafe member aborts before any earlier extraction."""
+        import io
+
+        from solstone.observe.transfer import import_archive
+        from solstone.observe.utils import compute_bytes_sha256
+
+        archive_path = tmp_path / "partial-import.tgz"
+        good_content = b"good audio"
+        sentinel = tmp_path / "partial_abs_member_sentinel"
+        manifest = {
+            "version": 1,
+            "day": "20250101",
+            "created_at": 1704067200000,
+            "host": "test-host",
+            "segments": {
+                "120000_300": {
+                    "files": [
+                        {
+                            "name": "audio.flac",
+                            "sha256": compute_bytes_sha256(good_content),
+                            "size": len(good_content),
+                        }
+                    ]
+                },
+                "130000_300": {"files": []},
+            },
+        }
+
+        with tarfile.open(archive_path, "w:gz") as tar:
+            good_info = tarfile.TarInfo(name="120000_300/audio.flac")
+            good_info.size = len(good_content)
+            tar.addfile(good_info, io.BytesIO(good_content))
+
+            bad_info = tarfile.TarInfo(name=f"130000_300/{sentinel.as_posix()}")
+            bad_content = b"evil"
+            bad_info.size = len(bad_content)
+            tar.addfile(bad_info, io.BytesIO(bad_content))
+
+            manifest_json = json.dumps(manifest).encode()
+            manifest_info = tarfile.TarInfo(name="manifest.json")
+            manifest_info.size = len(manifest_json)
+            tar.addfile(manifest_info, io.BytesIO(manifest_json))
+
+        journal_path = tmp_path / "journal"
+        journal_path.mkdir()
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_path))
+
+        import solstone.think.utils as think_utils
+
+        think_utils._journal_path_cache = None
+
+        with pytest.raises(ValueError, match="unsafe member filename"):
+            import_archive(archive_path)
+
+        day_dir = journal_path / "chronicle" / "20250101"
+        assert not (day_dir / "120000_300" / "audio.flac").exists()
+        assert not day_dir.exists()
+        assert not sentinel.exists()
+        assert list((journal_path / "chronicle").rglob("*.tmp")) == []
+
+    def test_import_archive_rejects_dotdot_arc_key(self, tmp_path, monkeypatch):
+        """AC#3a: traversal segment keys are rejected before target mkdir."""
+        import io
+
+        from solstone.observe.transfer import import_archive
+
+        archive_path = tmp_path / "dotdot-arc.tgz"
+        manifest = {
+            "version": 1,
+            "day": "20250101",
+            "created_at": 1704067200000,
+            "host": "test-host",
+            "segments": {"../../../escape_arc": {"files": []}},
+        }
+
+        with tarfile.open(archive_path, "w:gz") as tar:
+            manifest_json = json.dumps(manifest).encode()
+            manifest_info = tarfile.TarInfo(name="manifest.json")
+            manifest_info.size = len(manifest_json)
+            tar.addfile(manifest_info, io.BytesIO(manifest_json))
+
+        journal_path = tmp_path / "journal"
+        journal_path.mkdir()
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_path))
+
+        import solstone.think.utils as think_utils
+
+        think_utils._journal_path_cache = None
+
+        with pytest.raises(ValueError, match="unsafe segment key"):
+            import_archive(archive_path)
+
+        assert not (tmp_path / "escape_arc").exists()
+
+    def test_import_archive_rejects_absolute_arc_key(self, tmp_path, monkeypatch):
+        """AC#3b: absolute segment keys are rejected before target mkdir."""
+        import io
+
+        from solstone.observe.transfer import import_archive
+
+        archive_path = tmp_path / "absolute-arc.tgz"
+        sentinel_dir = tmp_path / "abs_arc_sentinel"
+        manifest = {
+            "version": 1,
+            "day": "20250101",
+            "created_at": 1704067200000,
+            "host": "test-host",
+            "segments": {sentinel_dir.as_posix(): {"files": []}},
+        }
+
+        with tarfile.open(archive_path, "w:gz") as tar:
+            manifest_json = json.dumps(manifest).encode()
+            manifest_info = tarfile.TarInfo(name="manifest.json")
+            manifest_info.size = len(manifest_json)
+            tar.addfile(manifest_info, io.BytesIO(manifest_json))
+
+        journal_path = tmp_path / "journal"
+        journal_path.mkdir()
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_path))
+
+        import solstone.think.utils as think_utils
+
+        think_utils._journal_path_cache = None
+
+        with pytest.raises(ValueError, match="unsafe segment key"):
+            import_archive(archive_path)
+
+        assert not sentinel_dir.exists()
+
+    def test_import_archive_rejects_invalid_day(self, tmp_path, monkeypatch):
+        """AC#4: invalid manifest day still fails through day_path validation."""
+        import io
+
+        from solstone.observe.transfer import import_archive
+
+        archive_path = tmp_path / "bad-day.tgz"
+        manifest = {
+            "version": 1,
+            "day": "bad",
+            "created_at": 1704067200000,
+            "host": "test-host",
+            "segments": {"120000_300": {"files": []}},
+        }
+
+        with tarfile.open(archive_path, "w:gz") as tar:
+            manifest_json = json.dumps(manifest).encode()
+            manifest_info = tarfile.TarInfo(name="manifest.json")
+            manifest_info.size = len(manifest_json)
+            tar.addfile(manifest_info, io.BytesIO(manifest_json))
+
+        journal_path = tmp_path / "journal"
+        journal_path.mkdir()
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_path))
+
+        import solstone.think.utils as think_utils
+
+        think_utils._journal_path_cache = None
+
+        with pytest.raises(ValueError, match="day must be in YYYYMMDD format"):
+            import_archive(archive_path)
+
+    def test_import_archive_rejects_empty_member_filename(self, tmp_path, monkeypatch):
+        """AC#5: a member exactly matching the segment prefix is rejected."""
+        import io
+
+        from solstone.observe.transfer import import_archive
+
+        archive_path = tmp_path / "empty-filename.tgz"
+        manifest = {
+            "version": 1,
+            "day": "20250101",
+            "created_at": 1704067200000,
+            "host": "test-host",
+            "segments": {"120000_300": {"files": []}},
+        }
+
+        with tarfile.open(archive_path, "w:gz") as tar:
+            file_info = tarfile.TarInfo(name="120000_300/")
+            content = b"evil"
+            file_info.size = len(content)
+            tar.addfile(file_info, io.BytesIO(content))
+
+            manifest_json = json.dumps(manifest).encode()
+            manifest_info = tarfile.TarInfo(name="manifest.json")
+            manifest_info.size = len(manifest_json)
+            tar.addfile(manifest_info, io.BytesIO(manifest_json))
+
+        journal_path = tmp_path / "journal"
+        journal_path.mkdir()
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_path))
+
+        import solstone.think.utils as think_utils
+
+        think_utils._journal_path_cache = None
+
+        with pytest.raises(ValueError, match="empty filename.*120000_300/"):
+            import_archive(archive_path)
+
+        assert not (journal_path / "chronicle" / "20250101" / "120000_300").exists()
+
+    def test_create_archive_import_archive_round_trip_deconflicts(
+        self, tmp_path, monkeypatch
+    ):
+        """AC#6: a real exported archive imports and deconflicts collisions."""
+        from solstone.observe.transfer import create_archive, import_archive
+
+        source_journal = tmp_path / "source-journal"
+        source_day = source_journal / "chronicle" / "20250101"
+        first_source = source_day / "120000_300" / "audio.flac"
+        second_source = source_day / "130000_300" / "screen.jsonl"
+        first_content = b"source collision content"
+        second_content = b'{"frame": "source noncollision"}\n'
+        first_source.parent.mkdir(parents=True)
+        second_source.parent.mkdir(parents=True)
+        first_source.write_bytes(first_content)
+        second_source.write_bytes(second_content)
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(source_journal))
+
+        import solstone.think.utils as think_utils
+
+        think_utils._journal_path_cache = None
+
+        archive_path = tmp_path / "roundtrip.tgz"
+        create_archive("20250101", archive_path)
+
+        default_stream = think_utils.DEFAULT_STREAM
+        target_journal = tmp_path / "target-journal"
+        colliding_path = (
+            target_journal
+            / "chronicle"
+            / "20250101"
+            / default_stream
+            / "120000_300"
+            / "audio.flac"
+        )
+        existing_content = b"target existing content"
+        colliding_path.parent.mkdir(parents=True)
+        colliding_path.write_bytes(existing_content)
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(target_journal))
+        think_utils._journal_path_cache = None
+
+        result = import_archive(archive_path)
+
+        target_day = target_journal / "chronicle" / "20250101" / default_stream
+        non_colliding_path = target_day / "130000_300" / "screen.jsonl"
+        deconflicted_paths = [
+            path
+            for path in target_day.iterdir()
+            if path.is_dir()
+            and path.name != "120000_300"
+            and (path / "audio.flac").exists()
+            and (path / "audio.flac").read_bytes() == first_content
+        ]
+
+        assert result["status"] == "imported"
+        assert non_colliding_path.read_bytes() == second_content
+        assert colliding_path.read_bytes() == existing_content
+        assert deconflicted_paths
+
 
 class TestManifestValidation:
     """Tests for manifest reading and validation."""

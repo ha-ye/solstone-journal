@@ -39,7 +39,7 @@ from solstone.observe import protocol
 from solstone.observe.peer_lookup import PeerInfo, PeerLookupError, resolve_peer
 from solstone.observe.pl_http import PlHttpSession
 from solstone.think.callosum import callosum_send
-from solstone.think.journal_io import install_file
+from solstone.think.journal_io import contained_path, install_file
 from solstone.think.link.bundle import load_client_identity
 from solstone.think.link.dialer import TunnelClient, TunnelRequestError
 from solstone.think.link.paths import relay_url
@@ -341,50 +341,75 @@ def import_archive(
             "validation": validation,
         }
 
-    # Ensure day directory exists
-    day_dir = day_path(day)
+    journal = get_journal()
 
-    # Extract segments
+    def _reject_if_unsafe(component: str, kind: str) -> None:
+        try:
+            contained_path(journal, component)
+        except ValueError as exc:
+            raise ValueError(
+                f"Refusing to import archive: unsafe {kind} {component!r} "
+                f"escapes the journal ({exc})"
+            ) from exc
+
     imported = []
     with tarfile.open(archive_path, "r:gz") as tar:
+        members = tar.getmembers()
+        plan: list[tuple[str, str, Path, list[tuple[tarfile.TarInfo, Path]]]] = []
+
         for original_arc_key, target_arc_key in validation["import_as"].items():
-            target_dir = day_dir / target_arc_key
+            _reject_if_unsafe(target_arc_key, "segment key")
+            target_dir = contained_path(journal, f"{day}/{target_arc_key}")
+
+            planned_files = []
+            prefix = f"{original_arc_key}/"
+            for member in members:
+                if member.name.startswith(prefix) and member.isfile():
+                    filename = member.name[len(prefix) :]
+                    if not filename:
+                        raise ValueError(
+                            "Refusing to import archive member with empty filename "
+                            f"for segment {original_arc_key!r} -> "
+                            f"{target_arc_key!r}: {member.name!r}"
+                        )
+                    _reject_if_unsafe(filename, "member filename")
+                    target_path = contained_path(
+                        journal,
+                        f"{day}/{target_arc_key}/{filename}",
+                    )
+                    planned_files.append((member, target_path))
+
+            plan.append((original_arc_key, target_arc_key, target_dir, planned_files))
+
+        for original_arc_key, target_arc_key, target_dir, planned_files in plan:
             target_dir.mkdir(parents=True, exist_ok=True)
 
-            # Extract files for this segment (archived as stream/segment/file)
-            prefix = f"{original_arc_key}/"
-            for member in tar.getmembers():
-                if member.name.startswith(prefix) and member.isfile():
-                    # Extract to target segment directory
-                    filename = member.name[len(prefix) :]
-                    target_path = target_dir / filename
-
-                    # Extract file content
-                    source = tar.extractfile(member)
-                    if source:
-                        temp_path = None
-                        temp_handle = None
-                        promoted = False
-                        try:
-                            temp_handle = tempfile.NamedTemporaryFile(
-                                mode="wb",
-                                dir=target_dir,
-                                prefix=".import_",
-                                suffix=".tmp",
-                                delete=False,
-                            )
-                            temp_path = Path(temp_handle.name)
-                            shutil.copyfileobj(source, temp_handle)
+            for member, target_path in planned_files:
+                source = tar.extractfile(member)
+                if source:
+                    temp_path = None
+                    temp_handle = None
+                    promoted = False
+                    try:
+                        temp_handle = tempfile.NamedTemporaryFile(
+                            mode="wb",
+                            dir=target_dir,
+                            prefix=".import_",
+                            suffix=".tmp",
+                            delete=False,
+                        )
+                        temp_path = Path(temp_handle.name)
+                        shutil.copyfileobj(source, temp_handle)
+                        temp_handle.close()
+                        install_file(temp_path, target_path)
+                        promoted = True
+                        # Preserve modification time (install_file does not)
+                        os.utime(target_path, (member.mtime, member.mtime))
+                    finally:
+                        if temp_handle is not None and not temp_handle.closed:
                             temp_handle.close()
-                            install_file(temp_path, target_path)
-                            promoted = True
-                            # Preserve modification time (install_file does not)
-                            os.utime(target_path, (member.mtime, member.mtime))
-                        finally:
-                            if temp_handle is not None and not temp_handle.closed:
-                                temp_handle.close()
-                            if temp_path is not None and not promoted:
-                                temp_path.unlink(missing_ok=True)
+                        if temp_path is not None and not promoted:
+                            temp_path.unlink(missing_ok=True)
 
             if original_arc_key != target_arc_key:
                 logger.info(f"  Imported: {original_arc_key} -> {target_arc_key}")
