@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
-import platform
 import sys
 import time
 import webbrowser
@@ -16,23 +14,15 @@ import webbrowser
 from solstone.think.journal_config import get_journal_config_path
 from solstone.think.services import portal_client, scout, spl
 
+logger = logging.getLogger(__name__)
+
 MIN_WAIT_SECONDS = 60
 MAX_WAIT_SECONDS = 3600
 
-STDOUT_OPENING = "Opening services.solstone.app to enable scout..."
+STDOUT_LINK_TEMPLATE = "To enable scout, open this link in any browser:\n\n    {url}\n"
+STDOUT_OPENED_BROWSER = "Opening it in your browser now."
 STDOUT_WAITING = "Waiting for you to finish in the browser (up to 15 minutes)..."
 STDOUT_SUCCESS = "Scout enabled."
-STDOUT_DEVICE_CODE_TEMPLATE = (
-    "Open this URL in any browser:\n"
-    "\n"
-    "    {url}\n"
-    "\n"
-    "Then enter this code when prompted:\n"
-    "\n"
-    "    {code}\n"
-    "\n"
-    "Waiting for you to finish in the browser (up to 15 minutes)..."
-)
 STDOUT_DISABLE_SUCCESS = "Scout disabled."
 STDOUT_DISABLE_PRESERVED_MANUAL_KEY = (
     "Scout disabled — your manually-pasted key was preserved."
@@ -71,7 +61,6 @@ ERROR_MESSAGES: dict[str, str] = {
         "A manual Gemini key is already present in journal config. "
         "Use --force to overwrite with a portal-provisioned key."
     ),
-    "rate_limited": "too many enable attempts from this network — wait an hour and try again.",
     "already_disabled": "solstone scout is not enabled on this machine.",
     "spl_already_enabled": "sol private link is already enabled. No change needed.",
     "spl_already_disabled": "sol private link is not enabled on this machine.",
@@ -206,22 +195,12 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _is_headless() -> bool:
-    if os.environ.get("SSH_TTY"):
-        return True
-    return (
-        platform.system() == "Linux"
-        and not os.environ.get("DISPLAY")
-        and not os.environ.get("WAYLAND_DISPLAY")
-    )
-
-
 def _open_browser(url: str) -> bool:
-    return webbrowser.open(url, new=2)
-
-
-def _print_device_code_instructions(url: str, code: str) -> None:
-    print(STDOUT_DEVICE_CODE_TEMPLATE.format(url=url, code=code))
+    try:
+        return bool(webbrowser.open(url, new=2))
+    except Exception as exc:
+        logger.warning("scout browser open failed: %s", exc)
+        return False
 
 
 def _poll_handoff(base_url: str, nonce: str, wait_seconds: int) -> dict:
@@ -243,20 +222,6 @@ def _poll_handoff(base_url: str, nonce: str, wait_seconds: int) -> dict:
     raise _CliError("consent_timeout")
 
 
-def _enable_scout_device_code(base_url: str, wait_seconds: int) -> None:
-    outcome = portal_client.mint_device_code(base_url)
-    if outcome.kind == "failed":
-        raise _CliError(outcome.reason or "unexpected_payload")
-    if not outcome.nonce or not outcome.code:
-        raise _CliError("unexpected_payload")
-    _print_device_code_instructions(
-        portal_client.device_code_entry_url(base_url),
-        outcome.code,
-    )
-    payload = _poll_handoff(base_url, outcome.nonce, wait_seconds)
-    scout.provision_scout_handoff(payload)
-
-
 def _enable_scout(args: argparse.Namespace) -> int:
     if not get_journal_config_path().exists():
         _print_error("journal_not_initialized")
@@ -272,18 +237,14 @@ def _enable_scout(args: argparse.Namespace) -> int:
 
     base_url = portal_client.portal_base_url()
     try:
-        if _is_headless():
-            _enable_scout_device_code(base_url, args.wait)
-        else:
-            nonce = portal_client.mint_nonce()
-            browser_url = portal_client.browser_url(base_url, nonce)
-            print(STDOUT_OPENING)
-            if _open_browser(browser_url):
-                print(STDOUT_WAITING)
-                payload = _poll_handoff(base_url, nonce, args.wait)
-                scout.provision_scout_handoff(payload)
-            else:
-                _enable_scout_device_code(base_url, args.wait)
+        nonce = portal_client.mint_nonce()
+        browser_url = portal_client.browser_url(base_url, nonce)
+        print(STDOUT_LINK_TEMPLATE.format(url=browser_url))
+        if _open_browser(browser_url):
+            print(STDOUT_OPENED_BROWSER)
+        print(STDOUT_WAITING)
+        payload = _poll_handoff(base_url, nonce, args.wait)
+        scout.provision_scout_handoff(payload)
     except _CliError as exc:
         _print_error(exc.token)
         return EXIT_CODES.get(exc.token, 1)

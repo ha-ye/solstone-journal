@@ -23,7 +23,8 @@ BLOCKED_COPY_RE = re.compile(
 
 def test_services_cli_copy_avoids_blocked_brand_terms() -> None:
     strings = [
-        cli.STDOUT_OPENING,
+        cli.STDOUT_LINK_TEMPLATE,
+        cli.STDOUT_OPENED_BROWSER,
         cli.STDOUT_WAITING,
         cli.STDOUT_SUCCESS,
         cli.STDOUT_SPL_SUCCESS,
@@ -98,10 +99,6 @@ def _install_urlopen(monkeypatch: pytest.MonkeyPatch, items: list[object]) -> No
         "write_failed",
         "already_enabled",
         "manual_key_present",
-        "device_code_happy",
-        "device_code_rate_limited",
-        "device_code_portal_unreachable",
-        "device_code_unexpected_payload",
         "disable_happy",
         "disable_already_disabled",
         "disable_manual_preserved",
@@ -117,7 +114,6 @@ def test_cli_branch_output_avoids_blocked_brand_terms(
     tmp_path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(cli, "_is_headless", lambda: False)
     monkeypatch.setattr(cli, "_open_browser", lambda _url: True)
 
     argv = ["enable", "scout"]
@@ -154,62 +150,6 @@ def test_cli_branch_output_avoids_blocked_brand_terms(
         config.setdefault("env", {})["GOOGLE_API_KEY"] = "manual"
         config.pop("services", None)
         write_journal_config(config)
-    elif branch == "device_code_happy":
-        monkeypatch.setattr(cli, "_is_headless", lambda: True)
-        monkeypatch.setattr(
-            portal_client,
-            "mint_device_code",
-            lambda _base_url: portal_client.DeviceCodeOutcome(
-                kind="success",
-                nonce="A" * 52,
-                code="SCOUT-2345-6789",
-                expires_in=900,
-            ),
-        )
-        monkeypatch.setattr(
-            portal_client,
-            "poll_handoff_once",
-            lambda *_args, **_kwargs: portal_client.PollOutcome(
-                kind="success",
-                payload={
-                    "google_api_key": "google-device",
-                    "dispatch_token": "dispatch-device",
-                    "account_id": "acct-device",
-                    "created_at": "2026-05-24T00:00:00Z",
-                },
-            ),
-        )
-        monkeypatch.setattr(cli.scout, "provision_scout_handoff", lambda _payload: None)
-    elif branch == "device_code_rate_limited":
-        monkeypatch.setattr(cli, "_is_headless", lambda: True)
-        monkeypatch.setattr(
-            portal_client,
-            "mint_device_code",
-            lambda _base_url: portal_client.DeviceCodeOutcome(
-                kind="failed",
-                reason="rate_limited",
-            ),
-        )
-    elif branch == "device_code_portal_unreachable":
-        monkeypatch.setattr(cli, "_is_headless", lambda: True)
-        monkeypatch.setattr(
-            portal_client,
-            "mint_device_code",
-            lambda _base_url: portal_client.DeviceCodeOutcome(
-                kind="failed",
-                reason="portal_unreachable",
-            ),
-        )
-    elif branch == "device_code_unexpected_payload":
-        monkeypatch.setattr(cli, "_is_headless", lambda: True)
-        monkeypatch.setattr(
-            portal_client,
-            "mint_device_code",
-            lambda _base_url: portal_client.DeviceCodeOutcome(
-                kind="failed",
-                reason="unexpected_payload",
-            ),
-        )
     elif branch == "disable_happy":
         cli.scout.provision_scout_handoff(
             {
