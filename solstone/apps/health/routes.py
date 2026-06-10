@@ -100,11 +100,16 @@ def _build_agent_error_seed(scan: AgentFailureScan) -> list[dict]:
     ]
 
 
+def _errors_today_label(count: int | None) -> str:
+    return "error today" if count == 1 else "errors today"
+
+
 @health_bp.route("/")
 def index():
     backlog = _load_backlog()
     agent_failure_scan = read_unresolved_agent_failures()
     agent_error_seed = _build_agent_error_seed(agent_failure_scan)
+    agent_error_count = len(agent_error_seed)
     return render_template(
         "app.html",
         health_backlog_verdict=verdict(backlog),
@@ -112,7 +117,10 @@ def index():
         health_readiness=_safe_readiness_snapshot(),
         health_agent_errors=agent_error_seed,
         health_agent_errors_ok=agent_failure_scan.ok,
-        health_agent_errors_count=len(agent_error_seed),
+        health_agent_errors_count=agent_error_count,
+        health_agent_errors_label=_errors_today_label(
+            agent_error_count if agent_failure_scan.ok else None
+        ),
     )
 
 

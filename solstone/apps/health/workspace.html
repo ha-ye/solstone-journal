@@ -1373,11 +1373,11 @@
       </a>
       <div class="glance-metric glance-metric-activity" id="glanceActivity">
         <span class="glance-metric-value" id="glanceActivityValue">0</span>
-        <span class="glance-metric-label">last hour</span>
+        <span class="glance-metric-label">events last hour</span>
       </div>
       <a class="glance-metric glance-metric-errors" href="#focus=recent-errors" id="glanceErrors">
         <span class="glance-metric-value" id="glanceErrorsValue">{{ health_agent_errors_count if health_agent_errors_ok else "—" }}</span>
-        <span class="glance-metric-label">errors today</span>
+        <span class="glance-metric-label" id="glanceErrorsLabel">{{ health_agent_errors_label }}</span>
       </a>
     </div>
   </div>
@@ -1407,8 +1407,8 @@
           </div>
         </div>
       </div>
-      <div class="vitals-section" role="group" aria-label="Agents: 0 running">
-        <div class="vitals-label" aria-hidden="true">agents</div>
+      <div class="vitals-section" role="group" aria-label="Talents: 0 running">
+        <div class="vitals-label" aria-hidden="true">talents</div>
         <div class="vitals-value" id="agentsValue" aria-hidden="true">
           <span>0 running</span>
         </div>
@@ -1549,7 +1549,7 @@
     <!-- Cortex Agents -->
     <div class="dashboard-card activity-section hidden" id="cortexSection">
       <div class="activity-section-header">
-        Active agents
+        Active talents
       </div>
       <div class="activity-grid" id="cortexGrid"></div>
     </div>
@@ -1732,6 +1732,7 @@
     glanceCostValue: document.getElementById('glanceCostValue'),
     glanceActivityValue: document.getElementById('glanceActivityValue'),
     glanceErrorsValue: document.getElementById('glanceErrorsValue'),
+    glanceErrorsLabel: document.getElementById('glanceErrorsLabel'),
     serviceDots: document.getElementById('serviceDots'),
     agentsValue: document.getElementById('agentsValue'),
     tasksValue: document.getElementById('tasksValue'),
@@ -2074,9 +2075,11 @@
     const today = todayKey();
     if (!state.agentErrorsOk) {
       elements.glanceErrorsValue.textContent = '—';
+      elements.glanceErrorsLabel.textContent = 'errors today';
     } else {
       const errorsToday = state.recentErrors.filter(error => dayKeyFromTimestamp(error.ts) === today).length;
       elements.glanceErrorsValue.textContent = String(errorsToday);
+      elements.glanceErrorsLabel.textContent = (errorsToday === 1 ? 'error today' : 'errors today');
     }
   }
 
@@ -2106,14 +2109,14 @@
     if (state.lastAgentFinishTs) {
       const ago = relativeTime(Date.now() - state.lastAgentFinishTs);
       const el = ensureChild(idx++);
-      el.textContent = 'last agent finished ' + ago + ' ago';
+      el.textContent = 'last talent finished ' + ago + ' ago';
       el.style.color = '';
     }
 
     const errCount = state.recentErrors.length;
     const errEl = ensureChild(idx++);
     if (!state.agentErrorsOk) {
-      errEl.textContent = "couldn't check agent errors today.";
+      errEl.textContent = "couldn't check talent errors today.";
       errEl.style.color = '#92400e';
     } else if (errCount > 0) {
       errEl.textContent = errCount + ' recent error' + (errCount !== 1 ? 's' : '');
@@ -2273,7 +2276,7 @@
     if (!state.agentErrorsOk && entries.length > 0) {
       const degraded = document.createElement('div');
       degraded.style.cssText = 'padding: 0.3em 0; font-size: 0.85em; color: #92400e;';
-      degraded.textContent = "couldn't check agent errors today.";
+      degraded.textContent = "couldn't check talent errors today.";
       container.appendChild(degraded);
     }
 
@@ -2299,7 +2302,7 @@
       const empty = document.createElement('div');
       empty.style.cssText = 'padding: 0.3em 0; font-size: 0.85em; color: #6b7280;';
       empty.textContent = !state.agentErrorsOk
-        ? "couldn't check agent errors today."
+        ? "couldn't check talent errors today."
         : (state.recentErrorsFilter ? 'no matching recent errors yet.' : 'no recent errors.');
       container.appendChild(empty);
       if (state.pendingRecentErrorsFocus) {
@@ -2392,7 +2395,7 @@
     if (types.has('agent')) {
       const advice = document.createElement('div');
       advice.style.cssText = 'padding: 0.25em 0; font-size: 0.8em; color: #9ca3af;';
-      advice.appendChild(document.createTextNode('Agent errors usually resolve on the next run. '));
+      advice.appendChild(document.createTextNode('Talent errors usually resolve on the next run. '));
       const btn = document.createElement('button');
       btn.setAttribute('data-action', 'view-logs');
       btn.setAttribute('data-service', 'cortex');
@@ -2551,7 +2554,7 @@
     if (crashedCount > 0) serviceParts.push(crashedCount + ' needs attention');
     sections[0]?.setAttribute('aria-label', 'Services: ' + (serviceParts.join(', ') || 'none'));
 
-    sections[1]?.setAttribute('aria-label', 'Agents: ' + state.agentCount + ' running');
+    sections[1]?.setAttribute('aria-label', 'Talents: ' + state.agentCount + ' running');
     sections[2]?.setAttribute('aria-label', 'Tasks: ' + state.tasks.length + ' active');
 
     const staleCount = state.health?.stale_heartbeats?.length || 0;
@@ -3416,7 +3419,7 @@
     // Progress bars
     const progressItems = [];
     if (d.agents_total > 0) {
-      progressItems.push({ label: 'Agents: ' + (d.agents_completed || 0) + ' / ' + d.agents_total, pct: Math.round((d.agents_completed || 0) / d.agents_total * 100) });
+      progressItems.push({ label: 'Talents: ' + (d.agents_completed || 0) + ' / ' + d.agents_total, pct: Math.round((d.agents_completed || 0) / d.agents_total * 100) });
     }
     if (d.segments_total > 0) {
       progressItems.push({ label: 'Segments: ' + (d.segments_completed || 0) + ' / ' + d.segments_total, pct: Math.round((d.segments_completed || 0) / d.segments_total * 100) });

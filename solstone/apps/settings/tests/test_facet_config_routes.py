@@ -57,16 +57,20 @@ def test_create_facet_route_validation_order_and_slug_rule(settings_env):
 
     empty = client.post("/app/settings/api/facet", json={"title": ""})
     symbols = client.post("/app/settings/api/facet", json={"title": "***"})
-    leading_digit = client.post("/app/settings/api/facet", json={"title": "1on1"})
+    leading_digit = client.post(
+        "/app/settings/api/facet", json={"title": "2026 Planning"}
+    )
     facets.create_facet("Personal")
     duplicate = client.post("/app/settings/api/facet", json={"title": "Personal"})
 
     assert empty.status_code == 400
     assert _reason_code(empty) == "missing_required_field"
+    assert empty.get_json()["detail"] == "Title is required"
     assert symbols.status_code == 400
     assert _reason_code(symbols) == "invalid_request_value"
     assert leading_digit.status_code == 400
     assert _reason_code(leading_digit) == "invalid_request_value"
+    assert leading_digit.get_json()["detail"] == "Title must start with a letter."
     assert duplicate.status_code == 409
     assert _reason_code(duplicate) == "facet_already_exists"
 

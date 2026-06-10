@@ -9,11 +9,19 @@ import re
 import time
 from datetime import date
 
+from solstone.apps.health import routes as health_routes
 from solstone.convey.reasons import REPROCESS_ALREADY_COMPLETE
 from solstone.think.talent_runs import AgentFailure, AgentFailureScan
 
 DAY = "20250115"
 SEGMENT = "120000_300"
+
+
+def test_errors_today_label_pluralizes_count():
+    assert health_routes._errors_today_label(1) == "error today"
+    assert health_routes._errors_today_label(0) == "errors today"
+    assert health_routes._errors_today_label(2) == "errors today"
+    assert health_routes._errors_today_label(None) == "errors today"
 
 
 def _readiness_snapshot(severity: str = "neutral") -> dict:
@@ -245,11 +253,11 @@ class TestInfoRoute:
         assert "window.HEALTH_AGENT_ERRORS = []" in html
         assert "window.HEALTH_AGENT_ERRORS_OK = false" in html
         assert re.search(r'id="glanceErrorsValue">—</span>', html)
-        assert "couldn't check agent errors today." in html
+        assert "couldn't check talent errors today." in html
         assert not re.search(r'id="glanceErrorsValue">0</span>', html)
         assert (
             "empty.textContent = !state.agentErrorsOk\n"
-            '        ? "couldn\'t check agent errors today."\n'
+            '        ? "couldn\'t check talent errors today."\n'
             "        : (state.recentErrorsFilter ? 'no matching recent errors yet.' : "
             "'no recent errors.');"
         ) in html

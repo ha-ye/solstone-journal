@@ -2001,7 +2001,7 @@ def create_facet() -> Any:
         if not slug or not re.fullmatch(r"[a-z][a-z0-9_-]*", slug):
             return error_response(
                 INVALID_REQUEST_VALUE,
-                detail="Title must contain at least one letter or number",
+                detail="Title must start with a letter.",
             )
 
         # Check for conflicts with existing facets

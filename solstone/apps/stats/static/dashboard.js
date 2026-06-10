@@ -854,7 +854,7 @@ const Dashboard = (function() {
     statsGrid.appendChild(statCard('audio hours', totalAudioHours, 'hours'));
     statsGrid.appendChild(statCard('screen hours', totalScreenHours, 'hours'));
     statsGrid.appendChild(statCard('total tokens', fmtTokens(totalTokens), 'tokens'));
-    statsGrid.appendChild(statCard('disk usage', fmtBytes(totals.day_bytes || 0), 'journal days'));
+    statsGrid.appendChild(statCard('disk usage', fmtBytes(totals.day_bytes || 0), 'on disk'));
     
     // Render progress cards
     const progressSection = document.getElementById('progressSection');

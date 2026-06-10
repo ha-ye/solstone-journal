@@ -2235,7 +2235,7 @@ button:focus:not(:focus-visible) {
     <select class="settings-nav-select" id="navSelect">
       <optgroup label="identity">
         <option value="profile">profile</option>
-        <option value="agent">agent identity</option>
+        <option value="agent">sol&#32;identity</option>
       </optgroup>
       <optgroup label="AI">
         <option value="providers">providers</option>
@@ -2275,7 +2275,7 @@ button:focus:not(:focus-visible) {
     <div class="settings-nav-group">
       <div class="settings-nav-label">identity</div>
       <button class="settings-nav-item active" data-section="profile" id="tab-profile" role="tab" aria-selected="true" aria-controls="section-profile" tabindex="0">profile</button>
-      <button class="settings-nav-item" data-section="agent" id="tab-agent" role="tab" aria-selected="false" aria-controls="section-agent" tabindex="-1">agent identity</button>
+      <button class="settings-nav-item" data-section="agent" id="tab-agent" role="tab" aria-selected="false" aria-controls="section-agent" tabindex="-1">sol&#32;identity</button>
     </div>
     <div class="settings-nav-group">
       <div class="settings-nav-label">AI</div>
@@ -3243,13 +3243,13 @@ button:focus:not(:focus-visible) {
 
     <!-- Agent Identity Section -->
     <section class="settings-section" id="section-agent" role="tabpanel" aria-labelledby="tab-agent">
-      <h2>agent identity</h2>
+      <h2>sol&#32;identity</h2>
       <p class="settings-section-desc">Your assistant's name and identity.</p>
 
       <form class="settings-form" onsubmit="return false;">
 
       <div class="settings-field">
-        <label for="field-agent-name">agent name</label>
+        <label for="field-agent-name">name</label>
         <input type="text" id="field-agent-name" placeholder="sol">
         <small>The name your assistant uses to identify itself</small>
       </div>
@@ -3268,7 +3268,7 @@ button:focus:not(:focus-visible) {
 
       <div class="settings-field">
         <button class="setup-btn" id="resetAgentName" style="background: #6c757d; font-size: 0.85em; padding: 0.4em 1em;">reset to default</button>
-        <small>reset the agent name back to "sol"</small>
+        <small>reset the name back to "sol"</small>
       </div>
       </form>
     </section>
@@ -7830,7 +7830,7 @@ if (agentNameInput) {
       });
       const result = await response.json();
       if (!result.success) {
-        throw new Error(result.error || 'Could not save agent name');
+        throw new Error(result.error || 'Could not save name');
       }
 
       configData = result.config;
@@ -7866,9 +7866,9 @@ if (resetAgentBtn) {
         if (statusEl) statusEl.textContent = 'default';
         const dateEl = document.getElementById('agent-named-date');
         if (dateEl) dateEl.textContent = '—';
-        notifySuccess('Reset', 'Agent name reset to sol');
+        notifySuccess('Reset', 'Name reset to sol');
       } else {
-        notifyError('Reset Failed', result.error || 'Could not reset agent name');
+        notifyError('Reset Failed', result.error || 'Could not reset name');
       }
     } catch (err) {
       notifyError('Reset Failed', err.message);

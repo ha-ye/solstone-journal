@@ -196,7 +196,7 @@ def test_agent_error_seed_bootstrap_and_dedupe_are_wired(health_env):
 def test_agent_error_degraded_copy_is_wired(health_env):
     rendered = _render_health_workspace(health_env)
 
-    assert "couldn't check agent errors today." in rendered
+    assert "couldn't check talent errors today." in rendered
     assert "elements.glanceErrorsValue.textContent = '—';" in rendered
     assert (
         "state.recentErrors.length === 0 && !state.recentErrorsFilter && "

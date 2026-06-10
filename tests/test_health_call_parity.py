@@ -145,14 +145,16 @@ def test_health_request_mapping(monkeypatch):
     ]
 
 
-def test_health_null_fields_render_none(runner, journal, monkeypatch):
+def test_health_null_fields_render_dash(runner, journal, monkeypatch):
     _freeze_health_surface(journal, monkeypatch)
 
     result = runner.invoke(app, ["summary", "--day", "20260410"])
 
     assert result.exit_code == 0
-    assert "  coverage_ratio: None\n" in result.stdout
-    assert "  last_segment_at: None\n" in result.stdout
+    assert "  coverage_ratio: —\n" in result.stdout
+    assert "  last_segment_at: —\n" in result.stdout
+    assert "  talent_run_failures_24h: —\n" in result.stdout
+    assert "None" not in result.stdout
 
 
 def test_health_range_validation_detail_to_stderr(runner):

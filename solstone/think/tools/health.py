@@ -32,6 +32,10 @@ def _handle_health_error(err: ConveyClientError) -> NoReturn:
     _exit_with(err.detail or err.error)
 
 
+def _dash(value: object) -> object:
+    return "—" if value is None else value
+
+
 def _render_summary(report: dict) -> None:
     capture = report["capture_health"]
     synthesis = report["synthesis_health"]
@@ -41,13 +45,13 @@ def _render_summary(report: dict) -> None:
     typer.echo("Capture")
     typer.echo(f"  hours_with_capture: {capture['hours_with_capture']}")
     typer.echo(f"  hours_total: {capture['hours_total']}")
-    typer.echo(f"  coverage_ratio: {capture['coverage_ratio']}")
+    typer.echo(f"  coverage_ratio: {_dash(capture['coverage_ratio'])}")
     typer.echo(
         "  facets_with_recent_capture: "
         + ", ".join(capture["facets_with_recent_capture"])
     )
     typer.echo("  facets_silent_24h: " + ", ".join(capture["facets_silent_24h"]))
-    typer.echo(f"  last_segment_at: {capture['last_segment_at']}")
+    typer.echo(f"  last_segment_at: {_dash(capture['last_segment_at'])}")
     typer.echo("Synthesis")
     typer.echo(f"  activities_count: {synthesis['activities_count']}")
     typer.echo(
@@ -61,14 +65,14 @@ def _render_summary(report: dict) -> None:
         + str(synthesis["activities_anticipated_unfilled"])
     )
     typer.echo(
-        "  talent_run_failures_24h: " + str(synthesis["talent_run_failures_24h"])
+        "  talent_run_failures_24h: " + str(_dash(synthesis["talent_run_failures_24h"]))
     )
     typer.echo(
         "  talent_degraded_outputs_24h: "
-        + str(synthesis["talent_degraded_outputs_24h"])
+        + str(_dash(synthesis["talent_degraded_outputs_24h"]))
     )
     typer.echo(
-        "  indexer_last_rebuild_at: " + str(synthesis["indexer_last_rebuild_at"])
+        "  indexer_last_rebuild_at: " + str(_dash(synthesis["indexer_last_rebuild_at"]))
     )
     backlog = report["segment_backlog"]
     n = backlog["not_thought"]

@@ -137,7 +137,7 @@ def test_dashboard_truthfulness_strings_use_allowed_terms():
     )
     health_source = health_workspace.read_text(encoding="utf-8")
     health_strings = [
-        "couldn't check agent errors today.",
+        "couldn't check talent errors today.",
         "this host's stream isn't reporting yet — showing",
         "this host is unknown — showing",
         "log updates may be delayed",

@@ -1095,11 +1095,11 @@
 </div>
 
 <div class="agents-content">
-  <h2 class="sr-only">agent runs</h2>
+  <h2 class="sr-only">talent runs</h2>
   <!-- Loading state -->
   <div id="loading-view" class="loading" role="status" aria-live="polite">
     <div class="spinner" aria-hidden="true"></div>
-    <div>loading agents...</div>
+    <div>loading talents...</div>
   </div>
 
   <div id="agents-status" class="sr-only" role="status" aria-live="polite"></div>
@@ -1111,8 +1111,8 @@
     <div id="agent-groups"></div>
     <div id="empty-state" class="empty-state" style="display: none;">
       <div class="empty-state-icon">🤖</div>
-      <div class="empty-state-text">No agent runs on this day</div>
-      <div class="empty-state-hint">agent runs will appear here when they complete</div>
+      <div class="empty-state-text">No talent runs on this day</div>
+      <div class="empty-state-hint">talent runs will appear here when they complete</div>
     </div>
   </div>
 
@@ -1153,9 +1153,9 @@
   <!-- Run Detail View -->
   <div id="run-detail-view" style="display: none;">
     <div class="run-detail-breadcrumb">
-      <a class="crumb-link" id="crumb-agents" href="#" onclick="event.preventDefault(); showGridView()">agents</a>
+      <a class="crumb-link" id="crumb-agents" href="#" onclick="event.preventDefault(); showGridView()">talents</a>
       <span class="crumb-sep">/</span>
-      <a class="crumb-link" id="crumb-agent" href="#">agent name</a>
+      <a class="crumb-link" id="crumb-agent" href="#">talent name</a>
       <span class="crumb-sep">/</span>
       <span class="crumb-current" id="crumb-run">Run 09:41</span>
     </div>
@@ -1175,7 +1175,7 @@
 <div id="preview-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="preview-modal-title">
   <div class="modal-content">
     <div class="modal-header">
-      <h3 class="modal-title" id="preview-modal-title">agent prompt</h3>
+      <h3 class="modal-title" id="preview-modal-title">talent prompt</h3>
       <button class="modal-close" onclick="hidePreview()">&times;</button>
     </div>
     <div class="modal-body">
@@ -1226,7 +1226,7 @@
         signalsEl.innerHTML = [
           { label: 'Entities', value: thickness.entity_depth ?? '—' },
           { label: 'Conversations', value: thickness.conversation_count ?? '—' },
-          { label: 'Days', value: thickness.journal_days ?? '—' },
+          { label: 'Active days', value: thickness.journal_days ?? '—' },
           { label: 'Facets', value: thickness.facet_count ?? '—' },
         ].map(s => '<div class="signal"><div class="signal-value">' + s.value + '</div><div class="signal-label">' + s.label + '</div></div>').join('')
           + '<div class="ready-badge ready-' + (thickness.ready ? 'true' : 'false') + '">'
@@ -1491,7 +1491,7 @@
 
     // Render system agents
     if (organized.system.length > 0) {
-      container.appendChild(renderSection('system agents', organized.system));
+      container.appendChild(renderSection('system talents', organized.system));
     }
 
     // Render app agent sections
