@@ -20,12 +20,14 @@ from solstone.think.entities import (
     detach_facet_entity,
     detected_entities_path,
     ensure_entity_memory,
+    entity_last_active_day,
     entity_last_active_ts,
     entity_memory_path,
     entity_slug,
     find_matching_entity,
     get_identity_names,
     iter_detected_entity_names_since,
+    last_active_day_for_ts,
     load_all_attached_entities,
     load_all_facet_relationships,
     load_all_journal_entities,
@@ -142,6 +144,67 @@ def test_entity_last_active_ts_zero_timestamps():
     }
     ts = entity_last_active_ts(entity)
     assert ts == DEFAULT_ACTIVITY_TS
+
+
+@pytest.fixture
+def tz_americas_evening(monkeypatch):
+    """Pin process tz to US Eastern so a UTC-next-day instant is the same local day.
+
+    Journal days bucket on local time, so the derived last-active day must follow
+    local time — this is the evening-Americas case that produced "Tomorrow".
+    """
+    import os
+    import time
+
+    original_tz = os.environ.get("TZ")
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    yield
+    if original_tz is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = original_tz
+    time.tzset()
+
+
+def test_last_active_day_for_ts_uses_local_journal_day(tz_americas_evening):
+    """Evening-Americas instant renders the local journal day, not the next UTC day."""
+    from datetime import datetime, timezone
+
+    # 2026-01-15 23:30 America/New_York == 2026-01-16 04:30 UTC.
+    instant = datetime(2026, 1, 16, 4, 30, tzinfo=timezone.utc)
+    ts_ms = int(instant.timestamp() * 1000)
+
+    assert last_active_day_for_ts(ts_ms) == "20260115"  # local journal day (the fix)
+    assert last_active_day_for_ts(ts_ms) != "20260116"  # NOT the next UTC day (the bug)
+
+
+def test_entity_last_active_day_from_updated_at_local_basis(tz_americas_evening):
+    """entity_last_active_day derives the local journal day from the updated_at epoch."""
+    from datetime import datetime, timezone
+
+    instant = datetime(2026, 1, 16, 4, 30, tzinfo=timezone.utc)
+    ts_ms = int(instant.timestamp() * 1000)
+
+    assert entity_last_active_day({"updated_at": ts_ms}) == "20260115"
+
+
+def test_entity_last_active_day_returns_last_seen_verbatim():
+    """A valid last_seen journal-day string is returned without an epoch round-trip."""
+    entity = {"last_seen": "20260115", "updated_at": 1700000000000}
+    assert entity_last_active_day(entity) == "20260115"
+
+
+def test_entity_last_active_day_malformed_last_seen_falls_through(
+    tz_americas_evening,
+):
+    """Malformed last_seen falls through to the epoch-derived local day."""
+    from datetime import datetime, timezone
+
+    instant = datetime(2026, 1, 16, 4, 30, tzinfo=timezone.utc)
+    ts_ms = int(instant.timestamp() * 1000)
+    entity = {"last_seen": "invalid", "updated_at": ts_ms}
+    assert entity_last_active_day(entity) == "20260115"
 
 
 def test_entity_last_active_ts_negative_timestamps():

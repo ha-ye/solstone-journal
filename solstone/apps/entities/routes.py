@@ -63,10 +63,12 @@ from solstone.think.entities import (
     count_observations,
     delete_detected_entity,
     detach_facet_entity,
+    entity_last_active_day,
     entity_last_active_ts,
     entity_memory_path,
     entity_slug,
     is_valid_entity_type,
+    last_active_day_for_ts,
     load_all_facet_relationships,
     load_all_journal_entities,
     load_detected_entities_recent,
@@ -144,6 +146,7 @@ def get_facet_entities_data(facet_name: str) -> dict:
             entity["has_voiceprint"] = metadata["has_voiceprint"]
         # Add computed activity timestamp for frontend sorting/display
         entity["last_active_ts"] = entity_last_active_ts(entity)
+        entity["last_active_day"] = entity_last_active_day(entity)
 
     # Load detected entities directly from files (excludes attached names/akas)
     detected = load_detected_entities_recent(facet_name)
@@ -805,6 +808,7 @@ def get_entity(facet_name: str, entity_id: str) -> Any:
         entity["has_voiceprint"] = metadata["has_voiceprint"]
         # Add computed activity timestamp for frontend display
         entity["last_active_ts"] = entity_last_active_ts(entity)
+        entity["last_active_day"] = entity_last_active_day(entity)
 
         # Ensure id is set
         if "id" not in entity:
@@ -1294,6 +1298,7 @@ def _build_facet_relationships(
         # Compute last_active_ts for this relationship
         rel_active_ts = entity_last_active_ts(relationship)
         facet_rel["last_active_ts"] = rel_active_ts
+        facet_rel["last_active_day"] = entity_last_active_day(relationship)
 
         # Only count observations and activity from non-detached relationships
         if not is_detached:
@@ -1348,6 +1353,9 @@ def get_journal_entities_data() -> dict:
             "facets": facet_relationships,
             "total_observation_count": total_observation_count,
             "last_active_ts": latest_active_ts,
+            "last_active_day": (
+                last_active_day_for_ts(latest_active_ts) if latest_active_ts else None
+            ),
         }
 
         entities.append(enriched)
@@ -1407,6 +1415,9 @@ def get_journal_entity(entity_id: str) -> Any:
             "facets": facet_relationships,
             "total_observation_count": total_observation_count,
             "last_active_ts": latest_active_ts,
+            "last_active_day": (
+                last_active_day_for_ts(latest_active_ts) if latest_active_ts else None
+            ),
         }
 
         return jsonify({"entity": enriched})

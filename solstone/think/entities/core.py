@@ -135,6 +135,34 @@ def entity_last_active_ts(entity: EntityDict) -> int:
     return DEFAULT_ACTIVITY_TS
 
 
+def last_active_day_for_ts(ts_ms: int) -> str:
+    """Convert a last-active epoch (ms) to a journal-local day string (YYYYMMDD).
+
+    Journal days bucket on local time (datetime.now()-based, e.g.
+    solstone.think.utils.day_path), so an instant is derived in local time here
+    too. This keeps a "now" timestamp on today's journal day instead of slipping
+    to the next UTC day for evening-Americas edits.
+    """
+    return datetime.fromtimestamp(ts_ms / 1000).strftime("%Y%m%d")
+
+
+def entity_last_active_day(entity: EntityDict) -> str:
+    """Get the entity's last-active day as a journal-local YYYYMMDD string.
+
+    Day-basis sibling of entity_last_active_ts(). Returns last_seen verbatim when
+    it is already a valid journal-day string (avoids a lossy epoch round-trip);
+    otherwise derives the day from entity_last_active_ts() on the local basis.
+    """
+    last_seen = entity.get("last_seen")
+    if last_seen and isinstance(last_seen, str) and len(last_seen) == 8:
+        try:
+            datetime.strptime(last_seen, "%Y%m%d")
+            return last_seen
+        except ValueError:
+            pass  # Malformed, fall through to epoch derivation
+    return last_active_day_for_ts(entity_last_active_ts(entity))
+
+
 def is_valid_entity_type(etype: str) -> bool:
     """Validate entity type: alphanumeric and spaces only, at least 3 characters."""
     if not etype or len(etype.strip()) < 3:

@@ -1716,18 +1716,10 @@ function formatDateShort(dateStr) {
   return short;
 }
 
-// Format timestamp (epoch ms) to relative date
-function formatTimestamp(epochMs) {
-  if (!epochMs) return null;
-  const date = new Date(epochMs);
-  const dateStr = date.toISOString().slice(0, 10).replace(/-/g, '');
-  return formatDateShort(dateStr);
-}
-
-// Get display date for entity using pre-computed last_active_ts from server
+// Get display date for entity using server-derived journal-local day (YYYYMMDD)
 function getEntityDisplayDate(entity) {
   if (entity.last_active_ts) {
-    return formatTimestamp(entity.last_active_ts);
+    return formatDateShort(entity.last_active_day);
   }
   return null;
 }
@@ -2077,7 +2069,7 @@ function renderJournalDetailView(entity) {
 
       if (facet.last_active_ts) {
         const date = document.createElement('span');
-        date.textContent = formatTimestamp(facet.last_active_ts);
+        date.textContent = formatDateShort(facet.last_active_day);
         meta.appendChild(date);
       }
 

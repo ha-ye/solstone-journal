@@ -37,10 +37,12 @@ from solstone.think.entities.core import (
     ENTITY_TYPES,
     MAX_ENTITY_SLUG_LENGTH,
     EntityDict,
+    entity_last_active_day,
     entity_last_active_ts,
     entity_slug,
     get_identity_names,
     is_valid_entity_type,
+    last_active_day_for_ts,
 )
 
 # Errors
@@ -143,7 +145,9 @@ __all__ = [
     "ENTITY_TYPES",
     "MAX_ENTITY_SLUG_LENGTH",
     "EntityDict",
+    "entity_last_active_day",
     "entity_last_active_ts",
+    "last_active_day_for_ts",
     "entity_slug",
     "get_identity_names",
     "is_valid_entity_type",
