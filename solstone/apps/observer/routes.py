@@ -40,6 +40,7 @@ from solstone.convey.reasons import (
     INGEST_STORAGE_FAILED,
     INVALID_DAY,
     INVALID_SEGMENT_OR_STREAM,
+    LOCAL_REQUEST_ONLY,
     MISSING_REQUIRED_FIELD,
     PAIRED_DEVICE_NOT_FOUND,
     PL_REVOKED,
@@ -361,6 +362,97 @@ def api_create() -> Any:
             "key_prefix": key[:8],
             "name": name,
             "ingest_url": ingest_url,
+            "protocol_version": protocol.OBSERVER_PROTOCOL_VERSION,
+        }
+    )
+
+
+_REGISTER_REQUIRED_FIELDS = ("platform", "hostname", "stream_type", "version")
+
+
+def _is_trusted_localhost() -> bool:
+    """Direct-loopback check mirroring the convey trust_localhost gate."""
+    is_localhost = request.remote_addr in ("127.0.0.1", "::1", "localhost")
+    proxy_headers = (
+        request.headers.get("X-Forwarded-For")
+        or request.headers.get("X-Real-IP")
+        or request.headers.get("X-Forwarded-Host")
+    )
+    return is_localhost and not proxy_headers
+
+
+@observer_bp.route("/register", methods=["POST"])
+def register() -> Any:
+    """Self-register a local observer and lock its stream identity.
+
+    Loopback-only (the in-handler guard is the sole gate) and require_login-exempt
+    so a local observer can register before setup completes. Mints the DL handle,
+    locks a stream onto the record, and returns the pinned descriptor response.
+    """
+    # Localhost guard FIRST — non-local / proxy-headed callers mint nothing.
+    if not _is_trusted_localhost():
+        return error_response(
+            LOCAL_REQUEST_ONLY,
+            detail="Observer registration requires a direct localhost request.",
+        )
+
+    parsed = request.get_json(force=True, silent=True)
+    data = parsed if isinstance(parsed, dict) else {}
+
+    for field in _REGISTER_REQUIRED_FIELDS:
+        value = data.get(field)
+        if not isinstance(value, str) or not value.strip():
+            return error_response(MISSING_REQUIRED_FIELD, detail=f"{field} is required")
+
+    hostname = data["hostname"].strip()
+    stream_type = data["stream_type"].strip()
+    try:
+        if stream_type == "desktop":
+            stream = stream_name(host=hostname)
+        else:
+            stream = stream_name(host=hostname, qualifier=stream_type)
+    except ValueError as exc:
+        return error_response(INVALID_SEGMENT_OR_STREAM, detail=str(exc))
+
+    key = _generate_key()
+    observer_data = {
+        "key": key,
+        "name": stream,
+        "platform": data["platform"].strip(),
+        "hostname": hostname,
+        "stream_type": stream_type,
+        "label": data.get("label"),
+        "version": data["version"].strip(),
+        "stream": stream,
+        "created_at": now_ms(),
+        "last_seen": None,
+        "last_segment": None,
+        "enabled": True,
+        "stats": {
+            "segments_received": 0,
+            "bytes_received": 0,
+        },
+    }
+
+    if not save_observer(observer_data):
+        return error_response(
+            SETTINGS_OPERATION_FAILED,
+            detail="Failed to save observer",
+        )
+
+    log_app_action(
+        app="observer",
+        facet=None,
+        action="observer_register",
+        params={"name": stream, "key_prefix": key[:8]},
+    )
+
+    return jsonify(
+        {
+            "key": key,
+            "prefix": key[:8],
+            "name": stream,
+            "ingest_url": "/app/observer/ingest",
             "protocol_version": protocol.OBSERVER_PROTOCOL_VERSION,
         }
     )
@@ -832,17 +924,21 @@ def ingest_upload(key: str | None = None) -> Any:
     if not files:
         return error_response(INGEST_NO_FILES, detail="No files uploaded")
 
-    # Determine stream name: trust client-provided stream in meta if valid,
-    # otherwise derive from observer registration name.
-    # Deriving from observer name via stream_name(observer=...) calls _strip_hostname,
-    # which strips qualifiers like ".tmux" — so "fedora.tmux" becomes "fedora",
-    # colliding both observers into one stream.
-    client_stream = meta.get("stream", "").strip()
-    observer_name = observer.get("name", "unknown")
-    if client_stream and re.match(r"^[a-z0-9][a-z0-9._-]*$", client_stream):
-        stream = client_stream
+    # Determine stream name. A registered observer carries a locked stream on its
+    # record — that is authoritative and ignores any client-provided meta.stream.
+    # Otherwise trust a valid client-provided meta.stream, falling back to deriving
+    # from the observer name (lossy: stream_name(observer=...) strips qualifiers
+    # like ".tmux", which is why registered observers lock the stream up front).
+    locked_stream = observer.get("stream")
+    if locked_stream:
+        stream = locked_stream
     else:
-        stream = stream_name(observer=observer_name)
+        client_stream = meta.get("stream", "").strip()
+        observer_name = observer.get("name", "unknown")
+        if client_stream and re.match(r"^[a-z0-9][a-z0-9._-]*$", client_stream):
+            stream = client_stream
+        else:
+            stream = stream_name(observer=observer_name)
 
     body, status = _process_ingest_files(
         observer, key_prefix, segment, day, stream, files
@@ -964,8 +1060,9 @@ def ingest_transfer(key: str) -> Any:
     return jsonify(body), status
 
 
+@observer_bp.route("/ingest/manifest", methods=["GET"])
 @observer_bp.route("/ingest/<key>/manifest", methods=["GET"])
-def ingest_manifest(key: str) -> Any:
+def ingest_manifest(key: str | None = None) -> Any:
     """List available manifest days for an observer."""
     _observer, key_prefix, error = resolve_observer_identity(key)
     if error is not None:
@@ -988,8 +1085,9 @@ def ingest_manifest(key: str) -> Any:
     return jsonify({"days": days})
 
 
+@observer_bp.route("/ingest/manifest/<day>", methods=["GET"])
 @observer_bp.route("/ingest/<key>/manifest/<day>", methods=["GET"])
-def ingest_manifest_day(key: str, day: str) -> Any:
+def ingest_manifest_day(day: str, key: str | None = None) -> Any:
     """Return a transfer manifest for all segments on a given day."""
     _observer, _key_prefix, error = resolve_observer_identity(key)
     if error is not None:
@@ -1125,14 +1223,19 @@ def ingest_segments(day: str, key: str | None = None) -> Any:
     # Get day directory for file verification
     day_dir = day_path(day)
 
-    # Determine stream: trust client-provided query param if valid,
-    # otherwise derive from observer name (same logic as ingest_upload).
-    client_stream = request.args.get("stream", "").strip()
-    observer_name = observer.get("name", "unknown")
-    if client_stream and re.match(r"^[a-z0-9][a-z0-9._-]*$", client_stream):
-        fallback_stream = client_stream
+    # Determine fallback stream for records that don't carry their own. A registered
+    # observer's locked stream is authoritative (ignores the ?stream= query param);
+    # otherwise trust a valid client-provided stream, then derive from observer name.
+    locked_stream = observer.get("stream")
+    if locked_stream:
+        fallback_stream = locked_stream
     else:
-        fallback_stream = stream_name(observer=observer_name)
+        client_stream = request.args.get("stream", "").strip()
+        observer_name = observer.get("name", "unknown")
+        if client_stream and re.match(r"^[a-z0-9][a-z0-9._-]*$", client_stream):
+            fallback_stream = client_stream
+        else:
+            fallback_stream = stream_name(observer=observer_name)
 
     # Build response grouped by segment, deduplicating by sha256
     # Later records overwrite earlier ones (most recent upload wins)

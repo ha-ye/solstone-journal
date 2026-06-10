@@ -125,6 +125,11 @@ LOCAL_REQUEST_REQUIRED = Reason(
     "I couldn't change network access from this request.",
     403,
 )
+LOCAL_REQUEST_ONLY = Reason(
+    "local_request_only",
+    "I couldn't register that observer because this endpoint serves local requests only.",
+    403,
+)
 
 # entities
 ENTITY_NOT_FOUND = Reason("entity_not_found", "I couldn't find that entity.", 404)
