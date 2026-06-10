@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import time
 
-from solstone.think.push.triggers import _append_nudge_log
-
 
 def record_nudge_log(
     kind: str,
@@ -21,6 +19,13 @@ def record_nudge_log(
     Older rows written by push send accounting do not include ``kind``. This
     writer leaves those rows unchanged.
     """
+    # Imported lazily to break a module-load circular import: push.triggers
+    # imports sol_initiated.copy (-> sol_initiated.__init__ -> start ->
+    # nudge_log), so a top-level `from ...triggers import _append_nudge_log`
+    # closes the cycle while triggers is mid-initialization. Deferring to call
+    # time (both modules fully loaded) makes the import order-independent.
+    from solstone.think.push.triggers import _append_nudge_log
+
     _append_nudge_log(
         {
             "ts": int(time.time()),
