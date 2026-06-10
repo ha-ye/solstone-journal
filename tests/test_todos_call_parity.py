@@ -15,7 +15,7 @@ import solstone.apps.todos.routes as todos_routes
 import solstone.apps.todos.todo as todo_mod
 import solstone.think.facets as facets_mod
 from solstone.apps.todos.call import app
-from solstone.apps.todos.todo import TodoChecklist
+from solstone.apps.todos.todo import TodoChecklist, TodoItem
 from solstone.think.convey_client import ConveyClient
 from solstone.think.journal_io import LockTimeout
 from tests._baseline_harness import make_logged_in_test_client
@@ -197,6 +197,26 @@ def test_list_defaults_from_env_and_today(
     assert today_result.stdout == "1: [ ] Today task\n"
 
 
+def test_list_day_option_matches_positional_and_conflicts(
+    runner: CliRunner, journal: Path
+) -> None:
+    _write_todos(journal, "personal", "20240101", [{"text": "Option task"}])
+
+    positional = runner.invoke(app, ["list", "20240101", "--facet", "personal"])
+    option = runner.invoke(app, ["list", "--day", "20240101", "--facet", "personal"])
+    conflict = runner.invoke(
+        app, ["list", "20240101", "--day", "20240102", "--facet", "personal"]
+    )
+
+    assert positional.exit_code == 0
+    assert option.exit_code == 0
+    assert option.stdout == positional.stdout
+    assert conflict.exit_code == 1
+    assert conflict.stderr == (
+        "Error: conflicting day given as argument (20240101) and --day (20240102).\n"
+    )
+
+
 def test_add_success_and_call_action_log(
     runner: CliRunner, journal: Path, frozen_clock: None
 ) -> None:
@@ -372,6 +392,72 @@ def test_done_cancel_errors(
     assert missing.stderr == "Error: line number 1 is out of range (1..0)\n"
     assert locked.exit_code == 1
     assert locked.stderr == "Error: todo list is busy, try again.\n"
+
+
+def test_terminal_state_cli_errors_leave_jsonl_unchanged(
+    runner: CliRunner, journal: Path
+) -> None:
+    completed_path = _write_todos(
+        journal, "personal", "20240101", [{"text": "Done", "completed": True}]
+    )
+    completed_before = _read_jsonl(completed_path)
+    completed_bytes = completed_path.read_bytes()
+
+    cancel_completed = runner.invoke(
+        app, ["cancel", "1", "--day", "20240101", "--facet", "personal"]
+    )
+
+    assert cancel_completed.exit_code == 1
+    assert cancel_completed.stderr == "Error: Cannot cancel a completed todo.\n"
+    assert _read_jsonl(completed_path) == completed_before
+    assert completed_path.read_bytes() == completed_bytes
+
+    cancelled_path = _write_todos(
+        journal, "personal", "20240102", [{"text": "Cancelled", "cancelled": True}]
+    )
+    cancelled_before = _read_jsonl(cancelled_path)
+    cancelled_bytes = cancelled_path.read_bytes()
+
+    done_cancelled = runner.invoke(
+        app, ["done", "1", "--day", "20240102", "--facet", "personal"]
+    )
+
+    assert done_cancelled.exit_code == 1
+    assert done_cancelled.stderr == "Error: Cannot complete a cancelled todo.\n"
+    assert _read_jsonl(cancelled_path) == cancelled_before
+    assert cancelled_path.read_bytes() == cancelled_bytes
+
+
+def test_done_rejects_move_tombstone_without_writing(
+    runner: CliRunner, journal: Path
+) -> None:
+    source_path = _write_todos(journal, "work", "20240101", [{"text": "Move me"}])
+    _ensure_facet(journal, "personal")
+    move_result = runner.invoke(
+        app,
+        [
+            "move",
+            "1",
+            "--day",
+            "20240101",
+            "--from",
+            "work",
+            "--to",
+            "personal",
+        ],
+    )
+    assert move_result.exit_code == 0
+    tombstone_before = _read_jsonl(source_path)
+    tombstone_bytes = source_path.read_bytes()
+
+    done_tombstone = runner.invoke(
+        app, ["done", "1", "--day", "20240101", "--facet", "work"]
+    )
+
+    assert done_tombstone.exit_code == 1
+    assert done_tombstone.stderr == "Error: Cannot complete a cancelled todo.\n"
+    assert _read_jsonl(source_path) == tombstone_before
+    assert source_path.read_bytes() == tombstone_bytes
 
 
 def test_move_success_nudge_consent_and_logs(
@@ -585,17 +671,18 @@ def test_move_missing_source_partial_and_busy(
     assert missing.stderr == "Error: No todos found for day 20240101 in facet 'work'.\n"
 
     _write_todos(journal, "work", "20240101", [{"text": "Partial"}])
-    original_cancel = TodoChecklist.cancel_entry
+    original_apply_cancel = TodoChecklist._apply_cancel
 
     def fail_cancel(
         self: TodoChecklist,
-        line_number: int,
+        item: TodoItem,
+        *,
         cancelled_reason: str | None = None,
         moved_to: str | None = None,
     ):
         raise RuntimeError("cancel failed")
 
-    monkeypatch.setattr(TodoChecklist, "cancel_entry", fail_cancel)
+    monkeypatch.setattr(TodoChecklist, "_apply_cancel", fail_cancel)
     partial = runner.invoke(
         app,
         [
@@ -616,7 +703,7 @@ def test_move_missing_source_partial_and_busy(
         "20240101 --facet work\n"
     )
 
-    monkeypatch.setattr(TodoChecklist, "cancel_entry", original_cancel)
+    monkeypatch.setattr(TodoChecklist, "_apply_cancel", original_apply_cancel)
     _write_todos(journal, "work", "20240102", [{"text": "Busy"}])
     _ensure_facet(journal, "personal")
 

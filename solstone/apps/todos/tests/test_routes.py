@@ -9,8 +9,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from solstone.apps.todos.todo import TodoChecklist
+from solstone.apps.todos.todo import TodoChecklist, TodoItem
 from solstone.convey import create_app
+from solstone.convey.reasons import INVALID_REQUEST_VALUE
 from solstone.think.call import call_app
 from solstone.think.convey_client import ConveyClient
 
@@ -127,13 +128,14 @@ def test_move_route_partial_failure_preserves_source(
 
     def fail_cancel(
         self: TodoChecklist,
-        line_number: int,
+        item: TodoItem,
+        *,
         cancelled_reason: str | None = None,
         moved_to: str | None = None,
     ):
         raise RuntimeError("cancel failed")
 
-    monkeypatch.setattr(TodoChecklist, "cancel_entry", fail_cancel)
+    monkeypatch.setattr(TodoChecklist, "_apply_cancel", fail_cancel)
 
     response = todos_client().post(
         f"/app/todos/{day}/move",
@@ -145,6 +147,54 @@ def test_move_route_partial_failure_preserves_source(
     assert response.get_json()["reason_code"] == "operation_no_longer_available"
     assert _read_jsonl(source_path)[0].get("cancelled") is None
     assert _read_jsonl(target_path)[0]["text"] == "Partial route"
+
+
+def test_done_api_rejects_cancelled_todo_without_writing(
+    tmp_path: Path, todos_client
+) -> None:
+    day = "20260420"
+    path = _write_todo(
+        tmp_path,
+        "personal",
+        day,
+        {"text": "Cancelled task", "cancelled": True},
+    )
+    before = path.read_bytes()
+
+    response = todos_client().post(
+        "/app/todos/api/done",
+        json={"day": day, "facet": "personal", "line_number": 1},
+    )
+
+    assert response.status_code == 400
+    body = response.get_json()
+    assert body["reason_code"] == INVALID_REQUEST_VALUE.code
+    assert body["detail"] == "Cannot complete a cancelled todo."
+    assert path.read_bytes() == before
+
+
+def test_cancel_api_rejects_completed_todo_without_writing(
+    tmp_path: Path, todos_client
+) -> None:
+    day = "20260421"
+    path = _write_todo(
+        tmp_path,
+        "personal",
+        day,
+        {"text": "Completed task", "completed": True},
+    )
+    before = path.read_bytes()
+
+    response = todos_client().post(
+        "/app/todos/api/cancel",
+        json={"day": day, "facet": "personal", "line_number": 1},
+    )
+
+    assert response.status_code == 400
+    body = response.get_json()
+    assert body["reason_code"] == INVALID_REQUEST_VALUE.code
+    assert body["detail"] == "Cannot cancel a completed todo."
+    assert path.read_bytes() == before
 
 
 def test_edit_move_route_cli_byte_parity(

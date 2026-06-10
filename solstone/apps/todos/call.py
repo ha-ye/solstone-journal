@@ -146,7 +146,13 @@ def _print_checklist_response(body: dict[str, Any]) -> None:
 @app.command("list")
 def list_todos(
     day: str | None = typer.Argument(
-        None, help="Journal day in YYYYMMDD format (or set SOL_DAY)."
+        None, help="Journal day in YYYYMMDD format (or use --day / SOL_DAY)."
+    ),
+    day_opt: str | None = typer.Option(
+        None,
+        "--day",
+        "-d",
+        help="Journal day (alternative to the positional argument; or set SOL_DAY).",
     ),
     facet: str | None = typer.Option(
         None, "--facet", "-f", help="Facet name. Omit to show all facets."
@@ -156,7 +162,11 @@ def list_todos(
     ),
 ) -> None:
     """Show the todo checklist for a day (or date range)."""
-    day = _resolve_sol_day_or_today(day)
+    if day is not None and day_opt is not None and day != day_opt:
+        _exit_with(
+            f"Error: conflicting day given as argument ({day}) and --day ({day_opt})."
+        )
+    day = _resolve_sol_day_or_today(day if day is not None else day_opt)
     if facet is None:
         facet = _get_sol_facet()
 

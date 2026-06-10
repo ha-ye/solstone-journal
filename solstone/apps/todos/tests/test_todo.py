@@ -16,6 +16,7 @@ from solstone.apps.todos.todo import (
     TodoItem,
     TodoMovePartialError,
     TodoNotMovableError,
+    TodoTerminalStateError,
     find_cross_facet_matches,
     get_facets_with_todos,
     get_todos,
@@ -483,6 +484,72 @@ def test_checklist_cancel_entry(monkeypatch, journal_root):
     assert data["cancelled"] is True
 
 
+def test_mark_done_rejects_cancelled_item_without_writing_completed(
+    monkeypatch, journal_root
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_root))
+    path = _write_todos(
+        journal_root,
+        "personal",
+        "20240105",
+        [{"text": "x", "cancelled": True}],
+    )
+
+    checklist = TodoChecklist.load("20240105", "personal")
+    with pytest.raises(
+        TodoTerminalStateError, match=r"Cannot complete a cancelled todo\."
+    ):
+        checklist.mark_done(1)
+
+    data = _read_todos(path)
+    assert data[0]["cancelled"] is True
+    assert "completed" not in data[0]
+
+
+def test_mark_done_rejects_completed_item(monkeypatch, journal_root):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_root))
+    _write_todos(
+        journal_root,
+        "personal",
+        "20240105",
+        [{"text": "Done already", "completed": True}],
+    )
+
+    checklist = TodoChecklist.load("20240105", "personal")
+    with pytest.raises(TodoTerminalStateError, match=r"Todo is already completed\."):
+        checklist.mark_done(1)
+
+
+def test_cancel_entry_rejects_completed_item(monkeypatch, journal_root):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_root))
+    _write_todos(
+        journal_root,
+        "personal",
+        "20240105",
+        [{"text": "Done already", "completed": True}],
+    )
+
+    checklist = TodoChecklist.load("20240105", "personal")
+    with pytest.raises(
+        TodoTerminalStateError, match=r"Cannot cancel a completed todo\."
+    ):
+        checklist.cancel_entry(1)
+
+
+def test_cancel_entry_rejects_cancelled_item(monkeypatch, journal_root):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_root))
+    _write_todos(
+        journal_root,
+        "personal",
+        "20240105",
+        [{"text": "Cancelled already", "cancelled": True}],
+    )
+
+    checklist = TodoChecklist.load("20240105", "personal")
+    with pytest.raises(TodoTerminalStateError, match=r"Todo is already cancelled\."):
+        checklist.cancel_entry(1)
+
+
 def test_move_entry_cross_facet_same_day(monkeypatch, journal_root):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_root))
     _write_todos(
@@ -610,13 +677,14 @@ def test_move_entry_partial_failure_preserves_source(monkeypatch, journal_root):
 
     def fail_cancel(
         self: TodoChecklist,
-        line_number: int,
+        item: TodoItem,
+        *,
         cancelled_reason: str | None = None,
         moved_to: str | None = None,
     ):
         raise RuntimeError("cancel failed")
 
-    monkeypatch.setattr(TodoChecklist, "cancel_entry", fail_cancel)
+    monkeypatch.setattr(TodoChecklist, "_apply_cancel", fail_cancel)
 
     with pytest.raises(TodoMovePartialError) as exc_info:
         TodoChecklist.move_entry("20240105", "work", 1, "20240105", "personal")

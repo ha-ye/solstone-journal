@@ -26,6 +26,7 @@ from solstone.apps.todos.todo import (
     TodoItem,
     TodoMovePartialError,
     TodoNotMovableError,
+    TodoTerminalStateError,
     find_cross_facet_matches,
     format_nudge,
     get_facets_with_todos,
@@ -465,6 +466,8 @@ def api_done_todo():
             return checklist, item
 
         checklist, item = TodoChecklist.locked_modify(day, facet, _done)
+    except TodoTerminalStateError as exc:
+        return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
     except IndexError as exc:
         return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
     except LockTimeout:
@@ -508,6 +511,8 @@ def api_cancel_todo():
             return checklist, item
 
         checklist, item = TodoChecklist.locked_modify(day, facet, _cancel)
+    except TodoTerminalStateError as exc:
+        return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
     except IndexError as exc:
         return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
     except LockTimeout:
@@ -927,6 +932,8 @@ def todos_day(day: str):  # type: ignore[override]
                 return redirect(url_for("app:todos.todos_day", day=day))
         except TodoEmptyTextError:
             flash("Cannot update todo to empty text", "error")
+        except TodoTerminalStateError as exc:
+            flash(str(exc), "error")
         except IndexError:
             flash(f"Todo list changed, {CONVEY_RELOAD_HINT}", "error")
         except TodoNotMovableError:

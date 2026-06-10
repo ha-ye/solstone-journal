@@ -195,6 +195,10 @@ class TodoMovePartialError(TodoError):
         )
 
 
+class TodoTerminalStateError(TodoError):
+    """Raised when a done/cancel transition is attempted on a terminal-state todo."""
+
+
 @dataclass(slots=True)
 class TodoItem:
     """Structured representation of a todo entry."""
@@ -417,9 +421,9 @@ class TodoChecklist:
 
             try:
                 if item.completed:
-                    dest.mark_done(created.index)
-                cancelled = source.cancel_entry(
-                    line_number,
+                    dest._apply_done(created)
+                cancelled = source._apply_cancel(
+                    item,
                     cancelled_reason="moved_to_facet",
                     moved_to=dst_facet,
                 )
@@ -485,6 +489,30 @@ class TodoChecklist:
         self.save()
         return item
 
+    def _apply_done(self, item: TodoItem) -> TodoItem:
+        """Mark an item complete without a terminal-state guard (internal)."""
+        item.completed = True
+        item.updated_at = now_ms()
+        self.save()
+        return item
+
+    def _apply_cancel(
+        self,
+        item: TodoItem,
+        *,
+        cancelled_reason: str | None = None,
+        moved_to: str | None = None,
+    ) -> TodoItem:
+        """Cancel an item without a terminal-state guard (internal)."""
+        item.cancelled = True
+        if cancelled_reason is not None:
+            item.cancelled_reason = cancelled_reason
+        if moved_to is not None:
+            item.moved_to = moved_to
+        item.updated_at = now_ms()
+        self.save()
+        return item
+
     def cancel_entry(
         self,
         line_number: int,
@@ -500,15 +528,13 @@ class TodoChecklist:
             The cancelled TodoItem.
         """
         _, item = self._get_item(line_number)
-
-        item.cancelled = True
-        if cancelled_reason is not None:
-            item.cancelled_reason = cancelled_reason
-        if moved_to is not None:
-            item.moved_to = moved_to
-        item.updated_at = now_ms()
-        self.save()
-        return item
+        if item.cancelled:
+            raise TodoTerminalStateError("Todo is already cancelled.")
+        if item.completed:
+            raise TodoTerminalStateError("Cannot cancel a completed todo.")
+        return self._apply_cancel(
+            item, cancelled_reason=cancelled_reason, moved_to=moved_to
+        )
 
     def mark_done(self, line_number: int) -> TodoItem:
         """Mark a todo entry complete.
@@ -520,11 +546,11 @@ class TodoChecklist:
             The updated TodoItem.
         """
         _, item = self._get_item(line_number)
-
-        item.completed = True
-        item.updated_at = now_ms()
-        self.save()
-        return item
+        if item.cancelled:
+            raise TodoTerminalStateError("Cannot complete a cancelled todo.")
+        if item.completed:
+            raise TodoTerminalStateError("Todo is already completed.")
+        return self._apply_done(item)
 
     def mark_undone(self, line_number: int) -> TodoItem:
         """Mark a todo entry incomplete.
