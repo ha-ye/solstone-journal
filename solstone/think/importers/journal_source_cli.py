@@ -23,6 +23,7 @@ import sys
 from importlib import import_module
 from pathlib import Path
 
+import solstone.convey.state as convey_state
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.paths import authorized_clients_path
 from solstone.think.utils import get_journal, now_ms, setup_cli
@@ -414,8 +415,6 @@ def main() -> None:
     p_revoke.add_argument("name", help="Journal source name")
 
     args = setup_cli(parser)
-
-    import solstone.convey.state as convey_state
 
     convey_state.journal_root = get_journal()
 

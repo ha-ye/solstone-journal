@@ -25,6 +25,7 @@ import logging
 import secrets
 import sys
 
+import solstone.convey.state as convey_state
 from solstone.apps.observer.utils import (
     _find_observer,
     find_observer_by_name,
@@ -44,7 +45,13 @@ from solstone.observe.copy import (
     OBSERVER_LOCALHOST_BANNER_LINE_4,
     OBSERVER_LOCALHOST_REMINDER,
 )
-from solstone.think.utils import get_config, now_ms, require_solstone, setup_cli
+from solstone.think.utils import (
+    get_config,
+    get_journal,
+    now_ms,
+    require_solstone,
+    setup_cli,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -495,9 +502,6 @@ def main() -> None:
     args = setup_cli(parser)
 
     # Keep app helpers aligned with the active CLI journal.
-    import solstone.convey.state as convey_state
-    from solstone.think.utils import get_journal
-
     convey_state.journal_root = get_journal()
 
     require_solstone()
