@@ -540,8 +540,8 @@ def test_process_audio_failed_embeddings_write_emits_failed_event(tmp_path):
             return_value=embeddings_data,
         ),
         patch(
-            "solstone.observe.transcribe.main.compute_overlap_fraction",
-            return_value=0.0,
+            "solstone.observe.transcribe.main.compute_overlap_and_logprobs",
+            return_value=(0.0, np.zeros((589, 7), dtype=np.float32)),
         ),
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
         patch(
@@ -609,8 +609,8 @@ def test_process_audio_embeddings_write_round_trips_without_lock(tmp_path):
             return_value=embeddings_data,
         ),
         patch(
-            "solstone.observe.transcribe.main.compute_overlap_fraction",
-            return_value=0.0,
+            "solstone.observe.transcribe.main.compute_overlap_and_logprobs",
+            return_value=(0.0, np.zeros((589, 7), dtype=np.float32)),
         ),
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
     ):
@@ -625,6 +625,66 @@ def test_process_audio_embeddings_write_round_trips_without_lock(tmp_path):
     assert mock_send.call_args.args[:2] == ("observe", "transcribed")
     assert mock_send.call_args.kwargs["outcome"] == "transcribed"
     assert list(embeddings_path.parent.glob("*.lock")) == []
+
+
+def test_process_audio_diarizer_failure_is_fail_soft(tmp_path):
+    from solstone.observe.transcribe.main import process_audio
+
+    raw_path = (
+        tmp_path / "chronicle" / "20260416" / "default" / "120000_300" / "audio.m4a"
+    )
+    raw_path.parent.mkdir(parents=True)
+    raw_path.touch()
+    audio_buffer = np.zeros(10 * SAMPLE_RATE, dtype=np.float32)
+    vad_result = VadResult(
+        duration=10.0,
+        speech_duration=5.0,
+        has_speech=True,
+        speech_segments=[(1.0, 6.0)],
+    )
+    statements = [{"id": 0, "start": 0.0, "end": 1.0, "text": "hi"}]
+    backend_module = MagicMock()
+    backend_module.get_model_info.return_value = {
+        "model": "medium.en",
+        "device": "cpu",
+        "compute_type": "int8",
+    }
+
+    with (
+        patch(
+            "solstone.observe.transcribe.main.get_journal",
+            return_value=str(raw_path.parents[4]),
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_config",
+            return_value={"transcribe": {"preserve_all": False, "enrich": False}},
+        ),
+        patch(
+            "solstone.observe.transcribe.main.stt_transcribe", return_value=statements
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_backend", return_value=backend_module
+        ),
+        patch("solstone.observe.transcribe.main._embed_statements", return_value=None),
+        patch(
+            "solstone.observe.transcribe.main.compute_overlap_and_logprobs",
+            return_value=(0.5, np.zeros((589, 7), dtype=np.float32)),
+        ),
+        patch(
+            "solstone.observe.transcribe.diarize.diarize_auto_k",
+            side_effect=RuntimeError("boom"),
+        ),
+        patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
+    ):
+        process_audio(raw_path, audio_buffer, vad_result, {}, backend="whisper")
+
+    assert mock_send.call_args.args[:2] == ("observe", "transcribed")
+    assert mock_send.call_args.kwargs["outcome"] == "transcribed"
+
+    jsonl_path = raw_path.with_suffix(".jsonl")
+    lines = jsonl_path.read_text(encoding="utf-8").splitlines()
+    assert jsonl_path.exists()
+    assert "speaker" not in json.loads(lines[1])
 
 
 class TestJSONLFormat:

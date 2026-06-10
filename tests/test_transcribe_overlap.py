@@ -118,3 +118,28 @@ def test_compute_overlap_fraction_uses_conditioned_formula(monkeypatch):
     )
 
     assert result == pytest.approx(100 / 400)
+
+
+def test_compute_overlap_and_logprobs_returns_fraction_and_logprobs(monkeypatch):
+    from solstone.observe.transcribe import overlap
+
+    classes = np.concatenate(
+        [
+            np.full(300, 1, dtype=np.int64),
+            np.full(100, 4, dtype=np.int64),
+            np.zeros(189, dtype=np.int64),
+        ]
+    )
+    monkeypatch.setattr(
+        overlap,
+        "_get_overlap_session",
+        lambda: _StubSession(_dominant_log_probs(classes)),
+    )
+
+    result, log_probs = overlap.compute_overlap_and_logprobs(
+        np.zeros(10 * SAMPLE_RATE, dtype=np.float32)
+    )
+
+    assert result == pytest.approx(100 / 400)
+    assert log_probs.shape == (589, 7)
+    assert log_probs.dtype == np.float32

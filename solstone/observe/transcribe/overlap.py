@@ -23,6 +23,9 @@ STRIDE_S = 5
 FRAMES_PER_WINDOW = 589
 OVERLAP_CLASSES = (4, 5, 6)
 
+# Tighter stride used when sharing pyannote output with the diarizer
+_DIARIZE_STRIDE_S = 2
+
 _overlap_session: ort.InferenceSession | None = None
 
 
@@ -114,6 +117,71 @@ def compute_overlap_fraction(
 
     overlap_count = int(np.isin(argmax, OVERLAP_CLASSES).sum())
     return float(overlap_count / speech_count)
+
+
+def compute_overlap_and_logprobs(
+    audio: np.ndarray, sample_rate: int = SAMPLE_RATE
+) -> tuple[float, np.ndarray]:
+    """Compute overlap fraction and return the pyannote log-probs for reuse.
+
+    Uses a 2-second stride (vs. the 5-second stride in compute_overlap_fraction)
+    for better per-frame resolution.  The returned avg_log_probs array has shape
+    (num_frames, 7) and can be passed directly to diarize() to skip a second
+    pyannote inference pass.
+    """
+    if sample_rate != SAMPLE_RATE:
+        raise ValueError(
+            f"pyannote overlap detector requires {SAMPLE_RATE} Hz audio, got {sample_rate}"
+        )
+
+    session = _get_overlap_session()
+    input_name = session.get_inputs()[0].name
+
+    window_samples = WINDOW_S * sample_rate
+    stride_samples = _DIARIZE_STRIDE_S * sample_rate
+
+    audio_f32 = np.asarray(audio, dtype=np.float32)
+    if len(audio_f32) < window_samples:
+        pad = window_samples - len(audio_f32)
+        audio_padded = np.concatenate([audio_f32, np.zeros(pad, dtype=np.float32)])
+    else:
+        audio_padded = audio_f32
+
+    starts = list(range(0, len(audio_padded) - window_samples + 1, stride_samples))
+    final_start = max(0, len(audio_padded) - window_samples)
+    if not starts:
+        starts = [final_start]
+    elif starts[-1] != final_start:
+        starts.append(final_start)
+
+    samples_per_frame = window_samples / FRAMES_PER_WINDOW
+    num_frames = int(np.ceil(len(audio_padded) / samples_per_frame))
+    accum = np.zeros((num_frames, 7), dtype=np.float64)
+    counts = np.zeros((num_frames,), dtype=np.int32)
+
+    for start_sample in starts:
+        chunk = audio_padded[start_sample : start_sample + window_samples][
+            None, None, :
+        ]
+        log_probs = session.run(None, {input_name: chunk})[0][0]
+        frame_start = int(round(start_sample / samples_per_frame))
+        frame_end = frame_start + log_probs.shape[0]
+        if frame_end > num_frames:
+            frame_end = num_frames
+            log_probs = log_probs[: frame_end - frame_start]
+        accum[frame_start:frame_end] += log_probs.astype(np.float64)
+        counts[frame_start:frame_end] += 1
+
+    counts = np.maximum(counts, 1)
+    avg_log_probs = (accum / counts[:, None]).astype(np.float32)
+
+    argmax = avg_log_probs.argmax(axis=-1)
+    speech_count = int((argmax >= 1).sum())
+    if speech_count == 0:
+        return 0.0, avg_log_probs
+
+    overlap_count = int(np.isin(argmax, OVERLAP_CLASSES).sum())
+    return float(overlap_count / speech_count), avg_log_probs
 
 
 def compute_overlap_fraction_for_wav(path: Path) -> float:

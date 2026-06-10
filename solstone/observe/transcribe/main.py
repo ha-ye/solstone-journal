@@ -80,7 +80,7 @@ from solstone.observe.transcribe import (
     get_backend,
 )
 from solstone.observe.transcribe import transcribe as stt_transcribe
-from solstone.observe.transcribe.overlap import compute_overlap_fraction
+from solstone.observe.transcribe.overlap import compute_overlap_and_logprobs
 from solstone.observe.transcribe.resource import (
     STT_SURFACE,
     select_stt_backend,
@@ -720,7 +720,9 @@ def process_audio(
         # Generate embeddings before timestamp restoration
         # Use reduced audio buffer if available for consistent timestamps
         embeddings_data = _embed_statements(stt_buffer, statements, SAMPLE_RATE)
-        overlap_fraction_value = compute_overlap_fraction(audio_buffer)
+        overlap_fraction_value, pyannote_logprobs = compute_overlap_and_logprobs(
+            audio_buffer
+        )
 
         # Restore original timestamps if audio was reduced (non-Gemini backends only)
         # Gemini with chunks already has timestamps in original audio time
@@ -730,6 +732,44 @@ def process_audio(
                 f"  Restored timestamps from reduced audio "
                 f"({reduction.reduced_duration:.1f}s -> {reduction.original_duration:.1f}s)"
             )
+
+        # Local speaker diarization for backends that produce no speaker labels.
+        # Skip when overlap is near zero — the recording is effectively solo
+        # speech and diarization adds no value.  Otherwise reuse the pyannote
+        # log-probs computed above so the diarizer skips its own pyannote pass.
+        _DIARIZE_MIN_OVERLAP = 0.05
+        if resolved_backend in {"parakeet", "whisper"}:
+            if overlap_fraction_value < _DIARIZE_MIN_OVERLAP:
+                logging.info(
+                    "  Skipping diarization: overlap=%.2f (threshold %.2f)",
+                    overlap_fraction_value,
+                    _DIARIZE_MIN_OVERLAP,
+                )
+            else:
+                try:
+                    from solstone.observe.transcribe.diarize import diarize_auto_k
+
+                    labels = diarize_auto_k(
+                        raw_path,
+                        statements,
+                        avg_log_probs=pyannote_logprobs,
+                        audio=audio_buffer,
+                    )
+                    assigned = 0
+                    for stmt, lbl in zip(statements, labels):
+                        if lbl is not None:
+                            stmt["speaker"] = lbl
+                            assigned += 1
+                    logging.info(
+                        "  Local diarization: %d/%d sentences labeled (overlap=%.2f)",
+                        assigned,
+                        len(statements),
+                        overlap_fraction_value,
+                    )
+                except Exception:
+                    logging.exception(
+                        "Local diarization failed; speaker labels will be absent"
+                    )
 
         # Convert to JSONL format (now with original timestamps)
         raw_filename = f"{raw_path.stem}{raw_path.suffix}"
