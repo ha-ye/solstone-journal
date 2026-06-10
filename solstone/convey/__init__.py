@@ -7,27 +7,10 @@ from __future__ import annotations
 
 import os
 from datetime import timedelta
+from typing import TYPE_CHECKING
 
-from flask import Flask, g, request
-from jinja2 import ChoiceLoader, FileSystemLoader
-
-from solstone.apps import AppRegistry
-from solstone.convey.secure_listener import ConveyIdentity
-from solstone.think.journal_config import write_journal_config
-from solstone.think.utils import ensure_journal_config
-
-from . import state, system
-from .apps import register_app_context
-from .bridge import emit
-from .chat import chat_bp, start_chat_runtime
-from .config import bp as config_bp
-from .health import bp as health_bp
-from .ledger import bp as ledger_bp
-from .profile import bp as profile_bp
-from .profile import profiles_bp
-from .request_id import install_request_id_stamper
-from .root import bp as root_bp
-from .services_scout import bp as services_scout_bp
+if TYPE_CHECKING:
+    from flask import Flask
 
 __all__ = [
     "create_app",
@@ -35,8 +18,23 @@ __all__ = [
 ]
 
 
+def __getattr__(name: str):
+    # PEP 562: resolve `emit` lazily so a bare `import solstone.convey.state`
+    # does not drag bridge/callosum (and the rest of the web stack) into
+    # sys.modules. The AttributeError for every other name is load-bearing:
+    # it lets `from solstone.convey import <submodule>` fall through to
+    # normal submodule import.
+    if name == "emit":
+        from .bridge import emit
+
+        return emit
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 def _get_or_create_secret() -> str:
     """Load convey.secret from journal.json, generating one if absent."""
+    from solstone.think.utils import ensure_journal_config
+
     config = ensure_journal_config()
     return config["convey"]["secret"]
 
@@ -45,6 +43,7 @@ def _migrate_password_hash() -> None:
     """Migrate plaintext convey.password to hashed password_hash."""
     from werkzeug.security import generate_password_hash
 
+    from solstone.think.journal_config import write_journal_config
     from solstone.think.utils import get_config
 
     config = get_config()
@@ -69,6 +68,7 @@ def _migrate_setup_completed() -> None:
     now writes all config atomically in init_finalize(), so this path is
     only reached for pre-existing journals.
     """
+    from solstone.think.journal_config import write_journal_config
     from solstone.think.utils import get_config
 
     config = get_config()
@@ -87,6 +87,10 @@ def _migrate_setup_completed() -> None:
 
 
 def install_identity_stamper(app: Flask) -> None:
+    from flask import g, request
+
+    from solstone.convey.secure_listener import ConveyIdentity
+
     @app.before_request
     def _stamp_identity() -> None:
         stamped = request.environ.get("pl.identity")
@@ -104,11 +108,26 @@ def install_identity_stamper(app: Flask) -> None:
 
 def create_app(journal: str = "") -> Flask:
     """Create and configure the Convey Flask application."""
+    from flask import Flask
+    from jinja2 import ChoiceLoader, FileSystemLoader
+
+    from solstone.apps import AppRegistry
     from solstone.think.link.runtime import start_link_runtime
     from solstone.think.push.runtime import start_push_runtime
     from solstone.think.voice.runtime import start_voice_runtime
 
+    from . import state, system
+    from .apps import register_app_context
+    from .chat import chat_bp, start_chat_runtime
+    from .config import bp as config_bp
+    from .health import bp as health_bp
+    from .ledger import bp as ledger_bp
+    from .profile import bp as profile_bp
+    from .profile import profiles_bp
     from .push import push_bp
+    from .request_id import install_request_id_stamper
+    from .root import bp as root_bp
+    from .services_scout import bp as services_scout_bp
     from .voice import voice_bp
 
     app = Flask(

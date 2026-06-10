@@ -57,11 +57,12 @@ def make_convey_app(
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
 
     import solstone.convey as convey
+    import solstone.convey.chat as convey_chat
     import solstone.think.link.runtime as link_runtime
     import solstone.think.push.runtime as push_runtime
     import solstone.think.voice.runtime as voice_runtime
 
-    monkeypatch.setattr(convey, "start_chat_runtime", lambda _app: None)
+    monkeypatch.setattr(convey_chat, "start_chat_runtime", lambda _app: None)
     monkeypatch.setattr(link_runtime, "start_link_runtime", lambda _app: None)
     monkeypatch.setattr(push_runtime, "start_push_runtime", lambda _app: None)
     monkeypatch.setattr(voice_runtime, "start_voice_runtime", lambda _app: None)
