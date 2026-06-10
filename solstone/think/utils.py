@@ -900,6 +900,42 @@ def day_input_summary(day: str) -> str:
         return f"{segment_count} segments, {duration_str}"
 
 
+def init_cli_runtime(verbose: bool, debug: bool) -> None:
+    """Configure logging and the journal/provider runtime for a CLI entry point.
+
+    Sets the root log level from the ``verbose``/``debug`` flags, resolves the
+    journal path via :func:`get_journal`, and loads ``journal.json``'s ``env``
+    section into ``os.environ`` — stripping any managed provider key (registry-
+    derived) that config does not set, so a stray shell-set provider key is never
+    used. Shared by :func:`setup_cli` (argparse entry points) and the house Typer
+    service commands so both honour the same ``-v``/``-d`` + provider-env contract.
+    """
+    if debug:
+        log_level = logging.DEBUG
+    elif verbose:
+        log_level = logging.INFO
+    else:
+        log_level = logging.WARNING
+
+    logging.basicConfig(level=log_level)
+
+    # Initialize journal path (auto-creates if needed)
+    get_journal()
+
+    # journal.json's `env` section is the authoritative and exclusive source for
+    # managed provider API keys. Load every config-declared var into os.environ,
+    # then strip any managed provider key (registry-derived) that config does not
+    # set, so a stray shell-set provider key is never used. Non-managed vars are
+    # loaded as-is; Vertex/ADC auth vars are not managed keys and are never stripped.
+    config = get_config()
+    config_env = config.get("env", {})
+    for key, value in config_env.items():
+        os.environ[key] = str(value)
+    for env_key in managed_provider_env_keys():
+        if not config_env.get(env_key):
+            os.environ.pop(env_key, None)
+
+
 def setup_cli(parser: argparse.ArgumentParser, *, parse_known: bool = False):
     """Parse command line arguments and configure logging.
 
@@ -927,30 +963,7 @@ def setup_cli(parser: argparse.ArgumentParser, *, parse_known: bool = False):
         args = parser.parse_args()
         extra = None
 
-    if args.debug:
-        log_level = logging.DEBUG
-    elif args.verbose:
-        log_level = logging.INFO
-    else:
-        log_level = logging.WARNING
-
-    logging.basicConfig(level=log_level)
-
-    # Initialize journal path (auto-creates if needed)
-    get_journal()
-
-    # journal.json's `env` section is the authoritative and exclusive source for
-    # managed provider API keys. Load every config-declared var into os.environ,
-    # then strip any managed provider key (registry-derived) that config does not
-    # set, so a stray shell-set provider key is never used. Non-managed vars are
-    # loaded as-is; Vertex/ADC auth vars are not managed keys and are never stripped.
-    config = get_config()
-    config_env = config.get("env", {})
-    for key, value in config_env.items():
-        os.environ[key] = str(value)
-    for env_key in managed_provider_env_keys():
-        if not config_env.get(env_key):
-            os.environ.pop(env_key, None)
+    init_cli_runtime(args.verbose, args.debug)
 
     return (args, extra) if parse_known else args
 

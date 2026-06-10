@@ -425,6 +425,24 @@ ROUTINES = [
     assert "WARNING: alpha:disabled schedule is disabled" in sync_out
 
 
+def test_cli_typer_dispatch_is_house_style():
+    from typer.testing import CliRunner
+
+    runner = CliRunner()
+
+    help_result = runner.invoke(maintenance_cli.app, ["--help"])
+    assert help_result.exit_code == 0
+    assert "list" in help_result.output
+    assert "sync" in help_result.output
+    assert "run" in help_result.output
+
+    bogus_result = runner.invoke(maintenance_cli.app, ["bogus"])
+    assert bogus_result.exit_code == 2
+
+    no_cmd_result = runner.invoke(maintenance_cli.app, [])
+    assert no_cmd_result.exit_code == 2
+
+
 def test_cli_run_forwards_remainder_args_and_exits_with_routine_code(
     tmp_path, monkeypatch
 ):
