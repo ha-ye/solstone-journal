@@ -460,9 +460,9 @@ button.day-header {
       </div>
 
       <div class="filter-section" id="agent-filters">
-        <h3>agents</h3>
+        <h3>talents</h3>
         <div class="filter-list" id="agent-list">
-          <span class="search-agents-empty">agents appear here as your journal grows</span>
+          <span class="search-agents-empty">talents appear here as your journal grows</span>
         </div>
       </div>
     </aside>
@@ -648,7 +648,7 @@ button.day-header {
       .then(data => {
         if (reset) {
           resultsContainer.innerHTML = '';
-          renderFilters(data.facets, data.agents);
+          renderFilters(data.facets, data.talents || []);
         }
 
         renderResults(data, reset);
@@ -677,7 +677,7 @@ button.day-header {
     loadMoreDaysBtn.style.display = 'none';
   }
 
-  function renderFilters(facets, agents) {
+  function renderFilters(facets, talents) {
     // Render facet filters
     let facetHtml = `
       <label class="filter-item ${!currentFacet ? 'active' : ''}">
@@ -713,8 +713,8 @@ button.day-header {
     });
 
     // Render agent filters (radio buttons for single-select)
-    if (agents.length === 0) {
-      agentList.innerHTML = '<span class="search-agents-empty">agents appear here as your journal grows</span>';
+    if (talents.length === 0) {
+      agentList.innerHTML = '<span class="search-agents-empty">talents appear here as your journal grows</span>';
     } else {
       let agentHtml = `
         <label class="filter-item ${!currentAgent ? 'active' : ''}">
@@ -722,7 +722,7 @@ button.day-header {
           <span class="filter-label">all</span>
         </label>
       `;
-      for (const t of agents) {
+      for (const t of talents) {
         const isActive = currentAgent === t.name;
         agentHtml += `
           <label class="filter-item ${isActive ? 'active' : ''}">
@@ -754,7 +754,7 @@ button.day-header {
       const suggestionsHtml = '<div class="search-noresults-suggestions">'
         + '<span>try different keywords or check your spelling</span>'
         + (currentFacet ? `<button type="button" data-clear="facet">search all facets instead of ${escapeHtml(currentFacet)}</button>` : '')
-        + (currentAgent ? `<button type="button" data-clear="agent">search all agents instead of ${escapeHtml(currentAgent)}</button>` : '')
+        + (currentAgent ? `<button type="button" data-clear="agent">search all talents instead of ${escapeHtml(currentAgent)}</button>` : '')
         + '</div>';
 
       resultsContainer.innerHTML = window.SurfaceState.empty({
