@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import platform
 import sys
@@ -105,8 +106,21 @@ class _ServicesArgumentParser(argparse.ArgumentParser):
         super().error(message)
 
 
-def _print_error(token: str) -> None:
-    print(f"{token}: {ERROR_MESSAGES[token]}", file=sys.stderr)
+_verbose_parent = argparse.ArgumentParser(add_help=False)
+_verbose_parent.add_argument(
+    "-v",
+    "--verbose",
+    action="store_true",
+    default=argparse.SUPPRESS,
+    help="Enable DEBUG logging for this command.",
+)
+
+
+def _print_error(token: str, detail: str | None = None) -> None:
+    message = f"{token}: {ERROR_MESSAGES[token]}"
+    if detail:
+        message += f" ({detail})"
+    print(message, file=sys.stderr)
 
 
 def _wait_seconds(value: str) -> int:
@@ -118,7 +132,10 @@ def _wait_seconds(value: str) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = _ServicesArgumentParser(description="Manage optional solstone services.")
+    parser = _ServicesArgumentParser(
+        description="Manage optional solstone services.",
+        parents=[_verbose_parent],
+    )
     subparsers = parser.add_subparsers(
         dest="command",
         title="commands",
@@ -128,6 +145,7 @@ def _build_parser() -> argparse.ArgumentParser:
     enable_parser = subparsers.add_parser(
         "enable",
         help="enable an optional service",
+        parents=[_verbose_parent],
     )
     service_parsers = enable_parser.add_subparsers(
         dest="service",
@@ -138,6 +156,7 @@ def _build_parser() -> argparse.ArgumentParser:
     scout_parser = service_parsers.add_parser(
         "scout",
         help="enable scout",
+        parents=[_verbose_parent],
     )
     scout_parser.add_argument(
         "--force",
@@ -157,12 +176,14 @@ def _build_parser() -> argparse.ArgumentParser:
     spl_parser = service_parsers.add_parser(
         "spl",
         help="enable sol private link",
+        parents=[_verbose_parent],
     )
     spl_parser.set_defaults(handler=_enable_spl)
 
     disable_parser = subparsers.add_parser(
         "disable",
         help="disable an optional service",
+        parents=[_verbose_parent],
     )
     disable_service_parsers = disable_parser.add_subparsers(
         dest="service",
@@ -173,11 +194,13 @@ def _build_parser() -> argparse.ArgumentParser:
     disable_scout_parser = disable_service_parsers.add_parser(
         "scout",
         help="disable scout",
+        parents=[_verbose_parent],
     )
     disable_scout_parser.set_defaults(handler=_disable_scout)
     disable_spl_parser = disable_service_parsers.add_parser(
         "spl",
         help="disable sol private link",
+        parents=[_verbose_parent],
     )
     disable_spl_parser.set_defaults(handler=_disable_spl)
     return parser
@@ -267,11 +290,11 @@ def _enable_scout(args: argparse.Namespace) -> int:
     except scout.JournalNotInitializedError:
         _print_error("journal_not_initialized")
         return 1
-    except ValueError:
-        _print_error("unexpected_payload")
+    except ValueError as exc:
+        _print_error("unexpected_payload", str(exc))
         return 1
-    except Exception:
-        _print_error("write_failed")
+    except Exception as exc:
+        _print_error("write_failed", str(exc))
         return 1
 
     print(STDOUT_SUCCESS)
@@ -347,6 +370,8 @@ def _disable_spl(_args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    if getattr(args, "verbose", False):
+        logging.basicConfig(level=logging.DEBUG)
     if not hasattr(args, "handler"):
         parser.print_help()
         return 0

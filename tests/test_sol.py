@@ -3,6 +3,7 @@
 
 """Tests for sol.py unified CLI."""
 
+import logging
 import os
 import subprocess
 import sys
@@ -253,6 +254,63 @@ class TestMain:
         captured = capsys.readouterr()
         assert "sol - solstone unified CLI" in captured.out
         assert "Usage: sol <command>" in captured.out
+
+    def test_journal_bare_verbose_shows_help_and_configures_debug(
+        self, monkeypatch, capsys
+    ):
+        """Test bare journal -v shows help after enabling DEBUG logging."""
+        calls = []
+        monkeypatch.setattr(sys, "argv", ["journal", "-v"])
+        monkeypatch.setenv("SOLSTONE_JOURNAL", "/tmp/test")
+        monkeypatch.setattr(
+            sol.logging,
+            "basicConfig",
+            lambda **kwargs: calls.append(kwargs),
+        )
+
+        sol.journal_main()
+
+        captured = capsys.readouterr()
+        assert "journal - solstone journal service CLI" in captured.out
+        assert "Usage: journal <command>" in captured.out
+        assert calls == [{"level": logging.DEBUG}]
+
+    def test_leading_verbose_strips_before_dispatch(self, monkeypatch):
+        """Test leading sol -v is consumed before subcommand argv rewrite."""
+        captured: dict[str, object] = {}
+        calls = []
+
+        def fake_run_command(module_path: str) -> int:
+            captured["module"] = module_path
+            captured["argv"] = sys.argv[:]
+            return 0
+
+        monkeypatch.setattr(sol, "run_command", fake_run_command)
+        monkeypatch.setattr(sol.setproctitle, "setproctitle", lambda _title: None)
+        monkeypatch.setattr(
+            sol.logging,
+            "basicConfig",
+            lambda **kwargs: calls.append(kwargs),
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["sol", "-v", "import", "--day", "20250101"],
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            sol.main()
+
+        rewritten_argv = captured["argv"]
+        assert exc_info.value.code == 0
+        assert captured["module"] == "solstone.think.importers.cli"
+        assert isinstance(rewritten_argv, list)
+        assert rewritten_argv[0] == "sol import"
+        assert "-v" not in rewritten_argv
+        assert "--verbose" not in rewritten_argv
+        assert "--day" in rewritten_argv
+        assert "20250101" in rewritten_argv
+        assert calls == [{"level": logging.DEBUG}]
 
     def test_main_help_flag(self, monkeypatch, capsys):
         """Test --help flag shows help."""

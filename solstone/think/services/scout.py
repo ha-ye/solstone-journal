@@ -24,7 +24,16 @@ from solstone.think.utils import get_journal
 log = logging.getLogger(__name__)
 
 _HANDOFF_FIELDS = ("google_api_key", "dispatch_token", "account_id", "created_at")
+_SECRET_HANDOFF_FIELDS = frozenset({"google_api_key", "dispatch_token"})
+_REDACTED = "***redacted***"
 KEY_FINGERPRINT_FIELD = "key_fingerprint_sha256"
+
+
+def _redact_handoff(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: (_REDACTED if key in _SECRET_HANDOFF_FIELDS else value)
+        for key, value in payload.items()
+    }
 
 
 class JournalNotInitializedError(RuntimeError):
@@ -69,6 +78,8 @@ def _fingerprint_key(key: str) -> str:
 def provision_scout_handoff(payload: dict[str, Any]) -> None:
     """Persist a portal-provisioned scout handoff into journal config."""
 
+    if log.isEnabledFor(logging.DEBUG):
+        log.debug("received scout handoff payload: %r", _redact_handoff(payload))
     values = _validate_handoff_payload(payload)
     _require_journal_config()
 

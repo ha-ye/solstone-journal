@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import stat
 import threading
 
 import pytest
 
 from solstone.think.journal_config import write_journal_config
+from solstone.think.services import scout as scout_module
 from solstone.think.services.scout import (
     KEY_FINGERPRINT_FIELD,
     DisableOutcome,
@@ -65,6 +67,38 @@ def test_provision_scout_handoff_round_trip_preserves_config(journal_copy) -> No
     assert scout[KEY_FINGERPRINT_FIELD] == hashlib.sha256(b"google-one").hexdigest()
     assert scout_provenance() == after["services"]["scout"]
     assert stat.S_IMODE(_config_path(journal_copy).stat().st_mode) == 0o600
+
+
+def test_redact_handoff_redacts_secrets_keeps_nonsecrets() -> None:
+    payload = {
+        "google_api_key": "google-secret",
+        "dispatch_token": "dispatch-secret",
+        "account_id": "acct-visible",
+        "created_at": 1716508800,
+    }
+
+    redacted = scout_module._redact_handoff(payload)
+
+    assert redacted["google_api_key"] == "***redacted***"
+    assert redacted["dispatch_token"] == "***redacted***"
+    assert redacted["account_id"] == "acct-visible"
+    assert redacted["created_at"] == 1716508800
+    assert isinstance(redacted["created_at"], int)
+    assert "google-secret" not in redacted.values()
+    assert "dispatch-secret" not in redacted.values()
+
+
+def test_provision_scout_handoff_debug_log_redacts_payload(
+    journal_copy, caplog
+) -> None:
+    caplog.set_level(logging.DEBUG)
+
+    provision_scout_handoff(_payload())
+
+    assert "received scout handoff payload" in caplog.text
+    assert "***redacted***" in caplog.text
+    assert "google-one" not in caplog.text
+    assert "dispatch-one" not in caplog.text
 
 
 def test_scout_three_state_matrix(journal_copy) -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import ssl
 import stat
 import urllib.error
@@ -166,6 +167,7 @@ def test_enable_scout_help_lists_flags(capsys) -> None:
     out = capsys.readouterr().out
     assert "--force" in out
     assert "--wait" in out
+    assert "--verbose" in out
 
 
 def test_unknown_service_exits_2(capsys) -> None:
@@ -328,6 +330,41 @@ def test_error_paths_emit_canonical_tokens(
     assert cli.main(["enable", "scout"]) == 1
 
     assert capsys.readouterr().err.startswith(f"{token}: ")
+
+
+def test_unexpected_payload_names_offending_field(
+    journal_copy, browser_ready, monkeypatch, capsys
+) -> None:
+    _install_urlopen(
+        monkeypatch,
+        [FakeResponse(200, json.dumps({"google_api_key": "only"}).encode())],
+    )
+
+    assert cli.main(["enable", "scout"]) == 1
+
+    err = capsys.readouterr().err
+    assert err.startswith("unexpected_payload: ")
+    assert "dispatch_token" in err
+    assert "(malformed handoff payload" in err
+
+
+def test_enable_scout_verbose_parses_and_redacts(
+    journal_copy, browser_ready, monkeypatch, caplog
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    _install_urlopen(monkeypatch, [FakeResponse(200, _payload_body())])
+
+    assert cli.main(["enable", "scout", "-v"]) == 0
+
+    assert "***redacted***" in caplog.text
+    assert "google-one" not in caplog.text
+    assert "dispatch-one" not in caplog.text
+    assert "acct-one" in caplog.text
+
+
+def test_services_top_level_verbose_parses(capsys) -> None:
+    assert cli.main(["-v"]) == 0
+    assert "Manage optional solstone services." in capsys.readouterr().out
 
 
 def test_204_sequence_then_200_succeeds(

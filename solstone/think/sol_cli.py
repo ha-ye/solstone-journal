@@ -17,6 +17,7 @@ Examples:
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 import sys
 from importlib.metadata import PackageNotFoundError
@@ -357,6 +358,16 @@ def _dispatch(binary: str, allowed_surfaces: frozenset[str] | None) -> None:
         else:
             print_help()
         return
+
+    if sys.argv[1] in ("-v", "--verbose"):
+        logging.basicConfig(level=logging.DEBUG)
+        del sys.argv[1]
+        if len(sys.argv) < 2:
+            if binary == "journal":
+                print_journal_help()
+            else:
+                print_help()
+            return
 
     cmd = sys.argv[1]
 
