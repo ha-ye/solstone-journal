@@ -477,11 +477,14 @@ function renderDayProvenance(generatedAt, model) {
 
 function renderEmptyState(headline, body, opts = {}) {
   const classes = ["timeline-empty-state", opts.modifierClass || ""].filter(Boolean).join(" ");
+  const icon = opts.icon
+    ? `\n      <div class="timeline-empty-icon" aria-hidden="true">${opts.icon}</div>`
+    : "";
   const link = opts.href && opts.linkText
     ? `<a href="${escapeHtml(opts.href)}">${escapeHtml(opts.linkText)}</a>`
     : "";
   return `
-    <div class="${classes}" data-timeline-state="empty">
+    <div class="${classes}" data-timeline-state="empty">${icon}
       <h2>${escapeHtml(headline)}</h2>
       <p>${escapeHtml(body)}</p>
       ${link}
@@ -792,7 +795,11 @@ async function renderDay(monthIndex, day) {
     timeline.innerHTML = renderEmptyState(
       `nothing observed on ${dateLabel}`,
       "the day looks empty here.",
-      { href: "/app/health", linkText: "system health →" },
+      {
+        icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>',
+        href: "/app/health",
+        linkText: "system health →",
+      },
     );
     return;
   }

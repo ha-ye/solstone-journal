@@ -612,12 +612,6 @@
     return Date.now();
   }
 
-  function getAttentionPlaceholder() {
-    var attention = window.solChatBarAttention || null;
-    if (!attention || typeof attention.placeholder_text !== 'string') return '';
-    return attention.placeholder_text;
-  }
-
   function formatChatDay(ts) {
     var date = new Date(typeof ts === 'number' ? ts : Date.now());
     var year = date.getFullYear();
@@ -628,7 +622,7 @@
 
   function restoreDefaultPlaceholder() {
     if (!input) return;
-    input.placeholder = getAttentionPlaceholder() || input.dataset.defaultPlaceholder || '';
+    input.placeholder = input.dataset.defaultPlaceholder || '';
   }
 
   function clearSolPingTimers() {
