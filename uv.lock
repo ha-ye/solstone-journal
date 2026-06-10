@@ -2681,7 +2681,7 @@ wheels = [
 
 [[package]]
 name = "openhands-sdk"
-version = "1.23.1"
+version = "1.27.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "agent-client-protocol" },
@@ -2702,9 +2702,9 @@ dependencies = [
     { name = "tree-sitter-bash" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/eb/28/8ee31659c76951429307fb8e65155d2797cf3337f1075f5625b2699c2489/openhands_sdk-1.23.1.tar.gz", hash = "sha256:16c75b1da35d093a3db8422574e7c850a8b57c80c9a5e9b5220f8ee199cc7f56", size = 460351, upload-time = "2026-05-25T19:47:27.987Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a3/9c/d8cd661bb6801589c1129de5d2035d742948af8c6631a19e48a3259b1ca4/openhands_sdk-1.27.1.tar.gz", hash = "sha256:e11f5d9a2843a35e1d6817cd333a422b3d5103ae8b4d78a364e8dc65baac3a45", size = 527660, upload-time = "2026-06-10T20:35:04.209Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ab/7d/d5848bbdd927e8bc94fa54312d0e286a32da83873a457d6816f3af5edd08/openhands_sdk-1.23.1-py3-none-any.whl", hash = "sha256:4c7b00a871c4c9421941fb05c3ad425ffe401a4215cd71f499bd106e63157044", size = 569173, upload-time = "2026-05-25T19:47:30.398Z" },
+    { url = "https://files.pythonhosted.org/packages/e6/a6/4a1cd6e241768c8e6b35fe27630d2e1dd14b8b4e382d84e5c46377e7c731/openhands_sdk-1.27.1-py3-none-any.whl", hash = "sha256:2ad06b9c02a3b617f9cc17908f8d5d9d7b7eb627077df4310f65069992378bbe", size = 638931, upload-time = "2026-06-10T20:35:10.933Z" },
 ]
 
 [[package]]
@@ -4354,7 +4354,7 @@ requires-dist = [
     { name = "onnxruntime-gpu", marker = "extra == 'parakeet-onnx-cuda'", specifier = ">=1.25.0" },
     { name = "openai", specifier = ">=1.2.0" },
     { name = "opencv-python-headless" },
-    { name = "openhands-sdk", specifier = "==1.23.*" },
+    { name = "openhands-sdk", specifier = "==1.27.*" },
     { name = "opentelemetry-api", specifier = "==1.39.1" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = "==1.39.1" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = "==1.39.1" },

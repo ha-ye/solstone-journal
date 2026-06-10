@@ -45,10 +45,15 @@ dependencies = [
     "av",
 
     "openai>=1.2.0",
-    "openhands-sdk==1.23.*",
-    # openhands-sdk 1.23 pulls lmnr's OpenTelemetry beta stack. Pin the
-    # matching line so pip does not mix newer 1.42/0.63 packages with lmnr's
-    # 0.60b1 semantic-conventions pin.
+    "openhands-sdk==1.27.*",
+    # Pinned to >=1.27.1: that release reverts the Gemini prompt-cache markers
+    # (upstream PR #3586 / issue #3585). Emitting cache_control on Gemini froze
+    # its cache at the static prefix and disabled Google's implicit caching
+    # (~6-14x cost); our default gemini-flash-latest never matched the allowlist,
+    # but the bump removes the latent trap for any explicit gemini-2.5/3 pin.
+    # openhands-sdk pulls lmnr's OpenTelemetry beta stack. Pin the matching line
+    # so pip does not mix newer 1.42/0.63 packages with lmnr's 0.60b1
+    # semantic-conventions pin.
     "opentelemetry-api==1.39.1",
     "opentelemetry-sdk==1.39.1",
     "opentelemetry-exporter-otlp-proto-grpc==1.39.1",
