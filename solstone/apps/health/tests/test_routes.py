@@ -150,7 +150,7 @@ class TestInfoRoute:
                 "name": "flow",
                 "ts": 1770000000000,
                 "service": "cortex",
-                "error": "agent error",
+                "error": "talent error",
                 "reason_code": "provider_key_missing",
                 "provider": "anthropic",
                 "model": "claude-test",
@@ -235,7 +235,7 @@ class TestInfoRoute:
         assert '"id": "agent-1"' in html
         assert '"name": "flow"' in html
         assert '"service": "cortex"' in html
-        assert '"error": "agent error"' in html
+        assert '"error": "talent error"' in html
         assert '"reason_code": "provider_key_missing"' in html
         assert re.search(r'id="glanceErrorsValue">1</span>', html)
 

@@ -91,7 +91,7 @@ def _build_agent_error_seed(scan: AgentFailureScan) -> list[dict]:
             "name": failure.name,
             "ts": failure.ts,
             "service": "cortex",
-            "error": "agent error",
+            "error": "talent error",
             "reason_code": failure.reason_code,
             "provider": failure.provider,
             "model": failure.model,
