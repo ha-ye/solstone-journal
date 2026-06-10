@@ -4,6 +4,23 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.5.3] - 2026-06-10
+
+### Added
+- whether your journal is reachable over your local network is now a setting in journal settings, alongside everything else. it used to live only behind a command-line flag. the default is unchanged: your journal stays local-only until you turn this on.
+
+### Changed
+- your journal's own config is now the single source for your managed provider keys. a key set only in your shell environment, and not in your journal config, is no longer picked up. this keeps where your keys come from predictable, and your journal config the one place that decides. nothing about what leaves your machine changes.
+- the words across health, settings, and sol now read "talents" where they used to say "agents," with a few labels clarified along the way (disk usage, error counts, and a stray "None" that no longer shows up on the command line).
+
+### Fixed
+- search in the web app works again. every search was failing with a generic error; this resolves the underlying cause, and results come back as they should.
+- importing a transfer or peer archive now refuses anything that would write outside your journal folder. a malformed or hostile archive is turned away whole, writing nothing — your journal folder stays the only place an import can land.
+- marking a todo done or cancelled when it was already finished is now refused with a clear message, instead of leaving it recorded as both at once.
+- an entity active right now no longer shows "Last active: Tomorrow" in the evening. the day is computed on your local time, so it reads correctly.
+- the chat box no longer shows a provider-setup notice as its placeholder on every page, and a day with nothing in it now gets the same friendly empty state as the other timeline views.
+- on macOS, installing or upgrading the journal service no longer fails on a slow machine. some upgrades could stop on an input/output error while the old service was still unloading; this now waits and retries instead of giving up.
+
 ## [0.5.2] - 2026-06-05
 
 ### Changed
