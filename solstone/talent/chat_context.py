@@ -15,13 +15,6 @@ from solstone.convey.sol_initiated.copy import (
     SYNTHETIC_TRIGGER_LABEL,
     TRIGGER_LABEL_SOL_INITIATED,
 )
-from solstone.talent._routine_context import (
-    _TEMPLATE_TRIGGERS as TEMPLATE_TRIGGERS,
-)
-from solstone.talent._routine_context import (
-    render_active_routines,
-    render_routine_suggestion,
-)
 
 logger = logging.getLogger(__name__)
 STOP_AND_REPORT_CONTRACT = (
@@ -31,67 +24,9 @@ STOP_AND_REPORT_CONTRACT = (
 )
 
 
-def _count_triggers(msg: str, facet: str | None, config: dict) -> bool:
-    """Count trigger signals in the user's message. Returns True if config was mutated."""
-    lower = msg.lower()
-    today = date.today().isoformat()
-    meta = config.setdefault("_meta", {})
-    suggestions = meta.setdefault("suggestions", {})
-    changed = False
-
-    for template, info in TEMPLATE_TRIGGERS.items():
-        if not any(p in lower for p in info["patterns"]):
-            continue
-
-        if template == "domain-watch":
-            if not facet:
-                continue
-            entry = suggestions.setdefault(
-                template,
-                {
-                    "trigger_count": 0,
-                    "first_trigger": None,
-                    "last_trigger": None,
-                    "trigger_data": {},
-                    "response": None,
-                    "suggested": False,
-                },
-            )
-            topics = entry.setdefault("trigger_data", {}).setdefault("topics", {})
-            dates = topics.setdefault(facet, [])
-            if today not in dates:
-                dates.append(today)
-                entry["trigger_count"] = len(dates)
-                entry["first_trigger"] = entry["first_trigger"] or min(dates)
-                entry["last_trigger"] = max(dates)
-                changed = True
-        else:
-            entry = suggestions.setdefault(
-                template,
-                {
-                    "trigger_count": 0,
-                    "first_trigger": None,
-                    "last_trigger": None,
-                    "trigger_data": {},
-                    "response": None,
-                    "suggested": False,
-                },
-            )
-            entry["trigger_count"] = entry.get("trigger_count", 0) + 1
-            entry["first_trigger"] = entry.get("first_trigger") or today
-            entry["last_trigger"] = today
-            changed = True
-
-    return changed
-
-
 def pre_process(context: dict) -> dict:
     """Build chat-context template vars for the chat talent prompt."""
-    from solstone.think.routines import get_config as get_routines_config
-    from solstone.think.routines import save_config as save_routines_config
-    from solstone.think.utils import CorruptConfigError
 
-    facet = context.get("facet")
     trigger_kind, trigger_payload = _normalize_trigger(context)
     day = _resolve_day(context, trigger_payload)
     template_vars = {
@@ -104,8 +39,6 @@ def pre_process(context: dict) -> dict:
         "since_ts": "",
         "trigger_talent": "",
         "location": "",
-        "active_routines": "",
-        "routine_suggestion": "",
     }
     result = {"template_vars": template_vars}
 
@@ -169,27 +102,6 @@ def pre_process(context: dict) -> dict:
         )
     template_vars["trigger_context"] = trigger_context
     template_vars["location"] = _render_location(trigger_payload, context)
-
-    try:
-        template_vars["active_routines"] = render_active_routines()
-    except Exception:
-        logger.debug("Routine state enrichment failed", exc_info=True)
-
-    try:
-        prompt = context.get("prompt", "")
-        if trigger_kind == "owner_message" and prompt:
-            routines_config = get_routines_config()
-            if _count_triggers(prompt, facet, routines_config):
-                save_routines_config(routines_config)
-    except Exception:
-        logger.debug("Routine trigger counting failed", exc_info=True)
-
-    try:
-        template_vars["routine_suggestion"] = render_routine_suggestion()
-    except CorruptConfigError:
-        raise
-    except Exception:
-        logger.debug("Routine suggestion eligibility check failed", exc_info=True)
 
     return result
 

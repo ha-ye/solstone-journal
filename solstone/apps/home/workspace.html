@@ -460,69 +460,6 @@
   color: #4f46e5;
 }
 
-/* Routines */
-.pulse-routines {
-  padding: 1.25rem;
-  background: #fff;
-  border-radius: 10px;
-  border: 1px solid #e2e8f0;
-}
-
-.pulse-routines-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-
-.pulse-routine-item {
-  font-size: 0.85rem;
-  color: #334155;
-  display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
-  padding: 0.25rem 0.35rem 0.25rem 0;
-}
-
-.pulse-routine-item::before {
-  content: "◆";
-  color: #6366f1;
-  flex-shrink: 0;
-  font-size: 0.75rem;
-  width: 0.75rem;
-  text-align: center;
-  margin-left: -1.25rem;
-}
-
-.pulse-routine-name {
-  font-weight: 500;
-}
-
-.pulse-routine-time {
-  font-size: 0.75rem;
-  color: #94a3b8;
-}
-
-.pulse-routine-summary {
-  color: #64748b;
-  font-size: 0.8rem;
-}
-
-.pulse-routines-more {
-  font-size: 0.8rem;
-  color: #6366f1;
-  margin-top: 0.5rem;
-}
-
-.pulse-routines-more a {
-  color: inherit;
-  text-decoration: none;
-}
-
-.pulse-routines-more a:hover {
-  text-decoration: underline;
-  background: transparent;
-}
-
 /* Briefing Card */
 .pulse-briefing-card {
   padding: 1.25rem;
@@ -782,7 +719,6 @@
 .pulse-reflection,
 .pulse-today,
 .pulse-needs,
-.pulse-routines,
 .pulse-yesterday,
 .pulse-briefing-card,
 .pulse-empty-state {
@@ -835,7 +771,6 @@
   .pulse-facet-chip,
   .pulse-briefing-section-toggle,
   .pulse-section-toggle,
-  .pulse-routine-item,
   .pulse-event,
   .pulse-activity,
   .pulse-needs-item {
@@ -854,7 +789,6 @@
 
   .pulse-narrative,
   .pulse-reflection,
-  .pulse-routines,
   .pulse-today,
   .pulse-needs,
   .pulse-yesterday,
@@ -872,7 +806,6 @@
   .pulse-reflection,
   .pulse-today,
   .pulse-needs,
-  .pulse-routines,
   .pulse-yesterday,
   .pulse-briefing-card,
   .pulse-empty-state {
@@ -881,14 +814,12 @@
 
   .pulse-section-toggle::before,
   .pulse-needs-item::before,
-  .pulse-routine-item::before,
   .pulse-briefing-section-toggle::before {
     margin-left: 0;
     width: auto;
   }
 
   .pulse-needs-item,
-  .pulse-routine-item,
   .pulse-event,
   .pulse-activity {
     padding-left: 0.35rem;
@@ -975,7 +906,7 @@
   {% if show_welcome %}
   <div class="pulse-welcome">
     <h2>welcome to your home page</h2>
-    <p>this is where your day comes together — narrative summaries, calendar events, tasks, and routines. as observers experience your day along with you and sol curates, sections will appear here automatically.</p>
+    <p>this is where your day comes together — narrative summaries, calendar events, and tasks. as observers experience your day along with you and sol curates, sections will appear here automatically.</p>
     <a href="/app/health">check system health →</a>
   </div>
   {% endif %}
@@ -1062,39 +993,6 @@
   <div class="pulse-empty-state">
     <h2 class="pulse-section-header">today's flow</h2>
     <div class="pulse-empty-message">no narrative yet — one will appear after solstone processes some audio. <a href="/app/health">check observer status →</a></div>
-  </div>
-  {% endif %}
-
-  <!-- Routines -->
-  {% set unseen_routines = routines|selectattr('seen', 'equalto', false)|list %}
-  {% if unseen_routines %}
-  <div class="pulse-routines" id="pulse-routines" data-section-collapsed="true">
-    <div class="pulse-section-toggle" role="button" tabindex="0" aria-expanded="false" onclick="toggleSection(this.parentElement)">
-      <h2 class="pulse-section-header">your routines</h2>
-      <span class="pulse-section-summary">{{ routines_summary }}</span>
-    </div>
-    <div class="pulse-section-body">
-    <div class="pulse-routines-list">
-      {% for routine in unseen_routines %}
-      <div class="pulse-routine-item" role="button" tabindex="0" data-conversation="Show me my {{ routine.name }} from today" data-routine-click="true">
-        <span>
-          <span class="pulse-routine-name">{{ routine.name }}</span>
-          <span class="pulse-routine-time">{{ routine.run_time_display }}</span>
-          {% if routine.summary %}
-          <span class="pulse-routine-summary">— {{ routine.summary }}</span>
-          {% endif %}
-        </span>
-      </div>
-      {% endfor %}
-    </div>
-    <div class="pulse-routines-more"><a href="#" data-conversation="Show me all my routine history">all routine history →</a></div>
-    </div>
-  </div>
-  {% endif %}
-  {% if not unseen_routines and routines and not show_welcome %}
-  <div class="pulse-empty-state">
-    <h2 class="pulse-section-header">your routines</h2>
-    <div class="pulse-empty-message">all caught up — no new routine results since you last checked.</div>
   </div>
   {% endif %}
 
@@ -1312,9 +1210,6 @@
     var dashboard = document.querySelector('.pulse-dashboard');
     if (dashboard) {
       function dispatchConversationElement(el) {
-        if (el.closest('[data-routine-click]') || el.hasAttribute('data-routine-click')) {
-          fetch('/app/home/api/routines/seen', {method: 'POST'});
-        }
         window.fillChat(el.dataset.conversation);
       }
 
@@ -1407,11 +1302,6 @@
         if (msg.event === 'finish' && msg.name === 'morning_briefing') refreshBriefing();
         if (msg.event === 'error') refreshVitals();
       });
-
-      // Routines: refresh on completion
-      window.appEvents.listen('routines', function(msg) {
-        if (msg.event === 'complete') refreshRoutines();
-      });
     }
   }
 
@@ -1438,10 +1328,9 @@
   };
 
   // Section collapse/expand
-  var SECTION_IDS = ['pulse-narrative', 'pulse-routines', 'pulse-today', 'pulse-needs'];
+  var SECTION_IDS = ['pulse-narrative', 'pulse-today', 'pulse-needs'];
   var SECTION_DEFAULTS = {
     'pulse-narrative': 'true',
-    'pulse-routines': 'true',
     'pulse-today': 'true',
     'pulse-needs': 'false'
   };
@@ -1584,80 +1473,6 @@
       url: url,
       cause: 'parse',
     });
-  }
-
-  async function refreshRoutines() {
-    try {
-      var data = await window.apiJson('/app/home/api/pulse');
-      if (!Array.isArray(data.routines)) {
-        throw malformedHomeResponse('/app/home/api/pulse', 'Malformed pulse response');
-      }
-      var container = document.getElementById('pulse-routines');
-      var routines = data.routines.filter(function(r) { return !r.seen; });
-      if (routines.length === 0) {
-        if (container) container.remove();
-        return;
-      }
-      var wasCollapsed;
-      if (container) {
-        wasCollapsed = container.dataset.sectionCollapsed;
-      } else {
-        try {
-          var saved = JSON.parse(sessionStorage.getItem('pulse-section-state') || '{}');
-          wasCollapsed = saved['pulse-routines'] || SECTION_DEFAULTS['pulse-routines'];
-        } catch(e) {
-          wasCollapsed = SECTION_DEFAULTS['pulse-routines'];
-        }
-      }
-      var expanded = wasCollapsed === 'false' ? 'true' : 'false';
-      var summaryText = routines.length + ' new routine' + (routines.length !== 1 ? 's' : '');
-      var html = '<div class="pulse-section-toggle" role="button" tabindex="0" aria-expanded="' + expanded + '" onclick="toggleSection(this.parentElement)">';
-      html += '<h2 class="pulse-section-header">your routines</h2>';
-      html += '<span class="pulse-section-summary">' + esc(summaryText) + '</span>';
-      html += '</div>';
-      html += '<div class="pulse-section-body">';
-      html += '<div class="pulse-routines-list">';
-      routines.forEach(function(r) {
-        var name = esc(r.name);
-        html += '<div class="pulse-routine-item" role="button" tabindex="0" data-conversation="Show me my ' + name + ' from today" data-routine-click="true"><span>';
-        html += '<span class="pulse-routine-name">' + name + '</span> ';
-        html += '<span class="pulse-routine-time">' + esc(r.run_time_display) + '</span>';
-        if (r.summary) html += ' <span class="pulse-routine-summary">— ' + esc(r.summary) + '</span>';
-        html += '</span></div>';
-      });
-      html += '</div><div class="pulse-routines-more"><a href="#" data-conversation="Show me all my routine history">all routine history →</a></div>';
-      html += '</div>';
-      if (container) {
-        container.innerHTML = html;
-        container.dataset.sectionCollapsed = wasCollapsed;
-      } else {
-        var newDiv = document.createElement('div');
-        newDiv.className = 'pulse-routines';
-        newDiv.id = 'pulse-routines';
-        newDiv.dataset.sectionCollapsed = wasCollapsed;
-        newDiv.innerHTML = html;
-        var narrative = document.getElementById('pulse-narrative');
-        var today = document.getElementById('pulse-today');
-        if (narrative) {
-          narrative.parentNode.insertBefore(newDiv, narrative.nextSibling);
-        } else if (today) {
-          today.parentNode.insertBefore(newDiv, today);
-        } else {
-          var dash = document.querySelector('.pulse-dashboard');
-          if (dash) dash.appendChild(newDiv);
-        }
-      }
-    } catch (err) {
-      var routinesContainer = document.getElementById('pulse-routines');
-      if (routinesContainer) {
-        routinesContainer.innerHTML = window.SurfaceState.error({
-          heading: 'Couldn\'t refresh routines',
-          desc: window.CONVEY_COPY.RELOAD_HINT,
-          serverMessage: err?.serverMessage || err?.message || '',
-          detail: err,
-        });
-      }
-    }
   }
 
   async function refreshBriefing() {

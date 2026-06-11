@@ -116,7 +116,6 @@ COMMANDS: dict[str, Command] = {
     "spl": Command("solstone.think.spl", "service"),
     "call": Command("solstone.think.call", "access"),
     "navigate": Command("solstone.think.tools.navigate", "service"),
-    "routines": Command("solstone.think.tools.routines", "service"),
     "identity": Command("solstone.think.tools.sol", "service"),
     "engage": Command("solstone.think.engage", "service"),
     "chat": Command("solstone.think.chat_cli", "access"),

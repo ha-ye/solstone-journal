@@ -107,7 +107,6 @@ EXCLUDED_FILES: frozenset[str] = frozenset(
         "solstone/think/runner.py",
         "solstone/think/providers_cli.py",
         "solstone/think/start.py",
-        "solstone/think/routines.py",
         # App-storage and temporary upload/transcription files.
         "solstone/apps/import/routes.py",
         "solstone/apps/support/routes.py",

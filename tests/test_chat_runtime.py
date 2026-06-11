@@ -570,12 +570,6 @@ def test_terminal_talent_reports_back_without_redispatch(
     monkeypatch.setattr(
         "solstone.convey.chat._emit_cortex_event", lambda *args, **kwargs: None
     )
-    monkeypatch.setattr("solstone.think.routines.get_routine_state", lambda: [])
-    monkeypatch.setattr(
-        "solstone.think.routines.get_config",
-        lambda: {"_meta": {"suggestions_enabled": False, "suggestions": {}}},
-    )
-    monkeypatch.setattr("solstone.think.routines.save_config", lambda config: None)
 
     spawns: list[dict] = []
 

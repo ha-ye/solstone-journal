@@ -107,7 +107,6 @@ call_app.add_typer(journal_app, name="journal")
 call_app.add_typer(ledger_app, name="ledger")
 call_app.add_typer(_moved_stub("navigate"), name="navigate")
 call_app.add_typer(profile_app, name="profile")
-call_app.add_typer(_moved_stub("routines"), name="routines")
 call_app.add_typer(_moved_stub("identity"), name="identity")
 
 

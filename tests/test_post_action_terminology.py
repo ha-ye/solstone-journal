@@ -52,7 +52,6 @@ def _minimal_home_context() -> dict:
         "anticipated_activities": [],
         "activities": [],
         "needs_you_items": [item],
-        "routines": [],
         "briefing_sections": {},
         "briefing_meta": None,
         "briefing_phase": "eod",
@@ -66,7 +65,6 @@ def _minimal_home_context() -> dict:
         "yesterday_processing": None,
         "show_welcome": False,
         "narrative_summary": "",
-        "routines_summary": "",
         "today_summary": "",
         "needs_summary": "1 item needs attention",
     }

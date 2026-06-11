@@ -54,8 +54,6 @@ def test_policy_denies_write_tools(tmp_path):
     [
         "journal identity pulse",
         "journal identity awareness --write --value update",
-        "journal routines list",
-        "journal routines output morning",
         "journal health logs --since 1h",
         "journal talent logs --daily -c 10",
         "journal identity pulse --write --value 'a; quoted value'",

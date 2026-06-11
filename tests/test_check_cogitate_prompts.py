@@ -82,7 +82,7 @@ def test_bare_journal_flags_fenced_commands() -> None:
             2,
             "bare-journal",
             "forbidden `journal supervisor`; use `journal` with one of "
-            "{identity, routines, health, talent}, or use `sol`/`sol call`",
+            "{identity, health, talent}, or use `sol`/`sol call`",
         )
     ]
 
@@ -92,7 +92,6 @@ def test_bare_journal_flags_fenced_commands() -> None:
     [
         "`journal identity pulse --write --value '>'`",
         "`journal identity pulse --write --value '|'`",
-        "`journal routines list`",
         "`journal health`",
         "`journal talent logs --daily`",
         "`sol doctor`",
@@ -194,14 +193,14 @@ def test_extract_command_spans_scans_fences_per_line_without_inline_double_scan(
         "echo `journal health`\n"
         "\n"
         "```\n"
-        "After `journal routines list`.\n"
+        "After `journal identity pulse`.\n"
     )
 
     assert ccp.extract_command_spans(body) == [
         (1, "journal navigate"),
         (3, "journal supervisor"),
         (4, "echo `journal health`"),
-        (7, "journal routines list"),
+        (7, "journal identity pulse"),
     ]
 
     findings = ccp.lint_prompt(body)

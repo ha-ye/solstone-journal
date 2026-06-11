@@ -5,15 +5,11 @@ import importlib.util
 import json
 import re
 import sys
-from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
-import pytest
-
 from solstone.convey.chat_stream import append_chat_event
 from solstone.convey.sol_initiated.copy import KIND_SOL_CHAT_REQUEST
-from solstone.think.utils import CorruptConfigError
 
 TEMPLATE_VAR_KEYS = {
     "active_talents",
@@ -25,8 +21,6 @@ TEMPLATE_VAR_KEYS = {
     "since_ts",
     "trigger_talent",
     "location",
-    "active_routines",
-    "routine_suggestion",
 }
 
 
@@ -63,15 +57,6 @@ def _ts(hour: int, minute: int, second: int = 0) -> int:
     return int(datetime(2026, 4, 20, hour, minute, second).timestamp() * 1000)
 
 
-def _stub_routines(monkeypatch) -> None:
-    monkeypatch.setattr("solstone.think.routines.get_routine_state", lambda: [])
-    monkeypatch.setattr(
-        "solstone.think.routines.get_config",
-        lambda: {"_meta": {"suggestions_enabled": False, "suggestions": {}}},
-    )
-    monkeypatch.setattr("solstone.think.routines.save_config", lambda config: None)
-
-
 def _append_owner_message(text: str, ts: int, **extra) -> None:
     append_chat_event(
         "owner_message",
@@ -100,9 +85,7 @@ def _chat_prompt_frontmatter() -> dict:
     return metadata
 
 
-def test_chat_context_injects_tail_trigger_location_and_routine_state(
-    monkeypatch, tmp_path
-):
+def test_chat_context_injects_tail_trigger_location(monkeypatch, tmp_path):
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
     _write_journal_config(
@@ -140,39 +123,6 @@ def test_chat_context_injects_tail_trigger_location_and_routine_state(
         started_at=_ts(9, 2),
     )
 
-    routines_config = {
-        "_meta": {
-            "suggestions_enabled": True,
-            "suggestions": {
-                "meeting-prep": {
-                    "trigger_count": 3,
-                    "first_trigger": "2026-04-01",
-                    "last_trigger": "2026-04-19",
-                    "trigger_data": {},
-                    "response": None,
-                    "suggested": False,
-                }
-            },
-        }
-    }
-    monkeypatch.setattr(
-        "solstone.think.routines.get_routine_state",
-        lambda: [
-            {
-                "name": "Morning Briefing",
-                "cadence": "0 9 * * *",
-                "last_run": None,
-                "enabled": True,
-                "paused_until": None,
-                "output_summary": "Shared the top priorities.",
-            }
-        ],
-    )
-    monkeypatch.setattr(
-        "solstone.think.routines.get_config", lambda: deepcopy(routines_config)
-    )
-    monkeypatch.setattr("solstone.think.routines.save_config", lambda config: None)
-
     result = _load_chat_context_module().pre_process(
         {
             "prompt": "Please brief me for my meeting",
@@ -201,10 +151,6 @@ def test_chat_context_injects_tail_trigger_location_and_routine_state(
     assert "## Location" in template_vars["location"]
     assert "/app/home" in template_vars["location"]
     assert "work" in template_vars["location"]
-    assert "## Active Routines" in template_vars["active_routines"]
-    assert "Morning Briefing" in template_vars["active_routines"]
-    assert "Routine Suggestion Eligible" in template_vars["routine_suggestion"]
-    assert "meeting-prep" in template_vars["routine_suggestion"]
 
 
 def test_chat_prompt_has_no_digest_slot():
@@ -217,7 +163,6 @@ def test_chat_prompt_has_no_digest_slot():
 def test_chat_context_owner_message_anchors_empty_tail(monkeypatch, tmp_path):
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    _stub_routines(monkeypatch)
 
     result = _load_chat_context_module().pre_process(
         {
@@ -237,7 +182,6 @@ def test_chat_context_owner_message_anchors_empty_tail(monkeypatch, tmp_path):
 def test_chat_context_owner_message_anchors_after_sol_message(monkeypatch, tmp_path):
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    _stub_routines(monkeypatch)
 
     _append_owner_message("thanks", _ts(8, 0))
     append_chat_event(
@@ -271,7 +215,6 @@ def test_chat_context_owner_message_anchors_after_sol_message(monkeypatch, tmp_p
 def test_chat_context_owner_message_anchor_is_idempotent(monkeypatch, tmp_path):
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    _stub_routines(monkeypatch)
 
     _append_owner_message("what's my name?", _ts(8, 0))
 
@@ -292,7 +235,6 @@ def test_chat_context_owner_message_anchor_is_idempotent(monkeypatch, tmp_path):
 def test_chat_context_owner_message_anchors_after_different_user(monkeypatch, tmp_path):
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    _stub_routines(monkeypatch)
 
     _append_owner_message("thanks", _ts(8, 0))
 
@@ -316,7 +258,6 @@ def test_chat_context_owner_message_anchors_after_different_user(monkeypatch, tm
 def test_chat_context_prompt_only_owner_message_anchors(monkeypatch, tmp_path):
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    _stub_routines(monkeypatch)
 
     result = _load_chat_context_module().pre_process(
         {"prompt": "what's my name?", "day": "20260420"}
@@ -328,7 +269,6 @@ def test_chat_context_prompt_only_owner_message_anchors(monkeypatch, tmp_path):
 def test_chat_context_owner_message_anchors_when_tail_read_fails(monkeypatch, tmp_path):
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    _stub_routines(monkeypatch)
     module = _load_chat_context_module()
 
     def _boom(*_args, **_kwargs):
@@ -354,7 +294,6 @@ def test_chat_context_owner_message_anchors_when_tail_read_fails(monkeypatch, tm
 def test_chat_context_talent_finished_does_not_owner_anchor(monkeypatch, tmp_path):
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    _stub_routines(monkeypatch)
 
     _append_owner_message("What happened?", _ts(8, 0))
     append_chat_event(
@@ -390,7 +329,6 @@ def test_chat_context_talent_finished_does_not_owner_anchor(monkeypatch, tmp_pat
 def test_chat_context_talent_errored_does_not_owner_anchor(monkeypatch, tmp_path):
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    _stub_routines(monkeypatch)
 
     _append_owner_message("What happened?", _ts(8, 0))
     append_chat_event(
@@ -428,7 +366,6 @@ def test_chat_context_owner_message_renders_empty_trigger_context(
 ):
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    _stub_routines(monkeypatch)
 
     result = _load_chat_context_module().pre_process(
         {
@@ -451,7 +388,6 @@ def test_chat_context_sol_initiated_still_renders_trigger_context(
 ):
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    _stub_routines(monkeypatch)
 
     result = _load_chat_context_module().pre_process(
         {
@@ -476,7 +412,6 @@ def test_chat_context_talent_finished_still_renders_trigger_context(
 ):
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    _stub_routines(monkeypatch)
 
     result = _load_chat_context_module().pre_process(
         {
@@ -499,7 +434,6 @@ def test_chat_context_talent_errored_still_renders_trigger_context(
 ):
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    _stub_routines(monkeypatch)
 
     result = _load_chat_context_module().pre_process(
         {
@@ -522,7 +456,6 @@ def test_chat_context_owner_message_needs_you_source_becomes_trigger_context(
 ):
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    _stub_routines(monkeypatch)
     source = {"kind": "needs_you", "item_text": "Review the launch checklist"}
 
     _append_owner_message("Review the launch checklist", _ts(8, 0), source=source)
@@ -549,53 +482,6 @@ def test_chat_context_owner_message_needs_you_source_becomes_trigger_context(
         "The owner reached this conversation from their Needs You tile"
     )
     assert "## Trigger Context" not in result["template_vars"]["trigger_context"]
-
-
-def test_chat_context_routine_suggestion_only_counts_owner_messages(
-    monkeypatch, tmp_path
-):
-    journal = tmp_path / "journal"
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-
-    routines_config = {"_meta": {"suggestions_enabled": True, "suggestions": {}}}
-    save_calls: list[dict] = []
-    monkeypatch.setattr("solstone.think.routines.get_routine_state", lambda: [])
-    monkeypatch.setattr("solstone.think.routines.get_config", lambda: routines_config)
-    monkeypatch.setattr(
-        "solstone.think.routines.save_config",
-        lambda config: save_calls.append(deepcopy(config)),
-    )
-
-    module = _load_chat_context_module()
-
-    module.pre_process(
-        {
-            "prompt": "What is on my calendar today?",
-            "trigger": {
-                "type": "talent_finished",
-                "name": "exec",
-                "summary": "Collected the latest meeting prep notes.",
-            },
-        }
-    )
-
-    assert routines_config["_meta"]["suggestions"] == {}
-    assert save_calls == []
-
-    module.pre_process(
-        {
-            "prompt": "What is on my calendar today?",
-            "trigger": {
-                "type": "owner_message",
-                "message": "What is on my calendar today?",
-                "ts": _ts(10, 0),
-            },
-        }
-    )
-
-    suggestion = routines_config["_meta"]["suggestions"]["morning-briefing"]
-    assert suggestion["trigger_count"] == 1
-    assert len(save_calls) == 1
 
 
 def test_chat_context_talent_finished_marks_stop_and_report(monkeypatch, tmp_path):
@@ -626,13 +512,6 @@ def test_chat_context_talent_finished_marks_stop_and_report(monkeypatch, tmp_pat
         name="exec",
         summary="Found the latest notes.",
     )
-
-    monkeypatch.setattr("solstone.think.routines.get_routine_state", lambda: [])
-    monkeypatch.setattr(
-        "solstone.think.routines.get_config",
-        lambda: {"_meta": {"suggestions_enabled": False, "suggestions": {}}},
-    )
-    monkeypatch.setattr("solstone.think.routines.save_config", lambda config: None)
 
     result = _load_chat_context_module().pre_process(
         {
@@ -696,13 +575,6 @@ def test_chat_context_talent_errored_marks_stop_and_report(monkeypatch, tmp_path
         reason="The lookup failed.",
     )
 
-    monkeypatch.setattr("solstone.think.routines.get_routine_state", lambda: [])
-    monkeypatch.setattr(
-        "solstone.think.routines.get_config",
-        lambda: {"_meta": {"suggestions_enabled": False, "suggestions": {}}},
-    )
-    monkeypatch.setattr("solstone.think.routines.save_config", lambda config: None)
-
     result = _load_chat_context_module().pre_process(
         {
             "day": "20260420",
@@ -757,13 +629,6 @@ def test_chat_context_talent_followups_are_observably_distinct(monkeypatch, tmp_
         requested_target=None,
         requested_task=None,
     )
-
-    monkeypatch.setattr("solstone.think.routines.get_routine_state", lambda: [])
-    monkeypatch.setattr(
-        "solstone.think.routines.get_config",
-        lambda: {"_meta": {"suggestions_enabled": False, "suggestions": {}}},
-    )
-    monkeypatch.setattr("solstone.think.routines.save_config", lambda config: None)
 
     module = _load_chat_context_module()
     finished = module.pre_process(
@@ -835,62 +700,18 @@ def test_chat_context_talent_followups_are_observably_distinct(monkeypatch, tmp_
     assert "- Reason: The lookup failed." in errored_vars["trigger_context"]
 
 
-def test_chat_context_preserves_save_routines_config_side_effect(monkeypatch, tmp_path):
+def test_chat_context_omits_messages_when_empty(monkeypatch, tmp_path):
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-
-    routines_config = {"_meta": {"suggestions_enabled": True, "suggestions": {}}}
-    save_calls: list[dict] = []
-    monkeypatch.setattr("solstone.think.routines.get_routine_state", lambda: [])
-    monkeypatch.setattr("solstone.think.routines.get_config", lambda: routines_config)
-    monkeypatch.setattr(
-        "solstone.think.routines.save_config",
-        lambda config: save_calls.append(deepcopy(config)),
-    )
-
-    _load_chat_context_module().pre_process(
-        {
-            "prompt": "What is on my calendar today?",
-            "trigger": {
-                "type": "owner_message",
-                "message": "What is on my calendar today?",
-                "ts": _ts(11, 0),
-            },
-        }
-    )
-
-    assert len(save_calls) == 1
-    saved = save_calls[0]
-    assert saved["_meta"]["suggestions"]["morning-briefing"]["trigger_count"] == 1
-    assert saved["_meta"]["suggestions"]["morning-briefing"]["first_trigger"]
-
-
-def test_chat_context_routines_omitted_when_empty(monkeypatch, tmp_path):
-    journal = tmp_path / "journal"
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    monkeypatch.setattr("solstone.think.routines.get_routine_state", lambda: [])
-    monkeypatch.setattr(
-        "solstone.think.routines.get_config",
-        lambda: {"_meta": {"suggestions_enabled": False, "suggestions": {}}},
-    )
-    monkeypatch.setattr("solstone.think.routines.save_config", lambda config: None)
 
     result = _load_chat_context_module().pre_process({"day": "20260420"})
 
     template_vars = _assert_template_vars_result(result)
-    assert template_vars["active_routines"] == ""
     assert template_vars["active_talents"] == ""
     assert "messages" not in result
 
 
 def test_pre_process_exposes_latest_owner_message_source(monkeypatch, tmp_path):
-    monkeypatch.setattr("solstone.think.routines.get_routine_state", lambda: [])
-    monkeypatch.setattr(
-        "solstone.think.routines.get_config",
-        lambda: {"_meta": {"suggestions_enabled": False, "suggestions": {}}},
-    )
-    monkeypatch.setattr("solstone.think.routines.save_config", lambda config: None)
-
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
     source = {"kind": "needs_you", "item_text": "Review the launch checklist"}
@@ -946,9 +767,6 @@ def test_chat_context_enrichment_errors_are_graceful(monkeypatch, tmp_path):
 
     monkeypatch.setattr(module, "read_chat_tail", _boom)
     monkeypatch.setattr(module, "reduce_chat_state", _boom)
-    monkeypatch.setattr("solstone.think.routines.get_routine_state", _boom)
-    monkeypatch.setattr("solstone.think.routines.get_config", _boom)
-    monkeypatch.setattr("solstone.think.routines.save_config", lambda config: None)
 
     result = module.pre_process(
         {
@@ -965,8 +783,6 @@ def test_chat_context_enrichment_errors_are_graceful(monkeypatch, tmp_path):
 
     template_vars = _assert_template_vars_result(result)
     assert template_vars["active_talents"] == ""
-    assert template_vars["active_routines"] == ""
-    assert template_vars["routine_suggestion"] == ""
     assert template_vars["trigger_context"] == ""
     assert "/app/home" in template_vars["location"]
     assert result["messages"] == [
@@ -974,30 +790,7 @@ def test_chat_context_enrichment_errors_are_graceful(monkeypatch, tmp_path):
     ]
 
 
-def test_chat_context_corrupt_config_re_raises_from_routine_suggestion(
-    monkeypatch, tmp_path
-):
-    journal = tmp_path / "journal"
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    module = _load_chat_context_module()
-
-    def _raise_corrupt_config():
-        raise CorruptConfigError(journal / "config" / "journal.json")
-
-    monkeypatch.setattr(module, "render_routine_suggestion", _raise_corrupt_config)
-
-    with pytest.raises(CorruptConfigError):
-        module.pre_process({"day": "20260420"})
-
-
 def test_chat_context_drops_legacy_memory_imports(monkeypatch):
-    monkeypatch.setattr("solstone.think.routines.get_routine_state", lambda: [])
-    monkeypatch.setattr(
-        "solstone.think.routines.get_config",
-        lambda: {"_meta": {"suggestions_enabled": False, "suggestions": {}}},
-    )
-    monkeypatch.setattr("solstone.think.routines.save_config", lambda config: None)
-
     legacy_module = "think" + ".con" + "versation"
     legacy_memory = "conversation_" + "memory"
     source = (

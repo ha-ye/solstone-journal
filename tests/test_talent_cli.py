@@ -448,7 +448,6 @@ def test_scan_command_examples_dedupes_and_caps():
     body = "\n".join(
         [
             "`sol call support search foo`",
-            "`journal routines list`",
             "`sol call support search foo`",
             "`journal talent logs --daily -c 20 --errors.`",
             "`journal identity pulse --write --value x`",
@@ -457,8 +456,8 @@ def test_scan_command_examples_dedupes_and_caps():
 
     assert _scan_command_examples(body, cap=3) == [
         "sol call support search foo",
-        "journal routines list",
         "journal talent logs --daily -c 20 --errors",
+        "journal identity pulse --write --value x",
     ]
 
 

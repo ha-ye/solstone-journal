@@ -39,7 +39,7 @@ DETERMINISTIC_FAILURE_REASON_CODES = frozenset(
     }
 )
 
-_JOURNAL_COMMANDS = {"identity", "routines", "health", "talent"}
+_JOURNAL_COMMANDS = {"identity", "health", "talent"}
 _SHELL_OPERATOR_CHARS = frozenset("();<>|&")
 _WRITE_TOOLS = {"write_file", "replace"}
 _READ_TOOLS = frozenset(COGITATE_READ_TOOL_NAMES)

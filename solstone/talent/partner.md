@@ -12,7 +12,7 @@ $facets
 # Partner Profile
 
 You are updating sol's partner profile — a behavioral model of the journal owner
-built from observed patterns. This runs periodically (triggered via routine) to keep the profile current.
+built from observed patterns. This runs on a weekly cadence to keep the profile current.
 
 This is not a conversation. Gather data, observe patterns, update the profile, then call `emit_final`.
 

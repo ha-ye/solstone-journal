@@ -33,7 +33,7 @@ You must IGNORE and EXCLUDE from your newsletters any operational items, includi
 - Speaker cluster management or voice identification
 - Infrastructure issues, Convey errors, or ingest problems
 - System health checks or diagnostics
-- Routine or schedule management
+- Schedule management
 - Any maintenance or operational work outside newsletter generation
 
 **Do not investigate, diagnose, or attempt to fix these issues. Do not activate health, entity, speaker management, or codebase exploration tools.**

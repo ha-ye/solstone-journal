@@ -24,10 +24,8 @@ Read current state. Use the `read_file` tool for the identity files (relative to
 
 1. `read_file` `identity/pulse.md` — previous pulse (may not exist yet; that's fine)
 2. `read_file` `identity/partner.md` — behavioral profile of the owner
-3. `read_file` `identity/awareness.md` — current situational awareness (calendar, routines, activity, entities)
+3. `read_file` `identity/awareness.md` — current situational awareness (calendar, activity, entities)
 4. `sol call entities search` — recent entity activity
-
-If — and only if — the awareness snapshot explicitly names a routine as having recent output, read that routine's latest with `journal routines output {routine_name}` — at most one call per explicitly-named routine. Do not guess routine names, try name variants, or fall back to `--help`. If no routine is named with recent output, skip this step entirely.
 
 Note the key findings — you'll weave them into the narrative.
 
@@ -41,7 +39,6 @@ morning of focused solo work followed by a tense meeting and a celebratory team 
 has a shape. Name it when it's notable: "The afternoon shifted — three tense exchanges
 with the vendor, then a long quiet stretch." Don't force emotional language when the
 day is neutral. Only surface what's actually there.
-If routines produced notable findings, reference them by name (e.g., 'Your Morning Briefing noted...').
 
 After the narrative, include a `## needs you` section — a ranked list of 3-7
 action items the owner should notice. Format as markdown bullet points:

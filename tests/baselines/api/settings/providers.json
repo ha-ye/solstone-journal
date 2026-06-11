@@ -367,14 +367,6 @@
       "tier": 2,
       "type": "cogitate"
     },
-    "talent.system.routine": {
-      "disabled": false,
-      "group": "Think",
-      "label": "Routine",
-      "schedule": "none",
-      "tier": 2,
-      "type": "cogitate"
-    },
     "talent.system.schedule": {
       "disabled": false,
       "group": "Think",

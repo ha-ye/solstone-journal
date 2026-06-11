@@ -42,7 +42,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Must equal solstone/think/cogitate_policy.py:_JOURNAL_COMMANDS
 # (cogitate_policy.py:21). Duplicated here intentionally; no shared import.
-ALLOWED_JOURNAL_COMMANDS = frozenset({"identity", "routines", "health", "talent"})
+ALLOWED_JOURNAL_COMMANDS = frozenset({"identity", "health", "talent"})
 
 # Must equal solstone/think/cogitate_policy.py:_READ_TOOLS
 # (cogitate_policy.py:24). Duplicated here intentionally; no shared import.
@@ -87,8 +87,7 @@ UNSUPPORTED_FLAGS: list[tuple[tuple[str, ...], str, str]] = []
 ALLOWLIST: dict[tuple[str, str], int] = {}
 
 JOURNAL_ALTERNATIVE = (
-    "use `journal` with one of {identity, routines, health, talent}, "
-    "or use `sol`/`sol call`"
+    "use `journal` with one of {identity, health, talent}, or use `sol`/`sol call`"
 )
 READ_ALTERNATIVE = (
     "use a bounded read tool: read_file, list_directory, glob, or grep_search"

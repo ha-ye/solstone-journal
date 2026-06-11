@@ -15,7 +15,6 @@ from solstone.think.service import Reconciled
 
 LOCAL_COMMANDS = {
     "navigate": "solstone.think.tools.navigate",
-    "routines": "solstone.think.tools.routines",
     "identity": "solstone.think.tools.sol",
     "install-provider": "solstone.think.install_provider",
 }
@@ -34,7 +33,6 @@ def test_local_commands_resolve_as_service(command: str, module: str) -> None:
     ("command", "extra_args"),
     [
         ("navigate", ["/x"]),
-        ("routines", ["list"]),
         ("identity", ["partner"]),
         ("install-provider", ["local"]),
     ],
@@ -122,7 +120,6 @@ def test_local_commands_are_journal_help_only(monkeypatch, capsys) -> None:
     ("args", "pointer"),
     [
         (["navigate", "/x"], "journal navigate"),
-        (["routines", "list"], "journal routines"),
         (["identity"], "journal identity"),
         (["settings", "providers", "install", "local"], "journal install-provider"),
     ],
@@ -145,5 +142,4 @@ def test_old_sol_call_help_lists_moved_stubs() -> None:
 
     assert result.exit_code == 0
     assert "Moved to `journal navigate`." in result.output
-    assert "Moved to `journal routines`." in result.output
     assert "Moved to `journal identity`." in result.output

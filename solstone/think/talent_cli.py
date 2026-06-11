@@ -472,7 +472,7 @@ def _scan_command_examples(body: str, *, cap: int = 6) -> list[str]:
     """Scan prompt body text for command examples."""
     pattern = re.compile(
         r"`(?P<cmd>(?:sol\s+call\s+[^\n`]+|journal\s+"
-        r"(?:identity|routines|health|talent)\b[^\n`]*))`"
+        r"(?:identity|health|talent)\b[^\n`]*))`"
     )
     seen: set[str] = set()
     result: list[str] = []

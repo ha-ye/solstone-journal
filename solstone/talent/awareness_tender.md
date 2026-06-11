@@ -18,13 +18,12 @@ This is not a conversation. Gather state, write the update, done.
 
 ## Gather state
 
-Read current state. Use `sol call` for indexed data, `read_file` for the
-identity file, and the settled `journal routines` form for routine state:
+Read current state. Use `sol call` for indexed data and `read_file` for the
+identity file:
 
 1. `sol call awareness status` — processing, import, and journal state
 2. `sol call activities list --source anticipated` — today's scheduled activity records
-3. `journal routines list` — active routines and recent outputs
-4. `sol call entities search --limit 5` — recent entity activity
+3. `sol call entities search --limit 5` — recent entity activity
 
 ## Write awareness.md
 
@@ -39,9 +38,6 @@ segment: {$SOL_SEGMENT}
 
 ## activity
 - {current activity state from sense, 1-2 bullets}
-
-## routines
-- {active routines and last-run status, 1-3 bullets}
 
 ## entities
 - {recent entity activity, 1-2 bullets}

@@ -9,18 +9,8 @@ from solstone.convey.sol_initiated.copy import (
 from solstone.talent import chat_context
 
 
-def _patch_routines(monkeypatch) -> None:
-    monkeypatch.setattr("solstone.think.routines.get_routine_state", lambda: [])
-    monkeypatch.setattr(
-        "solstone.think.routines.get_config",
-        lambda: {"_meta": {"suggestions_enabled": False, "suggestions": {}}},
-    )
-    monkeypatch.setattr("solstone.think.routines.save_config", lambda config: None)
-
-
 def test_pre_hook_sets_template_vars_for_sol_request(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    _patch_routines(monkeypatch)
     since_ts = 1_775_000_000_000
 
     result = chat_context.pre_process(
@@ -52,7 +42,6 @@ def test_pre_hook_sets_template_vars_for_sol_request(monkeypatch, tmp_path) -> N
 
 def test_existing_trigger_kind_labels_remain(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    _patch_routines(monkeypatch)
 
     owner = chat_context.pre_process(
         {

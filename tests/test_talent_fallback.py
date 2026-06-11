@@ -235,6 +235,7 @@ def _patch_prepare_config_dependencies(monkeypatch):
         "solstone.think.models.resolve_provider",
         lambda _context, _type: ("google", "gemini-3-flash-preview"),
     )
+    monkeypatch.setattr("solstone.think.models.get_context_registry", lambda: {})
 
 
 def test_prepare_config_rejects_frontmatter_outbound_approval(tmp_path, monkeypatch):

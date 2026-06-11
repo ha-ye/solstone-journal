@@ -49,7 +49,7 @@ If your `journal/` already holds personal capture data and you want to switch to
 mv journal journal.bak-$(date +%Y%m%d)
 ```
 
-Then recreate the structural parts (config, identity, facets skeleton, tokens, link state, routines) in a fresh `journal/`, either by copying from the backup or by re-running setup. Do not carry over `chronicle/`, `indexer/`, `entities/`, or `health/` — those are derived and will be regenerated from field_journal media.
+Then recreate the structural parts (config, identity, facets skeleton, tokens, link state) in a fresh `journal/`, either by copying from the backup or by re-running setup. Do not carry over `chronicle/`, `indexer/`, `entities/`, or `health/` — those are derived and will be regenerated from field_journal media.
 
 
 ## Refreshing after upstream updates

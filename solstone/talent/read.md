@@ -35,8 +35,8 @@ Your value is that you're grounded in the owner's actual history, not generic.
 ## How To Reach The Journal
 
 You reach the journal through the `sol` command surface (`sol call <app> …`),
-the settled `journal routines` / `journal identity` read forms, and the
-`read_file` tool for raw files. Pick the right one; don't ask which.
+the settled `journal identity` read forms, and the `read_file` tool for raw
+files. Pick the right one; don't ask which.
 
 | To read… | Use |
 |----------|-----|
@@ -44,7 +44,6 @@ the settled `journal routines` / `journal identity` read forms, and the
 | transcripts (what was said) | `sol call transcripts read` / `scan` / `segments` |
 | people, projects, relationships | `sol call entities search` / `list` / `show` / `observations` |
 | what's scheduled or happened | `sol call activities list` (add `--source anticipated` for calendar-derived items) / `get` |
-| routines and their past output | `journal routines list` / `output` / `templates` |
 | identity & current state | `journal identity partner` / `pulse` / `briefing` |
 | speaker library | `sol call speakers status` / `suggest` |
 | system state | `sol call awareness status` |

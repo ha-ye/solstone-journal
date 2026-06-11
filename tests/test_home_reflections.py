@@ -38,7 +38,6 @@ def _minimal_pulse_context(latest_weekly_reflection):
         "flow_updated_at": None,
         "anticipated_activities": [],
         "activities": [],
-        "routines": [],
         "briefing_sections": {},
         "briefing_meta": None,
         "briefing_phase": "eod",
@@ -57,7 +56,6 @@ def _minimal_pulse_context(latest_weekly_reflection):
         },
         "show_welcome": False,
         "narrative_summary": "",
-        "routines_summary": "",
         "today_summary": "",
         "needs_summary": "",
     }

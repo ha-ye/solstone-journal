@@ -631,10 +631,6 @@ def test_supervisor_registers_maintenance_before_scheduler_init(tmp_path, monkey
     monkeypatch.setattr(
         mod.scheduler, "catch_up", lambda: order.append(("catch_up", None))
     )
-    monkeypatch.setattr(
-        mod.routines, "init", lambda _callosum: order.append(("routines.init", None))
-    )
-    monkeypatch.setattr(mod.routines, "save_state", lambda: None)
 
     def interrupt_supervise(coro):
         coro.close()

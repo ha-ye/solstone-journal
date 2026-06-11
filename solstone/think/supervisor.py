@@ -26,7 +26,7 @@ from typing import Any, Callable, Iterable, NoReturn
 
 import psutil
 
-from solstone.think import maintenance, routines, scheduler
+from solstone.think import maintenance, scheduler
 from solstone.think.app_supervised import FLAG, is_app_supervised, resolve_parent_fd
 from solstone.think.callosum import CallosumConnection, CallosumServer
 from solstone.think.maint import run_pending_tasks
@@ -2298,7 +2298,6 @@ async def supervise(
             # Check periodic task schedules (non-blocking, submits via callosum)
             if schedule:
                 scheduler.check()
-                routines.check()
 
             # Sleep 1 second before next iteration (responsive to shutdown)
             await asyncio.sleep(1)
@@ -2649,7 +2648,6 @@ def main() -> None:
                     cmd_name,
                     seconds,
                 )
-        routines.init(_supervisor_callosum)
 
     if _task_queue:
         _task_queue.set_ready()
@@ -2708,12 +2706,6 @@ def main() -> None:
         child_stop_timeout = APP_SUPERVISED_CHILD_STOP_S if app_supervised else None
         for managed in reversed(procs):
             _stop_process(managed, timeout_cap=child_stop_timeout)
-
-        if schedule_enabled:
-            try:
-                routines.save_state()
-            except Exception as exc:
-                logging.warning("Failed to save routines state on shutdown: %s", exc)
 
         # Disconnect supervisor's Callosum connection
         if _supervisor_callosum:
