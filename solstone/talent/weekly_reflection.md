@@ -7,7 +7,8 @@
   "output": "md",
   "degradation_check": true,
   "read_scope_span": 7,
-  "max_turns": 100
+  "max_turns": 100,
+  "max_run_cost_usd": 5.00
 }
 
 $facets

@@ -102,6 +102,10 @@
       "template": "I didn't get a response",
       "action": null
     },
+    "token_budget_exceeded": {
+      "template": "this run reached its resource budget before finishing",
+      "action": null
+    },
     "unknown": {
       "template": "chat had trouble",
       "action": null

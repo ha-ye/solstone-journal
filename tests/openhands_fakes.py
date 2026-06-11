@@ -110,17 +110,23 @@ class TokenUsage(FakeModel):
     cache_read_tokens = 0
     cache_write_tokens = 0
     reasoning_tokens = 0
+    per_turn_token = 0
 
 
 class Metrics(FakeModel):
     def __init__(self) -> None:
-        super().__init__(accumulated_token_usage=TokenUsage(), token_usages=[])
+        super().__init__(
+            accumulated_cost=0.0,
+            accumulated_token_usage=TokenUsage(),
+            token_usages=[],
+        )
 
 
 class LLM(FakeModel):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.metrics = Metrics()
+        self.effective_max_input_tokens = None
 
 
 class Agent(FakeModel):
@@ -134,10 +140,14 @@ class Conversation(FakeModel):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.messages: list[str] = []
+        self.paused = False
         type(self).instances.append(self)
 
     def send_message(self, message: str) -> None:
         self.messages.append(message)
+
+    def pause(self) -> None:
+        self.paused = True
 
     async def arun(self) -> None:
         if type(self).arun_impl is None:

@@ -217,6 +217,12 @@ _ENTRIES: dict[str, _Entry] = {
         detail="Try again or choose another provider.",
         recovery_action=None,
     ),
+    "token_budget_exceeded": _Entry(
+        klass="generic",
+        summary="this run reached its resource budget before finishing",
+        detail="Try a shorter or more focused request.",
+        recovery_action=None,
+    ),
     "unknown": _Entry(
         klass="generic",
         summary="chat had trouble",

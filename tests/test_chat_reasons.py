@@ -34,6 +34,7 @@ EXPECTED_CODES = {
     "context_window_exceeded",
     "max_turns_exhausted",
     "no_output",
+    "token_budget_exceeded",
     "unknown",
 }
 

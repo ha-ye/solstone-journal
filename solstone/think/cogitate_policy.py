@@ -17,13 +17,26 @@ from solstone.think.cogitate_contract import (
 )
 
 MAX_TURNS = 60
+DEFAULT_RUN_COST_CAP_USD = 1.00
+COST_WARN_FRAC = 0.70
+CONTEXT_WARN_FRAC = 0.80
+CONTEXT_FINAL_FRAC = 0.88
+# Conservative fresh-token fallback when the SDK's accumulated_cost is still 0.0
+# (no response completed yet, or litellm cost calc failed). Uses Gemini Flash's
+# output rate ($2.50 / 1M tokens) for ALL fresh non-cache tokens so the estimate
+# errs high and the ceiling trips early rather than late.
+_FALLBACK_USD_PER_TOKEN = 0.0000025
 DETERMINISTIC_FAILURE_THRESHOLD = 2
 DEFAULT_READ_CALL_BUDGET = 200
 # Reason codes for content-deterministic crashes: re-dispatching a daily
-# unit that hit one of these will crash identically. token_budget_exceeded
-# joins this set when the per-run cost ceiling ships.
+# unit that hit one of these will crash identically.
 DETERMINISTIC_FAILURE_REASON_CODES = frozenset(
-    {"context_window_exceeded", "max_turns_exhausted", "no_output"}
+    {
+        "context_window_exceeded",
+        "max_turns_exhausted",
+        "no_output",
+        "token_budget_exceeded",
+    }
 )
 
 _JOURNAL_COMMANDS = {"identity", "routines", "health", "talent"}

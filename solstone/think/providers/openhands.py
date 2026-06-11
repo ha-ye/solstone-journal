@@ -30,7 +30,12 @@ from solstone.think.cogitate_contract import (
     expects_emit_final,
 )
 from solstone.think.cogitate_policy import (
+    _FALLBACK_USD_PER_TOKEN,
+    CONTEXT_FINAL_FRAC,
+    CONTEXT_WARN_FRAC,
+    COST_WARN_FRAC,
     DEFAULT_READ_CALL_BUDGET,
+    DEFAULT_RUN_COST_CAP_USD,
     MAX_TURNS,
     CogitatePolicy,
     MaxTurnsExhausted,
@@ -362,8 +367,10 @@ class _OpenHandsTranslator:
         self,
         *,
         callback: JSONEventCallback,
+        llm: Any,
         provider: str,
         model: str,
+        cost_cap: float,
         max_turns: int = MAX_TURNS,
         expects_emit_final: bool = False,
     ) -> None:
@@ -376,10 +383,13 @@ class _OpenHandsTranslator:
         from openhands.sdk.event.conversation_error import ConversationErrorEvent
 
         self.callback = callback
+        self.llm = llm
         self.provider = provider
         self.model = model
+        self.cost_cap = cost_cap
         self.max_turns = max_turns
         self.expects_emit_final = expects_emit_final
+        self.conversation: Any = None
         self.ActionEvent = ActionEvent
         self.AgentErrorEvent = AgentErrorEvent
         self.ConversationErrorEvent = ConversationErrorEvent
@@ -391,6 +401,9 @@ class _OpenHandsTranslator:
         self.final_message: str | None = None
         self.max_turns_exhausted = False
         self._max_turns_event_emitted = False
+        self._wrapup_nudged = False
+        self._final_turn_armed = False
+        self._cost_force_stopped = False
 
     def on_event(self, event: Any) -> None:
         if isinstance(event, self.ActionEvent):
@@ -438,6 +451,7 @@ class _OpenHandsTranslator:
             self.finish_message = _finish_message(event, args)
             return
 
+        self._check_resource_ceiling()
         self.tool_calls[call_id] = {"tool": tool_name, "args": args}
         self.callback.emit(
             {
@@ -449,6 +463,71 @@ class _OpenHandsTranslator:
                 "ts": now_ms(),
             }
         )
+
+    def _finish_tool_name(self) -> str:
+        return "emit_final" if self.expects_emit_final else "finish"
+
+    def _run_cost(self) -> float:
+        metrics = getattr(self.llm, "metrics", None)
+        cost = float(getattr(metrics, "accumulated_cost", 0.0) or 0.0)
+        if cost > 0.0:
+            return cost
+        usage = getattr(metrics, "accumulated_token_usage", None)
+        if usage is None:
+            return 0.0
+        prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
+        cache_read = int(getattr(usage, "cache_read_tokens", 0) or 0)
+        completion = int(getattr(usage, "completion_tokens", 0) or 0)
+        fresh = max(0, prompt - cache_read) + completion
+        return fresh * _FALLBACK_USD_PER_TOKEN
+
+    def _context_fraction(self) -> float | None:
+        window = getattr(self.llm, "effective_max_input_tokens", None)
+        if not window or window <= 0:
+            return None
+        metrics = getattr(self.llm, "metrics", None)
+        usage = getattr(metrics, "accumulated_token_usage", None)
+        per_turn = int(getattr(usage, "per_turn_token", 0) or 0)
+        return per_turn / window
+
+    def _check_resource_ceiling(self) -> None:
+        if self.conversation is None or self._cost_force_stopped:
+            return
+
+        # Stage 3: the armed last turn did not finish -> hard backstop.
+        if self._final_turn_armed:
+            self.conversation.pause()
+            self._cost_force_stopped = True
+            return
+
+        cost = self._run_cost()
+        context_frac = self._context_fraction()
+        finish_tool = self._finish_tool_name()
+
+        # Stage 2: at the cap -> arm exactly one more turn.
+        if cost >= self.cost_cap or (
+            context_frac is not None and context_frac >= CONTEXT_FINAL_FRAC
+        ):
+            self.conversation.send_message(
+                f"Resource budget reached: this is the final turn. Stop gathering "
+                f"more context or using tools, and call {finish_tool} now with the "
+                f"best result available."
+            )
+            self._final_turn_armed = True
+            self._wrapup_nudged = True
+            return
+
+        # Stage 1: approaching the cap -> one wrap-up nudge.
+        if not self._wrapup_nudged and (
+            cost >= COST_WARN_FRAC * self.cost_cap
+            or (context_frac is not None and context_frac >= CONTEXT_WARN_FRAC)
+        ):
+            self.conversation.send_message(
+                f"Resource budget warning: this run is approaching its per-run "
+                f"resource budget. Finish useful work now and call {finish_tool} "
+                f"with the best complete result you can produce."
+            )
+            self._wrapup_nudged = True
 
     def _emit_reasoning(self, event: Any, raw: list[dict[str, Any]]) -> None:
         reasoning_content = getattr(event, "reasoning_content", None)
@@ -795,6 +874,10 @@ async def run_cogitate(
 
         wants_emit_final = expects_emit_final(config)
         max_turns = int(config.get("max_turns", MAX_TURNS) or MAX_TURNS)
+        cost_cap = float(
+            config.get("max_run_cost_usd", DEFAULT_RUN_COST_CAP_USD)
+            or DEFAULT_RUN_COST_CAP_USD
+        )
         session_id, conversation_id = _session_identity(config.get("session_id"))
         prompt_body, system_instruction = assemble_prompt(
             config,
@@ -859,8 +942,10 @@ async def run_cogitate(
         persistence_dir.mkdir(parents=True, exist_ok=True)
         translator = _OpenHandsTranslator(
             callback=callback,
+            llm=llm,
             provider=provider,
             model=_prefixed_model(provider, model),
+            cost_cap=cost_cap,
             max_turns=max_turns,
             expects_emit_final=wants_emit_final,
         )
@@ -875,6 +960,7 @@ async def run_cogitate(
             stuck_detection=True,
             visualizer=None,
         )
+        translator.conversation = conversation
         conversation.send_message(prompt_body)
         with _suppress_litellm_cost_warnings():
             await conversation.arun()
@@ -885,6 +971,21 @@ async def run_cogitate(
             )
 
         result = translator.result()
+        if translator._cost_force_stopped and not (result and result.strip()):
+            callback.emit(
+                {
+                    "event": "error",
+                    "error": (
+                        "token_budget_exceeded: cogitate run reached its per-run "
+                        "resource budget before emitting a final result"
+                    ),
+                    "reason_code": "token_budget_exceeded",
+                    "provider": provider,
+                    "terminal": True,
+                    "ts": now_ms(),
+                }
+            )
+            return None
         if wants_emit_final and not (result and result.strip()):
             callback.emit(
                 {

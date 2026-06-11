@@ -10,7 +10,13 @@ from types import SimpleNamespace
 import pytest
 
 from solstone.think.cogitate_contract import AccessCapabilities
-from solstone.think.cogitate_policy import MAX_TURNS, MaxTurnsExhausted
+from solstone.think.cogitate_policy import (
+    CONTEXT_WARN_FRAC,
+    COST_WARN_FRAC,
+    DEFAULT_RUN_COST_CAP_USD,
+    MAX_TURNS,
+    MaxTurnsExhausted,
+)
 from solstone.think.providers import openhands
 from solstone.think.providers.shared import USAGE_KEYS, JSONEventCallback
 from solstone.think.talent import get_talent, get_talent_configs
@@ -27,11 +33,22 @@ def fixed_time(monkeypatch):
     monkeypatch.setattr(openhands, "now_ms", lambda: 123456)
 
 
-def _translator(fake_openhands, events: list[dict]) -> openhands._OpenHandsTranslator:
+def _translator(
+    fake_openhands,
+    events: list[dict],
+    *,
+    llm=None,
+    expects_emit_final: bool = False,
+) -> openhands._OpenHandsTranslator:
+    if llm is None:
+        llm = fake_openhands.LLM(model="openai/gpt-5")
     return openhands._OpenHandsTranslator(
         callback=JSONEventCallback(events.append),
+        llm=llm,
         provider="openai",
         model="openai/gpt-5",
+        cost_cap=DEFAULT_RUN_COST_CAP_USD,
+        expects_emit_final=expects_emit_final,
     )
 
 
@@ -78,6 +95,22 @@ def _emit_final_action(fake_openhands, content: str):
         tool_call_id="emit-1",
         action=SimpleNamespace(content=content),
     )
+
+
+def _sol_action(fake_openhands, call_id: str = "c1"):
+    return fake_openhands.ActionEvent(
+        reasoning_content=None,
+        thinking_blocks=[],
+        responses_reasoning_item=None,
+        tool_name="sol",
+        tool_call=SimpleNamespace(arguments='{"command":"sol call journal search x"}'),
+        tool_call_id=call_id,
+        action=None,
+    )
+
+
+def _fake_conversation(fake_openhands):
+    return fake_openhands.Conversation(agent=SimpleNamespace(system_prompt="system"))
 
 
 def _install_emit_final_arun(fake_openhands, content: str) -> None:
@@ -411,6 +444,108 @@ def test_translator_maps_max_turns_once(fake_openhands, fixed_time):
     ]
 
 
+def test_resource_monitor_wrapup_nudge_on_cost_axis(fake_openhands, fixed_time):
+    events: list[dict] = []
+    translator = _translator(fake_openhands, events)
+    translator.conversation = _fake_conversation(fake_openhands)
+    translator.llm.metrics.accumulated_cost = COST_WARN_FRAC * DEFAULT_RUN_COST_CAP_USD
+
+    translator.on_event(_sol_action(fake_openhands, "c1"))
+    translator.on_event(_sol_action(fake_openhands, "c2"))
+
+    assert translator.conversation.messages == [
+        "Resource budget warning: this run is approaching its per-run resource "
+        "budget. Finish useful work now and call finish with the best complete "
+        "result you can produce."
+    ]
+    assert [event["event"] for event in events] == ["tool_start", "tool_start"]
+
+
+def test_resource_monitor_wrapup_nudge_on_context_axis(fake_openhands, fixed_time):
+    events: list[dict] = []
+    translator = _translator(fake_openhands, events)
+    translator.conversation = _fake_conversation(fake_openhands)
+    translator.llm.effective_max_input_tokens = 100
+    translator.llm.metrics.accumulated_token_usage.per_turn_token = int(
+        CONTEXT_WARN_FRAC * 100
+    )
+
+    translator.on_event(_sol_action(fake_openhands))
+
+    assert len(translator.conversation.messages) == 1
+    assert "Resource budget warning" in translator.conversation.messages[0]
+    assert "call finish" in translator.conversation.messages[0]
+
+
+def test_resource_monitor_context_axis_noop_without_window(
+    fake_openhands,
+    fixed_time,
+):
+    events: list[dict] = []
+    translator = _translator(fake_openhands, events)
+    translator.conversation = _fake_conversation(fake_openhands)
+    translator.llm.metrics.accumulated_token_usage.per_turn_token = 1_000_000
+
+    translator.on_event(_sol_action(fake_openhands))
+
+    assert translator.conversation.messages == []
+    assert [event["event"] for event in events] == ["tool_start"]
+
+
+def test_resource_monitor_cost_fallback_from_fresh_tokens(
+    fake_openhands,
+    fixed_time,
+):
+    events: list[dict] = []
+    translator = _translator(fake_openhands, events)
+    translator.conversation = _fake_conversation(fake_openhands)
+    usage = translator.llm.metrics.accumulated_token_usage
+    usage.prompt_tokens = 300_000
+    usage.cache_read_tokens = 20_000
+
+    translator.on_event(_sol_action(fake_openhands))
+
+    assert len(translator.conversation.messages) == 1
+    assert "Resource budget warning" in translator.conversation.messages[0]
+
+
+def test_resource_monitor_final_turn_then_pause(fake_openhands, fixed_time):
+    events: list[dict] = []
+    translator = _translator(fake_openhands, events)
+    translator.conversation = _fake_conversation(fake_openhands)
+    translator.llm.metrics.accumulated_cost = DEFAULT_RUN_COST_CAP_USD
+
+    translator.on_event(_sol_action(fake_openhands, "c1"))
+
+    assert translator._final_turn_armed is True
+    assert translator.conversation.paused is False
+    assert translator.conversation.messages == [
+        "Resource budget reached: this is the final turn. Stop gathering more "
+        "context or using tools, and call finish now with the best result "
+        "available."
+    ]
+
+    translator.on_event(_sol_action(fake_openhands, "c2"))
+
+    assert translator.conversation.paused is True
+    assert translator._cost_force_stopped is True
+    assert [event["event"] for event in events] == ["tool_start", "tool_start"]
+
+
+def test_resource_monitor_finish_after_warning_no_pause(fake_openhands, fixed_time):
+    events: list[dict] = []
+    translator = _translator(fake_openhands, events, expects_emit_final=True)
+    translator.conversation = _fake_conversation(fake_openhands)
+    translator.llm.metrics.accumulated_cost = DEFAULT_RUN_COST_CAP_USD
+
+    translator.on_event(_sol_action(fake_openhands, "c1"))
+    translator.on_event(_emit_final_action(fake_openhands, "# Done"))
+
+    assert translator.conversation.paused is False
+    assert translator._cost_force_stopped is False
+    assert translator.result() == "# Done"
+
+
 def test_run_cogitate_uses_emit_final_branch_for_output_path(
     fake_openhands,
     monkeypatch,
@@ -560,6 +695,89 @@ def test_run_cogitate_uses_emit_final_branch_for_daily_no_output(
     ] == ["error"]
 
 
+def test_run_cogitate_force_stop_emits_token_budget_exceeded(
+    fake_openhands,
+    fixed_time,
+    monkeypatch,
+    tmp_path,
+):
+    async def hit_cost_cap(conversation):
+        conversation.agent.llm.metrics.accumulated_cost = DEFAULT_RUN_COST_CAP_USD
+        for callback in conversation.callbacks:
+            callback(_sol_action(fake_openhands, "c1"))
+        for callback in conversation.callbacks:
+            callback(_sol_action(fake_openhands, "c2"))
+
+    fake_openhands.Conversation.arun_impl = hit_cost_cap
+    config = _run_config(monkeypatch, tmp_path, output_path=str(tmp_path / "out.md"))
+    events: list[dict] = []
+
+    result = asyncio.run(openhands.run_cogitate(config, events.append))
+
+    assert result is None
+    error_events = [event for event in events if event["event"] == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["reason_code"] == "token_budget_exceeded"
+    assert error_events[0]["terminal"] is True
+    assert [event for event in events if event.get("reason_code") == "no_output"] == []
+    assert [event for event in events if event["event"] == "finish"] == []
+
+
+def test_run_cogitate_threads_max_run_cost_usd_override(
+    fake_openhands,
+    monkeypatch,
+    tmp_path,
+):
+    real_translator = openhands._OpenHandsTranslator
+    translators: list[openhands._OpenHandsTranslator] = []
+
+    class CapturingTranslator(real_translator):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            translators.append(self)
+
+    monkeypatch.setattr(openhands, "_OpenHandsTranslator", CapturingTranslator)
+    config = _run_config(monkeypatch, tmp_path, max_run_cost_usd=2.5)
+    events: list[dict] = []
+
+    asyncio.run(openhands.run_cogitate(config, events.append))
+
+    assert len(translators) == 1
+    assert translators[0].cost_cap == 2.5
+
+
+def test_resource_monitor_injects_via_send_message_not_system_prompt(
+    fake_openhands,
+    monkeypatch,
+    tmp_path,
+):
+    """AC#7: cogitate has no AgentContext, so send_message appends user suffix only."""
+
+    async def hit_warn_cap(conversation):
+        original_system_prompt = conversation.agent.system_prompt
+        conversation.agent.llm.metrics.accumulated_cost = (
+            COST_WARN_FRAC * DEFAULT_RUN_COST_CAP_USD
+        )
+        for callback in conversation.callbacks:
+            callback(_sol_action(fake_openhands))
+        assert conversation.agent.system_prompt == original_system_prompt
+
+    fake_openhands.Conversation.arun_impl = hit_warn_cap
+    config = _run_config(monkeypatch, tmp_path)
+    events: list[dict] = []
+
+    asyncio.run(openhands.run_cogitate(config, events.append))
+
+    conversation = fake_openhands.Conversation.instances[0]
+    warnings = [
+        message
+        for message in conversation.messages
+        if message.startswith("Resource budget warning")
+    ]
+    assert len(warnings) == 1
+    assert warnings[0] not in conversation.agent.system_prompt
+
+
 def test_run_cogitate_skips_read_tool_registration_when_tier_caps_disable_reads(
     fake_openhands,
     monkeypatch,
@@ -697,6 +915,12 @@ def test_schedule_gated_cogitate_prompts_use_emit_final():
         assert old_tool_name not in body, name
         assert "FinishTool" not in body, name
         assert body.count("emit_final") >= 2, name
+
+
+def test_weekly_reflection_declares_run_cost_override():
+    config = get_talent("weekly_reflection")
+
+    assert config["max_run_cost_usd"] == 5.00
 
 
 def test_run_cogitate_threads_configured_max_turns(
