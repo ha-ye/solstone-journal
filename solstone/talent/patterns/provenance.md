@@ -11,12 +11,12 @@ Canonical implementation: `solstone/talent/morning_briefing.md`.
 A structured preamble summarizing what data sources were consulted and what gaps exist. Appears at the top of the output so the reader knows the briefing's evidence base before reading any claims.
 
 **What it includes:**
-- Source counts (segments, calendar events, entities consulted, newsletters, followups, todos)
+- Source counts (segments, calendar events, entities consulted, newsletters, followups)
 - Gaps — sources that returned zero results or errored
 - YAML frontmatter with machine-readable source counts
 
 **Example:**
-> Built from 12 transcript segments, 4 calendar events, 3 entity profiles, 2 facet newsletters, 5 follow-ups, 8 todos. Gaps: entity intelligence unavailable for Sarah Chen; no facet newsletters today.
+> Built from 12 transcript segments, 4 calendar events, 3 entity profiles, 2 facet newsletters, and 5 follow-ups. Gaps: entity intelligence unavailable for Sarah Chen; no facet newsletters today.
 
 ### 2. Source Attribution
 

@@ -81,9 +81,9 @@ COMMANDS: dict[str, str] = {
 
 **Auto-discovered apps** — scans `solstone/apps/*/call.py` at import time:
 ```
-apps/todos/call.py      → sol call todos ...
-apps/activities/call.py → sol call activities ...
 apps/entities/call.py   → sol call entities ...
+apps/activities/call.py → sol call activities ...
+apps/skills/call.py     → sol call skills ...
 ```
 
 Each `call.py` must export `app = typer.Typer()`. The directory name becomes the sub-command name. Errors in one app don't prevent others from loading.
@@ -371,10 +371,6 @@ solstone/
 │   │   └── sol.py                  # journal identity (built-in)
 │   └── *.py                        # Top-level command modules
 ├── solstone/apps/
-│   ├── todos/
-│   │   ├── call.py                 # sol call todos (auto-discovered)
-│   │   ├── todo.py                 # Data models
-│   │   └── talent/todos/SKILL.md     # Agent skill doc
 │   ├── activities/
 │   │   ├── call.py                 # sol call activities (auto-discovered)
 │   │   └── talent/calendar/SKILL.md
@@ -421,7 +417,6 @@ solstone/
 
 | App | Source | Commands |
 |-----|--------|----------|
-| `todos` | `solstone/apps/todos/call.py` | list, add, done, cancel, move, upcoming, list-nudges-due, dispatch-nudges |
 | `activities` | `solstone/apps/activities/call.py` | list, get, create, update, mute, unmute |
 | `entities` | `solstone/apps/entities/call.py` | list, show, search, observe, merge |
 | `speakers` | `solstone/apps/speakers/call.py` | list, show, detect-owner, confirm-owner, clusters, suggest |
@@ -446,7 +441,7 @@ Skills are documented in `SKILL.md` files and symlinked into both `journal/.clau
 - `health` and `vit` have skills but no `call.py`
 - Some call apps provide the CLI while the skill provides agent behavioral context
 
-Skills document the CLI commands but also add behavioral guidance beyond what `--help` shows (e.g., "check upcoming before adding a future todo to avoid duplicates").
+Skills document the CLI commands but also add behavioral guidance beyond what `--help` shows (e.g., "check entity context before attaching a new relationship to avoid duplicates").
 
 ### Keeping skills in sync
 

@@ -345,10 +345,10 @@ def test_find_orphan_facets_fixture_excludes_broken_facet(monkeypatch):
 def test_ensure_facet_repairs_orphan_visible_in_get_facets(tmp_path, monkeypatch):
     """ensure_facet writes default metadata once and makes the facet visible."""
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    todos_dir = tmp_path / "facets" / "orphan" / "todos"
-    todos_dir.mkdir(parents=True)
-    (todos_dir / "20260101.jsonl").write_text(
-        json.dumps({"text": "Review"}) + "\n", encoding="utf-8"
+    entities_dir = tmp_path / "facets" / "orphan" / "entities"
+    entities_dir.mkdir(parents=True)
+    (entities_dir / "20260101.jsonl").write_text(
+        json.dumps({"type": "Person", "name": "Alice"}) + "\n", encoding="utf-8"
     )
 
     assert "orphan" not in get_facets()

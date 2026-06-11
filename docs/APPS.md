@@ -106,7 +106,7 @@ The workspace template is included inside the app container (`app.html`).
 **Reference implementations:**
 - Minimal: `solstone/apps/home/workspace.html` (simple content)
 - Styled: `solstone/apps/support/workspace.html` (custom CSS, forms, interactive JS)
-- Data-driven: `solstone/apps/todos/workspace.html` (facet sections, dynamic rendering)
+- Data-driven: `solstone/apps/entities/workspace.html` (facet sections, dynamic rendering)
 
 ---
 
@@ -127,9 +127,9 @@ Define custom routes for your app (API endpoints, form handlers, navigation rout
 
 **Reference implementations:**
 - API endpoints: `solstone/apps/search/routes.py` (search APIs, no index route)
-- Form handlers: `solstone/apps/todos/routes.py` (POST handlers, validation, flash messages)
+- JSON form/API handlers: `solstone/apps/entities/routes.py` (POST handlers, validation, JSON errors)
 - Navigation: `solstone/apps/activities/routes.py` (date-based routes with custom context)
-- Redirects: `solstone/apps/todos/routes.py` index route (redirects `/` to today's date)
+- Redirects: `solstone/apps/activities/routes.py` index route (redirects `/` to today's date)
 
 
 
@@ -206,7 +206,7 @@ Both badge types appear as red notification counts.
   icon: '📬',             // Emoji icon (optional)
   title: 'New Message',   // Title (required)
   message: 'You have...', // Message body (optional)
-  action: '/app/todos',   // Click action URL (optional)
+  action: '/app/entities', // Click action URL (optional)
   facet: 'work',          // Auto-select facet on click (optional)
   badge: 5,               // Badge count (optional)
   dismissible: true,      // Show X button (default: true)
@@ -221,7 +221,7 @@ Both badge types appear as red notification counts.
 - See [CALLOSUM.md](CALLOSUM.md) for event protocol details
 
 **Reference implementations:**
-- `solstone/apps/todos/background.html` - App icon badge with API fetch
+- `solstone/apps/timeline/background.html` - App icon badge with API fetch
 
 **Implementation source:** `solstone/convey/static/app.js` - AppServices framework, `solstone/convey/static/websocket.js` - WebSocket API
 
@@ -237,8 +237,7 @@ Define plain callable tool functions for your app in `tools.py`.
 - Put shared logic in your app/module layer and call it from these functions
 
 **Reference implementations:**
-- `solstone/apps/todos/tools.py`
-- `solstone/apps/entities/tools.py`
+- `solstone/apps/support/tools.py`
 
 ---
 
@@ -251,7 +250,7 @@ Define CLI commands for your app that are automatically discovered and available
 - Export an `app = typer.Typer()` instance with commands defined via `@app.command()`
 - Automatically discovered and mounted at startup
 - Errors in one app's CLI don't prevent other apps from loading
-- CLI commands call the same data layer as `tools.py` but print formatted console output
+- CLI commands call the same app/data layer as routes or tool functions, but print formatted console output
 
 **Required export:**
 ```python
@@ -271,7 +270,7 @@ app = typer.Typer(help="Description of your app commands.")
 
 **Reference implementations:**
 - Discovery logic: `solstone/think/call.py` - `_discover_app_calls()` function
-- App CLI example: `solstone/apps/todos/call.py` - Todo list command
+- App CLI example: `solstone/apps/entities/call.py` - Entity search command
 
 **Entities app reference:** `solstone/apps/entities/call.py` is the current pattern for a data-backed app CLI. It exposes `sol call entities list|detect|attach|update|aka|merge|observe|observations|consolidate|move`, and — like every journal-data `call.py` — reaches the journal only over HTTP via the Convey client (`solstone.think.convey_client`), importing no journal/domain module and doing no filesystem I/O of its own. The think-side write-owners it ultimately drives live under `solstone/think/entities/` (e.g. `journal.py`, `saving.py`, `merge.py`, `relationships.py`, `consolidation.py`), which own `journal/entities/<slug>/entity.json` and the per-entity `.npz` embedding files.
 
@@ -511,14 +510,13 @@ Apps can include their own tests that are discovered and run separately from cor
 **Directory structure:**
 ```
 apps/my_app/tests/
-├── __init__.py
 ├── conftest.py      # Self-contained fixtures
 └── test_*.py        # Test files
 ```
 
 **Reference implementations:**
-- Fixture patterns: `solstone/apps/todos/tests/conftest.py`
-- Tool testing: `solstone/apps/todos/tests/test_tools.py`
+- Fixture patterns: `solstone/apps/entities/tests/conftest.py`
+- Route testing: `solstone/apps/entities/tests/test_routes.py`
 
 ---
 
@@ -597,12 +595,12 @@ from solstone.apps.utils import log_app_action
 **Parameters:**
 - `app` - App name where action originated
 - `facet` - Facet where action occurred, or `None` for journal-level actions
-- `action` - Action type using `{domain}_{verb}` naming (e.g., `entity_add`, `todo_complete`)
+- `action` - Action type using `{domain}_{verb}` naming (e.g., `entity_attach`, `activity_update`)
 - `params` - Action-specific parameters dict
 - `day` - Optional day in YYYYMMDD format (defaults to today)
 
 **Facet-scoped vs journal-level:**
-- Pass a facet name for facet-specific actions (todos, entities, etc.)
+- Pass a facet name for facet-specific actions (activities, entities, etc.)
 - Pass `facet=None` for journal-level actions (settings, observers, etc.)
 
 Log after successful mutations, not attempts.
@@ -615,11 +613,6 @@ Available functions from the `think` module:
 
 ### Facets
 `solstone/think/facets.py`: `get_facets()` - Returns dict of facet configurations
-
-### Todos
-`solstone/apps/todos/todo.py`:
-- `get_todos(day, facet)` - Get todo list for day and facet
-- `TodoChecklist` class - Load and manipulate todo markdown files
 
 ### Entities
 `solstone/think/entities/`: `load_entities(facet)` - Load entities for a facet
@@ -720,7 +713,7 @@ def handle_action():
 **See:** `solstone/convey/static/app.css` for implementation details
 
 **Examples:**
-- Standard: `solstone/apps/home/workspace.html`, `solstone/apps/todos/workspace.html`, `solstone/apps/entities/workspace.html`
+- Standard: `solstone/apps/home/workspace.html`, `solstone/apps/entities/workspace.html`, `solstone/apps/activities/workspace.html`
 - Wide: `solstone/apps/search/workspace.html`, `solstone/apps/activities/_day.html`, `solstone/apps/import/workspace.html`
 
 ### CSS Variables
@@ -752,16 +745,16 @@ Main stylesheet `solstone/convey/static/app.css` provides base components. Revie
 ## Common Patterns
 
 ### Date-Based Navigation
-See `solstone/apps/todos/routes.py:todos_day()` - Shows date validation and `format_date()` usage. Day navigation is handled automatically by the date_nav component.
+See `solstone/apps/activities/routes.py` - Shows date validation and `format_date()` usage. Day navigation is handled automatically by the date_nav component.
 
 ### AJAX Endpoints
-See `solstone/apps/todos/routes.py:move_todo()` - Shows JSON parsing, validation, `error_response()`, `success_response()`.
+See `solstone/apps/activities/routes.py` - Shows JSON parsing, validation, `error_response()`, `success_response()`.
 
-### Form Handling with Flash Messages
-See `solstone/apps/todos/routes.py:todos_day()` POST handler - Shows form processing, validation, flash messages, redirects.
+### POST Handling and Validation
+See `solstone/apps/entities/routes.py` POST handlers - Shows request parsing, validation, JSON errors, and success responses.
 
 ### Facet-Aware Queries
-See `solstone/apps/todos/routes.py:todos_day()` - Loads data per-facet when selected, or all facets when null.
+See `solstone/apps/entities/routes.py` - Loads data per-facet when selected, or all facets when null.
 
 ### Facet Pill Badges
 Pass `facet_counts` dict to `render_template()` to show initial badge counts on facet pills:
@@ -769,9 +762,9 @@ Pass `facet_counts` dict to `render_template()` to show initial badge counts on 
 facet_counts = {"work": 5, "personal": 3}
 return render_template("app.html", facet_counts=facet_counts)
 ```
-For client-side updates (e.g., after completing a todo), use `AppServices.badges.facet.set(facetName, count)`.
+For client-side updates, use `AppServices.badges.facet.set(facetName, count)`.
 
-See `solstone/apps/todos/routes.py:todos_day()` - Computes pending counts from already-loaded data.
+Apps with per-facet counts should compute them from already-loaded data before rendering, or update them client-side as data changes.
 
 ---
 
@@ -800,7 +793,7 @@ FLASK_DEBUG=1 convey
 
 ### Logging
 
-Use `current_app.logger` from Flask for debugging. See `solstone/apps/todos/routes.py` for examples.
+Use a module-level `logging.getLogger(__name__)` logger for debugging. See `solstone/apps/entities/routes.py` for examples.
 
 ---
 
@@ -826,7 +819,7 @@ Browse `solstone/apps/*/` directories for reference implementations. Apps range 
 
 - **Minimal** - Just `workspace.html` (e.g., `solstone/apps/home/`, `solstone/apps/health/`)
 - **Styled** - Custom CSS, background services (e.g., `solstone/apps/support/`)
-- **Full-featured** - Routes, forms, AJAX, badges, tools (e.g., `solstone/apps/todos/`, `solstone/apps/entities/`)
+- **Full-featured** - Routes, forms, AJAX, and badges (e.g., `solstone/apps/entities/`, `solstone/apps/activities/`)
 
 ---
 

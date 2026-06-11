@@ -23,8 +23,10 @@ def journal(tmp_path, monkeypatch):
     )
 
     # Create some facet content to verify it moves
-    (facet_dir / "todos").mkdir()
-    (facet_dir / "todos" / "20260101.jsonl").write_text('{"text": "Buy groceries"}\n')
+    (facet_dir / "entities").mkdir()
+    (facet_dir / "entities" / "20260101.jsonl").write_text(
+        '{"type": "Person", "name": "Alice"}\n'
+    )
 
     return tmp_path
 
@@ -38,8 +40,8 @@ def test_rename_moves_directory(journal):
     assert (journal / "facets" / "new-name" / "facet.json").exists()
 
     # Content preserved
-    todos = journal / "facets" / "new-name" / "todos" / "20260101.jsonl"
-    assert todos.read_text().strip() == '{"text": "Buy groceries"}'
+    entities = journal / "facets" / "new-name" / "entities" / "20260101.jsonl"
+    assert entities.read_text().strip() == '{"type": "Person", "name": "Alice"}'
 
 
 def test_rename_updates_convey_config_selected(journal):

@@ -309,28 +309,6 @@ def _load_yesterday_pipeline_summary(yesterday: str) -> dict[str, Any]:
     return summarize_pipeline_day(yesterday)
 
 
-def _collect_todos(today: str) -> list[dict[str, Any]]:
-    """Collect pending todos across all facets."""
-    from solstone.apps.todos.todo import get_todos
-
-    todos = []
-    try:
-        facets = get_facets()
-    except Exception:
-        logger.warning("home: failed to get facets for todos", exc_info=True)
-        return []
-
-    for facet_name in facets:
-        facet_todos = get_todos(today, facet_name)
-        if facet_todos is None:
-            continue
-        for todo in facet_todos:
-            if not todo.get("completed") and not todo.get("cancelled"):
-                todo["facet"] = facet_name
-                todos.append(todo)
-    return todos
-
-
 def _collect_anticipated_activities(today: str) -> list[dict[str, Any]]:
     """Collect anticipated activities across all facets."""
     from solstone.think.activities import load_activity_records
@@ -1154,7 +1132,6 @@ def _build_pulse_context() -> dict[str, Any]:
 
     anticipated_activities = _collect_anticipated_activities(today)
     activities = _collect_activities(today)
-    todos = _collect_todos(today)
     routines = _collect_routines()
     latest_weekly_reflection = _load_latest_weekly_reflection()
 
@@ -1178,7 +1155,6 @@ def _build_pulse_context() -> dict[str, Any]:
         narrative_content is None
         and not anticipated_activities
         and not activities
-        and not todos
         and not unseen_routines
         and not briefing_exists
         and not attention
@@ -1207,7 +1183,7 @@ def _build_pulse_context() -> dict[str, Any]:
         today_summary_parts.append(f"{n} {'activities' if n != 1 else 'activity'}")
     today_summary = ", ".join(today_summary_parts)
 
-    needs_you_items = classify_needs_you(attention, pulse_needs, todos)
+    needs_you_items = classify_needs_you(attention, pulse_needs)
     needs_count = len(needs_you_items)
     needs_summary = ""
     if needs_count:
@@ -1269,7 +1245,6 @@ def _build_pulse_context() -> dict[str, Any]:
         "flow_updated_at": flow_updated_at,
         "anticipated_activities": anticipated_activities,
         "activities": activities,
-        "todos": todos,
         "needs_you_items": [item.to_dict() for item in needs_you_items],
         "routines": routines,
         "briefing_sections": briefing_sections,

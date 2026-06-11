@@ -35,7 +35,6 @@ class NeedsYouItem:
 def classify_needs_you(
     attention: Any,
     pulse_needs: list[Any],
-    todos: list[dict[str, Any]],
 ) -> list[NeedsYouItem]:
     items: list[NeedsYouItem] = []
 
@@ -46,11 +45,6 @@ def classify_needs_you(
 
     for pulse_need in pulse_needs:
         item = _classify_safely("pulse need", pulse_need, _classify_pulse_need)
-        if item is not None:
-            items.append(item)
-
-    for todo in todos[:7]:
-        item = _classify_safely("todo", todo, _classify_todo)
         if item is not None:
             items.append(item)
 
@@ -86,13 +80,6 @@ def _classify_pulse_need(item: Any) -> NeedsYouItem | None:
         )
     text = _require_text(item, "pulse need")
     return _chat_item(text, f"let's dig into {text}")
-
-
-def _classify_todo(todo: dict[str, Any]) -> NeedsYouItem:
-    if not isinstance(todo, dict):
-        raise TypeError("todo must be an object")
-    text = _require_text(todo.get("text"), "todo text")
-    return _chat_item(text, f"what's the context on: {text}")
 
 
 def _classify_generated_item(

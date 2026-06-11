@@ -102,7 +102,7 @@ def test_policy_denies_unapproved_journal_invocations(tmp_path, command):
         "sol call journal search x > out",
         "sol call journal search x 2>&1",
         "sol call journal search x <(journal health)",
-        "sol call journal search x\nsol call todos list",
+        "sol call journal search x\nsol call entities list",
         "sol call journal search 'unterminated",
     ],
 )
@@ -252,7 +252,7 @@ def test_policy_allows_non_support_chain_for_normal(tmp_path):
 
     allowed, reason = policy.check(
         "run_shell_command",
-        {"command": "sol call activities list && sol call todos list"},
+        {"command": "sol call activities list && sol call entities list"},
     )
 
     assert allowed is False

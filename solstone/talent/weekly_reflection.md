@@ -48,15 +48,13 @@ Suggested sources:
 4. `sol call journal search "" --day-from $day_YYYYMMDD --day-to <+6> -a decisions -n 12`
 5. `sol call journal search "" --day-from $day_YYYYMMDD --day-to <+6> -a followups -n 12`
 6. `sol call activities list --source anticipated --from $day_YYYYMMDD --to <+6>`
-7. `sol call todos list`
-8. Entity or relationship lookups only when they materially improve the reflection
+7. Entity or relationship lookups only when they materially improve the reflection
 
 Before writing, audit your coverage:
 - `newsletters`
 - `activities`
 - `decisions`
 - `followups`
-- `todos`
 - `relationship_signals`
 - `gaps`
 
@@ -83,7 +81,6 @@ sources:
   activities: [count]
   decisions: [count]
   followups: [count]
-  todos: [count]
   relationship_signals: [count]
 gaps: [list of gap descriptions, or []]
 ---

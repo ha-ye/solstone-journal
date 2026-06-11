@@ -38,7 +38,6 @@ def _minimal_pulse_context(latest_weekly_reflection):
         "flow_updated_at": None,
         "anticipated_activities": [],
         "activities": [],
-        "todos": [],
         "routines": [],
         "briefing_sections": {},
         "briefing_meta": None,

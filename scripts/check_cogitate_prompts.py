@@ -82,14 +82,7 @@ _PLACEHOLDER_RE = re.compile(r"<[+A-Za-z0-9_][+A-Za-z0-9_. -]*>")
 # A false entry (flagging a flag the CLI accepts) is worse than omission.
 # NOTE: 'facets --json' was a scope seed but is VALID
 # (sol call facets list-candidates accepts --json, facets/call.py:40) -- omitted.
-UNSUPPORTED_FLAGS: list[tuple[tuple[str, ...], str, str]] = [
-    # rejected by 'sol call todos list --help' @ HEAD be70b8dc; day is positional
-    (
-        ("todos", "list"),
-        "-d",
-        "use the positional day: 'sol call todos list <YYYYMMDD>'",
-    ),
-]
+UNSUPPORTED_FLAGS: list[tuple[tuple[str, ...], str, str]] = []
 
 ALLOWLIST: dict[tuple[str, str], int] = {}
 

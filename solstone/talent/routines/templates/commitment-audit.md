@@ -1,6 +1,6 @@
 {
   "name": "commitment-audit",
-  "description": "Audit open follow-ups, pending todos, and likely dropped commitments across facets.",
+  "description": "Audit open follow-ups and likely dropped commitments across facets.",
   "default_cadence": "0 10 * * 1",
   "default_timezone": "UTC",
   "default_facets": []
@@ -12,15 +12,14 @@ The goal is to surface what is overdue, stale, ambiguous, or at risk of being fo
 
 ## Gather
 
-1. Use `sol call todos list` to review current pending action items.
-2. Use `sol call journal search "" -a followups -n 20` to find follow-up items from recent journal activity.
-3. Use `sol call journal facets` if you need to map commitments back to facets.
-4. Use `sol call journal news FACET --day $day_YYYYMMDD` when a facet summary helps explain why something is still open.
-5. Use `journal identity pulse` to compare explicit commitments with current focus and needs-you items.
+1. Use `sol call journal search "" -a followups -n 20` to find follow-up items from recent journal activity.
+2. Use `sol call journal facets` if you need to map commitments back to facets.
+3. Use `sol call journal news FACET --day $day_YYYYMMDD` when a facet summary helps explain why something is still open.
+4. Use `journal identity pulse` to compare explicit commitments with current focus and needs-you items.
 
 ## Synthesize
 
-- Separate explicit todos from implied commitments found in follow-up output.
+- Separate explicit follow-ups from implied commitments found in journal output.
 - Highlight overdue items, stale items, and commitments without clear owners or timing.
 - Merge duplicates and repeated reminders into a single entry.
 - Call out places where current priorities do not match open obligations.

@@ -530,7 +530,9 @@ def test_cluster_with_agent_filter_app_namespaced(tmp_path, monkeypatch):
     (segment / "talents").mkdir()
     (segment / "audio.jsonl").write_text('{}\n{"text": "hello"}\n')
     (segment / "talents" / "entities.md").write_text("System entity results")
-    (segment / "talents" / "_todos_review.md").write_text("Todos review results")
+    (segment / "talents" / "_activities_review.md").write_text(
+        "Activities review results"
+    )
 
     # Test filtering to include app-namespaced agent
     result, counts = mod.cluster(
@@ -538,14 +540,14 @@ def test_cluster_with_agent_filter_app_namespaced(tmp_path, monkeypatch):
         sources={
             "transcripts": True,
             "percepts": False,
-            "agents": {"entities": False, "todos:review": True},
+            "agents": {"entities": False, "activities:review": True},
         },
     )
 
     assert counts["transcripts"] == 1
-    assert counts["agents"] == 1  # Only todos:review
+    assert counts["agents"] == 1  # Only activities:review
     assert "System entity results" not in result
-    assert "Todos review results" in result
+    assert "Activities review results" in result
 
 
 def test_cluster_with_empty_agent_filter(tmp_path, monkeypatch):
@@ -581,7 +583,7 @@ def test_filename_to_agent_key():
     assert _filename_to_agent_key("flow") == "flow"
 
     # App-namespaced agents
-    assert _filename_to_agent_key("_todos_review") == "todos:review"
+    assert _filename_to_agent_key("_activities_review") == "activities:review"
     assert _filename_to_agent_key("_entities_observer") == "entities:observer"
 
     # Edge case: single underscore component
@@ -594,17 +596,17 @@ def test_agent_matches_filter():
 
     # None filter means all agents
     assert _agent_matches_filter("entities", None) is True
-    assert _agent_matches_filter("_todos_review", None) is True
+    assert _agent_matches_filter("_activities_review", None) is True
 
     # Empty dict means no agents
     assert _agent_matches_filter("entities", {}) is False
-    assert _agent_matches_filter("_todos_review", {}) is False
+    assert _agent_matches_filter("_activities_review", {}) is False
 
     # Specific filtering
-    filter_dict = {"entities": True, "meetings": False, "todos:review": "required"}
+    filter_dict = {"entities": True, "meetings": False, "activities:review": "required"}
     assert _agent_matches_filter("entities", filter_dict) is True
     assert _agent_matches_filter("meetings", filter_dict) is False
-    assert _agent_matches_filter("_todos_review", filter_dict) is True
+    assert _agent_matches_filter("_activities_review", filter_dict) is True
     assert _agent_matches_filter("flow", filter_dict) is False  # Not in filter
 
 

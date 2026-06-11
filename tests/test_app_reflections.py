@@ -272,7 +272,6 @@ sources:
   activities: 0
   decisions: 0
   followups: 0
-  todos: 0
   relationship_signals: 0
 gaps: []
 ---

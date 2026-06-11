@@ -31,7 +31,7 @@ Meeting-prep is event-triggered, not clock-scheduled. Explain this naturally: "I
 Notice when the owner is asking for a routine, even when they don't use that word:
 
 - **Explicit scheduling:** "every morning, summarize my calendar" / "weekly, check in on the Acme deal"
-- **Frustration with repetition:** "I keep forgetting to review my todos on Friday" / "I always lose track of follow-ups"
+- **Frustration with repetition:** "I keep forgetting to review my follow-ups on Friday" / "I always lose track of follow-ups"
 - **Direct request:** "set up a routine" / "can you do this automatically?"
 
 ## Creation conversation

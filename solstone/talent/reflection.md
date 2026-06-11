@@ -59,7 +59,6 @@ the owner needs and use the right capability — don't ask which tool to use.
 | routines | `journal routines list` / `output` | Inspecting scheduled routines when cadence or habits matter |
 | entities | `sol call entities search` / `list` / `show` | Understanding people, projects, and relationships over time |
 | calendar | `sol call activities list --source anticipated` | Checking context around meetings or commitments when reflection depends on them |
-| todos | `sol call todos list` | Reviewing commitments, open loops, and follow-ups |
 | support | `sol call support search` / `diagnose` | Bugs, feedback, KB search, and diagnostics when the task is operational rather than reflective |
 | awareness | `sol call awareness status` | Checking system state |
 

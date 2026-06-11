@@ -858,143 +858,6 @@ class TestFormatObservations:
         assert "Allergic to peanuts" in chunks[2]["markdown"]
 
 
-class TestFormatTodos:
-    """Tests for the todos formatter."""
-
-    def test_get_formatter_todos(self):
-        """Test pattern matching for todos/*.jsonl."""
-        from solstone.think.formatters import get_formatter
-
-        formatter = get_formatter("facets/personal/todos/20240101.jsonl")
-        assert formatter is not None
-        assert formatter.__name__ == "format_todos"
-
-    def test_format_todos_basic(self):
-        """Test basic todos formatting with fixture file."""
-        from solstone.think.formatters import format_file
-
-        path = (
-            Path(os.environ["SOLSTONE_JOURNAL"])
-            / "facets/personal/todos/20240101.jsonl"
-        )
-        chunks, meta = format_file(path)
-
-        assert len(chunks) == 4  # 4 items in fixture
-        assert "header" in meta
-        assert "Todos: personal" in meta["header"]
-        assert "2024-01-01" in meta["header"]
-        assert "4 items" in meta["header"]
-
-    def test_format_todos_direct(self):
-        """Test format_todos function directly."""
-        from solstone.apps.todos.todo import format_todos
-
-        entries = [
-            {"text": "Do something", "completed": False},
-            {"text": "Done task", "completed": True},
-        ]
-
-        chunks, meta = format_todos(entries)
-
-        assert len(chunks) == 2
-        assert "* [ ] Do something" in chunks[0]["markdown"]
-        assert "* [x] Done task" in chunks[1]["markdown"]
-
-    def test_format_todos_list_item_prefix(self):
-        """Test that all items have * prefix for markdown list."""
-        from solstone.apps.todos.todo import format_todos
-
-        entries = [
-            {"text": "Task one", "completed": False},
-            {"text": "Task two", "completed": True},
-            {"text": "Cancelled", "cancelled": True},
-        ]
-
-        chunks, meta = format_todos(entries)
-
-        assert len(chunks) == 3
-        for chunk in chunks:
-            assert chunk["markdown"].startswith("* ")
-
-    def test_format_todos_completed_cancelled_display(self):
-        """Test checkbox and strikethrough rendering."""
-        from solstone.apps.todos.todo import format_todos
-
-        entries = [
-            {"text": "Incomplete", "completed": False},
-            {"text": "Complete", "completed": True},
-            {"text": "Cancelled", "cancelled": True},
-        ]
-
-        chunks, meta = format_todos(entries)
-
-        assert "[ ] Incomplete" in chunks[0]["markdown"]
-        assert "[x] Complete" in chunks[1]["markdown"]
-        assert "~~[cancelled] Cancelled~~" in chunks[2]["markdown"]
-
-    def test_format_todos_with_time(self):
-        """Test formatting with legacy time annotation input."""
-        from solstone.apps.todos.todo import format_todos
-
-        entries = [{"text": "Meeting", "time": "14:00", "completed": False}]
-        context = {"file_path": "/journal/facets/work/todos/20251215.jsonl"}
-
-        chunks, meta = format_todos(entries, context)
-
-        assert len(chunks) == 1
-        assert "Meeting (" in chunks[0]["markdown"]
-
-    def test_format_todos_header_facet_from_path(self):
-        """Test that facet name and day are extracted from file path."""
-        from solstone.apps.todos.todo import format_todos
-
-        entries = [{"text": "Test", "completed": False}]
-        context = {"file_path": "/journal/facets/work/todos/20251215.jsonl"}
-
-        chunks, meta = format_todos(entries, context)
-
-        assert "Todos: work" in meta["header"]
-        assert "2025-12-15" in meta["header"]
-
-    def test_format_todos_skipped_entries_error(self):
-        """Test that entries without 'text' field are skipped and reported."""
-        from solstone.apps.todos.todo import format_todos
-
-        entries = [
-            {"text": "Valid", "completed": False},
-            {"invalid": "no text"},
-            {"also_invalid": True},
-        ]
-
-        chunks, meta = format_todos(entries)
-
-        assert len(chunks) == 1
-        assert "error" in meta
-        assert "Skipped 2 entries" in meta["error"]
-        assert "text" in meta["error"]
-
-    def test_format_todos_timestamp_fallback(self):
-        """Test timestamp fallback: updated_at -> created_at -> file mtime."""
-        from solstone.apps.todos.todo import format_todos
-
-        # Entry with updated_at takes priority
-        entries_updated = [
-            {"text": "Test", "updated_at": 1700000000000, "created_at": 1600000000000}
-        ]
-        chunks, _ = format_todos(entries_updated)
-        assert chunks[0]["timestamp"] == 1700000000000
-
-        # Entry with only created_at
-        entries_created = [{"text": "Test", "created_at": 1600000000000}]
-        chunks, _ = format_todos(entries_created)
-        assert chunks[0]["timestamp"] == 1600000000000
-
-        # Entry with neither uses 0 (no file context)
-        entries_none = [{"text": "Test"}]
-        chunks, _ = format_todos(entries_none)
-        assert chunks[0]["timestamp"] == 0
-
-
 class TestFormatEvents:
     """Tests for the events formatter."""
 
@@ -1655,16 +1518,6 @@ class TestFormatterIndexerMetadata:
         assert "indexer" in meta
         assert meta["indexer"]["agent"] == "entity:detected"
 
-    def test_format_todos_returns_indexer(self):
-        """Test format_todos returns indexer with agent."""
-        from solstone.apps.todos.todo import format_todos
-
-        entries = [{"text": "Test task", "completed": False}]
-        chunks, meta = format_todos(entries)
-
-        assert "indexer" in meta
-        assert meta["indexer"]["agent"] == "todo"
-
 
 class TestFormatterSourceKey:
     """Tests verifying formatters return source key with original entry."""
@@ -1760,19 +1613,6 @@ class TestFormatterSourceKey:
         assert chunks[0]["source"] is entity
         assert chunks[0]["source"]["custom"] == 123
 
-    def test_format_todos_returns_source(self):
-        """Test format_todos returns source with original entry."""
-        from solstone.apps.todos.todo import format_todos
-
-        entry = {"text": "Test task", "completed": False, "priority": "high"}
-        entries = [entry]
-        chunks, meta = format_todos(entries)
-
-        assert len(chunks) == 1
-        assert "source" in chunks[0]
-        assert chunks[0]["source"] is entry
-        assert chunks[0]["source"]["priority"] == "high"
-
     def test_format_audio_timestamp_in_milliseconds(self):
         """Test format_audio returns timestamp in milliseconds."""
         from solstone.observe.hear import format_audio
@@ -1821,20 +1661,21 @@ class TestFormatLogs:
             {
                 "timestamp": "2025-12-16T07:33:05.135587+00:00",
                 "source": "tool",
-                "actor": "todos:todo",
-                "action": "todo_add",
-                "params": {"text": "Test task"},
+                "actor": "entities:entities",
+                "action": "entity_attach",
+                "params": {"type": "Person", "name": "Alice"},
             }
         ]
 
         chunks, meta = format_logs(entries)
 
         assert len(chunks) == 1
-        assert "Todo Add by todos:todo" in chunks[0]["markdown"]
+        assert "Entity Attach by entities:entities" in chunks[0]["markdown"]
         assert "**Source:** tool" in chunks[0]["markdown"]
         assert "**Time:** 07:33:05" in chunks[0]["markdown"]
         assert "**Parameters:**" in chunks[0]["markdown"]
-        assert "- text: Test task" in chunks[0]["markdown"]
+        assert "- type: Person" in chunks[0]["markdown"]
+        assert "- name: Alice" in chunks[0]["markdown"]
 
     def test_format_logs_with_agent_id(self):
         """Test that use_id renders as a link."""
@@ -1867,14 +1708,14 @@ class TestFormatLogs:
             {
                 "timestamp": "2025-12-16T07:33:05.135587+00:00",
                 "source": "tool",
-                "actor": "todos",
-                "action": "todo_add",
+                "actor": "entities",
+                "action": "entity_attach",
                 "params": {},
             },
             {
                 "timestamp": "2025-12-16T07:34:00.000000+00:00",
                 "source": "tool",
-                "actor": "todos",
+                "actor": "entities",
                 # Missing action
                 "params": {},
             },
@@ -1895,8 +1736,8 @@ class TestFormatLogs:
             {
                 "timestamp": "2025-12-16T07:33:05.135587+00:00",
                 "source": "tool",
-                "actor": "todos",
-                "action": "todo_add",
+                "actor": "entities",
+                "action": "entity_attach",
                 "params": {},
             }
         ]
@@ -1914,8 +1755,8 @@ class TestFormatLogs:
             {
                 "timestamp": "2025-12-16T07:33:05.135587+00:00",
                 "source": "app",
-                "actor": "todos",
-                "action": "todo_complete",
+                "actor": "entities",
+                "action": "entity_detach",
                 "params": {},
             }
         ]
@@ -1934,9 +1775,9 @@ class TestFormatLogs:
         entry = {
             "timestamp": "2025-12-16T07:33:05.135587+00:00",
             "source": "tool",
-            "actor": "todos",
-            "action": "todo_add",
-            "params": {"text": "Test"},
+            "actor": "entities",
+            "action": "entity_attach",
+            "params": {"name": "Test"},
             "extra_field": "custom_value",
         }
         entries = [entry]
@@ -1956,15 +1797,15 @@ class TestFormatLogs:
             {
                 "timestamp": "2025-12-16T07:33:05.135587+00:00",
                 "source": "tool",
-                "actor": "todos",
-                "action": "todo_add",
+                "actor": "entities",
+                "action": "entity_attach",
                 "params": {},
             },
             {
                 "timestamp": "2025-12-16T07:34:00.000000+00:00",
                 "source": "tool",
-                "actor": "todos",
-                "action": "todo_done",
+                "actor": "entities",
+                "action": "entity_update",
                 "params": {},
             },
         ]
@@ -1987,9 +1828,9 @@ class TestFormatLogs:
             {
                 "timestamp": "2025-12-16T07:33:05.135587+00:00",
                 "source": "tool",
-                "actor": "todos",
-                "action": "todo_add",
-                "params": {"text": long_text},
+                "actor": "entities",
+                "action": "entity_attach",
+                "params": {"name": long_text},
             }
         ]
 

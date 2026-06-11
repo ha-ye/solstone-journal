@@ -31,7 +31,6 @@ and query each source. If a source returns empty or errors, skip it — gaps are
 
 1. For each of the past 7 days:
    - `sol call activities list --source anticipated --day YYYYMMDD` — scheduled activity patterns
-   - `sol call todos list YYYYMMDD` — task patterns
 2. For each active facet (from `sol call journal facets`):
    - `sol call journal news FACET --day YYYYMMDD` (most recent day available) — work themes
 3. `sol call journal search "" --day-from YYYYMMDD -a pulse -n 10` — pulse narratives for behavioral patterns
@@ -48,12 +47,12 @@ for each section you update — it is the owned write command for `partner.md`
 
 **work patterns** — When do they work? How do they structure their day? Do they
 batch meetings or spread them out? Do they context-switch frequently or deep-focus?
-What times are they most active? Evidence: calendar density, todo completion timing,
-segment activity patterns.
+What times are they most active? Evidence: calendar density, segment activity patterns,
+and pulse/news timing.
 
 **communication style** — How do they express themselves? Brief or detailed? Do they
-prefer async (todos, notes) or sync (meetings, calls)? How do they frame requests
-vs decisions? Evidence: meeting frequency, todo phrasing patterns, entity interaction
+prefer async written work or sync meetings and calls? How do they frame requests
+vs decisions? Evidence: meeting frequency, journal phrasing patterns, entity interaction
 frequency.
 
 **relationship priorities** — Who matters most to them right now? Which relationships
@@ -110,7 +109,7 @@ For each section with new observations, write it:
 ```bash
 journal identity partner --update-section 'work patterns' --value 'My partner tends to batch meetings before noon and protects afternoon blocks for focused work. Calendar data from March 25-31 shows 85% of meetings before 12:00 (sol://20260328/archon/091500_300).
 
-Deep work sessions typically run 2-3 hours — todo completion spikes correlate with these blocks.'
+Deep work sessions typically run 2-3 hours — calendar and activity signals show fewer interruptions during these blocks.'
 ```
 
 Only update sections where you have meaningful new evidence. Leave `[observing]`

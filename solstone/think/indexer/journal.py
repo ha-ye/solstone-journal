@@ -7,7 +7,6 @@ This module provides a single FTS5 index over journal content:
 - Agent outputs (markdown files)
 - Events (facet event JSONL)
 - Entities (facet entity JSONL)
-- Todos (facet todo JSONL)
 - Action logs (facet/journal-level JSONL)
 
 All content is converted to markdown chunks via the formatters framework,

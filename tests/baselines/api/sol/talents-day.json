@@ -379,39 +379,6 @@
       "title": "timeline:segment_summary",
       "type": "generate"
     },
-    "todos:daily": {
-      "app": "todos",
-      "color": "#ef6c00",
-      "description": "Carries forward unfinished tasks, aggregates per-activity todo detections, validates completions against journal evidence, and prioritises the day's checklist.",
-      "multi_facet": true,
-      "output_format": null,
-      "schedule": "daily",
-      "source": "app",
-      "title": "Daily TODO Curator",
-      "type": "cogitate"
-    },
-    "todos:todo": {
-      "app": "todos",
-      "color": "#e65100",
-      "description": "Detects todo items from activity transcripts and validates existing todos against activity evidence via sol call commands.",
-      "multi_facet": false,
-      "output_format": null,
-      "schedule": "activity",
-      "source": "app",
-      "title": "TODO Detector",
-      "type": "cogitate"
-    },
-    "todos:weekly": {
-      "app": "todos",
-      "color": "#f4511e",
-      "description": "Audits the past week's journal follow-ups to confirm completions and surface the next five high-impact todos for today.",
-      "multi_facet": false,
-      "output_format": null,
-      "schedule": null,
-      "source": "app",
-      "title": "TODO Weekly Scout",
-      "type": "cogitate"
-    },
     "weekly_reflection": {
       "app": null,
       "color": "#6c757d",

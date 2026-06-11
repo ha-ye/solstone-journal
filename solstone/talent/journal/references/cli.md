@@ -18,7 +18,7 @@ sol call journal <command> [args...]
 sol call journal search [QUERY] [-n LIMIT] [--offset N] [-d DAY] [--day-from DAY] [--day-to DAY] [-f FACET] [-a AGENT]
 ```
 
-Search the journal index across insights, transcripts, historical event extracts, activity records, entities, and todos.
+Search the journal index across insights, transcripts, historical event extracts, activity records, and entities.
 
 - `QUERY`: optional text query. Defaults to empty string (`""`), which works as browse mode when filters are provided.
 - `-n, --limit`: max results (default `10`).
@@ -179,7 +179,7 @@ sol call journal facet merge SOURCE --into DEST [--consent]
 - `--into DEST` — destination facet to receive all data
 - `--consent` — required for agent audit trail when called by an agent
 
-Moves all entities, open todos (not completed or cancelled), non-cancelled calendar events, and news files from SOURCE into DEST. For entity conflicts (entity exists in both): DEST relationship wins, observations are appended without duplicates. For news conflicts (same date file in both): DEST file is preserved, SOURCE file is skipped. Completed/cancelled todos and cancelled events are not moved (they are deleted with the source facet). After all data is moved, SOURCE is permanently deleted and the index is rebuilt.
+Moves all entities, non-cancelled calendar events, and news files from SOURCE into DEST. For entity conflicts (entity exists in both): DEST relationship wins, observations are appended without duplicates. For news conflicts (same date file in both): DEST file is preserved, SOURCE file is skipped. Cancelled events are not moved. After all data is moved, SOURCE is permanently deleted and the index is rebuilt.
 
 Prints a summary of what will be moved before performing any mutations.
 

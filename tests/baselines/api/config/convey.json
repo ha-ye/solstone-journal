@@ -4,15 +4,13 @@
       "order": [
         "home",
         "activities",
-        "todos",
         "entities",
         "search",
         "reflections",
         "news"
       ],
       "starred": [
-        "home",
-        "todos"
+        "home"
       ]
     },
     "facets": {

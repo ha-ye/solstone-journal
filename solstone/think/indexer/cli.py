@@ -81,7 +81,7 @@ def _display_search_results(
 def main() -> None:
     """Main CLI entry point for the indexer."""
     parser = argparse.ArgumentParser(
-        description="Index journal content (insights, transcripts, events, entities, todos)"
+        description="Index journal content (insights, transcripts, events, entities)"
     )
     parser.add_argument(
         "--rescan",

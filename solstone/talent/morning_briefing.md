@@ -13,7 +13,7 @@
 
 $facets
 
-You are generating the morning briefing for $agent_name — a structured daily digest that synthesizes all agent outputs, calendar, and todos into an actionable start-of-day view.
+You are generating the morning briefing for $agent_name — a structured daily digest that synthesizes agent outputs, calendar, follow-ups, and current context into an actionable start-of-day view.
 
 This is not a conversation. Gather data, synthesize, then call `emit_final(content=<briefing markdown>)`. The system saves the `content` argument automatically.
 
@@ -24,16 +24,15 @@ Call all sources upfront. Some may return empty — that's expected, especially 
 1. `sol call journal facets` — list active facets
 2. For each facet: `sol call journal news FACET --day $day_YYYYMMDD` — facet newsletter
 3. `sol call activities list --source anticipated --day $day_YYYYMMDD` — today's scheduled items with participants
-4. `sol call todos list` — pending action items across all facets
-5. `read_file` `identity/pulse.md` — current pulse narrative and needs-you items
-6. `read_file` `identity/partner.md` — owner behavioral profile (informs tone and emphasis)
-7. `sol call journal search "" -d $day_YYYYMMDD -a followups -n 10` — follow-up items from today
-8. `sol call activities list --source anticipated --from $day_YYYYMMDD --to <+7>` — forward-looking scheduled items
-9. `sol call journal search "" -d $day_YYYYMMDD -a decisions -n 10` — yesterday's consequential decisions
-10. For each of the next 7 days after today: `sol call activities list --source anticipated --day YYYYMMDD` — upcoming scheduled items for forward look
+4. `read_file` `identity/pulse.md` — current pulse narrative and needs-you items
+5. `read_file` `identity/partner.md` — owner behavioral profile (informs tone and emphasis)
+6. `sol call journal search "" -d $day_YYYYMMDD -a followups -n 10` — follow-up items from today
+7. `sol call activities list --source anticipated --from $day_YYYYMMDD --to <+7>` — forward-looking scheduled items
+8. `sol call journal search "" -d $day_YYYYMMDD -a decisions -n 10` — yesterday's consequential decisions
+9. For each of the next 7 days after today: `sol call activities list --source anticipated --day YYYYMMDD` — upcoming scheduled items for forward look
 
 Also run:
-11. `read_file` `identity/health.md` — sol's federated health surface (synthesized by the steward talent)
+10. `read_file` `identity/health.md` — sol's federated health surface (synthesized by the steward talent)
 
 ## Phase 1.5: Pre-pass audit
 
@@ -43,8 +42,7 @@ Before synthesizing, audit what you gathered. This step uses only the data from 
    - `segments` — total transcript segments across all journal search calls
    - `anticipated_activities` — anticipated activities for today (step 3)
    - `facet_newsletters` — facets that returned a newsletter (step 2)
-   - `followups` — follow-up items returned (step 7)
-   - `todos` — pending todo items (step 4)
+   - `followups` — follow-up items returned (step 6)
    - `steward_health` — whether the steward health surface returned parseable content and how many Needs your attention bullets it surfaced
 
 2. **Identify gaps.** Record a gap for each source that returned zero results or is otherwise missing. A gap is not an error — it means the briefing has a blind spot in that area. Examples: `"no facet newsletters available"`, `"no follow-up items found"`, `"no anticipated activities today"`.
@@ -71,7 +69,7 @@ Build five sections from the gathered data. **Omit any section entirely if it ha
 - **Search results:** The header includes an `id` (e.g. `20260304/archon/143022_300/talents/followups.md:2`). Strip `:idx`, then strip `/talents/{agent}.md` → `sol://20260304/archon/143022_300`.
 - **Facet newsletters:** `sol://facets/{facet}/news/{day_YYYYMMDD}`.
 
-**Your Day** — What's ahead today. Lead with anticipated activities in chronological order. For each meeting, include who's attending and source-backed context from the gathered data when available. Include relevant todos due today. If no anticipated activities exist, lead with the highest-priority todos.
+**Your Day** — What's ahead today. Lead with anticipated activities in chronological order. For each meeting, include who's attending and source-backed context from the gathered data when available. If no anticipated activities exist, lead with the highest-priority follow-ups or pulse needs.
 
 **Yesterday** — What happened. Draw from facet newsletters, pulse, and decisions agent output. Highlight accomplishments, consequential decisions, and notable interactions. Keep to 3-5 bullets max. Only include if facet newsletters or decisions have content for the analysis day.
 Attribute each highlight to its source: `([facet newsletter](sol://facets/{facet}/news/{day}))`.
@@ -79,13 +77,13 @@ Grade highlights by evidence strength. **High** (corroborated by multiple source
 
 **Needs Attention** — Ranked action list. Synthesize from all sources into a single prioritized list:
   0. Pipeline gaps from yesterday's processing
-  1. Overdue commitments (todos past due, missed follow-ups)
+  1. Overdue commitments and missed follow-ups
   2. Pending follow-ups (items flagged by the followups agent)
-  3. Unscheduled todos (action items with no calendar time blocked)
+  3. Important pulse needs without calendar time blocked
 
   Do NOT include pipeline gaps when the steward health surface has no Needs your attention bullets. Zero noise on normal days.
 Attribute commitments and follow-ups to the originating segment: `(committed [date](sol://...))`, `(flagged [date](sol://...))`. For inferred items: `(inferred from [source](sol://...))`.
-Grade action items by evidence strength. **High** (explicit commitment with date, or overdue todo): state assertively — "Follow up on Series A term sheet — committed March 20, now overdue." **Medium** (flagged by followups agent with moderate confidence, or clear single-source item): present with attribution — "Review CI pipeline logs (flagged yesterday)." **Low** (inferred obligation from ambiguous mention, or low-confidence followup): hedge — "Possible commitment to send deck to investors" or "May need to follow up on the API discussion." When upstream followup output includes a `Confidence:` score, use it: 0.85+ high, 0.50–0.84 medium, below 0.50 low. Never hedge explicit commitments with clear dates; never present inferred obligations as definite action items.
+Grade action items by evidence strength. **High** (explicit commitment with date, or overdue follow-up): state assertively — "Follow up on Series A term sheet — committed March 20, now overdue." **Medium** (flagged by followups agent with moderate confidence, or clear single-source item): present with attribution — "Review CI pipeline logs (flagged yesterday)." **Low** (inferred obligation from ambiguous mention, or low-confidence followup): hedge — "Possible commitment to send deck to investors" or "May need to follow up on the API discussion." When upstream followup output includes a `Confidence:` score, use it: 0.85+ high, 0.50–0.84 medium, below 0.50 low. Never hedge explicit commitments with clear dates; never present inferred obligations as definite action items.
 
 **Forward Look** — What's coming. Draw from anticipated activity records and upcoming scheduled items (next 7 days). Note preparation needed for upcoming meetings or deadlines.
 Attribute schedule-derived items: `(from [schedule](sol://...))`. Data source: `sol call activities list --source anticipated` or the schedule talent output path.
@@ -108,12 +106,11 @@ sources:
   anticipated_activities: [count]
   facet_newsletters: [count]
   followups: [count]
-  todos: [count]
   steward_health: [present|missing]
 gaps: [list of gap descriptions, or empty list [] if none]
 ---
 
-> [coverage preamble — 1-2 sentences summarizing source counts and gaps. Example: "Built from 12 transcript segments, 4 anticipated activities, 2 facet newsletters, 5 follow-ups, 8 todos. No gaps." or with gaps: "Built from 8 segments, 2 activities. Gaps: no facet newsletters today."]
+> [coverage preamble — 1-2 sentences summarizing source counts and gaps. Example: "Built from 12 transcript segments, 4 anticipated activities, 2 facet newsletters, and 5 follow-ups. No gaps." or with gaps: "Built from 8 segments, 2 activities. Gaps: no facet newsletters today."]
 
 ## Your Day
 - **09:00** — Sync with Sarah Chen on Q2 roadmap. Last discussed launch timeline (from your [March standup](sol://20260313/archon/091500_300)).
@@ -146,4 +143,4 @@ Call `emit_final(content=<briefing markdown>)`. The `content` argument IS the br
 - Lead each section with the most important item.
 - Use bullets, not paragraphs.
 - Don't include greetings, sign-offs, or meta-commentary about being an AI.
-- On a quiet day with minimal data, produce only the sections that have content. A briefing with just "Your Day" listing a few todos is perfectly valid.
+- On a quiet day with minimal data, produce only the sections that have content. A briefing with just "Your Day" listing a few scheduled items or follow-ups is perfectly valid.

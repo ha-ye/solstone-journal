@@ -594,46 +594,6 @@ def _merge_overlapping_facet(
                     f"facet {facet_name} detected entities {source_det_file.name}: {exc}"
                 )
 
-    source_todos_dir = source_facet_dir / "todos"
-    if source_todos_dir.is_dir():
-        for source_todo_file in sorted(source_todos_dir.glob("*.jsonl")):
-            try:
-                target_todo_file = target_facet_dir / "todos" / source_todo_file.name
-                target_items = _read_jsonl(target_todo_file)
-                seen = {(item["text"], item.get("created_at")) for item in target_items}
-                new_items = []
-                for item in _read_jsonl(source_todo_file):
-                    log_id = f"{facet_name}/todos/{source_todo_file.name}/{item.get('text', '')}"
-                    if (item["text"], item.get("created_at")) in seen:
-                        _log_decision(
-                            log_path,
-                            {
-                                "action": "facet_todo_merged",
-                                "item_type": "todo",
-                                "item_id": log_id,
-                                "reason": "duplicate_skip",
-                            },
-                        )
-                    else:
-                        new_items.append(item)
-                        _log_decision(
-                            log_path,
-                            {
-                                "action": "facet_todo_merged",
-                                "item_type": "todo",
-                                "item_id": log_id,
-                                "reason": "appended",
-                            },
-                        )
-                if new_items and not dry_run:
-                    _append_jsonl(target_todo_file, new_items)
-            except DecisionLogWriteError:
-                raise
-            except Exception as exc:
-                summary.errors.append(
-                    f"facet {facet_name} todo {source_todo_file.name}: {exc}"
-                )
-
     source_activities_dir = source_facet_dir / "activities"
     if source_activities_dir.is_dir():
         source_config_file = source_activities_dir / "activities.jsonl"

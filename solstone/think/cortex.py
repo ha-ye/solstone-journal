@@ -295,7 +295,7 @@ class CortexService:
             env = os.environ.copy()
 
             # Promote top-level config keys to environment so tools can read
-            # them as defaults (e.g., sol call todos add uses SOL_FACET).
+            # them as defaults (e.g., sol call entities search uses SOL_FACET).
             # Explicit env overrides below take precedence.
             if config.get("facet"):
                 env["SOL_FACET"] = str(config["facet"])

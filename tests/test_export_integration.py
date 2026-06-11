@@ -246,10 +246,6 @@ def _setup_facet_with_entity(
         facet_root / "entities" / "20260413.jsonl",
         [{"id": entity_id, "name": "Source Entity", "type": "Person"}],
     )
-    _write_jsonl(
-        facet_root / "todos" / "20260413.jsonl",
-        [{"text": "Follow up", "created_at": 1}],
-    )
 
 
 def _setup_simple_facet(journal_root: Path) -> None:

@@ -152,10 +152,10 @@ def test_facet_action_includes_facet_field(test_facet):
 
     # Log a facet-scoped action
     log_app_action(
-        app="todos",
+        app="entities",
         facet=facet,
-        action="todo_add",
-        params={"text": "Test todo"},
+        action="entity_attach",
+        params={"type": "Person", "name": "Test Entity"},
     )
 
     # Check that the facet field is included

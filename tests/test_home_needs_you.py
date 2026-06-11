@@ -19,14 +19,11 @@ from solstone.apps.home.needs_you import (
 def test_classify_needs_you_locked_shape_and_order():
     attention = {"placeholder_text": "Pipeline needs review"}
     pulse_needs = ["Review the launch checklist"]
-    todos = [{"text": "Send the partner update"}]
-
-    items = classify_needs_you(attention, pulse_needs, todos)
+    items = classify_needs_you(attention, pulse_needs)
 
     assert [item.text for item in items] == [
         "Pipeline needs review",
         "Review the launch checklist",
-        "Send the partner update",
     ]
     assert [field.name for field in fields(NeedsYouItem)] == [
         "text",
@@ -49,7 +46,6 @@ def test_classify_needs_you_warns_and_omits_malformed(caplog):
     items = classify_needs_you(
         None,
         [None, ""],
-        [{"missing_text_field": 1}],
     )
 
     assert items == []
@@ -70,7 +66,6 @@ def test_classify_needs_you_route_same_origin_only(caplog):
                 "payload": {"href": "/app/settings"},
             }
         ],
-        [],
     )
 
     assert route_items == [
@@ -96,7 +91,6 @@ def test_classify_needs_you_invalid_route_returns_disabled_item():
                 "payload": {"href": "https://evil.com"},
             }
         ],
-        [],
     )
 
     assert items == [
@@ -124,7 +118,6 @@ def test_classify_needs_you_folds_confirm_to_chat():
     items = classify_needs_you(
         None,
         [{"text": "Confirm the next step", "kind": "confirm", "payload": {}}],
-        [],
     )
 
     assert items == [
@@ -132,18 +125,6 @@ def test_classify_needs_you_folds_confirm_to_chat():
             text="Confirm the next step",
             kind="chat",
             payload={"prompt": "let's dig into Confirm the next step"},
-        )
-    ]
-
-
-def test_classify_needs_you_todos_default_to_chat_with_context_prompt():
-    items = classify_needs_you(None, [], [{"text": "Draft the launch note"}])
-
-    assert items == [
-        NeedsYouItem(
-            text="Draft the launch note",
-            kind="chat",
-            payload={"prompt": "what's the context on: Draft the launch note"},
         )
     ]
 

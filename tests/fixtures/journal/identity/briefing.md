@@ -9,11 +9,10 @@ sources:
   entities_consulted: 3
   facet_newsletters: 2
   followups: 5
-  todos: 8
 gaps: []
 ---
 
-> Built from 14 transcript segments, 3 anticipated activities, 3 entity profiles, 2 facet newsletters, 5 follow-ups, 8 todos. No gaps.
+> Built from 14 transcript segments, 3 anticipated activities, 3 entity profiles, 2 facet newsletters, and 5 follow-ups. No gaps.
 
 ## Your Day
 

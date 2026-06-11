@@ -316,28 +316,6 @@ ENDPOINTS = [
         "params": {},
         "status": 200,
     },
-    # apps/todos/routes.py
-    {
-        "app": "todos",
-        "name": "badge-count",
-        "path": "/app/todos/api/badge-count",
-        "params": {},
-        "status": 200,
-    },
-    {
-        "app": "todos",
-        "name": "nudges",
-        "path": "/app/todos/api/nudges",
-        "params": {},
-        "status": 200,
-    },
-    {
-        "app": "todos",
-        "name": "stats-month",
-        "path": "/app/todos/api/stats/202603",
-        "params": {},
-        "status": 200,
-    },
     # apps/tokens/routes.py
     {
         "app": "tokens",

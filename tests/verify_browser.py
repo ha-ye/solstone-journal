@@ -138,15 +138,6 @@ SCENARIOS: list[dict[str, Any]] = [
         ],
     },
     {
-        "app": "todos",
-        "name": "smoke",
-        "steps": [
-            {"do": "navigate", "path": "/app/todos/20260304"},
-            {"do": "wait", "ms": 1000},
-            {"do": "screenshot"},
-        ],
-    },
-    {
         "app": "tokens",
         "name": "smoke",
         "steps": [
@@ -321,16 +312,6 @@ SCENARIOS: list[dict[str, Any]] = [
         "steps": [
             {"do": "navigate", "path": "/app/entities/work/romeo_montague"},
             {"do": "wait", "ms": 1000},
-            {"do": "screenshot"},
-        ],
-    },
-    {
-        "app": "todos",
-        "name": "todo-states",
-        "steps": [
-            {"do": "set_cookie", "name": "facet", "value": "work"},
-            {"do": "navigate", "path": "/app/todos/20260304"},
-            {"do": "wait", "ms": 1200},
             {"do": "screenshot"},
         ],
     },

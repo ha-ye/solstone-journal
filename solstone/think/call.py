@@ -31,7 +31,7 @@ def _discover_app_calls() -> None:
 
     Each ``call.py`` must export an ``app`` variable that is a
     ``typer.Typer`` instance.  The app directory name becomes the
-    sub-command name (e.g. ``sol call todos list ...``).
+    sub-command name (e.g. ``sol call entities search ...``).
 
     Errors in one app do not prevent others from loading.
     """

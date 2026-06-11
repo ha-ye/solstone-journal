@@ -30,7 +30,6 @@ def _minimal_home_context() -> dict:
     item = classify_needs_you(
         None,
         ["Review the launch checklist"],
-        [{"text": "Draft the partner note"}],
     )[0].to_dict()
     return {
         "today": "20260524",
@@ -52,7 +51,6 @@ def _minimal_home_context() -> dict:
         "flow_updated_at": None,
         "anticipated_activities": [],
         "activities": [],
-        "todos": [{"text": "Draft the partner note"}],
         "needs_you_items": [item],
         "routines": [],
         "briefing_sections": {},
@@ -104,7 +102,6 @@ def test_home_needs_you_strings_use_allowed_terms(journal_copy, monkeypatch):
     classifier_items = classify_needs_you(
         {"placeholder_text": "Pipeline needs review"},
         ["Review the launch checklist"],
-        [{"text": "Draft the partner note"}],
     )
     for item in classifier_items:
         _assert_clean(item.text)

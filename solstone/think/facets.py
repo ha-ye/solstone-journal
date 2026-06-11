@@ -168,7 +168,7 @@ def _write_action_log(
 
     Args:
         facet: Facet name where the action occurred, or None for journal-level
-        action: Action type (e.g., "todo_add", "entity_attach")
+        action: Action type (e.g., "entity_attach", "identity_update")
         params: Dictionary of action-specific parameters
         source: Origin type - "tool" for agents, "app" for web UI
         actor: For tools: agent name. For apps: app name
@@ -217,7 +217,7 @@ def log_call_action(
     """Log an action from a ``sol call`` CLI command.
 
     Creates a JSONL log entry for tracking successful modifications made via
-    ``sol call`` subcommands (entities, todos, etc.).
+    ``sol call`` subcommands (entities, activities, etc.).
 
     When facet is provided, writes to facets/{facet}/logs/{day}.jsonl.
     When facet is None, writes to config/actions/{day}.jsonl for journal-level
@@ -225,7 +225,7 @@ def log_call_action(
 
     Args:
         facet: Facet name where the action occurred, or None for journal-level
-        action: Action type (e.g., "todo_add", "entity_attach")
+        action: Action type (e.g., "entity_attach", "identity_update")
         params: Dictionary of action-specific parameters
         day: Day in YYYYMMDD format (defaults to today)
     """
@@ -1161,7 +1161,7 @@ def format_logs(
         params = entry.get("params", {})
         use_id = entry.get("use_id")
 
-        # Format action name for display (e.g., "todo_add" -> "Todo Add")
+        # Format action name for display (e.g., "entity_attach" -> "Entity Attach")
         action_display = action.replace("_", " ").title()
 
         # Build markdown

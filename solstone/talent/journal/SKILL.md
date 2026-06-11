@@ -46,7 +46,7 @@ For the full pipeline, see [captures](references/captures.md).
 |------|---------|
 | `chronicle/` | Daily capture folders |
 | `entities/` | Journal-level entity records |
-| `facets/` | Facet data: entities, todos, events, news, logs |
+| `facets/` | Facet data: entities, events, news, logs |
 | `talents/` | Talent run logs and outputs |
 | `solstone/apps/` | App-specific journal storage |
 | `imports/` | Imported audio and artifacts |
@@ -59,7 +59,7 @@ For the full table, see [storage](references/storage.md).
 
 - [CLI reference](references/cli.md) — `sol call journal` commands
 - [Configuration](references/config.md) — `journal.json`, providers, retention
-- [Facets](references/facets.md) — facet folders, entities, news, todos
+- [Facets](references/facets.md) — facet folders, entities, news, activities
 - [Captures and Extracts](references/captures.md) — layers, imports, segment layout
 - [Logs](references/logs.md) — action logs, token usage, talent logs, health
 - [Storage](references/storage.md) — top-level layout, app storage, search index

@@ -123,10 +123,6 @@ def _setup_facets(tmp_path):
     det_dir = work_dir / "entities"
     (det_dir / "20260413.jsonl").write_text('{"entity": "test"}\n', encoding="utf-8")
 
-    todo_dir = work_dir / "todos"
-    todo_dir.mkdir(parents=True)
-    (todo_dir / "20260413.jsonl").write_text('{"task": "do stuff"}\n', encoding="utf-8")
-
     personal_dir = facets_dir / "personal"
     personal_dir.mkdir(parents=True)
     (personal_dir / "facet.json").write_text('{"title": "Personal"}', encoding="utf-8")
@@ -749,7 +745,6 @@ class TestExportFacets:
             "files_0_1",
             "files_0_2",
             "files_0_3",
-            "files_0_4",
         ]
         work_metadata = json.loads(calls_by_facet["work"]["data"]["metadata"])
         assert work_metadata == {
@@ -770,7 +765,6 @@ class TestExportFacets:
                             "type": "entity_observations",
                         },
                         {"path": "facet.json", "type": "facet_json"},
-                        {"path": "todos/20260413.jsonl", "type": "todos"},
                     ],
                 }
             ]
@@ -791,7 +785,6 @@ class TestExportFacets:
                     work_dir / "entities" / "alice" / "entity.json"
                 ),
                 "work/entities/alice/observations.jsonl": "stale-hash",
-                "work/todos/20260413.jsonl": "stale-hash",
                 "personal/facet.json": _facet_file_hash(personal_dir / "facet.json"),
                 "personal/news/20260413.md": _facet_file_hash(
                     personal_dir / "news" / "20260413.md"
@@ -815,7 +808,6 @@ class TestExportFacets:
                 "path": "entities/alice/observations.jsonl",
                 "type": "entity_observations",
             },
-            {"path": "todos/20260413.jsonl", "type": "todos"},
         ]
 
     def test_dry_run(self, tmp_path, monkeypatch, capsys):
@@ -834,9 +826,9 @@ class TestExportFacets:
         assert mock_session.post.call_count == 0
         output = capsys.readouterr().out
         assert "personal: 2 new, 0 changed, 0 unchanged" in output
-        assert "work: 5 new, 0 changed, 0 unchanged" in output
+        assert "work: 4 new, 0 changed, 0 unchanged" in output
         assert (
-            "Dry run: 7 new files, 0 changed, 0 unchanged across 2 facet(s)" in output
+            "Dry run: 6 new files, 0 changed, 0 unchanged across 2 facet(s)" in output
         )
 
     def test_idempotent(self, tmp_path, monkeypatch, capsys):
@@ -917,7 +909,7 @@ class TestExportFacets:
         assert mock_session.post.call_count == 0
         output = capsys.readouterr().out
         assert "personal: 2 new, 0 changed, 0 unchanged" in output
-        assert "work: 0 new, 5 changed, 0 unchanged" in output
+        assert "work: 0 new, 4 changed, 0 unchanged" in output
 
     def test_skips_invalid_facet_names(self, tmp_path, monkeypatch):
         from solstone.observe.export import export_facets

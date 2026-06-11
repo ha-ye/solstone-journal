@@ -454,29 +454,6 @@
       "schedule": "segment",
       "tier": 3,
       "type": "generate"
-    },
-    "talent.todos.daily": {
-      "disabled": false,
-      "group": "Todos",
-      "label": "Daily TODO Curator",
-      "schedule": "daily",
-      "tier": 2,
-      "type": "cogitate"
-    },
-    "talent.todos.todo": {
-      "disabled": false,
-      "group": "Todos",
-      "label": "TODO Detector",
-      "schedule": "activity",
-      "tier": 2,
-      "type": "cogitate"
-    },
-    "talent.todos.weekly": {
-      "disabled": false,
-      "group": "Todos",
-      "label": "TODO Weekly Scout",
-      "tier": 2,
-      "type": "cogitate"
     }
   },
   "contexts": {

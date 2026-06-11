@@ -68,7 +68,6 @@ def _patch_talent_dirs(
         ("Bad `Read('x')`.", "cli-agent-tool"),
         ("Bad `cat foo`.", "shell-read"),
         ("Bad `journal/chronicle/20260101/x.json`.", "raw-journal-path"),
-        ("Bad `sol call todos list -d 20260101`.", "unsupported-flag"),
     ],
 )
 def test_lint_prompt_flags_cogitate_policy_violations(body: str, kind: str) -> None:
@@ -117,7 +116,7 @@ def test_lint_prompt_ignores_sanctioned_forms(body: str) -> None:
 @pytest.mark.parametrize(
     "body",
     [
-        "`sol call journal search x && sol call todos list`",
+        "`sol call journal search x && sol call entities list`",
         "`echo $(sol call support create --subject x)`",
         "`bash -lc 'sol call journal search x'`",
     ],
@@ -154,7 +153,7 @@ def test_lint_prompt_allows_multiline_partner_value_example() -> None:
     body = """```bash
 journal identity partner --update-section 'work patterns' --value 'My partner tends to batch meetings before noon and protects afternoon blocks for focused work. Calendar data from March 25-31 shows 85% of meetings before 12:00 (sol://20260328/archon/091500_300).
 
-Deep work sessions typically run 2-3 hours — todo completion spikes correlate with these blocks.'
+Deep work sessions typically run 2-3 hours — calendar and activity signals show fewer interruptions during these blocks.'
 ```
 """
 

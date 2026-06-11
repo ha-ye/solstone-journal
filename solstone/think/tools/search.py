@@ -89,7 +89,7 @@ def search_journal(
     """Search across all journal content using semantic full-text search.
 
     This tool searches through all indexed journal content including insights,
-    transcripts, events, entities, and todos. Use filters to narrow results
+    transcripts, events, and entities. Use filters to narrow results
     to specific content types or contexts.
 
     Args:

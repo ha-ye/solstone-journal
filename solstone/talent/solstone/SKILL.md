@@ -3,9 +3,9 @@ name: solstone
 version: 1.0.0
 description: >
   Read-only query of the solstone journal from any project. Look up people
-  and relationships, today's events, todos; read transcripts. TRIGGER:
+  and relationships, today's events; read transcripts. TRIGGER:
   solstone, my journal, search my memory, what happened, who is, meeting
-  with, co-brain, recall, sol call journal/entities/transcripts/todos.
+  with, co-brain, recall, sol call journal/entities/transcripts.
 ---
 
 # solstone — journal query interface
@@ -56,9 +56,6 @@ sol call entities observations "<entity_name>" --facet "<facet>"
 Combine these commands to get a full picture of the current day:
 
 ```bash
-# Upcoming todos
-sol call todos upcoming
-
 # Calendar events for today
 sol call activities list --source anticipated
 
@@ -116,10 +113,10 @@ External callers should never need to set these. The commands above use explicit
 
 For richer answers, combine multiple commands:
 
-**"Brief me on today"** — events + todos + calendar:
+**"Brief me on today"** — events + active relationships:
 ```bash
-sol call todos upcoming
 sol call activities list --source anticipated
+sol call entities search --limit 5
 ```
 
 **"Prep me for a meeting with X"** — recent transcript mentions:
@@ -143,7 +140,6 @@ Most commands output plain text by default. Many support `--json` for structured
 This is a **read-only** interface. The journal is the person's private space. You cannot:
 
 - Create, delete, or modify facets
-- Add or complete todos
 - Attach or modify entities
 - Write news or observations
 - Run pipeline operations (think, indexer, transcribe)

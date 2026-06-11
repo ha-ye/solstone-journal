@@ -77,7 +77,7 @@ class App:
     # Hide the universal chat bar on this app
     app_bar: bool = True
 
-    # Allow clicking future dates in month picker (for todos)
+    # Allow apps to opt into clicking future dates in the month picker.
     allow_future_dates: bool = False
 
     def facets_enabled(self) -> bool:

@@ -33,7 +33,6 @@ DEFAULT_RAIL_APPS = [
     "home",
     "sol",
     "chat",
-    "todos",
     "activities",
     "transcripts",
     "observer",
@@ -437,7 +436,7 @@ def update_facet_order() -> tuple[Any, int]:
 def update_app_order() -> tuple[Any, int]:
     """POST /api/config/apps/order - Update app ordering.
 
-    Request body: {"order": ["home", "activities", "todos"]}
+    Request body: {"order": ["home", "activities", "entities"]}
 
     Returns:
         JSON success/error response

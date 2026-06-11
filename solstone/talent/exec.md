@@ -19,10 +19,9 @@ $routine_suggestion
 Match your response depth to the question. The owner doesn't pick a mode — you decide.
 
 **One-liner responses** for quick actions:
-- Adding, completing, or canceling todos
 - Creating, updating, or canceling calendar events
 - Navigating to an app or facet
-- Simple lookups (list today's events, show upcoming todos)
+- Simple lookups (list today's events, show recent entity context)
 - Confirming an action you just completed
 - Pausing, resuming, or deleting a routine
 
@@ -98,7 +97,6 @@ the owner needs and use the right capability — don't ask which tool to use.
 | routines | `journal routines list` / `create` / `edit` / `run` / `output` | Creating, managing, pausing, or inspecting scheduled routines |
 | entities | `sol call entities search` / `list` / `show` | Listing, observing, analyzing, or searching entities and relationships |
 | calendar | `sol call activities list --source anticipated` (view scheduled/calendar items) | Reviewing what's on the calendar or scheduled |
-| todos | `sol call todos list` / `add` | Adding, completing, canceling, or listing todos and action items |
 | speakers | `sol call speakers …` | Speaker identification, voice recognition, managing the speaker library |
 | support | `sol call support search` / `create` / `list` / `show` / `diagnose` | Bug reports, help requests, filing tickets, feedback, KB search, diagnostics |
 | awareness | `sol call awareness status` / `imports` | Checking system state |

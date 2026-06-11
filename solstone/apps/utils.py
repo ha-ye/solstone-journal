@@ -122,9 +122,9 @@ def log_app_action(
     actions (settings changes, observer management, etc.).
 
     Args:
-        app: App name where action originated (e.g., "entities", "todos")
+        app: App name where action originated (e.g., "entities", "activities")
         facet: Facet where action occurred, or None for journal-level actions
-        action: Action type (e.g., "entity_add", "todo_complete")
+        action: Action type (e.g., "entity_attach", "activity_update")
         params: Action-specific parameters to record
         day: Day in YYYYMMDD format (defaults to today)
 

@@ -688,25 +688,15 @@ def test_schedule_gated_cogitate_prompts_use_emit_final():
         if config.get("schedule") in {"daily", "weekly", "activity"}
         and "output" not in config
     }
-    artifact_names = {
-        name
-        for name, config in converted.items()
-        if name.endswith(":todo") and config.get("schedule") == "activity"
-    }
-
     # steward is no longer a cogitate talent (deterministic render + lite generate).
-    assert len(converted) == 8
-    assert artifact_names == {"todos:todo"}
+    assert len(converted) == 6
 
     for name, config in converted.items():
         body = Path(config["path"]).read_text(encoding="utf-8")
         assert "emit_final" in body, name
         assert old_tool_name not in body, name
         assert "FinishTool" not in body, name
-        if name in artifact_names:
-            assert body.count("emit_final") >= 1, name
-        else:
-            assert body.count("emit_final") >= 2, name
+        assert body.count("emit_final") >= 2, name
 
 
 def test_run_cogitate_threads_configured_max_turns(

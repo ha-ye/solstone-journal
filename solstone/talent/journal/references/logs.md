@@ -5,7 +5,7 @@
 Action logs record an audit trail of owner-initiated actions and agent tool calls. There are two types:
 
 - **Journal-level logs** (`config/actions/`) – actions not tied to a specific facet (settings changes, observer management)
-- **Facet-scoped logs** (`facets/{facet}/logs/`) – actions within a specific facet (todos, entities)
+- **Facet-scoped logs** (`facets/{facet}/logs/`) – actions within a specific facet (activities, entities)
 
 ### Journal Action Logs
 
@@ -31,10 +31,12 @@ The `logs/` directory within each facet records facet-scoped actions. Logs are o
 {
   "timestamp": "2025-12-16T07:33:05.135587+00:00",
   "source": "tool",
-  "actor": "todos:todo",
-  "action": "todo_add",
+  "actor": "entities:entities",
+  "action": "entity_attach",
   "params": {
-    "text": "Review project proposal"
+    "type": "Person",
+    "name": "Alice Johnson",
+    "description": "Lead engineer on the API project"
   },
   "facet": "work",
   "use_id": "1765870373972"
@@ -48,7 +50,7 @@ Both log types share the same structure:
 - `timestamp` – ISO 8601 timestamp of the action
 - `source` – Origin type: "app" for web UI, "tool" for agent tools
 - `actor` – App or tool name that performed the action
-- `action` – Action name (e.g., "todo_add", "identity_update")
+- `action` – Action name (e.g., "entity_attach", "identity_update")
 - `params` – Action-specific parameters
 - `facet` – Facet name (only present in facet-scoped logs)
 - `use_id` – Agent ID (only present for agent tool actions)

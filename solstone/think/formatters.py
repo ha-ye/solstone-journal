@@ -88,7 +88,7 @@ def extract_path_metadata(rel_path: str) -> dict[str, str]:
     # Extract facet from facets/{facet}/... paths
     if parts[0] == "facets" and len(parts) >= 3:
         facet = parts[1]
-        # Day from YYYYMMDD filename (events/entities/todos/news)
+        # Day from YYYYMMDD filename (events/entities/news)
         if len(parts) >= 4 and DATE_RE.fullmatch(basename):
             day = basename
         # Day from activities/{YYYYMMDD}/{activity_id}/... directory structure
@@ -164,7 +164,6 @@ FORMATTERS: dict[str, tuple[str, str, bool]] = {
         "format_activities",
         True,
     ),
-    "facets/*/todos/*.jsonl": ("solstone.apps.todos.todo", "format_todos", True),
     "facets/*/logs/*.jsonl": ("solstone.think.facets", "format_logs", True),
     # Structured file imports (indexed)
     "*/import.*/imported.jsonl": (

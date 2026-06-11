@@ -146,7 +146,7 @@ Reference map of key paths. `journal/` is the journal root.
 | `health/` | Service logs: `<service>.log` symlinks, `callosum.sock`, `supervisor.log` |
 | `agents/` | Agent run logs: `<name>/<id>.jsonl`, `<name>/<id>_active.jsonl`, `<name>.log` symlink, `<day>.jsonl` day index |
 | `config/` | `journal.json`, `convey.json`, `schedules.json`, `actions/YYYYMMDD.jsonl` |
-| `facets/<facet>/` | Per-facet data: `facet.json`, `entities/`, `todos/`, `events/`, `news/`, `logs/` |
+| `facets/<facet>/` | Per-facet data: `facet.json`, `entities/`, `events/`, `news/`, `logs/` |
 | `entities/<id>/` | Canonical entity records: `entity.json` |
 | `tokens/` | Token usage: `YYYYMMDD.jsonl` per day |
 | `indexer/` | Search index: `journal.sqlite` (FTS5) |
