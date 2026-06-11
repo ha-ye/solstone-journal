@@ -31,17 +31,6 @@ def _read_history(journal_path):
     return [json.loads(line) for line in history.read_text().splitlines()]
 
 
-def _section_body(content: str, heading: str) -> str:
-    lines = content.splitlines()
-    target = f"## {heading}"
-    start = lines.index(target) + 1
-    end = next(
-        (index for index in range(start, len(lines)) if lines[index].startswith("## ")),
-        len(lines),
-    )
-    return "\n".join(lines[start:end]).strip()
-
-
 def _assert_history_record(record, *, file_name, actor, op, section, reason):
     assert list(record) == _HISTORY_FIELDS
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", record["ts"])
@@ -58,7 +47,7 @@ def _assert_history_record(record, *, file_name, actor, op, section, reason):
 
 @pytest.fixture
 def journal_with_identity(tmp_path, monkeypatch):
-    """Set up a journal with identity/ containing self.md, agency.md, and partner.md."""
+    """Set up a journal with identity/ containing self.md and partner.md."""
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
     # Provide minimal config for ensure_identity_directory
@@ -92,28 +81,6 @@ Test User
 [discovering]
 """
     (identity_dir / "self.md").write_text(self_md)
-
-    agency_md = """\
-# agency
-
-things I'm tracking, acting on, or watching.
-
-## curation
-[nothing yet]
-
-## observations
-[watching and learning]
-
-## follow-throughs
-[none yet]
-
-## system
-[monitoring]
-
-## self-improvement
-[learning what works]
-"""
-    (identity_dir / "agency.md").write_text(agency_md)
 
     partner_md = """\
 # partner
@@ -295,114 +262,6 @@ class TestSolPartnerUpdateSection:
         assert "no content" in result.output
 
 
-class TestSolAgencyRead:
-    def test_read_agency(self, journal_with_identity):
-        result = runner.invoke(app, ["agency"])
-        assert result.exit_code == 0
-        assert "# agency" in result.output
-        assert "## curation" in result.output
-
-    def test_read_agency_missing(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        (config_dir / "journal.json").write_text(json.dumps({}))
-        # ensure_identity_directory creates agency.md
-        result = runner.invoke(app, ["agency"])
-        assert result.exit_code == 0
-
-
-class TestSolAgencyWrite:
-    def test_write_agency(self, journal_with_identity):
-        new_content = "# agency\n\n## curation\n- review entity duplicates\n\n## system\n[clean]\n"
-        result = runner.invoke(app, ["agency", "--write"], input=new_content)
-        assert result.exit_code == 0
-        assert "agency.md updated" in result.output
-
-        # Verify file was written
-        agency_path = journal_with_identity / "identity" / "agency.md"
-        assert agency_path.read_text() == new_content
-
-    def test_write_agency_empty_stdin(self, journal_with_identity):
-        result = runner.invoke(app, ["agency", "--write"], input="")
-        assert result.exit_code == 1
-        assert "no content" in result.output
-
-    def test_update_section_system_with_value(self, journal_with_identity):
-        agency_path = journal_with_identity / "identity" / "agency.md"
-        before = agency_path.read_text()
-        original_curation = _section_body(before, "curation")
-
-        result = runner.invoke(
-            app,
-            [
-                "agency",
-                "--update-section",
-                "system",
-                "--value",
-                "Investigate recurring daily talent errors.",
-            ],
-        )
-
-        assert result.exit_code == 0
-        assert "Updated ## system in agency.md" in result.output
-        content = agency_path.read_text()
-        assert (
-            _section_body(content, "system")
-            == "Investigate recurring daily talent errors."
-        )
-        assert _section_body(content, "curation") == original_curation
-
-    def test_update_section_not_found(self, journal_with_identity):
-        result = runner.invoke(
-            app,
-            ["agency", "--update-section", "nonexistent"],
-            input="content",
-        )
-
-        assert result.exit_code == 1
-        assert "not found" in result.output
-
-    def test_update_section_empty_stdin(self, journal_with_identity):
-        result = runner.invoke(
-            app,
-            ["agency", "--update-section", "system"],
-            input="",
-        )
-
-        assert result.exit_code == 1
-        assert "no content" in result.output
-
-    def test_update_section_disjoint_writes_preserve_other_sections(
-        self, journal_with_identity
-    ):
-        agency_path = journal_with_identity / "identity" / "agency.md"
-        before = agency_path.read_text()
-        original_observations = _section_body(before, "observations")
-        original_follow_throughs = _section_body(before, "follow-throughs")
-        original_self_improvement = _section_body(before, "self-improvement")
-        system_text = "Investigate recurring daily talent errors."
-        curation_text = "Possible speaker cleanup needs owner review."
-
-        system_result = runner.invoke(
-            app,
-            ["agency", "--update-section", "system", "--value", system_text],
-        )
-        curation_result = runner.invoke(
-            app,
-            ["agency", "--update-section", "curation", "--value", curation_text],
-        )
-
-        assert system_result.exit_code == 0
-        assert curation_result.exit_code == 0
-        content = agency_path.read_text()
-        assert _section_body(content, "system") == system_text
-        assert _section_body(content, "curation") == curation_text
-        assert _section_body(content, "observations") == original_observations
-        assert _section_body(content, "follow-throughs") == original_follow_throughs
-        assert _section_body(content, "self-improvement") == original_self_improvement
-
-
 class TestSolPulseRead:
     def test_read_pulse(self, journal_with_identity):
         pulse_md = "---\nupdated: 2026-03-22T14:00:00\nsource: pulse-cogitate\n---\n\nTest narrative.\n"
@@ -451,17 +310,6 @@ class TestSolWriteDoesNotEscapeIdentityDir:
             f.name for f in journal_with_identity.iterdir() if f.is_file()
         )
         assert "self.md" not in journal_files
-
-    def test_agency_write_stays_in_identity_dir(self, journal_with_identity):
-        """Write to agency.md goes to identity/agency.md, not anywhere else."""
-        result = runner.invoke(app, ["agency", "--write"], input="test content\n")
-        assert result.exit_code == 0
-        agency_path = journal_with_identity / "identity" / "agency.md"
-        assert agency_path.read_text() == "test content\n"
-        journal_files = set(
-            f.name for f in journal_with_identity.iterdir() if f.is_file()
-        )
-        assert "agency.md" not in journal_files
 
     def test_pulse_write_stays_in_identity_dir(self, journal_with_identity):
         """Write to pulse.md goes to identity/pulse.md, not anywhere else."""
@@ -527,21 +375,6 @@ class TestSolSelfValueOption:
         assert self_path.read_text() == "from value\n"
 
 
-class TestSolAgencyValueOption:
-    def test_write_agency_with_value(self, journal_with_identity):
-        new_content = "# agency\n\n## curation\n- item\n"
-        result = runner.invoke(app, ["agency", "--write", "--value", new_content])
-        assert result.exit_code == 0
-        assert "agency.md updated" in result.output
-        agency_path = journal_with_identity / "identity" / "agency.md"
-        assert agency_path.read_text() == new_content
-
-    def test_value_empty_string_errors(self, journal_with_identity):
-        result = runner.invoke(app, ["agency", "--write", "--value", ""])
-        assert result.exit_code == 1
-        assert "no content" in result.output
-
-
 class TestSolPulseValueOption:
     def test_write_pulse_with_value(self, journal_with_identity):
         new_content = "---\nupdated: 2026-03-22\n---\n\nNarrative.\n"
@@ -598,19 +431,6 @@ class TestSolHistoryLogging:
             records[0],
             file_name="self.md",
             actor="journal identity self --write",
-            op="replace",
-            section=None,
-            reason="manual replace",
-        )
-
-    def test_agency_write_logs_history(self, journal_with_identity):
-        runner.invoke(app, ["agency", "--write", "--value", "# agency\n\nNew.\n"])
-        records = _read_history(journal_with_identity)
-        assert len(records) == 1
-        _assert_history_record(
-            records[0],
-            file_name="agency.md",
-            actor="journal identity agency --write",
             op="replace",
             section=None,
             reason="manual replace",

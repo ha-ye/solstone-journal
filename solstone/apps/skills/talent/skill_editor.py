@@ -14,13 +14,11 @@ import frontmatter
 from solstone.convey.reasons import SKILLS_BUSY
 from solstone.think import skills as think_skills
 from solstone.think.activities import get_activity_output_path, get_activity_record
-from solstone.think.identity import update_identity_section
 from solstone.think.journal_io import LockTimeout
 from solstone.think.utils import get_journal
 
 logger = logging.getLogger(__name__)
 
-WATCHING_AND_LEARNING = "[watching and learning]"
 NO_PENDING_SKILL_WORK = "no pending skill work"
 SPAN_DIRNAME = "spans"
 
@@ -58,26 +56,6 @@ def _load_profile_metadata(markdown: str | None) -> dict[str, Any]:
         return {}
     meta = post.metadata
     return meta if isinstance(meta, dict) else {}
-
-
-def _read_identity_section(file_name: str, heading: str) -> str:
-    path = Path(get_journal()) / "identity" / Path(file_name).name
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (FileNotFoundError, OSError):
-        return ""
-
-    lines = text.split("\n")
-    start = None
-    target_heading = f"## {heading}"
-    for index, line in enumerate(lines):
-        if line == target_heading:
-            start = index + 1
-        elif start is not None and line.startswith("## "):
-            return "\n".join(lines[start:index]).strip()
-    if start is not None:
-        return "\n".join(lines[start:]).strip()
-    return ""
 
 
 def _mark_edit_request_processed(request_id: str, *, error: str | None = None) -> None:
@@ -504,8 +482,6 @@ def post_process(result: str, context: dict) -> str | None:
             logger.warning("skill_editor: invalid updated_at")
             return None
 
-    was_new_profile = think_skills.load_profile(slug) is None
-
     ordered_meta: dict[str, Any] = {
         "name": slug,
         "display_name": display_name,
@@ -521,11 +497,6 @@ def post_process(result: str, context: dict) -> str | None:
     body = post.content.rstrip() + "\n" if post.content.strip() else ""
     markdown = frontmatter.dumps(frontmatter.Post(body, **ordered_meta))
     think_skills.save_profile(slug, markdown)
-
-    pattern = think_skills.find_pattern(slug)
-    observation_count = 0
-    if pattern is not None:
-        observation_count = len(pattern.get("observations", []))
 
     now = think_skills.utc_now_iso()
 
@@ -588,21 +559,5 @@ def post_process(result: str, context: dict) -> str | None:
         except LockTimeout:
             logger.warning("skill_editor: %s", SKILLS_BUSY.message)
             return None
-
-    if mode == "create" and was_new_profile:
-        nudge_line = f"- Noticed recurring skill: {display_name} — observed {observation_count} times"
-        existing = _read_identity_section("agency.md", "observations")
-        if nudge_line not in existing.splitlines():
-            if existing and existing.strip() != WATCHING_AND_LEARNING:
-                content = existing.rstrip("\n") + "\n" + nudge_line
-            else:
-                content = nudge_line
-            update_identity_section(
-                "agency.md",
-                "observations",
-                content,
-                actor="skill_editor",
-                reason="new recurring skill observed",
-            )
 
     return None

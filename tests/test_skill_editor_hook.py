@@ -11,7 +11,6 @@ import pytest
 
 from solstone.apps.skills.talent.skill_editor import (
     NO_PENDING_SKILL_WORK,
-    WATCHING_AND_LEARNING,
     post_process,
     pre_process,
 )
@@ -149,7 +148,6 @@ def _seed_fixture(
     activities: dict[tuple[str, str], list[dict]] | None = None,
     narratives: dict[tuple[str, str, str], str] | None = None,
     spans: dict[tuple[str, str], list[dict]] | None = None,
-    agency_observations: str = WATCHING_AND_LEARNING,
 ) -> None:
     skills_dir = root / "skills"
     skills_dir.mkdir(parents=True, exist_ok=True)
@@ -168,15 +166,6 @@ def _seed_fixture(
 
     for slug, markdown in (profiles or {}).items():
         (skills_dir / f"{slug}.md").write_text(markdown, encoding="utf-8")
-
-    identity_dir = root / "identity"
-    identity_dir.mkdir(parents=True, exist_ok=True)
-    (identity_dir / "agency.md").write_text(
-        "# agency\n\n## observations\n"
-        + agency_observations
-        + "\n\n## next\n\n[nothing yet]\n",
-        encoding="utf-8",
-    )
 
     for (facet, day), records in (activities or {}).items():
         activities_dir = root / "facets" / facet / "activities"
@@ -362,7 +351,7 @@ def test_pre_emits_spans_unavailable_when_file_missing(skill_editor_env):
     assert "[spans unavailable]" in result["template_vars"]["skill_context"]
 
 
-def test_post_creates_new_profile_and_fires_nudge(skill_editor_env):
+def test_post_creates_new_profile(skill_editor_env):
     pattern = _pattern(
         needs_profile=True,
         observations=[
@@ -388,11 +377,9 @@ def test_post_creates_new_profile_and_fires_nudge(skill_editor_env):
     updated = think_skills.find_pattern("alpha-skill")
     assert updated["status"] == "mature"
     assert updated["needs_profile"] is False
-    agency = (skill_editor_env / "identity" / "agency.md").read_text(encoding="utf-8")
-    assert "- Noticed recurring skill: Alpha Skill — observed 2 times" in agency
 
 
-def test_post_refreshes_existing_profile_no_nudge(skill_editor_env):
+def test_post_refreshes_existing_profile(skill_editor_env):
     _seed_fixture(
         skill_editor_env,
         patterns=[
@@ -403,7 +390,6 @@ def test_post_refreshes_existing_profile_no_nudge(skill_editor_env):
             )
         ],
         profiles={"alpha-skill": _profile_markdown(display_name="Old Name")},
-        agency_observations="existing observation",
     )
     result = _profile_markdown(
         slug="alpha-skill",
@@ -420,8 +406,6 @@ def test_post_refreshes_existing_profile_no_nudge(skill_editor_env):
     assert saved is not None and "Refreshed Skill" in saved
     updated = think_skills.find_pattern("alpha-skill")
     assert updated["needs_refresh"] is False
-    agency = (skill_editor_env / "identity" / "agency.md").read_text(encoding="utf-8")
-    assert "Refreshed Skill" not in agency
 
 
 def test_post_processes_edit_request_clears_both_flags(skill_editor_env):
@@ -616,18 +600,14 @@ def test_post_is_idempotent_on_double_call(skill_editor_env):
 
     post_process(result, context)
     first_pattern = think_skills.find_pattern("alpha-skill").copy()
-    first_agency = (skill_editor_env / "identity" / "agency.md").read_text(
-        encoding="utf-8"
-    )
+    first_profile = think_skills.load_profile("alpha-skill")
 
     post_process(result, context)
 
     second_pattern = think_skills.find_pattern("alpha-skill").copy()
-    second_agency = (skill_editor_env / "identity" / "agency.md").read_text(
-        encoding="utf-8"
-    )
+    second_profile = think_skills.load_profile("alpha-skill")
     assert first_pattern == second_pattern
-    assert first_agency == second_agency
+    assert first_profile == second_profile
 
 
 def test_post_preserves_flags_when_output_invalid(skill_editor_env):

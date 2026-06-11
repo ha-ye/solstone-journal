@@ -654,4 +654,3 @@ class TestSolIdentityRoutes:
             "status": "ok",
         }
         assert (journal / "identity" / "self.md").exists()
-        assert (journal / "identity" / "agency.md").exists()

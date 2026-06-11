@@ -99,7 +99,6 @@ def pre_process(context: dict) -> dict:
     template_vars = {
         "digest_contents": "",
         "identity_self": "",
-        "identity_agency": "",
         "active_talents": "",
         "trigger_kind": "",
         "trigger_context": "",
@@ -121,7 +120,6 @@ def pre_process(context: dict) -> dict:
 
     try:
         template_vars["identity_self"] = _load_identity_contents("self.md")
-        template_vars["identity_agency"] = _load_identity_contents("agency.md")
     except Exception:
         logger.debug("Identity enrichment failed", exc_info=True)
 

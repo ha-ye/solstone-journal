@@ -566,17 +566,12 @@ class TestEnsureIdentityDirectory:
         identity_dir = ensure_identity_directory()
         assert identity_dir == tmp_path / "identity"
         assert (identity_dir / "self.md").exists()
-        assert (identity_dir / "agency.md").exists()
 
         self_content = (identity_dir / "self.md").read_text()
         assert self_content.startswith("# self\n")
         assert "I am sol." in self_content
         assert "sol (default)" in self_content
         assert "[getting to know you]" in self_content
-
-        agency_content = (identity_dir / "agency.md").read_text()
-        assert agency_content.startswith("# agency\n")
-        assert "[nothing yet" in agency_content
 
         assert (identity_dir / "awareness.md").exists()
         awareness_content = (identity_dir / "awareness.md").read_text()

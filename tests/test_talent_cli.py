@@ -323,17 +323,17 @@ def test_show_prompt_context_day_format_validation(capsys):
 
 def test_show_effective_prompt_read_scope_matches_assembled_prompt(capsys):
     """Cogitate prompt view renders the same assembled prompt provider receives."""
-    config = get_talent("agency")
+    config = get_talent("self_observer")
     body, system_instruction = assemble_prompt(config, sol_tool_name="sol")
 
-    show_effective_prompt("agency", full=True)
+    show_effective_prompt("self_observer", full=True)
     output = capsys.readouterr().out
 
     assert system_instruction is not None
     assert system_instruction.startswith(COGITATE_RUNTIME_PREAMBLE)
     assert "through the `sol` tool" in system_instruction
     assert "Limit filesystem reads to today's segment dir" in system_instruction
-    assert "# Agency" in body
+    assert "# Self Observer" in body
     assert system_instruction in output
     assert body in output
     assert "tier: normal" in output
@@ -451,7 +451,7 @@ def test_scan_command_examples_dedupes_and_caps():
             "`journal routines list`",
             "`sol call support search foo`",
             "`journal talent logs --daily -c 20 --errors.`",
-            "`journal identity agency --update-section system --value x`",
+            "`journal identity pulse --write --value x`",
         ]
     )
 

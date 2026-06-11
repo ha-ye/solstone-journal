@@ -79,6 +79,6 @@ def set_owner(
 @app.command("sol-init")
 @convey_cli
 def sol_init() -> None:
-    """Initialize the identity directory with self.md and agency.md."""
+    """Initialize the identity directory with self.md."""
     body = get_client().request("POST", "/app/sol/api/sol-init")
     typer.echo(json.dumps(body, indent=2))

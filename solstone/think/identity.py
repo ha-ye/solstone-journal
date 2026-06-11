@@ -15,29 +15,6 @@ from solstone.think.journal_io import append_text, atomic_replace, hold_lock
 
 logger = logging.getLogger(__name__)
 
-_AGENCY_MD = """\
-# agency
-
-things I'm tracking, acting on, or watching. I update this as I notice things
-and resolve them. this is reviewed periodically.
-
-## curation
-[nothing yet — building initial picture of journal health]
-
-## observations
-[watching and learning]
-
-## follow-throughs
-[none yet]
-
-## system
-[monitoring]
-
-## self-improvement
-[learning what works]
-"""
-
-
 _PARTNER_MD = """\
 # partner
 
@@ -419,7 +396,6 @@ def ensure_identity_directory() -> Path:
     identity_dir = _identity_dir()
     defaults = {
         "self.md": _build_self_md(get_config()),
-        "agency.md": _AGENCY_MD,
         "partner.md": _PARTNER_MD,
         "awareness.md": _AWARENESS_MD,
         "digest.md": _DIGEST_MD,

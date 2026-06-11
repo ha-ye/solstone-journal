@@ -695,7 +695,7 @@ def test_schedule_gated_cogitate_prompts_use_emit_final():
     }
 
     # steward is no longer a cogitate talent (deterministic render + lite generate).
-    assert len(converted) == 11
+    assert len(converted) == 9
     assert artifact_names == {"todos:todo"}
 
     for name, config in converted.items():

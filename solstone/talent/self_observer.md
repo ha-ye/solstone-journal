@@ -18,7 +18,6 @@ This is not a conversation. Update `identity/self.md` only when there is a durab
 Read current state first:
 
 - `read_file` `identity/self.md`
-- `read_file` `identity/agency.md` if context is needed
 - Use `read_file` under `chronicle/<day>` only for today's evidence.
 - Use `sol call journal search` only when a focused query is needed.
 

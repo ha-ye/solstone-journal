@@ -91,7 +91,6 @@ def test_bare_journal_flags_fenced_commands() -> None:
 @pytest.mark.parametrize(
     "body",
     [
-        "`journal identity agency --update-section observations --value ok`",
         "`journal identity pulse --write --value '>'`",
         "`journal identity pulse --write --value '|'`",
         "`journal routines list`",
@@ -104,7 +103,7 @@ def test_bare_journal_flags_fenced_commands() -> None:
         "`list_directory journal/chronicle`",
         "`glob journal/chronicle/*`",
         "`grep_search needle journal/chronicle`",
-        "`identity/agency.md`",
+        "`identity/self.md`",
         "`chronicle/20260101`",
         "`## observations`",
         "`write_file`",
@@ -320,7 +319,6 @@ def test_discovery_floor_matches_cogitate_frontmatter() -> None:
 
     discovered = {rel for rel, _body in ccp.discover_prompts()}
     assert expected
-    assert "solstone/talent/agency.md" in discovered
     assert expected <= discovered
 
 
@@ -332,4 +330,3 @@ def test_repo_tree_is_green() -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "cogitate-prompts: pass" in result.stdout
-    assert "solstone/talent/agency.md: 1/1 bare-journal (allowlisted)" in result.stdout

@@ -91,12 +91,7 @@ UNSUPPORTED_FLAGS: list[tuple[tuple[str, ...], str, str]] = [
     ),
 ]
 
-ALLOWLIST: dict[tuple[str, str], int] = {
-    # agency.md names the deterministic `journal heartbeat` system workflow in a
-    # NEGATIVE instruction (telling the talent NOT to do health repair). It is a
-    # descriptive reference to a real service command, not a talent invocation.
-    ("solstone/talent/agency.md", "bare-journal"): 1,
-}
+ALLOWLIST: dict[tuple[str, str], int] = {}
 
 JOURNAL_ALTERNATIVE = (
     "use `journal` with one of {identity, routines, health, talent}, "

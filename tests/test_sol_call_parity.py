@@ -156,7 +156,6 @@ def test_sol_init_creates_identity_files(runner, journal) -> None:
         "status": "ok",
     }
     assert (journal / "identity" / "self.md").exists()
-    assert (journal / "identity" / "agency.md").exists()
 
 
 def test_convey_down_prints_require_solstone_message(journal, monkeypatch) -> None:

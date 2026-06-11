@@ -19,7 +19,6 @@ from solstone.think.utils import CorruptConfigError
 TEMPLATE_VAR_KEYS = {
     "digest_contents",
     "identity_self",
-    "identity_agency",
     "active_talents",
     "trigger_kind",
     "trigger_context",
@@ -858,9 +857,7 @@ def test_chat_context_includes_identity_grounding(monkeypatch, tmp_path):
 
     template_vars = _assert_template_vars_result(result)
     assert template_vars["identity_self"]
-    assert template_vars["identity_agency"]
     assert template_vars["identity_self"] != digest_seed.strip()
-    assert template_vars["identity_agency"] != digest_seed.strip()
 
 
 def test_chat_context_preserves_save_routines_config_side_effect(monkeypatch, tmp_path):
