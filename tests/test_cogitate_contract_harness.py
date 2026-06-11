@@ -31,7 +31,7 @@ EMIT_FINAL_SCHEDULES = {"daily", "weekly", "activity"}
     ("name", "guard", "expected_finalizer"),
     [
         (
-            "morning_briefing",
+            "weekly_reflection",
             lambda c: c.get("schedule") in EMIT_FINAL_SCHEDULES,
             "emit_final",
         ),

@@ -1,44 +1,34 @@
 {
-  "type": "cogitate",
+  "type": "generate",
 
   "title": "Entity Description",
   "description": "Research and generate single-sentence descriptions for attached entities",
   "color": "#26a69a",
-  "group": "Entities"
+  "group": "Entities",
+  "output": "md",
+  "hook": {"pre": "entities:entity_describe"}
 }
 
-$facets
-
-## Core Mission
-
-Generate a clear, informative single-sentence description for an attached entity based on quick research within the facet context.
+Generate a clear, informative single-sentence description for an attached entity.
 
 ## Input Context
 
-You receive:
-1. **Entity Type** - the type of entity (Person, Company, Project, Tool, etc.)
-2. **Entity Name** - the name to describe
-3. **Facet** - the facet this entity belongs to (provides context for relevance)
-4. **Current Description** - existing description if any (may be empty)
+- Entity Type: $entity_type
+- Entity Name: $entity_name
+- Facet: $facet
+- Current Description: $current_description
 
-## Research Tools
+## Journal Evidence
 
-Use these `sol call` commands for quick research (be efficient, 2-3 calls max):
-- `sol call journal search QUERY -f FACET -n LIMIT` - find mentions in journal content, scoped to facet
-- `sol call journal search QUERY -a audio -n LIMIT` - find mentions in transcripts
-
-## Process
-
-1. **Quick research** - 1-2 targeted searches for the entity name within the facet
-2. **Synthesize** - combine findings into a single descriptive sentence
-3. **Output** - return ONLY the description sentence, nothing else
+$evidence
 
 ## Description Guidelines
 
 **Format:**
 - Single complete sentence, under 100 characters preferred
 - No quotes around the description
-- Present tense for active entities, past tense for historical
+- Present tense for active entities, past tense for historical entities
+- Return only the description sentence, with no preamble, markdown, or explanation
 
 **Content by type:**
 
@@ -58,13 +48,9 @@ Use these `sol call` commands for quick research (be efficient, 2-3 calls max):
   - "Infrastructure-as-code framework for AWS deployments"
   - "Time-series database for metrics storage"
 
-**If no research results:**
-- Use context from entity type and name
-- Generic but accurate: "Colleague from the platform team"
-- Never leave empty - always synthesize something
+**If no journal evidence is found:**
+- Use the entity type, entity name, facet, and current description
+- Produce a generic but useful sentence
+- Never leave the response empty
 
-## Output
-
-Return ONLY the description sentence. No preamble, no explanation, no quotes.
-Conclude with the built-in finish tool (`FinishTool`) — this talent has no
-`emit_final`; the description sentence is your final response.
+Return only one plain sentence.

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import time
 import uuid
@@ -1071,16 +1070,12 @@ def generate_description(facet_name: str) -> Any:
             detail="Type and name are required",
         )
 
-    # Check for Google API key
-    api_key = os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        return error_response(
-            PROVIDER_KEY_MISSING,
-            detail="GOOGLE_API_KEY not set",
-        )
-
     try:
         from solstone.convey.utils import spawn_agent
+
+        provider_error = _entity_describe_generate_readiness_error()
+        if provider_error is not None:
+            return provider_error
 
         # Build concise prompt - agent has detailed instructions
         current_desc = current_description or "(none)"
@@ -1094,7 +1089,6 @@ def generate_description(facet_name: str) -> Any:
         use_id = spawn_agent(
             prompt=prompt,
             name="entities:entity_describe",
-            provider="google",
         )
         if use_id is None:
             return error_response(
@@ -1106,6 +1100,24 @@ def generate_description(facet_name: str) -> Any:
 
     except Exception as e:
         return error_response(AGENT_UNAVAILABLE, detail=str(e))
+
+
+def _entity_describe_generate_readiness_error() -> Any | None:
+    from solstone.think.models import resolve_provider
+    from solstone.think.providers.state import readiness_for_provider
+    from solstone.think.talent import key_to_context
+
+    context = key_to_context("entities:entity_describe")
+    provider, model = resolve_provider(context, "generate")
+    readiness = readiness_for_provider(provider, "generate", model)
+    if readiness.status not in {"blocked", "unhealthy"}:
+        return None
+
+    detail = readiness.message or (
+        f"{provider} generate provider is not ready"
+        + (f" ({readiness.reason_code})" if readiness.reason_code else "")
+    )
+    return error_response(PROVIDER_KEY_MISSING, detail=detail)
 
 
 @entities_bp.route("/api/<facet_name>/assist", methods=["POST"])
