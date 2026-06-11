@@ -27,7 +27,7 @@ def test_rename_unified_and_remove_triage_idempotent(tmp_path, monkeypatch):
                 "contexts": {
                     "talent.system.unified": {"provider": "openai"},
                     "talent.system.triage": {"provider": "anthropic"},
-                    "talent.system.digest": {"provider": "google"},
+                    "talent.system.morning_briefing": {"provider": "google"},
                 }
             }
         },
@@ -43,7 +43,7 @@ def test_rename_unified_and_remove_triage_idempotent(tmp_path, monkeypatch):
     assert "talent.system.unified" not in data["providers"]["contexts"]
     assert "talent.system.triage" not in data["providers"]["contexts"]
     assert data["providers"]["contexts"]["talent.system.chat"] == {"provider": "openai"}
-    assert data["providers"]["contexts"]["talent.system.digest"] == {
+    assert data["providers"]["contexts"]["talent.system.morning_briefing"] == {
         "provider": "google"
     }
 
@@ -94,7 +94,7 @@ def test_noop_when_no_legacy_provider_contexts_present(tmp_path, monkeypatch):
             "providers": {
                 "contexts": {
                     "talent.system.chat": {"provider": "openai"},
-                    "talent.system.digest": {"provider": "google"},
+                    "talent.system.morning_briefing": {"provider": "google"},
                 }
             }
         },

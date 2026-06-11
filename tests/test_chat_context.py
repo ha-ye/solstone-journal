@@ -16,7 +16,6 @@ from solstone.convey.sol_initiated.copy import KIND_SOL_CHAT_REQUEST
 from solstone.think.utils import CorruptConfigError
 
 TEMPLATE_VAR_KEYS = {
-    "digest_contents",
     "active_talents",
     "trigger_kind",
     "trigger_context",
@@ -101,16 +100,11 @@ def _chat_prompt_frontmatter() -> dict:
     return metadata
 
 
-def test_chat_context_injects_digest_tail_trigger_location_and_routine_state(
+def test_chat_context_injects_tail_trigger_location_and_routine_state(
     monkeypatch, tmp_path
 ):
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    (journal / "identity").mkdir(parents=True, exist_ok=True)
-    (journal / "identity" / "digest.md").write_text(
-        "Digest notes for today.",
-        encoding="utf-8",
-    )
     _write_journal_config(
         journal,
         {
@@ -195,7 +189,6 @@ def test_chat_context_injects_digest_tail_trigger_location_and_routine_state(
     )
 
     template_vars = _assert_template_vars_result(result)
-    assert template_vars["digest_contents"] == "Digest notes for today."
     assert result["messages"] == [
         {"role": "user", "content": "Please brief me for my meeting"},
         {"role": "assistant", "content": "I can help with that."},
@@ -212,6 +205,13 @@ def test_chat_context_injects_digest_tail_trigger_location_and_routine_state(
     assert "Morning Briefing" in template_vars["active_routines"]
     assert "Routine Suggestion Eligible" in template_vars["routine_suggestion"]
     assert "meeting-prep" in template_vars["routine_suggestion"]
+
+
+def test_chat_prompt_has_no_digest_slot():
+    prompt = _chat_prompt_text()
+
+    assert "$digest_contents" not in prompt
+    assert "digest" not in prompt.lower()
 
 
 def test_chat_context_owner_message_anchors_empty_tail(monkeypatch, tmp_path):
@@ -944,7 +944,6 @@ def test_chat_context_enrichment_errors_are_graceful(monkeypatch, tmp_path):
     def _boom(*_args, **_kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(module, "_load_digest_contents", _boom)
     monkeypatch.setattr(module, "read_chat_tail", _boom)
     monkeypatch.setattr(module, "reduce_chat_state", _boom)
     monkeypatch.setattr("solstone.think.routines.get_routine_state", _boom)
@@ -965,7 +964,6 @@ def test_chat_context_enrichment_errors_are_graceful(monkeypatch, tmp_path):
     )
 
     template_vars = _assert_template_vars_result(result)
-    assert template_vars["digest_contents"] == ""
     assert template_vars["active_talents"] == ""
     assert template_vars["active_routines"] == ""
     assert template_vars["routine_suggestion"] == ""

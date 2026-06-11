@@ -584,7 +584,6 @@ def test_supervisor_registers_maintenance_before_scheduler_init(tmp_path, monkey
     monkeypatch.setattr(mod, "start_callosum_in_process", lambda: None)
     monkeypatch.setattr(mod, "stop_callosum_in_process", lambda **_kwargs: None)
     monkeypatch.setattr(mod, "is_local_provider_needed", lambda: False)
-    monkeypatch.setattr(mod, "_maybe_submit_startup_digest", lambda *, no_cortex: None)
     monkeypatch.setattr(mod, "signal_ready", lambda: None)
     monkeypatch.setattr(mod, "clear_ready", lambda: None)
     monkeypatch.setattr(mod, "_sd_notify", lambda _state: None)

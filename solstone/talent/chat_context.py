@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime
-from pathlib import Path
 from typing import Any
 
 from solstone.convey.chat_stream import read_chat_tail, reduce_chat_state
@@ -23,7 +22,6 @@ from solstone.talent._routine_context import (
     render_active_routines,
     render_routine_suggestion,
 )
-from solstone.think.utils import get_journal
 
 logger = logging.getLogger(__name__)
 STOP_AND_REPORT_CONTRACT = (
@@ -97,7 +95,6 @@ def pre_process(context: dict) -> dict:
     trigger_kind, trigger_payload = _normalize_trigger(context)
     day = _resolve_day(context, trigger_payload)
     template_vars = {
-        "digest_contents": "",
         "active_talents": "",
         "trigger_kind": "",
         "trigger_context": "",
@@ -111,11 +108,6 @@ def pre_process(context: dict) -> dict:
         "routine_suggestion": "",
     }
     result = {"template_vars": template_vars}
-
-    try:
-        template_vars["digest_contents"] = _load_digest_contents()
-    except Exception:
-        logger.debug("Digest enrichment failed", exc_info=True)
 
     messages: list[dict[str, str]] = []
     source_context = ""
@@ -200,13 +192,6 @@ def pre_process(context: dict) -> dict:
         logger.debug("Routine suggestion eligibility check failed", exc_info=True)
 
     return result
-
-
-def _load_digest_contents() -> str:
-    digest_path = Path(get_journal()) / "identity" / "digest.md"
-    if not digest_path.exists():
-        return ""
-    return digest_path.read_text(encoding="utf-8").strip()
 
 
 def _normalize_trigger(context: dict) -> tuple[str | None, dict[str, Any]]:

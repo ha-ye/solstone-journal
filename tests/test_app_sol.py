@@ -149,16 +149,6 @@ def test_get_talent_configs_system_agents_have_metadata(fixture_journal):
     assert "color" in exec_talent
 
 
-def test_digest_talent_discovery_and_schedule_exclusion(fixture_journal):
-    agents = get_talent_configs(type="cogitate")
-
-    assert "digest" in agents
-    assert agents["digest"]["schedule"] == "none"
-
-    for schedule in ("daily", "segment", "activity", "weekly"):
-        assert "digest" not in get_talent_configs(type="cogitate", schedule=schedule)
-
-
 def test_get_talent_configs_excludes_private_apps(
     fixture_journal, tmp_path, monkeypatch
 ):

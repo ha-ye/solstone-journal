@@ -79,7 +79,6 @@ responses. Nothing gets sent without their review.
 """
 
 _AWARENESS_MD = "not yet updated\n"
-_DIGEST_MD = "not yet generated\n"
 
 STEWARD_SECTION_STATUS = "## Status"
 STEWARD_SECTION_ATTENTION = "## Needs your attention"
@@ -280,7 +279,6 @@ def ensure_identity_directory() -> Path:
     defaults = {
         "partner.md": _PARTNER_MD,
         "awareness.md": _AWARENESS_MD,
-        "digest.md": _DIGEST_MD,
         "health.md": "\n".join(
             [
                 STEWARD_SECTION_STATUS,

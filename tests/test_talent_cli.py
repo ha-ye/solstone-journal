@@ -323,17 +323,17 @@ def test_show_prompt_context_day_format_validation(capsys):
 
 def test_show_effective_prompt_read_scope_matches_assembled_prompt(capsys):
     """Cogitate prompt view renders the same assembled prompt provider receives."""
-    config = get_talent("digest")
+    config = get_talent("awareness_tender")
     body, system_instruction = assemble_prompt(config, sol_tool_name="sol")
 
-    show_effective_prompt("digest", full=True)
+    show_effective_prompt("awareness_tender", full=True)
     output = capsys.readouterr().out
 
     assert system_instruction is not None
     assert system_instruction.startswith(COGITATE_RUNTIME_PREAMBLE)
     assert "through the `sol` tool" in system_instruction
     assert "Limit filesystem reads to today's segment dir" in system_instruction
-    assert "# Digest" in body
+    assert "# Awareness Tender" in body
     assert system_instruction in output
     assert body in output
     assert "tier: normal" in output
@@ -398,7 +398,7 @@ def test_inventory_rows_normalize_and_lockstep_with_config():
     # is no longer part of the cogitate inventory.
     assert "steward" not in by_name
     assert by_name["naming"]["access_tier"] == "normal"
-    assert by_name["digest"]["schedule"] == by_name["naming"]["schedule"] == "-"
+    assert by_name["naming"]["schedule"] == "-"
 
 
 def test_tier_inventory_matches_capabilities():

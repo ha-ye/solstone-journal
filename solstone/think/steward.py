@@ -680,7 +680,7 @@ def _attention_bullets(
     if "daily_agents_missing" in kinds:
         bullets.append(
             "- **Pipeline gap:** Daily agents didn't run yesterday despite "
-            "journal data. Facet newsletters and digest may be missing."
+            "journal data. Facet newsletters may be missing."
         )
 
     seg = next((a for a in anomalies if a.get("kind") == "segment_runs_missing"), None)

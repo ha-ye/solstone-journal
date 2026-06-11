@@ -170,32 +170,3 @@ def test_wait_for_convey_ready_convey_died(caplog):
 # require_solstone branch tests (down/tempfail/up/skip) live with the function in
 # tests/test_think_utils.py::TestSolstoneGuard — they test a utils helper, not
 # supervisor startup, and were a duplicate set here.
-
-
-def test_startup_submits_digest_once():
-    mod = importlib.reload(importlib.import_module("solstone.think.supervisor"))
-    submit = mock.Mock()
-
-    mod._task_queue = SimpleNamespace(submit=submit)
-    mod._is_remote_mode = False
-    mod._digest_submitted_this_boot = False
-
-    mod._maybe_submit_startup_digest(no_cortex=False)
-    mod._maybe_submit_startup_digest(no_cortex=False)
-
-    submit.assert_called_once_with(["journal", "identity", "digest"])
-    assert mod._digest_submitted_this_boot is True
-
-
-def test_startup_skips_digest_when_no_cortex():
-    mod = importlib.reload(importlib.import_module("solstone.think.supervisor"))
-    submit = mock.Mock()
-
-    mod._task_queue = SimpleNamespace(submit=submit)
-    mod._is_remote_mode = False
-    mod._digest_submitted_this_boot = False
-
-    mod._maybe_submit_startup_digest(no_cortex=True)
-
-    submit.assert_not_called()
-    assert mod._digest_submitted_this_boot is False

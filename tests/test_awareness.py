@@ -572,9 +572,8 @@ class TestEnsureIdentityDirectory:
         awareness_content = (identity_dir / "awareness.md").read_text()
         assert awareness_content.strip() == "not yet updated"
 
-        assert (identity_dir / "digest.md").exists()
-        digest_content = (identity_dir / "digest.md").read_text()
-        assert digest_content.strip() == "not yet generated"
+        assert not (identity_dir / "digest.md").exists()
+        assert (identity_dir / "health.md").exists()
 
     def test_idempotent_does_not_overwrite(self, tmp_path):
         from solstone.think.identity import ensure_identity_directory

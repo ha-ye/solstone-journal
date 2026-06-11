@@ -240,7 +240,6 @@ def test_graceful_shutdown_calls_stop_process_for_each_managed_proc(
     monkeypatch.setattr(mod, "start_callosum_in_process", lambda: None)
     monkeypatch.setattr(mod, "stop_callosum_in_process", lambda **_kwargs: None)
     monkeypatch.setattr(mod, "wait_for_convey_ready", lambda _proc: True)
-    monkeypatch.setattr(mod, "_maybe_submit_startup_digest", lambda *, no_cortex: None)
 
     class FakeCallosumConnection:
         def __init__(self, *args, **kwargs):
@@ -304,7 +303,6 @@ def _run_supervisor_main_for_shutdown_knobs(tmp_path, monkeypatch, *, argv):
     monkeypatch.setattr(mod.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(mod, "start_callosum_in_process", lambda: None)
     monkeypatch.setattr(mod, "is_local_provider_needed", lambda: False)
-    monkeypatch.setattr(mod, "_maybe_submit_startup_digest", lambda *, no_cortex: None)
 
     class FakeCallosumConnection:
         def __init__(self, *args, **kwargs):

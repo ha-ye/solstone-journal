@@ -174,7 +174,7 @@ def test_run_weekly_prompts_persists_cogitate_with_output(tmp_path, monkeypatch)
     captured = _patch_weekly_runtime(
         monkeypatch,
         tmp_path / "journal",
-        {"digest": {"type": "cogitate", "priority": 50, "output": "md"}},
+        {"naming": {"type": "cogitate", "priority": 50, "output": "md"}},
     )
 
     success, failed, failed_names = run_weekly_prompts(
@@ -186,7 +186,7 @@ def test_run_weekly_prompts_persists_cogitate_with_output(tmp_path, monkeypatch)
     assert (success, failed, failed_names) == (1, 0, [])
     assert len(captured) == 1
     _prompt, name, config = captured[0]
-    assert name == "digest"
+    assert name == "naming"
     assert config["output"] == "md"
     assert "refresh" not in config
 
@@ -197,7 +197,7 @@ def test_run_weekly_prompts_refreshes_cogitate_with_output(tmp_path, monkeypatch
     captured = _patch_weekly_runtime(
         monkeypatch,
         tmp_path / "journal",
-        {"digest": {"type": "cogitate", "priority": 50, "output": "md"}},
+        {"naming": {"type": "cogitate", "priority": 50, "output": "md"}},
     )
 
     success, failed, failed_names = run_weekly_prompts(
@@ -209,7 +209,7 @@ def test_run_weekly_prompts_refreshes_cogitate_with_output(tmp_path, monkeypatch
     assert (success, failed, failed_names) == (1, 0, [])
     assert len(captured) == 1
     _prompt, name, config = captured[0]
-    assert name == "digest"
+    assert name == "naming"
     assert config["output"] == "md"
     assert config["refresh"] is True
 

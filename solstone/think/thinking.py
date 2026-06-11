@@ -307,7 +307,7 @@ def _drain_priority_batch(
 
     Returns:
         Tuple of (success_count, failed_count, failed_names) where
-        failed_names contains descriptions like "digest (error)" or
+        failed_names contains descriptions like "flow (error)" or
         "recap/work (timeout)".
     """
     if not spawned:
@@ -1279,7 +1279,7 @@ def run_daily_prompts(
 
     Returns:
         Tuple of (success_count, fail_count, failed_names, applicable_units) where
-        failed_names contains descriptions like "digest (error)" and
+        failed_names contains descriptions like "flow (error)" and
         applicable_units contains (name, facet) daily units that survived
         structural filters.
     """
