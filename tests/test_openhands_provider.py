@@ -623,12 +623,12 @@ def test_run_cogitate_passes_outbound_approval_to_policy(
         ),
         (
             "exec",
-            "outbound",
+            "normal",
             {"sol", "read_file", "list_directory", "glob", "grep_search"},
             ["FinishTool"],
         ),
         (
-            "reflection",
+            "read",
             "normal",
             {"sol", "read_file", "list_directory", "glob", "grep_search"},
             ["FinishTool"],
@@ -657,13 +657,13 @@ def test_run_cogitate_real_talent_access_tiers_register_expected_tools(
     assert conversation.agent.include_default_tools == expected_default_tools
 
 
-def test_run_cogitate_exec_outbound_tool_surface_matches_normal_talent(
+def test_run_cogitate_exec_tool_surface_matches_normal_talent(
     fake_openhands,
     monkeypatch,
     tmp_path,
 ):
     exec_config = _real_talent_config(monkeypatch, tmp_path, "exec")
-    normal_config = _real_talent_config(monkeypatch, tmp_path, "reflection")
+    normal_config = _real_talent_config(monkeypatch, tmp_path, "read")
 
     exec_events: list[dict] = []
     _result, _conversation, exec_tool_names, _registered = _run_and_capture_tool_state(
@@ -674,7 +674,7 @@ def test_run_cogitate_exec_outbound_tool_surface_matches_normal_talent(
         _run_and_capture_tool_state(fake_openhands, normal_config, normal_events)
     )
 
-    assert exec_config["access_tier"] == "outbound"
+    assert exec_config["access_tier"] == "normal"
     assert normal_config["access_tier"] == "normal"
     assert exec_tool_names == normal_tool_names
 

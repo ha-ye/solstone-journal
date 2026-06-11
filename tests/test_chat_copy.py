@@ -43,12 +43,15 @@ def _extract_object_literal(text: str, marker: str) -> dict:
 
 def test_talent_label_for_all_known_combinations():
     expected = {
+        ("read", "running"): chat_copy.TALENT_LABEL_READ_RUNNING,
+        ("read", "finished"): chat_copy.TALENT_LABEL_READ_FINISHED,
+        ("read", "errored"): chat_copy.TALENT_LABEL_READ_ERRORED,
         ("exec", "running"): chat_copy.TALENT_LABEL_EXEC_RUNNING,
         ("exec", "finished"): chat_copy.TALENT_LABEL_EXEC_FINISHED,
         ("exec", "errored"): chat_copy.TALENT_LABEL_EXEC_ERRORED,
-        ("reflection", "running"): chat_copy.TALENT_LABEL_REFLECTION_RUNNING,
-        ("reflection", "finished"): chat_copy.TALENT_LABEL_REFLECTION_FINISHED,
-        ("reflection", "errored"): chat_copy.TALENT_LABEL_REFLECTION_ERRORED,
+        ("support", "running"): chat_copy.TALENT_LABEL_SUPPORT_RUNNING,
+        ("support", "finished"): chat_copy.TALENT_LABEL_SUPPORT_FINISHED,
+        ("support", "errored"): chat_copy.TALENT_LABEL_SUPPORT_ERRORED,
     }
 
     for (target, status), label in expected.items():
@@ -101,15 +104,20 @@ def test_js_parity():
     js_labels = _extract_object_literal(text, "const TALENT_LABELS = ")
 
     assert js_labels == {
+        "read": {
+            "running": chat_copy.TALENT_LABEL_READ_RUNNING,
+            "finished": chat_copy.TALENT_LABEL_READ_FINISHED,
+            "errored": chat_copy.TALENT_LABEL_READ_ERRORED,
+        },
         "exec": {
             "running": chat_copy.TALENT_LABEL_EXEC_RUNNING,
             "finished": chat_copy.TALENT_LABEL_EXEC_FINISHED,
             "errored": chat_copy.TALENT_LABEL_EXEC_ERRORED,
         },
-        "reflection": {
-            "running": chat_copy.TALENT_LABEL_REFLECTION_RUNNING,
-            "finished": chat_copy.TALENT_LABEL_REFLECTION_FINISHED,
-            "errored": chat_copy.TALENT_LABEL_REFLECTION_ERRORED,
+        "support": {
+            "running": chat_copy.TALENT_LABEL_SUPPORT_RUNNING,
+            "finished": chat_copy.TALENT_LABEL_SUPPORT_FINISHED,
+            "errored": chat_copy.TALENT_LABEL_SUPPORT_ERRORED,
         },
     }
     assert (

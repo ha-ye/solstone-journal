@@ -260,17 +260,17 @@ def test_http_error_message_falls_back_for_non_json_body() -> None:
                 "requested_task": " find \n the Adrian quote ",
             },
             False,
-            "Looking in your journal… (find the Adrian quote)",
+            "Making that change… (find the Adrian quote)",
         ),
         (
             {
                 "tract": "chat",
                 "event": "sol_message",
-                "requested_target": "reflection",
+                "requested_target": "read",
                 "requested_task": "patterns this month",
             },
             False,
-            "Reflecting… (patterns this month)",
+            "Reading your journal… (patterns this month)",
         ),
         (
             {"tract": "chat", "event": "talent_finished", "use_id": "talent-1"},
@@ -294,7 +294,7 @@ def test_render_progress_truncates_task_suffix_to_100_chars() -> None:
         verbose=False,
     )
 
-    assert line == f"Looking in your journal… ({'x' * 99}…)"
+    assert line == f"Making that change… ({'x' * 99}…)"
 
 
 def test_render_progress_truncates_verbose_thinking_to_200_chars() -> None:

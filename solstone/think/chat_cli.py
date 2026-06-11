@@ -17,8 +17,7 @@ from typing import Any
 
 from solstone.apps.chat.copy import (
     CHAT_LIVENESS_THINKING,
-    TALENT_LABEL_EXEC_RUNNING,
-    TALENT_LABEL_REFLECTION_RUNNING,
+    talent_label_for,
 )
 from solstone.convey.chat_stream import read_chat_events
 from solstone.convey.provider_readiness import chat_view
@@ -169,13 +168,11 @@ def _render_progress(event: dict, *, verbose: bool) -> str | None:
 
     if tract == "chat" and event_name == "sol_message":
         target = event.get("requested_target")
-        if target == "exec":
-            return TALENT_LABEL_EXEC_RUNNING + _task_suffix(event.get("requested_task"))
-        if target == "reflection":
-            return TALENT_LABEL_REFLECTION_RUNNING + _task_suffix(
-                event.get("requested_task")
-            )
-        return None
+        try:
+            label = talent_label_for(target, "running")
+        except ValueError:
+            return None
+        return label + _task_suffix(event.get("requested_task"))
 
     if tract == "chat" and event_name == "talent_finished":
         return COMPOSING_MESSAGE

@@ -260,7 +260,7 @@ def test_chat_day_renders_owner_language_talent_labels(journal_copy, monkeypatch
     _set_today(monkeypatch, "20990103")
     env = _make_env(journal_copy, monkeypatch)
 
-    for index, target in enumerate(("exec", "reflection")):
+    for index, target in enumerate(("read", "exec", "support")):
         append_chat_event(
             "talent_spawned",
             ts=_ms(2099, 1, 2, 10 + index, 0),
@@ -288,7 +288,7 @@ def test_chat_day_renders_owner_language_talent_labels(journal_copy, monkeypatch
     html = response.get_data(as_text=True)
 
     assert response.status_code == 200
-    for target in ("exec", "reflection"):
+    for target in ("read", "exec", "support"):
         for status in ("running", "finished", "errored"):
             label = chat_copy.talent_label_for(target, status)
             assert str(markupsafe_escape(label)) in html

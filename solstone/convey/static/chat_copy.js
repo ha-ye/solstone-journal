@@ -3,15 +3,20 @@
 
 (function () {
   const TALENT_LABELS = {
-    "exec": {
-      "running": "Looking in your journal…",
-      "finished": "Looked in your journal",
-      "errored": "Couldn't finish looking in your journal"
+    "read": {
+      "running": "Reading your journal…",
+      "finished": "Read your journal",
+      "errored": "Couldn't finish reading your journal"
     },
-    "reflection": {
-      "running": "Reflecting…",
-      "finished": "Reflected",
-      "errored": "Couldn't finish reflecting"
+    "exec": {
+      "running": "Making that change…",
+      "finished": "Made the change",
+      "errored": "Couldn't finish the change"
+    },
+    "support": {
+      "running": "Reaching sol pbc…",
+      "finished": "Reached sol pbc",
+      "errored": "Couldn't reach sol pbc"
     }
   };
 

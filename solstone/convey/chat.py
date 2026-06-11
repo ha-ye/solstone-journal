@@ -729,6 +729,12 @@ def _spawn_chat_generate(action: dict[str, Any]) -> ChatSpawnResult:
     return ChatSpawnResult(ok=True)
 
 
+DISPATCH_SPAWN_NAMES = {
+    # App talents spawn under "app:talent"; dispatch vocabulary stays bare.
+    "support": "support:support",
+}
+
+
 def _spawn_talent(action: dict[str, Any]) -> bool:
     from solstone.convey.utils import spawn_agent
 
@@ -745,10 +751,11 @@ def _spawn_talent(action: dict[str, Any]) -> bool:
         "chat_parent_use_id": action["logical_use_id"],
         "outbound_approval": action.get("outbound_approval"),
     }
+    spawn_name = DISPATCH_SPAWN_NAMES.get(action["target"], action["target"])
     try:
         use_id = spawn_agent(
             prompt=prompt,
-            name=action["target"],
+            name=spawn_name,
             provider=None,
             config=config,
             use_id=action["use_id"],
@@ -1172,16 +1179,22 @@ def _active_talent_count_for_today_locked() -> int:
 
 # target field — accepted aliases → canonical
 TARGET_ALIASES = {
+    "read": "read",
+    "Read": "read",
+    "READ": "read",
     "exec": "exec",
     "execute": "exec",
     "Exec": "exec",
     "EXEC": "exec",
-    "reflection": "reflection",
-    "Reflection": "reflection",
-    "REFLECTION": "reflection",
-    "reflect": "reflection",
+    "support": "support",
+    "Support": "support",
+    "SUPPORT": "support",
+    "reflection": "read",
+    "Reflection": "read",
+    "REFLECTION": "read",
+    "reflect": "read",
 }
-# Values outside this set still raise ValueError.
+# Values outside read/exec/support still raise ValueError.
 
 # LOCKED — see scope doc.
 # Spec amendment required to expand. No fuzzy matching, no LLM classification.
@@ -1220,7 +1233,7 @@ CLOSER_STRIP_PATTERNS = {
 #   1044 message non-string/non-null : keep      — field-type contract.
 #   1050 talent_request non-dict/null: keep      — spec call-out: keep strict.
 #   1053 target non-string           : keep      — aliases apply only after type check.
-#   1055 target unknown              : coerce    — TARGET_ALIASES, then raise if unresolved.
+#   1055 target unknown              : coerce    — TARGET_ALIASES, then raise if unresolved outside read/exec/support.
 #   1058 task non-empty              : coerce    — strip whitespace; empty-after-strip raises.
 #   1079 context odd shape           : ratified  — d03aa3ad shipped prose fallback; no new behavior.
 # Sibling sweep: chat_stream.py ValueErrors guard the state↔disk JSONL/path seam, out of scope.
@@ -1260,7 +1273,7 @@ def _parse_chat_result(result: Any, use_id: str | None = None) -> dict[str, Any]
             target,
             use_id,
         )
-    if target not in {"exec", "reflection"}:
+    if target not in {"read", "exec", "support"}:
         raise ValueError(f"unknown talent target: {target}")
     task = talent_request.get("task")
     if not isinstance(task, str):

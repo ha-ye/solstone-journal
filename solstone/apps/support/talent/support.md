@@ -31,8 +31,22 @@ These are non-negotiable:
 - `sol call support feedback --body "..." --submit --yes` — Submit feedback (dry-run preview by default; pass `--submit` to actually send). The submit only goes through when this run carries owner send-approval.
 - `sol call support announcements` — Check for product updates / known issues
 - `sol call support diagnose` — Show journal-host diagnostics (read-only — no ticket sent)
+- `sol call awareness status` — Check system state / active attention items
+- `journal health` — Show the journal's deterministic health narrative (read-only)
 
 `--yes` keeps the subprocess non-interactive. It is not the consent gate; the runtime decides whether a send command is permitted.
+
+## Triage Before You File
+
+Before drafting a ticket, gather the right diagnostics so support arrives with
+state, not just symptoms:
+- `sol call support diagnose` — journal-host diagnostics (version, OS, services)
+- `journal health` — the journal's own health narrative
+- `sol call awareness status` — active system attention items
+- `sol call support announcements` — check for a known issue first, to avoid a duplicate
+
+Attach the relevant *values* to the draft — never the journal content behind
+them. This is the same consent boundary as everything else here.
 
 ## How to Handle Support Requests
 

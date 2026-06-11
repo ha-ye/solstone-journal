@@ -1251,6 +1251,85 @@ def test_exec_dispatch_appends_sol_message_and_spawns_talent_real_path(
         assert spawned_events[-1]["use_id"] in chat._active_talents
 
 
+def test_support_dispatch_spawns_app_talent_but_keeps_bare_event_name(
+    tmp_path, monkeypatch
+):
+    import solstone.convey.chat as chat
+
+    _setup_journal(tmp_path, monkeypatch)
+    _reset_chat_state(chat)
+    _install_fake_timers(monkeypatch)
+
+    spawn_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_cortex_event", lambda *args, **kwargs: None
+    )
+
+    def fake_spawn_agent(prompt, name, provider=None, config=None, use_id=None):
+        spawn_calls.append(
+            {
+                "prompt": prompt,
+                "name": name,
+                "provider": provider,
+                "config": config,
+                "use_id": use_id,
+            }
+        )
+        return use_id
+
+    monkeypatch.setattr("solstone.convey.utils.spawn_agent", fake_spawn_agent)
+
+    with chat._state_lock:
+        start_info = chat._activate_current_locked(
+            "1713625600000",
+            {"type": "owner_message", "message": "help"},
+            {"app": "sol", "path": "/app/sol", "facet": "work"},
+            outbound_approval="approval-token",
+        )
+
+    raw_use_id = start_info["raw_use_id"]
+    chat._on_cortex_finish(
+        {
+            "use_id": raw_use_id,
+            "result": json.dumps(
+                {
+                    "message": "I'll get support on that.",
+                    "notes": "need support",
+                    "talent_request": {
+                        "target": "support",
+                        "task": "File a bug report",
+                        "context": json.dumps({"severity": "medium"}),
+                    },
+                }
+            ),
+        }
+    )
+
+    events = read_chat_events(chat._today_day())
+    sol_messages = [event for event in events if event["kind"] == "sol_message"]
+    spawned_events = [event for event in events if event["kind"] == "talent_spawned"]
+
+    assert sol_messages[-1]["requested_target"] == "support"
+    assert spawned_events[-1]["name"] == "support"
+    assert spawned_events[-1]["task"] == "File a bug report"
+    assert len(spawn_calls) == 1
+    spawn_call = spawn_calls[0]
+    assert spawn_call["name"] == "support:support"
+    assert spawn_call["use_id"] == spawned_events[-1]["use_id"]
+    assert spawn_call["config"] == {
+        "app": "sol",
+        "path": "/app/sol",
+        "facet": "work",
+        "chat_parent_use_id": "1713625600000",
+        "outbound_approval": "approval-token",
+    }
+    assert "File a bug report" in str(spawn_call["prompt"])
+    assert "Target: support" in str(spawn_call["prompt"])
+    with chat._state_lock:
+        active = chat._active_talents[spawned_events[-1]["use_id"]]
+        assert active["target"] == "support"
+
+
 def test_watchdog_refreshed_by_progress_event(tmp_path, monkeypatch):
     import solstone.convey.chat as chat
 
@@ -1865,24 +1944,25 @@ def test_on_cortex_error_unreserved_silent(tmp_path, monkeypatch, caplog):
         assert chat._reserved_use_ids == {}
 
 
-def test_parse_chat_result_accepts_reflection_target():
+@pytest.mark.parametrize("target", ("read", "exec", "support"))
+def test_parse_chat_result_accepts_dispatch_targets(target):
     import solstone.convey.chat as chat
 
     parsed = chat._parse_chat_result(
         {
             "message": "Let me think about that.",
-            "notes": "dispatch reflection",
+            "notes": f"dispatch {target}",
             "talent_request": {
-                "target": "reflection",
-                "task": "Reflect on the last week",
+                "target": target,
+                "task": "Handle the request",
                 "context": {"facet": "work"},
             },
         }
     )
 
     assert parsed["talent_request"] == {
-        "target": "reflection",
-        "task": "Reflect on the last week",
+        "target": target,
+        "task": "Handle the request",
         "context": {"facet": "work"},
     }
     # Exercises the scope-mandated defensive dict shim.
@@ -1962,7 +2042,7 @@ def test_parse_chat_result_rejects_unknown_target():
         chat._parse_chat_result(
             {
                 "message": "Let me think about that.",
-                "notes": "dispatch reflection",
+                "notes": "dispatch unknown",
                 "talent_request": {"target": "foo", "task": "Reflect on the week"},
             }
         )
@@ -2006,22 +2086,23 @@ def test_parse_chat_result_coerces_target_case_variants(raw_target, canonical_ta
     assert parsed["talent_request"]["target"] == canonical_target
 
 
-def test_parse_chat_result_coerces_reflect_synonym():
+@pytest.mark.parametrize("raw_target", ("reflection", "reflect"))
+def test_parse_chat_result_coerces_reflection_backcompat_to_read(raw_target):
     import solstone.convey.chat as chat
 
     parsed = chat._parse_chat_result(
         {
             "message": "I am looking into that.",
-            "notes": "need reflection",
+            "notes": "need read",
             "talent_request": {
-                "target": "reflect",
+                "target": raw_target,
                 "task": "Reflect on the week",
                 "context": None,
             },
         }
     )
 
-    assert parsed["talent_request"]["target"] == "reflection"
+    assert parsed["talent_request"]["target"] == "read"
 
 
 def test_parse_chat_result_rejects_unknown_target_after_alias_lookup():
@@ -2169,7 +2250,7 @@ def test_parse_chat_result_keeps_strict_on_non_string_notes():
         )
 
 
-def test_reflection_dispatch_spawns_reflection_talent(tmp_path, monkeypatch):
+def test_read_dispatch_spawns_read_talent(tmp_path, monkeypatch):
     import solstone.convey.chat as chat
 
     _setup_journal(tmp_path, monkeypatch)
@@ -2202,9 +2283,9 @@ def test_reflection_dispatch_spawns_reflection_talent(tmp_path, monkeypatch):
             "result": json.dumps(
                 {
                     "message": "I want to sit with that.",
-                    "notes": "need reflection",
+                    "notes": "need read",
                     "talent_request": {
-                        "target": "reflection",
+                        "target": "read",
                         "task": "Reflect on the week",
                         "context": json.dumps({"facet": "work"}),
                     },
@@ -2214,16 +2295,16 @@ def test_reflection_dispatch_spawns_reflection_talent(tmp_path, monkeypatch):
     )
 
     assert actions[-1]["kind"] == "talent"
-    assert actions[-1]["target"] == "reflection"
+    assert actions[-1]["target"] == "read"
 
     events = read_chat_events(chat._today_day())
     sol_message = next(event for event in events if event["kind"] == "sol_message")
     spawned = next(event for event in events if event["kind"] == "talent_spawned")
-    assert sol_message["requested_target"] == "reflection"
-    assert spawned["name"] == "reflection"
+    assert sol_message["requested_target"] == "read"
+    assert spawned["name"] == "read"
 
 
-def test_reflection_finish_retriggers_chat_like_exec(tmp_path, monkeypatch):
+def test_read_finish_retriggers_chat_like_exec(tmp_path, monkeypatch):
     import solstone.convey.chat as chat
 
     _setup_journal(tmp_path, monkeypatch)
@@ -2251,7 +2332,7 @@ def test_reflection_finish_retriggers_chat_like_exec(tmp_path, monkeypatch):
         }
         chat._active_talents["1713627000001"] = {
             "chat_use_id": "1713627000000",
-            "target": "reflection",
+            "target": "read",
             "task": "Reflect on the week",
             "location": {"app": "sol", "path": "/app/sol", "facet": "work"},
         }
@@ -2261,6 +2342,6 @@ def test_reflection_finish_retriggers_chat_like_exec(tmp_path, monkeypatch):
     finished_events = [
         e for e in read_chat_events(chat._today_day()) if e["kind"] == "talent_finished"
     ]
-    assert finished_events[-1]["name"] == "reflection"
+    assert finished_events[-1]["name"] == "read"
     assert actions[-1]["trigger"]["type"] == "talent_finished"
-    assert actions[-1]["trigger"]["name"] == "reflection"
+    assert actions[-1]["trigger"]["name"] == "read"

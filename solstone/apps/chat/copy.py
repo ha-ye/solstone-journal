@@ -5,12 +5,15 @@
 
 # fmt: off
 # T1.3 — owner-language talent labels (CMO subagent voice pass, 2026-05-26)
-TALENT_LABEL_EXEC_RUNNING = "Looking in your journal…"
-TALENT_LABEL_EXEC_FINISHED = "Looked in your journal"
-TALENT_LABEL_EXEC_ERRORED = "Couldn't finish looking in your journal"
-TALENT_LABEL_REFLECTION_RUNNING = "Reflecting…"
-TALENT_LABEL_REFLECTION_FINISHED = "Reflected"
-TALENT_LABEL_REFLECTION_ERRORED = "Couldn't finish reflecting"
+TALENT_LABEL_READ_RUNNING = "Reading your journal…"
+TALENT_LABEL_READ_FINISHED = "Read your journal"
+TALENT_LABEL_READ_ERRORED = "Couldn't finish reading your journal"
+TALENT_LABEL_EXEC_RUNNING = "Making that change…"
+TALENT_LABEL_EXEC_FINISHED = "Made the change"
+TALENT_LABEL_EXEC_ERRORED = "Couldn't finish the change"
+TALENT_LABEL_SUPPORT_RUNNING = "Reaching sol pbc…"
+TALENT_LABEL_SUPPORT_FINISHED = "Reached sol pbc"
+TALENT_LABEL_SUPPORT_ERRORED = "Couldn't reach sol pbc"
 
 # T1.4 — queue depth indicators (lowercase "sol" per system-anatomy canon)
 CHAT_QUEUE_INDICATOR_SINGULAR = "1 message waiting"
@@ -42,12 +45,15 @@ CHAT_THINKING_SETTING_HELP = "sol does some thinking before replying. Choose how
 from typing import Literal
 
 _TALENT_LABELS: dict[tuple[str, str], str] = {
+    ("read", "running"): TALENT_LABEL_READ_RUNNING,
+    ("read", "finished"): TALENT_LABEL_READ_FINISHED,
+    ("read", "errored"): TALENT_LABEL_READ_ERRORED,
     ("exec", "running"): TALENT_LABEL_EXEC_RUNNING,
     ("exec", "finished"): TALENT_LABEL_EXEC_FINISHED,
     ("exec", "errored"): TALENT_LABEL_EXEC_ERRORED,
-    ("reflection", "running"): TALENT_LABEL_REFLECTION_RUNNING,
-    ("reflection", "finished"): TALENT_LABEL_REFLECTION_FINISHED,
-    ("reflection", "errored"): TALENT_LABEL_REFLECTION_ERRORED,
+    ("support", "running"): TALENT_LABEL_SUPPORT_RUNNING,
+    ("support", "finished"): TALENT_LABEL_SUPPORT_FINISHED,
+    ("support", "errored"): TALENT_LABEL_SUPPORT_ERRORED,
 }
 
 

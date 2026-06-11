@@ -368,10 +368,10 @@
       "tier": 2,
       "type": "cogitate"
     },
-    "talent.system.reflection": {
+    "talent.system.read": {
       "disabled": false,
       "group": "Think",
-      "label": "Reflection",
+      "label": "Read",
       "tier": 2,
       "type": "cogitate"
     },
