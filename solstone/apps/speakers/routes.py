@@ -1708,7 +1708,14 @@ def api_cli_backfill() -> Any:
     """Backfill speaker labels synchronously for the CLI."""
     data = request.get_json(silent=True) or {}
     commit = bool(data.get("commit", False))
-    return jsonify(backfill_segments(dry_run=not commit, progress_callback=None))
+    reattribute = bool(data.get("reattribute", False))
+    kwargs: dict[str, Any] = {
+        "dry_run": not commit,
+        "progress_callback": None,
+    }
+    if reattribute:
+        kwargs["reattribute"] = True
+    return jsonify(backfill_segments(**kwargs))
 
 
 @speakers_bp.route("/api/wipe", methods=["POST"])

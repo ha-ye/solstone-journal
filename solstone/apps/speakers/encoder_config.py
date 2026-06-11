@@ -3,11 +3,20 @@
 
 """Encoder-specific calibration constants. Source of truth for owner-separation, acoustic-match, and owner-bootstrap quality thresholds. Changes require CPO spec revision; see cpo/specs/in-flight/speaker-attribution-wespeaker.md."""
 
+import math
+
 ENCODER_ID: str = "wespeaker-resnet34-256"
 
 OWNER_THRESHOLD: float = 0.43
 ACOUSTIC_HIGH: float = 0.36
 ACOUSTIC_MEDIUM: float = 0.22
+
+# Hybrid-cluster and voiceprint-refinement acoustic constants.
+VP_DECAY_LAMBDA: float = math.log(2) / 120
+VP_OUTLIER_MIN_SIMILARITY: float = 0.18
+VP_OUTLIER_MIN_SAMPLES: int = 5
+CC_COVERAGE_GATE: float = 0.45
+CC_CONFIDENCE_GATE: float = 0.28
 
 OWNER_BOOTSTRAP_MIN_STMTS: int = 30
 OWNER_BOOTSTRAP_MIN_MEDIAN_DURATION_S: float = 1.5

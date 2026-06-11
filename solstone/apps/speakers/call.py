@@ -308,6 +308,11 @@ def backfill(
         "--commit",
         help="Persist results. Without this flag the command only reports what would happen.",
     ),
+    reattribute: bool = typer.Option(
+        False,
+        "--reattribute",
+        help="Also re-attribute segments that already have speaker labels (preserves user corrections).",
+    ),
     json_output: bool = typer.Option(
         False, "--json", help="Output full result as JSON."
     ),
@@ -324,7 +329,11 @@ def backfill(
         typer.echo("Scanning journal for segments with embeddings...")
 
     start = time.monotonic()
-    stats = _request("POST", "/app/speakers/api/backfill", json_body={"commit": commit})
+    stats = _request(
+        "POST",
+        "/app/speakers/api/backfill",
+        json_body={"commit": commit, "reattribute": reattribute},
+    )
     elapsed = time.monotonic() - start
 
     if json_output:

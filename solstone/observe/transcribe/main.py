@@ -801,6 +801,26 @@ def process_audio(
                 expected_keys=tuple(embeddings_data.keys()),
             )
             logging.info(f"Saved embeddings: {embeddings_path}")
+            try:
+                from solstone.apps.speakers.candidate_tracker import CandidateTracker
+
+                tracker_day = day or day_from_path(raw_path)
+                tracker_segment = segment or get_segment_key(raw_path)
+                tracker_stream = raw_path.parent.parent.name
+                if tracker_day and tracker_segment and tracker_stream:
+                    CandidateTracker().process_segment(
+                        day=tracker_day,
+                        segment_key=tracker_segment,
+                        stream=tracker_stream,
+                        source=raw_path.stem,
+                        seg_dir=raw_path.parent,
+                    )
+            except Exception:
+                logging.warning(
+                    "Speaker candidate tracking failed for %s",
+                    raw_path,
+                    exc_info=True,
+                )
         else:
             logging.warning(f"No embeddings generated for {raw_path}")
 

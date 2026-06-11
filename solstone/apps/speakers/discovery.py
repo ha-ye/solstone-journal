@@ -523,6 +523,22 @@ def identify_cluster(
             apply_label_patches(seg_dir, patches, allow_insert=True)
             segments_updated += 1
 
+    if vp_batch:
+        try:
+            cluster_centroid = normalize_embedding(
+                np.mean([embedding for embedding, _ in vp_batch], axis=0)
+            )
+            if cluster_centroid is not None:
+                from solstone.apps.speakers.candidate_tracker import CandidateTracker
+
+                CandidateTracker().retroactive_confirm(cluster_centroid, entity_id)
+        except Exception as exc:
+            logger.warning(
+                "Failed to retroactively confirm speaker candidate for %s: %s",
+                entity_id,
+                exc,
+            )
+
     _write_resolved_cluster(cluster_id, entity_id, entity_name)
 
     return {

@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
+import time
 from collections import defaultdict
 from collections.abc import Callable
 from pathlib import Path
@@ -33,7 +35,12 @@ from solstone.apps.speakers._overlap import _read_segment_overlap_fraction
 from solstone.apps.speakers.encoder_config import (
     ACOUSTIC_HIGH,
     ACOUSTIC_MEDIUM,
+    CC_CONFIDENCE_GATE,
+    CC_COVERAGE_GATE,
     NOISY_FLYWHEEL_OVERLAP_MAX,
+    VP_DECAY_LAMBDA,
+    VP_OUTLIER_MIN_SAMPLES,
+    VP_OUTLIER_MIN_SIMILARITY,
 )
 from solstone.apps.speakers.owner import load_owner_centroid
 from solstone.apps.speakers.time import segment_start_ts_ms
@@ -69,6 +76,68 @@ def _routes_helpers():
         _load_segment_speakers,
         _load_entity_voiceprints_file,
     )
+
+
+def _decay_weighted_centroid(
+    embeddings: np.ndarray,
+    metas: list[dict],
+    stream: str,
+    now_ms_value: int,
+    normalize_embedding: Callable[[np.ndarray], np.ndarray | None],
+) -> np.ndarray | None:
+    """Build a same-stream-preferred, decay-weighted centroid."""
+    normalized_rows: list[tuple[np.ndarray, dict]] = []
+    for emb, meta in zip(embeddings, metas):
+        normalized = normalize_embedding(emb)
+        if normalized is None:
+            continue
+        normalized_rows.append((normalized, meta if isinstance(meta, dict) else {}))
+
+    same_stream = [
+        (emb, meta) for emb, meta in normalized_rows if meta.get("stream") == stream
+    ]
+    basis = same_stream if len(same_stream) >= 5 else normalized_rows
+    if not basis:
+        return None
+
+    weighted_sum = np.zeros_like(basis[0][0], dtype=np.float32)
+    total_weight = 0.0
+    for emb, meta in basis:
+        try:
+            added_at_ms = float(meta.get("added_at"))
+        except (TypeError, ValueError):
+            added_at_ms = float(now_ms_value)
+        age_days = max(0.0, (float(now_ms_value) - added_at_ms) / 86_400_000.0)
+        weight = math.exp(-VP_DECAY_LAMBDA * age_days)
+        weighted_sum += emb * weight
+        total_weight += weight
+
+    if total_weight <= 0:
+        return None
+    return normalize_embedding(weighted_sum / total_weight)
+
+
+def _load_integer_speaker_labels(seg_dir: Path, source: str) -> dict[int, int]:
+    """Load integer per-sentence speaker labels from the segment JSONL."""
+    jsonl_path = seg_dir / f"{source}.jsonl"
+    if not jsonl_path.exists():
+        return {}
+
+    labels: dict[int, int] = {}
+    try:
+        with open(jsonl_path, encoding="utf-8") as f:
+            lines = f.readlines()
+    except Exception:
+        return labels
+
+    for sid, line in enumerate(lines[1:], start=1):
+        try:
+            speaker = json.loads(line).get("speaker")
+        except json.JSONDecodeError:
+            continue
+        if isinstance(speaker, int):
+            labels[sid] = speaker
+    return labels
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +421,7 @@ def attribute_segment(
             }
 
         # Load centroids with same-stream preference
+        layer3_now_ms = int(time.time() * 1000)
         voiceprint_centroids: dict[str, np.ndarray] = {}
         for eid in vp_entity_ids:
             result = load_entity_voiceprints_file(eid)
@@ -362,26 +432,81 @@ def attribute_segment(
                 continue
             voiceprint_versions[eid] = len(vp_embs)
 
-            same_stream: list[np.ndarray] = []
-            all_embs: list[np.ndarray] = []
-            for ve, vm in zip(vp_embs, vp_meta):
-                n = normalize_embedding(ve)
-                if n is not None:
-                    all_embs.append(n)
-                    if vm.get("stream") == stream:
-                        same_stream.append(n)
-
-            basis = same_stream if len(same_stream) >= 5 else all_embs
-            if not basis:
-                continue
-            centroid = normalize_embedding(np.mean(basis, axis=0))
+            centroid = _decay_weighted_centroid(
+                vp_embs,
+                vp_meta,
+                stream,
+                layer3_now_ms,
+                normalize_embedding,
+            )
             if centroid is not None:
                 voiceprint_centroids[eid] = centroid
 
         # Build sentence-to-embedding index
         sid_to_idx = {int(s): i for i, s in enumerate(statement_ids)}
 
+        # Hybrid Layer 3: map per-segment integer clusters to entity centroids.
+        integer_speakers = _load_integer_speaker_labels(seg_dir, source)
+        labeled = [
+            sid for sid in unresolved if isinstance(integer_speakers.get(sid), int)
+        ]
+        coverage = len(labeled) / len(unresolved) if unresolved else 0.0
+        if labeled and coverage >= CC_COVERAGE_GATE and voiceprint_centroids:
+            cluster_members: dict[int, list[int]] = defaultdict(list)
+            cluster_embeddings: dict[int, list[np.ndarray]] = defaultdict(list)
+            for sid in labeled:
+                idx = sid_to_idx.get(sid)
+                if idx is None:
+                    continue
+                normalized = normalize_embedding(embeddings[idx])
+                if normalized is None:
+                    continue
+                cluster_id = integer_speakers[sid]
+                cluster_members[cluster_id].append(sid)
+                cluster_embeddings[cluster_id].append(normalized)
+
+            cluster_centroids: dict[int, np.ndarray] = {}
+            for cluster_id, member_embeddings in cluster_embeddings.items():
+                centroid = normalize_embedding(np.mean(member_embeddings, axis=0))
+                if centroid is not None:
+                    cluster_centroids[cluster_id] = centroid
+
+            pairs: list[tuple[float, int, str]] = []
+            for cluster_id, cluster_centroid in cluster_centroids.items():
+                for eid, entity_centroid in voiceprint_centroids.items():
+                    score = float(np.dot(cluster_centroid, entity_centroid))
+                    pairs.append((score, cluster_id, eid))
+
+            assigned: dict[int, tuple[str, float]] = {}
+            used_clusters: set[int] = set()
+            used_entities: set[str] = set()
+            for score, cluster_id, eid in sorted(pairs, reverse=True):
+                if cluster_id in used_clusters or eid in used_entities:
+                    continue
+                assigned[cluster_id] = (eid, score)
+                used_clusters.add(cluster_id)
+                used_entities.add(eid)
+
+            if assigned:
+                mean_confidence = sum(score for _, score in assigned.values()) / len(
+                    assigned
+                )
+                if mean_confidence >= CC_CONFIDENCE_GATE:
+                    for cluster_id, (eid, score) in assigned.items():
+                        if score < ACOUSTIC_MEDIUM:
+                            continue
+                        confidence = "high" if score >= ACOUSTIC_HIGH else "medium"
+                        for sid in cluster_members[cluster_id]:
+                            labels[sid] = {
+                                "sentence_id": sid,
+                                "speaker": eid,
+                                "confidence": confidence,
+                                "method": "acoustic_cluster",
+                            }
+
         for sid in unresolved:
+            if labels[sid]["speaker"] is not None:
+                continue
             idx = sid_to_idx.get(sid)
             if idx is None:
                 continue
@@ -728,16 +853,13 @@ def accumulate_voiceprints(
 
     Returns dict mapping entity_id -> number of new embeddings saved.
     """
-    from solstone.think.entities import (
-        load_existing_voiceprint_keys,
-        save_voiceprints_batch,
-    )
+    from solstone.think.entities import save_voiceprints_batch
 
     (
         load_embeddings_file,
         normalize_embedding,
         _,
-        _,
+        load_entity_voiceprints_file,
     ) = _routes_helpers()
 
     centroid_data = load_owner_centroid()
@@ -773,6 +895,7 @@ def accumulate_voiceprints(
         "structural_single_speaker",
         "structural_setting",
         "acoustic",
+        "acoustic_cluster",
     }
 
     principal = get_journal_principal()
@@ -781,6 +904,7 @@ def accumulate_voiceprints(
     # Collect per-entity
     entity_new: dict[str, list[tuple[np.ndarray, dict]]] = defaultdict(list)
     entity_existing: dict[str, set] = {}
+    entity_existing_centroids: dict[str, tuple[int, np.ndarray | None]] = {}
     saved_counts: dict[str, int] = {}
 
     for label in labels:
@@ -808,9 +932,45 @@ def accumulate_voiceprints(
 
         # Idempotency check
         if speaker not in entity_existing:
-            entity_existing[speaker] = load_existing_voiceprint_keys(speaker)
+            result = load_entity_voiceprints_file(speaker)
+            if result is None:
+                entity_existing[speaker] = set()
+                entity_existing_centroids[speaker] = (0, None)
+            else:
+                existing_embs, existing_meta = result
+                entity_existing[speaker] = {
+                    (
+                        meta.get("day"),
+                        meta.get("segment_key"),
+                        meta.get("source"),
+                        meta.get("sentence_id"),
+                    )
+                    for meta in existing_meta
+                }
+                existing_norms = [
+                    existing
+                    for emb in existing_embs
+                    if (existing := normalize_embedding(emb)) is not None
+                ]
+                existing_centroid = (
+                    normalize_embedding(np.mean(existing_norms, axis=0))
+                    if existing_norms
+                    else None
+                )
+                entity_existing_centroids[speaker] = (
+                    len(existing_embs),
+                    existing_centroid,
+                )
         vp_key = (day, segment_key, source, sid)
         if vp_key in entity_existing[speaker]:
+            continue
+
+        existing_count, existing_centroid = entity_existing_centroids[speaker]
+        if (
+            existing_count >= VP_OUTLIER_MIN_SAMPLES
+            and existing_centroid is not None
+            and float(np.dot(normalized, existing_centroid)) < VP_OUTLIER_MIN_SIMILARITY
+        ):
             continue
 
         metadata = {
@@ -857,6 +1017,7 @@ def backfill_segments(
     *,
     dry_run: bool = False,
     progress_callback: Any | None = None,
+    reattribute: bool = False,
 ) -> dict[str, Any]:
     """Run attribution across all segments with embeddings.
 
@@ -871,6 +1032,8 @@ def backfill_segments(
     progress_callback : callable, optional
         Called with (processed, total, day, stream, segment_key) after
         each segment.
+    reattribute : bool
+        If True, reprocess segments that already have speaker_labels.json.
 
     Returns
     -------
@@ -906,7 +1069,7 @@ def backfill_segments(
     to_process: list[tuple[str, str, str, Path]] = []
     already_labeled = 0
     for day_name, stream_name, seg_key, seg_path in eligible:
-        if _has_speaker_labels(seg_path):
+        if not reattribute and _has_speaker_labels(seg_path):
             already_labeled += 1
         else:
             to_process.append((day_name, stream_name, seg_key, seg_path))

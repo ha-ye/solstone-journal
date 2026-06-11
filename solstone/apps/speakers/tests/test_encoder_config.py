@@ -2,6 +2,8 @@
 # Copyright (c) 2026 sol pbc
 """Test the constant-import contract for encoder_config."""
 
+import math
+
 from solstone.apps.speakers import attribution, encoder_config, owner
 from solstone.observe.transcribe.main import (
     OVERLAP_DETECTOR_ID as MAIN_OVERLAP_DETECTOR_ID,
@@ -14,6 +16,11 @@ def test_locked_constants():
     assert encoder_config.OWNER_THRESHOLD == 0.43
     assert encoder_config.ACOUSTIC_HIGH == 0.36
     assert encoder_config.ACOUSTIC_MEDIUM == 0.22
+    assert encoder_config.VP_DECAY_LAMBDA == math.log(2) / 120
+    assert encoder_config.VP_OUTLIER_MIN_SIMILARITY == 0.18
+    assert encoder_config.VP_OUTLIER_MIN_SAMPLES == 5
+    assert encoder_config.CC_COVERAGE_GATE == 0.45
+    assert encoder_config.CC_CONFIDENCE_GATE == 0.28
     assert encoder_config.OWNER_BOOTSTRAP_MIN_STMTS == 30
     assert encoder_config.OWNER_BOOTSTRAP_MIN_MEDIAN_DURATION_S == 1.5
     assert encoder_config.OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25 == 0.30
@@ -26,6 +33,14 @@ def test_locked_constants():
 def test_attribution_imports_acoustic_constants():
     assert attribution.ACOUSTIC_HIGH is encoder_config.ACOUSTIC_HIGH
     assert attribution.ACOUSTIC_MEDIUM is encoder_config.ACOUSTIC_MEDIUM
+    assert attribution.VP_DECAY_LAMBDA is encoder_config.VP_DECAY_LAMBDA
+    assert (
+        attribution.VP_OUTLIER_MIN_SIMILARITY
+        is encoder_config.VP_OUTLIER_MIN_SIMILARITY
+    )
+    assert attribution.VP_OUTLIER_MIN_SAMPLES is encoder_config.VP_OUTLIER_MIN_SAMPLES
+    assert attribution.CC_COVERAGE_GATE is encoder_config.CC_COVERAGE_GATE
+    assert attribution.CC_CONFIDENCE_GATE is encoder_config.CC_CONFIDENCE_GATE
 
 
 def test_owner_imports_constants():
