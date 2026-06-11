@@ -101,10 +101,25 @@ _parent_death_sigterm_sent = threading.Event()
 
 
 def app_supervised_graceful_budget_s() -> float:
-    """Worst-case non-wedge graceful time after watcher self-SIGTERM."""
+    """Sum of configured app-supervised graceful shutdown step budgets.
+
+    After the parent-death watcher self-SIGTERMs, the graceful path runs these
+    configured caps in finally-block order: handle_shutdown's managed-child
+    reap, task-queue drain, managed child-stop, and Callosum join.
+
+    The assertion that this budget stays below APP_SUPERVISED_SHUTDOWN_CEILING_S
+    guards that configured step budgets leave room under the hard parent-death
+    backstop. It is not a guarantee that wall time can never exceed this sum.
+    In the common non-D-state case, bounded terminate calls (timeout plus
+    KILL_REAP_GRACE_S) keep the graceful path well under the ceiling. For
+    pathological slow-to-reap children, a step may exceed its nominal cap; the
+    parent-death backstop remains the hard guarantee by sleeping to the ceiling,
+    SIGKILLing every child's process group, then calling os._exit(1).
+    """
     return (
         HANDLE_SHUTDOWN_REAP_S
         + APP_SUPERVISED_TASK_DRAIN_S
+        + APP_SUPERVISED_CHILD_STOP_S
         + APP_SUPERVISED_CALLOSUM_JOIN_S
     )
 
@@ -155,32 +170,82 @@ def enforce_parent_death_shutdown_deadline(
     *,
     ceiling: float = APP_SUPERVISED_SHUTDOWN_CEILING_S,
     managed_procs: Iterable[RunnerManagedProcess] | None = None,
+    task_procs: Iterable[RunnerManagedProcess] | None = None,
     sent_event: "threading.Event | None" = None,
     kill: Callable[[int, int], None] | None = None,
+    killpg: Callable[[int, int], None] | None = None,
+    getpgid: Callable[[int], int] | None = None,
     exit_now: Callable[[int], NoReturn] | None = None,
     sleep: Callable[[float], None] | None = None,
 ) -> None:
     del reason
+    own_pid = os.getpid()
+    own_pgid = os.getpgrp()
     kill_fn = kill or os.kill
+    killpg_fn = killpg or os.killpg
+    getpgid_fn = getpgid or os.getpgid
     exit_now_fn = exit_now or os._exit
     sleep_fn = sleep or time.sleep
     sigterm_sent = sent_event if sent_event is not None else _parent_death_sigterm_sent
 
     if not sigterm_sent.is_set():
         sigterm_sent.set()
-        kill_fn(os.getpid(), signal.SIGTERM)
+        kill_fn(own_pid, signal.SIGTERM)
 
     sleep_fn(ceiling)
 
     procs = managed_procs if managed_procs is not None else _managed_procs
-    for managed in procs:
+    if task_procs is not None:
+        task_snapshot = task_procs
+    elif _task_queue is not None:
+        with _task_queue._lock:
+            task_snapshot = list(_task_queue._active.values())
+    else:
+        task_snapshot = []
+
+    def _kill_group(managed: RunnerManagedProcess) -> None:
         if not managed.is_running():
-            continue
+            return
         try:
-            managed.process.kill()
+            pgid = getpgid_fn(managed.process.pid)
+        except (ProcessLookupError, OSError):
+            logger.exception(
+                "parent-death backstop: could not resolve pgid for %s",
+                managed.name,
+            )
+            return
+
+        if pgid == own_pgid or pgid == own_pid:
+            logger.warning(
+                "parent-death backstop: refusing to signal supervisor's own "
+                "group (pgid=%s) for %s",
+                pgid,
+                managed.name,
+            )
+            return
+
+        try:
+            killpg_fn(pgid, signal.SIGKILL)
         except Exception:
             logger.exception(
                 "parent-death backstop: SIGKILL failed for %s", managed.name
+            )
+
+    for managed in procs:
+        try:
+            _kill_group(managed)
+        except Exception:
+            logger.exception(
+                "parent-death backstop: unexpected failure for %s",
+                getattr(managed, "name", managed),
+            )
+    for managed in task_snapshot:
+        try:
+            _kill_group(managed)
+        except Exception:
+            logger.exception(
+                "parent-death backstop: unexpected failure for %s",
+                getattr(managed, "name", managed),
             )
 
     exit_now_fn(1)
@@ -237,12 +302,12 @@ def _candidate_journal(proc: "psutil.Process") -> Path | None:
         return None
 
 
-# The long-lived managed-service proctitles set by setproctitle at
-# sol_cli.py (f"{binary}:{cmd}"). setproctitle is in-process and persists
-# until the process exits, so an orphaned service still reports its title
-# via proc.name() after the supervisor dies — which is what lets the sweep
-# find it. The supervisor-owned `llama-server` reports its own bare binary
-# name (no colon prefix) and is included here so the sweep reaps it too.
+# The long-lived journal proctitles set by setproctitle at sol_cli.py
+# (f"{binary}:{cmd}"). setproctitle is in-process and persists until the
+# process exits, so an orphaned service or task child still reports its title
+# via proc.name() after the supervisor dies, which is what lets the sweep find
+# it. The supervisor-owned `llama-server` reports its own bare binary name (no
+# colon prefix) and is included here so the sweep reaps it too.
 # The mlx-vlm server is a Python process, but our launcher sets the same
 # managed proctitle so proc.name() is stable for orphan sweeping.
 _LOCAL_SERVER_PROCTITLES = frozenset(
@@ -251,17 +316,18 @@ _LOCAL_SERVER_PROCTITLES = frozenset(
         MLX_SERVER_PROCESS_NAME,
     }
 )
-_MANAGED_SERVICE_PROCTITLES = (
-    frozenset(
-        {
-            "journal:sense",
-            "journal:cortex",
-            "journal:convey",
-            "journal:spl",
-        }
-    )
-    | _LOCAL_SERVER_PROCTITLES
-)
+
+
+def _is_sweepable_orphan_name(name: str) -> bool:
+    """True if proc.name() identifies a sweepable orphan of this install.
+
+    Any `journal:*` proctitle - managed service or task-queue child - plus the
+    bare local-server binary names. A PPID-1, same-journal `journal:*` process
+    is by definition an orphan of a dead supervisor. `solstone:*`/`sol:*` and a
+    bare `journal` (no colon) are deliberately not matched because they cannot
+    be positively classified as a sub-command of this install.
+    """
+    return name.startswith("journal:") or name in _LOCAL_SERVER_PROCTITLES
 
 
 def _sweep_orphaned_sol_processes(journal: Path, grace: float = 5.0) -> int:
@@ -271,7 +337,7 @@ def _sweep_orphaned_sol_processes(journal: Path, grace: float = 5.0) -> int:
     targets: list[int] = []
     for proc in psutil.process_iter(["name", "ppid", "username", "pid"]):
         try:
-            if proc.name() not in _MANAGED_SERVICE_PROCTITLES:
+            if not _is_sweepable_orphan_name(proc.name()):
                 continue
             if proc.ppid() != 1:
                 continue

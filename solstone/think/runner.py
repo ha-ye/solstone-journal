@@ -33,6 +33,7 @@ from solstone.think.callosum import CallosumConnection
 from solstone.think.utils import CHRONICLE_DIR, get_journal, now_ms
 
 logger = logging.getLogger(__name__)
+KILL_REAP_GRACE_S = 0.5
 
 
 def _get_journal_path() -> Path:
@@ -406,8 +407,9 @@ class ManagedProcess:
 
         Sends SIGTERM to the immediate child and the process group. Waits up to
         `timeout` seconds for graceful exit. If the process is still alive after
-        `timeout`, escalates to SIGKILL on the group and child, then re-raises
-        `subprocess.TimeoutExpired` after the kill completes.
+        `timeout`, escalates to SIGKILL on the group and child, waits up to
+        `KILL_REAP_GRACE_S` for the kill to reap, then abandons the wait and
+        re-raises `subprocess.TimeoutExpired`.
 
         Args:
             timeout: Seconds to wait after SIGTERM before SIGKILL (default: 15).
@@ -452,8 +454,17 @@ class ManagedProcess:
                 self.process.kill()
             except (ProcessLookupError, OSError):
                 pass
-            self.process.wait()
-            logger.debug(f"{self.name} killed with code {self.process.returncode}")
+            try:
+                self.process.wait(timeout=KILL_REAP_GRACE_S)
+                logger.debug(f"{self.name} killed with code {self.process.returncode}")
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "%s remained unreaped %.1fs after SIGKILL "
+                    "(likely D-state; supervisor exiting; SIGKILL guarantees "
+                    "eventual death)",
+                    self.name,
+                    KILL_REAP_GRACE_S,
+                )
             raise
 
     def cleanup(self) -> None:

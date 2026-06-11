@@ -12,7 +12,7 @@ from unittest.mock import Mock, call
 
 import pytest
 
-from solstone.think.runner import ManagedProcess, run_task
+from solstone.think.runner import KILL_REAP_GRACE_S, ManagedProcess, run_task
 
 
 @pytest.fixture
@@ -69,7 +69,41 @@ def test_terminate_uses_process_group(monkeypatch):
 
     timeout_process.terminate.assert_called_once_with()
     timeout_process.kill.assert_called_once_with()
-    assert timeout_process.wait.call_args_list == [call(timeout=2), call()]
+    assert timeout_process.wait.call_args_list == [
+        call(timeout=2),
+        call(timeout=KILL_REAP_GRACE_S),
+    ]
+    assert killpg.call_args_list == [
+        call(456, signal.SIGTERM),
+        call(456, signal.SIGKILL),
+    ]
+
+
+def test_terminate_abandons_unreaped_child_after_sigkill(monkeypatch):
+    killpg = Mock()
+    monkeypatch.setattr("solstone.think.runner.os.getpgid", lambda pid: 456)
+    monkeypatch.setattr("solstone.think.runner.os.killpg", killpg)
+
+    process = Mock()
+    process.pid = 125
+    graceful_timeout = subprocess.TimeoutExpired(cmd=["test"], timeout=2)
+    process.wait.side_effect = [
+        graceful_timeout,
+        subprocess.TimeoutExpired(cmd=["test"], timeout=KILL_REAP_GRACE_S),
+    ]
+    process.returncode = None
+    managed = _managed_for_process(process)
+
+    with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+        managed.terminate(timeout=2)
+
+    assert exc_info.value is graceful_timeout
+    process.terminate.assert_called_once_with()
+    process.kill.assert_called_once_with()
+    assert process.wait.call_args_list == [
+        call(timeout=2),
+        call(timeout=KILL_REAP_GRACE_S),
+    ]
     assert killpg.call_args_list == [
         call(456, signal.SIGTERM),
         call(456, signal.SIGKILL),

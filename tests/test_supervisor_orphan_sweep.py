@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from solstone.think import supervisor
-from solstone.think.supervisor import _MANAGED_SERVICE_PROCTITLES
+from solstone.think.providers.mlx_server import MLX_SERVER_PROCESS_NAME
 
 TEST_JOURNAL = Path("/journal/test")
 
@@ -60,8 +60,23 @@ class TestOrphanSweep:
         )
         return kills
 
-    @pytest.mark.parametrize("proctitle", sorted(_MANAGED_SERVICE_PROCTITLES))
-    def test_managed_service_proctitles_are_sigtermed(self, monkeypatch, proctitle):
+    @pytest.mark.parametrize(
+        "proctitle",
+        [
+            "journal:sense",
+            "journal:cortex",
+            "journal:convey",
+            "journal:spl",
+            "journal:think",
+            "journal:heartbeat",
+            "journal:identity",
+            "journal:providers",
+            "journal:facet-candidates",
+            "llama-server",
+            MLX_SERVER_PROCESS_NAME,
+        ],
+    )
+    def test_sweepable_orphan_proctitles_are_sigtermed(self, monkeypatch, proctitle):
         procs = [_FakeProcess(pid=111, name=proctitle)]
         kills = self._patch_common(monkeypatch, procs)
         monkeypatch.setattr(supervisor.psutil, "pid_exists", lambda _pid: False)
@@ -71,9 +86,9 @@ class TestOrphanSweep:
 
     @pytest.mark.parametrize(
         "proctitle",
-        ["journal:think", "journal:heartbeat", "sol:call"],
+        ["sol:call", "solstone:convey", "journal", "python"],
     )
-    def test_non_managed_orphan_proctitles_are_ignored(self, monkeypatch, proctitle):
+    def test_non_sweepable_orphan_proctitles_are_ignored(self, monkeypatch, proctitle):
         procs = [_FakeProcess(pid=111, name=proctitle)]
         kills = self._patch_common(monkeypatch, procs)
 
