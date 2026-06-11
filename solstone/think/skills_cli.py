@@ -12,9 +12,6 @@ Two install modes:
   SKILL.md source into <DIR>/.claude/skills/ and <DIR>/.agents/skills/.
 
 Subcommands: install, uninstall, list.
-
-Note: this is a different namespace from `sol call skills`, which manages
-owner-wide journal skill patterns under apps/skills/.
 """
 
 from __future__ import annotations
@@ -41,9 +38,7 @@ GLOBAL_SKIP_MESSAGE = (
 SUBCOMMAND_DESCRIPTION = """User mode: copies/removes the bundled umbrella skill solstone/talent/solstone/ in per-agent user config dirs.
 Project mode: symlinks/removes every talent/ and apps/*/talent/ skill under DIR.
 User-mode install creates missing agent config dirs and atomically replaces a
-changed skill target.
-This is separate from `sol call skills`, which manages owner-wide journal
-skill patterns."""
+changed skill target."""
 
 
 @dataclass(frozen=True)
@@ -532,9 +527,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "User mode copies the bundled umbrella skill solstone/talent/solstone/ "
             "into per-agent user config dirs. Project mode symlinks every talent/ "
             "and apps/*/talent/ SKILL.md source into the selected project directory. "
-            "This is separate from `sol call skills`, which manages owner-wide "
-            "journal skill patterns. User-mode install creates missing agent config "
-            "dirs and atomically replaces a changed skill target."
+            "User-mode install creates missing agent config dirs and atomically "
+            "replaces a changed skill target."
         ),
     )
     subparsers = parser.add_subparsers(dest="cmd", required=True)

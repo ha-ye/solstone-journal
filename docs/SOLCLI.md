@@ -425,7 +425,6 @@ solstone/
 | `activities` | `solstone/apps/activities/call.py` | list, get, create, update, mute, unmute |
 | `entities` | `solstone/apps/entities/call.py` | list, show, search, observe, merge |
 | `speakers` | `solstone/apps/speakers/call.py` | list, show, detect-owner, confirm-owner, clusters, suggest |
-| `skills` | `solstone/apps/skills/call.py` | list, show, observe, seed, promote, refresh, mark-dormant, retire, edit-request, rename |
 | `transcripts` | `solstone/apps/transcripts/call.py` | list, read, segments |
 | `support` | `solstone/apps/support/call.py` | register, search, article, create, list, show, reply, attach, feedback, announcements, diagnose |
 | `sol` | `solstone/apps/sol/call.py` | name, set-name, reset, thickness, set-owner, sol-init |
@@ -433,7 +432,7 @@ solstone/
 | `awareness` | `solstone/apps/awareness/call.py` | status, imports, log, log-read |
 | `journal` | `solstone/think/tools/call.py` | search, events, facets, facet (show/create/update/rename/mute/unmute/delete/merge), news, agents, read, imports, import, retention purge, storage-summary |
 
-`sol skills` manages coding-agent skill installation; `sol call skills` manages owner-wide journal skill patterns.
+`sol skills` manages coding-agent skill installation.
 
 ## Skill System
 

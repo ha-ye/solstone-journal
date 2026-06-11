@@ -121,7 +121,6 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/think/link/nonces.py",
         "solstone/think/link/paths.py",
         "solstone/think/sense_splitter.py",
-        "solstone/think/skills.py",
         "solstone/think/streams.py",
         "solstone/think/thinking.py",
         # Chronicle day content direct writers. Importer modules that merely

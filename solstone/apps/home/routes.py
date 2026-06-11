@@ -22,7 +22,6 @@ from solstone.apps.home.needs_you import classify_needs_you
 from solstone.convey.apps import _resolve_attention
 from solstone.convey.bridge import get_cached_state
 from solstone.convey.utils import DATE_RE, format_date, relative_time
-from solstone.think import skills as think_skills
 from solstone.think.awareness import get_current
 from solstone.think.capture_health import get_capture_health
 from solstone.think.facets import get_enabled_facets, get_facets
@@ -1015,36 +1014,6 @@ def _save_routines_state(state: dict[str, Any]) -> None:
         raise
 
 
-def _load_skills_state() -> dict[str, Any]:
-    """Load skills seen state from skills/state.json."""
-    state_path = Path(get_journal()) / "skills" / "state.json"
-    if not state_path.exists():
-        return {}
-    try:
-        with open(state_path, encoding="utf-8") as f:
-            raw = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return {}
-    return raw if isinstance(raw, dict) else {}
-
-
-def _save_skills_state(state: dict[str, Any]) -> None:
-    """Persist skills seen state to skills/state.json."""
-    skills_dir = Path(get_journal()) / "skills"
-    skills_dir.mkdir(parents=True, exist_ok=True)
-    state_path = skills_dir / "state.json"
-
-    fd, tmp_path = tempfile.mkstemp(dir=skills_dir, suffix=".tmp", prefix=".state_")
-    tmp_file = Path(tmp_path)
-    try:
-        with open(fd, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2)
-        tmp_file.replace(state_path)
-    except BaseException:
-        tmp_file.unlink(missing_ok=True)
-        raise
-
-
 def _parse_seen_iso(value: str | None) -> datetime | None:
     # Legacy state files persisted naive-UTC ISO; current writers persist aware UTC.
     # Treat naive as UTC so both formats round-trip into a comparable aware datetime.
@@ -1134,108 +1103,6 @@ def _collect_routines() -> list[dict[str, Any]]:
         return []
 
 
-def _collect_skills() -> list[dict[str, Any]]:
-    """Collect owner-wide skill profiles for the Pulse view."""
-    try:
-        state = _load_skills_state()
-        last_seen_dt = _parse_seen_iso(state.get("skills_last_seen"))
-
-        skills: list[dict[str, Any]] = []
-        for pattern in think_skills.load_patterns():
-            try:
-                slug = str(pattern.get("slug") or "").strip()
-                status = str(pattern.get("status") or "").strip() or "emerging"
-                if not slug or status == "retired":
-                    continue
-
-                profile_markdown = think_skills.load_profile(slug)
-                if profile_markdown is None:
-                    continue
-
-                post = frontmatter.loads(profile_markdown)
-                meta = post.metadata
-                observations = [
-                    observation
-                    for observation in pattern.get("observations", [])
-                    if isinstance(observation, dict)
-                ]
-                observation_times = sorted(
-                    str(observation.get("recorded_at") or observation.get("day") or "")
-                    for observation in observations
-                    if observation.get("recorded_at") or observation.get("day")
-                )
-                facets = sorted(
-                    {
-                        str(item).strip()
-                        for item in pattern.get("facets_touched", [])
-                        if str(item).strip()
-                    }
-                    or {
-                        str(observation.get("facet") or "").strip()
-                        for observation in observations
-                        if str(observation.get("facet") or "").strip()
-                    }
-                )
-                confidence = meta.get("confidence", 0.0)
-                if isinstance(confidence, (int, float)) and not isinstance(
-                    confidence, bool
-                ):
-                    confidence_value = float(confidence)
-                else:
-                    confidence_value = 0.0
-
-                try:
-                    profile_mtime = datetime.fromtimestamp(
-                        think_skills.profile_path(slug).stat().st_mtime,
-                        tz=timezone.utc,
-                    )
-                except OSError:
-                    profile_mtime = None
-
-                seen = _was_seen(profile_mtime, last_seen_dt)
-
-                skills.append(
-                    {
-                        "id": slug,
-                        "slug": slug,
-                        "name": (
-                            str(meta.get("display_name") or "").strip()
-                            or str(pattern.get("name") or "").strip()
-                            or slug
-                        ),
-                        "description": str(meta.get("description") or "").strip(),
-                        "category": str(meta.get("category") or "").strip(),
-                        "confidence": confidence_value,
-                        "status": status,
-                        "facets": facets,
-                        "observations": len(observations),
-                        "first_seen": observation_times[0] if observation_times else "",
-                        "last_seen": observation_times[-1] if observation_times else "",
-                        "content": post.content,
-                        "seen": seen,
-                    }
-                )
-            except Exception:
-                logger.warning(
-                    "home: failed to load skill %s",
-                    pattern.get("slug"),
-                    exc_info=True,
-                )
-                continue
-
-        skills.sort(
-            key=lambda skill: (
-                float(skill.get("confidence") or 0.0),
-                str(skill.get("last_seen") or ""),
-            ),
-            reverse=True,
-        )
-        return skills
-    except Exception:
-        logger.warning("home: failed to collect skills", exc_info=True)
-        return []
-
-
 def _build_pulse_context() -> dict[str, Any]:
     """Build the full Pulse page context."""
     today = _today()
@@ -1289,7 +1156,6 @@ def _build_pulse_context() -> dict[str, Any]:
     activities = _collect_activities(today)
     todos = _collect_todos(today)
     routines = _collect_routines()
-    skills = _collect_skills()
     latest_weekly_reflection = _load_latest_weekly_reflection()
 
     last_observe_relative = None
@@ -1308,14 +1174,12 @@ def _build_pulse_context() -> dict[str, Any]:
     briefing_phase = _compute_briefing_phase(segment_count, now.hour, briefing_exists)
     briefing_lateness = _briefing_lateness_state(now, briefing_phase)
     unseen_routines = [r for r in routines if not r["seen"]]
-    unseen_skills = [s for s in skills if not s["seen"]]
     show_welcome = (
         narrative_content is None
         and not anticipated_activities
         and not activities
         and not todos
         and not unseen_routines
-        and not skills
         and not briefing_exists
         and not attention
         and not pulse_needs
@@ -1333,17 +1197,6 @@ def _build_pulse_context() -> dict[str, Any]:
     if unseen_routines:
         n = len(unseen_routines)
         routines_summary = f"{n} new routine{'s' if n != 1 else ''}"
-
-    skills_summary = ""
-    if skills:
-        new_count = len(unseen_skills)
-        total = len(skills)
-        if new_count:
-            skills_summary = f"{new_count} new, {total} total"
-        else:
-            skills_summary = f"{total} skill{'s' if total != 1 else ''}"
-
-    skills_content = {s["id"]: s["content"] for s in skills}
 
     today_summary_parts = []
     if anticipated_activities:
@@ -1419,9 +1272,6 @@ def _build_pulse_context() -> dict[str, Any]:
         "todos": todos,
         "needs_you_items": [item.to_dict() for item in needs_you_items],
         "routines": routines,
-        "skills": skills,
-        "skills_summary": skills_summary,
-        "skills_content": skills_content,
         "briefing_sections": briefing_sections,
         "briefing_meta": briefing_meta,
         "briefing_phase": briefing_phase,
@@ -1468,15 +1318,6 @@ def api_routines_seen():
     state = _load_routines_state()
     state["routines_last_seen"] = datetime.now(timezone.utc).isoformat()
     _save_routines_state(state)
-    return jsonify({"ok": True})
-
-
-@home_bp.route("/api/skills/seen", methods=["POST"])
-def api_skills_seen():
-    """Mark skills as seen."""
-    state = _load_skills_state()
-    state["skills_last_seen"] = datetime.now(timezone.utc).isoformat()
-    _save_skills_state(state)
     return jsonify({"ok": True})
 
 

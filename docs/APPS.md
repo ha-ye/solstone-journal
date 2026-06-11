@@ -273,7 +273,7 @@ app = typer.Typer(help="Description of your app commands.")
 - Discovery logic: `solstone/think/call.py` - `_discover_app_calls()` function
 - App CLI example: `solstone/apps/todos/call.py` - Todo list command
 
-**Skills app reference:** `solstone/apps/skills/call.py` is the current owner-wide pattern for a data-backed app CLI. It exposes `sol call skills list|show|observe|seed|promote|refresh|mark-dormant|retire|edit-request|rename` and routes all writes through `solstone/think/skills.py`, which owns `journal/skills/patterns.jsonl`, `journal/skills/edit_requests.jsonl`, and `journal/skills/{slug}.md`. The shipped daily talents for this app live in `solstone/apps/skills/talent/skill_observer.md` (daily cogitate, priority 41) and `solstone/apps/skills/talent/skill_editor.md` + `skill_editor.py` (daily generate, priority 60). The observer marks patterns for creation/refresh, and the editor consumes those flags or pending `edit-request` rows to write/update exactly one owner-wide profile per run.
+**Entities app reference:** `solstone/apps/entities/call.py` is the current pattern for a data-backed app CLI. It exposes `sol call entities list|detect|attach|update|aka|merge|observe|observations|consolidate|move`, and — like every journal-data `call.py` — reaches the journal only over HTTP via the Convey client (`solstone.think.convey_client`), importing no journal/domain module and doing no filesystem I/O of its own. The think-side write-owners it ultimately drives live under `solstone/think/entities/` (e.g. `journal.py`, `saving.py`, `merge.py`, `relationships.py`, `consolidation.py`), which own `journal/entities/<slug>/entity.json` and the per-entity `.npz` embedding files.
 
 ---
 

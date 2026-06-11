@@ -194,7 +194,6 @@ def _patch_minimal_pulse_context(monkeypatch, pipeline_status):
     )
     monkeypatch.setattr("solstone.apps.home.routes._collect_todos", lambda today: [])
     monkeypatch.setattr("solstone.apps.home.routes._collect_routines", lambda: [])
-    monkeypatch.setattr("solstone.apps.home.routes._collect_skills", lambda: [])
     monkeypatch.setattr(
         "solstone.apps.home.routes.read_steward_health",
         lambda: pipeline_status,
@@ -667,7 +666,6 @@ def test_build_pulse_context_includes_yesterday_processing(monkeypatch):
     )
     monkeypatch.setattr("solstone.apps.home.routes._collect_todos", lambda today: [])
     monkeypatch.setattr("solstone.apps.home.routes._collect_routines", lambda: [])
-    monkeypatch.setattr("solstone.apps.home.routes._collect_skills", lambda: [])
     monkeypatch.setattr("solstone.apps.home.routes.read_steward_health", lambda: None)
     monkeypatch.setattr(
         "solstone.apps.home.routes._summarize_yesterday_processing",
