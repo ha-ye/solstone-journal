@@ -100,6 +100,17 @@ def _find_speaker_candidate(
     )
 
 
+def _speaker_direction_matches(
+    row: dict[str, Any],
+    source_id: str,
+    target_id: str,
+) -> bool:
+    return (
+        str(row.get("source_id") or "") == source_id
+        and str(row.get("target_id") or "") == target_id
+    )
+
+
 def _facet_error(name_key: str, message: str) -> dict[str, Any]:
     return {
         "status": "error",
@@ -397,6 +408,8 @@ def accept_speaker_candidate(
     row = _find_speaker_candidate(source_id, target_id)
     if row is None:
         return _speaker_error(source_id, target_id, "candidate not found")
+    if not _speaker_direction_matches(row, source_id, target_id):
+        return _speaker_error(source_id, target_id, "candidate direction mismatch")
 
     status = _status(row)
     if not commit:
@@ -465,6 +478,8 @@ def dismiss_speaker_candidate(
     row = _find_speaker_candidate(source_id, target_id)
     if row is None:
         return _speaker_error(source_id, target_id, "candidate not found")
+    if not _speaker_direction_matches(row, source_id, target_id):
+        return _speaker_error(source_id, target_id, "candidate direction mismatch")
 
     status = _status(row)
     if status == "dismissed":

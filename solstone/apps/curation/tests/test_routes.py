@@ -412,6 +412,24 @@ def test_speaker_accept_merge_error_keeps_candidate_open(curation_env):
     assert load_speaker_candidates()[0]["status"] == "open"
 
 
+def test_speaker_accept_rejects_swapped_direction(curation_env):
+    env = curation_env()
+    labels_path = _seed_speaker_entities(env)
+    payload = _speaker_payload(source_id="alice_johnson", target_id="alice")
+
+    resp = env.client.post("/app/curation/api/speaker/accept", json=payload)
+
+    assert resp.status_code == 400
+    data = resp.get_json()
+    assert data["status"] == "error"
+    assert data["error"] == "candidate direction mismatch"
+    assert load_speaker_candidates()[0]["status"] == "open"
+    assert load_journal_entity("alice") is not None
+    assert load_journal_entity("alice_johnson") is not None
+    labels = json.loads(labels_path.read_text(encoding="utf-8"))["labels"]
+    assert labels[0]["speaker"] == "alice"
+
+
 def test_speaker_dismiss_sets_watermark_and_removes_from_open_list(curation_env):
     env = curation_env()
     record_name_variant_candidate(
