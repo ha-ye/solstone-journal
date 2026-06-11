@@ -93,17 +93,6 @@
       "title": "Maintenance Window",
       "type": "generate"
     },
-    "digest": {
-      "app": null,
-      "color": "#6c757d",
-      "description": "Synthesize a plain-English digest of who sol is and what's happening now.",
-      "multi_facet": false,
-      "output_format": null,
-      "schedule": "none",
-      "source": "system",
-      "title": "Digest",
-      "type": "cogitate"
-    },
     "documents": {
       "app": null,
       "color": "#5c6bc0",
@@ -164,11 +153,11 @@
       "color": "#26a69a",
       "description": "Research and generate single-sentence descriptions for attached entities",
       "multi_facet": false,
-      "output_format": null,
+      "output_format": "md",
       "schedule": null,
       "source": "app",
       "title": "Entity Description",
-      "type": "cogitate"
+      "type": "generate"
     },
     "entities:entity_observer": {
       "app": "entities",
@@ -223,7 +212,7 @@
       "schedule": "daily",
       "source": "system",
       "title": "Morning Briefing",
-      "type": "cogitate"
+      "type": "generate"
     },
     "naming": {
       "app": null,

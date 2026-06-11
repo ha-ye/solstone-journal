@@ -234,7 +234,7 @@
       "group": "Entities",
       "label": "Entity Description",
       "tier": 2,
-      "type": "cogitate"
+      "type": "generate"
     },
     "talent.entities.entity_observer": {
       "disabled": false,
@@ -282,14 +282,6 @@
       "tier": 2,
       "type": "generate"
     },
-    "talent.system.digest": {
-      "disabled": false,
-      "group": "Think",
-      "label": "Digest",
-      "schedule": "none",
-      "tier": 2,
-      "type": "cogitate"
-    },
     "talent.system.documents": {
       "disabled": false,
       "group": "Think",
@@ -335,7 +327,7 @@
       "label": "Morning Briefing",
       "schedule": "daily",
       "tier": 2,
-      "type": "cogitate"
+      "type": "generate"
     },
     "talent.system.naming": {
       "disabled": false,

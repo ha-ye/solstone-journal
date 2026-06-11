@@ -114,6 +114,21 @@
       "title": "Entity Extraction",
       "type": "generate"
     },
+    "entities:entity_describe": {
+      "app": "entities",
+      "color": "#26a69a",
+      "description": "Research and generate single-sentence descriptions for attached entities",
+      "group": "Entities",
+      "hook": {
+        "pre": "entities:entity_describe"
+      },
+      "mtime": 0,
+      "output": "md",
+      "path": "<PROJECT>/solstone/apps/entities/talent/entity_describe.md",
+      "source": "app",
+      "title": "Entity Description",
+      "type": "generate"
+    },
     "entities:entity_observer": {
       "app": "entities",
       "color": "#004d40",
@@ -170,6 +185,22 @@
       "schema": "story.schema.json",
       "source": "system",
       "title": "Event Story",
+      "type": "generate"
+    },
+    "morning_briefing": {
+      "color": "#1565c0",
+      "degradation_check": true,
+      "description": "Synthesizes all daily agent outputs into a structured five-section morning briefing",
+      "hook": {
+        "pre": "morning_briefing"
+      },
+      "mtime": 0,
+      "output": "md",
+      "path": "<PROJECT>/solstone/talent/morning_briefing.md",
+      "priority": 50,
+      "schedule": "daily",
+      "source": "system",
+      "title": "Morning Briefing",
       "type": "generate"
     },
     "participation": {

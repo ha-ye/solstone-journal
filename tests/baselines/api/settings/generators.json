@@ -26,6 +26,14 @@
     },
     {
       "app": null,
+      "description": "Synthesizes all daily agent outputs into a structured five-section morning briefing",
+      "disabled": false,
+      "key": "morning_briefing",
+      "source": "system",
+      "title": "Morning Briefing"
+    },
+    {
+      "app": null,
       "description": "Writes the owner-facing health summary (headline, sentence, suggested action) from the deterministic health surface.",
       "disabled": false,
       "key": "steward",
