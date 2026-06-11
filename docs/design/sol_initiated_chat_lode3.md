@@ -398,10 +398,8 @@ Run, in order:
 - `make test-app APP=chat`
 - `make ci`
 - `make verify-api`
-- `make verify-browser`
 
-`make verify-api` and `make verify-browser` are required because this lode adds
-new settings endpoints and changes chat rendering.
+`make verify-api` is required because this lode adds new settings endpoints.
 
 ## Risks And Open Questions
 

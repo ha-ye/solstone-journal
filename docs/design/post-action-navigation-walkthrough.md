@@ -45,7 +45,6 @@ Run:
 make ci
 make test
 make test-app APP=settings
-make verify-browser
 ```
 
 Use `make verify-api` when API baseline coverage is being audited for this route set.

@@ -322,8 +322,7 @@ Design:
 
 Testability:
 
-- There is no pinchtab fake-clock primitive. `tests/verify_browser.py:514-515`
-  supports `evaluate`, so the chat-bar time source should allow a tiny optional
+- The chat-bar time source should allow a tiny optional
   `window.__solChatTestClock` function. Tests can monkey-patch that function
   without waiting 30 real seconds.
 - Keep the hook optional and local to the chat-bar code path. Production code
@@ -436,7 +435,7 @@ Add or extend:
 - `tests/test_sol_initiated_constants_locked.py`: include
   `solstone/convey/static/sol_initiated_constants.js` and assert JS/Python
   constants match.
-- Browser verification/manual smoke: sol-ping renders, pulse clears after the
+- Manual smoke: sol-ping renders, pulse clears after the
   test clock advances, open navigates to `/app/chat/<day>#event-<idx>`, dismiss
   clears all tabs.
 

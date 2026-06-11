@@ -125,10 +125,6 @@ Verified against `Makefile`. Grouped by use.
 |--------|-------------|
 | `make verify-api` | Start a sandbox, run `tests/verify_api.py` against its convey port, stop the sandbox. API-regression check. |
 | `make update-api-baselines` | Same, but update the baseline fixtures instead of failing on diff. Run after intentional API changes. |
-| `make verify-browser` | Start a sandbox, run `tests/verify_browser.py` (pinchtab-driven browser scenarios), stop the sandbox. UI-regression check. |
-| `make update-browser-baselines` | Browser-baselines equivalent of `update-api-baselines`. |
-| `make review` | Full product verification: sandbox + API verify + browser verify, in one command. Pre-ship gate for anything user-visible. Requires pinchtab. |
-| `make install-pinchtab` | One-time install of the pinchtab browser driver used by `make review` / `make verify-browser`. |
 
 ### Service management (systemd / launchd)
 
@@ -157,7 +153,7 @@ Verified against `Makefile`. Grouped by use.
 - **Fixture journal:** `tests/fixtures/journal/` — a complete mock journal with facets, entities, segments, index state. The autouse `set_test_journal_path` fixture in `tests/conftest.py` sets `SOLSTONE_JOURNAL` to this path for unit tests. Individual tests may override it with `monkeypatch.setenv` when they need an isolated tmp journal (see §8).
 - **Run one test:** `make test-only TEST=tests/test_utils.py::test_foo` or `TEST="-k test_foo"`. **One app:** `make test-app APP=<name>`.
 - **`make test` runs everything** — `tests/` and every `solstone/apps/*/tests/` in one parallel run. App tests are not a separate step.
-- **All tests are fast unit/component tests** — no real browser, no live network, no API keys. There is no integration/e2e test tier; tests that would need those were removed in favor of live verification via `make sandbox` / `make verify-browser`.
+- **All tests are fast unit/component tests** — no real browser, no live network, no API keys. There is no integration/e2e test tier; tests that would need those were removed in favor of live verification via `make sandbox`.
 - **After editing `solstone/convey/` or `solstone/apps/`:** `journal restart-convey` to reload code in a running stack.
 - **`make dev` + `make sandbox`** both write runtime artifacts into the fixtures journal; `tests/fixtures/journal/.gitignore` covers those — never commit them.
 - **Test invariants, not snapshots.** A test asserts what must hold in *every* valid state of the system — not what happens to be true today. Never pin a test to hand-edited prose (CHANGELOG / README / docs), to a value the system is *designed* to change (a version, a date, a growing count), or to a transient state. The tell: if doing the correct next thing — cut a release, rename a label, graduate a shipped changelog entry — turns the test red, the test is wrong, not the system. And test the code that *produces* a fact, never the rendered text about it. (A `[Unreleased]`-pinned changelog test was exactly this anti-pattern — its pass condition required the release process to *not* run; removed 2026-05-30.)

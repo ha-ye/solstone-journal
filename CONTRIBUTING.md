@@ -123,12 +123,11 @@ make ci
 make test-only TEST="-k test_foo"              # one test by name/pattern
 ```
 
-All tests are fast unit/component tests (no real browser, live network, or API keys). For user-visible web changes, use the sandbox/browser verification targets when relevant:
+All tests are fast unit/component tests (no real browser, live network, or API keys). For user-visible web changes, use the API verification target and review the live UI in a sandbox when relevant:
 
 ```bash
-make verify-api
-make verify-browser
-make review
+make verify-api    # check API baselines against a sandbox
+make sandbox       # start a sandbox to review the live UI (make sandbox-stop when done)
 ```
 
 See [AGENTS.md](AGENTS.md) for the full Makefile command table and [docs/testing.md](docs/testing.md) for test isolation details.

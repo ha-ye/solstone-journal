@@ -14,4 +14,3 @@ Known-good consumers depend on this day staying stable:
 - `solstone/apps/transcripts/tests/test_segment_routes.py`, which pins `FIXTURE_DAY`
 - `tests/test_segment.py`, which validates segment chains
 - activity-state-machine tests
-- `tests/verify_browser.py`, which navigates this day
