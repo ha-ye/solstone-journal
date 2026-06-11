@@ -3491,11 +3491,12 @@ function setupCortexListener() {
     return;
   }
 
+  // No schema gate: this listener intentionally accepts mixed cortex traffic —
+  // use-tied frames plus tract-level `status` frames that carry `uses:[...]` and no
+  // top-level `use_id`. The `msg.use_id` guard in the handler is the authoritative filter.
   cortexSub = window.appEvents.listen('cortex', {
-    schema: ['event', 'use_id'],
     correlationKey: 'use_id',
     timeout: ENTITIES_CORTEX_STALL_MS,
-    onDrop: (e) => window.logError(e, { context: 'entities: cortex listener drop' }),
     onTimeout: (useId) => handleEntitiesTimeout(useId)
   }, (msg) => {
     const agentId = msg.use_id;
