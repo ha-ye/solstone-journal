@@ -316,7 +316,15 @@ def callosum_sse(key: str) -> Any:
 
 @observer_bp.route("/api/create", methods=["POST"])
 def api_create() -> Any:
-    """Create a new observer registration."""
+    """Create a new observer registration (legacy web-UI mint).
+
+    Used only by the observer management page's "add observer" button
+    (apps/observer/workspace.html). Auto-registering observer clients use
+    POST /app/observer/register instead, which takes a self-descriptor and
+    locks a stream identity onto the record. This route is kept for the
+    human-facing management flow; it always mints and returns ``key_prefix``
+    (vs /register's ``prefix``).
+    """
     data = request.get_json(force=True) if request.is_json else {}
     name = data.get("name", "").strip()
     if not name:
