@@ -8,12 +8,14 @@ from dataclasses import dataclass
 from typing import Any
 
 import solstone.think.facet_review_candidates as facet_store
+from solstone.think import speaker_review_candidates as speaker_store
 from solstone.think.entities import review_candidates as entity_store
 from solstone.think.entities.merge import merge_entity
 from solstone.think.facets import create_facet
 
 KIND_FACET_CANDIDATE = "facet_candidate"
 KIND_ENTITY_MERGE = "entity_merge"
+KIND_SPEAKER_NAME_VARIANT = "speaker_name_variant"
 
 
 @dataclass(frozen=True)
@@ -66,6 +68,10 @@ def _entity_key(facet: str, source_slug: str, target_slug: str) -> str:
     return entity_store.candidate_key(facet, source_slug, target_slug)
 
 
+def _speaker_key(source_id: str, target_id: str) -> str:
+    return speaker_store.candidate_key(source_id, target_id)
+
+
 def _find_facet_candidate(name_key: str) -> dict[str, Any] | None:
     return facet_store.find_candidate(facet_store.load_candidates(), name_key)
 
@@ -80,6 +86,17 @@ def _find_entity_candidate(
         facet,
         source_slug,
         target_slug,
+    )
+
+
+def _find_speaker_candidate(
+    source_id: str,
+    target_id: str,
+) -> dict[str, Any] | None:
+    return speaker_store.find_candidate(
+        speaker_store.load_candidates(),
+        source_id,
+        target_id,
     )
 
 
@@ -102,6 +119,19 @@ def _entity_error(
         "status": "error",
         "kind": KIND_ENTITY_MERGE,
         "key": _entity_key(facet, source_slug, target_slug),
+        "error": message,
+    }
+
+
+def _speaker_error(
+    source_id: str,
+    target_id: str,
+    message: str,
+) -> dict[str, Any]:
+    return {
+        "status": "error",
+        "kind": KIND_SPEAKER_NAME_VARIANT,
+        "key": _speaker_key(source_id, target_id),
         "error": message,
     }
 
@@ -158,6 +188,33 @@ def load_open_items() -> list[CurationItem]:
                 target_slug=target_slug,
                 evidence=dict(evidence),
                 strength=strength,
+            )
+        )
+
+    for row in speaker_store.load_candidates():
+        if row.get("status") != "open":
+            continue
+        evidence = row.get("evidence", {})
+        if not isinstance(evidence, dict):
+            evidence = {}
+        source_id = str(row.get("source_id") or "")
+        target_id = str(row.get("target_id") or "")
+        similarity = float(row["similarity"])
+        speaker_evidence = dict(evidence)
+        speaker_evidence["similarity"] = similarity
+        speaker_evidence["readiness"] = row.get("readiness")
+        items.append(
+            CurationItem(
+                kind=KIND_SPEAKER_NAME_VARIANT,
+                key=_speaker_key(source_id, target_id),
+                name=None,
+                facet=None,
+                source=str(row.get("source_label") or source_id),
+                source_slug=source_id,
+                target=str(row.get("target_label") or target_id),
+                target_slug=target_id,
+                evidence=speaker_evidence,
+                strength=int(round(similarity * 100)),
             )
         )
 
@@ -324,6 +381,110 @@ def dismiss_entity_candidate(
     return {
         "status": "dismissed",
         "kind": KIND_ENTITY_MERGE,
+        "key": key,
+        "candidate": dismissed,
+    }
+
+
+def accept_speaker_candidate(
+    source_id: str,
+    target_id: str,
+    *,
+    commit: bool,
+) -> dict[str, Any]:
+    """Preview or accept one open speaker name-variant merge candidate."""
+    key = _speaker_key(source_id, target_id)
+    row = _find_speaker_candidate(source_id, target_id)
+    if row is None:
+        return _speaker_error(source_id, target_id, "candidate not found")
+
+    status = _status(row)
+    if not commit:
+        if status != "open":
+            return _speaker_error(
+                source_id,
+                target_id,
+                f"cannot preview candidate with status {status}",
+            )
+        result = merge_entity(
+            source_id,
+            target_id,
+            keep_source_as_aka=True,
+            commit=False,
+            caller="curation.speaker.preview",
+        )
+        if "error" in result:
+            return _speaker_error(source_id, target_id, str(result["error"]))
+        return {
+            "status": "preview",
+            "kind": KIND_SPEAKER_NAME_VARIANT,
+            "key": key,
+            "merge": result,
+        }
+
+    if status == "accepted":
+        return {
+            "status": "already_accepted",
+            "kind": KIND_SPEAKER_NAME_VARIANT,
+            "key": key,
+            "candidate": row,
+        }
+    if status != "open":
+        return _speaker_error(
+            source_id,
+            target_id,
+            f"cannot accept candidate with status {status}",
+        )
+
+    result = merge_entity(
+        source_id,
+        target_id,
+        keep_source_as_aka=True,
+        commit=True,
+        caller="curation.speaker.accept",
+    )
+    if "error" in result:
+        return _speaker_error(source_id, target_id, str(result["error"]))
+
+    accepted = speaker_store.accept_candidate(source_id, target_id)
+    return {
+        "status": "accepted",
+        "kind": KIND_SPEAKER_NAME_VARIANT,
+        "key": key,
+        "merge": result,
+        "candidate": accepted,
+    }
+
+
+def dismiss_speaker_candidate(
+    source_id: str,
+    target_id: str,
+) -> dict[str, Any]:
+    """Dismiss an open speaker name-variant merge candidate."""
+    key = _speaker_key(source_id, target_id)
+    row = _find_speaker_candidate(source_id, target_id)
+    if row is None:
+        return _speaker_error(source_id, target_id, "candidate not found")
+
+    status = _status(row)
+    if status == "dismissed":
+        return {
+            "status": "already_dismissed",
+            "kind": KIND_SPEAKER_NAME_VARIANT,
+            "key": key,
+            "candidate": row,
+        }
+    if status != "open":
+        return _speaker_error(
+            source_id,
+            target_id,
+            f"cannot dismiss candidate with status {status}",
+        )
+
+    dismissed = speaker_store.dismiss_candidate(source_id, target_id)
+    return {
+        "status": "dismissed",
+        "kind": KIND_SPEAKER_NAME_VARIANT,
         "key": key,
         "candidate": dismissed,
     }

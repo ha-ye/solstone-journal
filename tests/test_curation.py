@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from solstone.think.curation import (
+    KIND_SPEAKER_NAME_VARIANT,
     accept_entity_candidate,
     accept_facet_candidate,
     dismiss_entity_candidate,
@@ -28,6 +29,7 @@ from solstone.think.facet_review_candidates import (
 from solstone.think.facet_review_candidates import (
     save_candidates as save_facet_candidates,
 )
+from solstone.think.speaker_review_candidates import record_name_variant_candidate
 
 
 @pytest.fixture
@@ -107,6 +109,32 @@ def test_load_open_items_normalizes_and_orders(curation_journal):
     assert items[0].strength == 5
     assert items[1].kind == "facet_candidate"
     assert items[1].evidence["count"] == 3
+
+
+def test_load_open_items_includes_speaker_name_variant(curation_journal):
+    record_name_variant_candidate(
+        source_id="alice",
+        source_label="Alice",
+        target_id="alice_johnson",
+        target_label="Alice Johnson",
+        similarity=0.934,
+    )
+
+    items = load_open_items()
+
+    assert len(items) == 1
+    item = items[0]
+    assert item.kind == KIND_SPEAKER_NAME_VARIANT
+    assert item.key == "alice|alice_johnson"
+    assert item.name is None
+    assert item.facet is None
+    assert item.source == "Alice"
+    assert item.source_slug == "alice"
+    assert item.target == "Alice Johnson"
+    assert item.target_slug == "alice_johnson"
+    assert item.evidence["similarity"] == 0.934
+    assert item.evidence["readiness"] == "ready"
+    assert item.strength == 93
 
 
 def test_accept_facet_candidate_creates_facet_then_marks_accepted(curation_journal):

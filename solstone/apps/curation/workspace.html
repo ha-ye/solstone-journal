@@ -147,7 +147,7 @@
 <section class="curation-shell" data-curation-root>
   <h1 class="curation-header">{{ curation_copy.CUR_HEADING }}</h1>
 
-  {% if not curation_facet_items and not curation_entity_items %}
+  {% if not curation_facet_items and not curation_entity_items and not curation_speaker_items %}
     <p class="curation-empty">{{ curation_copy.CUR_EMPTY_STATE }}</p>
   {% endif %}
 
@@ -181,6 +181,18 @@
         <div class="curation-actions">
           <button class="curation-button curation-button-primary" type="button" data-action="entity-preview" data-facet="{{ item.facet }}" data-source-slug="{{ item.source_slug }}" data-target-slug="{{ item.target_slug }}">{{ curation_copy.CUR_ENTITY_MERGE_ACTION }}</button>
           <button class="curation-button" type="button" data-action="entity-dismiss" data-facet="{{ item.facet }}" data-source-slug="{{ item.source_slug }}" data-target-slug="{{ item.target_slug }}">{{ curation_copy.CUR_ENTITY_DISMISS_ACTION }}</button>
+        </div>
+        <div class="curation-preview" hidden></div>
+        <p class="curation-item-error" hidden></p>
+      </article>
+    {% endfor %}
+
+    {% for item in curation_speaker_items %}
+      <article class="curation-item" data-curation-item data-kind="speaker_name_variant" data-key="{{ item.key }}" data-source-id="{{ item.source_slug }}" data-target-id="{{ item.target_slug }}">
+        <p class="curation-body">{{ curation_copy.CUR_SPEAKER_BODY.format(source=item.source, target=item.target) }}</p>
+        <div class="curation-actions">
+          <button class="curation-button curation-button-primary" type="button" data-action="speaker-preview">{{ curation_copy.CUR_SPEAKER_MERGE_ACTION }}</button>
+          <button class="curation-button" type="button" data-action="speaker-dismiss">{{ curation_copy.CUR_SPEAKER_DISMISS_ACTION }}</button>
         </div>
         <div class="curation-preview" hidden></div>
         <p class="curation-item-error" hidden></p>
@@ -244,6 +256,23 @@ const CUR_COPY = {{ curation_copy_payload|tojson|safe }};
     };
   }
 
+  function speakerPayload(button) {
+    const item = itemFor(button);
+    const ds = item?.dataset || {};
+    return {
+      key: ds.key,
+      source_id: ds.sourceId,
+      target_id: ds.targetId
+    };
+  }
+
+  function payloadAttrs(payload) {
+    if (payload.facet !== undefined) {
+      return `data-facet="${escapeHtml(payload.facet)}" data-source-slug="${escapeHtml(payload.source_slug)}" data-target-slug="${escapeHtml(payload.target_slug)}"`;
+    }
+    return `data-key="${escapeHtml(payload.key)}" data-source-id="${escapeHtml(payload.source_id)}" data-target-id="${escapeHtml(payload.target_id)}"`;
+  }
+
   function previewRows(preview) {
     const rows = [];
     const aliases = preview.akas_added || [];
@@ -268,7 +297,7 @@ const CUR_COPY = {{ curation_copy_payload|tojson|safe }};
     return rows;
   }
 
-  function renderPreview(item, payload, result) {
+  function renderPreview(item, payload, result, acceptAction = 'entity-accept', cancelAction = 'entity-cancel') {
     const previewNode = item.querySelector('.curation-preview');
     if (!previewNode) return;
     const preview = result.preview || {};
@@ -285,8 +314,8 @@ const CUR_COPY = {{ curation_copy_payload|tojson|safe }};
       ${listHtml}
       ${errorHtml}
       <div class="curation-actions">
-        <button class="curation-button curation-button-primary" type="button" data-action="entity-accept" data-facet="${escapeHtml(payload.facet)}" data-source-slug="${escapeHtml(payload.source_slug)}" data-target-slug="${escapeHtml(payload.target_slug)}">${CUR_COPY.CUR_ENTITY_CONFIRM_ACTION}</button>
-        <button class="curation-button" type="button" data-action="entity-cancel">${CUR_COPY.CUR_ENTITY_CANCEL_ACTION}</button>
+        <button class="curation-button curation-button-primary" type="button" data-action="${escapeHtml(acceptAction)}" ${payloadAttrs(payload)}>${CUR_COPY.CUR_ENTITY_CONFIRM_ACTION}</button>
+        <button class="curation-button" type="button" data-action="${escapeHtml(cancelAction)}">${CUR_COPY.CUR_ENTITY_CANCEL_ACTION}</button>
       </div>
     `;
     previewNode.hidden = false;
@@ -304,7 +333,7 @@ const CUR_COPY = {{ curation_copy_payload|tojson|safe }};
       return;
     }
 
-    if (action === 'entity-cancel') {
+    if (action === 'entity-cancel' || action === 'speaker-cancel') {
       const preview = item?.querySelector('.curation-preview');
       if (preview) {
         preview.hidden = true;
@@ -320,6 +349,36 @@ const CUR_COPY = {{ curation_copy_payload|tojson|safe }};
         : '/app/curation/api/facet/dismiss';
       setBusy(button, true);
       postJson(path, { name_key: nameKey })
+        .then(() => removeItem(item))
+        .catch((err) => {
+          setBusy(button, false);
+          showError(item, err.serverMessage || err.message);
+        });
+      return;
+    }
+
+    if (action === 'speaker-preview') {
+      const payload = speakerPayload(button);
+      setBusy(button, true);
+      postJson('/app/curation/api/speaker/preview', payload)
+        .then((result) => {
+          setBusy(button, false);
+          renderPreview(item, payload, result, 'speaker-accept', 'speaker-cancel');
+        })
+        .catch((err) => {
+          setBusy(button, false);
+          showError(item, err.serverMessage || err.message);
+        });
+      return;
+    }
+
+    if (action === 'speaker-accept' || action === 'speaker-dismiss') {
+      const payload = speakerPayload(button);
+      const path = action === 'speaker-accept'
+        ? '/app/curation/api/speaker/accept'
+        : '/app/curation/api/speaker/dismiss';
+      setBusy(button, true);
+      postJson(path, payload)
         .then(() => removeItem(item))
         .catch((err) => {
           setBusy(button, false);

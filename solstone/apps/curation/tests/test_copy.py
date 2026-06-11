@@ -9,6 +9,7 @@ import json
 import re
 from pathlib import Path
 
+from solstone.apps.curation import copy as copy_module
 from solstone.apps.curation.copy import (
     curation_copy_payload,
     curation_copy_values,
@@ -43,6 +44,19 @@ def test_all_copy_constants_referenced_by_render_surface():
     missing = [name for name in curation_copy_payload() if name not in html]
 
     assert missing == []
+
+
+def test_speaker_copy_avoids_banned_verbs():
+    banned = re.compile(r"\b(capture|watch|record|monitor|track|collect)\b", re.I)
+    hits = {
+        name: value
+        for name, value in vars(copy_module).items()
+        if name.startswith("CUR_SPEAKER_")
+        and isinstance(value, str)
+        and banned.search(value)
+    }
+
+    assert hits == {}
 
 
 def test_curation_index_injects_copy(curation_env):

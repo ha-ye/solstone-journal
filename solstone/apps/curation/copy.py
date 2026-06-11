@@ -18,6 +18,11 @@ CUR_FACET_EVIDENCE_ACTION = "view evidence"
 CUR_ENTITY_BODY = '"{a}" and "{b}" look like the same entity. Merge them?'
 CUR_ENTITY_MERGE_ACTION = "Merge"
 CUR_ENTITY_DISMISS_ACTION = "Keep separate"
+CUR_SPEAKER_BODY = (
+    'solstone noticed "{source}" and "{target}" may be the same speaker. Merge them?'
+)
+CUR_SPEAKER_MERGE_ACTION = "Review merge"
+CUR_SPEAKER_DISMISS_ACTION = "Keep separate"
 CUR_EMPTY_STATE = (
     "Nothing to review — solstone hasn't spotted new structure to suggest."
 )

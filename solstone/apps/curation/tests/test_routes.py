@@ -9,8 +9,10 @@ import html as html_lib
 import json
 from pathlib import Path
 
+import numpy as np
+
 from solstone.apps.curation.copy import CUR_EMPTY_STATE, CUR_HEADING
-from solstone.think.entities.journal import save_journal_entity
+from solstone.think.entities.journal import load_journal_entity, save_journal_entity
 from solstone.think.entities.review_candidates import (
     load_candidates as load_entity_candidates,
 )
@@ -21,6 +23,13 @@ from solstone.think.facet_review_candidates import (
     load_candidates as load_facet_candidates,
 )
 from solstone.think.facet_review_candidates import record_facet_candidate
+from solstone.think.speaker_review_candidates import (
+    candidate_key as speaker_candidate_key,
+)
+from solstone.think.speaker_review_candidates import (
+    load_candidates as load_speaker_candidates,
+)
+from solstone.think.speaker_review_candidates import record_name_variant_candidate
 
 
 def _seed_facet_candidate(count: int = 3) -> None:
@@ -82,6 +91,115 @@ def _entity_payload() -> dict[str, str]:
     }
 
 
+def _speaker_payload(
+    source_id: str = "alice",
+    target_id: str = "alice_johnson",
+) -> dict[str, str]:
+    return {
+        "key": speaker_candidate_key(source_id, target_id),
+        "source_id": source_id,
+        "target_id": target_id,
+    }
+
+
+def _embedding(vector: list[float]) -> np.ndarray:
+    embedding = np.array(vector + [0.0] * (256 - len(vector)), dtype=np.float32)
+    return embedding / np.linalg.norm(embedding)
+
+
+def _write_voiceprints(
+    entity_dir: Path,
+    embedding: np.ndarray,
+    *,
+    offset: int = 0,
+) -> None:
+    embeddings = np.tile(embedding.reshape(1, -1), (5, 1))
+    metadata = np.array(
+        [
+            json.dumps(
+                {
+                    "day": "20240101",
+                    "segment_key": "143022_300",
+                    "source": "mic_audio",
+                    "sentence_id": i + offset,
+                    "added_at": 1700000000000,
+                }
+            )
+            for i in range(5)
+        ],
+        dtype=str,
+    )
+    np.savez_compressed(
+        entity_dir / "voiceprints.npz",
+        embeddings=embeddings,
+        metadata=metadata,
+    )
+
+
+def _write_speaker_labels(env) -> Path:
+    labels_path = (
+        env.journal
+        / "chronicle"
+        / "20240101"
+        / "test"
+        / "143022_300"
+        / "talents"
+        / "speaker_labels.json"
+    )
+    labels_path.parent.mkdir(parents=True, exist_ok=True)
+    labels_path.write_text(
+        json.dumps(
+            {
+                "labels": [
+                    {
+                        "sentence_id": 1,
+                        "speaker": "alice",
+                        "confidence": "high",
+                        "method": "voiceprint",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    return labels_path
+
+
+def _seed_speaker_entities(env) -> Path:
+    save_journal_entity(
+        {
+            "id": "alice",
+            "name": "Alice",
+            "type": "Person",
+            "aka": [],
+        }
+    )
+    save_journal_entity(
+        {
+            "id": "alice_johnson",
+            "name": "Alice Johnson",
+            "type": "Person",
+            "aka": [],
+        }
+    )
+    embedding = _embedding([1.0, 0.0, 0.0])
+    _write_voiceprints(env.journal / "entities" / "alice", embedding)
+    _write_voiceprints(
+        env.journal / "entities" / "alice_johnson",
+        embedding,
+        offset=10,
+    )
+    labels_path = _write_speaker_labels(env)
+    record_name_variant_candidate(
+        source_id="alice",
+        source_label="Alice",
+        target_id="alice_johnson",
+        target_label="Alice Johnson",
+        similarity=0.99,
+    )
+    return labels_path
+
+
 def test_index_renders_empty_state(curation_env):
     env = curation_env()
 
@@ -105,6 +223,25 @@ def test_index_renders_facet_and_entity_candidates(curation_env):
     assert "Home Reno" in html
     assert "Kognova Inc" in html
     assert "Kognova" in html
+
+
+def test_index_renders_speaker_candidate(curation_env):
+    env = curation_env()
+    record_name_variant_candidate(
+        source_id="alice",
+        source_label="Alice",
+        target_id="alice_johnson",
+        target_label="Alice Johnson",
+        similarity=0.99,
+    )
+
+    resp = env.client.get("/app/curation/")
+
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    assert 'data-kind="speaker_name_variant"' in html
+    assert "Alice" in html
+    assert "Alice Johnson" in html
 
 
 def test_facet_accept_creates_facet_and_flips_status(curation_env):
@@ -200,6 +337,130 @@ def test_entity_preview_error_returns_400_without_flipping(curation_env):
     assert resp.status_code == 400
     assert resp.get_json()["status"] == "error"
     assert load_entity_candidates()[0]["status"] == "open"
+
+
+def test_speaker_preview_returns_summary_and_keeps_state_open(curation_env):
+    env = curation_env()
+    labels_path = _seed_speaker_entities(env)
+    source_before = load_journal_entity("alice")
+    target_before = load_journal_entity("alice_johnson")
+    source_voiceprints_before = (
+        env.journal / "entities" / "alice" / "voiceprints.npz"
+    ).read_bytes()
+    target_voiceprints_before = (
+        env.journal / "entities" / "alice_johnson" / "voiceprints.npz"
+    ).read_bytes()
+    labels_before = labels_path.read_text(encoding="utf-8")
+
+    resp = env.client.post("/app/curation/api/speaker/preview", json=_speaker_payload())
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["status"] == "preview"
+    assert data["merge"]["would_identity"]["akas_added"] == ["Alice"]
+    assert data["preview"]["akas_added"] == ["Alice"]
+    assert data["preview"]["voiceprints_added"] == 5
+    assert load_speaker_candidates()[0]["status"] == "open"
+    assert load_journal_entity("alice") == source_before
+    assert load_journal_entity("alice_johnson") == target_before
+    assert (
+        env.journal / "entities" / "alice" / "voiceprints.npz"
+    ).read_bytes() == source_voiceprints_before
+    assert (
+        env.journal / "entities" / "alice_johnson" / "voiceprints.npz"
+    ).read_bytes() == target_voiceprints_before
+    assert labels_path.read_text(encoding="utf-8") == labels_before
+
+
+def test_speaker_accept_merges_and_marks_candidate_accepted(curation_env):
+    env = curation_env()
+    labels_path = _seed_speaker_entities(env)
+
+    resp = env.client.post("/app/curation/api/speaker/accept", json=_speaker_payload())
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["status"] == "accepted"
+    assert data["merge"]["merged"] is True
+    rows = load_speaker_candidates()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "accepted"
+    assert [row for row in rows if row["status"] == "open"] == []
+    assert load_journal_entity("alice") is None
+    target = load_journal_entity("alice_johnson")
+    assert target is not None
+    assert "Alice" in target["aka"]
+    labels = json.loads(labels_path.read_text(encoding="utf-8"))["labels"]
+    assert labels[0]["speaker"] == "alice_johnson"
+
+
+def test_speaker_accept_merge_error_keeps_candidate_open(curation_env):
+    env = curation_env()
+    record_name_variant_candidate(
+        source_id="alice",
+        source_label="Alice",
+        target_id="alice_johnson",
+        target_label="Alice Johnson",
+        similarity=0.99,
+    )
+
+    resp = env.client.post("/app/curation/api/speaker/accept", json=_speaker_payload())
+
+    assert resp.status_code == 400
+    assert resp.get_json()["status"] == "error"
+    assert "Source entity not found" in resp.get_json()["error"]
+    assert load_speaker_candidates()[0]["status"] == "open"
+
+
+def test_speaker_dismiss_sets_watermark_and_removes_from_open_list(curation_env):
+    env = curation_env()
+    record_name_variant_candidate(
+        source_id="alice",
+        source_label="Alice",
+        target_id="alice_johnson",
+        target_label="Alice Johnson",
+        similarity=0.99,
+    )
+
+    resp = env.client.post("/app/curation/api/speaker/dismiss", json=_speaker_payload())
+
+    assert resp.status_code == 200
+    row = load_speaker_candidates()[0]
+    assert row["status"] == "dismissed"
+    assert row["dismissed_detection_count"] == 1
+    index_resp = env.client.get("/app/curation/")
+    assert index_resp.status_code == 200
+    assert 'data-kind="speaker_name_variant"' not in index_resp.get_data(as_text=True)
+
+
+def test_speaker_payload_missing_field_returns_400(curation_env):
+    env = curation_env()
+
+    resp = env.client.post(
+        "/app/curation/api/speaker/preview",
+        json={"key": speaker_candidate_key("alice", "alice_johnson")},
+    )
+
+    assert resp.status_code == 400
+    assert resp.get_json()["reason_code"] == "missing_required_field"
+
+
+def test_speaker_payload_key_mismatch_returns_400(curation_env):
+    env = curation_env()
+
+    resp = env.client.post(
+        "/app/curation/api/speaker/preview",
+        json={
+            "key": "wrong|key",
+            "source_id": "alice",
+            "target_id": "alice_johnson",
+            "source_label": "Ignored",
+            "target_label": "Also Ignored",
+        },
+    )
+
+    assert resp.status_code == 400
+    assert resp.get_json()["reason_code"] == "invalid_request_value"
 
 
 def test_rendered_payload_matches_copy_source(curation_env):
