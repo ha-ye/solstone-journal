@@ -33,6 +33,7 @@ DEFAULT_RAIL_APPS = [
     "home",
     "sol",
     "chat",
+    "curation",
     "activities",
     "transcripts",
     "observer",

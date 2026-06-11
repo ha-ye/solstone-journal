@@ -52,6 +52,14 @@ def test_seed_default_app_navigation_seeds_absent_apps():
     assert config["apps"]["order"] == DEFAULT_APP_ORDER
 
 
+def test_curation_pinned_in_default_rail():
+    from solstone.convey.config import DEFAULT_APP_ORDER, DEFAULT_RAIL_APPS
+
+    assert "curation" in DEFAULT_RAIL_APPS
+    assert DEFAULT_RAIL_APPS.index("curation") == 3
+    assert "curation" in DEFAULT_APP_ORDER
+
+
 def test_seed_default_app_navigation_preserves_present_empty_lists():
     from solstone.convey.config import seed_default_app_navigation
 

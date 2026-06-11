@@ -494,5 +494,5 @@ def test_rendered_payload_matches_copy_source(curation_env):
 def test_app_metadata_exists():
     metadata = json.loads(Path("solstone/apps/curation/app.json").read_text())
 
-    assert metadata["label"] == "suggestions"
+    assert metadata["label"] == "curation"
     assert metadata["facets"]["disabled"] is True
