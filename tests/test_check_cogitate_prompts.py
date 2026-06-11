@@ -102,7 +102,7 @@ def test_bare_journal_flags_fenced_commands() -> None:
         "`list_directory journal/chronicle`",
         "`glob journal/chronicle/*`",
         "`grep_search needle journal/chronicle`",
-        "`identity/self.md`",
+        "`identity/partner.md`",
         "`chronicle/20260101`",
         "`## observations`",
         "`write_file`",
