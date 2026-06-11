@@ -19,14 +19,14 @@ def test_add_persists_role(tmp_path: Path) -> None:
     assert payload[0]["role"] == "observer"
 
 
-def test_add_default_role_phone(tmp_path: Path) -> None:
+def test_add_default_role_less(tmp_path: Path) -> None:
     path = tmp_path / "nonces.json"
     store = NonceStore(path)
 
-    store.add("abc123", "Phone", now=1000)
+    store.add("abc123", "Linked System", now=1000)
 
     payload = json.loads(path.read_text("utf-8"))
-    assert payload[0]["role"] == "phone"
+    assert payload[0]["role"] == ""
 
 
 def test_consume_preserves_role(tmp_path: Path) -> None:
@@ -55,7 +55,7 @@ def test_consume_by_code_preserves_role(tmp_path: Path) -> None:
     assert consumed.role == "observer"
 
 
-def test_read_legacy_nonce_defaults_phone(tmp_path: Path) -> None:
+def test_read_legacy_nonce_defaults_role_less(tmp_path: Path) -> None:
     path = tmp_path / "nonces.json"
     path.write_text(
         json.dumps(
@@ -78,4 +78,4 @@ def test_read_legacy_nonce_defaults_phone(tmp_path: Path) -> None:
     consumed = store.consume("abc123", now=1001)
 
     assert consumed is not None
-    assert consumed.role == "phone"
+    assert consumed.role == ""

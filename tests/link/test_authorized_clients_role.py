@@ -19,17 +19,17 @@ def test_add_persists_role(tmp_path: Path) -> None:
     assert payload[0]["role"] == "observer"
 
 
-def test_add_default_role_phone(tmp_path: Path) -> None:
+def test_add_default_role_less(tmp_path: Path) -> None:
     path = tmp_path / "auth.json"
     store = AuthorizedClients(path)
 
-    store.add("sha256:abc", "Phone", "inst-1")
+    store.add("sha256:abc", "Linked System", "inst-1")
 
     payload = json.loads(path.read_text("utf-8"))
-    assert payload[0]["role"] == "phone"
+    assert payload[0]["role"] == ""
 
 
-def test_load_legacy_entry_defaults_phone(tmp_path: Path) -> None:
+def test_load_legacy_entry_defaults_role_less(tmp_path: Path) -> None:
     path = tmp_path / "auth.json"
     path.write_text(
         json.dumps(
@@ -48,23 +48,25 @@ def test_load_legacy_entry_defaults_phone(tmp_path: Path) -> None:
 
     store = AuthorizedClients(path)
 
-    assert store.snapshot()[0].role == "phone"
+    assert store.snapshot()[0].role == ""
 
 
 def test_role_round_trips_through_write_then_read(tmp_path: Path) -> None:
     path = tmp_path / "auth.json"
     store = AuthorizedClients(path)
+    store.add("sha256:linked", "Linked System", "inst-1")
+    store.add("sha256:blank", "Blank", "inst-1", role="")
     store.add("sha256:observer", "Observer", "inst-1", role="observer")
     store.add("sha256:peer", "Peer", "inst-1", role="peer")
-    store.add("sha256:phone", "Phone", "inst-1")
 
     reloaded = AuthorizedClients(path)
     roles = {entry.fingerprint: entry.role for entry in reloaded.snapshot()}
 
     assert roles == {
+        "sha256:linked": "",
+        "sha256:blank": "",
         "sha256:observer": "observer",
         "sha256:peer": "peer",
-        "sha256:phone": "phone",
     }
 
 

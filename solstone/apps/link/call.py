@@ -18,16 +18,13 @@ from solstone.convey.reasons import PAIRED_DEVICE_NOT_FOUND
 from solstone.think.convey_client import ConveyClientError, convey_cli, get_client
 
 app = typer.Typer(
-    help="Link — tunnel service for reaching this solstone from paired phones."
+    help="Link — tunnel service for reaching this solstone from linked systems."
 )
 
 PAIR_TIMEOUT_SECONDS = 300
-VALID_ROLES = {"phone", "observer", "peer"}
-ROLE_HEADINGS = {
-    "phone": "Phones:",
-    "observer": "Observers:",
-    "peer": "Peers:",
-}
+VALID_ROLES = {"", "phone", "observer", "peer"}
+LINKED_SYSTEMS_HEADING = "Linked systems:"
+PEERS_HEADING = "Peers:"
 
 
 def _detect_lan_ip() -> str | None:
@@ -89,15 +86,14 @@ def _relative_time(iso: str | None) -> str:
 @convey_cli
 def pair(
     device_label: str = typer.Option(
-        ..., "--device-label", help="Label for the phone being paired"
+        ..., "--device-label", help="Label for the linked system being paired"
     ),
-    as_role: str = typer.Option(
-        "phone",
+    as_role: str | None = typer.Option(
+        None,
         "--as",
         help=(
-            "Role tag stored with the pairing — identity metadata that future route "
-            "handlers will key on (not just CLI grouping). One of: phone, observer, "
-            "peer."
+            "Optional tag for the linked system. Links are role-less by default; "
+            "only peer has special behavior. One of: phone, observer, peer."
         ),
     ),
     convey_host: str = typer.Option(
@@ -113,19 +109,22 @@ def pair(
     timeout_seconds: int = typer.Option(
         PAIR_TIMEOUT_SECONDS,
         "--timeout",
-        help="How long to wait for the phone before giving up",
+        help="How long to wait for the linked system before giving up",
     ),
 ) -> None:
     """Mint a one-shot nonce, print the pair URL + QR-ready payload, wait for completion."""
-    if as_role not in VALID_ROLES:
+    if as_role is not None and as_role not in VALID_ROLES:
         typer.echo("invalid role; expected one of: phone, observer, peer", err=True)
         raise typer.Exit(2)
 
     client = get_client()
+    payload = {"device_label": device_label}
+    if as_role is not None:
+        payload["role"] = as_role
     mint = client.request(
         "POST",
         "/app/link/api/pair/mint",
-        json={"device_label": device_label, "role": as_role},
+        json=payload,
     )
     value = mint["nonce"]
     manual_code = mint["manual_code"]
@@ -139,9 +138,9 @@ def pair(
     typer.echo(f"manual code: {manual_code}")
     typer.echo(f"Pair URL: {url}")
     typer.echo(f"CA fingerprint: sha256:{ca_fp}")
-    typer.echo(f"Device: {device_label} (role: {as_role})")
+    typer.echo(f"Device: {device_label}{' (peer)' if as_role == 'peer' else ''}")
     typer.echo("")
-    typer.echo("Waiting for phone…")
+    typer.echo("Waiting for linked system…")
 
     before = {
         d["fingerprint"]
@@ -154,7 +153,8 @@ def pair(
         new_entries = [d for d in devices if d["fingerprint"] not in before]
         if new_entries:
             entry = new_entries[-1]
-            typer.echo(f"Paired: {entry['device_label']} (role: {entry['role']})")
+            suffix = " (peer)" if entry["role"] == "peer" else ""
+            typer.echo(f"Paired: {entry['device_label']}{suffix}")
             typer.echo(f"  fingerprint: {entry['fingerprint']}")
             typer.echo(f"  paired_at:   {entry['paired_at']}")
             raise typer.Exit(0)
@@ -180,19 +180,26 @@ def list_devices() -> None:
     if not devices:
         typer.echo("No devices linked yet.")
         return
-    grouped = {role: [] for role in ROLE_HEADINGS}
+    linked_systems = []
+    peers = []
     for device in devices:
-        grouped.setdefault(device["role"], []).append(device)
+        # call.py is a pure HTTP client, so it cannot import link.auth.is_peer.
+        if device.get("role") == "peer":
+            peers.append(device)
+        else:
+            linked_systems.append(device)
 
     printed_section = False
-    for role, heading in ROLE_HEADINGS.items():
-        role_entries = grouped[role]
-        if not role_entries:
+    for heading, entries in (
+        (LINKED_SYSTEMS_HEADING, linked_systems),
+        (PEERS_HEADING, peers),
+    ):
+        if not entries:
             continue
         if printed_section:
             typer.echo("")
         typer.echo(heading)
-        for device in role_entries:
+        for device in entries:
             typer.echo(
                 f"- {device['device_label']}"
                 f" — added {_relative_time(device['paired_at'])}"

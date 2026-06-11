@@ -31,8 +31,15 @@ def _start_pair(env, role: str) -> dict:
     return response.get_json()
 
 
-@pytest.mark.parametrize("role", ["phone", "observer", "peer"])
-def test_pair_route_persists_consumed_nonce_role(link_env, role: str) -> None:
+@pytest.mark.parametrize(
+    ("role", "expected_role"),
+    [("phone", ""), ("observer", ""), ("peer", "peer")],
+)
+def test_pair_route_normalizes_consumed_nonce_role(
+    link_env,
+    role: str,
+    expected_role: str,
+) -> None:
     env = link_env()
     started = _start_pair(env, role)
 
@@ -44,11 +51,18 @@ def test_pair_route_persists_consumed_nonce_role(link_env, role: str) -> None:
     assert response.status_code == 200
     entries = link_routes._authorized().snapshot()
     assert len(entries) == 1
-    assert entries[0].role == role
+    assert entries[0].role == expected_role
 
 
-@pytest.mark.parametrize("role", ["phone", "observer", "peer"])
-def test_by_code_route_persists_consumed_nonce_role(link_env, role: str) -> None:
+@pytest.mark.parametrize(
+    ("role", "expected_role"),
+    [("phone", ""), ("observer", ""), ("peer", "peer")],
+)
+def test_by_code_route_normalizes_consumed_nonce_role(
+    link_env,
+    role: str,
+    expected_role: str,
+) -> None:
     env = link_env()
     started = _start_pair(env, role)
 
@@ -60,4 +74,4 @@ def test_by_code_route_persists_consumed_nonce_role(link_env, role: str) -> None
     assert response.status_code == 200
     entries = link_routes._authorized().snapshot()
     assert len(entries) == 1
-    assert entries[0].role == role
+    assert entries[0].role == expected_role

@@ -1,5 +1,9 @@
 # observer-over-pl
 
+> Superseded note, link-mess step 2: the role-at-pair-time mechanism described
+> below is historical. Observers now self-register with `POST
+> /app/observer/register`; pairing is role-less except for the `peer` path.
+
 ## Summary
 
 This lode adds a paired-link (`pl`) transport path to the observer client while
@@ -45,6 +49,8 @@ Add the requested top-of-module contract docstring in
 pre-dial credential-file errors.
 
 ### 2. Cross-app write routing
+
+Superseded by link-mess step 2: link pairing no longer mints observer records.
 
 Chosen: `solstone/apps/link/routes.py:_complete_pairing()` will call
 `solstone.apps.observer.utils.mint_pl_observer_record()` only when

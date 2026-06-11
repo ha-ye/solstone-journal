@@ -189,19 +189,20 @@ def test_pair_start_spl_uses_thirty_second_expiry_and_nonce_ttl(link_env) -> Non
     assert snap[0].expires_at - snap[0].issued_at == TOTP_STEP_SECONDS
 
 
-def test_pair_start_spl_keeps_role_home_private(link_env, monkeypatch) -> None:
+def test_pair_start_spl_keeps_role_less_home_private(link_env, monkeypatch) -> None:
     env = link_env(posture="spl", totp_secret="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
     monkeypatch.setattr(link_routes, "generate_relay_nonce", lambda: "00" * 16)
 
     response = env.client.post(
         "/app/link/pair-start",
-        json={"device_label": "Observer", "role": "observer"},
+        json={"device_label": "Linked System"},
     )
 
     assert response.status_code == 200
     payload = response.get_json()
-    assert link_routes._nonces().snapshot()[0].role == "observer"
+    assert link_routes._nonces().snapshot()[0].role == ""
     assert b"observer" not in _decode_pair_link(payload["pair_link"])
+    assert b"phone" not in _decode_pair_link(payload["pair_link"])
 
 
 def test_pair_start_spl_missing_totp_secret_errors_without_nonce(link_env) -> None:

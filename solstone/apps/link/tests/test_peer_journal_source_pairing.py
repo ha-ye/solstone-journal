@@ -205,15 +205,17 @@ def test_phone_role_pairing_does_not_mint_journal_source(link_env) -> None:
     assert _journal_source_paths(env) == []
     entries = link_routes._authorized().snapshot()
     assert len(entries) == 1
-    assert entries[0].role == "phone"
+    assert entries[0].role == ""
 
 
-def test_observer_role_pairing_mints_observer_not_journal_source(link_env) -> None:
+def test_observer_role_pairing_does_not_mint_observer_or_journal_source(
+    link_env,
+) -> None:
     env = link_env()
 
     response = _pair(env, role="observer", label="Observer Laptop")
 
-    assert load_observer_by_fingerprint(response["fingerprint"]) is not None
+    assert load_observer_by_fingerprint(response["fingerprint"]) is None
     assert (
         journal_sources.load_journal_source_by_fingerprint(response["fingerprint"])
         is None
@@ -221,7 +223,7 @@ def test_observer_role_pairing_mints_observer_not_journal_source(link_env) -> No
     assert _journal_source_paths(env) == []
     entries = link_routes._authorized().snapshot()
     assert len(entries) == 1
-    assert entries[0].role == "observer"
+    assert entries[0].role == ""
 
 
 def test_observer_role_pairing_validates_but_ignores_sender_instance_id(
@@ -236,9 +238,7 @@ def test_observer_role_pairing_validates_but_ignores_sender_instance_id(
         sender_instance_id="abc-123",
     )
 
-    observer = load_observer_by_fingerprint(response["fingerprint"])
-    assert observer is not None
-    assert "peer_instance_id" not in observer
+    assert load_observer_by_fingerprint(response["fingerprint"]) is None
     assert (
         journal_sources.load_journal_source_by_fingerprint(response["fingerprint"])
         is None
@@ -246,6 +246,7 @@ def test_observer_role_pairing_validates_but_ignores_sender_instance_id(
     entries = link_routes._authorized().snapshot()
     assert len(entries) == 1
     assert not hasattr(entries[0], "peer_instance_id")
+    assert entries[0].role == ""
 
 
 def test_peer_journal_source_mint_failure_does_not_add_authorized(

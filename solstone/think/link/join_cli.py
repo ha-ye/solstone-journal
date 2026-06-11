@@ -6,7 +6,7 @@
 Manual short-code form posts to `/app/link/by-code`; v3 pair-link URL form
 decodes the embedded nonce and posts to `/app/link/pair?token=<nonce>`.
 
-Observer credentials are written under
+Role-less linked-system credentials are written under
 `$XDG_CONFIG_HOME/solstone-observer/spl/<label>/` when XDG_CONFIG_HOME is set,
 otherwise `~/.config/solstone-observer/spl/<label>/`.
 
@@ -19,8 +19,8 @@ not the local `--label`. Label-to-instance_id resolution for
 Both layouts contain `private.pem`, `cert.pem`, `chain.pem`,
 `home_attestation.jwt`, and `peer.json`. `peer.json` fields are deterministic:
 `label`, `paired_at`, `instance_id`, `home_label`, `fingerprint`,
-`local_endpoints`, and `role`; role is `observer` or `peer` for documented join
-storage layouts.
+`local_endpoints`, and `role`; role is `peer` or `""` for role-less linked
+systems.
 """
 
 from __future__ import annotations
@@ -46,14 +46,13 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
-from solstone.apps.link.copy import PAIR_LINK_HOST, PAIR_LINK_PATH
 from solstone.apps.link.crockford32 import decode as crockford_decode
-from solstone.apps.link.manual_code import normalize as normalize_manual_code
+from solstone.think.link.auth import is_peer
 from solstone.think.link.observer_paths import observer_bundle_dir
 from solstone.think.link.paths import LinkState
 from solstone.think.utils import get_journal
 
-VALID_ROLES = {"phone", "observer", "peer"}
+VALID_ROLES = {"", "phone", "observer", "peer"}
 MANUAL_CODE_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{8}$")
 LABEL_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 BUNDLE_FILES = {
@@ -85,12 +84,13 @@ class PairResponse:
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--home", help="Receiver base URL")
     parser.add_argument("--code", required=True, help="Manual code or pair-link URL")
-    parser.add_argument("--as", required=True, dest="as_role", help="Role to join as")
+    parser.add_argument("--as", dest="as_role", help="Optional tag to join as")
     parser.add_argument("--label", required=True, help="Local credentials label")
 
 
 def main(args: argparse.Namespace) -> int:
-    if args.as_role not in VALID_ROLES:
+    as_role = args.as_role or ""
+    if as_role not in VALID_ROLES:
         return _fail("invalid role; expected one of: phone, observer, peer", code=2)
 
     label = str(args.label)
@@ -103,7 +103,7 @@ def main(args: argparse.Namespace) -> int:
     except ValueError as exc:
         return _fail(str(exc), code=1)
 
-    if args.as_role == "peer":
+    if is_peer(as_role):
         private_key_pem, csr_pem = _build_csr(label)
         body = {
             **pair_request.body_base,
@@ -152,7 +152,7 @@ def main(args: argparse.Namespace) -> int:
         "home_label": response.home_label,
         "fingerprint": ca_fp,
         "local_endpoints": response.local_endpoints,
-        "role": args.as_role,
+        "role": "peer" if is_peer(as_role) else "",
     }
     files = {
         "private.pem": private_key_pem,
@@ -167,12 +167,16 @@ def main(args: argparse.Namespace) -> int:
     except OSError as exc:
         return _fail(str(exc), code=1)
 
-    print(f"Linked {label} as {args.as_role}.")
+    suffix = " as peer" if is_peer(as_role) else ""
+    print(f"Linked {label}{suffix}.")
     print(f"Credentials: {bundle_dir}")
     return 0
 
 
 def _parse_pair_request(code: str, home: str | None) -> PairRequest:
+    from solstone.apps.link.copy import PAIR_LINK_HOST, PAIR_LINK_PATH
+    from solstone.apps.link.manual_code import normalize as normalize_manual_code
+
     if code.startswith(f"https://{PAIR_LINK_HOST}{PAIR_LINK_PATH}#"):
         return _parse_pair_link(code, home)
     canonical_code = normalize_manual_code(code)

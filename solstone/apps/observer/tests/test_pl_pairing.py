@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Tests for PL observer record minting during link pairing."""
+"""Tests for role-less PL link pairing before observer self-registration."""
 
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ def _make_csr(label: str = "test") -> str:
     return csr.public_bytes(serialization.Encoding.PEM).decode("ascii")
 
 
-def _start_pair(env, *, role: str, label: str = "Pair Device") -> dict:
+def _start_pair(env, *, role: str = "", label: str = "Pair Device") -> dict:
     response = env.client.post(
         "/app/link/pair-start",
         json={"device_label": label, "role": role},
@@ -75,7 +75,7 @@ def _start_pair(env, *, role: str, label: str = "Pair Device") -> dict:
     return response.get_json()
 
 
-def _pair(env, *, role: str, label: str = "Pair Device") -> dict:
+def _pair(env, *, role: str = "", label: str = "Pair Device") -> dict:
     started = _start_pair(env, role=role, label=label)
     response = env.client.post(
         "/app/link/pair",
@@ -99,67 +99,26 @@ def _observer_record_paths(env) -> list:
     return sorted((env.journal / "apps" / "observer" / "observers").glob("*.json"))
 
 
-def test_observer_role_pairing_mints_observer_record_and_authorized_client(
-    pair_env,
-) -> None:
+def _journal_source_paths(env) -> list:
+    return sorted((env.journal / "apps" / "import" / "journal_sources").glob("*.json"))
+
+
+def test_role_less_pairing_does_not_mint_observer_record(pair_env) -> None:
     env = pair_env()
 
-    response = _pair(env, role="observer", label="Observer Laptop")
-
-    observer = load_observer_by_fingerprint(response["fingerprint"])
-    assert observer is not None
-    assert observer["name"] == "Observer Laptop"
-    assert observer["mode"] == "pl"
-    entries = link_routes._authorized().snapshot()
-    assert len(entries) == 1
-    assert entries[0].fingerprint == response["fingerprint"]
-    assert entries[0].role == "observer"
-
-
-def test_observer_role_pairing_ignores_sender_instance_id(pair_env) -> None:
-    env = pair_env()
-    started = _start_pair(env, role="observer", label="Observer Laptop")
-
-    response = env.client.post(
-        "/app/link/pair",
-        json={
-            "nonce": started["nonce"],
-            "csr": _make_csr("Observer Laptop"),
-            "sender_instance_id": "abc-123",
-        },
-    )
-
-    assert response.status_code == 200
-    fingerprint = response.get_json()["fingerprint"]
-    observer = load_observer_by_fingerprint(fingerprint)
-    assert observer is not None
-    assert "peer_instance_id" not in observer
-    entries = link_routes._authorized().snapshot()
-    assert len(entries) == 1
-    assert not hasattr(entries[0], "peer_instance_id")
-    journal_sources_dir = env.journal / "apps" / "import" / "journal_sources"
-    assert (
-        not journal_sources_dir.exists()
-        or list(journal_sources_dir.glob("*.json")) == []
-    )
-
-
-def test_phone_role_pairing_does_not_mint_observer_record(pair_env) -> None:
-    env = pair_env()
-
-    response = _pair(env, role="phone", label="Owner Phone")
+    response = _pair(env, label="Linked System")
 
     assert load_observer_by_fingerprint(response["fingerprint"]) is None
     assert _observer_record_paths(env) == []
     entries = link_routes._authorized().snapshot()
     assert len(entries) == 1
     assert entries[0].fingerprint == response["fingerprint"]
-    assert entries[0].role == "phone"
+    assert entries[0].role == ""
 
 
-def test_phone_role_pl_ingest_returns_auth_required(pair_env) -> None:
+def test_role_less_pl_ingest_returns_auth_required(pair_env) -> None:
     env = pair_env()
-    response = _pair(env, role="phone", label="Owner Phone")
+    response = _pair(env, label="Linked System")
 
     ingest = env.client.post(
         "/app/observer/ingest",
@@ -201,7 +160,7 @@ def test_attestation_failure_does_not_write_observer_or_authorized(
         expires_at=now + 300,
         used=True,
         manual_code=None,
-        role="observer",
+        role="",
     )
 
     with pytest.raises(RuntimeError, match="attestation failed"):
@@ -215,44 +174,7 @@ def test_attestation_failure_does_not_write_observer_or_authorized(
     assert _observer_record_paths(env) == []
 
 
-def test_observer_record_mint_failure_does_not_add_authorized_client(
-    pair_env,
-    monkeypatch,
-) -> None:
-    env = pair_env()
-
-    def fail_mint(*args, **kwargs):
-        raise RuntimeError("observer mint failed")
-
-    class Authorized:
-        def add(self, *args, **kwargs) -> None:
-            pytest.fail("authorized add should not run after observer mint failure")
-
-    monkeypatch.setattr(link_routes, "mint_pl_observer_record", fail_mint)
-    monkeypatch.setattr(link_routes, "_authorized", lambda: Authorized())
-    now = int(time.time())
-    consumed = Nonce(
-        value="nonce",
-        device_label="Observer Laptop",
-        issued_at=now,
-        expires_at=now + 300,
-        used=True,
-        manual_code=None,
-        role="observer",
-    )
-
-    with pytest.raises(RuntimeError, match="observer mint failed"):
-        link_routes._complete_pairing(
-            consumed,
-            _make_csr("mint"),
-            "Observer Laptop",
-            network="network",
-        )
-
-    assert _observer_record_paths(env) == []
-
-
-def test_observer_record_rolls_back_when_authorized_add_fails(
+def test_peer_journal_source_rolls_back_when_authorized_add_fails(
     pair_env,
     monkeypatch,
 ) -> None:
@@ -266,36 +188,21 @@ def test_observer_record_rolls_back_when_authorized_add_fails(
     now = int(time.time())
     consumed = Nonce(
         value="nonce",
-        device_label="Observer Laptop",
+        device_label="Peer Laptop",
         issued_at=now,
         expires_at=now + 300,
         used=True,
         manual_code=None,
-        role="observer",
+        role="peer",
     )
 
     with pytest.raises(RuntimeError, match="ledger write failed"):
         link_routes._complete_pairing(
             consumed,
             _make_csr("rollback"),
-            "Observer Laptop",
+            "Peer Laptop",
             network="network",
         )
 
     assert _observer_record_paths(env) == []
-
-
-def test_repair_same_label_leaves_old_observer_record(pair_env) -> None:
-    env = pair_env()
-
-    first = _pair(env, role="observer", label="Observer Laptop")
-    second = _pair(env, role="observer", label="Observer Laptop")
-
-    assert first["fingerprint"] != second["fingerprint"]
-    first_record = load_observer_by_fingerprint(first["fingerprint"])
-    second_record = load_observer_by_fingerprint(second["fingerprint"])
-    assert first_record is not None
-    assert second_record is not None
-    assert first_record["enabled"] is True
-    assert second_record["enabled"] is True
-    assert len(_observer_record_paths(env)) == 2
+    assert _journal_source_paths(env) == []

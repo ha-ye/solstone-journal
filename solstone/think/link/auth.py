@@ -12,15 +12,16 @@ fields for UX:
               "device_label": "Jer's iPhone",
               "paired_at": "2026-04-19T17:42:13Z",
               "instance_id": "<home_instance_id>",
-              "role": "phone",
+              "role": "",
               "last_seen_at": "2026-04-19T18:03:12Z",  // optional; null/absent = never
               "network": "network"                     // optional; local display label source
             }
 
-Readers reload the file on mtime change so an unpair action takes effect
-within ~500 ms of the file write. Convey's pair and unpair routes own the
-pairing writer surface; the secure listener updates `last_seen_at` and uses
-this ledger for TLS verification and per-request authorization.
+Role-less linked systems are stored with `role: ""`; peers are stored with
+`role: "peer"`. Readers reload the file on mtime change so an unpair action
+takes effect within ~500 ms of the file write. Convey's pair and unpair routes
+own the pairing writer surface; the secure listener updates `last_seen_at` and
+uses this ledger for TLS verification and per-request authorization.
 
 `last_seen_at` and `network` are local-only — never transmitted externally.
 """
@@ -38,13 +39,17 @@ from solstone.think.journal_io import hold_lock, write_json
 MAX_DEVICE_LABEL_LEN = 80
 
 
+def is_peer(role: str) -> bool:
+    return role == "peer"
+
+
 @dataclass(frozen=True)
 class ClientEntry:
     fingerprint: str
     device_label: str
     paired_at: str
     instance_id: str
-    role: str = "phone"
+    role: str = ""
     last_seen_at: str | None = None
     network: str | None = None
 
@@ -91,7 +96,7 @@ class AuthorizedClients:
         device_label: str,
         instance_id: str,
         *,
-        role: str = "phone",
+        role: str = "",
         paired_at: str | None = None,
         network: str | None = None,
     ) -> None:
@@ -206,11 +211,7 @@ class AuthorizedClients:
                     device_label=str(item.get("device_label", "")),
                     paired_at=str(item.get("paired_at", "")),
                     instance_id=str(item.get("instance_id", "")),
-                    role=(
-                        item.get("role")
-                        if isinstance(item.get("role"), str)
-                        else "phone"
-                    ),
+                    role=item.get("role") if isinstance(item.get("role"), str) else "",
                     last_seen_at=last_seen if isinstance(last_seen, str) else None,
                     network=network if isinstance(network, str) else None,
                 )

@@ -12,8 +12,8 @@ from solstone.think.link.paths import authorized_clients_path
 def test_devices_api_includes_role_field(link_env) -> None:
     env = link_env()
     store = AuthorizedClients(authorized_clients_path())
-    store.add("sha256:phone", "phone", "inst-1", role="phone")
-    store.add("sha256:observer", "observer", "inst-1", role="observer")
+    store.add("sha256:linked", "linked", "inst-1")
+    store.add("sha256:peer", "peer", "inst-1", role="peer")
 
     response = env.client.get("/app/link/api/devices")
 
@@ -21,12 +21,12 @@ def test_devices_api_includes_role_field(link_env) -> None:
     devices = response.get_json()["devices"]
     roles_by_label = {device["device_label"]: device["role"] for device in devices}
     assert roles_by_label == {
-        "phone": "phone",
-        "observer": "observer",
+        "linked": "",
+        "peer": "peer",
     }
 
 
-def test_devices_api_legacy_entry_defaults_to_phone(link_env) -> None:
+def test_devices_api_legacy_entry_defaults_to_role_less(link_env) -> None:
     env = link_env()
     path = authorized_clients_path()
     path.write_text(
@@ -50,4 +50,4 @@ def test_devices_api_legacy_entry_defaults_to_phone(link_env) -> None:
     assert response.status_code == 200
     devices = response.get_json()["devices"]
     assert len(devices) == 1
-    assert devices[0]["role"] == "phone"
+    assert devices[0]["role"] == ""

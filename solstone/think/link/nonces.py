@@ -33,7 +33,7 @@ class Nonce:
     expires_at: int
     used: bool
     manual_code: str | None
-    role: str = "phone"
+    role: str = ""
 
 
 class NonceStore:
@@ -49,7 +49,7 @@ class NonceStore:
         nonce: str,
         device_label: str,
         *,
-        role: str = "phone",
+        role: str = "",
         manual_code: str | None = None,
         now: int | None = None,
         ttl: int = NONCE_TTL_SECONDS,
@@ -162,11 +162,7 @@ class NonceStore:
                         if isinstance(item.get("manual_code"), str)
                         else None
                     ),
-                    role=(
-                        item.get("role")
-                        if isinstance(item.get("role"), str)
-                        else "phone"
-                    ),
+                    role=item.get("role") if isinstance(item.get("role"), str) else "",
                 )
         return out
 

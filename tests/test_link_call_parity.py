@@ -61,7 +61,7 @@ def _add_device(
     fingerprint: str,
     label: str,
     *,
-    role: str = "phone",
+    role: str = "",
     paired_at: str = PAIRED_AT,
     last_seen_at: str | None = None,
 ) -> None:
@@ -101,7 +101,7 @@ class _PairingTime:
 
 
 def test_pair_rejects_invalid_roles_without_minting(runner):
-    for role in ("bogus", ""):
+    for role in ("bogus", "Observer"):
         result = runner.invoke(
             link_call.app,
             ["pair", "--device-label", "test-laptop", "--as", role, "--timeout", "1"],
@@ -131,9 +131,7 @@ def test_pair_mints_nonce_prints_payload_and_times_out(runner, monkeypatch):
     )
     assert "Pair URL: http://localhost:5015/app/link/pair?token=" in result.stdout
     assert "CA fingerprint: sha256:" in result.stdout
-    assert (
-        "Device: Test Phone (role: observer)\n\nWaiting for phone…\n" in result.stdout
-    )
+    assert "Device: Test Phone\n\nWaiting for linked system…\n" in result.stdout
     assert result.stdout.endswith("Timed out. Pair code expired.\n")
     nonces = _nonces().snapshot()
     assert len(nonces) == 1
@@ -144,7 +142,7 @@ def test_pair_mints_nonce_prints_payload_and_times_out(runner, monkeypatch):
 @pytest.mark.parametrize(
     ("extra_args", "expected_role"),
     [
-        ([], "phone"),
+        ([], ""),
         (["--as", "peer"], "peer"),
     ],
 )
@@ -196,7 +194,7 @@ def test_pair_uses_minted_port_and_convey_host_override(runner, monkeypatch):
 def test_pair_reports_newly_paired_device(runner, monkeypatch):
     def add_device() -> None:
         if not _authorized().snapshot():
-            _add_device("sha256:" + ("1" * 64), "Phone", role="phone")
+            _add_device("sha256:" + ("1" * 64), "Phone")
 
     monkeypatch.setattr(link_call, "_detect_lan_ip", lambda: None)
     monkeypatch.setattr(link_call, "time", _PairingTime(on_sleep=add_device))
@@ -208,7 +206,7 @@ def test_pair_reports_newly_paired_device(runner, monkeypatch):
 
     assert result.exit_code == 0
     assert (
-        "Paired: Phone (role: phone)\n"
+        "Paired: Phone\n"
         "  fingerprint: sha256:1111111111111111111111111111111111111111111111111111111111111111\n"
         f"  paired_at:   {PAIRED_AT}\n"
     ) in result.stdout
@@ -242,15 +240,14 @@ def test_list_empty_store(runner):
     assert result.stdout == "No devices linked yet.\n"
 
 
-def test_list_phones_only_omits_other_headings(runner):
+def test_list_linked_systems_only_omits_peer_heading(runner):
     _add_device("sha256:aaaaaaaaaaaaaaaa0000", "alpha")
     _add_device("sha256:bbbbbbbbbbbbbbbb0000", "beta")
 
     result = runner.invoke(link_call.app, ["list"])
 
     assert result.exit_code == 0
-    assert "Phones:\n" in result.stdout
-    assert "Observers:" not in result.stdout
+    assert "Linked systems:\n" in result.stdout
     assert "Peers:" not in result.stdout
     assert result.stdout.count("- ") == 2
 
@@ -260,8 +257,14 @@ def test_list_grouped_output_and_device_line(runner, monkeypatch):
     _add_device(
         "sha256:0123456789abcdef0000",
         "phone",
+        role="phone",
         paired_at=PAIRED_AT,
         last_seen_at=LAST_SEEN_AT,
+    )
+    _add_device(
+        "sha256:aaaaaaaaaaaaaaaa0000",
+        "linked",
+        paired_at=PAIRED_AT,
     )
     _add_device(
         "sha256:bbbbbbbbbbbbbbbb0000",
@@ -276,25 +279,24 @@ def test_list_grouped_output_and_device_line(runner, monkeypatch):
 
     assert result.exit_code == 0
     assert (
-        result.stdout == "Phones:\n"
+        result.stdout == "Linked systems:\n"
         "- phone — added 1 hour ago — last seen 30 minutes ago [0123456789abcdef]\n"
-        "\n"
-        "Observers:\n"
+        "- linked — added 1 hour ago — last seen never [aaaaaaaaaaaaaaaa]\n"
         "- observer — added 1 hour ago — last seen never [bbbbbbbbbbbbbbbb]\n"
+        "- tablet — added 1 hour ago — last seen never [dddddddddddddddd]\n"
         "\n"
         "Peers:\n"
         "- peer — added 1 hour ago — last seen never [cccccccccccccccc]\n"
     )
 
 
-def test_list_observers_only_omits_phone_heading(runner):
+def test_list_legacy_observer_role_uses_linked_systems_heading(runner):
     _add_device("sha256:bbbbbbbbbbbbbbbb0000", "observer", role="observer")
 
     result = runner.invoke(link_call.app, ["list"])
 
     assert result.exit_code == 0
-    assert "Phones:" not in result.stdout
-    assert "Observers:\n" in result.stdout
+    assert "Linked systems:\n" in result.stdout
     assert "Peers:" not in result.stdout
 
 

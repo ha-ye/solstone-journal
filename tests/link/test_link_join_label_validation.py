@@ -14,7 +14,7 @@ def _args(label: str) -> argparse.Namespace:
     return argparse.Namespace(
         home="http://receiver",
         code="ABCD-EFGH",
-        as_role="observer",
+        as_role=None,
         label=label,
     )
 

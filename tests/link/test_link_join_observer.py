@@ -39,7 +39,7 @@ def _args(
     *,
     home: str | None = "http://receiver",
     code: str = "ABCD-EFGH",
-    as_role: str = "observer",
+    as_role: str | None = None,
     label: str = "laptop",
 ) -> argparse.Namespace:
     return argparse.Namespace(home=home, code=code, as_role=as_role, label=label)
@@ -122,7 +122,7 @@ def test_short_code_happy_path_writes_bundle(
     assert peer["home_label"] == "solstone"
     assert peer["fingerprint"].startswith("sha256:")
     assert peer["local_endpoints"] == [{"host": "127.0.0.1", "port": 7657}]
-    assert peer["role"] == "observer"
+    assert peer["role"] == ""
 
 
 def test_url_happy_path_posts_to_pair_token(

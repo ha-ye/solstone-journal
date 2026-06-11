@@ -22,7 +22,7 @@ def test_add_and_consume(tmp_path: Path) -> None:
         expires_at=1000 + NONCE_TTL_SECONDS,
         used=False,
         manual_code=None,
-        role="phone",
+        role="",
     )
     assert consumed == Nonce(
         value="abc123",
@@ -31,7 +31,7 @@ def test_add_and_consume(tmp_path: Path) -> None:
         expires_at=1000 + NONCE_TTL_SECONDS,
         used=True,
         manual_code=None,
-        role="phone",
+        role="",
     )
 
 
@@ -102,7 +102,7 @@ def test_consume_by_code_round_trip(tmp_path: Path) -> None:
         expires_at=1000 + NONCE_TTL_SECONDS,
         used=True,
         manual_code="K7M3X9PW",
-        role="phone",
+        role="",
     )
     assert store.peek("abc123") == consumed
 

@@ -58,7 +58,6 @@ from solstone.apps.link.relay_link import (
     compute_current_totp,
     encode_relay_pair_link,
 )
-from solstone.apps.observer.utils import mint_pl_observer_record, revoke_observer_record
 from solstone.apps.utils import log_app_action
 from solstone.convey import emit
 from solstone.convey.bridge import get_cached_state
@@ -80,7 +79,7 @@ from solstone.convey.reasons import (
     PAIRING_REQUEST_INVALID,
 )
 from solstone.convey.utils import error_response
-from solstone.think.link.auth import AuthorizedClients, ClientEntry
+from solstone.think.link.auth import AuthorizedClients, ClientEntry, is_peer
 from solstone.think.link.ca import (
     generate_nonce,
     generate_relay_nonce,
@@ -119,7 +118,7 @@ from solstone.think.utils import get_config, get_journal, now_ms
 logger = logging.getLogger(__name__)
 MANUAL_CODE_RE = re.compile(rf"^[0-9A-HJKMNP-TV-Z]{{{MANUAL_CODE_LEN}}}$")
 _SENDER_INSTANCE_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,256}$")
-VALID_ROLES = {"phone", "observer", "peer"}
+VALID_ROLES = {"", "phone", "observer", "peer"}
 # The watcher emits only lan/ula today; vpn stays empty until a scope is wired.
 VPN_SCOPES = {"vpn"}
 journal_sources = import_module("solstone.apps.import.journal_sources")
@@ -468,7 +467,8 @@ def pair_start() -> Any:
     device_label = (
         str(payload.get("device_label") or "").strip() or _default_device_label()
     )
-    role = payload.get("role", "phone")
+    raw_role = payload.get("role", "")
+    role = "" if raw_role is None else raw_role
     if not isinstance(role, str) or role not in VALID_ROLES:
         return error_response(PAIRING_REQUEST_INVALID, detail="invalid role")
 
@@ -565,10 +565,9 @@ def _complete_pairing(
     if endpoints:
         response["local_endpoints"] = [endpoint_to_dict(ep) for ep in endpoints]
 
-    observer_record_path = None
     journal_source_record_path = None
     try:
-        if consumed.role == "peer":
+        if is_peer(consumed.role):
             journal_source_record_path = mint_pl_journal_source_record(
                 fingerprint=fingerprint,
                 device_label=device_label,
@@ -576,26 +575,15 @@ def _complete_pairing(
                 peer_instance_id=sender_instance_id,
             )
             create_state_directory(Path(get_journal()), journal_source_record_path.stem)
-        if consumed.role == "observer":
-            observer_record_path = mint_pl_observer_record(
-                fingerprint=fingerprint,
-                device_label=device_label,
-                paired_at=paired_at,
-            )
         _authorized().add(
             fingerprint=fingerprint,
             device_label=device_label,
             instance_id=state.instance_id,
-            role=consumed.role,
+            role="peer" if is_peer(consumed.role) else "",
             paired_at=paired_at,
             network=network,
         )
     except Exception:
-        if observer_record_path is not None:
-            try:
-                observer_record_path.unlink()
-            except FileNotFoundError:
-                pass
         if journal_source_record_path is not None:
             try:
                 journal_source_record_path.unlink()
@@ -823,33 +811,7 @@ def unpair() -> Any:
     short_fp = fp_hex[:16]
     role = entry.role
 
-    if role == "phone":
-        removed = authorized.remove(fingerprint)
-        if not removed:
-            logger.warning(
-                "unpair: phone entry %s already absent from authorized_clients",
-                short_fp,
-            )
-    elif role == "observer":
-        try:
-            revoke_observer_record(short_fp)
-        except ValueError as exc:
-            msg = str(exc)
-            if "already revoked" in msg:
-                logger.warning("unpair: observer %s already revoked: %s", short_fp, msg)
-            else:
-                logger.warning(
-                    "unpair: observer record missing for %s: %s", short_fp, msg
-                )
-            authorized.remove(fingerprint)
-        except RuntimeError as exc:
-            logger.error(
-                "unpair: failed to save observer record for %s: %s",
-                short_fp,
-                exc,
-            )
-            authorized.remove(fingerprint)
-    elif role == "peer":
+    if is_peer(role):
         source = load_journal_source_by_fingerprint(fingerprint)
         if source is None:
             logger.warning("unpair: peer journal source missing for %s", short_fp)
@@ -874,11 +836,6 @@ def unpair() -> Any:
                 )
         authorized.remove(fingerprint)
     else:
-        logger.warning(
-            "unpair: unexpected role %r for entry %s; treating as phone",
-            role,
-            short_fp,
-        )
         authorized.remove(fingerprint)
     return jsonify({"unpaired": fingerprint})
 
