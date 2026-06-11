@@ -38,6 +38,8 @@ def test_runtime_reason_codes_are_state_reason_codes():
         "network_unreachable",
         "provider_unavailable",
         "provider_response_invalid",
+        "context_window_exceeded",
+        "max_turns_exhausted",
         "unknown",
     }
     assert RUNTIME_REASON_CODES == frozenset(known_returns)

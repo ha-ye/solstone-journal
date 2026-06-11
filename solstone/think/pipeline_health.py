@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from solstone.think.cluster import cluster_segments
+from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_REASON_CODES
 from solstone.think.utils import (
     DEFAULT_STREAM,
     day_dirs,
@@ -103,10 +104,19 @@ class TerminalState:
     latest_event: str
     latest_ts: int
     trailing_fail_count: int
+    deterministic_fail_count: int
     last_fail_ts: int | None
     reason_code: str | None
     provider: str | None
     model: str | None
+
+
+@dataclass(frozen=True)
+class DeterministicFailure:
+    """A daily unit whose latest terminal is a deterministic crash."""
+
+    count: int
+    reason_code: str
 
 
 @dataclass(frozen=True)
@@ -432,6 +442,15 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
             if event != TERMINAL_FAIL:
                 break
             trailing_fail_count += 1
+        deterministic_fail_count = 0
+        for _ts, _seq, event, reason_code, _provider, _model in reversed(ordered):
+            if event == TERMINAL_COMPLETE:
+                break
+            if (
+                event == TERMINAL_FAIL
+                and reason_code in DETERMINISTIC_FAILURE_REASON_CODES
+            ):
+                deterministic_fail_count += 1
         last_fail = next(
             (record for record in reversed(ordered) if record[2] == TERMINAL_FAIL),
             None,
@@ -440,6 +459,7 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
             latest_event=latest_event,
             latest_ts=latest_ts,
             trailing_fail_count=trailing_fail_count,
+            deterministic_fail_count=deterministic_fail_count,
             last_fail_ts=last_fail[0] if last_fail else None,
             reason_code=last_fail[3] if last_fail else None,
             provider=last_fail[4] if last_fail else None,
@@ -464,6 +484,38 @@ def read_completed_units(day: str) -> set[tuple[str, str, str | None]]:
         and unit.activity is None
         and state.latest_event == TERMINAL_COMPLETE
     }
+
+
+def read_daily_deterministic_failures(
+    day: str,
+) -> dict[tuple[str, str | None], DeterministicFailure]:
+    """Return daily units whose latest terminal is a deterministic failure.
+
+    Keyed by ``(name, facet)``. A unit qualifies only when its latest
+    terminal health event is a ``talent.fail`` whose ``reason_code`` is in
+    ``DETERMINISTIC_FAILURE_REASON_CODES``; the count is the number of such
+    deterministic failures since the unit's last completion that day. A
+    completion or a transient latest failure excludes the unit.
+
+    This function does not create, modify, or delete journal state.
+    """
+    result: dict[tuple[str, str | None], DeterministicFailure] = {}
+    for unit, state in read_terminal_states(day).items():
+        if (
+            unit.mode != "daily"
+            or unit.segment is not None
+            or unit.activity is not None
+        ):
+            continue
+        if state.latest_event != TERMINAL_FAIL:
+            continue
+        if state.reason_code not in DETERMINISTIC_FAILURE_REASON_CODES:
+            continue
+        result[(unit.name, unit.facet)] = DeterministicFailure(
+            count=state.deterministic_fail_count,
+            reason_code=state.reason_code,
+        )
+    return result
 
 
 def read_segment_progress(day: str) -> dict[tuple[str | None, str], SegmentProgress]:

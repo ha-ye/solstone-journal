@@ -29,6 +29,7 @@ from solstone.think.activities import (
 from solstone.think.activity_state_machine import ActivityStateMachine
 from solstone.think.callosum import CallosumConnection
 from solstone.think.cluster import cluster_segments
+from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_THRESHOLD
 from solstone.think.cortex_client import (
     CortexSpawnUnavailable,
     cortex_request,
@@ -43,8 +44,10 @@ from solstone.think.facets import (
 from solstone.think.journal_io import atomic_replace
 from solstone.think.pipeline_health import (
     SEGMENT_FLOOR_TALENTS,
+    DeterministicFailure,
     classify_segment_completion,
     read_completed_units,
+    read_daily_deterministic_failures,
     read_segment_progress,
 )
 from solstone.think.runner import run_task
@@ -479,6 +482,8 @@ def _check_daily_skip(
     mode: str,
     completed: set[tuple[str, str, str | None]],
     never_skip: frozenset[str],
+    deterministic_failures: dict[tuple[str, str | None], DeterministicFailure],
+    retry_on_deterministic_failure: bool = False,
     from_scratch: bool = False,
 ) -> tuple[bool, str | None]:
     if mode != "daily":
@@ -489,6 +494,10 @@ def _check_daily_skip(
         return (False, None)
     if (mode, name, facet) in completed:
         return (True, "already_complete")
+    if not retry_on_deterministic_failure:
+        failure = deterministic_failures.get((name, facet))
+        if failure is not None and failure.count >= DETERMINISTIC_FAILURE_THRESHOLD:
+            return (True, "deterministic_failure_no_retry")
     return (False, None)
 
 
@@ -1284,6 +1293,7 @@ def run_daily_prompts(
         return (0, 0, [], set())
 
     completed_units = read_completed_units(day)
+    deterministic_failures = read_daily_deterministic_failures(day)
 
     # Group prompts by priority
     priority_groups: dict[int, list[tuple[str, dict]]] = {}
@@ -1326,6 +1336,7 @@ def run_daily_prompts(
     all_failed_names: list[str] = []
     applicable_units: set[tuple[str, str | None]] = set()
     already_complete_skips = 0
+    deterministic_skips = 0
 
     # Process each priority group in order
     for priority in sorted(priority_groups.keys()):
@@ -1400,14 +1411,30 @@ def run_daily_prompts(
                             mode=target_schedule,
                             completed=completed_units,
                             never_skip=NEVER_SKIP_DAILY,
+                            deterministic_failures=deterministic_failures,
+                            retry_on_deterministic_failure=config.get(
+                                "retry_on_deterministic_failure", False
+                            ),
                             from_scratch=from_scratch,
                         )
                         if skip:
-                            reason = reason or "already_complete"
+                            if reason == "deterministic_failure_no_retry":
+                                failure = deterministic_failures[
+                                    (prompt_name, facet_name)
+                                ]
+                                detail = (
+                                    f"{failure.count} same-day deterministic failures "
+                                    f"({failure.reason_code}); not re-dispatching"
+                                )
+                                deterministic_skips += 1
+                            else:
+                                reason = reason or "already_complete"
+                                detail = "unit already complete in health log"
+                                already_complete_skips += 1
                             _log_skip(
                                 prompt_name,
                                 reason,
-                                "unit already complete in health log",
+                                detail,
                                 mode=target_schedule,
                                 day=day,
                                 facet=facet_name,
@@ -1418,7 +1445,6 @@ def run_daily_prompts(
                                 facet_name,
                                 reason,
                             )
-                            already_complete_skips += 1
                             continue
 
                         logging.info(f"Spawning {prompt_name} for facet: {facet_name}")
@@ -1514,19 +1540,32 @@ def run_daily_prompts(
                         mode=target_schedule,
                         completed=completed_units,
                         never_skip=NEVER_SKIP_DAILY,
+                        deterministic_failures=deterministic_failures,
+                        retry_on_deterministic_failure=config.get(
+                            "retry_on_deterministic_failure", False
+                        ),
                         from_scratch=from_scratch,
                     )
                     if skip:
-                        reason = reason or "already_complete"
+                        if reason == "deterministic_failure_no_retry":
+                            failure = deterministic_failures[(prompt_name, None)]
+                            detail = (
+                                f"{failure.count} same-day deterministic failures "
+                                f"({failure.reason_code}); not re-dispatching"
+                            )
+                            deterministic_skips += 1
+                        else:
+                            reason = reason or "already_complete"
+                            detail = "unit already complete in health log"
+                            already_complete_skips += 1
                         _log_skip(
                             prompt_name,
                             reason,
-                            "unit already complete in health log",
+                            detail,
                             mode=target_schedule,
                             day=day,
                         )
                         logging.debug("Skipping %s: %s", prompt_name, reason)
-                        already_complete_skips += 1
                         continue
 
                     logging.info(f"Spawning {prompt_name}")
@@ -1644,6 +1683,11 @@ def run_daily_prompts(
         logging.info(
             "Daily idempotency: skipped %d already-complete unit(s)",
             already_complete_skips,
+        )
+    if deterministic_skips:
+        logging.info(
+            "Daily idempotency: skipped %d deterministic-failure unit(s) (no retry)",
+            deterministic_skips,
         )
 
     duration_ms = int((time.time() - start_time) * 1000)

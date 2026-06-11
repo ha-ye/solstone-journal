@@ -36,6 +36,14 @@ def _read_jsonl(path: Path) -> list[dict]:
         return [json.loads(line) for line in handle if line.strip()]
 
 
+def _skip_events(journal: Path, day: str, filename: str) -> list[dict]:
+    return [
+        event
+        for event in _read_jsonl(journal / "chronicle" / day / "health" / filename)
+        if event["event"] == "talent.skip"
+    ]
+
+
 def _complete(name: str, ts: int = 1, facet: str | None = None) -> dict:
     event = {"event": "talent.complete", "ts": ts, "mode": "daily", "name": name}
     if facet:
@@ -110,6 +118,7 @@ def _run_daily_with_writer(mod, journal: Path, day: str, filename: str, **kwargs
 def test_check_daily_skip_predicate():
     mod = importlib.import_module("solstone.think.thinking")
     completed = {("daily", "alpha", None), ("daily", "pulse", None)}
+    deterministic_failures = {}
 
     assert mod._check_daily_skip(
         "alpha",
@@ -117,6 +126,7 @@ def test_check_daily_skip_predicate():
         mode="daily",
         completed=completed,
         never_skip=mod.NEVER_SKIP_DAILY,
+        deterministic_failures=deterministic_failures,
     ) == (True, "already_complete")
     assert mod._check_daily_skip(
         "beta",
@@ -124,6 +134,7 @@ def test_check_daily_skip_predicate():
         mode="daily",
         completed=completed,
         never_skip=mod.NEVER_SKIP_DAILY,
+        deterministic_failures=deterministic_failures,
     ) == (False, None)
     assert mod._check_daily_skip(
         "alpha",
@@ -131,6 +142,7 @@ def test_check_daily_skip_predicate():
         mode="segment",
         completed=completed,
         never_skip=mod.NEVER_SKIP_DAILY,
+        deterministic_failures=deterministic_failures,
     ) == (False, None)
     assert mod._check_daily_skip(
         "pulse",
@@ -138,6 +150,7 @@ def test_check_daily_skip_predicate():
         mode="daily",
         completed=completed,
         never_skip=mod.NEVER_SKIP_DAILY,
+        deterministic_failures=deterministic_failures,
     ) == (False, None)
     assert mod._check_daily_skip(
         "awareness_tender",
@@ -145,6 +158,7 @@ def test_check_daily_skip_predicate():
         mode="daily",
         completed={("daily", "awareness_tender", None)},
         never_skip=mod.NEVER_SKIP_DAILY,
+        deterministic_failures=deterministic_failures,
     ) == (False, None)
     assert mod._check_daily_skip(
         "alpha",
@@ -152,6 +166,7 @@ def test_check_daily_skip_predicate():
         mode="daily",
         completed=completed,
         never_skip=frozenset(),
+        deterministic_failures=deterministic_failures,
         from_scratch=True,
     ) == (False, None)
 
@@ -292,6 +307,120 @@ def test_run_daily_prompts_reruns_no_output_failures(daily_journal, monkeypatch)
         if event["event"] == "talent.skip"
     ]
     assert [event["name"] for event in skips] == ["alpha"]
+
+
+def test_run_daily_prompts_skips_two_deterministic_failures(daily_journal, monkeypatch):
+    mod = importlib.import_module("solstone.think.thinking")
+    _write_health(
+        daily_journal,
+        DAY,
+        "001_daily.jsonl",
+        [
+            _fail("alpha", ts=1, reason_code="context_window_exceeded"),
+            _fail("alpha", ts=2, reason_code="context_window_exceeded"),
+            _complete("beta"),
+        ],
+    )
+    dispatched: list[tuple[str, dict]] = []
+    _install_daily_mocks(monkeypatch, mod, _single_configs("alpha", "beta"), dispatched)
+
+    _run_daily_with_writer(mod, daily_journal, DAY, "002_daily.jsonl")
+
+    assert dispatched == []
+    skips = _skip_events(daily_journal, DAY, "002_daily.jsonl")
+    assert {event["name"] for event in skips} == {"alpha", "beta"}
+    alpha_skip = next(event for event in skips if event["name"] == "alpha")
+    assert alpha_skip["reason"] == "deterministic_failure_no_retry"
+    assert alpha_skip["detail"] == (
+        "2 same-day deterministic failures "
+        "(context_window_exceeded); not re-dispatching"
+    )
+
+
+def test_run_daily_prompts_reruns_one_deterministic_failure(daily_journal, monkeypatch):
+    mod = importlib.import_module("solstone.think.thinking")
+    _write_health(
+        daily_journal,
+        DAY,
+        "001_daily.jsonl",
+        [_fail("alpha", reason_code="context_window_exceeded")],
+    )
+    dispatched: list[tuple[str, dict]] = []
+    _install_daily_mocks(monkeypatch, mod, _single_configs("alpha"), dispatched)
+
+    _run_daily_with_writer(mod, daily_journal, DAY, "002_daily.jsonl")
+
+    assert [name for name, _config in dispatched] == ["alpha"]
+
+
+def test_run_daily_prompts_reruns_transient_failures(daily_journal, monkeypatch):
+    mod = importlib.import_module("solstone.think.thinking")
+    _write_health(
+        daily_journal,
+        DAY,
+        "001_daily.jsonl",
+        [
+            _fail("alpha", ts=1, reason_code="provider_quota_exceeded"),
+            _fail("alpha", ts=2, reason_code="provider_quota_exceeded"),
+            _fail("alpha", ts=3, reason_code="provider_quota_exceeded"),
+        ],
+    )
+    dispatched: list[tuple[str, dict]] = []
+    _install_daily_mocks(monkeypatch, mod, _single_configs("alpha"), dispatched)
+
+    _run_daily_with_writer(mod, daily_journal, DAY, "002_daily.jsonl")
+
+    assert [name for name, _config in dispatched] == ["alpha"]
+
+
+def test_run_daily_prompts_deterministic_failure_resets_per_day(
+    daily_journal, monkeypatch
+):
+    mod = importlib.import_module("solstone.think.thinking")
+    other_day = "20990302"
+    _write_health(
+        daily_journal,
+        DAY,
+        "001_daily.jsonl",
+        [
+            _fail("alpha", ts=1, reason_code="context_window_exceeded"),
+            _fail("alpha", ts=2, reason_code="context_window_exceeded"),
+        ],
+    )
+    dispatched: list[tuple[str, dict]] = []
+    _install_daily_mocks(monkeypatch, mod, _single_configs("alpha"), dispatched)
+
+    _run_daily_with_writer(mod, daily_journal, other_day, "001_daily.jsonl")
+
+    assert [name for name, _config in dispatched] == ["alpha"]
+
+
+def test_run_daily_prompts_retry_on_deterministic_failure_override(
+    daily_journal, monkeypatch
+):
+    mod = importlib.import_module("solstone.think.thinking")
+    _write_health(
+        daily_journal,
+        DAY,
+        "001_daily.jsonl",
+        [
+            _fail("alpha", ts=1, reason_code="context_window_exceeded"),
+            _fail("alpha", ts=2, reason_code="context_window_exceeded"),
+        ],
+    )
+    configs = {
+        "alpha": {
+            "type": "cogitate",
+            "priority": 10,
+            "retry_on_deterministic_failure": True,
+        }
+    }
+    dispatched: list[tuple[str, dict]] = []
+    _install_daily_mocks(monkeypatch, mod, configs, dispatched)
+
+    _run_daily_with_writer(mod, daily_journal, DAY, "002_daily.jsonl")
+
+    assert [name for name, _config in dispatched] == ["alpha"]
 
 
 def test_run_daily_prompts_keys_multi_facet_units_by_facet(daily_journal, monkeypatch):

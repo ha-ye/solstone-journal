@@ -20,6 +20,7 @@ from solstone.think.pipeline_health import (
     pipeline_status_message,
     read_backlog_view,
     read_completed_units,
+    read_daily_deterministic_failures,
     read_day_stuck,
     read_terminal_states,
     summarize_pipeline_day,
@@ -262,6 +263,134 @@ def test_read_completed_units_keys_include_facet(pipeline_journal):
     )
 
     assert read_completed_units(day) == {("daily", "facet_newsletter", "work")}
+
+
+def test_read_daily_deterministic_failures(pipeline_journal):
+    day = "20990216"
+    base = pipeline_journal / "chronicle" / day / "health"
+    _write_jsonl(
+        base / "001_daily.jsonl",
+        [
+            {
+                "event": "talent.fail",
+                "ts": 1,
+                "mode": "daily",
+                "name": "alpha",
+                "reason_code": "max_turns_exhausted",
+            },
+            {
+                "event": "talent.fail",
+                "ts": 2,
+                "mode": "daily",
+                "name": "alpha",
+                "reason_code": "max_turns_exhausted",
+            },
+            {
+                "event": "talent.fail",
+                "ts": 1,
+                "mode": "daily",
+                "name": "single",
+                "reason_code": "context_window_exceeded",
+            },
+            {
+                "event": "talent.fail",
+                "ts": 1,
+                "mode": "daily",
+                "name": "completed",
+                "reason_code": "no_output",
+            },
+            {
+                "event": "talent.fail",
+                "ts": 2,
+                "mode": "daily",
+                "name": "completed",
+                "reason_code": "no_output",
+            },
+            {
+                "event": "talent.complete",
+                "ts": 3,
+                "mode": "daily",
+                "name": "completed",
+            },
+            {
+                "event": "talent.fail",
+                "ts": 1,
+                "mode": "daily",
+                "name": "transient",
+                "reason_code": "no_output",
+            },
+            {
+                "event": "talent.fail",
+                "ts": 2,
+                "mode": "daily",
+                "name": "transient",
+                "reason_code": "max_turns_exhausted",
+            },
+            {
+                "event": "talent.fail",
+                "ts": 3,
+                "mode": "daily",
+                "name": "transient",
+                "reason_code": "provider_quota_exceeded",
+            },
+            {
+                "event": "talent.fail",
+                "ts": 1,
+                "mode": "daily",
+                "name": "reset",
+                "reason_code": "no_output",
+            },
+            {
+                "event": "talent.complete",
+                "ts": 2,
+                "mode": "daily",
+                "name": "reset",
+            },
+            {
+                "event": "talent.fail",
+                "ts": 3,
+                "mode": "daily",
+                "name": "reset",
+                "reason_code": "context_window_exceeded",
+            },
+            {
+                "event": "talent.fail",
+                "ts": 1,
+                "mode": "daily",
+                "name": "facet_newsletter",
+                "facet": "work",
+                "reason_code": "max_turns_exhausted",
+            },
+            {
+                "event": "talent.fail",
+                "ts": 2,
+                "mode": "daily",
+                "name": "facet_newsletter",
+                "facet": "work",
+                "reason_code": "max_turns_exhausted",
+            },
+            {
+                "event": "talent.fail",
+                "ts": 1,
+                "mode": "daily",
+                "name": "facet_newsletter",
+                "facet": "personal",
+                "reason_code": "no_output",
+            },
+        ],
+    )
+
+    result = read_daily_deterministic_failures(day)
+
+    assert result[("alpha", None)].count == 2
+    assert result[("alpha", None)].reason_code == "max_turns_exhausted"
+    assert result[("single", None)].count == 1
+    assert ("completed", None) not in result
+    assert ("transient", None) not in result
+    assert result[("reset", None)].count == 1
+    assert result[("reset", None)].reason_code == "context_window_exceeded"
+    assert result[("facet_newsletter", "work")].count == 2
+    assert result[("facet_newsletter", "personal")].count == 1
 
 
 def test_read_completed_units_skips_malformed_records(pipeline_journal):

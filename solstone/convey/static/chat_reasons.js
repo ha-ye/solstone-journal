@@ -90,6 +90,14 @@
       "template": "chat took too long",
       "action": null
     },
+    "context_window_exceeded": {
+      "template": "the conversation grew too long to finish",
+      "action": null
+    },
+    "max_turns_exhausted": {
+      "template": "this took too many steps to finish",
+      "action": null
+    },
     "no_output": {
       "template": "I didn't get a response",
       "action": null

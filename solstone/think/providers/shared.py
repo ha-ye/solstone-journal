@@ -242,9 +242,11 @@ def _contains_any(text: str, patterns: tuple[str, ...]) -> bool:
 
 RUNTIME_REASON_CODES = frozenset(
     {
+        "context_window_exceeded",
         "provider_quota_exceeded",
         "provider_key_invalid",
         "chat_timeout",
+        "max_turns_exhausted",
         "network_unreachable",
         "provider_unavailable",
         "provider_response_invalid",
@@ -265,6 +267,12 @@ def classify_provider_error(exc: BaseException, provider: str) -> str:
 
         if exc_name == "QuotaExhaustedError":
             return "provider_quota_exceeded"
+        if exc_name == "ContextWindowExceededError":
+            return "context_window_exceeded"
+        # MaxIterationsReached is OpenHands' event-code spelling of the same limit;
+        # our MaxTurnsExhausted (cogitate_policy) is what actually reaches here.
+        if exc_name in ("MaxTurnsExhausted", "MaxIterationsReached"):
+            return "max_turns_exhausted"
 
         if isinstance(exc, ValueError) and "no response from model" in message_lower:
             return "provider_response_invalid"

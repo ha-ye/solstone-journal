@@ -19,6 +19,26 @@ def test_classifies_quota_exhausted_error():
     assert classify_provider_error(exc, "google") == "provider_quota_exceeded"
 
 
+def test_classifies_litellm_context_window_exceeded():
+    from litellm.exceptions import ContextWindowExceededError
+
+    exc = ContextWindowExceededError(
+        "context window exceeded",
+        model="gpt-5",
+        llm_provider="openai",
+    )
+
+    assert classify_provider_error(exc, "openhands") == "context_window_exceeded"
+
+
+def test_classifies_max_turns_exhausted():
+    from solstone.think.cogitate_policy import MaxTurnsExhausted
+
+    exc = MaxTurnsExhausted("max_turns_exhausted: OpenHands cogitate exceeded 60 turns")
+
+    assert classify_provider_error(exc, "openhands") == "max_turns_exhausted"
+
+
 def test_classifies_builtin_connection_error():
     assert classify_provider_error(ConnectionError("offline"), "google") == (
         "network_unreachable"

@@ -31,6 +31,8 @@ EXPECTED_CODES = {
     "provider_unavailable",
     "chat_pipeline_unavailable",
     "chat_timeout",
+    "context_window_exceeded",
+    "max_turns_exhausted",
     "no_output",
     "unknown",
 }

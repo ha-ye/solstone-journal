@@ -199,6 +199,18 @@ _ENTRIES: dict[str, _Entry] = {
         detail="Try again with a shorter request.",
         recovery_action=None,
     ),
+    "context_window_exceeded": _Entry(
+        klass="generic",
+        summary="the conversation grew too long to finish",
+        detail="Try a shorter or more focused request.",
+        recovery_action=None,
+    ),
+    "max_turns_exhausted": _Entry(
+        klass="generic",
+        summary="this took too many steps to finish",
+        detail="Try again or simplify the request.",
+        recovery_action=None,
+    ),
     "no_output": _Entry(
         klass="generic",
         summary="I didn't get a response",

@@ -17,7 +17,14 @@ from solstone.think.cogitate_contract import (
 )
 
 MAX_TURNS = 60
+DETERMINISTIC_FAILURE_THRESHOLD = 2
 DEFAULT_READ_CALL_BUDGET = 200
+# Reason codes for content-deterministic crashes: re-dispatching a daily
+# unit that hit one of these will crash identically. token_budget_exceeded
+# joins this set when the per-run cost ceiling ships.
+DETERMINISTIC_FAILURE_REASON_CODES = frozenset(
+    {"context_window_exceeded", "max_turns_exhausted", "no_output"}
+)
 
 _JOURNAL_COMMANDS = {"identity", "routines", "health", "talent"}
 _SHELL_OPERATOR_CHARS = frozenset("();<>|&")
