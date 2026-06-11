@@ -689,7 +689,7 @@ def test_schedule_gated_cogitate_prompts_use_emit_final():
         and "output" not in config
     }
     # steward is no longer a cogitate talent (deterministic render + lite generate).
-    assert len(converted) == 6
+    assert len(converted) == 5
 
     for name, config in converted.items():
         body = Path(config["path"]).read_text(encoding="utf-8")

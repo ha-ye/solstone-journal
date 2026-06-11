@@ -565,13 +565,8 @@ class TestEnsureIdentityDirectory:
 
         identity_dir = ensure_identity_directory()
         assert identity_dir == tmp_path / "identity"
-        assert (identity_dir / "self.md").exists()
-
-        self_content = (identity_dir / "self.md").read_text()
-        assert self_content.startswith("# self\n")
-        assert "I am sol." in self_content
-        assert "sol (default)" in self_content
-        assert "[getting to know you]" in self_content
+        assert not (identity_dir / ("self" + ".md")).exists()
+        assert not (identity_dir / "agency.md").exists()
 
         assert (identity_dir / "awareness.md").exists()
         awareness_content = (identity_dir / "awareness.md").read_text()
@@ -585,13 +580,13 @@ class TestEnsureIdentityDirectory:
         from solstone.think.identity import ensure_identity_directory
 
         identity_dir = ensure_identity_directory()
-        # Modify self.md
-        self_path = identity_dir / "self.md"
-        self_path.write_text("custom content", encoding="utf-8")
+        # Modify awareness.md
+        awareness_path = identity_dir / "awareness.md"
+        awareness_path.write_text("custom content", encoding="utf-8")
 
         # Call again — should NOT overwrite
         ensure_identity_directory()
-        assert self_path.read_text() == "custom content"
+        assert awareness_path.read_text() == "custom content"
 
     def test_creates_partner_md(self, tmp_path):
         from solstone.think.identity import ensure_identity_directory
@@ -617,257 +612,6 @@ class TestEnsureIdentityDirectory:
 
         ensure_identity_directory()
         assert (identity_dir / "partner.md").read_text() == custom
-
-    def test_migration_named_agent(self, tmp_path, monkeypatch):
-        """Named agent config populates self.md name and opening."""
-        # Write a config with a named agent
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = {
-            "agent": {
-                "name": "aria",
-                "name_status": "chosen",
-                "named_date": "2026-01-15",
-                "proposal_count": 3,
-            },
-            "identity": {"name": "", "bio": ""},
-        }
-        (config_dir / "journal.json").write_text(json.dumps(config), encoding="utf-8")
-
-        from solstone.think.identity import ensure_identity_directory
-
-        identity_dir = ensure_identity_directory()
-        content = (identity_dir / "self.md").read_text()
-        assert "I am aria." in content
-        assert "aria (named 2026-01-15)" in content
-        # Owner should still be default
-        assert "[getting to know you]" in content
-
-    def test_migration_identity_data(self, tmp_path):
-        """Identity name/bio populates self.md owner section."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = {
-            "agent": {
-                "name": "sol",
-                "name_status": "default",
-                "named_date": None,
-                "proposal_count": 0,
-            },
-            "identity": {"name": "Jer", "bio": "builder of things"},
-        }
-        (config_dir / "journal.json").write_text(json.dumps(config), encoding="utf-8")
-
-        from solstone.think.identity import ensure_identity_directory
-
-        identity_dir = ensure_identity_directory()
-        content = (identity_dir / "self.md").read_text()
-        # Agent should be default
-        assert "I am sol." in content
-        assert "sol (default)" in content
-        # Owner should be migrated
-        assert "Jer" in content
-        assert "builder of things" in content
-
-    def test_migration_both_agent_and_identity(self, tmp_path):
-        """Both named agent and identity data are migrated."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = {
-            "agent": {
-                "name": "iris",
-                "name_status": "self-named",
-                "named_date": None,
-                "proposal_count": 1,
-            },
-            "identity": {"name": "Alex", "bio": ""},
-        }
-        (config_dir / "journal.json").write_text(json.dumps(config), encoding="utf-8")
-
-        from solstone.think.identity import ensure_identity_directory
-
-        identity_dir = ensure_identity_directory()
-        content = (identity_dir / "self.md").read_text()
-        assert "I am iris." in content
-        assert "iris" in content  # name section (no named_date)
-        assert "Alex" in content
-        # No bio, so no extra line
-        assert "builder" not in content
-
-
-class TestUpdateSelfMd:
-    """Tests for update_self_md_section and update_self_md_opening."""
-
-    def _setup_self_md(self, tmp_path):
-        """Create a minimal journal with self.md for testing."""
-        identity_dir = tmp_path / "identity"
-        identity_dir.mkdir()
-        self_md = identity_dir / "self.md"
-        self_md.write_text(
-            "# self\n"
-            "\n"
-            "I am sol. this is a new journal — we're just getting started.\n"
-            "\n"
-            "## my name\n"
-            "sol (default)\n"
-            "\n"
-            "## who I'm here for\n"
-            "[getting to know you]\n"
-            "\n"
-            "## our relationship\n"
-            "[forming]\n"
-            "\n"
-            "## what I've noticed\n"
-            "[observing]\n"
-            "\n"
-            "## what I find interesting\n"
-            "[discovering]\n",
-            encoding="utf-8",
-        )
-        return self_md
-
-    def test_update_section_name(self, tmp_path):
-        self_md = self._setup_self_md(tmp_path)
-        from solstone.think.identity import update_self_md_section
-
-        result = update_self_md_section(
-            "my name",
-            "aria (named 2026-03-19)",
-            actor="test update self section",
-            reason="test",
-        )
-        assert result is True
-        content = self_md.read_text()
-        assert "aria (named 2026-03-19)" in content
-        assert "sol (default)" not in content
-        # Other sections preserved
-        assert "## who I'm here for" in content
-        assert "[getting to know you]" in content
-        assert "## our relationship" in content
-
-    def test_update_section_owner(self, tmp_path):
-        self_md = self._setup_self_md(tmp_path)
-        from solstone.think.identity import update_self_md_section
-
-        result = update_self_md_section(
-            "who I'm here for",
-            "Jer\nSoftware engineer",
-            actor="test update self section",
-            reason="test",
-        )
-        assert result is True
-        content = self_md.read_text()
-        assert "Jer\nSoftware engineer" in content
-        assert "[getting to know you]" not in content
-        # Other sections preserved
-        assert "## my name" in content
-        assert "sol (default)" in content
-
-    def test_update_section_logs_history(self, tmp_path):
-        self._setup_self_md(tmp_path)
-        from solstone.think.identity import update_self_md_section
-
-        update_self_md_section(
-            "my name",
-            "aria (named 2026-03-19)",
-            actor="test update self section",
-            reason="test",
-        )
-        records = _read_identity_history(tmp_path)
-        assert len(records) == 1
-        _assert_identity_history(
-            records[0],
-            file_name="self.md",
-            actor="test update self section",
-            op="update_section",
-            section="my name",
-            reason="test",
-        )
-
-    def test_update_section_last_section(self, tmp_path):
-        self_md = self._setup_self_md(tmp_path)
-        from solstone.think.identity import update_self_md_section
-
-        result = update_self_md_section(
-            "what I find interesting",
-            "music and patterns",
-            actor="test update self section",
-            reason="test",
-        )
-        assert result is True
-        content = self_md.read_text()
-        assert "music and patterns" in content
-        assert "[discovering]" not in content
-
-    def test_update_section_missing_heading(self, tmp_path):
-        self._setup_self_md(tmp_path)
-        from solstone.think.identity import update_self_md_section
-
-        result = update_self_md_section(
-            "nonexistent",
-            "content",
-            actor="test update self section",
-            reason="test",
-        )
-        assert result is False
-
-    def test_update_section_no_file(self):
-        from solstone.think.identity import update_self_md_section
-
-        result = update_self_md_section(
-            "my name",
-            "content",
-            actor="test update self section",
-            reason="test",
-        )
-        assert result is False
-
-    def test_update_opening(self, tmp_path):
-        self_md = self._setup_self_md(tmp_path)
-        from solstone.think.identity import update_self_md_opening
-
-        result = update_self_md_opening(
-            "I am aria. this is a new journal — we're just getting started.",
-            actor="test update self opening",
-            reason="test",
-        )
-        assert result is True
-        content = self_md.read_text()
-        assert "I am aria." in content
-        assert "I am sol." not in content
-        # Sections preserved
-        assert "## my name" in content
-        assert "sol (default)" in content
-
-    def test_update_opening_logs_history(self, tmp_path):
-        self._setup_self_md(tmp_path)
-        from solstone.think.identity import update_self_md_opening
-
-        update_self_md_opening(
-            "I am aria.",
-            actor="test update self opening",
-            reason="test",
-        )
-        records = _read_identity_history(tmp_path)
-        assert len(records) == 1
-        _assert_identity_history(
-            records[0],
-            file_name="self.md",
-            actor="test update self opening",
-            op="update_opening",
-            section=None,
-            reason="test",
-        )
-
-    def test_update_opening_no_file(self):
-        from solstone.think.identity import update_self_md_opening
-
-        result = update_self_md_opening(
-            "content",
-            actor="test update self opening",
-            reason="test",
-        )
-        assert result is False
 
 
 class TestUpdateIdentitySection:
@@ -906,26 +650,6 @@ class TestUpdateIdentitySection:
             reason="test",
         )
         assert result is False
-
-    def test_self_md_wrapper_still_works(self, tmp_path):
-        from solstone.think.identity import update_self_md_section
-
-        self_md = (
-            "# self\n\n## my name\nsol (default)\n\n## who I'm here for\nTest User\n"
-        )
-        (tmp_path / "identity").mkdir(exist_ok=True)
-        (tmp_path / "identity" / "self.md").write_text(self_md)
-
-        result = update_self_md_section(
-            "my name",
-            "aria",
-            actor="test update self section",
-            reason="test",
-        )
-        assert result is True
-        content = (tmp_path / "identity" / "self.md").read_text()
-        assert "aria" in content
-        assert "## who I'm here for" in content
 
     def test_partner_update_prunes_getting_started(self, tmp_path):
         from solstone.think.identity import update_identity_section

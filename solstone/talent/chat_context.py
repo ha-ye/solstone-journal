@@ -98,7 +98,6 @@ def pre_process(context: dict) -> dict:
     day = _resolve_day(context, trigger_payload)
     template_vars = {
         "digest_contents": "",
-        "identity_self": "",
         "active_talents": "",
         "trigger_kind": "",
         "trigger_context": "",
@@ -117,11 +116,6 @@ def pre_process(context: dict) -> dict:
         template_vars["digest_contents"] = _load_digest_contents()
     except Exception:
         logger.debug("Digest enrichment failed", exc_info=True)
-
-    try:
-        template_vars["identity_self"] = _load_identity_contents("self.md")
-    except Exception:
-        logger.debug("Identity enrichment failed", exc_info=True)
 
     messages: list[dict[str, str]] = []
     source_context = ""
@@ -213,13 +207,6 @@ def _load_digest_contents() -> str:
     if not digest_path.exists():
         return ""
     return digest_path.read_text(encoding="utf-8").strip()
-
-
-def _load_identity_contents(file_name: str) -> str:
-    identity_path = Path(get_journal()) / "identity" / file_name
-    if not identity_path.exists():
-        return ""
-    return identity_path.read_text(encoding="utf-8").strip()
 
 
 def _normalize_trigger(context: dict) -> tuple[str | None, dict[str, Any]]:

@@ -13,12 +13,10 @@ import pytest
 
 from solstone.convey.chat_stream import append_chat_event
 from solstone.convey.sol_initiated.copy import KIND_SOL_CHAT_REQUEST
-from solstone.think.identity import ensure_identity_directory
 from solstone.think.utils import CorruptConfigError
 
 TEMPLATE_VAR_KEYS = {
     "digest_contents",
-    "identity_self",
     "active_talents",
     "trigger_kind",
     "trigger_context",
@@ -835,29 +833,6 @@ def test_chat_context_talent_followups_are_observably_distinct(monkeypatch, tmp_
     assert errored_instruction in errored_vars["trigger_context"]
     assert "- Result: Found the latest notes." in finished_vars["trigger_context"]
     assert "- Reason: The lookup failed." in errored_vars["trigger_context"]
-
-
-def test_chat_context_includes_identity_grounding(monkeypatch, tmp_path):
-    journal = tmp_path / "journal"
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    _write_journal_config(journal, {})
-    ensure_identity_directory()
-
-    digest_seed = (journal / "identity" / "digest.md").read_text(encoding="utf-8")
-    assert digest_seed == "not yet generated\n"
-
-    monkeypatch.setattr("solstone.think.routines.get_routine_state", lambda: [])
-    monkeypatch.setattr(
-        "solstone.think.routines.get_config",
-        lambda: {"_meta": {"suggestions_enabled": False, "suggestions": {}}},
-    )
-    monkeypatch.setattr("solstone.think.routines.save_config", lambda config: None)
-
-    result = _load_chat_context_module().pre_process({"day": "20260420"})
-
-    template_vars = _assert_template_vars_result(result)
-    assert template_vars["identity_self"]
-    assert template_vars["identity_self"] != digest_seed.strip()
 
 
 def test_chat_context_preserves_save_routines_config_side_effect(monkeypatch, tmp_path):

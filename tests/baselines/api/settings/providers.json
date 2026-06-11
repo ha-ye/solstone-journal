@@ -399,14 +399,6 @@
       "tier": 2,
       "type": "generate"
     },
-    "talent.system.self_observer": {
-      "disabled": false,
-      "group": "Think",
-      "label": "Self Observer",
-      "schedule": "daily",
-      "tier": 2,
-      "type": "cogitate"
-    },
     "talent.system.sense": {
       "disabled": false,
       "group": "Think",

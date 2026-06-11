@@ -23,10 +23,9 @@ This is not a conversation. Gather context, write the pulse, done.
 Read current state. Use the `read_file` tool for the identity files (relative to the journal root); use `sol call` for indexed data:
 
 1. `read_file` `identity/pulse.md` — previous pulse (may not exist yet; that's fine)
-2. `read_file` `identity/self.md` — who the owner is
-3. `read_file` `identity/partner.md` — behavioral profile of the owner
-4. `read_file` `identity/awareness.md` — current situational awareness (calendar, routines, activity, entities)
-5. `sol call entities search` — recent entity activity
+2. `read_file` `identity/partner.md` — behavioral profile of the owner
+3. `read_file` `identity/awareness.md` — current situational awareness (calendar, routines, activity, entities)
+4. `sol call entities search` — recent entity activity
 
 If — and only if — the awareness snapshot explicitly names a routine as having recent output, read that routine's latest with `journal routines output {routine_name}` — at most one call per explicitly-named routine. Do not guess routine names, try name variants, or fall back to `--help`. If no routine is named with recent output, skip this step entirely.
 

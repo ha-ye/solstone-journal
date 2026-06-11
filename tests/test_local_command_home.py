@@ -35,7 +35,7 @@ def test_local_commands_resolve_as_service(command: str, module: str) -> None:
     [
         ("navigate", ["/x"]),
         ("routines", ["list"]),
-        ("identity", ["self"]),
+        ("identity", ["partner"]),
         ("install-provider", ["local"]),
     ],
 )

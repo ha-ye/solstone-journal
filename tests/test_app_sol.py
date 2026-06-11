@@ -304,22 +304,6 @@ def sol_identity_client(tmp_path, monkeypatch):
     return app.test_client(), tmp_path
 
 
-def _write_sol_self_md(journal: Path) -> Path:
-    identity_dir = journal / "identity"
-    identity_dir.mkdir(parents=True, exist_ok=True)
-    path = identity_dir / "self.md"
-    path.write_text(
-        "# self\n\n"
-        "I am sol. this is a new journal — we're just getting started.\n\n"
-        "## my name\n"
-        "sol (default)\n\n"
-        "## who I'm here for\n"
-        "[getting to know you]\n",
-        encoding="utf-8",
-    )
-    return path
-
-
 class TestApiOutputFile:
     """Tests for api_output_file endpoint."""
 
@@ -579,10 +563,9 @@ class TestSolIdentityRoutes:
             "proposal_count": 0,
         }
 
-    def test_api_set_name_updates_agent_and_self_md(self, sol_identity_client):
-        client, journal = sol_identity_client
+    def test_api_set_name_updates_agent(self, sol_identity_client):
+        client, _journal = sol_identity_client
         write_journal_config({})
-        self_path = _write_sol_self_md(journal)
 
         resp = client.post(
             "/app/sol/api/set-name",
@@ -595,9 +578,6 @@ class TestSolIdentityRoutes:
         assert payload["name_status"] == "chosen"
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", payload["named_date"])
         assert read_journal_config()["agent"] == payload
-        self_content = self_path.read_text(encoding="utf-8")
-        assert "I am aria." in self_content
-        assert f"aria (named {payload['named_date']})" in self_content
 
     def test_api_reset_updates_agent(self, sol_identity_client):
         client, _journal = sol_identity_client
@@ -623,10 +603,9 @@ class TestSolIdentityRoutes:
         }
         assert read_journal_config()["agent"]["name"] == "sol"
 
-    def test_api_set_owner_updates_identity_and_self_md(self, sol_identity_client):
-        client, journal = sol_identity_client
+    def test_api_set_owner_updates_identity(self, sol_identity_client):
+        client, _journal = sol_identity_client
         write_journal_config({})
-        self_path = _write_sol_self_md(journal)
 
         resp = client.post(
             "/app/sol/api/set-owner",
@@ -638,10 +617,6 @@ class TestSolIdentityRoutes:
         config = read_journal_config()
         assert config["identity"]["name"] == "Jer"
         assert config["identity"]["bio"] == "Building solstone"
-        self_content = self_path.read_text(encoding="utf-8")
-        assert "Jer" in self_content
-        assert "Building solstone" in self_content
-        assert "[getting to know you]" not in self_content
 
     def test_api_sol_init_creates_identity_directory(self, sol_identity_client):
         client, journal = sol_identity_client
@@ -653,4 +628,4 @@ class TestSolIdentityRoutes:
             "identity_dir": str(journal / "identity"),
             "status": "ok",
         }
-        assert (journal / "identity" / "self.md").exists()
+        assert (journal / "identity" / "partner.md").exists()

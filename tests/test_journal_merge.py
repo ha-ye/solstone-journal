@@ -119,7 +119,9 @@ def merge_journals_fixture(tmp_path, monkeypatch):
     )
 
     (source / "identity").mkdir(parents=True)
-    (source / "identity" / "self.md").write_text("source identity\n", encoding="utf-8")
+    (source / "identity" / "partner.md").write_text(
+        "source identity\n", encoding="utf-8"
+    )
     (source / "config").mkdir(parents=True)
     (source / "config" / "source-only.json").write_text("{}", encoding="utf-8")
 
@@ -506,7 +508,7 @@ def test_source_identity_skipped(merge_journals_fixture, monkeypatch):
     result = runner.invoke(call_app, ["journal", "merge", str(paths["source"])])
 
     assert result.exit_code == 0
-    assert not (paths["target"] / "identity" / "self.md").exists()
+    assert not (paths["target"] / "identity" / "partner.md").exists()
 
 
 def test_source_config_skipped(merge_journals_fixture, monkeypatch):

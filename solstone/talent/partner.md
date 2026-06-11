@@ -21,8 +21,6 @@ This is not a conversation. Gather data, observe patterns, update the profile, t
 Read `identity/partner.md` with the `read_file` tool.
 
 Note which sections have real observations vs `[observing]` placeholders.
-Also read your own identity for context with the `read_file` tool:
-`identity/self.md`.
 
 ## Step 2: Gather recent data
 

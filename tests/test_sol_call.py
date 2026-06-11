@@ -47,7 +47,7 @@ def _assert_history_record(record, *, file_name, actor, op, section, reason):
 
 @pytest.fixture
 def journal_with_identity(tmp_path, monkeypatch):
-    """Set up a journal with identity/ containing self.md and partner.md."""
+    """Set up a journal with identity/ containing partner.md."""
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
     # Provide minimal config for ensure_identity_directory
@@ -59,28 +59,6 @@ def journal_with_identity(tmp_path, monkeypatch):
 
     identity_dir = tmp_path / "identity"
     identity_dir.mkdir()
-
-    self_md = """\
-# self
-
-I am sol. this is a new journal — we're just getting started.
-
-## my name
-sol (default)
-
-## who I'm here for
-Test User
-
-## our relationship
-[forming]
-
-## what I've noticed
-[observing]
-
-## what I find interesting
-[discovering]
-"""
-    (identity_dir / "self.md").write_text(self_md)
 
     partner_md = """\
 # partner
@@ -116,82 +94,6 @@ adapt its responses, timing, and initiative to how this person actually works.
     )
 
     return tmp_path
-
-
-class TestSolSelfRead:
-    def test_read_self(self, journal_with_identity):
-        result = runner.invoke(app, ["self"])
-        assert result.exit_code == 0
-        assert "# self" in result.output
-        assert "Test User" in result.output
-
-    def test_read_self_missing(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        (config_dir / "journal.json").write_text(json.dumps({}))
-        # ensure_identity_directory will create the file, so this tests the happy path
-        result = runner.invoke(app, ["self"])
-        assert result.exit_code == 0
-
-
-class TestSolSelfWrite:
-    def test_write_self(self, journal_with_identity):
-        new_content = "# self\n\nI am sol. Jer's journal.\n\n## my name\nsol\n"
-        result = runner.invoke(app, ["self", "--write"], input=new_content)
-        assert result.exit_code == 0
-        assert "self.md updated" in result.output
-
-        # Verify file was written
-        self_path = journal_with_identity / "identity" / "self.md"
-        assert self_path.read_text() == new_content
-
-    def test_write_self_empty_stdin(self, journal_with_identity):
-        result = runner.invoke(app, ["self", "--write"], input="")
-        assert result.exit_code == 1
-        assert "no content" in result.output
-
-    def test_write_self_whitespace_only(self, journal_with_identity):
-        result = runner.invoke(app, ["self", "--write"], input="   \n\n  ")
-        assert result.exit_code == 1
-        assert "no content" in result.output
-
-
-class TestSolSelfUpdateSection:
-    def test_update_section_owner(self, journal_with_identity):
-        result = runner.invoke(
-            app,
-            ["self", "--update-section", "who I'm here for"],
-            input="Jer — goes by Jer, not Jeremie",
-        )
-        assert result.exit_code == 0
-        assert "Updated ## who I'm here for" in result.output
-
-        # Verify section was updated, other sections preserved
-        self_path = journal_with_identity / "identity" / "self.md"
-        content = self_path.read_text()
-        assert "Jer — goes by Jer, not Jeremie" in content
-        assert "## my name" in content
-        assert "sol (default)" in content
-        assert "## our relationship" in content
-
-    def test_update_section_not_found(self, journal_with_identity):
-        result = runner.invoke(
-            app,
-            ["self", "--update-section", "nonexistent"],
-            input="content",
-        )
-        assert result.exit_code == 1
-        assert "not found" in result.output
-
-    def test_update_section_empty_stdin(self, journal_with_identity):
-        result = runner.invoke(
-            app,
-            ["self", "--update-section", "who I'm here for"],
-            input="",
-        )
-        assert result.exit_code == 1
-        assert "no content" in result.output
 
 
 class TestSolPartnerRead:
@@ -300,17 +202,6 @@ class TestSolPulseWrite:
 class TestSolWriteDoesNotEscapeIdentityDir:
     """Verify that journal identity only writes to identity/ files."""
 
-    def test_self_write_stays_in_identity_dir(self, journal_with_identity):
-        """Write to self.md goes to identity/self.md, not anywhere else."""
-        result = runner.invoke(app, ["self", "--write"], input="test content\n")
-        assert result.exit_code == 0
-        self_path = journal_with_identity / "identity" / "self.md"
-        assert self_path.read_text() == "test content\n"
-        journal_files = set(
-            f.name for f in journal_with_identity.iterdir() if f.is_file()
-        )
-        assert "self.md" not in journal_files
-
     def test_pulse_write_stays_in_identity_dir(self, journal_with_identity):
         """Write to pulse.md goes to identity/pulse.md, not anywhere else."""
         result = runner.invoke(app, ["pulse", "--write"], input="test content\n")
@@ -332,47 +223,6 @@ class TestSolWriteDoesNotEscapeIdentityDir:
             f.name for f in journal_with_identity.iterdir() if f.is_file()
         )
         assert "partner.md" not in journal_files
-
-
-class TestSolSelfValueOption:
-    def test_write_self_with_value(self, journal_with_identity):
-        new_content = "# self\n\nI am sol. Jer's journal.\n\n## my name\nsol\n"
-        result = runner.invoke(app, ["self", "--write", "--value", new_content])
-        assert result.exit_code == 0
-        assert "self.md updated" in result.output
-        self_path = journal_with_identity / "identity" / "self.md"
-        assert self_path.read_text() == new_content
-
-    def test_update_section_with_value(self, journal_with_identity):
-        result = runner.invoke(
-            app,
-            [
-                "self",
-                "--update-section",
-                "who I'm here for",
-                "--value",
-                "Jer — founder",
-            ],
-        )
-        assert result.exit_code == 0
-        assert "Updated ## who I'm here for" in result.output
-        content = (journal_with_identity / "identity" / "self.md").read_text()
-        assert "Jer — founder" in content
-
-    def test_value_empty_string_errors(self, journal_with_identity):
-        result = runner.invoke(app, ["self", "--write", "--value", "   "])
-        assert result.exit_code == 1
-        assert "no content" in result.output
-
-    def test_value_takes_precedence_over_stdin(self, journal_with_identity):
-        result = runner.invoke(
-            app,
-            ["self", "--write", "--value", "from value\n"],
-            input="from stdin\n",
-        )
-        assert result.exit_code == 0
-        self_path = journal_with_identity / "identity" / "self.md"
-        assert self_path.read_text() == "from value\n"
 
 
 class TestSolPulseValueOption:
@@ -422,20 +272,6 @@ class TestSolPartnerValueOption:
 
 
 class TestSolHistoryLogging:
-    def test_self_write_logs_history(self, journal_with_identity):
-        new_content = "# self\n\nUpdated.\n"
-        runner.invoke(app, ["self", "--write", "--value", new_content])
-        records = _read_history(journal_with_identity)
-        assert len(records) == 1
-        _assert_history_record(
-            records[0],
-            file_name="self.md",
-            actor="journal identity self --write",
-            op="replace",
-            section=None,
-            reason="manual replace",
-        )
-
     def test_pulse_write_logs_history(self, journal_with_identity):
         runner.invoke(app, ["pulse", "--write", "--value", "---\n---\n\nPulse.\n"])
         records = _read_history(journal_with_identity)
@@ -449,25 +285,9 @@ class TestSolHistoryLogging:
             reason="manual replace",
         )
 
-    def test_update_section_logs_history(self, journal_with_identity):
-        runner.invoke(
-            app,
-            ["self", "--update-section", "who I'm here for", "--value", "Jer"],
-        )
-        records = _read_history(journal_with_identity)
-        assert len(records) == 1
-        _assert_history_record(
-            records[0],
-            file_name="self.md",
-            actor="journal identity self --update-section <heading>",
-            op="update_section",
-            section="who I'm here for",
-            reason="manual section update",
-        )
-
     def test_multiple_writes_append(self, journal_with_identity):
-        runner.invoke(app, ["self", "--write", "--value", "# self\n\nFirst.\n"])
-        runner.invoke(app, ["self", "--write", "--value", "# self\n\nSecond.\n"])
+        runner.invoke(app, ["partner", "--write", "--value", "# partner\n\nFirst.\n"])
+        runner.invoke(app, ["partner", "--write", "--value", "# partner\n\nSecond.\n"])
         records = _read_history(journal_with_identity)
         assert len(records) == 2
 

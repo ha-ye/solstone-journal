@@ -323,17 +323,17 @@ def test_show_prompt_context_day_format_validation(capsys):
 
 def test_show_effective_prompt_read_scope_matches_assembled_prompt(capsys):
     """Cogitate prompt view renders the same assembled prompt provider receives."""
-    config = get_talent("self_observer")
+    config = get_talent("digest")
     body, system_instruction = assemble_prompt(config, sol_tool_name="sol")
 
-    show_effective_prompt("self_observer", full=True)
+    show_effective_prompt("digest", full=True)
     output = capsys.readouterr().out
 
     assert system_instruction is not None
     assert system_instruction.startswith(COGITATE_RUNTIME_PREAMBLE)
     assert "through the `sol` tool" in system_instruction
     assert "Limit filesystem reads to today's segment dir" in system_instruction
-    assert "# Self Observer" in body
+    assert "# Digest" in body
     assert system_instruction in output
     assert body in output
     assert "tier: normal" in output

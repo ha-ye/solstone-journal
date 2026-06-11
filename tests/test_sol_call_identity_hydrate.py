@@ -20,16 +20,14 @@ def journal_path(tmp_path, monkeypatch):
 def test_identity_hydrate_reads_all_sections(journal_path):
     identity_dir = journal_path / "identity"
     identity_dir.mkdir()
-    (identity_dir / "self.md").write_text("self body")
     (identity_dir / "partner.md").write_text("partner body")
     (identity_dir / "awareness.md").write_text("awareness body")
 
     output = _hydrate()
 
-    expected = ["# self", "# partner", "# awareness"]
+    expected = ["# partner", "# awareness"]
     positions = [output.index(marker) for marker in expected]
     assert positions == sorted(positions)
-    assert "self body" in output
     assert "partner body" in output
     assert "awareness body" in output
 
@@ -37,12 +35,10 @@ def test_identity_hydrate_reads_all_sections(journal_path):
 def test_identity_hydrate_marks_missing_sections(journal_path):
     identity_dir = journal_path / "identity"
     identity_dir.mkdir()
-    (identity_dir / "self.md").write_text("self body")
     (identity_dir / "partner.md").write_text("partner body")
 
     output = _hydrate()
 
-    assert "# self\n\nself body\n" in output
     assert "# partner\n\npartner body\n" in output
     assert "# awareness\n\n(not present)\n" in output
 
@@ -50,14 +46,13 @@ def test_identity_hydrate_marks_missing_sections(journal_path):
 def test_identity_hydrate_handles_empty_identity_directory(journal_path):
     output = _hydrate()
 
-    for stem in ("self", "partner", "awareness"):
+    for stem in ("partner", "awareness"):
         assert f"# {stem}\n\n(not present)\n" in output
 
 
 def test_identity_hydrate_starts_with_species_preamble(journal_path):
     identity_dir = journal_path / "identity"
     identity_dir.mkdir()
-    (identity_dir / "self.md").write_text("self body")
     (identity_dir / "partner.md").write_text("partner body")
     (identity_dir / "awareness.md").write_text("awareness body")
 
@@ -65,7 +60,7 @@ def test_identity_hydrate_starts_with_species_preamble(journal_path):
 
     assert output.startswith("# species\n\n")
     assert _SPECIES_PREAMBLE in output
-    expected = ["# species", "# self", "# partner", "# awareness"]
+    expected = ["# species", "# partner", "# awareness"]
     positions = [output.index(marker) for marker in expected]
     assert positions == sorted(positions)
 
@@ -73,25 +68,23 @@ def test_identity_hydrate_starts_with_species_preamble(journal_path):
 def test_identity_hydrate_strips_duplicate_section_heading(journal_path):
     identity_dir = journal_path / "identity"
     identity_dir.mkdir()
-    (identity_dir / "self.md").write_text("# self\n\nself body\n")
-    (identity_dir / "partner.md").write_text("partner body")
+    (identity_dir / "partner.md").write_text("# partner\n\npartner body\n")
     (identity_dir / "awareness.md").write_text("awareness body")
 
     output = _hydrate()
 
-    assert output.splitlines().count("# self") == 1
-    assert "# self\n\nself body" in output
+    assert output.splitlines().count("# partner") == 1
+    assert "# partner\n\npartner body" in output
 
 
 def test_identity_hydrate_preserves_non_matching_heading(journal_path):
     identity_dir = journal_path / "identity"
     identity_dir.mkdir()
-    (identity_dir / "self.md").write_text("# My Custom Heading\n\nself body\n")
-    (identity_dir / "partner.md").write_text("partner body")
+    (identity_dir / "partner.md").write_text("# My Custom Heading\n\npartner body\n")
     (identity_dir / "awareness.md").write_text("awareness body")
 
     output = _hydrate()
 
     assert "# My Custom Heading" in output
-    assert output.splitlines().count("# self") == 1
-    assert "self body" in output
+    assert output.splitlines().count("# partner") == 1
+    assert "partner body" in output

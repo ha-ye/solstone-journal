@@ -69,7 +69,7 @@ def test_write_identity_first_write(tmp_path):
 def test_write_identity_atomic_failure(tmp_path, monkeypatch):
     identity_dir = tmp_path / "identity"
     identity_dir.mkdir()
-    target = identity_dir / "self.md"
+    target = identity_dir / "partner.md"
     target.write_text("original\n", encoding="utf-8")
 
     def fail_replace(src, dst):
@@ -79,7 +79,7 @@ def test_write_identity_atomic_failure(tmp_path, monkeypatch):
 
     with pytest.raises(OSError, match="replace failed"):
         write_identity(
-            "self.md",
+            "partner.md",
             actor="test writer",
             op="replace",
             section=None,
@@ -99,7 +99,7 @@ def _identity_worker(journal_path, barrier, errors, index):
 
         barrier.wait(timeout=5)
         write_identity(
-            "self.md",
+            "partner.md",
             actor=f"writer-{index}",
             op="replace",
             section=None,
@@ -137,14 +137,14 @@ def test_write_identity_serializes_process_writers(tmp_path):
     records = _read_history(tmp_path)
     assert len(records) == 4
     assert {r["actor"] for r in records} == {f"writer-{i}" for i in range(4)}
-    final = (tmp_path / "identity" / "self.md").read_text(encoding="utf-8")
+    final = (tmp_path / "identity" / "partner.md").read_text(encoding="utf-8")
     assert final in {f"content-{i}\n" for i in range(4)}
 
 
 def test_write_identity_lock_serializes(tmp_path):
     def writer(actor: str, content: str) -> None:
         write_identity(
-            "self.md",
+            "partner.md",
             actor=actor,
             op="replace",
             section=None,
@@ -159,7 +159,7 @@ def test_write_identity_lock_serializes(tmp_path):
     thread_one.join()
     thread_two.join()
 
-    final_content = (tmp_path / "identity" / "self.md").read_text(encoding="utf-8")
+    final_content = (tmp_path / "identity" / "partner.md").read_text(encoding="utf-8")
     assert final_content in {"first\n", "second\n"}
 
     records = _read_history(tmp_path)

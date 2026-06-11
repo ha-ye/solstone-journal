@@ -22,10 +22,10 @@ Read current state. Use `sol call` for indexed data, `read_file` for the
 identity file, and the settled `journal routines` form for routine state:
 
 1. `sol call awareness status` — processing, import, and journal state
-2. `read_file` `identity/self.md` — identity summary (skim for key changes)
-3. `sol call activities list --source anticipated` — today's scheduled activity records
-4. `journal routines list` — active routines and recent outputs
-5. `sol call entities search --limit 5` — recent entity activity
+2. `sol call activities list --source anticipated` — today's scheduled activity records
+3. `journal routines list` — active routines and recent outputs
+4. `sol call entities search --limit 5` — recent entity activity
+
 ## Write awareness.md
 
 Compose a structured bullet-point snapshot. Keep it under 30 lines. Use this format:

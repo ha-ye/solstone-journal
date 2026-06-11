@@ -43,17 +43,8 @@ EMIT_FINAL_SCHEDULES = {"daily", "weekly", "activity"}
             ),
             "FinishTool",
         ),
-        (
-            # self_observer persists via `sol` domain commands and returns no output -
-            # a quiet/side-effect talent - but it is daily-scheduled so its
-            # registration outcome is emit_final; "quiet" is prose intent, never a
-            # third registration.
-            "self_observer",
-            lambda c: c.get("schedule") in EMIT_FINAL_SCHEDULES,
-            "emit_final",
-        ),
     ],
-    ids=["emit_final-scheduled", "finishtool-unscheduled", "quiet-side-effect"],
+    ids=["emit_final-scheduled", "finishtool-unscheduled"],
 )
 def test_cogitate_finalization_class_assembles_on_contract(
     name,

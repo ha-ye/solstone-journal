@@ -350,7 +350,7 @@ def load_prompt(
                 # Add uppercase-first version
                 template_vars[key.capitalize()] = str_value.capitalize()
 
-        # Merge identity/ template vars (for example $identity_self)
+        # Merge identity/ template vars (for example $identity_partner)
         identity_vars = _load_identity_vars()
         for key, value in identity_vars.items():
             if key not in template_vars:

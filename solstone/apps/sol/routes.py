@@ -41,11 +41,7 @@ from solstone.convey.reasons import (
 )
 from solstone.convey.utils import DATE_RE, error_response, format_date
 from solstone.think.facets import get_facets
-from solstone.think.identity import (
-    ensure_identity_directory,
-    update_self_md_opening,
-    update_self_md_section,
-)
+from solstone.think.identity import ensure_identity_directory
 from solstone.think.journal_config import read_journal_config, write_journal_config
 from solstone.think.journal_io import LockTimeout
 from solstone.think.models import calc_agent_cost
@@ -787,20 +783,6 @@ def api_set_name() -> Any:
     config["agent"] = agent
     write_journal_config(config)
 
-    try:
-        update_self_md_opening(
-            f"I am {name}. this is a new journal — we're just getting started.",
-            actor="sol call sol set-name",
-            reason="agent name updated",
-        )
-        update_self_md_section(
-            "my name",
-            f"{name} (named {named_date})",
-            actor="sol call sol set-name",
-            reason="agent name updated",
-        )
-    except LockTimeout:
-        return error_response(IDENTITY_BUSY, detail="identity is busy; try again")
     return jsonify(agent)
 
 
@@ -838,18 +820,6 @@ def api_set_owner() -> Any:
     config["identity"] = identity
     write_journal_config(config)
 
-    owner_content = name
-    if bio:
-        owner_content += f"\n{bio}"
-    try:
-        update_self_md_section(
-            "who I'm here for",
-            owner_content,
-            actor="sol call sol set-owner",
-            reason="owner identity updated",
-        )
-    except LockTimeout:
-        return error_response(IDENTITY_BUSY, detail="identity is busy; try again")
     return jsonify({"name": name, "bio": bio or ""})
 
 

@@ -313,17 +313,6 @@
       "title": "Screen Record",
       "type": "generate"
     },
-    "self_observer": {
-      "app": null,
-      "color": "#6c757d",
-      "description": "Tends durable self observations in identity/self.md.",
-      "multi_facet": false,
-      "output_format": null,
-      "schedule": "daily",
-      "source": "system",
-      "title": "Self Observer",
-      "type": "cogitate"
-    },
     "sense": {
       "app": null,
       "color": "#ff6f00",
