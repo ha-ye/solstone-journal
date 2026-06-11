@@ -16,6 +16,29 @@ from solstone.think.entities.journal import load_journal_entity, scan_journal_en
 STREAM = "test"
 
 
+def _write_matching_voiceprints(entity_dir, embedding, *, offset: int = 0) -> None:
+    embeddings = np.tile(embedding.reshape(1, -1), (5, 1))
+    metadata = np.array(
+        [
+            json.dumps(
+                {
+                    "day": "20240101",
+                    "segment_key": "143022_300",
+                    "source": "mic_audio",
+                    "sentence_id": i + offset,
+                }
+            )
+            for i in range(5)
+        ],
+        dtype=str,
+    )
+    np.savez_compressed(
+        entity_dir / "voiceprints.npz",
+        embeddings=embeddings,
+        metadata=metadata,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Core merge behavior
 # ---------------------------------------------------------------------------
@@ -632,51 +655,34 @@ def test_resolve_name_variants_deep_merge(speakers_env):
     # Create two entities with identical voiceprints
     embedding = np.random.default_rng(42).standard_normal(256).astype(np.float32)
     embedding = embedding / np.linalg.norm(embedding)
-    embeddings = np.tile(embedding.reshape(1, -1), (5, 1))
 
     alias_dir = env.create_entity("Alice")
     canonical_dir = env.create_entity("Alice Johnson")
 
-    meta_a = np.array(
-        [
-            json.dumps(
-                {
-                    "day": "20240101",
-                    "segment_key": "143022_300",
-                    "source": "mic_audio",
-                    "sentence_id": i,
-                }
-            )
-            for i in range(5)
-        ],
-        dtype=str,
-    )
-    meta_b = np.array(
-        [
-            json.dumps(
-                {
-                    "day": "20240101",
-                    "segment_key": "143022_300",
-                    "source": "mic_audio",
-                    "sentence_id": i + 10,
-                }
-            )
-            for i in range(5)
-        ],
-        dtype=str,
-    )
-    np.savez_compressed(
-        alias_dir / "voiceprints.npz", embeddings=embeddings, metadata=meta_a
-    )
-    np.savez_compressed(
-        canonical_dir / "voiceprints.npz", embeddings=embeddings, metadata=meta_b
-    )
+    _write_matching_voiceprints(alias_dir, embedding)
+    _write_matching_voiceprints(canonical_dir, embedding, offset=10)
 
     from solstone.apps.speakers.bootstrap import resolve_name_variants
 
     stats = resolve_name_variants(dry_run=False)
 
     assert len(stats["auto_merged"]) == 1
+    assert stats["auto_merged"] == [
+        {"canonical": "Alice Johnson", "alias": "Alice", "similarity": 1.0}
+    ]
+    assert set(stats) == {
+        "entities_with_voiceprints",
+        "pairs_compared",
+        "matches_found",
+        "auto_merged",
+        "ambiguous",
+        "errors",
+    }
+    assert stats["matches_found"] == [
+        {"name_a": "Alice", "name_b": "Alice Johnson", "similarity": 1.0}
+    ]
+    assert stats["ambiguous"] == []
+    assert stats["errors"] == []
 
     # Deep merge: alias entity should be deleted
     assert load_journal_entity("alice") is None
@@ -689,51 +695,100 @@ def test_resolve_name_variants_dry_run_unchanged(speakers_env):
 
     embedding = np.random.default_rng(42).standard_normal(256).astype(np.float32)
     embedding = embedding / np.linalg.norm(embedding)
-    embeddings = np.tile(embedding.reshape(1, -1), (5, 1))
 
     alias_dir = env.create_entity("Bob")
     canonical_dir = env.create_entity("Bob Smith")
 
-    meta_a = np.array(
-        [
-            json.dumps(
-                {
-                    "day": "20240101",
-                    "segment_key": "143022_300",
-                    "source": "mic_audio",
-                    "sentence_id": i,
-                }
-            )
-            for i in range(5)
-        ],
-        dtype=str,
-    )
-    meta_b = np.array(
-        [
-            json.dumps(
-                {
-                    "day": "20240101",
-                    "segment_key": "143022_300",
-                    "source": "mic_audio",
-                    "sentence_id": i + 10,
-                }
-            )
-            for i in range(5)
-        ],
-        dtype=str,
-    )
-    np.savez_compressed(
-        alias_dir / "voiceprints.npz", embeddings=embeddings, metadata=meta_a
-    )
-    np.savez_compressed(
-        canonical_dir / "voiceprints.npz", embeddings=embeddings, metadata=meta_b
-    )
+    _write_matching_voiceprints(alias_dir, embedding)
+    _write_matching_voiceprints(canonical_dir, embedding, offset=10)
 
     from solstone.apps.speakers.bootstrap import resolve_name_variants
 
     stats = resolve_name_variants(dry_run=True)
 
-    assert len(stats["auto_merged"]) == 1
+    assert stats == {
+        "entities_with_voiceprints": 2,
+        "pairs_compared": 1,
+        "matches_found": [{"name_a": "Bob", "name_b": "Bob Smith", "similarity": 1.0}],
+        "auto_merged": [{"canonical": "Bob Smith", "alias": "Bob", "similarity": 1.0}],
+        "ambiguous": [],
+        "errors": [],
+    }
     # Dry run: both entities still exist
     assert load_journal_entity("bob") is not None
     assert load_journal_entity("bob_smith") is not None
+
+
+def test_detect_name_variant_candidates_returns_directional_ready_pair(speakers_env):
+    """Detection returns alias source and canonical target for actionable pairs."""
+    env = speakers_env()
+    embedding = np.random.default_rng(42).standard_normal(256).astype(np.float32)
+    embedding = embedding / np.linalg.norm(embedding)
+
+    alias_dir = env.create_entity("Alice")
+    canonical_dir = env.create_entity("Alice Johnson")
+    _write_matching_voiceprints(alias_dir, embedding)
+    _write_matching_voiceprints(canonical_dir, embedding, offset=10)
+
+    from solstone.apps.speakers.bootstrap import detect_name_variant_candidates
+
+    result = detect_name_variant_candidates()
+
+    assert result == {
+        "candidates": [
+            {
+                "source_id": "alice",
+                "source_label": "Alice",
+                "target_id": "alice_johnson",
+                "target_label": "Alice Johnson",
+                "similarity": 1.0,
+                "readiness": "ready",
+            }
+        ],
+        "entities_with_voiceprints": 2,
+        "pairs_compared": 1,
+        "matches_found": [
+            {"name_a": "Alice", "name_b": "Alice Johnson", "similarity": 1.0}
+        ],
+        "ambiguous": [],
+    }
+
+
+def test_detect_name_variant_candidates_excludes_ambiguous_pairs(speakers_env):
+    """Detection suppresses candidates when one entity has multiple matches."""
+    env = speakers_env()
+    embedding = np.random.default_rng(42).standard_normal(256).astype(np.float32)
+    embedding = embedding / np.linalg.norm(embedding)
+
+    for offset, name in enumerate(["Alice", "Alice Johnson", "Alice Smith"]):
+        entity_dir = env.create_entity(name)
+        _write_matching_voiceprints(entity_dir, embedding, offset=offset * 10)
+
+    from solstone.apps.speakers.bootstrap import detect_name_variant_candidates
+
+    result = detect_name_variant_candidates()
+
+    assert result["candidates"] == []
+    assert len(result["matches_found"]) == 3
+    assert result["ambiguous"]
+
+
+def test_detect_name_variant_candidates_excludes_non_name_variants(speakers_env):
+    """Detection reports non-name-variant acoustic matches as ambiguous."""
+    env = speakers_env()
+    embedding = np.random.default_rng(42).standard_normal(256).astype(np.float32)
+    embedding = embedding / np.linalg.norm(embedding)
+
+    first_dir = env.create_entity("Romeo")
+    second_dir = env.create_entity("Juliet")
+    _write_matching_voiceprints(first_dir, embedding)
+    _write_matching_voiceprints(second_dir, embedding, offset=10)
+
+    from solstone.apps.speakers.bootstrap import detect_name_variant_candidates
+
+    result = detect_name_variant_candidates()
+
+    assert result["candidates"] == []
+    assert result["ambiguous"] == [
+        {"name": "Juliet", "candidates": [{"name": "Romeo", "similarity": 1.0}]}
+    ]

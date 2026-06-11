@@ -27,9 +27,9 @@ _SKIP_PARTICIPANT_TERMS = ("presenting", "private", "unscheduled")
 
 
 def _bootstrap_helpers():
-    from solstone.apps.speakers.bootstrap import resolve_name_variants
+    from solstone.apps.speakers.bootstrap import detect_name_variant_candidates
 
-    return resolve_name_variants
+    return detect_name_variant_candidates
 
 
 def _discovery_helpers():
@@ -254,36 +254,17 @@ def _import_linkable() -> list[dict[str, Any]]:
 
 
 def _name_variant() -> list[dict[str, Any]]:
-    resolve_name_variants = _bootstrap_helpers()
-    from solstone.think.entities.journal import load_all_journal_entities
-
-    result = resolve_name_variants(dry_run=True)
-    entities = load_all_journal_entities()
-    name_to_id = {
-        entity.get("name", "").strip().lower(): entity_id
-        for entity_id, entity in entities.items()
-        if entity.get("name")
-    }
+    detect_name_variant_candidates = _bootstrap_helpers()
 
     suggestions: list[dict[str, Any]] = []
-    for pair in result.get("matches_found", []):
-        name_a = pair["name_a"]
-        name_b = pair["name_b"]
-        lower_a = name_a.lower()
-        lower_b = name_b.lower()
-        first_word_match = (
-            lower_a.split()[0] == lower_b or lower_b.split()[0] == lower_a
-        )
-        substring_match = lower_a in lower_b or lower_b in lower_a
-        if not (first_word_match or substring_match):
-            continue
-
+    for pair in detect_name_variant_candidates().get("candidates", []):
         suggestions.append(
             {
                 "type": "name_variant",
-                "entity_a": {"id": name_to_id.get(lower_a), "name": name_a},
-                "entity_b": {"id": name_to_id.get(lower_b), "name": name_b},
+                "source": {"id": pair["source_id"], "name": pair["source_label"]},
+                "target": {"id": pair["target_id"], "name": pair["target_label"]},
                 "similarity": pair["similarity"],
+                "readiness": pair["readiness"],
             }
         )
 
@@ -391,8 +372,8 @@ def format_suggestions(suggestions: list[dict[str, Any]]) -> str:
         elif suggestion_type == "name_variant":
             lines.append(
                 "Name variant: "
-                f'"{suggestion["entity_a"]["name"]}" '
-                f'\u2194 "{suggestion["entity_b"]["name"]}" '
+                f'"{suggestion["source"]["name"]}" '
+                f'\u2194 "{suggestion["target"]["name"]}" '
                 f"(similarity: {suggestion['similarity']:.2f})"
             )
         elif suggestion_type == "low_confidence_review":

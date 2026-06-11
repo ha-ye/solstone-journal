@@ -127,10 +127,10 @@ def test_suggest_name_variant(speakers_env):
     results = suggest_opportunities()
 
     suggestion = next(item for item in results if item["type"] == "name_variant")
-    assert suggestion["entity_a"]["id"] in {"alice", "alice_test"}
-    assert suggestion["entity_b"]["id"] in {"alice", "alice_test"}
-    assert suggestion["entity_a"]["id"] != suggestion["entity_b"]["id"]
+    assert suggestion["source"] == {"id": "alice", "name": "Alice"}
+    assert suggestion["target"] == {"id": "alice_test", "name": "Alice Test"}
     assert suggestion["similarity"] > 0.90
+    assert suggestion["readiness"] == "ready"
 
 
 def test_suggest_import_linkable(speakers_env):

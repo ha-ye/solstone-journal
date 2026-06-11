@@ -186,6 +186,7 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Speaker candidate pool (`awareness/speaker_candidates.json`) | `solstone/apps/speakers/candidate_tracker.py` |
 | Entity merge candidates (`entities/review-candidates.jsonl`) | `solstone/think/entities/review_candidates.py` |
 | Facet review candidates (`facets/review-candidates.jsonl`) | `solstone/think/facet_review_candidates.py` |
+| Speaker review candidates (`speakers/review-candidates.jsonl`) | `solstone/think/speaker_review_candidates.py` |
 | Facets (`facets/*/facet.json`, `facets/*/relationships/`) | `solstone/think/facets.py` + `solstone/apps/facets/*` (if/when created) |
 | Observations (`observations.jsonl`) | `solstone/think/entities/observations.py` |
 | Activities (`facets/*/activities/*.jsonl`) | `solstone/think/activities.py` |

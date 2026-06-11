@@ -291,26 +291,8 @@ def merge_names(alias_name: str, canonical_name: str) -> dict[str, Any]:
     }
 
 
-def resolve_name_variants(dry_run: bool = False) -> dict[str, Any]:
-    """Find and merge speaker name variants using voiceprint similarity.
-
-    Computes a centroid for each entity's voiceprints and compares all
-    pairs. Pairs with cosine similarity > NAME_MERGE_THRESHOLD (0.90)
-    are flagged as the same person.
-
-    Auto-merge criteria (all must be true):
-    - Both entities have exactly one high-similarity match (mutual exclusivity)
-    - The shorter name is the first word of the longer name (name variant pattern)
-
-    When auto-merging, the short name is added as an aka on the canonical
-    (longer-name) entity. Ambiguous cases are logged but not applied.
-
-    Args:
-        dry_run: If True, report merges without applying them
-
-    Returns:
-        Dict with merge statistics
-    """
+def detect_name_variant_candidates() -> dict[str, Any]:
+    """Find actionable speaker name-variant candidates using voiceprint similarity."""
     from solstone.think.entities import (
         load_entity_voiceprints_file,
         normalize_embedding,
@@ -318,13 +300,12 @@ def resolve_name_variants(dry_run: bool = False) -> dict[str, Any]:
 
     journal_entities = load_all_journal_entities()
 
-    stats: dict[str, Any] = {
+    result: dict[str, Any] = {
+        "candidates": [],
         "entities_with_voiceprints": 0,
         "pairs_compared": 0,
         "matches_found": [],
-        "auto_merged": [],
         "ambiguous": [],
-        "errors": [],
     }
 
     # Compute centroid for each non-principal entity with voiceprints
@@ -338,11 +319,11 @@ def resolve_name_variants(dry_run: bool = False) -> dict[str, Any]:
         if not name:
             continue
 
-        result = load_entity_voiceprints_file(entity_id)
-        if result is None:
+        voiceprint_result = load_entity_voiceprints_file(entity_id)
+        if voiceprint_result is None:
             continue
 
-        embeddings, _ = result
+        embeddings, _ = voiceprint_result
         if len(embeddings) == 0:
             continue
 
@@ -360,7 +341,7 @@ def resolve_name_variants(dry_run: bool = False) -> dict[str, Any]:
             continue
 
         centroids[entity_id] = (centroid, name)
-        stats["entities_with_voiceprints"] += 1
+        result["entities_with_voiceprints"] += 1
 
     # Compare all pairs and build match graph
     ids = list(centroids.keys())
@@ -368,7 +349,7 @@ def resolve_name_variants(dry_run: bool = False) -> dict[str, Any]:
 
     for i in range(len(ids)):
         for j in range(i + 1, len(ids)):
-            stats["pairs_compared"] += 1
+            result["pairs_compared"] += 1
             id_a, id_b = ids[i], ids[j]
             cent_a, name_a = centroids[id_a]
             cent_b, name_b = centroids[id_b]
@@ -376,7 +357,7 @@ def resolve_name_variants(dry_run: bool = False) -> dict[str, Any]:
             similarity = float(np.dot(cent_a, cent_b))
 
             if similarity >= NAME_MERGE_THRESHOLD:
-                stats["matches_found"].append(
+                result["matches_found"].append(
                     {
                         "name_a": name_a,
                         "name_b": name_b,
@@ -399,7 +380,7 @@ def resolve_name_variants(dry_run: bool = False) -> dict[str, Any]:
             for m in matches:
                 processed.add(tuple(sorted([eid, m[0]])))
 
-            stats["ambiguous"].append(
+            result["ambiguous"].append(
                 {
                     "name": name,
                     "candidates": [
@@ -426,13 +407,15 @@ def resolve_name_variants(dry_run: bool = False) -> dict[str, Any]:
 
         # Determine canonical (longer name) vs alias (shorter name)
         if len(name_a) >= len(name_b):
-            canonical_name, alias_name = name_a, name_b
+            target_id, target_label = eid, name_a
+            source_id, source_label = other_id, name_b
         else:
-            canonical_name, alias_name = name_b, name_a
+            target_id, target_label = other_id, name_b
+            source_id, source_label = eid, name_a
 
         # Check name variant pattern: first-word, token-subset, or prefix-token
-        if not is_name_variant_match(alias_name, canonical_name):
-            stats["ambiguous"].append(
+        if not is_name_variant_match(source_label, target_label):
+            result["ambiguous"].append(
                 {
                     "name": name_a,
                     "candidates": [
@@ -442,27 +425,86 @@ def resolve_name_variants(dry_run: bool = False) -> dict[str, Any]:
             )
             continue
 
-        # Auto-merge: call deep merge
+        # Pairs reaching this path are ready; "waiting" is reserved for deferred confidence.
+        result["candidates"].append(
+            {
+                "source_id": source_id,
+                "source_label": source_label,
+                "target_id": target_id,
+                "target_label": target_label,
+                "similarity": round(similarity, 4),
+                "readiness": "ready",
+            }
+        )
+
+    return result
+
+
+def resolve_name_variants(dry_run: bool = False) -> dict[str, Any]:
+    """Find and merge speaker name variants using voiceprint similarity.
+
+    Computes a centroid for each entity's voiceprints and compares all
+    pairs. Pairs with cosine similarity >= NAME_MERGE_THRESHOLD (0.90)
+    are flagged as the same person.
+
+    Auto-merge criteria (all must be true):
+    - Both entities have exactly one high-similarity match (mutual exclusivity)
+    - The shorter name is the first word of the longer name (name variant pattern)
+
+    When auto-merging, the short name is added as an aka on the canonical
+    (longer-name) entity. Ambiguous cases are logged but not applied.
+
+    Args:
+        dry_run: If True, report merges without applying them
+
+    Returns:
+        Dict with merge statistics
+    """
+    from solstone.think.entities import merge_entity
+
+    detection = detect_name_variant_candidates()
+    stats: dict[str, Any] = {
+        "entities_with_voiceprints": detection["entities_with_voiceprints"],
+        "pairs_compared": detection["pairs_compared"],
+        "matches_found": detection["matches_found"],
+        "auto_merged": [],
+        "ambiguous": detection["ambiguous"],
+        "errors": [],
+    }
+
+    for candidate in detection["candidates"]:
+        source_id = candidate["source_id"]
+        source_label = candidate["source_label"]
+        target_id = candidate["target_id"]
+        target_label = candidate["target_label"]
+        similarity = candidate["similarity"]
+
         if not dry_run:
             try:
-                result = merge_names(alias_name, canonical_name)
-                if result.get("error"):
+                merge_result = merge_entity(
+                    source_id,
+                    target_id,
+                    keep_source_as_aka=True,
+                    commit=True,
+                    caller="speakers.resolve_name_variants",
+                )
+                if merge_result.get("error"):
                     stats["errors"].append(
-                        f"Failed to merge {alias_name} -> {canonical_name}: "
-                        f"{result['error']}"
+                        f"Failed to merge {source_label} -> {target_label}: "
+                        f"{merge_result['error']}"
                     )
                     continue
             except Exception as e:
                 stats["errors"].append(
-                    f"Failed to merge {alias_name} -> {canonical_name}: {e}"
+                    f"Failed to merge {source_label} -> {target_label}: {e}"
                 )
                 continue
 
         stats["auto_merged"].append(
             {
-                "canonical": canonical_name,
-                "alias": alias_name,
-                "similarity": round(similarity, 4),
+                "canonical": target_label,
+                "alias": source_label,
+                "similarity": similarity,
             }
         )
 
