@@ -16,9 +16,11 @@ import pytest
 
 from solstone.think.pipeline_health import (
     STUCK_FAIL_THRESHOLD,
+    CompletionsSince,
     TerminalUnit,
     pipeline_status_message,
     read_backlog_view,
+    read_completed_since,
     read_completed_units,
     read_daily_deterministic_failures,
     read_day_stuck,
@@ -574,6 +576,151 @@ def test_read_completed_units_returns_old_daily_tuple_shape_and_filters_scoped_u
         ("daily", "facet_newsletter", "work"),
     }
     assert all(isinstance(unit, tuple) and len(unit) == 3 for unit in completed)
+
+
+def test_read_completed_since_missing_health_dirs(pipeline_journal):
+    assert read_completed_since("20990210", 0) == CompletionsSince((), ())
+
+
+def test_read_completed_since_dedups_segment_completions_at_max_ts(pipeline_journal):
+    day = "20990211"
+    base = pipeline_journal / "chronicle" / day / "health"
+    _write_jsonl(
+        base / "001_segment.jsonl",
+        [
+            _complete("090000_300", "entities", 100, stream="default"),
+            _complete("090000_300", "sense", 150, stream="default"),
+            _complete("090000_300", "documents", 125, stream="default"),
+        ],
+    )
+
+    assert read_completed_since(day, 99).segments == (
+        {"stream": "default", "segment": "090000_300", "ts": 150},
+    )
+
+
+def test_read_completed_since_excludes_ts_at_or_before_since(pipeline_journal):
+    day = "20990212"
+    base = pipeline_journal / "chronicle" / day / "health"
+    _write_jsonl(
+        base / "001_segment.jsonl",
+        [_complete("090000_300", "entities", 100, stream="default")],
+    )
+
+    assert read_completed_since(day, 100) == CompletionsSince((), ())
+
+
+def test_read_completed_since_projects_activity_units(pipeline_journal):
+    day = "20990213"
+    base = pipeline_journal / "chronicle" / day / "health"
+    _write_jsonl(
+        base / "001_activity.jsonl",
+        [
+            {
+                "event": "talent.complete",
+                "ts": 101,
+                "mode": "activity",
+                "name": "summary",
+                "facet": "work",
+                "activity": "meeting_090000_300",
+            }
+        ],
+    )
+
+    assert read_completed_since(day, 100).activities == (
+        {"facet": "work", "activity": "meeting_090000_300", "ts": 101},
+    )
+
+
+def test_read_completed_since_includes_prior_day_completions(pipeline_journal):
+    day = "20990214"
+    prev_day = "20990213"
+    base = pipeline_journal / "chronicle" / prev_day / "health"
+    _write_jsonl(
+        base / "001_segment.jsonl",
+        [_complete("235900_300", "entities", 200, stream="default")],
+    )
+
+    assert read_completed_since(day, 199).segments == (
+        {"stream": "default", "segment": "235900_300", "ts": 200},
+    )
+
+
+def test_read_completed_since_excludes_units_whose_latest_terminal_failed(
+    pipeline_journal,
+):
+    day = "20990215"
+    base = pipeline_journal / "chronicle" / day / "health"
+    _write_jsonl(
+        base / "001_segment.jsonl",
+        [
+            _complete("090000_300", "entities", 100, stream="default"),
+            _fail("090000_300", "entities", 110, stream="default"),
+        ],
+    )
+
+    assert read_completed_since(day, 99) == CompletionsSince((), ())
+
+
+def test_read_completed_since_ignores_cadence_own_terminal_record(pipeline_journal):
+    day = "20990216"
+    base = pipeline_journal / "chronicle" / day / "health"
+    _write_jsonl(
+        base / "001_cadence.jsonl",
+        [
+            {
+                "event": "talent.complete",
+                "ts": 100,
+                "mode": "cadence",
+                "name": "pulse",
+                "segment": None,
+                "activity": None,
+            }
+        ],
+    )
+
+    assert read_completed_since(day, 99) == CompletionsSince((), ())
+
+
+def test_read_completed_since_sorts_outputs_deterministically(pipeline_journal):
+    day = "20990217"
+    base = pipeline_journal / "chronicle" / day / "health"
+    _write_jsonl(
+        base / "001_units.jsonl",
+        [
+            _complete("z_seg", "entities", 200, stream="zeta"),
+            _complete("a_seg", "entities", 100, stream="zeta"),
+            _complete("b_seg", "entities", 100, stream="alpha"),
+            {
+                "event": "talent.complete",
+                "ts": 150,
+                "mode": "activity",
+                "name": "summary",
+                "facet": "work",
+                "activity": "z_activity",
+            },
+            {
+                "event": "talent.complete",
+                "ts": 150,
+                "mode": "activity",
+                "name": "summary",
+                "facet": "home",
+                "activity": "a_activity",
+            },
+        ],
+    )
+
+    completions = read_completed_since(day, 99)
+
+    assert completions.segments == (
+        {"stream": "alpha", "segment": "b_seg", "ts": 100},
+        {"stream": "zeta", "segment": "a_seg", "ts": 100},
+        {"stream": "zeta", "segment": "z_seg", "ts": 200},
+    )
+    assert completions.activities == (
+        {"facet": "home", "activity": "a_activity", "ts": 150},
+        {"facet": "work", "activity": "z_activity", "ts": 150},
+    )
 
 
 def test_empty_day_is_healthy(pipeline_journal):

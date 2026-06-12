@@ -9,7 +9,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from solstone.think.cluster import cluster_segments
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # Test indirection: tests monkeypatch this for time-sensitive branches.
 _now = datetime.now
 
-_MODES = ("segment", "daily", "activity", "weekly", "flush")
+_MODES = ("segment", "daily", "activity", "weekly", "flush", "cadence")
 _FAILED_LIST_CAP = 20
 SEGMENT_FLOOR_TALENTS: tuple[str, ...] = ("entities", "documents")
 STUCK_FAIL_THRESHOLD = 3
@@ -109,6 +109,14 @@ class TerminalState:
     reason_code: str | None
     provider: str | None
     model: str | None
+
+
+@dataclass(frozen=True)
+class CompletionsSince:
+    """Completed segment/activity units newer than a timestamp, for cadence."""
+
+    segments: tuple[dict, ...]
+    activities: tuple[dict, ...]
 
 
 @dataclass(frozen=True)
@@ -484,6 +492,61 @@ def read_completed_units(day: str) -> set[tuple[str, str, str | None]]:
         and unit.activity is None
         and state.latest_event == TERMINAL_COMPLETE
     }
+
+
+def read_completed_since(day: str, since_ms: int) -> CompletionsSince:
+    """Return unique completed segment/activity units newer than since_ms.
+
+    Scans ``day`` and the prior day because post-midnight completions can
+    reference the previous day's health dir. Projects ``read_terminal_states``
+    from per-talent identities to unique segment/activity units, each tagged
+    with the newest completion ts.
+
+    This function does not create, modify, or delete journal state.
+    """
+    prev = (datetime.strptime(day, "%Y%m%d") - timedelta(days=1)).strftime("%Y%m%d")
+    seg_max: dict[tuple[str | None, str], int] = {}
+    act_max: dict[tuple[str | None, str], int] = {}
+
+    for scan_day in (day, prev):
+        for unit, state in read_terminal_states(scan_day).items():
+            if state.latest_event != TERMINAL_COMPLETE or state.latest_ts <= since_ms:
+                continue
+
+            if unit.segment:
+                seg_key = (unit.stream, unit.segment)
+                seg_max[seg_key] = max(seg_max.get(seg_key, 0), state.latest_ts)
+            elif unit.activity:
+                act_key = (unit.facet, unit.activity)
+                act_max[act_key] = max(act_max.get(act_key, 0), state.latest_ts)
+
+    segments = tuple(
+        sorted(
+            (
+                {"stream": stream, "segment": segment, "ts": ts}
+                for (stream, segment), ts in seg_max.items()
+            ),
+            key=lambda item: (
+                item["ts"],
+                item["stream"] or "",
+                item["segment"],
+            ),
+        )
+    )
+    activities = tuple(
+        sorted(
+            (
+                {"facet": facet, "activity": activity, "ts": ts}
+                for (facet, activity), ts in act_max.items()
+            ),
+            key=lambda item: (
+                item["ts"],
+                item["facet"] or "",
+                item["activity"],
+            ),
+        )
+    )
+    return CompletionsSince(segments=segments, activities=activities)
 
 
 def read_daily_deterministic_failures(

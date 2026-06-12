@@ -46,6 +46,7 @@ from solstone.think.pipeline_health import (
     SEGMENT_FLOOR_TALENTS,
     DeterministicFailure,
     classify_segment_completion,
+    read_completed_since,
     read_completed_units,
     read_daily_deterministic_failures,
     read_segment_progress,
@@ -121,6 +122,26 @@ def _jsonl_log(event: str, **fields) -> None:
     """Write a JSONL event if the writer is active."""
     if _jsonl:
         _jsonl.log(event, **fields)
+
+
+def load_cadence_state() -> dict[str, int]:
+    """Read health/cadence.json per-talent last-run timestamps."""
+    path = Path(get_journal()) / "health" / "cadence.json"
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError) as exc:
+        logging.warning("Failed to load cadence state: %s", exc)
+        return {}
+
+
+def save_cadence_state(state: dict[str, int]) -> None:
+    """Persist cadence state to health/cadence.json atomically."""
+    path = Path(get_journal()) / "health" / "cadence.json"
+    atomic_replace(path, json.dumps(state, indent=2))
 
 
 def _provider_model_fields(use_id: str) -> dict[str, str | None]:
@@ -2081,6 +2102,119 @@ def run_weekly_prompts(
     return (total_success, total_failed, all_failed_names)
 
 
+def run_cadence_prompts(
+    day: str,
+    refresh: bool,
+    verbose: bool,
+    max_concurrency: int = 2,
+    stream: str | None = None,
+    timeout: int | None = 610,
+) -> tuple[int, int, list[str]]:
+    """Run cadence-scheduled prompts whose completion gate is open."""
+    all_prompts = get_talent_configs(schedule="cadence")
+    if not all_prompts:
+        logging.info("cadence: no cadence talents configured")
+        return (0, 0, [])
+
+    cadence_state = load_cadence_state()
+    dirty = False
+    total_success = 0
+    total_failed = 0
+    failed_names: list[str] = []
+    fired = 0
+    skipped = 0
+
+    for name, config in sorted(
+        all_prompts.items(), key=lambda item: (item[1]["priority"], item[0])
+    ):
+        now = now_ms()
+        cadence_minutes = config.get("cadence_minutes", 5)
+        last = cadence_state.get(name)
+        if last is not None and now - last < cadence_minutes * 60_000:
+            _log_skip(
+                name,
+                "interval_not_elapsed",
+                f"{(now - last) // 1000}s since last < {cadence_minutes}m",
+                mode="cadence",
+                day=day,
+            )
+            skipped += 1
+            continue
+
+        since_ms = last or 0
+        window = read_completed_since(day, since_ms)
+        if not window.segments and not window.activities:
+            _log_skip(
+                name,
+                "no_new_work",
+                "no segment/activity completed since last cadence run",
+                mode="cadence",
+                day=day,
+            )
+            skipped += 1
+            continue
+
+        is_generate = config["type"] == "generate"
+        request_config: dict = {
+            "day": day,
+            "schedule": "cadence",
+            "env": {"SOL_DAY": day},
+            "cadence_window": {
+                "since_ms": since_ms,
+                "segments": list(window.segments),
+                "activities": list(window.activities),
+            },
+        }
+        _apply_output_persistence(request_config, config, force_refresh=refresh)
+        prompt = "" if is_generate else f"Running cadence task for {iso_date(day)}."
+
+        use_id = _cortex_request_with_retry(
+            prompt=prompt,
+            name=name,
+            config=request_config,
+        )
+        if use_id is None:
+            _log_skip(
+                name,
+                "send_failed",
+                f"All cortex request attempts failed for {name}",
+                mode="cadence",
+                day=day,
+            )
+            total_failed += 1
+            failed_names.append(f"{name} (send)")
+            continue
+
+        emit("talent_started", mode="cadence", day=day, name=name, use_id=use_id)
+        _jsonl_log(
+            "talent.dispatch",
+            mode="cadence",
+            day=day,
+            name=name,
+            use_id=use_id,
+        )
+        s, f, fn = _drain_priority_batch(
+            [(use_id, name, config, None)], "cadence", day, None, stream, timeout
+        )
+        total_success += s
+        total_failed += f
+        failed_names.extend(fn)
+        if s == 1 and f == 0:
+            cadence_state[name] = now
+            dirty = True
+            fired += 1
+
+    if dirty:
+        save_cadence_state(cadence_state)
+    logging.info(
+        "cadence: %d fired, %d skipped (no new work or interval), %d failed",
+        fired,
+        skipped,
+        total_failed,
+    )
+    return (total_success, total_failed, failed_names)
+
+
 def run_activity_prompts(
     day: str,
     activity_id: str,
@@ -2699,6 +2833,7 @@ def dry_run(
     refresh: bool = False,
     stream: str | None = None,
     weekly: bool = False,
+    cadence: bool = False,
 ) -> None:
     """Print what think would execute without spawning any agents."""
     day_formatted = iso_date(day)
@@ -2766,6 +2901,36 @@ def dry_run(
             print("No prompts for schedule: weekly")
         else:
             _print_prompt_table(all_prompts, day, refresh=refresh, stream=stream)
+        return
+
+    if cadence:
+        all_prompts = get_talent_configs(schedule="cadence")
+        print(f"Day {day_formatted} — cadence agents\n")
+        if not all_prompts:
+            print("No prompts for schedule: cadence")
+            return
+        cadence_state = load_cadence_state()
+        now = now_ms()
+        for name, config in sorted(
+            all_prompts.items(), key=lambda item: (item[1]["priority"], item[0])
+        ):
+            cadence_minutes = config.get("cadence_minutes", 5)
+            last = cadence_state.get(name)
+            if last is not None and now - last < cadence_minutes * 60_000:
+                print(
+                    f"  skip  {name} — interval not elapsed "
+                    f"({(now - last) // 1000}s < {cadence_minutes}m)"
+                )
+                continue
+            window = read_completed_since(day, last or 0)
+            count = len(window.segments) + len(window.activities)
+            if count == 0:
+                print(f"  no-op {name} — no new work since last cadence run")
+            else:
+                print(
+                    f"  fire  {name} — window: {len(window.segments)} segment(s), "
+                    f"{len(window.activities)} activity(ies)"
+                )
         return
 
     if segments:
@@ -2994,7 +3159,7 @@ def parse_args() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--day",
-        help="Day folder in YYYYMMDD format (defaults to yesterday)",
+        help="Day folder in YYYYMMDD format (defaults to yesterday, or today with --cadence)",
     )
     parser.add_argument(
         "--segment",
@@ -3091,6 +3256,11 @@ def parse_args() -> argparse.ArgumentParser:
         help="Run weekly-scheduled agents (incompatible with --segment, --segments, --activity, --flush)",
     )
     parser.add_argument(
+        "--cadence",
+        action="store_true",
+        help="Run cadence-scheduled agents on completed segments/activities (incompatible with --segment, --segments, --activity, --flush, --weekly)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show what would run without executing anything",
@@ -3123,6 +3293,8 @@ def main() -> None:
             incompatible.append("--flush")
         if args.segments:
             incompatible.append("--segments")
+        if args.cadence:
+            incompatible.append("--cadence")
         if incompatible:
             parser.error(f"--updated is incompatible with {', '.join(incompatible)}")
         today = date.today().strftime("%Y%m%d")
@@ -3132,7 +3304,11 @@ def main() -> None:
 
     day = args.day
     if day is None:
-        day = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+        day = (
+            date.today().strftime("%Y%m%d")
+            if args.cadence
+            else (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+        )
     day_dir = day_path(day)
 
     if not day_dir.is_dir():
@@ -3173,6 +3349,13 @@ def main() -> None:
             "--weekly is incompatible with --segment, --segments, --activity, and --flush"
         )
 
+    if args.cadence and (
+        args.segment or args.segments or args.activity or args.flush or args.weekly
+    ):
+        parser.error(
+            "--cadence is incompatible with --segment, --segments, --activity, --flush, and --weekly"
+        )
+
     if args.dry_run:
         dry_run(
             day,
@@ -3184,6 +3367,7 @@ def main() -> None:
             refresh=args.refresh,
             stream=args.stream,
             weekly=args.weekly,
+            cadence=args.cadence,
         )
         sys.exit(0)
 
@@ -3195,10 +3379,16 @@ def main() -> None:
         _run_mode = "segment"
     elif args.weekly:
         _run_mode = "weekly"
+    elif args.cadence:
+        _run_mode = "cadence"
     elif args.segment:
         _run_mode = "segment"
     else:
         _run_mode = "daily"
+
+    if args.cadence and not get_talent_configs(schedule="cadence"):
+        logging.info("cadence: no cadence talents configured")
+        sys.exit(0)
 
     _run_ref = str(now_ms())
     _run_start_time = time.time()
@@ -3351,6 +3541,31 @@ def main() -> None:
             if fail_count > 0:
                 names = ", ".join(failed_names)
                 logging.error(f"{fail_count} weekly prompt(s) failed: {names}")
+                sys.exit(1)
+            sys.exit(0)
+
+        # Handle cadence mode — dispatch only agents whose completion gate is open
+        if args.cadence:
+            success_count, fail_count, failed_names = run_cadence_prompts(
+                day=day,
+                refresh=args.refresh,
+                verbose=args.verbose,
+                max_concurrency=args.jobs,
+                stream=args.stream,
+            )
+
+            duration_ms = int((time.time() - start_time) * 1000)
+            logging.info(
+                f"Cadence think completed in {duration_ms}ms: "
+                f"{success_count} succeeded, {fail_count} failed"
+            )
+            day_log(day, f"think --cadence failed={fail_count}")
+            _run_result["success"] = success_count
+            _run_result["failed"] = fail_count
+
+            if fail_count > 0:
+                names = ", ".join(failed_names)
+                logging.error(f"{fail_count} cadence prompt(s) failed: {names}")
                 sys.exit(1)
             sys.exit(0)
 
