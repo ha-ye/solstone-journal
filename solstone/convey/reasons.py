@@ -130,6 +130,33 @@ SERVICE_OPERATION_FAILED = Reason(
     "The service operation could not be completed.",
     500,
 )
+
+# backup
+BACKUP_BUSY = Reason(
+    "backup_busy",
+    "I couldn't start that because another backup task is already running. Try again in a moment.",
+    503,
+)
+BACKUP_NOT_CONFIRMED = Reason(
+    "backup_not_confirmed",
+    "I couldn't turn on backup until you confirm your recovery key.",
+    400,
+)
+RECOVERY_KEY_MISMATCH = Reason(
+    "recovery_key_mismatch",
+    "I couldn't confirm that — it didn't match your recovery key.",
+    400,
+)
+BACKUP_OPERATION_FAILED = Reason(
+    "backup_operation_failed",
+    "I couldn't finish that backup action.",
+    500,
+)
+BACKUP_UNAVAILABLE = Reason(
+    "backup_unavailable",
+    "I couldn't start a backup because solstone's background service isn't running. Start it, then try again.",
+    503,
+)
 NETWORK_SECURITY_REQUIRES_PASSWORD = Reason(
     "network_security_requires_password",
     "I couldn't change network access until a password is set.",

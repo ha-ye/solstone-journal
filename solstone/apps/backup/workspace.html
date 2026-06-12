@@ -1,0 +1,216 @@
+<link rel="stylesheet" href="{{ url_for('app:backup.static', filename='backup.css') }}">
+
+<section class="backup-shell" data-backup-root data-state="empty">
+  <header class="backup-header">
+    <p class="backup-kicker">{{ backup_copy.intro.optional }}</p>
+    <h1>{{ backup_copy.intro.title }}</h1>
+    <p>{{ backup_copy.intro.subtitle }}</p>
+    <ul class="backup-bullets">
+      {% for bullet in backup_copy.intro.bullets %}
+        <li>{{ bullet }}</li>
+      {% endfor %}
+    </ul>
+  </header>
+
+  <div class="backup-operation" data-operation-banner hidden>
+    <span data-operation-phase>{{ backup_copy.phase_labels.loading }}</span>
+    <span data-operation-error></span>
+  </div>
+
+  <div class="backup-panels">
+    <article class="backup-panel" data-backup-panel="intro">
+      <div class="backup-panel-main">
+        <h2>{{ backup_copy.intro.title }}</h2>
+        <p>{{ backup_copy.intro.subtitle }}</p>
+      </div>
+      <div class="backup-panel-actions">
+        <button type="button" data-action="start">{{ backup_copy.action_labels.start }}</button>
+        <button type="button" data-action="show-restore">{{ backup_copy.action_labels.restore }}</button>
+      </div>
+    </article>
+
+    <article class="backup-panel" data-backup-panel="educate" hidden>
+      <div class="backup-panel-main">
+        <h2>{{ backup_copy.management.status_labels.setup }}</h2>
+        <p>{{ backup_copy.educate.stakes }}</p>
+      </div>
+      <div class="backup-panel-actions">
+        <button type="button" data-action="understand">{{ backup_copy.action_labels.understand }}</button>
+      </div>
+    </article>
+
+    <article class="backup-panel" data-backup-panel="display" hidden>
+      <div class="backup-panel-main">
+        <p class="backup-warning">{{ backup_copy.key.theft_honesty }}</p>
+        <div class="backup-recovery-grid" data-recovery-grid aria-live="polite"></div>
+        <p class="backup-note">{{ backup_copy.key.pm_caution }}</p>
+        <p class="backup-note">{{ backup_copy.key.clipboard_caveat }}</p>
+      </div>
+      <div class="backup-panel-actions">
+        <button type="button" data-action="save-password-manager">{{ backup_copy.key.save_password_manager }}</button>
+        <button type="button" data-action="copy-key">{{ backup_copy.key.copy }}</button>
+        <button type="button" data-action="continue-confirm">{{ backup_copy.key.continue }}</button>
+      </div>
+    </article>
+
+    <article class="backup-panel" data-backup-panel="confirm" hidden>
+      <form data-confirm-form>
+        <label>
+          <span>{{ backup_copy.confirm.prompt }}</span>
+          <textarea data-confirm-input name="recovery_key" autocomplete="off" spellcheck="false"></textarea>
+        </label>
+        <p class="backup-error" data-confirm-error hidden></p>
+        <div class="backup-panel-actions">
+          <button type="submit">{{ backup_copy.action_labels.enable }}</button>
+          <button type="button" data-action="see-key-again">{{ backup_copy.confirm.escape }}</button>
+        </div>
+      </form>
+    </article>
+
+    <article class="backup-panel" data-backup-panel="destination" hidden>
+      <form data-destination-form>
+        <h2>{{ backup_copy.management.status_labels.destination }}</h2>
+        <p class="backup-warning">{{ backup_copy.destination.object_lock_warning }}</p>
+        <label>
+          <span>{{ backup_copy.destination.field_labels.repository }}</span>
+          <input name="repository" data-field="repository" autocomplete="off">
+        </label>
+        <label>
+          <span>{{ backup_copy.destination.field_labels.backend }}</span>
+          <select name="backend" data-field="backend">
+            <option value="s3">{{ backup_copy.destination.field_labels.s3 }}</option>
+            <option value="b2">{{ backup_copy.destination.field_labels.b2 }}</option>
+          </select>
+        </label>
+        <div data-backend-fields="s3">
+          <label>
+            <span>{{ backup_copy.destination.field_labels.access_key_id }}</span>
+            <input name="access_key_id" data-field="access_key_id" autocomplete="off">
+          </label>
+          <label>
+            <span>{{ backup_copy.destination.field_labels.secret_access_key }}</span>
+            <input name="secret_access_key" data-field="secret_access_key" type="password" autocomplete="off">
+          </label>
+        </div>
+        <div data-backend-fields="b2" hidden>
+          <label>
+            <span>{{ backup_copy.destination.field_labels.b2_key_id }}</span>
+            <input name="account_id" data-field="account_id" autocomplete="off">
+          </label>
+          <label>
+            <span>{{ backup_copy.destination.field_labels.b2_application_key }}</span>
+            <input name="account_key" data-field="account_key" type="password" autocomplete="off">
+          </label>
+        </div>
+        <p class="backup-status-message" data-destination-status></p>
+        <div class="backup-panel-actions">
+          <button type="submit">{{ backup_copy.action_labels.save_destination }}</button>
+          <button type="button" data-action="enable-backup">{{ backup_copy.action_labels.enable }}</button>
+        </div>
+      </form>
+    </article>
+
+    <article class="backup-panel" data-backup-panel="management" hidden>
+      <div class="backup-management-grid">
+        <section>
+          <h2>{{ backup_copy.management.status_labels.last_backup }}</h2>
+          <p data-last-backup>{{ backup_copy.management.status_labels.not_yet }}</p>
+        </section>
+        <section>
+          <h2>{{ backup_copy.management.status_labels.last_prune }}</h2>
+          <p data-last-prune>{{ backup_copy.management.status_labels.not_yet }}</p>
+        </section>
+        <section>
+          <h2>{{ backup_copy.management.status_labels.storage_used }}</h2>
+          <p data-storage-placeholder>{{ backup_copy.management.status_labels.not_available }}</p>
+        </section>
+        <section>
+          <h2>{{ backup_copy.management.status_labels.snapshot_history }}</h2>
+          <p data-snapshot-placeholder>{{ backup_copy.management.status_labels.not_available }}</p>
+        </section>
+      </div>
+
+      <form data-retention-form>
+        <h2>{{ backup_copy.management.status_labels.retention }}</h2>
+        {% for key, label in backup_copy.management.retention_labels.items() %}
+          <label>
+            <span>{{ label }}</span>
+            <input name="{{ key }}" data-retention-field="{{ key }}" type="number" min="0" step="1">
+          </label>
+        {% endfor %}
+        <p class="backup-status-message" data-retention-status></p>
+        <button type="submit">{{ backup_copy.action_labels.save_retention }}</button>
+      </form>
+
+      <div class="backup-panel-actions">
+        <button type="button" data-action="backup-now">{{ backup_copy.action_labels.backup_now }}</button>
+        <button type="button" data-action="view-key">{{ backup_copy.action_labels.view_key }}</button>
+        <button type="button" data-action="rotate-key">{{ backup_copy.action_labels.rotate_key }}</button>
+        <button type="button" data-action="teardown">{{ backup_copy.action_labels.teardown }}</button>
+      </div>
+      <p class="backup-warning">{{ backup_copy.management.destructive_caption }}</p>
+    </article>
+
+    <article class="backup-panel" data-backup-panel="restore" hidden>
+      <form data-restore-form>
+        <h2>{{ backup_copy.action_labels.restore }}</h2>
+        <p>{{ backup_copy.restore.expectation }}</p>
+        <label>
+          <span>{{ backup_copy.destination.field_labels.repository }}</span>
+          <input name="repository" data-field="restore_repository" autocomplete="off">
+        </label>
+        <label>
+          <span>{{ backup_copy.destination.field_labels.backend }}</span>
+          <select name="backend" data-field="restore_backend">
+            <option value="s3">{{ backup_copy.destination.field_labels.s3 }}</option>
+            <option value="b2">{{ backup_copy.destination.field_labels.b2 }}</option>
+          </select>
+        </label>
+        <div data-restore-backend-fields="s3">
+          <label>
+            <span>{{ backup_copy.destination.field_labels.access_key_id }}</span>
+            <input name="access_key_id" data-field="restore_access_key_id" autocomplete="off">
+          </label>
+          <label>
+            <span>{{ backup_copy.destination.field_labels.secret_access_key }}</span>
+            <input name="secret_access_key" data-field="restore_secret_access_key" type="password" autocomplete="off">
+          </label>
+        </div>
+        <div data-restore-backend-fields="b2" hidden>
+          <label>
+            <span>{{ backup_copy.destination.field_labels.b2_key_id }}</span>
+            <input name="account_id" data-field="restore_account_id" autocomplete="off">
+          </label>
+          <label>
+            <span>{{ backup_copy.destination.field_labels.b2_application_key }}</span>
+            <input name="account_key" data-field="restore_account_key" type="password" autocomplete="off">
+          </label>
+        </div>
+        <label>
+          <span>{{ backup_copy.confirm.prompt }}</span>
+          <textarea name="recovery_key" data-restore-key-input autocomplete="off" spellcheck="false"></textarea>
+        </label>
+        <p class="backup-status-message" data-restore-status></p>
+        <div class="backup-panel-actions">
+          <button type="submit">{{ backup_copy.action_labels.restore }}</button>
+          <button type="button" data-action="cancel-restore">{{ backup_copy.action_labels.cancel }}</button>
+        </div>
+      </form>
+    </article>
+  </div>
+
+  <div class="backup-state-markers" aria-hidden="true">
+    <span data-empty-state>{{ backup_copy.phase_labels.empty }}</span>
+    <span data-loading-state>{{ backup_copy.phase_labels.loading }}</span>
+    <span data-enabling-state>{{ backup_copy.phase_labels.setting_up }}</span>
+    <span data-error-state>{{ backup_copy.error_intro }}</span>
+  </div>
+</section>
+
+<script>
+  const BACKUP_COPY = {{ backup_copy|default({})|tojson|safe }};
+  const BACKUP_INITIAL = {{ backup_initial|default({})|tojson|safe }};
+  window.BACKUP_COPY = BACKUP_COPY;
+  window.BACKUP_INITIAL = BACKUP_INITIAL;
+</script>
+<script defer src="{{ url_for('app:backup.static', filename='backup.js') }}"></script>

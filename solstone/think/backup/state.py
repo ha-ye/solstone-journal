@@ -54,6 +54,7 @@ BACKUP_DEFAULTS: dict[str, Any] = {
         "error_reason": None,
     },
 }
+RETENTION_KEYS = ("hourly", "daily", "weekly", "monthly")
 
 
 @dataclass(frozen=True)
@@ -154,11 +155,36 @@ def set_destination(destination: Destination) -> None:
         write_journal_config(config)
 
 
+def set_enabled(enabled: bool) -> None:
+    with hold_config_lock():
+        config = read_journal_config()
+        backup = _writable_backup_section(config)
+        backup["enabled"] = enabled
+        write_journal_config(config)
+
+
 def set_recovery_key_confirmed(confirmed: bool = True) -> None:
     with hold_config_lock():
         config = read_journal_config()
         backup = _writable_backup_section(config)
         backup["confirmed_recovery_key"] = confirmed
+        write_journal_config(config)
+
+
+def set_retention(retention: dict[str, int]) -> None:
+    if not isinstance(retention, dict):
+        raise ValueError("backup retention must be a JSON object")
+    if set(retention) != set(RETENTION_KEYS):
+        raise ValueError("backup retention must include hourly, daily, weekly, monthly")
+    for key in RETENTION_KEYS:
+        value = retention[key]
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError("backup retention values must be non-negative integers")
+
+    with hold_config_lock():
+        config = read_journal_config()
+        backup = _writable_backup_section(config)
+        backup["retention"] = {key: int(retention[key]) for key in RETENTION_KEYS}
         write_journal_config(config)
 
 
@@ -246,7 +272,9 @@ __all__ = [
     "record_backup_result",
     "record_prune_result",
     "set_destination",
+    "set_enabled",
     "set_recovery_key",
     "set_recovery_key_confirmed",
+    "set_retention",
     "status_view",
 ]

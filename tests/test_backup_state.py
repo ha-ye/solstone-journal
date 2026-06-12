@@ -163,6 +163,103 @@ def test_setters_round_trip_under_config_lock(
     assert _read_config(tmp_path)["backup"]["confirmed_recovery_key"] is True
 
 
+def test_set_enabled_round_trips_under_config_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, {})
+    entries = 0
+
+    @contextmanager
+    def fake_lock():
+        nonlocal entries
+        entries += 1
+        yield
+
+    monkeypatch.setattr(state, "hold_config_lock", fake_lock)
+
+    state.set_enabled(True)
+    state.set_enabled(False)
+
+    assert entries == 2
+    assert _read_config(tmp_path)["backup"]["enabled"] is False
+    assert state.get_backup_config()["enabled"] is False
+    assert stat.S_IMODE(_config_path(tmp_path).stat().st_mode) == 0o600
+
+
+def test_set_retention_round_trips_under_config_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, {})
+    entries = 0
+
+    @contextmanager
+    def fake_lock():
+        nonlocal entries
+        entries += 1
+        yield
+
+    monkeypatch.setattr(state, "hold_config_lock", fake_lock)
+
+    state.set_retention({"hourly": 1, "daily": 2, "weekly": 3, "monthly": 4})
+
+    assert entries == 1
+    assert _read_config(tmp_path)["backup"]["retention"] == {
+        "hourly": 1,
+        "daily": 2,
+        "weekly": 3,
+        "monthly": 4,
+    }
+    assert state.get_backup_config()["retention"] == {
+        "hourly": 1,
+        "daily": 2,
+        "weekly": 3,
+        "monthly": 4,
+    }
+    assert stat.S_IMODE(_config_path(tmp_path).stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize(
+    "retention",
+    [
+        {"hourly": 1, "daily": 2, "weekly": 3},
+        {"hourly": 1, "daily": 2, "weekly": 3, "monthly": 4, "yearly": 5},
+        {"hourly": True, "daily": 2, "weekly": 3, "monthly": 4},
+        {"hourly": "1", "daily": 2, "weekly": 3, "monthly": 4},
+        {"hourly": -1, "daily": 2, "weekly": 3, "monthly": 4},
+    ],
+)
+def test_set_retention_rejects_invalid_values_without_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    retention: dict[str, object],
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    original = {
+        "backup": {"retention": {"hourly": 9, "daily": 8, "weekly": 7, "monthly": 6}}
+    }
+    _write_config(tmp_path, original)
+    before = _read_config(tmp_path)
+    entries = 0
+
+    @contextmanager
+    def fake_lock():
+        nonlocal entries
+        entries += 1
+        yield
+
+    monkeypatch.setattr(state, "hold_config_lock", fake_lock)
+
+    with pytest.raises(ValueError):
+        state.set_retention(retention)  # type: ignore[arg-type]
+
+    assert entries == 0
+    assert _read_config(tmp_path) == before
+
+
 def test_set_recovery_key_writes_known_key_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

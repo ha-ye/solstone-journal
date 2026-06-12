@@ -1,0 +1,213 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/* Copyright (c) 2026 sol pbc */
+
+.backup-shell {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.backup-header {
+  margin: 0 0 1rem;
+}
+
+.backup-header h1 {
+  margin: 0 0 0.4rem;
+  font-size: 1.65rem;
+  line-height: 1.2;
+}
+
+.backup-header p {
+  max-width: 760px;
+  margin: 0.25rem 0 0;
+  color: var(--text-muted, #555);
+  line-height: 1.45;
+}
+
+.backup-kicker {
+  font-size: 0.9rem;
+}
+
+.backup-bullets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0;
+  margin: 0.8rem 0 0;
+  list-style: none;
+}
+
+.backup-bullets li,
+.backup-state-markers span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.5rem;
+  padding: 0 0.5rem;
+  border-radius: 999px;
+  background: var(--muted-bg, #f0f0f0);
+  color: var(--text-muted, #555);
+  font-size: 0.82rem;
+}
+
+.backup-operation {
+  margin: 0 0 0.75rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border-color, #ddd);
+  border-radius: 8px;
+  background: var(--surface-color, #fff);
+}
+
+.backup-panels {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.backup-panel {
+  padding: 1rem;
+  border: 1px solid var(--border-color, #ddd);
+  border-radius: 8px;
+  background: var(--surface-color, #fff);
+}
+
+.backup-panel[hidden],
+.backup-operation[hidden],
+[data-backend-fields][hidden],
+[data-restore-backend-fields][hidden],
+.backup-error[hidden],
+.backup-status-message[hidden] {
+  display: none;
+}
+
+.backup-panel h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.1rem;
+  line-height: 1.25;
+}
+
+.backup-panel p {
+  margin: 0.45rem 0 0;
+  line-height: 1.45;
+}
+
+.backup-warning {
+  color: #7a3d00;
+}
+
+.backup-note,
+.backup-status-message,
+.backup-error {
+  color: var(--text-muted, #555);
+}
+
+.backup-error,
+[data-operation-error] {
+  color: #9b1c1c;
+}
+
+.backup-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.9rem;
+}
+
+.backup-panel button,
+.backup-panel input,
+.backup-panel select,
+.backup-panel textarea {
+  font: inherit;
+}
+
+.backup-panel button {
+  min-height: 2.25rem;
+  border: 1px solid var(--border-color, #ccc);
+  border-radius: 6px;
+  background: var(--button-bg, #fff);
+  color: var(--text-color, #222);
+  padding: 0 0.75rem;
+  cursor: pointer;
+}
+
+.backup-panel label {
+  display: grid;
+  gap: 0.3rem;
+  margin-top: 0.75rem;
+}
+
+.backup-panel input,
+.backup-panel select,
+.backup-panel textarea {
+  width: 100%;
+  min-height: 2.25rem;
+  box-sizing: border-box;
+  border: 1px solid var(--border-color, #ccc);
+  border-radius: 6px;
+  background: var(--surface-color, #fff);
+  color: var(--text-color, #222);
+  padding: 0.45rem 0.55rem;
+}
+
+.backup-panel textarea {
+  min-height: 6rem;
+  resize: vertical;
+}
+
+.backup-recovery-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.45rem;
+  margin: 0.85rem 0;
+}
+
+.backup-recovery-grid code {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.35rem;
+  border: 1px solid var(--border-color, #ddd);
+  border-radius: 6px;
+  background: var(--muted-bg, #f4f4f4);
+  font-size: 1rem;
+  letter-spacing: 0;
+}
+
+.backup-management-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.backup-management-grid section {
+  min-height: 5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border-color, #ddd);
+  border-radius: 8px;
+}
+
+.backup-state-markers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.75rem;
+}
+
+@media (max-width: 768px) {
+  .backup-shell,
+  [data-backup-root] {
+    padding-left: calc(var(--menu-bar-width-minimal) + 1rem);
+    padding-bottom: calc(var(--app-bar-height) + 3rem);
+  }
+
+  body.menu-full .backup-shell,
+  body.menu-full [data-backup-root] {
+    padding-left: calc(var(--menu-bar-width-full) + 1rem);
+  }
+
+  .backup-recovery-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .backup-management-grid {
+    grid-template-columns: 1fr;
+  }
+}
