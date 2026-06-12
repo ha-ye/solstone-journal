@@ -163,6 +163,70 @@ def test_setters_round_trip_under_config_lock(
     assert _read_config(tmp_path)["backup"]["confirmed_recovery_key"] is True
 
 
+def test_record_backup_result_writes_last_backup_under_config_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, {})
+    entries = 0
+
+    @contextmanager
+    def fake_lock():
+        nonlocal entries
+        entries += 1
+        yield
+
+    monkeypatch.setattr(state, "hold_config_lock", fake_lock)
+
+    state.record_backup_result(
+        status="error",
+        time=123,
+        snapshot_id="partial-snapshot",
+        error_reason="incomplete",
+    )
+
+    assert entries == 1
+    assert _read_config(tmp_path)["backup"]["last_backup"] == {
+        "time": 123,
+        "snapshot_id": "partial-snapshot",
+        "status": "error",
+        "error_reason": "incomplete",
+    }
+    assert stat.S_IMODE(_config_path(tmp_path).stat().st_mode) == 0o600
+
+
+def test_record_prune_result_writes_last_prune(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, {})
+    entries = 0
+
+    @contextmanager
+    def fake_lock():
+        nonlocal entries
+        entries += 1
+        yield
+
+    monkeypatch.setattr(state, "hold_config_lock", fake_lock)
+
+    state.record_prune_result(
+        status="error",
+        time=456,
+        error_reason="timeout",
+    )
+
+    assert entries == 1
+    assert _read_config(tmp_path)["backup"]["last_prune"] == {
+        "time": 456,
+        "status": "error",
+        "error_reason": "timeout",
+    }
+    assert "snapshot_id" not in _read_config(tmp_path)["backup"]["last_prune"]
+
+
 def test_status_view_redacts_all_secrets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -202,3 +266,4 @@ def test_status_view_redacts_all_secrets(
     assert view["daily_key_set"] is True
     assert view["recovery_key_set"] is True
     assert view["recovery_key_confirmed"] is True
+    assert view["last_prune"] == state.BACKUP_DEFAULTS["last_prune"]

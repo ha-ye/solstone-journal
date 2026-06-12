@@ -48,6 +48,11 @@ BACKUP_DEFAULTS: dict[str, Any] = {
         "status": None,
         "error_reason": None,
     },
+    "last_prune": {
+        "time": None,
+        "status": None,
+        "error_reason": None,
+    },
 }
 
 
@@ -157,6 +162,42 @@ def set_recovery_key_confirmed(confirmed: bool = True) -> None:
         write_journal_config(config)
 
 
+def record_backup_result(
+    *,
+    status: str,
+    time: int | None,
+    snapshot_id: str | None = None,
+    error_reason: str | None = None,
+) -> None:
+    with hold_config_lock():
+        config = read_journal_config()
+        backup = _writable_backup_section(config)
+        backup["last_backup"] = {
+            "time": time,
+            "snapshot_id": snapshot_id,
+            "status": status,
+            "error_reason": error_reason,
+        }
+        write_journal_config(config)
+
+
+def record_prune_result(
+    *,
+    status: str,
+    time: int | None,
+    error_reason: str | None = None,
+) -> None:
+    with hold_config_lock():
+        config = read_journal_config()
+        backup = _writable_backup_section(config)
+        backup["last_prune"] = {
+            "time": time,
+            "status": status,
+            "error_reason": error_reason,
+        }
+        write_journal_config(config)
+
+
 def status_view() -> dict[str, Any]:
     config = get_backup_config()
     destination = config["destination"]
@@ -175,6 +216,7 @@ def status_view() -> dict[str, Any]:
         "retention": config["retention"],
         "schedule": config["schedule"],
         "last_backup": config["last_backup"],
+        "last_prune": config["last_prune"],
     }
 
 
@@ -185,6 +227,8 @@ __all__ = [
     "get_backup_config",
     "get_destination",
     "get_keys",
+    "record_backup_result",
+    "record_prune_result",
     "set_destination",
     "set_recovery_key_confirmed",
     "status_view",
