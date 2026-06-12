@@ -32,7 +32,9 @@ desktop recording — add it.
 Use `sol call activities create --source cogitate` with argv flags to add a
 record:
 - `--activity`: activity type (meeting, call, etc.)
-- `--since-segment`: closest real captured segment in time
+- `--since-segment`: the `segment_key` shown under the matching narrative
+  (`HHMMSS_LEN`, for example `143000_300`). Do not pass the full narrative
+  heading such as `engineering_143000_300`.
 - `--title`: required title
 - `--description`: one-sentence prose summary
 - `--details`: optional longer details

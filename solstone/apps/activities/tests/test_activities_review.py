@@ -19,6 +19,7 @@ def test_assemble_activity_evidence_includes_records_and_narratives(monkeypatch)
     assert "## Existing records" in evidence
     assert "## Per-span narratives" in evidence
     assert "engineering_143000_300" in evidence
+    assert "segment_key=143000_300" in evidence
     assert "Verona Platform" in evidence
     assert "Engineering Session Review" in evidence
     assert "schema translation" in evidence
@@ -52,5 +53,7 @@ def test_activities_review_talent_config(monkeypatch):
     assert config["priority"] == 30
     assert config["hook"]["pre"] == "activities:activities_review"
     assert "$activity_evidence" in config["user_instruction"]
+    assert "segment_key" in config["user_instruction"]
+    assert "engineering_143000_300" in config["user_instruction"]
     assert "sol call activities list" not in config["user_instruction"]
     assert "$activity_md_dir" not in config["user_instruction"]

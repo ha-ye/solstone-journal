@@ -19,6 +19,15 @@ def _joined(values: object) -> str:
     return ", ".join(values) or "none"
 
 
+def _segment_key(activity_id: str) -> str:
+    parts = activity_id.rsplit("_", 2)
+    if len(parts) == 3:
+        candidate = f"{parts[1]}_{parts[2]}"
+        if len(parts[1]) == 6 and parts[1].isdigit() and parts[2].isdigit():
+            return candidate
+    return activity_id
+
+
 def assemble_activity_evidence(facet: str, day: str) -> str:
     records = sorted(
         load_activity_records(facet, day),
@@ -45,7 +54,11 @@ def assemble_activity_evidence(facet: str, day: str) -> str:
         activity_id = md_path.parent.name
         filename = md_path.name
         body = md_path.read_text(encoding="utf-8").strip()
-        narrative_blocks.append(f"### {activity_id}/{filename}\n\n{body}")
+        narrative_blocks.append(
+            f"### {activity_id}/{filename}\n"
+            f"segment_key={_segment_key(activity_id)}\n\n"
+            f"{body}"
+        )
     narratives_section = (
         "\n\n".join(narrative_blocks) if narrative_blocks else "No per-span narratives."
     )
