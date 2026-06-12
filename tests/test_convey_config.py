@@ -60,6 +60,14 @@ def test_curation_pinned_in_default_rail():
     assert "curation" in DEFAULT_APP_ORDER
 
 
+def test_services_default_unstarred_after_news():
+    from solstone.convey.config import DEFAULT_APP_ORDER, DEFAULT_RAIL_APPS
+
+    assert "services" not in DEFAULT_RAIL_APPS
+    assert "services" in DEFAULT_APP_ORDER
+    assert DEFAULT_APP_ORDER.index("news") < DEFAULT_APP_ORDER.index("services")
+
+
 def test_seed_default_app_navigation_preserves_present_empty_lists():
     from solstone.convey.config import seed_default_app_navigation
 

@@ -115,6 +115,21 @@ CONVEY_BUSY = Reason(
     "I couldn't update the interface settings right now because they were busy. Try again in a moment.",
     503,
 )
+SERVICE_BUSY = Reason(
+    "service_busy",
+    "The service operation is already running. Try again in a moment.",
+    503,
+)
+UNKNOWN_SERVICE = Reason(
+    "unknown_service",
+    "I couldn't find that service.",
+    404,
+)
+SERVICE_OPERATION_FAILED = Reason(
+    "service_operation_failed",
+    "The service operation could not be completed.",
+    500,
+)
 NETWORK_SECURITY_REQUIRES_PASSWORD = Reason(
     "network_security_requires_password",
     "I couldn't change network access until a password is set.",
