@@ -129,9 +129,9 @@ def test_mobile_rules_preserve_all_row_content(services_env):
         )
         assert sorted(actions) == ["disable", "enable", "refresh"]
 
-    for service in ("scout", "spl"):
+    for service in ("scout", "spl", "spb"):
         assert _class_token_present(_row_html(html, service), "services-manage")
-    for service in ("spb", "spn"):
+    for service in ("spn",):
         assert _class_token_present(_row_html(html, service), "services-coming-soon")
 
     css = _services_css()

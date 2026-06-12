@@ -24,7 +24,8 @@ from solstone.convey.reasons import (
     SERVICE_OPERATION_FAILED,
     UNKNOWN_SERVICE,
 )
-from solstone.convey.utils import error_response
+from solstone.convey.utils import error_response, time_since
+from solstone.think.backup import state as backup_state
 from solstone.think.services import outcomes, portal_client, scout, spl, spl_handoff
 from solstone.think.services import status as service_status
 
@@ -43,7 +44,10 @@ SERVICE_SPL = "spl"
 SERVICE_SPB = "spb"
 SERVICE_SPN = "spn"
 SERVICES = (SERVICE_SCOUT, SERVICE_SPL, SERVICE_SPB, SERVICE_SPN)
-COMING_SOON_SERVICES = frozenset({SERVICE_SPB, SERVICE_SPN})
+COMING_SOON_SERVICES = frozenset({SERVICE_SPN})
+# spb is a local manage-only row: it links to /app/backup and must never
+# reach the SPL back-channel. Guarded in every POST handler below.
+MANAGE_ONLY_SERVICES = frozenset({SERVICE_SPB})
 TERMINAL_PHASES = frozenset({"enabled", "pending", "revoked", "error"})
 RETRYABLE_CODES = frozenset(
     {outcomes.EXPIRED, outcomes.NETWORK_ERROR, outcomes.LOCAL_ERROR}
@@ -488,6 +492,22 @@ def _service_status(service: str) -> dict[str, Any]:
             "actions": _spl_actions(state),
             "operation": _operation_for_service(SERVICE_SPL),
         }
+    if service == SERVICE_SPB:
+        view = backup_state.status_view()
+        last_time = view["last_backup"]["time"]
+        guidance = (
+            f"last backup {time_since(last_time)}"
+            if last_time is not None
+            else "not set up"
+        )
+        return {
+            "service": SERVICE_SPB,
+            "state": "enabled" if view["enabled"] else "disabled",
+            "guidance": guidance,
+            "provenance": {},
+            "actions": {"enable": False, "refresh": False, "disable": False},
+            "operation": None,
+        }
     if service in COMING_SOON_SERVICES:
         return {
             "service": service,
@@ -536,6 +556,8 @@ def enable(service: str) -> tuple[dict[str, Any], int] | tuple[Response, int]:
         return error_response(UNKNOWN_SERVICE)
     if service in COMING_SOON_SERVICES:
         return _unsupported()
+    if service in MANAGE_ONLY_SERVICES:
+        return _unsupported()
     if service == SERVICE_SCOUT:
         if scout.is_scout_enabled():
             return error_response(
@@ -577,6 +599,8 @@ def disable(service: str) -> tuple[Response, int]:
     if service not in SERVICES:
         return error_response(UNKNOWN_SERVICE)
     if service in COMING_SOON_SERVICES:
+        return _unsupported()
+    if service in MANAGE_ONLY_SERVICES:
         return _unsupported()
     try:
         if service == SERVICE_SCOUT:

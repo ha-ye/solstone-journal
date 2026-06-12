@@ -32,6 +32,9 @@ def test_services_copy_verbatim_strings():
         rows["spb"]["description"]
         == "keep an encrypted copy of your journal somewhere safe — only you can read it"
     )
+    assert rows["spb"]["manage_affordance"] == "manage in backup →"
+    assert rows["spb"]["manage_href"] == "/app/backup"
+    assert rows["spb"]["coming_soon"] is False
     assert (
         rows["spn"]["description"]
         == "let sol reach you on your other devices when there's something worth a look"

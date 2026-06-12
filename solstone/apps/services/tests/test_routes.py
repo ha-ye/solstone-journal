@@ -10,6 +10,7 @@ import hashlib
 import json
 import re
 import threading
+import time
 from pathlib import Path
 
 from solstone.apps.services import routes as services_routes
@@ -113,19 +114,118 @@ def test_pending_scout_status_formats_since_label(services_env):
     assert data["provenance"]["since_label"] == "2026-02-02"
 
 
-def test_spb_spn_status_coming_soon_and_mutations_write_nothing(services_env):
+def test_spn_status_coming_soon_and_mutations_write_nothing(services_env):
     env = services_env()
     before = (env.journal / "config" / "journal.json").read_bytes()
 
-    for service in ("spb", "spn"):
-        status_response = env.client.get(f"/app/services/{service}/status")
-        assert status_response.status_code == 200
-        assert status_response.get_json()["state"] == "coming_soon"
-        for action in ("enable", "refresh", "disable"):
-            response = env.client.post(f"/app/services/{service}/{action}")
-            assert response.status_code == 403
+    status_response = env.client.get("/app/services/spn/status")
+    assert status_response.status_code == 200
+    assert status_response.get_json()["state"] == "coming_soon"
+    for action in ("enable", "refresh", "disable"):
+        response = env.client.post(f"/app/services/spn/{action}")
+        assert response.status_code == 403
 
     assert (env.journal / "config" / "journal.json").read_bytes() == before
+
+
+def test_spb_live_row_reflects_backup_state(services_env):
+    env = services_env()
+
+    response = env.client.get("/app/services/spb/status")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["state"] == "disabled"
+    assert data["guidance"] == "not set up"
+    assert data["actions"] == {"enable": False, "refresh": False, "disable": False}
+    assert data["operation"] is None
+
+    config = _read_config(env)
+    config["backup"] = {
+        "enabled": True,
+        "last_backup": {
+            "time": int(time.time()) - 3 * 86400,
+            "snapshot_id": None,
+            "status": "ok",
+            "error_reason": None,
+        },
+    }
+    _write_config(env, config)
+
+    response = env.client.get("/app/services/spb/status")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["state"] == "enabled"
+    assert data["guidance"].startswith("last backup ")
+    assert data["guidance"].endswith(" ago")
+    assert "day" in data["guidance"]
+
+    response = env.client.get("/app/services/")
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert 'href="/app/backup"' in html
+    assert "manage in backup →" in html
+
+
+def test_spb_mutations_make_no_back_channel_call_and_write_nothing(
+    services_env,
+    monkeypatch,
+):
+    env = services_env()
+
+    def _raise(*_a, **_k):
+        raise AssertionError("spb reached the back-channel")
+
+    monkeypatch.setattr(services_routes, "run_spl_handoff", _raise)
+    monkeypatch.setattr(services_routes, "run_scout_handoff", _raise)
+    monkeypatch.setattr(services_routes.spl, "disable_spl", _raise)
+
+    before = (env.journal / "config" / "journal.json").read_bytes()
+
+    assert env.client.get("/app/services/spb/status").status_code == 200
+    assert env.client.get("/app/services/").status_code == 200
+    assert env.client.post("/app/services/spb/enable").status_code == 403
+    assert env.client.post("/app/services/spb/disable").status_code == 403
+    assert env.client.post("/app/services/spb/refresh").status_code == 403
+
+    assert (env.journal / "config" / "journal.json").read_bytes() == before
+
+
+def test_spb_status_payload_carries_no_secret(services_env):
+    env = services_env()
+    config = _read_config(env)
+    config["backup"] = {
+        "enabled": True,
+        "last_backup": {
+            "time": int(time.time()),
+            "snapshot_id": None,
+            "status": "ok",
+            "error_reason": None,
+        },
+        "daily_key": "daily-secret",
+        "recovery_key": "recovery-secret",
+        "destination": {
+            "repository": "r",
+            "backend": "b2",
+            "credentials": {"b2_account_key": "cred-secret"},
+        },
+    }
+    _write_config(env, config)
+
+    response = env.client.get("/app/services/spb/status")
+    html_response = env.client.get("/app/services/")
+
+    assert response.status_code == 200
+    assert html_response.status_code == 200
+    serialized_json = json.dumps(response.get_json()).lower()
+    serialized_html = html_response.get_data(as_text=True).lower()
+    for secret in ("daily-secret", "recovery-secret", "cred-secret"):
+        assert secret not in serialized_json
+        assert secret not in serialized_html
+    for key in ("daily_key", "recovery_key", "credentials"):
+        assert key not in serialized_json
 
 
 def test_unknown_service_returns_unknown_service(services_env):
@@ -268,17 +368,18 @@ def test_scout_refresh_failure_without_state_write(
     assert (env.journal / "config" / "journal.json").read_bytes() == before
 
 
-def test_services_routes_do_not_import_app_link_modules():
+def test_services_routes_do_not_import_sibling_app_modules():
+    banned_prefixes = ("solstone.apps.link", "solstone.apps.backup")
     violations: list[str] = []
     for path in Path("solstone/apps/services").glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    if alias.name.startswith("solstone.apps.link"):
+                    if alias.name.startswith(banned_prefixes):
                         violations.append(f"{path}: import {alias.name}")
             elif isinstance(node, ast.ImportFrom):
-                if node.module and node.module.startswith("solstone.apps.link"):
+                if node.module and node.module.startswith(banned_prefixes):
                     violations.append(f"{path}: from {node.module} import ...")
 
     assert violations == []

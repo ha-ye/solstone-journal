@@ -20,6 +20,7 @@ SPL_MANAGE_AFFORDANCE = "manage in link →"
 SPB_DESCRIPTION = (
     "keep an encrypted copy of your journal somewhere safe — only you can read it"
 )
+SPB_MANAGE_AFFORDANCE = "manage in backup →"
 SPN_DESCRIPTION = (
     "let sol reach you on your other devices when there's something worth a look"
 )
@@ -80,9 +81,9 @@ def services_copy_payload() -> dict[str, Any]:
                 "id": "spb",
                 "label": "spb",
                 "description": SPB_DESCRIPTION,
-                "manage_affordance": "",
-                "manage_href": None,
-                "coming_soon": True,
+                "manage_affordance": SPB_MANAGE_AFFORDANCE,
+                "manage_href": "/app/backup",
+                "coming_soon": False,
             },
             {
                 "id": "spn",
