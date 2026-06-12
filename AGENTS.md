@@ -193,6 +193,7 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Identity (`identity/*.md`, `identity/history.jsonl` audit log) | `solstone/think/identity.py` |
 | Todos (`facets/*/todos/*.jsonl`) | `solstone/apps/todos/todo.py` |
 | Chronicle chat stream (`chronicle/**/chat/<seg>/chat.jsonl`) | `solstone/convey/chat_stream.py` |
+| Day talent-output accumulator (`chronicle/<day>/talents/<name>.jsonl`) | `solstone/think/day_accumulator.py` |
 | Config (`config/journal.json`) | `solstone/think/journal_config.py` |
 | Schedules (`config/schedules.json`) | `solstone/think/schedule_config.py` |
 | Push devices (`config/push_devices.json`) | `solstone/think/push/devices.py` |

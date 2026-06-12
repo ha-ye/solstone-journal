@@ -218,6 +218,11 @@ FORMATTERS: dict[str, tuple[str, str, bool]] = {
     "*/*/*/screen.jsonl": ("solstone.observe.screen", "format_screen", False),
     "*/*/*/*_screen.jsonl": ("solstone.observe.screen", "format_screen", False),
     "*/chat/*/chat.jsonl": ("solstone.think.chat_formatter", "format_chat", True),
+    "*/talents/*.jsonl": (
+        "solstone.think.day_accumulator",
+        "format_day_accumulator",
+        True,
+    ),
     # Markdown — day-level agents output and segment-level (day/stream/segment/talents/)
     "*/talents/*.md": ("solstone.think.markdown", "format_markdown", True),
     # Layout: day/stream/segment/talents/*.md
