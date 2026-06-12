@@ -611,6 +611,74 @@ def test_execute_generate_preserves_string_contents_order(monkeypatch):
     assert events[-1]["event"] == "finish"
 
 
+def test_execute_generate_passes_prepared_provider_and_model(monkeypatch):
+    from solstone.think.talents import _execute_generate
+
+    events = []
+    seen = {}
+
+    def mock_generate_with_result(**kwargs):
+        seen["provider"] = kwargs.get("provider")
+        seen["model"] = kwargs.get("model")
+        return {"text": "ok", "usage": {"input_tokens": 1, "output_tokens": 1}}
+
+    monkeypatch.setattr(
+        "solstone.think.talent.key_to_context", lambda _name: "talent.system.default"
+    )
+    monkeypatch.setattr(
+        "solstone.think.models.generate_with_result", mock_generate_with_result
+    )
+
+    config = {
+        "name": "chat",
+        "provider": "google",
+        "model": "gemini-3-flash-preview",
+        "prompt": "hello",
+        "health_stale": False,
+    }
+
+    asyncio.run(_execute_generate(config, events.append))
+
+    assert seen["provider"] == "google"
+    assert seen["model"] == "gemini-3-flash-preview"
+    assert events[-1]["event"] == "finish"
+
+
+def test_execute_generate_local_failure_does_not_consult_backup(monkeypatch):
+    from solstone.think.talents import _execute_generate
+
+    events = []
+    calls = {"count": 0}
+
+    def mock_generate_with_result(**_kwargs):
+        calls["count"] += 1
+        raise RuntimeError("binary_missing")
+
+    def fail_backup(_agent_type):
+        raise AssertionError("local failure must not consult cloud backup")
+
+    monkeypatch.setattr(
+        "solstone.think.talent.key_to_context", lambda _name: "talent.system.default"
+    )
+    monkeypatch.setattr(
+        "solstone.think.models.generate_with_result", mock_generate_with_result
+    )
+    monkeypatch.setattr("solstone.think.models.get_backup_provider", fail_backup)
+
+    config = {
+        "name": "chat",
+        "provider": "local",
+        "prompt": "hello",
+        "health_stale": False,
+    }
+
+    with pytest.raises(RuntimeError, match="binary_missing"):
+        asyncio.run(_execute_generate(config, events.append))
+
+    assert calls["count"] == 1
+    assert not any(e.get("event") == "fallback" for e in events)
+
+
 def test_on_failure_retry_generate(monkeypatch):
     from solstone.think.talents import _execute_generate
 

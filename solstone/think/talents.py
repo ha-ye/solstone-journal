@@ -1064,6 +1064,8 @@ async def _execute_generate(
             json_output=is_json_output,
             json_schema=runtime_json_schema,
             timeout_s=timeout_s,
+            provider=config.get("provider"),
+            model=config.get("model"),
         )
     except Exception as exc:
         provider = config.get("provider", "google")
