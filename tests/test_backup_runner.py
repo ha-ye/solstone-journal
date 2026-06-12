@@ -22,6 +22,7 @@ def test_run_restic_builds_safe_argv_and_minimal_env(
     def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         captured["argv"] = argv
         captured["env"] = kwargs["env"]
+        captured["pass_fds"] = kwargs["pass_fds"]
         return subprocess.CompletedProcess(argv, 0, stdout="{}", stderr="")
 
     monkeypatch.setenv("PATH", "/bin")
@@ -62,6 +63,36 @@ def test_run_restic_builds_safe_argv_and_minimal_env(
         "AWS_ACCESS_KEY_ID": "access-key",
         "AWS_SECRET_ACCESS_KEY": "backend-secret",
     }
+    assert captured["pass_fds"] == ()
+
+
+def test_run_restic_threads_pass_fds(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, Any] = {}
+
+    def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured["argv"] = argv
+        captured["pass_fds"] = kwargs["pass_fds"]
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    result = runner.run_restic(
+        ["key", "add", "--new-password-file", "/dev/fd/17"],
+        repository="s3:safe-bucket/path",
+        password="repo-password",
+        restic_path=Path("/usr/bin/restic"),
+        pass_fds=(17,),
+    )
+
+    assert result.returncode == 0
+    assert captured["argv"] == [
+        "/usr/bin/restic",
+        "key",
+        "add",
+        "--new-password-file",
+        "/dev/fd/17",
+    ]
+    assert captured["pass_fds"] == (17,)
 
 
 def test_run_restic_scrubs_success_output_and_json(

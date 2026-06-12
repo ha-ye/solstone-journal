@@ -116,6 +116,7 @@ def run_restic(
     json: bool = False,
     max_repack_size: str | None = None,
     timeout: float | None = None,
+    pass_fds: tuple[int, ...] = (),
 ) -> ResticResult:
     env, secrets = _child_env(repository, password, backend_env)
     argv = _build_argv(restic_path, args, json, max_repack_size)
@@ -133,6 +134,7 @@ def run_restic(
             text=True,
             env=env,
             timeout=timeout,
+            pass_fds=pass_fds,
         )
     except subprocess.TimeoutExpired as exc:
         stdout = _scrub(_timeout_text(exc.stdout), secrets)
