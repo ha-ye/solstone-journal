@@ -4,6 +4,22 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.5.4] - 2026-06-12
+
+### Added
+- you can now back up your journal to your own cloud storage, encrypted before it ever leaves your machine. set up a destination you own (an S3 or B2 bucket), and solstone keeps an encrypted copy there on a schedule, with restore and prune built in. you hold the keys: a daily key that runs the backup and a separate recovery key you save somewhere safe, and you need the recovery key to restore. nothing routes through sol pbc, ever; the backup goes straight from your machine to your bucket and back. set it up from the new backup page in your journal, or from the terminal with `journal backup`.
+- your journal now has a "your services" page that gathers the optional extras you can turn on, like scout and your private link, in one place. each one shows whether it's on and lets you turn it on or off from inside your journal, with backup linked from there too.
+- on-device transcription can now tell voices apart on its own. when the local engine handles your audio, it now labels who's speaking the same way the hosted option already did, so a conversation reads as a back-and-forth rather than one undivided block. this runs entirely on your machine; nothing new leaves it.
+- the curation page now suggests when two speaker names look like the same person, alongside the facet and entity merges it already offered, so tidying up who's who has one clear place to happen. it only ever suggests; you decide.
+
+### Changed
+- solstone no longer includes todos, skills, routines, or the daily digest. these came out as a deliberate narrowing of what solstone does. anything you'd already saved under them stays untouched on disk; nothing is deleted.
+- on Linux, the on-device (local) option now runs on your graphics card instead of the processor. it needs a usable GPU; a Linux machine without one uses a hosted option instead. on macOS, the local option runs on Apple's MLX, as before.
+- turning on solstone scout is now a single sign-in link that works the same on every machine, including headless ones. the older code-based path could stall or report a confusing failure on some setups; that path is gone.
+
+### Fixed
+- a computer running more than one observer no longer blends them into a single stream. if you ran, say, a desktop observer and a terminal observer on the same machine, they could collapse into one and overwrite each other; each observer now registers itself and keeps its own identity. this happens locally on your machine; nothing new leaves it.
+
 ## [0.5.3] - 2026-06-10
 
 ### Added
