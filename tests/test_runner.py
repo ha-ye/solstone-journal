@@ -452,6 +452,7 @@ def test_run_task_day_override(journal_path, mock_callosum):
             "segment",
         ),
         (["journal", "think", "--weekly"], "weekly"),
+        (["journal", "think", "--cadence"], "cadence"),
         (
             [
                 "journal",

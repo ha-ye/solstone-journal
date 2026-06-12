@@ -88,6 +88,7 @@ def reset_scheduler_state():
     scheduler._entries = {}
     scheduler._state = {}
     scheduler._callosum = None
+    scheduler._last_minute = None
     scheduler._last_hour = None
     scheduler._daily_time = None
     scheduler._last_daily_mark = None
@@ -98,6 +99,7 @@ def reset_scheduler_state():
     scheduler._entries = {}
     scheduler._state = {}
     scheduler._callosum = None
+    scheduler._last_minute = None
     scheduler._last_hour = None
     scheduler._daily_time = None
     scheduler._last_daily_mark = None

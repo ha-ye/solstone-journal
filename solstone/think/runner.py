@@ -183,7 +183,8 @@ class DailyLogWriter:
 def _command_partition(cmd: Sequence[str]) -> str:
     """Return the queue/log partition name for a managed-process cmd.
 
-    Think tasks partition by bare mode name (daily/segment/flush/activity/weekly);
+    Think tasks partition by bare mode name
+    (daily/segment/flush/activity/weekly/cadence);
     everything else uses sol/journal subcommand or process basename.
     """
     if cmd and cmd[0] in ("sol", "journal") and len(cmd) > 1:
@@ -194,6 +195,7 @@ def _command_partition(cmd: Sequence[str]) -> str:
                 ("--flush", "flush"),
                 ("--segments", "segment"),
                 ("--weekly", "weekly"),
+                ("--cadence", "cadence"),
                 ("--segment", "segment"),
             ]:
                 if flag in cmd:

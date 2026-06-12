@@ -49,6 +49,7 @@ def reset_scheduler_state():
     mod._entries = {}
     mod._state = {}
     mod._callosum = None
+    mod._last_minute = None
     mod._last_hour = None
     mod._daily_time = None
     mod._last_daily_mark = None
@@ -59,6 +60,7 @@ def reset_scheduler_state():
     mod._entries = {}
     mod._state = {}
     mod._callosum = None
+    mod._last_minute = None
     mod._last_hour = None
     mod._daily_time = None
     mod._last_daily_mark = None
@@ -135,6 +137,59 @@ class TestLoadConfig:
         from solstone.think.scheduler import load_config
 
         assert load_config() == {}
+
+    def test_minute_every_accepted(self, journal_path):
+        _write_config(
+            journal_path,
+            {
+                "cadence": {
+                    "cmd": ["journal", "think", "--cadence"],
+                    "every": "5m",
+                },
+            },
+        )
+        from solstone.think.scheduler import load_config
+
+        entries = load_config()
+
+        assert entries["cadence"]["every"] == "5m"
+        assert entries["cadence"]["cmd"] == ["journal", "think", "--cadence"]
+
+    def test_bad_minute_every_skipped(self, journal_path, caplog):
+        _write_config(
+            journal_path,
+            {
+                "bad": {"cmd": ["journal", "think", "--cadence"], "every": "5x"},
+            },
+        )
+        from solstone.think.scheduler import load_config
+
+        assert load_config() == {}
+        assert "Schedule 'bad': unknown interval '5x'" in caplog.text
+
+    def test_minute_every_below_floor_warns_once(self, journal_path, caplog):
+        _write_config(
+            journal_path,
+            {
+                "cadence": {
+                    "cmd": ["journal", "think", "--cadence"],
+                    "every": "2m",
+                },
+            },
+        )
+        from solstone.think.scheduler import load_config
+
+        entries = load_config()
+
+        assert entries["cadence"]["every"] == "2m"
+        warnings = [
+            record.message
+            for record in caplog.records
+            if "below the 5m floor" in record.message
+        ]
+        assert warnings == [
+            "Schedule 'cadence': interval '2m' is below the 5m floor; clamped to 5m"
+        ]
 
     def test_missing_cmd_skipped(self, journal_path):
         _write_config(
@@ -305,6 +360,26 @@ class TestState:
 # ---------------------------------------------------------------------------
 
 
+class TestMinuteIntervals:
+    def test_parse_minute_interval(self):
+        import solstone.think.scheduler as mod
+
+        assert mod._parse_minute_interval("5m") == 5
+        assert mod._parse_minute_interval("2m") == 5
+        assert mod._parse_minute_interval("10m") == 10
+        assert mod._parse_minute_interval("1m") == 5
+        assert mod._parse_minute_interval("hourly") is None
+        assert mod._parse_minute_interval("5") is None
+        assert mod._parse_minute_interval(5) is None
+
+    def test_is_minute_interval(self):
+        import solstone.think.scheduler as mod
+
+        assert mod._is_minute_interval("5m") is True
+        assert mod._is_minute_interval("hourly") is False
+        assert mod._is_minute_interval("5") is False
+
+
 class TestIsDue:
     def test_no_state_is_due(self):
         from solstone.think.scheduler import _is_due
@@ -343,6 +418,26 @@ class TestIsDue:
         # Last run yesterday at 23:50, now is 00:01
         state = {"last_run": datetime(2026, 2, 16, 23, 50).timestamp()}
         assert _is_due(entry, state, datetime(2026, 2, 17, 0, 1)) is True
+
+    def test_minute_never_run_is_due(self):
+        from solstone.think.scheduler import _is_due
+
+        entry = {"cmd": ["journal", "think", "--cadence"], "every": "5m"}
+        assert _is_due(entry, None, datetime(2026, 2, 17, 14, 30)) is True
+
+    def test_minute_elapsed_is_due(self):
+        from solstone.think.scheduler import _is_due
+
+        entry = {"cmd": ["journal", "think", "--cadence"], "every": "5m"}
+        state = {"last_run": datetime(2026, 2, 17, 14, 24).timestamp()}
+        assert _is_due(entry, state, datetime(2026, 2, 17, 14, 30)) is True
+
+    def test_minute_before_elapsed_not_due(self):
+        from solstone.think.scheduler import _is_due
+
+        entry = {"cmd": ["journal", "think", "--cadence"], "every": "5m"}
+        state = {"last_run": datetime(2026, 2, 17, 14, 27).timestamp()}
+        assert _is_due(entry, state, datetime(2026, 2, 17, 14, 30)) is False
 
 
 class TestDailyTime:
@@ -1046,6 +1141,80 @@ class TestCheck:
         callosum.emit.assert_not_called()
         assert "a" in mod._state
 
+    def test_minute_boundary_submits_without_hour_boundary(self, journal_path):
+        """Crossing a minute boundary submits due minute-interval tasks."""
+        import solstone.think.scheduler as mod
+
+        callosum = Mock()
+        callosum.emit = Mock(return_value=True)
+        now = datetime(2026, 2, 17, 14, 6, 10)
+
+        _write_config(
+            journal_path,
+            {
+                "cadence": {
+                    "cmd": ["journal", "think", "--cadence"],
+                    "every": "5m",
+                },
+            },
+        )
+        _write_state(
+            journal_path,
+            {"cadence": {"last_run": datetime(2026, 2, 17, 14, 0).timestamp()}},
+        )
+
+        mod.init(callosum)
+        mod._last_minute = datetime(2026, 2, 17, 14, 5)
+        mod._last_hour = datetime(2026, 2, 17, 14, 0)
+        mod._last_daily_mark = mod._compute_daily_mark(now, None)
+        mod._last_weekly_mark = mod._compute_weekly_mark(now, 6, None)
+
+        with _fake_now(now):
+            mod.check()
+            mod.check()
+
+        callosum.emit.assert_called_once()
+        assert callosum.emit.call_args[1]["cmd"] == [
+            "journal",
+            "think",
+            "--cadence",
+        ]
+        assert mod._last_minute == datetime(2026, 2, 17, 14, 6)
+
+    def test_minute_boundary_skips_before_interval_elapsed(self, journal_path):
+        """Minute-boundary checks still honor the sliding interval."""
+        import solstone.think.scheduler as mod
+
+        callosum = Mock()
+        callosum.emit = Mock(return_value=True)
+        now = datetime(2026, 2, 17, 14, 6, 10)
+
+        _write_config(
+            journal_path,
+            {
+                "cadence": {
+                    "cmd": ["journal", "think", "--cadence"],
+                    "every": "5m",
+                },
+            },
+        )
+        _write_state(
+            journal_path,
+            {"cadence": {"last_run": datetime(2026, 2, 17, 14, 3).timestamp()}},
+        )
+
+        mod.init(callosum)
+        mod._last_minute = datetime(2026, 2, 17, 14, 5)
+        mod._last_hour = datetime(2026, 2, 17, 14, 0)
+        mod._last_daily_mark = mod._compute_daily_mark(now, None)
+        mod._last_weekly_mark = mod._compute_weekly_mark(now, 6, None)
+
+        with _fake_now(now):
+            mod.check()
+
+        callosum.emit.assert_not_called()
+        assert mod._last_minute == datetime(2026, 2, 17, 14, 6)
+
     def test_emit_failure_no_state_update(self, journal_path):
         """If emit fails, last_run should not be updated."""
         import solstone.think.scheduler as mod
@@ -1208,6 +1377,32 @@ class TestCollectStatus:
         expected = int(datetime(2026, 3, 29, 3, 0).timestamp() * 1000)
         assert status[0]["next_run"] == expected
 
+    def test_next_run_minute_interval(self, journal_path):
+        import solstone.think.scheduler as mod
+
+        mod._entries = {
+            "cadence": {"cmd": ["journal", "think", "--cadence"], "every": "5m"}
+        }
+        mod._state = {"cadence": {"last_run": datetime(2026, 2, 17, 14, 0).timestamp()}}
+
+        with _fake_now(datetime(2026, 2, 17, 14, 3)):
+            status = mod.collect_status()
+
+        expected = int(datetime(2026, 2, 17, 14, 5).timestamp() * 1000)
+        assert status[0]["next_run"] == expected
+        assert status[0]["due"] is False
+
+    def test_format_next_due_minute_interval(self, journal_path):
+        import solstone.think.scheduler as mod
+
+        entry = {"cmd": ["journal", "think", "--cadence"], "every": "5m"}
+        state = {"last_run": datetime(2026, 2, 17, 14, 0).timestamp()}
+
+        with _fake_now(datetime(2026, 2, 17, 14, 3)):
+            assert mod._format_next_due(entry, state, datetime(2026, 2, 17, 14, 3)) == (
+                "14:05"
+            )
+
     def test_next_run_when_due(self, journal_path):
         import solstone.think.scheduler as mod
 
@@ -1285,6 +1480,26 @@ class TestHeartbeatSchedule:
             "max_runtime": "10m",
         }
         assert mod._entries["facet-candidates"]["max_runtime"] == 600
+
+    def test_register_defaults_creates_cadence(self, journal_path):
+        """register_defaults() creates a cadence entry."""
+        import solstone.think.scheduler as mod
+
+        mock_cal = Mock()
+        mod.init(mock_cal)
+        mod.register_defaults()
+
+        config_path = journal_path / "config" / "schedules.json"
+        with open(config_path) as f:
+            raw = json.load(f)
+
+        assert raw["cadence"] == {
+            "cmd": ["journal", "think", "--cadence"],
+            "every": "5m",
+            "enabled": True,
+            "max_runtime": "10m",
+        }
+        assert mod._entries["cadence"]["max_runtime"] == 600
 
     def test_register_defaults_idempotent(self, journal_path):
         """register_defaults() does not overwrite existing heartbeat config."""
@@ -1405,3 +1620,25 @@ class TestCLI:
         assert "sync:plaud" in out
         assert "hourly" in out
         assert "NAME" in out
+
+    def test_minute_interval_config_prints_next_due(
+        self, journal_path, capsys, monkeypatch
+    ):
+        monkeypatch.setattr("sys.argv", ["sol schedule"])
+        _write_config(
+            journal_path,
+            {
+                "cadence": {
+                    "cmd": ["journal", "think", "--cadence"],
+                    "every": "5m",
+                },
+            },
+        )
+
+        from solstone.think.scheduler import main
+
+        main()
+        out = capsys.readouterr().out
+        cadence_line = next(line for line in out.splitlines() if "cadence" in line)
+        assert "5m" in cadence_line
+        assert "?" not in cadence_line

@@ -4,7 +4,7 @@
 """Clock-aligned task scheduler for the supervisor.
 
 Reads schedule definitions from config/schedules.json and submits tasks
-via Callosum at hour and day boundaries. State (last-run times) persists
+via Callosum at minute, hour, and day boundaries. State (last-run times) persists
 to health/scheduler.json across restarts.
 
 Runtime functions (init, check) are used by the supervisor.
@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -45,6 +46,7 @@ INTERVALS = {"hourly", "daily", "weekly"}
 _entries: dict[str, dict[str, Any]] = {}
 _state: dict[str, dict[str, Any]] = {}
 _callosum: Any = None  # CallosumConnection
+_last_minute: datetime | None = None
 _last_hour: datetime | None = None
 _daily_time: str | None = None
 _last_daily_mark: datetime | None = None
@@ -126,7 +128,17 @@ def load_config() -> dict[str, dict[str, Any]]:
             continue
 
         every = entry.get("every")
-        if every not in INTERVALS:
+        if every in INTERVALS or _is_minute_interval(every):
+            if _is_minute_interval(every):
+                match = re.fullmatch(r"(\d+)m", every)
+                if match and int(match.group(1)) < 5:
+                    logger.warning(
+                        "Schedule '%s': interval '%s' is below the 5m floor; "
+                        "clamped to 5m",
+                        name,
+                        every,
+                    )
+        else:
             logger.warning(
                 "Schedule '%s': unknown interval '%s' (expected %s), skipping",
                 name,
@@ -277,6 +289,19 @@ def _compute_weekly_mark(
     return target_mark - timedelta(weeks=1)
 
 
+def _is_minute_interval(every: Any) -> bool:
+    return isinstance(every, str) and re.fullmatch(r"\d+m", every) is not None
+
+
+def _parse_minute_interval(every: Any) -> int | None:
+    if not isinstance(every, str):
+        return None
+    match = re.fullmatch(r"(\d+)m", every)
+    if not match:
+        return None
+    return max(int(match.group(1)), 5)
+
+
 def _is_due(entry: dict, state_entry: dict | None, now: datetime) -> bool:
     """Check if an entry is due based on its interval and last_run."""
     last_run = (state_entry or {}).get("last_run")
@@ -298,6 +323,11 @@ def _is_due(entry: dict, state_entry: dict | None, now: datetime) -> bool:
         if weekly_day_val is None:
             weekly_day_val = 6  # default Sunday
         return last_dt < _compute_weekly_mark(now, weekly_day_val, _weekly_time)
+    if _is_minute_interval(every):
+        minutes = _parse_minute_interval(every)
+        if minutes is None:
+            return False
+        return last_dt <= now - timedelta(minutes=minutes)
     return False
 
 
@@ -308,13 +338,15 @@ def _is_due(entry: dict, state_entry: dict | None, now: datetime) -> bool:
 
 def init(callosum: Any) -> None:
     """Initialize scheduler with a Callosum connection. Load config and state."""
-    global _entries, _state, _callosum, _last_hour, _last_daily_mark, _last_weekly_mark
+    global _entries, _state, _callosum, _last_minute, _last_hour
+    global _last_daily_mark, _last_weekly_mark
 
     _callosum = callosum
     _entries = load_config()
     _state = load_state()
 
     now = datetime.now()
+    _last_minute = now.replace(second=0, microsecond=0)
     _last_hour = _hour_mark(now)
     _last_daily_mark = _compute_daily_mark(now, _daily_time)
     weekly_day_val = _parse_weekly_day(_weekly_day)
@@ -352,12 +384,14 @@ def register_defaults() -> None:
 
     need_heartbeat = "heartbeat" not in _entries
     need_weekly = "weekly-agents" not in _entries
+    need_cadence = "cadence" not in _entries
     need_providers = "providers" not in _entries
     need_facet_candidates = "facet-candidates" not in _entries
 
     if (
         not need_heartbeat
         and not need_weekly
+        and not need_cadence
         and not need_providers
         and not need_facet_candidates
     ):
@@ -380,6 +414,14 @@ def register_defaults() -> None:
             "every": "weekly",
             "enabled": True,
             "max_runtime": "30m",
+        }
+
+    if need_cadence and "cadence" not in raw:
+        additions["cadence"] = {
+            "cmd": ["journal", "think", "--cadence"],
+            "every": "5m",
+            "enabled": True,
+            "max_runtime": "10m",
         }
 
     if need_providers and "providers" not in raw:
@@ -445,15 +487,17 @@ def _submit_entry(name: str, entry: dict) -> bool:
 def check() -> None:
     """Check for clock boundaries and submit due tasks.
 
-    Called each supervisor tick (~1s). Does nothing unless an hour or day
+    Called each supervisor tick (~1s). Does nothing unless a clock
     boundary has been crossed since the last check.
     """
-    global _entries, _state, _last_hour, _last_daily_mark, _last_weekly_mark
+    global _entries, _state, _last_minute, _last_hour, _last_daily_mark
+    global _last_weekly_mark
 
     if _last_hour is None:
         return
 
     now = datetime.now()
+    current_minute = now.replace(second=0, microsecond=0)
     current_hour = _hour_mark(now)
     current_daily_mark = _compute_daily_mark(now, _daily_time)
     weekly_day_val = _parse_weekly_day(_weekly_day)
@@ -464,13 +508,21 @@ def check() -> None:
     hour_changed = current_hour != _last_hour
     daily_mark_changed = current_daily_mark != _last_daily_mark
     weekly_mark_changed = current_weekly_mark != _last_weekly_mark
+    minute_changed = current_minute != _last_minute
 
-    if not hour_changed and not daily_mark_changed and not weekly_mark_changed:
+    if (
+        not hour_changed
+        and not daily_mark_changed
+        and not weekly_mark_changed
+        and not minute_changed
+    ):
         return
 
-    # Boundary crossed — reload config for freshest definitions
-    _entries = load_config()
+    # Clock boundary crossed — reload config on coarse boundaries only.
+    if hour_changed or daily_mark_changed or weekly_mark_changed:
+        _entries = load_config()
     _state = load_state()
+    _last_minute = current_minute
     _last_hour = current_hour
     # Recompute with potentially updated _daily_time from config reload
     new_daily_mark = _compute_daily_mark(now, _daily_time)
@@ -498,6 +550,8 @@ def check() -> None:
         if every == "daily" and not daily_mark_changed:
             continue
         if every == "weekly" and not weekly_mark_changed:
+            continue
+        if _is_minute_interval(every) and not minute_changed:
             continue
 
         if not _is_due(entry, _state.get(name), now):
@@ -581,6 +635,13 @@ def _compute_next_run(entry: dict, state_entry: dict | None, now: datetime) -> i
             weekly_day_val = 6
         mark = _compute_weekly_mark(now, weekly_day_val, _weekly_time)
         nxt = mark if _is_due(entry, state_entry, now) else mark + timedelta(weeks=1)
+    elif _is_minute_interval(every):
+        minutes = _parse_minute_interval(every) or 5
+        if _is_due(entry, state_entry, now):
+            nxt = now
+        else:
+            last_run = (state_entry or {}).get("last_run")
+            nxt = datetime.fromtimestamp(last_run) + timedelta(minutes=minutes)
     else:
         return int(now.timestamp() * 1000)
     return int(nxt.timestamp() * 1000)
@@ -620,6 +681,11 @@ def _format_next_due(entry: dict, state_entry: dict | None, now: datetime) -> st
         weekly_mark = _compute_weekly_mark(now, weekly_day_val, _weekly_time)
         nxt = weekly_mark + timedelta(weeks=1)
         return f"{nxt.strftime('%A')} {nxt.strftime('%H:%M')}"
+    if _is_minute_interval(every):
+        minutes = _parse_minute_interval(every) or 5
+        last_run = (state_entry or {}).get("last_run")
+        nxt = datetime.fromtimestamp(last_run) + timedelta(minutes=minutes)
+        return nxt.strftime("%H:%M")
     return "?"
 
 
@@ -700,7 +766,7 @@ def main() -> None:
         last_run_str = _format_timestamp((state_entry or {}).get("last_run"))
 
         # Build a validated entry for _is_due / _format_next_due
-        if every in INTERVALS and enabled:
+        if (every in INTERVALS or _is_minute_interval(every)) and enabled:
             entry = {"cmd": cmd, "every": every}
             next_due_str = _format_next_due(entry, state_entry, now)
         else:
