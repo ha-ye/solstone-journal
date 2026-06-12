@@ -163,6 +163,56 @@ def test_setters_round_trip_under_config_lock(
     assert _read_config(tmp_path)["backup"]["confirmed_recovery_key"] is True
 
 
+def test_set_recovery_key_writes_known_key_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(
+        tmp_path,
+        {
+            "backup": {
+                "daily_key": "daily-secret",
+                "recovery_key": "A" * 64,
+                "confirmed_recovery_key": True,
+            }
+        },
+    )
+
+    state.set_recovery_key("B" * 64)
+
+    backup = _read_config(tmp_path)["backup"]
+    assert backup["daily_key"] == "daily-secret"
+    assert backup["recovery_key"] == "B" * 64
+    assert backup["confirmed_recovery_key"] is True
+    assert stat.S_IMODE(_config_path(tmp_path).stat().st_mode) == 0o600
+
+
+def test_clear_backup_config_resets_backup_section(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(
+        tmp_path,
+        {
+            "identity": {"name": "Test"},
+            "backup": {
+                "enabled": True,
+                "daily_key": "daily-secret",
+                "recovery_key": "C" * 64,
+            },
+        },
+    )
+
+    state.clear_backup_config()
+
+    config = _read_config(tmp_path)
+    assert config["identity"] == {"name": "Test"}
+    assert config["backup"] == state.BACKUP_DEFAULTS
+    assert stat.S_IMODE(_config_path(tmp_path).stat().st_mode) == 0o600
+
+
 def test_record_backup_result_writes_last_backup_under_config_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

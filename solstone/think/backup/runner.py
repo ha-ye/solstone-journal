@@ -106,6 +106,27 @@ def _timeout_text(value: str | bytes | None) -> str:
     return value
 
 
+def reason_for_returncode(returncode: int) -> str:
+    return {
+        3: "incomplete",
+        10: "repo_missing",
+        11: "locked",
+        12: "auth_failed",
+        124: "timeout",
+    }.get(returncode, "failed")
+
+
+def select_summary(parsed: Any) -> dict[str, Any] | None:
+    if isinstance(parsed, dict) and parsed.get("message_type") == "summary":
+        return parsed
+
+    if isinstance(parsed, list):
+        for record in reversed(parsed):
+            if isinstance(record, dict) and record.get("message_type") == "summary":
+                return record
+    return None
+
+
 def run_restic(
     args: Sequence[str],
     *,
@@ -157,3 +178,11 @@ def run_restic(
         json=parsed_json,
         argv=safe_argv,
     )
+
+
+__all__ = [
+    "ResticResult",
+    "reason_for_returncode",
+    "run_restic",
+    "select_summary",
+]

@@ -10,14 +10,17 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from solstone.think.backup.destination import (
     Destination,
     assemble_backend_env,
 )
 from solstone.think.backup.install import ensure_restic
-from solstone.think.backup.runner import run_restic
+from solstone.think.backup.runner import (
+    reason_for_returncode,
+    run_restic,
+    select_summary,
+)
 from solstone.think.backup.state import (
     BackupKeys,
     get_backup_config,
@@ -83,27 +86,6 @@ def _resolve_runtime() -> _Runtime | None:
     return _Runtime(destination=destination, keys=keys, restic_path=restic_path)
 
 
-def _reason_for_returncode(returncode: int) -> str:
-    return {
-        3: "incomplete",
-        10: "repo_missing",
-        11: "locked",
-        12: "auth_failed",
-        124: "timeout",
-    }.get(returncode, "failed")
-
-
-def _select_summary(parsed: Any) -> dict[str, Any] | None:
-    if isinstance(parsed, dict) and parsed.get("message_type") == "summary":
-        return parsed
-
-    if isinstance(parsed, list):
-        for record in reversed(parsed):
-            if isinstance(record, dict) and record.get("message_type") == "summary":
-                return record
-    return None
-
-
 def _backup_args() -> list[str]:
     args = ["backup", str(get_journal())]
     for pattern in BACKUP_EXCLUDES:
@@ -150,7 +132,7 @@ def _recover_stale_lock(
     logger.warning(
         "backup stale lock recovery completed returncode=%s reason_code=%s",
         result.returncode,
-        _reason_for_returncode(result.returncode),
+        reason_for_returncode(result.returncode),
     )
 
 
@@ -205,7 +187,7 @@ def run_backup() -> BackupResult:
         json=True,
         timeout=BACKUP_TIMEOUT_SECONDS,
     )
-    summary = _select_summary(result.json)
+    summary = select_summary(result.json)
     snapshot_id = None
     if summary is not None:
         raw_snapshot_id = summary.get("snapshot_id")
@@ -228,7 +210,7 @@ def run_backup() -> BackupResult:
     reason = (
         "unknown"
         if result.returncode == 0
-        else _reason_for_returncode(result.returncode)
+        else reason_for_returncode(result.returncode)
     )
     logger.warning(
         "backup completed returncode=%s reason_code=%s",
@@ -292,7 +274,7 @@ def run_prune() -> PruneResult:
         )
         return PruneResult(status="ok", error_reason=None)
 
-    reason = _reason_for_returncode(result.returncode)
+    reason = reason_for_returncode(result.returncode)
     logger.warning(
         "backup prune completed returncode=%s reason_code=%s",
         result.returncode,

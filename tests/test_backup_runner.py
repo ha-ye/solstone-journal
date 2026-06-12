@@ -267,6 +267,35 @@ def test_parse_json_lines_from_scrubbed_stdout(
     assert result.json == [{"message": "[redacted]"}, {"message": "ok"}]
 
 
+@pytest.mark.parametrize(
+    ("returncode", "reason"),
+    [
+        (3, "incomplete"),
+        (10, "repo_missing"),
+        (11, "locked"),
+        (12, "auth_failed"),
+        (124, "timeout"),
+        (77, "failed"),
+    ],
+)
+def test_reason_for_returncode(returncode: int, reason: str) -> None:
+    assert runner.reason_for_returncode(returncode) == reason
+
+
+def test_select_summary_from_dict_or_json_lines() -> None:
+    assert runner.select_summary({"message_type": "summary", "snapshot_id": "one"}) == {
+        "message_type": "summary",
+        "snapshot_id": "one",
+    }
+    assert runner.select_summary(
+        [
+            {"message_type": "status", "percent_done": 50},
+            {"message_type": "summary", "snapshot_id": "two"},
+        ]
+    ) == {"message_type": "summary", "snapshot_id": "two"}
+    assert runner.select_summary({"message_type": "status"}) is None
+
+
 RESTIC_BIN = shutil.which("restic")
 
 

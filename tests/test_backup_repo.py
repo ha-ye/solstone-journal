@@ -205,7 +205,137 @@ def test_add_recovery_key_raises_sanitized_error(
             restic_path=Path("/usr/bin/restic"),
         )
 
+    assert isinstance(exc_info.value, repo.ResticKeyError)
+    assert exc_info.value.returncode == 42
     assert str(exc_info.value) == "restic key add failed with returncode 42"
+
+
+def test_capture_current_key_id_returns_current_full_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
+        captured["args"] = args
+        captured.update(kwargs)
+        return ResticResult(
+            0,
+            "",
+            "",
+            [
+                {"current": False, "id": "other-id"},
+                {"current": True, "id": "current-full-id"},
+            ],
+            ("restic", *args),
+        )
+
+    monkeypatch.setattr(repo, "run_restic", fake_run_restic)
+    destination = _destination()
+
+    key_id = repo._capture_current_key_id(
+        destination,
+        password="recovery",
+        restic_path=Path("/usr/bin/restic"),
+        timeout=15,
+    )
+
+    assert key_id == "current-full-id"
+    assert captured["args"] == ["key", "list"]
+    assert captured["repository"] == destination.repository
+    assert captured["password"] == "recovery"
+    assert captured["json"] is True
+    assert captured["timeout"] == 15
+
+
+def test_capture_current_key_id_raises_typed_error_on_nonzero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        repo,
+        "run_restic",
+        lambda args, **kwargs: ResticResult(12, "", "", None, ("restic", *args)),
+    )
+
+    with pytest.raises(repo.ResticKeyError) as exc_info:
+        repo._capture_current_key_id(
+            _destination(),
+            password="recovery",
+            restic_path=Path("/usr/bin/restic"),
+        )
+
+    assert exc_info.value.returncode == 12
+    assert str(exc_info.value) == "restic key list failed with returncode 12"
+
+
+def test_capture_current_key_id_raises_when_no_current(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        repo,
+        "run_restic",
+        lambda args, **kwargs: ResticResult(
+            0,
+            "",
+            "",
+            [{"current": False, "id": "other-id"}],
+            ("restic", *args),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="did not mark a current key"):
+        repo._capture_current_key_id(
+            _destination(),
+            password="recovery",
+            restic_path=Path("/usr/bin/restic"),
+        )
+
+
+def test_remove_key_issues_key_remove(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
+        captured["args"] = args
+        captured.update(kwargs)
+        return ResticResult(0, "", "", None, ("restic", *args))
+
+    monkeypatch.setattr(repo, "run_restic", fake_run_restic)
+    destination = _destination()
+
+    repo._remove_key(
+        destination,
+        password="daily",
+        key_id="old-id",
+        restic_path=Path("/usr/bin/restic"),
+        timeout=15,
+    )
+
+    assert captured["args"] == ["key", "remove", "old-id"]
+    assert captured["repository"] == destination.repository
+    assert captured["password"] == "daily"
+    assert captured["timeout"] == 15
+
+
+def test_remove_key_raises_typed_error_on_nonzero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        repo,
+        "run_restic",
+        lambda args, **kwargs: ResticResult(11, "", "", None, ("restic", *args)),
+    )
+
+    with pytest.raises(repo.ResticKeyError) as exc_info:
+        repo._remove_key(
+            _destination(),
+            password="daily",
+            key_id="old-id",
+            restic_path=Path("/usr/bin/restic"),
+        )
+
+    assert exc_info.value.returncode == 11
+    assert str(exc_info.value) == "restic key remove failed with returncode 11"
 
 
 @pytest.mark.skipif(RESTIC_BIN is None, reason="restic is not installed")

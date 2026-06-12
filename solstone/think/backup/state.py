@@ -162,6 +162,21 @@ def set_recovery_key_confirmed(confirmed: bool = True) -> None:
         write_journal_config(config)
 
 
+def set_recovery_key(recovery_key: str) -> None:
+    with hold_config_lock():
+        config = read_journal_config()
+        backup = _writable_backup_section(config)
+        backup["recovery_key"] = recovery_key
+        write_journal_config(config)
+
+
+def clear_backup_config() -> None:
+    with hold_config_lock():
+        config = read_journal_config()
+        config["backup"] = copy.deepcopy(BACKUP_DEFAULTS)
+        write_journal_config(config)
+
+
 def record_backup_result(
     *,
     status: str,
@@ -223,6 +238,7 @@ def status_view() -> dict[str, Any]:
 __all__ = [
     "BACKUP_DEFAULTS",
     "BackupKeys",
+    "clear_backup_config",
     "generate_and_store_keys",
     "get_backup_config",
     "get_destination",
@@ -230,6 +246,7 @@ __all__ = [
     "record_backup_result",
     "record_prune_result",
     "set_destination",
+    "set_recovery_key",
     "set_recovery_key_confirmed",
     "status_view",
 ]

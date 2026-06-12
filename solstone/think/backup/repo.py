@@ -16,6 +16,12 @@ from solstone.think.backup.destination import (
 from solstone.think.backup.runner import run_restic
 
 
+class ResticKeyError(RuntimeError):
+    def __init__(self, operation: str, returncode: int) -> None:
+        super().__init__(f"restic {operation} failed with returncode {returncode}")
+        self.returncode = returncode
+
+
 def init_repository(
     destination: Destination,
     *,
@@ -127,7 +133,56 @@ def _add_recovery_key(
                 pass
 
     if result.returncode != 0:
-        raise RuntimeError(f"restic key add failed with returncode {result.returncode}")
+        raise ResticKeyError("key add", result.returncode)
+
+
+def _capture_current_key_id(
+    destination: Destination,
+    *,
+    password: str,
+    restic_path: Path,
+    timeout: float | None = None,
+) -> str:
+    result = run_restic(
+        ["key", "list"],
+        repository=destination.repository,
+        password=password,
+        restic_path=restic_path,
+        backend_env=assemble_backend_env(destination),
+        json=True,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        raise ResticKeyError("key list", result.returncode)
+    if isinstance(result.json, list):
+        for record in result.json:
+            if not isinstance(record, dict):
+                continue
+            if record.get("current") is True:
+                key_id = record.get("id")
+                if isinstance(key_id, str) and key_id:
+                    return key_id
+    raise RuntimeError("restic key list did not mark a current key")
+
+
+def _remove_key(
+    destination: Destination,
+    *,
+    password: str,
+    key_id: str,
+    restic_path: Path,
+    timeout: float | None = None,
+) -> None:
+    result = run_restic(
+        ["key", "remove", key_id],
+        repository=destination.repository,
+        password=password,
+        restic_path=restic_path,
+        backend_env=assemble_backend_env(destination),
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        raise ResticKeyError("key remove", result.returncode)
 
 
 def _verify_recovery_key(
@@ -148,5 +203,6 @@ def _verify_recovery_key(
 
 
 __all__ = [
+    "ResticKeyError",
     "init_repository",
 ]
