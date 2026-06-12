@@ -11,7 +11,6 @@ import getpass
 import json
 import logging
 import os
-import re
 import signal
 import socket
 import stat
@@ -79,9 +78,6 @@ LOCAL_WEDGE_PROVIDER_MAP_CAP = 512
 LOCAL_SERVER_READY_TIMEOUT_S = 300.0
 LOCAL_SERVER_HEALTH_POLL_INTERVAL_S = 1.0
 LOCAL_MODEL_WARMING_UP_COPY = "Local model is warming up..."
-_LLAMA_OFFLOAD_RE = re.compile(
-    r"load_tensors:\s+offloaded\s+(\d+)\s*/\s*(\d+)\s+layers\s+to\s+GPU"
-)
 logger = logging.getLogger(__name__)
 _SERVICE_LIFECYCLE_VERBS = {
     "start",
@@ -1592,18 +1588,6 @@ def _start_mlx_local_server() -> RunnerManagedProcess | None:
     return managed
 
 
-def _read_llama_offload_counts(log_path: Path) -> tuple[int, int] | None:
-    try:
-        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except (FileNotFoundError, OSError):
-        return None
-    for line in lines:
-        match = _LLAMA_OFFLOAD_RE.search(line)
-        if match:
-            return int(match.group(1)), int(match.group(2))
-    return None
-
-
 def _format_vulkan_devices(devices: list[Any], local_vulkan: Any) -> str:
     if not devices:
         return "none"
@@ -1696,88 +1680,51 @@ def start_local_server() -> RunnerManagedProcess | None:
         raise RuntimeError("Local server may not bind 0.0.0.0.")
 
     env = os.environ | {"GGML_VK_VISIBLE_DEVICES": str(selected.index)}
+    vram_before_mib = local_vulkan.device_local_used_mib(selected.index)
     managed = _launch_process(LOCAL_SERVER_PROCESS_NAME, cmd, restart=True, env=env)
     print(f"  {LOCAL_MODEL_WARMING_UP_COPY}", flush=True)
 
-    def fail_gpu_offload(reason: str, *, offloaded: int, total: int) -> None:
-        logging.warning("gpu_unavailable: %s", reason)
-        try:
-            local_install.record_gpu_offload_verdict(
-                "failed", offloaded=offloaded, total=total
-            )
-        finally:
-            timeout = _SERVICE_STATE.get(managed.name, {}).get("shutdown_timeout", 15)
-            _SERVICE_STATE.pop(managed.name, None)
-            _terminate_managed(
-                managed,
-                timeout,
-                reason="gpu offload verification failed",
-            )
-            managed.cleanup()
+    def fail_local_server_launch(reason: str) -> None:
+        logging.warning("local server launch failed: %s", reason)
+        timeout = _SERVICE_STATE.get(managed.name, {}).get("shutdown_timeout", 15)
+        _SERVICE_STATE.pop(managed.name, None)
+        _terminate_managed(
+            managed,
+            timeout,
+            reason="local server launch failed",
+        )
+        managed.cleanup()
 
-    offload_verified = False
     deadline = time.monotonic() + LOCAL_SERVER_READY_TIMEOUT_S
     while time.monotonic() < deadline:
-        if not offload_verified:
-            counts = _read_llama_offload_counts(managed.log_writer.path)
-            if counts is not None:
-                offloaded, total = counts
-                if offloaded == 0:
-                    fail_gpu_offload(
-                        f"llama-server offloaded 0/{total} layers to GPU",
-                        offloaded=0,
-                        total=total,
-                    )
-                    return None
-                logging.info(
-                    "llama-server offloaded %d/%d layers to GPU",
-                    offloaded,
-                    total,
-                )
-                if offloaded < total:
-                    logging.warning(
-                        "PARTIAL GPU OFFLOAD: only %d of %d layers reached the GPU; "
-                        "model did not fully fit VRAM",
-                        offloaded,
-                        total,
-                    )
-                local_install.record_gpu_offload_verdict(
-                    "verified", offloaded=offloaded, total=total
-                )
-                offload_verified = True
-
         if managed.process.poll() is not None:
-            fail_gpu_offload(
-                (
-                    "llama-server exited during warmup before GPU offload "
-                    f"verification completed, code {managed.process.returncode}"
-                ),
-                offloaded=0,
-                total=0,
+            fail_local_server_launch(
+                f"llama-server exited during warmup with code "
+                f"{managed.process.returncode}"
             )
             return None
         state, error = local_server._probe_health(port)
         if state == local_server.STATE_READY:
-            if offload_verified:
-                logging.info("llama-server ready on port %s", port)
-                return managed
-            logging.debug(
-                "llama-server health is ready before GPU offload verification"
-            )
+            vram_after_mib = local_vulkan.device_local_used_mib(selected.index)
+            if vram_before_mib is not None and vram_after_mib is not None:
+                logging.info(
+                    "local GPU: %s — VRAM used %+d MiB after model load (%d -> %d MiB)",
+                    selected.name,
+                    vram_after_mib - vram_before_mib,
+                    vram_before_mib,
+                    vram_after_mib,
+                )
+            else:
+                logging.info(
+                    "local GPU: %s — VRAM-usage delta unavailable "
+                    "(VK_EXT_memory_budget not reported)",
+                    selected.name,
+                )
+            logging.info("llama-server ready on port %s", port)
+            return managed
         if state == local_server.STATE_FAILED and error:
             logging.debug("llama-server health probe failed during warmup: %s", error)
         time.sleep(LOCAL_SERVER_HEALTH_POLL_INTERVAL_S)
-
-    if not offload_verified:
-        fail_gpu_offload(
-            (
-                "llama-server did not report GPU layer offload within "
-                f"{LOCAL_SERVER_READY_TIMEOUT_S:.0f}s"
-            ),
-            offloaded=0,
-            total=0,
-        )
-        return None
 
     logging.warning(
         "llama-server did not become ready within %.0fs; continuing startup",

@@ -131,3 +131,42 @@ def test_enumerate_gpus_returns_empty_on_nonzero_or_bad_json(monkeypatch):
     )
 
     assert local_vulkan._enumerate_gpus() == []
+
+
+def test_device_local_used_mib_parses_subprocess_json(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, stdout="4685", stderr="")
+
+    monkeypatch.setattr(local_vulkan.subprocess, "run", fake_run)
+
+    assert local_vulkan.device_local_used_mib(1) == 4685
+    cmd, kwargs = calls[0]
+    assert cmd[-2:] == ["budget", "1"]
+    assert kwargs["capture_output"] is True
+    assert kwargs["text"] is True
+    assert kwargs["timeout"] == local_vulkan._PROBE_TIMEOUT_S
+    assert kwargs["check"] is False
+    assert "env" not in kwargs
+
+
+def test_device_local_used_mib_returns_none_on_probe_failures(monkeypatch):
+    def completed(stdout: str, returncode: int = 0):
+        return lambda cmd, **_kwargs: subprocess.CompletedProcess(
+            cmd, returncode, stdout=stdout, stderr=""
+        )
+
+    for stdout in ("null", "{not-json", '"4685"', "true", "-1"):
+        monkeypatch.setattr(local_vulkan.subprocess, "run", completed(stdout))
+        assert local_vulkan.device_local_used_mib(1) is None
+
+    monkeypatch.setattr(local_vulkan.subprocess, "run", completed("", returncode=1))
+    assert local_vulkan.device_local_used_mib(1) is None
+
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired("probe", 10)
+
+    monkeypatch.setattr(local_vulkan.subprocess, "run", timeout)
+    assert local_vulkan.device_local_used_mib(1) is None

@@ -23,6 +23,8 @@ VK_TYPE_CPU = 4
 _SOFTWARE_NAME_SUBSTRINGS = ("llvmpipe", "lavapipe", "swiftshader")
 _PROBE_TIMEOUT_S = 10.0
 _VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO = 1
+_VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2 = 1000059006
+_VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT = 1000237000
 _VK_PHYSICAL_DEVICE_MEMORY_PROPERTY_DEVICE_LOCAL_BIT = 0x00000001
 _VK_PHYSICAL_DEVICE_NAME_SIZE = 256
 _VK_MAX_MEMORY_TYPES = 32
@@ -84,6 +86,23 @@ class _VkPhysicalDeviceMemoryProperties(ctypes.Structure):
         ("memoryTypes", _VkMemoryType * _VK_MAX_MEMORY_TYPES),
         ("memoryHeapCount", ctypes.c_uint32),
         ("memoryHeaps", _VkMemoryHeap * _VK_MAX_MEMORY_HEAPS),
+    ]
+
+
+class _VkPhysicalDeviceMemoryBudgetPropertiesEXT(ctypes.Structure):
+    _fields_ = [
+        ("sType", ctypes.c_uint32),
+        ("pNext", ctypes.c_void_p),
+        ("heapBudget", ctypes.c_uint64 * _VK_MAX_MEMORY_HEAPS),
+        ("heapUsage", ctypes.c_uint64 * _VK_MAX_MEMORY_HEAPS),
+    ]
+
+
+class _VkPhysicalDeviceMemoryProperties2(ctypes.Structure):
+    _fields_ = [
+        ("sType", ctypes.c_uint32),
+        ("pNext", ctypes.c_void_p),
+        ("memoryProperties", _VkPhysicalDeviceMemoryProperties),
     ]
 
 
@@ -202,6 +221,133 @@ def _enumerate_in_process() -> list[VulkanDevice]:
     return devices
 
 
+def _device_local_used_in_process(index: int) -> int | None:
+    """Return best-effort cross-process device-local VRAM use for one GPU."""
+    if isinstance(index, bool) or index < 0:
+        return None
+    try:
+        vulkan = ctypes.CDLL("libvulkan.so.1")
+    except OSError:
+        return None
+
+    instance = ctypes.c_void_p()
+    try:
+        vulkan.vkCreateInstance.argtypes = [
+            ctypes.POINTER(_VkInstanceCreateInfo),
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        vulkan.vkCreateInstance.restype = ctypes.c_int32
+        vulkan.vkDestroyInstance.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
+        vulkan.vkDestroyInstance.restype = None
+        vulkan.vkEnumeratePhysicalDevices.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint32),
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        vulkan.vkEnumeratePhysicalDevices.restype = ctypes.c_int32
+
+        memory_props2_fn = None
+        for symbol in (
+            "vkGetPhysicalDeviceMemoryProperties2",
+            "vkGetPhysicalDeviceMemoryProperties2KHR",
+        ):
+            try:
+                memory_props2_fn = getattr(vulkan, symbol)
+            except AttributeError:
+                continue
+            break
+        if memory_props2_fn is None:
+            return None
+        memory_props2_fn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(_VkPhysicalDeviceMemoryProperties2),
+        ]
+        memory_props2_fn.restype = None
+
+        create_info = _VkInstanceCreateInfo(
+            sType=_VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+            pNext=None,
+            flags=0,
+            pApplicationInfo=None,
+            enabledLayerCount=0,
+            ppEnabledLayerNames=None,
+            enabledExtensionCount=0,
+            ppEnabledExtensionNames=None,
+        )
+        if (
+            vulkan.vkCreateInstance(
+                ctypes.byref(create_info), None, ctypes.byref(instance)
+            )
+            != 0
+        ):
+            return None
+
+        count = ctypes.c_uint32(0)
+        if vulkan.vkEnumeratePhysicalDevices(instance, ctypes.byref(count), None) != 0:
+            return None
+        if count.value == 0 or index >= count.value:
+            return None
+
+        device_array_type = ctypes.c_void_p * count.value
+        raw_devices = device_array_type()
+        if (
+            vulkan.vkEnumeratePhysicalDevices(
+                instance,
+                ctypes.byref(count),
+                ctypes.cast(raw_devices, ctypes.POINTER(ctypes.c_void_p)),
+            )
+            != 0
+        ):
+            return None
+        if index >= count.value:
+            return None
+
+        budget = _VkPhysicalDeviceMemoryBudgetPropertiesEXT(
+            sType=_VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT,
+            pNext=None,
+        )
+        memory_props2 = _VkPhysicalDeviceMemoryProperties2(
+            sType=_VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
+            pNext=ctypes.addressof(budget),
+        )
+        memory_props2_fn(raw_devices[index], ctypes.byref(memory_props2))
+
+        # heapUsage is current-process usage; this subprocess owns no
+        # llama-server allocations. heapBudget reflects cross-process pressure,
+        # so size-budget is the best-effort logging-only signal.
+        mem_props = memory_props2.memoryProperties
+        if mem_props.memoryHeapCount > _VK_MAX_MEMORY_HEAPS:
+            return None
+        used_bytes = 0
+        found_device_local = False
+        for heap_index in range(mem_props.memoryHeapCount):
+            heap = mem_props.memoryHeaps[heap_index]
+            if not (heap.flags & _VK_PHYSICAL_DEVICE_MEMORY_PROPERTY_DEVICE_LOCAL_BIT):
+                continue
+            found_device_local = True
+            size = int(heap.size)
+            heap_budget = int(budget.heapBudget[heap_index])
+            if size > 0 and heap_budget == 0:
+                return None
+            used_bytes += size - heap_budget
+
+        if not found_device_local or used_bytes < 0:
+            return None
+        return used_bytes // (1024 * 1024)
+    except Exception:
+        return None
+    finally:
+        if instance.value:
+            try:
+                vulkan.vkDestroyInstance(instance, None)
+            except Exception:
+                pass
+
+
 def _devices_from_json(text: str) -> list[VulkanDevice]:
     payload = json.loads(text)
     if not isinstance(payload, list):
@@ -251,6 +397,49 @@ def _enumerate_gpus() -> list[VulkanDevice]:
         logger.warning("Vulkan GPU probe returned no devices")
         return []
     return devices
+
+
+def device_local_used_mib(index: int) -> int | None:
+    if isinstance(index, bool) or index < 0:
+        return None
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "solstone.think.providers.local_vulkan",
+                "budget",
+                str(index),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_PROBE_TIMEOUT_S,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "Vulkan VRAM budget probe timed out after %.0fs", _PROBE_TIMEOUT_S
+        )
+        return None
+    except OSError as exc:
+        logger.warning("Vulkan VRAM budget probe could not start: %s", exc)
+        return None
+
+    if completed.returncode != 0:
+        logger.warning(
+            "Vulkan VRAM budget probe exited with status %s", completed.returncode
+        )
+        return None
+
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        logger.warning("Vulkan VRAM budget probe returned invalid JSON: %s", exc)
+        return None
+
+    if not isinstance(payload, int) or isinstance(payload, bool) or payload < 0:
+        return None
+    return payload
 
 
 def detect_gpus() -> list[VulkanDevice]:
@@ -307,6 +496,19 @@ def classify(dev: VulkanDevice) -> str:
 
 
 def _main() -> None:
+    args = sys.argv[1:]
+    if len(args) == 2 and args[0] == "budget":
+        try:
+            index = int(args[1])
+        except ValueError:
+            result = None
+        else:
+            result = _device_local_used_in_process(index)
+        print(json.dumps(result))
+        return
+    if args:
+        print(json.dumps(None))
+        return
     print(json.dumps([asdict(device) for device in _enumerate_in_process()]))
 
 

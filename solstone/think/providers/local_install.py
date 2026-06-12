@@ -48,10 +48,7 @@ _LOCAL_METADATA_KEYS = frozenset(
         "model_sha256",
         "mmproj_path",
         "mmproj_sha256",
-        # Operator override: raw Vulkan index. Verdict: post-launch GPU offload.
         "vulkan_device_index",
-        "gpu_offload_verdict",
-        "gpu_offload_detail",
     }
 )
 
@@ -176,26 +173,6 @@ def gpu_device_override() -> int | None:
     except (TypeError, ValueError):
         return None
     return index if index >= 0 else None
-
-
-def gpu_offload_verdict() -> str | None:
-    config = read_journal_config()
-    record = config.get("providers", {}).get("bundled", {}).get(LOCAL_PROVIDER_NAME, {})
-    if not isinstance(record, dict):
-        return None
-    verdict = record.get("gpu_offload_verdict")
-    return verdict if isinstance(verdict, str) else None
-
-
-def record_gpu_offload_verdict(verdict: str, *, offloaded: int, total: int) -> None:
-    if verdict not in {"verified", "failed"}:
-        raise ValueError(f"unknown GPU offload verdict: {verdict}")
-    _write_local_metadata(
-        {
-            "gpu_offload_verdict": verdict,
-            "gpu_offload_detail": f"{offloaded}/{total}",
-        }
-    )
 
 
 def _record_local_progress(received: int, total: int | None) -> None:
@@ -468,7 +445,7 @@ def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
     selected_gpu = local_vulkan.select_device(
         local_vulkan.detect_gpus(), override_index=gpu_device_override()
     )
-    gpu_available = selected_gpu is not None and gpu_offload_verdict() != "failed"
+    gpu_available = selected_gpu is not None
     return {
         "install_state": status["install_state"],
         "binary_installed": binary_path.exists() and os.access(binary_path, os.X_OK),
@@ -515,8 +492,6 @@ __all__ = [
     "install_hint",
     "probe_binary_runnable",
     "gpu_device_override",
-    "gpu_offload_verdict",
-    "record_gpu_offload_verdict",
     "inspect_readiness",
     "ensure_artifacts_installed",
 ]

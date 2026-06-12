@@ -389,28 +389,6 @@ def test_inspect_readiness_reports_gpu_unavailable_without_hardware(
     assert readiness["gpu_available"] is False
 
 
-def test_inspect_readiness_failed_offload_verdict_blocks_gpu(tmp_path, monkeypatch):
-    _init_journal(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        local_vulkan,
-        "detect_gpus",
-        lambda: [
-            local_vulkan.VulkanDevice(
-                1,
-                "NVIDIA GeForce GTX 1660 Ti",
-                local_vulkan.VK_TYPE_DISCRETE,
-                6390,
-            )
-        ],
-    )
-    local_install.record_gpu_offload_verdict("failed", offloaded=0, total=41)
-
-    readiness = local_install.inspect_readiness(LOCAL_MODEL)
-
-    assert readiness["gpu_available"] is False
-    assert local_install.gpu_offload_verdict() == "failed"
-
-
 def test_inspect_readiness_honors_vulkan_device_override(tmp_path, monkeypatch):
     _init_journal(tmp_path, monkeypatch)
     devices = [
@@ -436,25 +414,6 @@ def test_inspect_readiness_honors_vulkan_device_override(tmp_path, monkeypatch):
     local_install._write_local_metadata({"vulkan_device_index": "1"})
 
     assert local_install.inspect_readiness(LOCAL_MODEL)["gpu_available"] is False
-
-
-def test_record_gpu_offload_verdict_persists_counts(tmp_path, monkeypatch):
-    _init_journal(tmp_path, monkeypatch)
-
-    local_install.record_gpu_offload_verdict("verified", offloaded=20, total=41)
-
-    slot = _local_slot()
-    assert slot["gpu_offload_verdict"] == "verified"
-    assert slot["gpu_offload_detail"] == "20/41"
-
-    def raise_memory_error():
-        raise RuntimeError("psutil failed")
-
-    monkeypatch.setattr(memory.psutil, "virtual_memory", raise_memory_error)
-
-    readiness = local_install.inspect_readiness(LOCAL_MODEL)
-
-    assert readiness["ram_sufficient"] is True
 
 
 def test_inspect_readiness_ignores_stale_model_path_after_model_change(

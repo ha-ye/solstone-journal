@@ -1,4 +1,0 @@
-2026-06-12T12:00:00.000000+00:00 [llama-server:stderr] ggml_vulkan: 0 = NVIDIA GeForce GTX 1660 Ti (NVIDIA) | uma: 0 | fp16: 1
-2026-06-12T12:00:01.000000+00:00 [llama-server:stderr] load_tensors: offloading 40 repeating layers to GPU
-2026-06-12T12:00:01.100000+00:00 [llama-server:stderr] load_tensors: offloaded 41/41 layers to GPU
-2026-06-12T12:00:02.000000+00:00 [llama-server:stderr] common_init_from_params: setting dry_penalty_last_n to ctx_size = 16384

@@ -1,4 +1,4 @@
-These fixtures cover the Linux Vulkan local-provider gate.
+These fixtures cover Linux Vulkan local-provider device selection.
 
 The b9291 `llama-server --list-devices` text is intentionally not parsed. It
 reports names and memory only, and the iGPU can report more shared memory than

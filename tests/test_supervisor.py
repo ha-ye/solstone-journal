@@ -1286,6 +1286,14 @@ class _TaskManagedStub:
         self.is_running = MagicMock(return_value=True)
 
 
+BENIGN_LLAMA_LOAD_LOG = (
+    "2026-06-12T12:00:00+00:00 [llama-server:stderr] "
+    "llama_model_loader: loading model tensors\n"
+    "2026-06-12T12:00:02+00:00 [llama-server:stderr] "
+    "common_init_from_params: setting dry_penalty_last_n to ctx_size = 16384\n"
+)
+
+
 def test_ensure_venv_bin_on_path_prepends_when_missing(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     monkeypatch.setenv("PATH", "/usr/bin")
@@ -1943,17 +1951,11 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
     written_ports = []
     spawned = []
     spawned_envs = []
-    verdicts = []
     managed = _TaskManagedStub(cmd=[])
     managed.name = "llama-server"
     managed.process.returncode = None
     log_path = tmp_path / "llama-server.log"
-    log_path.write_text(
-        Path("tests/fixtures/llama_server/load_tensors_full.log").read_text(
-            encoding="utf-8"
-        ),
-        encoding="utf-8",
-    )
+    log_path.write_text(BENIGN_LLAMA_LOAD_LOG, encoding="utf-8")
     managed.log_writer = type("LogWriter", (), {"path": log_path})()
 
     monkeypatch.setattr(
@@ -1973,13 +1975,7 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
             )
         ],
     )
-    monkeypatch.setattr(
-        local_install,
-        "record_gpu_offload_verdict",
-        lambda verdict, *, offloaded, total: verdicts.append(
-            (verdict, offloaded, total)
-        ),
-    )
+    monkeypatch.setattr(local_vulkan, "device_local_used_mib", lambda index: 512)
     monkeypatch.setattr(mod, "find_available_port", lambda: 2468)
     monkeypatch.setattr(
         mod,
@@ -2024,7 +2020,6 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
         ]
     ]
     assert spawned_envs[0]["GGML_VK_VISIBLE_DEVICES"] == "1"
-    assert verdicts == [("verified", 41, 41)]
     assert "0.0.0.0" not in spawned[0]
     assert mod._SERVICE_STATE["llama-server"]["restart"] is True
     assert mod.LOCAL_MODEL_WARMING_UP_COPY in capsys.readouterr().out
@@ -2069,7 +2064,6 @@ def _configure_linux_llama_start(
     managed.log_writer = type("LogWriter", (), {"path": log_path})()
     spawned: list[list[str]] = []
     spawned_envs: list[dict[str, str] | None] = []
-    verdicts: list[tuple[str, int, int]] = []
 
     monkeypatch.setattr(
         local_install,
@@ -2088,13 +2082,7 @@ def _configure_linux_llama_start(
             )
         ],
     )
-    monkeypatch.setattr(
-        local_install,
-        "record_gpu_offload_verdict",
-        lambda verdict, *, offloaded, total: verdicts.append(
-            (verdict, offloaded, total)
-        ),
-    )
+    monkeypatch.setattr(local_vulkan, "device_local_used_mib", lambda index: 512)
     monkeypatch.setattr(mod, "find_available_port", lambda: 2468)
     monkeypatch.setattr(mod, "write_service_port", lambda _service, _port: None)
     monkeypatch.setattr(local_server, "_probe_health", lambda _port: ("ready", None))
@@ -2107,7 +2095,7 @@ def _configure_linux_llama_start(
         return managed
 
     monkeypatch.setattr(mod.RunnerManagedProcess, "spawn", fake_spawn)
-    return managed, verdicts, spawned, spawned_envs
+    return managed, spawned, spawned_envs
 
 
 def test_start_local_server_skips_without_hardware_gpu(tmp_path, monkeypatch):
@@ -2130,61 +2118,22 @@ def test_start_local_server_skips_without_hardware_gpu(tmp_path, monkeypatch):
     launch.assert_not_called()
 
 
-def test_start_local_server_verified_full_offload_returns_ready(tmp_path, monkeypatch):
+def test_start_local_server_benign_load_log_returns_ready(tmp_path, monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
-    log_text = Path("tests/fixtures/llama_server/load_tensors_full.log").read_text(
-        encoding="utf-8"
-    )
-    managed, verdicts, _spawned, spawned_envs = _configure_linux_llama_start(
-        mod, tmp_path, monkeypatch, log_text=log_text
+    managed, _spawned, spawned_envs = _configure_linux_llama_start(
+        mod, tmp_path, monkeypatch, log_text=BENIGN_LLAMA_LOAD_LOG
     )
 
     assert mod.start_local_server() is managed
-    assert verdicts == [("verified", 41, 41)]
     assert spawned_envs[0]["GGML_VK_VISIBLE_DEVICES"] == "1"
     managed.terminate.assert_not_called()
 
 
-def test_start_local_server_partial_offload_warns_but_returns_ready(
-    tmp_path, monkeypatch, caplog
-):
-    mod = importlib.import_module("solstone.think.supervisor")
-    log_text = Path("tests/fixtures/llama_server/load_tensors_partial.log").read_text(
-        encoding="utf-8"
-    )
-    managed, verdicts, _spawned, _envs = _configure_linux_llama_start(
-        mod, tmp_path, monkeypatch, log_text=log_text
-    )
-
-    with caplog.at_level(logging.WARNING):
-        assert mod.start_local_server() is managed
-
-    assert verdicts == [("verified", 20, 41)]
-    assert "PARTIAL GPU OFFLOAD" in caplog.text
-    managed.terminate.assert_not_called()
-
-
-def test_start_local_server_zero_offload_fails_closed(tmp_path, monkeypatch):
-    mod = importlib.import_module("solstone.think.supervisor")
-    log_text = Path("tests/fixtures/llama_server/load_tensors_zero.log").read_text(
-        encoding="utf-8"
-    )
-    managed, verdicts, _spawned, _envs = _configure_linux_llama_start(
-        mod, tmp_path, monkeypatch, log_text=log_text
-    )
-
-    assert mod.start_local_server() is None
-    assert verdicts == [("failed", 0, 41)]
-    assert "llama-server" not in mod._SERVICE_STATE
-    managed.terminate.assert_called_once_with(timeout=15)
-    managed.cleanup.assert_called_once_with()
-
-
-def test_start_local_server_process_exit_before_offload_fails_closed(
+def test_start_local_server_process_exit_during_warmup_fails_closed(
     tmp_path, monkeypatch
 ):
     mod = importlib.import_module("solstone.think.supervisor")
-    managed, verdicts, _spawned, _envs = _configure_linux_llama_start(
+    managed, _spawned, _envs = _configure_linux_llama_start(
         mod,
         tmp_path,
         monkeypatch,
@@ -2193,29 +2142,26 @@ def test_start_local_server_process_exit_before_offload_fails_closed(
     )
 
     assert mod.start_local_server() is None
-    assert verdicts == [("failed", 0, 0)]
     assert "llama-server" not in mod._SERVICE_STATE
     managed.terminate.assert_called_once_with(timeout=15)
     managed.cleanup.assert_called_once_with()
 
 
-def test_start_local_server_no_offload_line_by_deadline_fails_closed(
+def test_start_local_server_deadline_with_live_process_returns_managed(
     tmp_path, monkeypatch
 ):
     mod = importlib.import_module("solstone.think.supervisor")
     monkeypatch.setattr(mod, "LOCAL_SERVER_READY_TIMEOUT_S", 0.0)
-    managed, verdicts, _spawned, _envs = _configure_linux_llama_start(
+    managed, _spawned, _envs = _configure_linux_llama_start(
         mod,
         tmp_path,
         monkeypatch,
         log_text="2026-06-12T12:00:00+00:00 [llama-server:stderr] loading\n",
     )
 
-    assert mod.start_local_server() is None
-    assert verdicts == [("failed", 0, 0)]
-    assert "llama-server" not in mod._SERVICE_STATE
-    managed.terminate.assert_called_once_with(timeout=15)
-    managed.cleanup.assert_called_once_with()
+    assert mod.start_local_server() is managed
+    managed.terminate.assert_not_called()
+    managed.cleanup.assert_not_called()
 
 
 class _LocalManagedStub:
