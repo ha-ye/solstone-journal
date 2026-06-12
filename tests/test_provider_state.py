@@ -4,7 +4,7 @@
 import json
 
 from solstone.think.models import LOCAL_MODEL
-from solstone.think.providers import local_install, local_server, state
+from solstone.think.providers import local_install, local_server, local_vulkan, state
 from solstone.think.providers.shared import (
     RUNTIME_REASON_CODES,
     classify_provider_error,
@@ -16,6 +16,7 @@ def _readiness(
     binary: bool = True,
     model: bool = True,
     ram: bool = True,
+    gpu: bool = True,
     install_state: str = "installed",
 ) -> dict:
     return {
@@ -23,6 +24,7 @@ def _readiness(
         "binary_installed": binary,
         "model_installed": model,
         "ram_sufficient": ram,
+        "gpu_available": gpu,
         "binary_path": "/tmp/llama-server",
         "model_path": "/tmp/model.gguf",
         "model_id": LOCAL_MODEL,
@@ -186,6 +188,60 @@ def test_local_readiness_installing(monkeypatch):
 
     assert provider_state.status == "blocked"
     assert provider_state.reason_code == "local_model_installing"
+    assert provider_state.source == "local_install"
+
+
+def test_local_readiness_gpu_unavailable_blocks_before_missing_artifacts(monkeypatch):
+    monkeypatch.setattr(
+        local_install,
+        "inspect_readiness",
+        lambda _model=None: _readiness(binary=False, model=False, gpu=False),
+    )
+
+    provider_state = state.readiness_for_provider("local", "generate")
+
+    assert provider_state.status == "blocked"
+    assert provider_state.reason_code == "gpu_unavailable"
+    assert provider_state.source == "local_install"
+
+
+def test_local_readiness_gpu_unavailable_flows_from_inspect_without_launch(
+    tmp_path, monkeypatch
+):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "journal.json").write_text(
+        json.dumps({"providers": {}}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    binary = local_install.binary_path_for_pin()
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_text("binary", encoding="utf-8")
+    binary.chmod(0o755)
+    gguf = local_install.model_path(LOCAL_MODEL)
+    gguf.parent.mkdir(parents=True, exist_ok=True)
+    gguf.write_text("model", encoding="utf-8")
+    mmproj = local_install.mmproj_path(LOCAL_MODEL)
+    if mmproj is not None:
+        mmproj.write_text("mmproj", encoding="utf-8")
+
+    monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: [])
+    monkeypatch.setattr(
+        local_server,
+        "probe_state",
+        lambda: (_ for _ in ()).throw(AssertionError("server probe not expected")),
+    )
+
+    readiness = local_install.inspect_readiness(LOCAL_MODEL)
+    provider_state = state.readiness_for_provider("local", "generate")
+
+    assert readiness["binary_installed"] is True
+    assert readiness["model_installed"] is True
+    assert readiness["gpu_available"] is False
+    assert provider_state.status == "blocked"
+    assert provider_state.reason_code == "gpu_unavailable"
     assert provider_state.source == "local_install"
 
 

@@ -5277,6 +5277,7 @@ function localIssueCopy(issue) {
     model_missing: 'local model files are not installed',
     server_unhealthy: 'local runtime is not ready',
     ram_insufficient: 'not enough memory for the selected local model',
+    gpu_unavailable: 'This computer has no GPU acceleration, which local models require.',
   };
   return messages[issue] || issue || 'local provider is not ready';
 }

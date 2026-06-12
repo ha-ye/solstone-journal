@@ -458,6 +458,7 @@ def normalize(data: Any, journal_path: str) -> Any:
                                 if i
                                 in {
                                     "binary_missing",
+                                    "gpu_unavailable",
                                     "model_missing",
                                     "ram_insufficient",
                                     "server_unhealthy",

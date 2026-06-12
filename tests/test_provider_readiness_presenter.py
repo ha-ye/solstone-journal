@@ -120,6 +120,7 @@ def test_unknown_status_uses_neutral_readiness_copy():
 def test_blocking_reason_classification():
     for code in (
         "provider_key_missing",
+        "gpu_unavailable",
         "local_model_missing",
         "unsupported_platform",
         "local_server_unhealthy",

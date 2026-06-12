@@ -105,7 +105,7 @@ def test_launch_process_records_service_state(monkeypatch):
         _callosum=None,
     )
 
-    def fake_spawn(cmd, *, ref=None, callosum=None, day=None):
+    def fake_spawn(cmd, *, ref=None, callosum=None, day=None, env=None):
         assert cmd == ["journal", "sense"]
         assert ref == "ref-1"
         assert day is None
@@ -1342,7 +1342,7 @@ def test_task_queue_history_records_completion(tmp_path, monkeypatch):
     managed.wait.return_value = 0
     managed.cleanup = MagicMock()
 
-    def fake_spawn(cmd, *, ref=None, callosum=None, day=None):
+    def fake_spawn(cmd, *, ref=None, callosum=None, day=None, env=None):
         managed.cmd = cmd
         managed.ref = ref
         return managed
@@ -1429,7 +1429,7 @@ def test_run_task_completes_when_scheduler_writeback_fails(monkeypatch):
     managed.wait.return_value = 0
     managed.cleanup = MagicMock()
 
-    def fake_spawn(cmd, *, ref=None, callosum=None, day=None):
+    def fake_spawn(cmd, *, ref=None, callosum=None, day=None, env=None):
         managed.cmd = cmd
         managed.ref = ref
         return managed
@@ -1516,7 +1516,7 @@ def test_task_history_records_cap_kill_as_timeout(monkeypatch):
 
     managed.wait.side_effect = wait
 
-    def fake_spawn(cmd, *, ref=None, callosum=None, day=None):
+    def fake_spawn(cmd, *, ref=None, callosum=None, day=None, env=None):
         return managed
 
     monkeypatch.setattr(mod, "CallosumConnection", FakeCallosum)
@@ -1811,13 +1811,16 @@ def test_start_local_server_launches_mlx_server_on_darwin(
     tmp_path, monkeypatch, capsys
 ):
     mod = importlib.import_module("solstone.think.supervisor")
-    from solstone.think.providers import local_server, mlx_install
+    from solstone.think.providers import local_server, local_vulkan, mlx_install
 
     monkeypatch.setattr(sys, "platform", "darwin")
+    gpu_gate = MagicMock(side_effect=AssertionError("darwin must not probe Vulkan"))
+    monkeypatch.setattr(local_vulkan, "detect_gpus", gpu_gate)
     mod._SERVICE_STATE.clear()
     runtime_dir = tmp_path / "gemma4" / "variant-1120"
     written_ports = []
     spawned = []
+    spawned_envs = []
     managed = _TaskManagedStub(cmd=[])
     managed.name = "mlx-vlm-server"
     managed.process.returncode = None
@@ -1842,8 +1845,9 @@ def test_start_local_server_launches_mlx_server_on_darwin(
     )
     monkeypatch.setattr(local_server, "_probe_health", lambda port: ("ready", None))
 
-    def fake_spawn(cmd, *, ref=None, callosum=None, day=None):
+    def fake_spawn(cmd, *, ref=None, callosum=None, day=None, env=None):
         spawned.append(cmd)
+        spawned_envs.append(env)
         managed.cmd = cmd
         managed.ref = ref
         return managed
@@ -1866,10 +1870,16 @@ def test_start_local_server_launches_mlx_server_on_darwin(
         ]
     ]
     assert "0.0.0.0" not in spawned[0]
+    assert "--n-gpu-layers" not in spawned[0]
+    assert "-c" not in spawned[0]
+    assert "--device" not in spawned[0]
+    assert "Vulkan0" not in spawned[0]
+    assert spawned_envs == [None]
     assert "--draft-model" not in spawned[0]
     assert "--draft-kind" not in spawned[0]
     assert mod._SERVICE_STATE["mlx-vlm-server"]["restart"] is True
     assert mod.LOCAL_MODEL_WARMING_UP_COPY in capsys.readouterr().out
+    gpu_gate.assert_not_called()
 
 
 def test_start_local_server_skips_when_mlx_not_installed_on_darwin(monkeypatch):
@@ -1920,7 +1930,7 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
     tmp_path, monkeypatch, capsys
 ):
     mod = importlib.import_module("solstone.think.supervisor")
-    from solstone.think.providers import local_install, local_server
+    from solstone.think.providers import local_install, local_server, local_vulkan
 
     mod._SERVICE_STATE.clear()
     binary = tmp_path / "llama-server"
@@ -1932,14 +1942,43 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
     mmproj = model_artifact_dir / "mmproj.gguf"
     written_ports = []
     spawned = []
+    spawned_envs = []
+    verdicts = []
     managed = _TaskManagedStub(cmd=[])
     managed.name = "llama-server"
     managed.process.returncode = None
+    log_path = tmp_path / "llama-server.log"
+    log_path.write_text(
+        Path("tests/fixtures/llama_server/load_tensors_full.log").read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8",
+    )
+    managed.log_writer = type("LogWriter", (), {"path": log_path})()
 
     monkeypatch.setattr(
         local_install,
         "ensure_artifacts_installed",
         lambda model_id: (binary, gguf, mmproj),
+    )
+    monkeypatch.setattr(
+        local_vulkan,
+        "detect_gpus",
+        lambda: [
+            local_vulkan.VulkanDevice(
+                1,
+                "NVIDIA GeForce GTX 1660 Ti",
+                local_vulkan.VK_TYPE_DISCRETE,
+                6390,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        local_install,
+        "record_gpu_offload_verdict",
+        lambda verdict, *, offloaded, total: verdicts.append(
+            (verdict, offloaded, total)
+        ),
     )
     monkeypatch.setattr(mod, "find_available_port", lambda: 2468)
     monkeypatch.setattr(
@@ -1949,8 +1988,9 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
     )
     monkeypatch.setattr(local_server, "_probe_health", lambda port: ("ready", None))
 
-    def fake_spawn(cmd, *, ref=None, callosum=None, day=None):
+    def fake_spawn(cmd, *, ref=None, callosum=None, day=None, env=None):
         spawned.append(cmd)
+        spawned_envs.append(env)
         managed.cmd = cmd
         managed.ref = ref
         return managed
@@ -1973,10 +2013,18 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
             "--port",
             "2468",
             "--jinja",
+            "--n-gpu-layers",
+            "999",
+            "-c",
+            "16384",
+            "--device",
+            "Vulkan0",
             "--mmproj",
             str(mmproj),
         ]
     ]
+    assert spawned_envs[0]["GGML_VK_VISIBLE_DEVICES"] == "1"
+    assert verdicts == [("verified", 41, 41)]
     assert "0.0.0.0" not in spawned[0]
     assert mod._SERVICE_STATE["llama-server"]["restart"] is True
     assert mod.LOCAL_MODEL_WARMING_UP_COPY in capsys.readouterr().out
@@ -1996,6 +2044,178 @@ def test_start_local_server_skips_missing_artifacts(monkeypatch):
 
     assert mod.start_local_server() is None
     launch.assert_not_called()
+
+
+def _configure_linux_llama_start(
+    mod,
+    tmp_path,
+    monkeypatch,
+    *,
+    log_text: str,
+    poll_return=None,
+):
+    from solstone.think.providers import local_install, local_server, local_vulkan
+
+    mod._SERVICE_STATE.clear()
+    binary = tmp_path / "llama-server"
+    model_artifact_dir = local_install.model_dir(mod.LOCAL_MODEL)
+    gguf = model_artifact_dir / "model.gguf"
+    log_path = tmp_path / "llama-server.log"
+    log_path.write_text(log_text, encoding="utf-8")
+    managed = _TaskManagedStub(cmd=[])
+    managed.name = "llama-server"
+    managed.process.returncode = poll_return
+    managed.process.poll = MagicMock(return_value=poll_return)
+    managed.log_writer = type("LogWriter", (), {"path": log_path})()
+    spawned: list[list[str]] = []
+    spawned_envs: list[dict[str, str] | None] = []
+    verdicts: list[tuple[str, int, int]] = []
+
+    monkeypatch.setattr(
+        local_install,
+        "ensure_artifacts_installed",
+        lambda model_id: (binary, gguf, None),
+    )
+    monkeypatch.setattr(
+        local_vulkan,
+        "detect_gpus",
+        lambda: [
+            local_vulkan.VulkanDevice(
+                1,
+                "NVIDIA GeForce GTX 1660 Ti",
+                local_vulkan.VK_TYPE_DISCRETE,
+                6390,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        local_install,
+        "record_gpu_offload_verdict",
+        lambda verdict, *, offloaded, total: verdicts.append(
+            (verdict, offloaded, total)
+        ),
+    )
+    monkeypatch.setattr(mod, "find_available_port", lambda: 2468)
+    monkeypatch.setattr(mod, "write_service_port", lambda _service, _port: None)
+    monkeypatch.setattr(local_server, "_probe_health", lambda _port: ("ready", None))
+
+    def fake_spawn(cmd, *, ref=None, callosum=None, day=None, env=None):
+        spawned.append(cmd)
+        spawned_envs.append(env)
+        managed.cmd = cmd
+        managed.ref = ref
+        return managed
+
+    monkeypatch.setattr(mod.RunnerManagedProcess, "spawn", fake_spawn)
+    return managed, verdicts, spawned, spawned_envs
+
+
+def test_start_local_server_skips_without_hardware_gpu(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    from solstone.think.providers import local_install, local_vulkan
+
+    binary = tmp_path / "llama-server"
+    model_artifact_dir = local_install.model_dir(mod.LOCAL_MODEL)
+    gguf = model_artifact_dir / "model.gguf"
+    monkeypatch.setattr(
+        local_install,
+        "ensure_artifacts_installed",
+        lambda model_id: (binary, gguf, None),
+    )
+    monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: [])
+    launch = MagicMock()
+    monkeypatch.setattr(mod, "_launch_process", launch)
+
+    assert mod.start_local_server() is None
+    launch.assert_not_called()
+
+
+def test_start_local_server_verified_full_offload_returns_ready(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    log_text = Path("tests/fixtures/llama_server/load_tensors_full.log").read_text(
+        encoding="utf-8"
+    )
+    managed, verdicts, _spawned, spawned_envs = _configure_linux_llama_start(
+        mod, tmp_path, monkeypatch, log_text=log_text
+    )
+
+    assert mod.start_local_server() is managed
+    assert verdicts == [("verified", 41, 41)]
+    assert spawned_envs[0]["GGML_VK_VISIBLE_DEVICES"] == "1"
+    managed.terminate.assert_not_called()
+
+
+def test_start_local_server_partial_offload_warns_but_returns_ready(
+    tmp_path, monkeypatch, caplog
+):
+    mod = importlib.import_module("solstone.think.supervisor")
+    log_text = Path("tests/fixtures/llama_server/load_tensors_partial.log").read_text(
+        encoding="utf-8"
+    )
+    managed, verdicts, _spawned, _envs = _configure_linux_llama_start(
+        mod, tmp_path, monkeypatch, log_text=log_text
+    )
+
+    with caplog.at_level(logging.WARNING):
+        assert mod.start_local_server() is managed
+
+    assert verdicts == [("verified", 20, 41)]
+    assert "PARTIAL GPU OFFLOAD" in caplog.text
+    managed.terminate.assert_not_called()
+
+
+def test_start_local_server_zero_offload_fails_closed(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    log_text = Path("tests/fixtures/llama_server/load_tensors_zero.log").read_text(
+        encoding="utf-8"
+    )
+    managed, verdicts, _spawned, _envs = _configure_linux_llama_start(
+        mod, tmp_path, monkeypatch, log_text=log_text
+    )
+
+    assert mod.start_local_server() is None
+    assert verdicts == [("failed", 0, 41)]
+    assert "llama-server" not in mod._SERVICE_STATE
+    managed.terminate.assert_called_once_with(timeout=15)
+    managed.cleanup.assert_called_once_with()
+
+
+def test_start_local_server_process_exit_before_offload_fails_closed(
+    tmp_path, monkeypatch
+):
+    mod = importlib.import_module("solstone.think.supervisor")
+    managed, verdicts, _spawned, _envs = _configure_linux_llama_start(
+        mod,
+        tmp_path,
+        monkeypatch,
+        log_text="2026-06-12T12:00:00+00:00 [llama-server:stderr] loading\n",
+        poll_return=1,
+    )
+
+    assert mod.start_local_server() is None
+    assert verdicts == [("failed", 0, 0)]
+    assert "llama-server" not in mod._SERVICE_STATE
+    managed.terminate.assert_called_once_with(timeout=15)
+    managed.cleanup.assert_called_once_with()
+
+
+def test_start_local_server_no_offload_line_by_deadline_fails_closed(
+    tmp_path, monkeypatch
+):
+    mod = importlib.import_module("solstone.think.supervisor")
+    monkeypatch.setattr(mod, "LOCAL_SERVER_READY_TIMEOUT_S", 0.0)
+    managed, verdicts, _spawned, _envs = _configure_linux_llama_start(
+        mod,
+        tmp_path,
+        monkeypatch,
+        log_text="2026-06-12T12:00:00+00:00 [llama-server:stderr] loading\n",
+    )
+
+    assert mod.start_local_server() is None
+    assert verdicts == [("failed", 0, 0)]
+    assert "llama-server" not in mod._SERVICE_STATE
+    managed.terminate.assert_called_once_with(timeout=15)
+    managed.cleanup.assert_called_once_with()
 
 
 class _LocalManagedStub:

@@ -289,6 +289,7 @@ def test_get_providers_ai_readiness_cloud_unknown_is_neutral(
         ("local_model_installing", "blocked", "blocker"),
         ("local_model_loading", "blocked", "blocker"),
         ("ram_insufficient", "blocked", "blocker"),
+        ("gpu_unavailable", "blocked", "blocker"),
         ("local_server_unhealthy", "unhealthy", "attention"),
     ],
 )

@@ -250,10 +250,10 @@ def test_llama_server_pins_are_real_b9291_digests():
         == "0e985f87dd71f96a9cb9ebc3ad26f8388030342d000e7e82d4a38d14913373ff"
     )
     assert linux["release_tag"] == "b9291"
-    assert linux["filename"] == "llama-b9291-bin-ubuntu-x64.tar.gz"
+    assert linux["filename"] == "llama-b9291-bin-ubuntu-vulkan-x64.tar.gz"
     assert (
         linux["sha256"]
-        == "8cb79eb596cc5cc15a6089ceadaa2723e3d75c1e7b37cfb9977ad1d4dc4a41eb"
+        == "7e3bf4202bedc71c2c9fbfbe02d10075b8d596bb963e7ab006663582dc2e92c2"
     )
 
 
@@ -278,6 +278,7 @@ def test_build_provider_status_local_not_selected_is_inert(monkeypatch):
             "binary_installed": True,
             "model_installed": True,
             "ram_sufficient": True,
+            "gpu_available": True,
             "binary_path": "/fake/llama-server",
         },
     )
@@ -308,6 +309,7 @@ def test_build_provider_status_local_readiness(monkeypatch):
             "binary_installed": True,
             "model_installed": True,
             "ram_sufficient": True,
+            "gpu_available": True,
         },
     )
     monkeypatch.setattr(
@@ -338,6 +340,7 @@ def test_build_provider_status_local_launch_failure_adds_probe_detail_and_hint(
             "binary_installed": True,
             "model_installed": True,
             "ram_sufficient": True,
+            "gpu_available": True,
             "binary_path": "/fake/llama-server",
         },
     )
@@ -372,6 +375,7 @@ def test_build_provider_status_local_server_unhealthy_when_probe_runnable(
             "binary_installed": True,
             "model_installed": True,
             "ram_sufficient": True,
+            "gpu_available": True,
             "binary_path": "/fake/llama-server",
         },
     )
@@ -406,6 +410,7 @@ def test_build_provider_status_local_healthy_skips_probe(monkeypatch):
             "binary_installed": True,
             "model_installed": True,
             "ram_sufficient": True,
+            "gpu_available": True,
             "binary_path": "/fake/llama-server",
         },
     )
@@ -434,6 +439,7 @@ def test_local_provider_status_carries_install_hint_substring(monkeypatch):
             "binary_installed": False,
             "model_installed": False,
             "ram_sufficient": False,
+            "gpu_available": True,
         },
     )
     monkeypatch.setattr(
@@ -457,6 +463,31 @@ def test_local_provider_status_carries_install_hint_substring(monkeypatch):
     assert any("journal install-provider local" in issue for issue in status["issues"])
 
 
+def test_local_provider_status_reports_gpu_unavailable_issue(monkeypatch):
+    from solstone.think.providers import build_provider_status
+
+    _select_local_provider(monkeypatch)
+    monkeypatch.setattr(
+        "solstone.think.providers.local_install.inspect_readiness",
+        lambda: {
+            "binary_installed": True,
+            "model_installed": True,
+            "ram_sufficient": True,
+            "gpu_available": False,
+            "binary_path": "/fake/llama-server",
+        },
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.is_healthy", lambda: True
+    )
+
+    status = build_provider_status(
+        [{"name": "local", "label": "Local (on-device)", "env_key": ""}]
+    )["local"]
+
+    assert status["issues"] == ["gpu_unavailable"]
+
+
 def test_build_provider_status_local_configured_ignores_ram_flag(monkeypatch):
     from solstone.think.providers import build_provider_status
 
@@ -467,6 +498,7 @@ def test_build_provider_status_local_configured_ignores_ram_flag(monkeypatch):
             "binary_installed": True,
             "model_installed": True,
             "ram_sufficient": False,
+            "gpu_available": True,
             "binary_path": "/fake/llama-server",
         },
     )

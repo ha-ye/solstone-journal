@@ -36,6 +36,7 @@ READINESS_REASON_CODES = frozenset(
         "local_model_missing",
         "local_model_installing",
         "local_model_loading",
+        "gpu_unavailable",
         "local_server_unhealthy",
     }
 )
@@ -285,6 +286,8 @@ def local_status_dict() -> dict:
 
     issues: list[str] = []
     server_healthy = local_server.is_healthy()
+    if not readiness.get("gpu_available", True):
+        issues.append("gpu_unavailable")
     if not binary_installed:
         issues.append("binary_missing")
     if not model_installed:
@@ -414,6 +417,16 @@ def _local_readiness_for_provider(
             "local_model_installing",
             model=model_id,
             message=str(readiness["install_state"]),
+            source="local_install",
+        )
+
+    if not readiness.get("gpu_available", True):
+        return _state(
+            provider,
+            interface,
+            "blocked",
+            "gpu_unavailable",
+            model=model_id,
             source="local_install",
         )
 

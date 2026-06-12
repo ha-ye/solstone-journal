@@ -15,7 +15,7 @@ import pytest
 
 from solstone.think.journal_config import read_journal_config
 from solstone.think.models import LOCAL_MODEL
-from solstone.think.providers import local_install, memory
+from solstone.think.providers import local_install, local_vulkan, memory
 from solstone.think.providers.install_state import read_install_status
 from solstone.think.providers.local import LOCAL_MODEL_SPECS
 
@@ -52,10 +52,16 @@ def test_install_hint_literal() -> None:
 def test_install_llama_server_relocates_binary_and_libraries(tmp_path, monkeypatch):
     _init_journal(tmp_path, monkeypatch)
     pin = local_install.pin_for_current_platform()
+    if local_install.llama_server_artifact_key() == "x86_64-unknown-linux-gnu":
+        assert pin["filename"] == "llama-b9291-bin-ubuntu-vulkan-x64.tar.gz"
+        assert (
+            pin["sha256"]
+            == "7e3bf4202bedc71c2c9fbfbe02d10075b8d596bb963e7ab006663582dc2e92c2"
+        )
     artifact_key = local_install.llama_server_artifact_key()
     install_dir = local_install.binary_install_dir(artifact_key, pin)
     binary_path = local_install.binary_path_for_pin(artifact_key, pin)
-    inner_name = "llama-btest"
+    inner_name = "llama-b9291"
     lib_names = ["libllama.so", "libggml.so", "libfoo.dylib"]
     fixture_root = tmp_path / "fixture" / inner_name
     fixture_root.mkdir(parents=True)
@@ -350,6 +356,96 @@ def test_inspect_readiness_reports_ram_sufficient_for_low_or_unknown_memory(
     readiness = local_install.inspect_readiness(LOCAL_MODEL)
 
     assert readiness["ram_sufficient"] is True
+
+
+def test_inspect_readiness_reports_gpu_available_with_hardware(tmp_path, monkeypatch):
+    _init_journal(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        local_vulkan,
+        "detect_gpus",
+        lambda: [
+            local_vulkan.VulkanDevice(
+                1,
+                "NVIDIA GeForce GTX 1660 Ti",
+                local_vulkan.VK_TYPE_DISCRETE,
+                6390,
+            )
+        ],
+    )
+
+    readiness = local_install.inspect_readiness(LOCAL_MODEL)
+
+    assert readiness["gpu_available"] is True
+
+
+def test_inspect_readiness_reports_gpu_unavailable_without_hardware(
+    tmp_path, monkeypatch
+):
+    _init_journal(tmp_path, monkeypatch)
+    monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: [])
+
+    readiness = local_install.inspect_readiness(LOCAL_MODEL)
+
+    assert readiness["gpu_available"] is False
+
+
+def test_inspect_readiness_failed_offload_verdict_blocks_gpu(tmp_path, monkeypatch):
+    _init_journal(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        local_vulkan,
+        "detect_gpus",
+        lambda: [
+            local_vulkan.VulkanDevice(
+                1,
+                "NVIDIA GeForce GTX 1660 Ti",
+                local_vulkan.VK_TYPE_DISCRETE,
+                6390,
+            )
+        ],
+    )
+    local_install.record_gpu_offload_verdict("failed", offloaded=0, total=41)
+
+    readiness = local_install.inspect_readiness(LOCAL_MODEL)
+
+    assert readiness["gpu_available"] is False
+    assert local_install.gpu_offload_verdict() == "failed"
+
+
+def test_inspect_readiness_honors_vulkan_device_override(tmp_path, monkeypatch):
+    _init_journal(tmp_path, monkeypatch)
+    devices = [
+        local_vulkan.VulkanDevice(
+            0,
+            "Intel(R) Graphics",
+            local_vulkan.VK_TYPE_INTEGRATED,
+            23814,
+        ),
+        local_vulkan.VulkanDevice(
+            1,
+            "llvmpipe (LLVM)",
+            local_vulkan.VK_TYPE_CPU,
+            0,
+        ),
+    ]
+    monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: devices)
+    local_install._write_local_metadata({"vulkan_device_index": "0"})
+
+    assert local_install.gpu_device_override() == 0
+    assert local_install.inspect_readiness(LOCAL_MODEL)["gpu_available"] is True
+
+    local_install._write_local_metadata({"vulkan_device_index": "1"})
+
+    assert local_install.inspect_readiness(LOCAL_MODEL)["gpu_available"] is False
+
+
+def test_record_gpu_offload_verdict_persists_counts(tmp_path, monkeypatch):
+    _init_journal(tmp_path, monkeypatch)
+
+    local_install.record_gpu_offload_verdict("verified", offloaded=20, total=41)
+
+    slot = _local_slot()
+    assert slot["gpu_offload_verdict"] == "verified"
+    assert slot["gpu_offload_detail"] == "20/41"
 
     def raise_memory_error():
         raise RuntimeError("psutil failed")

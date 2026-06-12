@@ -21,6 +21,7 @@ _MISSING_CONFIG_REASONS = {
     "provider_key_missing",
     "provider_key_invalid",
     "ram_insufficient",
+    "gpu_unavailable",
     "local_model_missing",
     "model_missing",
     "binary_missing",

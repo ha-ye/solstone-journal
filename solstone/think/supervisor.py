@@ -11,6 +11,7 @@ import getpass
 import json
 import logging
 import os
+import re
 import signal
 import socket
 import stat
@@ -78,6 +79,9 @@ LOCAL_WEDGE_PROVIDER_MAP_CAP = 512
 LOCAL_SERVER_READY_TIMEOUT_S = 300.0
 LOCAL_SERVER_HEALTH_POLL_INTERVAL_S = 1.0
 LOCAL_MODEL_WARMING_UP_COPY = "Local model is warming up..."
+_LLAMA_OFFLOAD_RE = re.compile(
+    r"load_tensors:\s+offloaded\s+(\d+)\s*/\s*(\d+)\s+layers\s+to\s+GPU"
+)
 logger = logging.getLogger(__name__)
 _SERVICE_LIFECYCLE_VERBS = {
     "start",
@@ -1069,6 +1073,7 @@ def _launch_process(
     restart: bool = False,
     shutdown_timeout: int = 15,
     ref: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> RunnerManagedProcess:
     # NOTE: All child processes should include -v for verbose logging by default.
     # This ensures their output is captured in logs for debugging.
@@ -1083,7 +1088,7 @@ def _launch_process(
     # Use unified runner to spawn process (share supervisor's callosum)
     try:
         managed = RunnerManagedProcess.spawn(
-            cmd, ref=ref, callosum=_supervisor_callosum
+            cmd, ref=ref, callosum=_supervisor_callosum, env=env
         )
     except RuntimeError as exc:
         logging.error(str(exc))
@@ -1587,12 +1592,44 @@ def _start_mlx_local_server() -> RunnerManagedProcess | None:
     return managed
 
 
+def _read_llama_offload_counts(log_path: Path) -> tuple[int, int] | None:
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except (FileNotFoundError, OSError):
+        return None
+    for line in lines:
+        match = _LLAMA_OFFLOAD_RE.search(line)
+        if match:
+            return int(match.group(1)), int(match.group(2))
+    return None
+
+
+def _format_vulkan_devices(devices: list[Any], local_vulkan: Any) -> str:
+    if not devices:
+        return "none"
+    return "; ".join(
+        (
+            f"raw_index={device.index} name={device.name!r} "
+            f"type={local_vulkan.classify(device)} vram_mib={device.vram_mib}"
+        )
+        for device in devices
+    )
+
+
+def _gpu_unavailable_reason(devices: list[Any], override: int | None) -> str:
+    if not devices:
+        return "no Vulkan devices enumerated"
+    if override is not None:
+        return f"Vulkan override raw index {override} is not an available hardware GPU"
+    return "only non-hardware or software Vulkan devices were enumerated"
+
+
 def start_local_server() -> RunnerManagedProcess | None:
     """Launch the supervisor-owned local llama-server when artifacts are present."""
     if sys.platform == "darwin":
         return _start_mlx_local_server()
 
-    from solstone.think.providers import local_install, local_server
+    from solstone.think.providers import local_install, local_server, local_vulkan
 
     try:
         binary_path, gguf_path, mmproj_path = local_install.ensure_artifacts_installed(
@@ -1615,6 +1652,24 @@ def start_local_server() -> RunnerManagedProcess | None:
         logging.info("Local model not ready; skipping llama-server startup: %s", exc)
         return None
 
+    devices = local_vulkan.detect_gpus()
+    override = local_install.gpu_device_override()
+    selected = local_vulkan.select_device(devices, override_index=override)
+    logging.info(
+        "Vulkan GPU probe: devices=%s; selected=%s",
+        _format_vulkan_devices(devices, local_vulkan),
+        (
+            f"raw_index={selected.index} name={selected.name!r} "
+            f"type={local_vulkan.classify(selected)}"
+            if selected is not None
+            else "none"
+        ),
+    )
+    if selected is None:
+        reason = _gpu_unavailable_reason(devices, override)
+        logging.info("gpu_unavailable: skipping llama-server startup: %s", reason)
+        return None
+
     port = find_available_port()
     write_service_port("local", port)
     cmd = [
@@ -1628,30 +1683,101 @@ def start_local_server() -> RunnerManagedProcess | None:
         "--port",
         str(port),
         "--jinja",
+        "--n-gpu-layers",
+        "999",
+        "-c",
+        "16384",
+        "--device",
+        "Vulkan0",
     ]
     if mmproj_path is not None:
         cmd.extend(["--mmproj", str(mmproj_path)])
     if "0.0.0.0" in cmd:
         raise RuntimeError("Local server may not bind 0.0.0.0.")
 
-    managed = _launch_process(LOCAL_SERVER_PROCESS_NAME, cmd, restart=True)
+    env = os.environ | {"GGML_VK_VISIBLE_DEVICES": str(selected.index)}
+    managed = _launch_process(LOCAL_SERVER_PROCESS_NAME, cmd, restart=True, env=env)
     print(f"  {LOCAL_MODEL_WARMING_UP_COPY}", flush=True)
 
+    def fail_gpu_offload(reason: str, *, offloaded: int, total: int) -> None:
+        logging.warning("gpu_unavailable: %s", reason)
+        try:
+            local_install.record_gpu_offload_verdict(
+                "failed", offloaded=offloaded, total=total
+            )
+        finally:
+            timeout = _SERVICE_STATE.get(managed.name, {}).get("shutdown_timeout", 15)
+            _SERVICE_STATE.pop(managed.name, None)
+            _terminate_managed(
+                managed,
+                timeout,
+                reason="gpu offload verification failed",
+            )
+            managed.cleanup()
+
+    offload_verified = False
     deadline = time.monotonic() + LOCAL_SERVER_READY_TIMEOUT_S
     while time.monotonic() < deadline:
+        if not offload_verified:
+            counts = _read_llama_offload_counts(managed.log_writer.path)
+            if counts is not None:
+                offloaded, total = counts
+                if offloaded == 0:
+                    fail_gpu_offload(
+                        f"llama-server offloaded 0/{total} layers to GPU",
+                        offloaded=0,
+                        total=total,
+                    )
+                    return None
+                logging.info(
+                    "llama-server offloaded %d/%d layers to GPU",
+                    offloaded,
+                    total,
+                )
+                if offloaded < total:
+                    logging.warning(
+                        "PARTIAL GPU OFFLOAD: only %d of %d layers reached the GPU; "
+                        "model did not fully fit VRAM",
+                        offloaded,
+                        total,
+                    )
+                local_install.record_gpu_offload_verdict(
+                    "verified", offloaded=offloaded, total=total
+                )
+                offload_verified = True
+
         if managed.process.poll() is not None:
-            logging.warning(
-                "llama-server exited during warmup with code %s",
-                managed.process.returncode,
+            fail_gpu_offload(
+                (
+                    "llama-server exited during warmup before GPU offload "
+                    f"verification completed, code {managed.process.returncode}"
+                ),
+                offloaded=0,
+                total=0,
             )
-            return managed
+            return None
         state, error = local_server._probe_health(port)
         if state == local_server.STATE_READY:
-            logging.info("llama-server ready on port %s", port)
-            return managed
+            if offload_verified:
+                logging.info("llama-server ready on port %s", port)
+                return managed
+            logging.debug(
+                "llama-server health is ready before GPU offload verification"
+            )
         if state == local_server.STATE_FAILED and error:
             logging.debug("llama-server health probe failed during warmup: %s", error)
         time.sleep(LOCAL_SERVER_HEALTH_POLL_INTERVAL_S)
+
+    if not offload_verified:
+        fail_gpu_offload(
+            (
+                "llama-server did not report GPU layer offload within "
+                f"{LOCAL_SERVER_READY_TIMEOUT_S:.0f}s"
+            ),
+            offloaded=0,
+            total=0,
+        )
+        return None
 
     logging.warning(
         "llama-server did not become ready within %.0fs; continuing startup",

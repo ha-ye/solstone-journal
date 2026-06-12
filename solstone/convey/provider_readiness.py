@@ -91,6 +91,15 @@ _ENTRIES: dict[str, _Entry] = {
         ),
         recovery_action=_LOCAL_SETUP_ACTION,
     ),
+    "gpu_unavailable": _Entry(
+        klass="setup",
+        summary="local models need GPU acceleration on this computer",
+        detail=(
+            "Local models require a supported GPU. This computer has no GPU "
+            "acceleration available."
+        ),
+        recovery_action=_SETTINGS_ACTION,
+    ),
     "local_model_missing": _Entry(
         klass="setup",
         summary="local model setup is not finished",

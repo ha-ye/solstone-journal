@@ -113,6 +113,13 @@ def test_workspace_unified_provider_panel_keeps_bootstrap_endpoints_and_polling(
     assert "providersPanelActionPending" in text
 
 
+def test_workspace_local_issue_copy_includes_gpu_unavailable():
+    text = _workspace_text()
+
+    assert "gpu_unavailable" in text
+    assert "This computer has no GPU acceleration, which local models require." in text
+
+
 def test_workspace_provider_names_excludes_openhands():
     text = _workspace_text()
 

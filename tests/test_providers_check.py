@@ -467,6 +467,34 @@ def test_check_cogitate_local_missing_runtime_names_local_install_hint(monkeypat
     assert "journal install-provider local" in msg
 
 
+def test_check_cogitate_local_gpu_unavailable_uses_issue_copy(monkeypatch):
+    import solstone.think.providers_cli as providers_cli
+
+    monkeypatch.setattr(
+        providers_cli,
+        "_provider_status",
+        lambda _name: {
+            "configured": True,
+            "cogitate_cli_found": True,
+            "cogitate_ready": False,
+            "issues": ["gpu_unavailable"],
+        },
+    )
+
+    monkeypatch.setattr(
+        "solstone.think.providers.state.readiness_for_provider",
+        lambda *_args: type("FakeState", (), {"reason_code": "gpu_unavailable"})(),
+    )
+
+    status, msg, reason_code = asyncio.run(
+        providers_cli._check_cogitate("local", 2, 30)
+    )
+
+    assert status == "skip"
+    assert msg == "gpu_unavailable"
+    assert reason_code == "gpu_unavailable"
+
+
 def test_all_skip_exits_zero(tmp_path, monkeypatch):
     """Exit code is 0 when all results are skipped (no fails)."""
     import solstone.think.providers_cli as providers_cli

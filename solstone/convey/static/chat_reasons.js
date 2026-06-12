@@ -18,6 +18,10 @@
       "template": "the local model needs more memory than this machine has",
       "action": {"label": "Open Local Model Setup", "href": "/app/settings/#providers"}
     },
+    "gpu_unavailable": {
+      "template": "local models need GPU acceleration on this computer",
+      "action": {"label": "Open Settings", "href": "/app/settings/#providers"}
+    },
     "local_model_missing": {
       "template": "local model setup is not finished",
       "action": {"label": "Open Local Model Setup", "href": "/app/settings/#providers"}

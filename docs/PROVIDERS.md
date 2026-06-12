@@ -318,8 +318,15 @@ OpenAI-compatible ``/v1`` surface. Key differences from cloud providers:
   vision-capable unified VLM ``local/qwen3.5-4b`` from
   ``unsloth/Qwen3.5-4B-GGUF``: ``Qwen3.5-4B-Q4_K_M.gguf`` (2740937888 bytes,
   8 GiB minimum RAM) with ``mmproj-F16.gguf``. v1 ships macOS arm64 Metal and
-  Linux x86_64 CPU slices; Linux CUDA is deferred until an upstream Linux CUDA
-  tarball is pinned.
+  Linux x86_64 Vulkan slices. The Linux slice requires a Vulkan-capable hardware
+  GPU; CPU/software Vulkan devices such as llvmpipe, lavapipe, and SwiftShader
+  are rejected, with no CPU fallback.
+- **Linux GPU override:** operators can set
+  ``providers.bundled.local.vulkan_device_index`` to a raw Vulkan physical-device
+  index when auto-selection chooses the wrong GPU. The override is still gated:
+  absent, CPU, virtual, software, or out-of-range indices fail readiness.
+- **Missing GPU recovery:** local setup or retry does not fix a missing hardware
+  GPU. Choose a configured cloud provider instead.
 - **Model prefix convention:** Models use the ``local/`` prefix
   (for example, ``local/qwen3.5-4b``).
 - **Cogitate through OpenHands.** Cogitate uses the OpenHands + LiteLLM facade

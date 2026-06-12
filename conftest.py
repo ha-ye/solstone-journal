@@ -15,6 +15,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 _TMPDIR_FALLBACK_NOTICE: str | None = None
 
 
@@ -145,3 +147,27 @@ def pytest_sessionfinish(session, exitstatus):
 
     sys.stderr.write(_format_leak_message(new_entries))
     session.exitstatus = 1
+
+
+@pytest.fixture(autouse=True)
+def _default_local_vulkan_gpu():
+    """Keep local-provider readiness deterministic on GPU-less test hosts."""
+    from solstone.think.providers import local_vulkan
+
+    original_detect_gpus = local_vulkan.detect_gpus
+    local_vulkan.reset_detect_cache()
+
+    def fake_detect_gpus():
+        return [
+            local_vulkan.VulkanDevice(
+                1,
+                "NVIDIA GeForce GTX 1660 Ti",
+                local_vulkan.VK_TYPE_DISCRETE,
+                6390,
+            )
+        ]
+
+    local_vulkan.detect_gpus = fake_detect_gpus
+    yield
+    local_vulkan.detect_gpus = original_detect_gpus
+    local_vulkan.reset_detect_cache()

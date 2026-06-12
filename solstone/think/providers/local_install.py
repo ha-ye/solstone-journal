@@ -48,6 +48,10 @@ _LOCAL_METADATA_KEYS = frozenset(
         "model_sha256",
         "mmproj_path",
         "mmproj_sha256",
+        # Operator override: raw Vulkan index. Verdict: post-launch GPU offload.
+        "vulkan_device_index",
+        "gpu_offload_verdict",
+        "gpu_offload_detail",
     }
 )
 
@@ -60,8 +64,8 @@ LLAMA_SERVER_PINS: dict[str, dict[str, str]] = {
     },
     "x86_64-unknown-linux-gnu": {
         "release_tag": "b9291",
-        "filename": "llama-b9291-bin-ubuntu-x64.tar.gz",
-        "sha256": "8cb79eb596cc5cc15a6089ceadaa2723e3d75c1e7b37cfb9977ad1d4dc4a41eb",
+        "filename": "llama-b9291-bin-ubuntu-vulkan-x64.tar.gz",
+        "sha256": "7e3bf4202bedc71c2c9fbfbe02d10075b8d596bb963e7ab006663582dc2e92c2",
         "binary_name": "llama-server",
     },
 }
@@ -157,6 +161,41 @@ def _write_local_metadata(updates: dict[str, str]) -> None:
     for key, value in updates.items():
         slot[key] = value
     write_journal_config(config)
+
+
+def gpu_device_override() -> int | None:
+    config = read_journal_config()
+    record = config.get("providers", {}).get("bundled", {}).get(LOCAL_PROVIDER_NAME, {})
+    if not isinstance(record, dict):
+        return None
+    value = record.get("vulkan_device_index")
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        index = int(value)
+    except (TypeError, ValueError):
+        return None
+    return index if index >= 0 else None
+
+
+def gpu_offload_verdict() -> str | None:
+    config = read_journal_config()
+    record = config.get("providers", {}).get("bundled", {}).get(LOCAL_PROVIDER_NAME, {})
+    if not isinstance(record, dict):
+        return None
+    verdict = record.get("gpu_offload_verdict")
+    return verdict if isinstance(verdict, str) else None
+
+
+def record_gpu_offload_verdict(verdict: str, *, offloaded: int, total: int) -> None:
+    if verdict not in {"verified", "failed"}:
+        raise ValueError(f"unknown GPU offload verdict: {verdict}")
+    _write_local_metadata(
+        {
+            "gpu_offload_verdict": verdict,
+            "gpu_offload_detail": f"{offloaded}/{total}",
+        }
+    )
 
 
 def _record_local_progress(received: int, total: int | None) -> None:
@@ -390,6 +429,8 @@ def install_local(model_id: str = LOCAL_MODEL) -> dict[str, Any]:
 
 
 def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
+    from solstone.think.providers import local_vulkan
+
     config = read_journal_config()
     record = config.get("providers", {}).get("bundled", {}).get(LOCAL_PROVIDER_NAME, {})
     if not isinstance(record, dict):
@@ -424,6 +465,10 @@ def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
     )
     mmproj_installed = resolved_mmproj is None or resolved_mmproj.exists()
     memory_verdict = assess_memory(spec.min_ram_bytes, block_below_floor=False)
+    selected_gpu = local_vulkan.select_device(
+        local_vulkan.detect_gpus(), override_index=gpu_device_override()
+    )
+    gpu_available = selected_gpu is not None and gpu_offload_verdict() != "failed"
     return {
         "install_state": status["install_state"],
         "binary_installed": binary_path.exists() and os.access(binary_path, os.X_OK),
@@ -431,6 +476,7 @@ def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
         "gguf_installed": gguf_path.exists(),
         "mmproj_installed": mmproj_installed,
         "ram_sufficient": memory_verdict.severity != "blocked",
+        "gpu_available": gpu_available,
         "binary_path": str(binary_path),
         "model_path": str(gguf_path),
         "mmproj_path": str(resolved_mmproj) if resolved_mmproj is not None else None,
@@ -468,6 +514,9 @@ __all__ = [
     "install_local",
     "install_hint",
     "probe_binary_runnable",
+    "gpu_device_override",
+    "gpu_offload_verdict",
+    "record_gpu_offload_verdict",
     "inspect_readiness",
     "ensure_artifacts_installed",
 ]

@@ -1,0 +1,20 @@
+[
+  {
+    "index": 0,
+    "name": "Intel(R) Graphics (RKL GT1)",
+    "device_type": 1,
+    "vram_mib": 23814
+  },
+  {
+    "index": 1,
+    "name": "NVIDIA GeForce GTX 1660 Ti",
+    "device_type": 2,
+    "vram_mib": 6390
+  },
+  {
+    "index": 2,
+    "name": "llvmpipe (LLVM 21.1.8, 256 bits)",
+    "device_type": 4,
+    "vram_mib": 0
+  }
+]
