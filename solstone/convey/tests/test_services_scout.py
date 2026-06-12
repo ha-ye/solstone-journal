@@ -266,6 +266,35 @@ def test_status_sse_happy_path(
         response.close()
 
 
+def test_pending_payload_still_emits_failed(
+    convey_env_setup_pending,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = convey_env_setup_pending()
+    monkeypatch.setattr(
+        portal_client,
+        "poll_handoff_once",
+        lambda *_a, **_k: PollOutcome(
+            kind="success",
+            payload={
+                "state": "pending",
+                "account_id": "acct-p",
+                "since": 1_700_000_000_000,
+            },
+        ),
+    )
+    start_response = _start(env.client)
+    nonce_id = start_response.get_json()["nonce_id"]
+    response = _status(env.client, nonce_id)
+    try:
+        assert _next_event(response)[0] == "subscribed"
+        name, data = _next_event(response)
+        assert name == "failed"
+        assert data["reason"] == "unexpected_payload"
+    finally:
+        response.close()
+
+
 def test_status_unknown_nonce_returns_404(convey_env_setup_pending) -> None:
     env = convey_env_setup_pending()
 

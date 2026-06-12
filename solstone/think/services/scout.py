@@ -75,6 +75,11 @@ def _fingerprint_key(key: str) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
+def _is_approved_provision(block: Any) -> bool:
+    """A non-pending scout block is the approved (provisioned-key) variant."""
+    return isinstance(block, dict) and block.get("state") != "pending"
+
+
 def provision_scout_handoff(payload: dict[str, Any]) -> None:
     """Persist a portal-provisioned scout handoff into journal config."""
 
@@ -103,6 +108,35 @@ def provision_scout_handoff(payload: dict[str, Any]) -> None:
             log.debug(
                 "provisioned scout service for account_id=%s", values["account_id"]
             )
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def record_scout_pending(account_id: str, since: Any) -> None:
+    """Store a pending scout-approval marker (no key or dispatch token written)."""
+
+    if not isinstance(account_id, str) or not account_id:
+        raise ValueError(
+            "malformed handoff payload: field 'account_id' must be a non-empty string"
+        )
+    _require_journal_config()
+
+    lock_path = _lock_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w", encoding="utf-8") as lock_file:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            _require_journal_config()
+            config = read_journal_config()
+            config.setdefault("services", {})["scout"] = {
+                "state": "pending",
+                "account_id": account_id,
+                "since": since,
+                "checked_at": datetime.now(timezone.utc).isoformat(),
+            }
+            write_journal_config(config)
+            log.debug("recorded pending scout marker for account_id=%s", account_id)
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 
@@ -152,9 +186,9 @@ def is_scout_enabled() -> bool:
     """Return whether scout is enabled through service provisioning."""
 
     config = read_journal_config()
-    return bool(
-        config.get("services", {}).get("scout")
-        and config.get("env", {}).get("GOOGLE_API_KEY")
+    block = config.get("services", {}).get("scout")
+    return _is_approved_provision(block) and bool(
+        config.get("env", {}).get("GOOGLE_API_KEY")
     )
 
 
@@ -162,9 +196,9 @@ def is_manual_key_present() -> bool:
     """Return whether a manual Gemini key exists without scout provenance."""
 
     config = read_journal_config()
-    return bool(
-        config.get("env", {}).get("GOOGLE_API_KEY")
-        and not config.get("services", {}).get("scout")
+    block = config.get("services", {}).get("scout")
+    return bool(config.get("env", {}).get("GOOGLE_API_KEY")) and not (
+        _is_approved_provision(block)
     )
 
 

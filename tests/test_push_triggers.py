@@ -822,6 +822,37 @@ def test_dispatch_via_portal_no_scout_returns_none(monkeypatch):
     assert not urlopen_called
 
 
+def test_dispatch_via_portal_pending_marker_no_token_noops(monkeypatch):
+    urlopen_called = False
+    monkeypatch.setattr(
+        portal_dispatch,
+        "scout_provenance",
+        lambda: {
+            "state": "pending",
+            "account_id": "acct-p",
+            "since": 1_700_000_000_000,
+            "checked_at": "2026-06-11T00:00:00+00:00",
+        },
+    )
+
+    def fake_urlopen(request, timeout):
+        nonlocal urlopen_called
+        urlopen_called = True
+        return _PortalResponse(b"{}")
+
+    monkeypatch.setattr(portal_dispatch.urllib_request, "urlopen", fake_urlopen)
+
+    assert (
+        portal_dispatch.dispatch_via_portal(
+            request_id="req-1",
+            summary="x",
+            category="notice",
+        )
+        is None
+    )
+    assert not urlopen_called
+
+
 def test_dispatch_dedup_via_portal_posts_and_returns_payload(monkeypatch):
     monkeypatch.setattr(
         portal_dispatch,

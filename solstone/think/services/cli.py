@@ -10,6 +10,8 @@ import logging
 import sys
 import time
 import webbrowser
+from datetime import datetime, timezone
+from typing import Any
 
 from solstone.think.journal_config import get_journal_config_path
 from solstone.think.services import portal_client, scout, spl
@@ -23,6 +25,12 @@ STDOUT_LINK_TEMPLATE = "To enable scout, open this link in any browser:\n\n    {
 STDOUT_OPENED_BROWSER = "Opening it in your browser now."
 STDOUT_WAITING = "Waiting for you to finish in the browser (up to 15 minutes)..."
 STDOUT_SUCCESS = "Scout enabled."
+STDOUT_PENDING = "Scout request applied — pending review (submitted {since})."
+STDOUT_REVOKED = "Scout access has ended."
+STDOUT_REVOKED_PRESERVED_MANUAL_KEY = (
+    "Scout access has ended — your manually-pasted key was preserved."
+)
+STDOUT_REFRESH = "Re-pulled scout status."
 STDOUT_DISABLE_SUCCESS = "Scout disabled."
 STDOUT_DISABLE_PRESERVED_MANUAL_KEY = (
     "Scout disabled — your manually-pasted key was preserved."
@@ -51,6 +59,10 @@ ERROR_MESSAGES: dict[str, str] = {
     ),
     "unexpected_payload": (
         "The services response shape was unexpected. Update solstone and try again."
+    ),
+    "scout_server_bad_payload": (
+        "services.solstone.app returned an incomplete scout approval. "
+        "Retry shortly; if it persists, the portal is at fault."
     ),
     "write_failed": (
         "Scout was approved, but journal config was not saved. "
@@ -82,9 +94,10 @@ EXIT_CODES: dict[str, int] = {
 
 
 class _CliError(Exception):
-    def __init__(self, token: str):
+    def __init__(self, token: str, detail: str | None = None):
         super().__init__(token)
         self.token = token
+        self.detail = detail
 
 
 class _ServicesArgumentParser(argparse.ArgumentParser):
@@ -118,6 +131,15 @@ def _wait_seconds(value: str) -> int:
     except ValueError as exc:
         raise argparse.ArgumentTypeError("wait must be an integer") from exc
     return max(MIN_WAIT_SECONDS, min(MAX_WAIT_SECONDS, seconds))
+
+
+def _format_since(since: Any) -> str:
+    try:
+        return datetime.fromtimestamp(int(since) / 1000, tz=timezone.utc).strftime(
+            "%Y-%m-%d"
+        )
+    except (TypeError, ValueError, OverflowError, OSError):
+        return "recently"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -192,6 +214,33 @@ def _build_parser() -> argparse.ArgumentParser:
         parents=[_verbose_parent],
     )
     disable_spl_parser.set_defaults(handler=_disable_spl)
+
+    refresh_parser = subparsers.add_parser(
+        "refresh",
+        help="refresh optional service status",
+        parents=[_verbose_parent],
+    )
+    refresh_service_parsers = refresh_parser.add_subparsers(
+        dest="service",
+        metavar="{scout}",
+        title="services",
+        parser_class=_ServicesArgumentParser,
+    )
+    refresh_scout_parser = refresh_service_parsers.add_parser(
+        "scout",
+        help="refresh scout",
+        parents=[_verbose_parent],
+    )
+    refresh_scout_parser.add_argument(
+        "--wait",
+        type=_wait_seconds,
+        default=portal_client.DEFAULT_WAIT_SECONDS,
+        metavar="SECONDS",
+        help=(
+            "Owner-patience budget for the browser flow, clamped to 60-3600 seconds."
+        ),
+    )
+    refresh_scout_parser.set_defaults(handler=_refresh_scout)
     return parser
 
 
@@ -222,6 +271,43 @@ def _poll_handoff(base_url: str, nonce: str, wait_seconds: int) -> dict:
     raise _CliError("consent_timeout")
 
 
+def _apply_handoff(payload: dict) -> str:
+    """Interpret a portal handoff payload by state and apply it.
+
+    Returns the STDOUT message; raises _CliError for known bad-payload tokens.
+    """
+
+    state = payload.get("state")
+    if state == "approved":
+        try:
+            scout.provision_scout_handoff(payload)
+        except ValueError as exc:
+            raise _CliError("scout_server_bad_payload", str(exc)) from exc
+        return STDOUT_SUCCESS
+    if state == "pending":
+        try:
+            scout.record_scout_pending(payload.get("account_id"), payload.get("since"))
+        except ValueError as exc:
+            raise _CliError("scout_server_bad_payload", str(exc)) from exc
+        return STDOUT_PENDING.format(since=_format_since(payload.get("since")))
+    if state == "revoked":
+        outcome = scout.disable_scout()
+        if outcome.env_key_preserved:
+            return STDOUT_REVOKED_PRESERVED_MANUAL_KEY
+        return STDOUT_REVOKED
+    if state is None:
+        # ROLLOUT-WINDOW: the pre-state worker sends a bare 4-field approved
+        # payload with no "state". Treat as approved. Remove this branch once the
+        # state-aware worker ships (J-follow-up: clean-break removal).
+        try:
+            scout.provision_scout_handoff(payload)
+        except ValueError as exc:
+            raise _CliError("unexpected_payload", str(exc)) from exc
+        return STDOUT_SUCCESS
+    # Unknown state value => client too old to understand it.
+    raise _CliError("unexpected_payload")
+
+
 def _enable_scout(args: argparse.Namespace) -> int:
     if not get_journal_config_path().exists():
         _print_error("journal_not_initialized")
@@ -244,21 +330,48 @@ def _enable_scout(args: argparse.Namespace) -> int:
             print(STDOUT_OPENED_BROWSER)
         print(STDOUT_WAITING)
         payload = _poll_handoff(base_url, nonce, args.wait)
-        scout.provision_scout_handoff(payload)
+        message = _apply_handoff(payload)
     except _CliError as exc:
-        _print_error(exc.token)
+        _print_error(exc.token, exc.detail)
         return EXIT_CODES.get(exc.token, 1)
     except scout.JournalNotInitializedError:
         _print_error("journal_not_initialized")
-        return 1
-    except ValueError as exc:
-        _print_error("unexpected_payload", str(exc))
         return 1
     except Exception as exc:
         _print_error("write_failed", str(exc))
         return 1
 
-    print(STDOUT_SUCCESS)
+    print(message)
+    return 0
+
+
+def _refresh_scout(args: argparse.Namespace) -> int:
+    if not get_journal_config_path().exists():
+        _print_error("journal_not_initialized")
+        return 1
+
+    base_url = portal_client.portal_base_url()
+    try:
+        nonce = portal_client.mint_nonce()
+        browser_url = portal_client.browser_url(base_url, nonce)
+        print(STDOUT_LINK_TEMPLATE.format(url=browser_url))
+        if _open_browser(browser_url):
+            print(STDOUT_OPENED_BROWSER)
+        print(STDOUT_WAITING)
+        payload = _poll_handoff(base_url, nonce, args.wait)
+        message = _apply_handoff(payload)
+    except _CliError as exc:
+        _print_error(exc.token, exc.detail)
+        return EXIT_CODES.get(exc.token, 1)
+    except scout.JournalNotInitializedError:
+        _print_error("journal_not_initialized")
+        return 1
+    except Exception as exc:
+        _print_error("write_failed", str(exc))
+        return 1
+
+    print(STDOUT_REFRESH)
+    print(message)
     return 0
 
 

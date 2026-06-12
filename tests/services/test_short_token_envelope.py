@@ -14,6 +14,7 @@ CANONICAL_TOKENS = {
     "tls_verification_failed",
     "nonce_invalid",
     "unexpected_payload",
+    "scout_server_bad_payload",
     "write_failed",
     "already_enabled",
     "manual_key_present",

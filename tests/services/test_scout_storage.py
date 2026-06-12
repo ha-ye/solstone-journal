@@ -21,6 +21,7 @@ from solstone.think.services.scout import (
     is_manual_key_present,
     is_scout_enabled,
     provision_scout_handoff,
+    record_scout_pending,
     scout_provenance,
 )
 
@@ -119,6 +120,72 @@ def test_scout_three_state_matrix(journal_copy) -> None:
     provision_scout_handoff(_payload("two"))
     assert is_scout_enabled()
     assert not is_manual_key_present()
+
+
+def test_pending_marker_alone_predicates(journal_copy) -> None:
+    config = _read_config(journal_copy)
+    config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
+    config.pop("services", None)
+    write_journal_config(config)
+
+    record_scout_pending("acct-p", 1_700_000_000_000)
+
+    assert not is_scout_enabled()
+    assert not is_manual_key_present()
+    saved = _read_config(journal_copy)
+    assert "GOOGLE_API_KEY" not in saved.get("env", {})
+    scout = dict(saved["services"]["scout"])
+    checked_at = scout.pop("checked_at")
+    assert isinstance(checked_at, str)
+    assert scout == {
+        "state": "pending",
+        "account_id": "acct-p",
+        "since": 1_700_000_000_000,
+    }
+    assert scout_provenance() == saved["services"]["scout"]
+
+
+def test_pending_marker_with_manual_key_predicates(journal_copy) -> None:
+    config = _read_config(journal_copy)
+    config.setdefault("env", {})["GOOGLE_API_KEY"] = "manual"
+    config.pop("services", None)
+    write_journal_config(config)
+
+    record_scout_pending("acct-p", 1_700_000_000_000)
+
+    assert not is_scout_enabled()
+    assert is_manual_key_present()
+    saved = _read_config(journal_copy)
+    assert saved["env"]["GOOGLE_API_KEY"] == "manual"
+
+
+def test_record_scout_pending_requires_account_id(journal_copy) -> None:
+    config = _read_config(journal_copy)
+    config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
+    config.pop("services", None)
+    write_journal_config(config)
+
+    with pytest.raises(ValueError):
+        record_scout_pending("", 123)
+    with pytest.raises(ValueError):
+        record_scout_pending(None, 123)
+
+    assert "scout" not in _read_config(journal_copy).get("services", {})
+
+
+def test_record_scout_pending_writes_no_google_api_key(journal_copy) -> None:
+    config = _read_config(journal_copy)
+    config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
+    config.pop("services", None)
+    write_journal_config(config)
+
+    record_scout_pending("acct-p", 1_700_000_000_000)
+
+    saved = _read_config(journal_copy)
+    assert "GOOGLE_API_KEY" not in saved.get("env", {})
+    scout = saved["services"]["scout"]
+    assert "google_api_key" not in scout
+    assert "dispatch_token" not in scout
 
 
 @pytest.mark.parametrize("field", list(_payload().keys()))
