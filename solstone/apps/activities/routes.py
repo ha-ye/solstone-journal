@@ -14,6 +14,7 @@ from solstone.convey import state
 from solstone.convey.reasons import (
     ACTIVITIES_BUSY,
     ACTIVITY_ALREADY_EXISTS,
+    ACTIVITY_INVALID,
     ACTIVITY_NOT_FOUND,
     FILE_NOT_FOUND,
     FILE_READ_FAILED,
@@ -170,6 +171,14 @@ def activities_create_record(day: str) -> Any:
         body = {}
 
     title = str(body.get("title") or "").strip()
+    source = str(body.get("source") or "user")
+    if not title:
+        return error_response(ACTIVITY_INVALID, detail="title must not be empty")
+    if source not in {"user", "cogitate"}:
+        return error_response(
+            ACTIVITY_INVALID, detail="source must be 'user' or 'cogitate'"
+        )
+
     activity_type = str(body.get("activity") or "").strip()
     if not get_activity_by_id(facet, activity_type):
         return error_response(ACTIVITY_NOT_FOUND, detail=activity_type)
@@ -183,7 +192,6 @@ def activities_create_record(day: str) -> Any:
 
     description = str(body.get("description") or title).strip() or title
     details = str(body.get("details") or "")
-    source = str(body.get("source") or "user")
     participation_provided = "participation" in body
     participation: list[dict[str, Any]] = []
     if participation_provided:

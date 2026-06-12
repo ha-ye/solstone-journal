@@ -14,7 +14,11 @@ from datetime import datetime, timedelta
 
 import typer
 
-from solstone.convey.reasons import ACTIVITY_ALREADY_EXISTS, ACTIVITY_NOT_FOUND
+from solstone.convey.reasons import (
+    ACTIVITY_ALREADY_EXISTS,
+    ACTIVITY_INVALID,
+    ACTIVITY_NOT_FOUND,
+)
 from solstone.think.convey_client import ConveyClientError, convey_cli, get_client
 
 _PARTICIPATION_ROLES = {"attendee", "mentioned"}
@@ -74,10 +78,12 @@ def _valid_segment_key(segment: str) -> bool:
     return 0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59
 
 
-def _read_stdin_json() -> dict[str, object]:
+def _read_stdin_json(*, allow_empty: bool = False) -> dict[str, object]:
     """Parse a single JSON object from stdin."""
     raw = sys.stdin.read().strip()
     if not raw:
+        if allow_empty:
+            return {}
         typer.echo("Error: expected JSON object on stdin.", err=True)
         raise typer.Exit(1)
 
@@ -387,27 +393,35 @@ def create_record(
         "--source",
         help="Record source label: user or cogitate.",
     ),
+    title: str | None = typer.Option(
+        None,
+        "--title",
+        help="Activity title (argv mode).",
+    ),
+    activity: str | None = typer.Option(
+        None,
+        "--activity",
+        help="Activity type (argv mode).",
+    ),
+    description: str | None = typer.Option(
+        None,
+        "--description",
+        help="One-line description (argv mode).",
+    ),
+    details: str | None = typer.Option(
+        None,
+        "--details",
+        help="Longer details (argv mode).",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
-    """Create a new synthetic activity record from JSON on stdin."""
+    """Create a new synthetic activity record from argv flags or JSON on stdin."""
     if source not in {"cogitate", "user"}:
         typer.echo("Error: --source must be 'cogitate' or 'user'.", err=True)
         raise typer.Exit(1)
 
     resolved_facet = _resolve_sol_facet(facet)
     resolved_day = _resolve_sol_day(day)
-    payload = _read_stdin_json()
-    participation_provided = "participation" in payload
-
-    title = str(payload.get("title") or "").strip()
-    if not title:
-        typer.echo("Error: title is required.", err=True)
-        raise typer.Exit(1)
-
-    activity_type = str(payload.get("activity") or "").strip()
-    if not activity_type:
-        typer.echo("Error: activity is required.", err=True)
-        raise typer.Exit(1)
 
     if since_segment is not None and not _valid_segment_key(since_segment):
         typer.echo(
@@ -416,19 +430,54 @@ def create_record(
         )
         raise typer.Exit(1)
 
-    body: dict[str, object] = {
-        "title": title,
-        "activity": activity_type,
-        "source": source,
-    }
-    if "description" in payload:
-        body["description"] = payload["description"]
-    if "details" in payload:
-        body["details"] = payload["details"]
+    payload_flags_supplied = any(
+        value is not None for value in (title, activity, description, details)
+    )
+    if payload_flags_supplied:
+        if title is None:
+            typer.echo("Error: --title is required.", err=True)
+            raise typer.Exit(1)
+        if activity is None:
+            typer.echo("Error: --activity is required.", err=True)
+            raise typer.Exit(1)
+        activity_type = activity
+        body: dict[str, object] = {
+            "title": title,
+            "activity": activity,
+            "source": source,
+        }
+        if description is not None:
+            body["description"] = description
+        if details is not None:
+            body["details"] = details
+    else:
+        payload = _read_stdin_json()
+        participation_provided = "participation" in payload
+
+        title = str(payload.get("title") or "").strip()
+        if not title:
+            typer.echo("Error: title is required.", err=True)
+            raise typer.Exit(1)
+
+        activity_type = str(payload.get("activity") or "").strip()
+        if not activity_type:
+            typer.echo("Error: activity is required.", err=True)
+            raise typer.Exit(1)
+
+        body = {
+            "title": title,
+            "activity": activity_type,
+            "source": source,
+        }
+        if "description" in payload:
+            body["description"] = payload["description"]
+        if "details" in payload:
+            body["details"] = payload["details"]
+        if participation_provided:
+            body["participation"] = _validate_participation(payload["participation"])
+
     if since_segment is not None:
         body["since_segment"] = since_segment
-    if participation_provided:
-        body["participation"] = _validate_participation(payload["participation"])
 
     try:
         response = get_client().request(
@@ -446,6 +495,9 @@ def create_record(
             raise typer.Exit(1) from err
         if err.reason_code == ACTIVITY_ALREADY_EXISTS.code:
             typer.echo(f"Error: activity already exists: {err.detail}", err=True)
+            raise typer.Exit(1) from err
+        if err.reason_code == ACTIVITY_INVALID.code:
+            typer.echo(f"Error: {err.detail}", err=True)
             raise typer.Exit(1) from err
         raise
 
@@ -472,22 +524,49 @@ def update_record_command(
         help="Journal day in YYYYMMDD format (or set SOL_DAY).",
     ),
     note: str | None = typer.Option(None, "--note", help="Edit note."),
+    title: str | None = typer.Option(
+        None,
+        "--title",
+        help="Activity title (argv mode).",
+    ),
+    description: str | None = typer.Option(
+        None,
+        "--description",
+        help="One-line description (argv mode).",
+    ),
+    details: str | None = typer.Option(
+        None,
+        "--details",
+        help="Longer details (argv mode).",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
 ) -> None:
-    """Apply a shallow JSON patch to one activity record."""
+    """Apply an argv flag or stdin JSON patch to one activity record."""
     resolved_facet = _resolve_sol_facet(facet)
     resolved_day = _resolve_sol_day(day)
-    payload = _read_stdin_json()
 
-    patch = {
-        key: value
-        for key, value in payload.items()
-        if key in {"title", "description", "details"}
-    }
-    if set(payload) - set(patch):
-        extra = ", ".join(sorted(set(payload) - set(patch)))
-        typer.echo(f"Error: disallowed update fields: {extra}", err=True)
-        raise typer.Exit(1)
+    payload_flags_supplied = any(
+        value is not None for value in (title, description, details)
+    )
+    if payload_flags_supplied:
+        patch: dict[str, object] = {}
+        if title is not None:
+            patch["title"] = title
+        if description is not None:
+            patch["description"] = description
+        if details is not None:
+            patch["details"] = details
+    else:
+        payload = _read_stdin_json(allow_empty=True)
+        patch = {
+            key: value
+            for key, value in payload.items()
+            if key in {"title", "description", "details"}
+        }
+        if set(payload) - set(patch):
+            extra = ", ".join(sorted(set(payload) - set(patch)))
+            typer.echo(f"Error: disallowed update fields: {extra}", err=True)
+            raise typer.Exit(1)
 
     if not patch:
         typer.echo(

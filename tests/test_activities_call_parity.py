@@ -350,6 +350,134 @@ def test_create_success_json_and_text(runner):
     assert text.stdout.startswith("### Focused coding\n- Activity: coding\n")
 
 
+def test_create_argv_success(runner):
+    result = runner.invoke(
+        app,
+        [
+            "create",
+            "--day",
+            DAY,
+            "--facet",
+            FACET,
+            "--source",
+            "cogitate",
+            "--title",
+            "Team sync",
+            "--activity",
+            "meeting",
+            "--description",
+            "Synced",
+            "--details",
+            "notes",
+            "--since-segment",
+            "090000_300",
+            "--json",
+        ],
+    )
+
+    payload = json.loads(result.stdout)
+    assert result.exit_code == 0
+    assert payload["id"] == "meeting_090000_300"
+    assert payload["source"] == "cogitate"
+    assert payload["segments"] == ["090000_300"]
+    assert payload["description"] == "Synced"
+    assert payload["details"] == "notes"
+    assert payload["edits"][-1]["actor"] == "cogitate:activities"
+    assert payload["edits"][-1]["fields"] == [
+        "activity",
+        "title",
+        "description",
+        "details",
+        "source",
+    ]
+
+
+def test_create_argv_missing_required_flags(runner):
+    missing_title = runner.invoke(
+        app,
+        [
+            "create",
+            "--day",
+            DAY,
+            "--facet",
+            FACET,
+            "--activity",
+            "meeting",
+        ],
+    )
+    missing_activity = runner.invoke(
+        app,
+        [
+            "create",
+            "--day",
+            DAY,
+            "--facet",
+            FACET,
+            "--title",
+            "X",
+        ],
+    )
+
+    assert missing_title.exit_code == 1
+    assert missing_title.stdout == ""
+    assert missing_title.stderr == "Error: --title is required.\n"
+    assert missing_activity.exit_code == 1
+    assert missing_activity.stdout == ""
+    assert missing_activity.stderr == "Error: --activity is required.\n"
+
+
+def test_create_argv_surfaces_server_title_rejection(runner):
+    result = runner.invoke(
+        app,
+        [
+            "create",
+            "--day",
+            DAY,
+            "--facet",
+            FACET,
+            "--source",
+            "cogitate",
+            "--title",
+            "",
+            "--activity",
+            "meeting",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr == "Error: title must not be empty\n"
+
+
+def test_create_argv_flags_ignore_stdin(runner):
+    result = runner.invoke(
+        app,
+        [
+            "create",
+            "--day",
+            DAY,
+            "--facet",
+            FACET,
+            "--source",
+            "cogitate",
+            "--title",
+            "Flag title",
+            "--activity",
+            "meeting",
+            "--description",
+            "Flag description",
+            "--json",
+        ],
+        input=json.dumps({"title": "IGNORED", "activity": "coding"}),
+    )
+
+    payload = json.loads(result.stdout)
+    assert result.exit_code == 0
+    assert payload["title"] == "Flag title"
+    assert payload["activity"] == "meeting"
+    assert payload["description"] == "Flag description"
+
+
 @pytest.mark.parametrize(
     ("args", "stdin", "stderr"),
     [
@@ -586,6 +714,69 @@ def test_update_success_errors_and_busy(runner, journal, monkeypatch):
     )
     assert missing.stderr == "activity not found: missing\n"
     assert busy.stderr == f"{ACTIVITIES_BUSY.message}\n"
+
+
+def test_update_argv_success_and_empty_details(runner, journal):
+    _write_records(journal, FACET, DAY, [_base_record(details="Old details")])
+
+    success = runner.invoke(
+        app,
+        [
+            "update",
+            "coding_090000_300",
+            "--day",
+            DAY,
+            "--facet",
+            FACET,
+            "--title",
+            "Focused coding",
+            "--details",
+            "New details",
+            "--json",
+        ],
+    )
+    empty_details = runner.invoke(
+        app,
+        [
+            "update",
+            "coding_090000_300",
+            "--day",
+            DAY,
+            "--facet",
+            FACET,
+            "--details",
+            "",
+            "--json",
+        ],
+    )
+
+    success_payload = json.loads(success.stdout)
+    empty_details_payload = json.loads(empty_details.stdout)
+    assert success.exit_code == 0
+    assert success_payload["title"] == "Focused coding"
+    assert success_payload["details"] == "New details"
+    assert empty_details.exit_code == 0
+    assert empty_details_payload["details"] == ""
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["update", "coding_090000_300", "--day", DAY, "--facet", FACET, "--note", "x"],
+        ["update", "coding_090000_300", "--day", DAY, "--facet", FACET, "--json"],
+    ],
+)
+def test_update_no_mutable_field_no_stdin(runner, journal, args):
+    _write_records(journal, FACET, DAY, [_base_record()])
+
+    result = runner.invoke(app, args)
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert (
+        result.stderr
+        == "Error: update payload must include at least one mutable field.\n"
+    )
 
 
 def test_mute_unmute_success_not_found_and_busy(runner, journal, monkeypatch):

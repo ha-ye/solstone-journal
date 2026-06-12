@@ -32,16 +32,16 @@ general-purpose write tool. Every mutation below is a `sol call …` command.
 | merge two entities | `sol call entities merge` |
 | move an entity between facets | `sol call entities move` |
 | mute / unmute an activity | `sol call activities mute` / `unmute` |
+| create or edit an activity record | `sol call activities create` / `update` |
 | name the journal / set the owner | `sol call sol set-name` / `set-owner` |
 
 If you don't know a command's exact options, check `sol call <app> <verb>
 --help` before acting.
 
 You do **not** create or cancel calendar events (calendar items come from the
-Calendar import and are read-only), create or edit activity *records* (you can
-only mute/unmute existing ones), manage to-dos, or manage owner skills — those
-surfaces aren't available here. If asked, say so plainly and offer what does
-exist (e.g. an entity edit).
+Calendar import and are read-only), manage to-dos, or manage owner skills —
+those surfaces aren't available here. If asked, say so plainly and offer what
+does exist (e.g. an entity edit).
 
 ## Common Patterns (chain calls toward the goal)
 

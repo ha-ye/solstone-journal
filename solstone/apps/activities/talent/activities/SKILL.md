@@ -67,23 +67,33 @@ sol call activities get coding_090000_300 -f work -d 20260115
 ## create
 
 ```bash
-sol call activities create [-f FACET] [-d DAY] [--since-segment SEGMENT] [--source user|cogitate] [--json]
+sol call activities create [-f FACET] [-d DAY] [--since-segment SEGMENT] [--source user|cogitate] [--title T] [--activity TYPE] [--description D] [--details E] [--json]
 ```
 
-Create a new activity record from a JSON object on stdin.
+Create a new activity record from argv flags or a JSON object on stdin.
 
 - `-f, --facet`: facet name (default: `SOL_FACET` env).
 - `-d, --day`: day in `YYYYMMDD` (default: `SOL_DAY` env).
 - `--since-segment`: optional segment key to anchor a real activity span.
 - `--source`: record source label (`user` by default).
+- `--title`: activity title. Required in argv mode.
+- `--activity`: activity type. Required in argv mode.
+- `--description`: optional one-line description.
+- `--details`: optional longer details.
 - `--json`: emit the created record.
+
+Input styles:
+
+- Use argv flags for simple records.
+- Use stdin JSON when you need `participation`.
 
 Stdin JSON requirements:
 
 - Required: `title`, `activity`
 - Optional: `description`, `details`, `participation`
 
-`participation` is an array of participant objects. Each entry must include:
+`participation` is available only via stdin JSON, not via flags. It is an array
+of participant objects. Each entry must include:
 
 - `name`: non-empty string.
 - `role`: `"attendee"` or `"mentioned"`.
@@ -96,6 +106,8 @@ Names are resolved against journal entities after validation; any caller-supplie
 Examples:
 
 ```bash
+sol call activities create -f work --title "Deep work" --activity coding
+sol call activities create -f work --title "Session review" --activity coding --details "Retrospective notes" --since-segment 090000_300 --source cogitate --json
 echo '{"title":"Deep work","activity":"coding"}' | sol call activities create -f work
 echo '{"title":"Session review","activity":"coding","details":"Retrospective notes"}' | sol call activities create -f work --since-segment 090000_300 --source cogitate --json
 echo '{
@@ -111,22 +123,26 @@ echo '{
 ## update
 
 ```bash
-sol call activities update SPAN_ID [-f FACET] [-d DAY] [--note TEXT] [--json]
+sol call activities update SPAN_ID [-f FACET] [-d DAY] [--note TEXT] [--title T] [--description D] [--details E] [--json]
 ```
 
-Update one activity record from a JSON patch on stdin.
+Update one activity record from argv flags or a JSON patch on stdin.
 
 - `SPAN_ID`: activity record id.
 - `-f, --facet`: facet name (default: `SOL_FACET` env).
 - `-d, --day`: day in `YYYYMMDD` (default: `SOL_DAY` env).
 - `--note`: optional edit note stored in the record history.
+- `--title`: replacement title.
+- `--description`: replacement description.
+- `--details`: replacement details.
 - `--json`: emit the updated record.
 
 Stdin JSON may include only `title`, `description`, and `details`.
 
-Example:
+Examples:
 
 ```bash
+sol call activities update coding_090000_300 -f work --title "Focused coding" --details "Closed out CLI edge cases" --note "tightened summary"
 echo '{"title":"Focused coding","details":"Closed out CLI edge cases"}' | sol call activities update coding_090000_300 -f work --note "tightened summary"
 ```
 
