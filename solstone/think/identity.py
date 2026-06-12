@@ -78,8 +78,6 @@ responses. Nothing gets sent without their review.
 [not yet observed — sol will learn as we spend time together]
 """
 
-_AWARENESS_MD = "not yet updated\n"
-
 STEWARD_SECTION_STATUS = "## Status"
 STEWARD_SECTION_ATTENTION = "## Needs your attention"
 STEWARD_SECTION_AUTO_REPAIRS = "## Auto-repairs (last 7d)"
@@ -278,7 +276,6 @@ def ensure_identity_directory() -> Path:
     identity_dir = _identity_dir()
     defaults = {
         "partner.md": _PARTNER_MD,
-        "awareness.md": _AWARENESS_MD,
         "health.md": "\n".join(
             [
                 STEWARD_SECTION_STATUS,

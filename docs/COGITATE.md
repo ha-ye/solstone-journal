@@ -1,8 +1,8 @@
 # Cogitate runtime contract
 
 The canonical contract for **cogitate talents** — the LLM agents Cortex spawns to
-read and update the journal (chat, pulse, awareness_tender, the entity /
-activity / import talents, and the rest). It is the single place a talent
+read and update the journal (chat, the entity / activity / import talents, and
+the rest). It is the single place a talent
 author can point at and say what a fresh cogitate run's working directory,
 context, tools, finalization, and persistence are — instead of reverse-engineering
 the runtime from `solstone/think/talents.py`, the providers, the policy, and the

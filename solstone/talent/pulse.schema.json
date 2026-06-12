@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["title", "one_sentence", "full_details", "needs_you"],
+  "properties": {
+    "title": {"type": "string"},
+    "one_sentence": {"type": "string"},
+    "full_details": {"type": "string"},
+    "needs_you": {"type": "array", "items": {"type": "string"}}
+  }
+}

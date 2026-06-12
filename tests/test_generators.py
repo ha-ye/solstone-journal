@@ -106,13 +106,14 @@ def test_scheduled_generators_have_valid_schedule():
     """Test that scheduled generators have valid schedule field.
 
     Generators with a schedule field must have valid values
-    ('segment', 'daily', or 'activity'). Some generators (like importer) have
-    output but no schedule - they're used for ad-hoc processing, not scheduled runs.
+    ('segment', 'daily', 'weekly', 'cadence', or 'activity'). Some generators
+    (like importer) have output but no schedule - they're used for ad-hoc
+    processing, not scheduled runs.
     """
     talent = importlib.import_module("solstone.think.talent")
 
     generators = talent.get_talent_configs(type="generate")
-    valid_schedules = ("segment", "daily", "activity", "weekly")
+    valid_schedules = ("segment", "daily", "activity", "weekly", "cadence")
 
     for key, meta in generators.items():
         sched = meta.get("schedule")

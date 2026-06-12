@@ -4,6 +4,7 @@
 import json
 
 from solstone.talent import morning_briefing
+from solstone.think.day_accumulator import append_record
 
 
 def _result(day: str = "20260422") -> dict:
@@ -24,9 +25,18 @@ def _result(day: str = "20260422") -> dict:
 
 def test_morning_briefing_pre_hook_builds_source_packet(tmp_path, monkeypatch):
     journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
     identity = journal / "identity"
     identity.mkdir(parents=True)
-    (identity / "pulse.md").write_text("Pulse needs focus time.", encoding="utf-8")
+    append_record(
+        "20260422",
+        "pulse",
+        {
+            "full_details": "Pulse needs focus time.",
+            "needs_you": ["Review the launch checklist."],
+            "ts": 1,
+        },
+    )
     (identity / "partner.md").write_text("Partner profile.", encoding="utf-8")
     (identity / "health.md").write_text(
         "## Needs your attention\n\nnone", encoding="utf-8"
@@ -105,6 +115,8 @@ def test_morning_briefing_pre_hook_builds_source_packet(tmp_path, monkeypatch):
     assert "Planning meeting" in packet["anticipated_today"]
     assert "Proposal deadline" in packet["anticipated_forward"]
     assert "Work shipped a release." in packet["facet_newsletters"]
+    assert "Pulse needs focus time." in packet["pulse_surface"]
+    assert "- Review the launch checklist." in packet["pulse_surface"]
     assert "  anticipated_activities: 1" in packet["source_counts"]
     assert json.loads(packet["source_gaps"]) == []
 
@@ -114,6 +126,7 @@ def test_morning_briefing_pre_hook_missing_sources_are_visible_gaps(
 ):
     journal = tmp_path / "journal"
     journal.mkdir()
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
 
     monkeypatch.setattr(morning_briefing, "get_journal", lambda: str(journal))
     monkeypatch.setattr(

@@ -39,6 +39,7 @@ def pre_process(context: dict) -> dict:
         "since_ts": "",
         "trigger_talent": "",
         "location": "",
+        "situational": "",
     }
     result = {"template_vars": template_vars}
 
@@ -92,6 +93,8 @@ def pre_process(context: dict) -> dict:
     except Exception:
         logger.debug("Active talent enrichment failed", exc_info=True)
 
+    template_vars["situational"] = _render_situational(day)
+
     _apply_trigger_template_vars(template_vars, trigger_kind, trigger_payload)
     trigger_context = _render_trigger_context(trigger_kind, trigger_payload, context)
     if source_context:
@@ -104,6 +107,36 @@ def pre_process(context: dict) -> dict:
     template_vars["location"] = _render_location(trigger_payload, context)
 
     return result
+
+
+def _render_situational(day: str) -> str:
+    """Compact situational read from the latest pulse record."""
+    try:
+        from solstone.think.day_accumulator import read_latest
+
+        record = read_latest(day, "pulse")
+    except Exception:
+        logger.debug("Situational pulse enrichment failed", exc_info=True)
+        return ""
+    if not record:
+        return ""
+
+    lines = ["## Situational awareness\n"]
+    title = str(record.get("title") or "").strip()
+    one = str(record.get("one_sentence") or "").strip()
+    details = str(record.get("full_details") or "").strip()
+    if title:
+        lines.append(f"**{title}**")
+    if one:
+        lines.append(one)
+    if details:
+        lines.append(f"\n{details}")
+
+    needs = [str(n).strip() for n in record.get("needs_you", []) if str(n).strip()]
+    if needs:
+        lines.append("\nNeeds the owner:")
+        lines.extend(f"- {need}" for need in needs)
+    return "\n".join(lines)
 
 
 def _normalize_trigger(context: dict) -> tuple[str | None, dict[str, Any]]:

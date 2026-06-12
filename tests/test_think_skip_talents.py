@@ -56,16 +56,6 @@ def _segment_configs(*names: str) -> dict[str, dict]:
             "type": "cogitate",
             "schedule": "segment",
         },
-        "awareness_tender": {
-            "priority": 30,
-            "type": "cogitate",
-            "schedule": "segment",
-        },
-        "pulse": {
-            "priority": 30,
-            "type": "cogitate",
-            "schedule": "segment",
-        },
     }
     return {name: dict(configs[name]) for name in names}
 
@@ -77,14 +67,12 @@ def _all_segment_configs() -> dict[str, dict]:
         "documents",
         "screen",
         "speaker_attribution",
-        "awareness_tender",
-        "pulse",
     )
 
 
 def _new_only_segment_configs() -> dict[str, dict]:
     configs = _all_segment_configs()
-    for name in ("awareness_tender", "pulse"):
+    for name in ("screen",):
         configs[name] = {**configs[name], "new_only": True}
     return configs
 
@@ -95,7 +83,6 @@ def _active_sense_output() -> dict:
         "recommend": {
             "screen_record": True,
             "speaker_attribution": True,
-            "pulse_update": True,
         },
         "facets": [],
     }
@@ -272,14 +259,14 @@ def test_parser_forwards_skip_talents(
             "--segment",
             SEGMENT,
             "--skip-talents",
-            "awareness_tender,pulse",
+            "screen,speaker_attribution",
         ],
     )
 
     think.main()
 
     assert len(calls) == 1
-    assert calls[0]["skip_talents"] == frozenset({"awareness_tender", "pulse"})
+    assert calls[0]["skip_talents"] == frozenset({"screen", "speaker_attribution"})
 
 
 def test_empty_flag_forwards_empty_set(
@@ -417,10 +404,8 @@ def test_segment_batch_skip_does_not_dispatch_or_fail(
         "documents",
         "screen",
         "speaker_attribution",
-        "awareness_tender",
-        "pulse",
     ]
-    assert success == 6
+    assert success == 4
     assert failed == 0
     assert failed_names == []
 
@@ -429,7 +414,7 @@ def test_segment_batch_skip_does_not_dispatch_or_fail(
     assert skip_events[0]["name"] == "entities"
 
 
-def test_tail_talent_skip_does_not_dispatch_or_fail(
+def test_recommended_talent_skip_does_not_dispatch_or_fail(
     segment_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -437,7 +422,7 @@ def test_tail_talent_skip_does_not_dispatch_or_fail(
     from solstone.think.thinking import ThinkingJSONLWriter
 
     spawned: list[str] = []
-    jsonl_path = segment_dir.parent.parent / "health" / "test_skip_pulse.jsonl"
+    jsonl_path = segment_dir.parent.parent / "health" / "test_skip_screen.jsonl"
     writer = ThinkingJSONLWriter(str(jsonl_path))
     _write_sense_output(segment_dir, _active_sense_output())
     (segment_dir / "audio.npz").touch()
@@ -450,27 +435,25 @@ def test_tail_talent_skip_does_not_dispatch_or_fail(
         refresh=False,
         verbose=False,
         stream=STREAM,
-        skip_talents=frozenset({"pulse"}),
+        skip_talents=frozenset({"screen"}),
     )
     writer.close()
     monkeypatch.setattr(think, "_jsonl", None)
 
-    assert "pulse" not in spawned
+    assert "screen" not in spawned
     assert spawned == [
         "sense",
         "entities",
         "documents",
-        "screen",
         "speaker_attribution",
-        "awareness_tender",
     ]
-    assert success == 6
+    assert success == 4
     assert failed == 0
     assert failed_names == []
 
     skip_events = _skip_events(_read_events(jsonl_path))
     assert len(skip_events) == 1
-    assert skip_events[0]["name"] == "pulse"
+    assert skip_events[0]["name"] == "screen"
 
 
 def test_new_only_talents_skip_on_historical_segment_think(
@@ -502,31 +485,25 @@ def test_new_only_talents_skip_on_historical_segment_think(
     writer.close()
     monkeypatch.setattr(think, "_jsonl", None)
 
-    assert "pulse" not in spawned
-    assert "awareness_tender" not in spawned
+    assert "screen" not in spawned
     assert spawned == [
         "sense",
         "entities",
         "documents",
-        "screen",
         "speaker_attribution",
     ]
-    assert success == 5
+    assert success == 4
     assert failed == 0
     assert failed_names == []
 
     events = _read_events(jsonl_path)
     new_only_events = _skip_events(events, reason="new_only_historical")
-    assert len(new_only_events) == 2
-    assert {event["name"] for event in new_only_events} == {
-        "awareness_tender",
-        "pulse",
-    }
-    pulse_skip = next(event for event in new_only_events if event["name"] == "pulse")
-    assert pulse_skip["reason"] == "new_only_historical"
+    assert len(new_only_events) == 1
+    assert new_only_events[0]["name"] == "screen"
+    assert new_only_events[0]["reason"] == "new_only_historical"
     assert not any(
         event["event"] == "talent.skip"
-        and event.get("name") == "pulse"
+        and event.get("name") == "screen"
         and event.get("reason") == "not_recommended"
         for event in events
     )
@@ -568,10 +545,8 @@ def test_new_only_talents_dispatch_on_live_segment_think(
         "documents",
         "screen",
         "speaker_attribution",
-        "awareness_tender",
-        "pulse",
     ]
-    assert success == 7
+    assert success == 5
     assert failed == 0
     assert failed_names == []
     assert _skip_events(_read_events(jsonl_path), reason="new_only_historical") == []
@@ -602,22 +577,21 @@ def test_new_only_composes_with_skip_talents_on_live_segment_think(
         refresh=False,
         verbose=False,
         stream=STREAM,
-        skip_talents=frozenset({"pulse"}),
+        skip_talents=frozenset({"screen"}),
         live=True,
     )
     writer.close()
     monkeypatch.setattr(think, "_jsonl", None)
 
-    assert "pulse" not in spawned
-    assert "awareness_tender" in spawned
-    assert success == 6
+    assert "screen" not in spawned
+    assert success == 4
     assert failed == 0
     assert failed_names == []
 
     events = _read_events(jsonl_path)
     skip_events = _skip_events(events)
     assert len(skip_events) == 1
-    assert skip_events[0]["name"] == "pulse"
+    assert skip_events[0]["name"] == "screen"
     assert _skip_events(events, reason="new_only_historical") == []
 
 
@@ -653,10 +627,8 @@ def test_sense_skip_uses_cached_output_for_downstream(
         "documents",
         "screen",
         "speaker_attribution",
-        "awareness_tender",
-        "pulse",
     ]
-    assert success == 6
+    assert success == 4
     assert failed == 0
     assert failed_names == []
 
@@ -698,7 +670,7 @@ def test_skip_talents_composes_with_no_activity_prompts(
     assert "entities" not in spawned
     assert len(append_calls) >= 1
     assert activity_calls == []
-    assert success == 6
+    assert success == 4
     assert failed == 0
     assert failed_names == []
 
@@ -744,10 +716,8 @@ def test_unknown_name_is_silent_noop(
         "documents",
         "screen",
         "speaker_attribution",
-        "awareness_tender",
-        "pulse",
     ]
-    assert success == 7
+    assert success == 5
     assert failed == 0
     assert failed_names == []
     assert _skip_events(_read_events(jsonl_path)) == []

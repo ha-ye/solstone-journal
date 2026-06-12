@@ -23,10 +23,11 @@ from solstone.convey.bridge import get_cached_state
 from solstone.convey.utils import DATE_RE, format_date, relative_time
 from solstone.think.awareness import get_current
 from solstone.think.capture_health import get_capture_health
+from solstone.think.day_accumulator import read_latest
 from solstone.think.facets import get_enabled_facets, get_facets
 from solstone.think.pipeline_health import summarize_pipeline_day
 from solstone.think.steward import read_steward_health, read_steward_summary
-from solstone.think.utils import get_journal
+from solstone.think.utils import day_path, get_journal
 
 # Briefing phase thresholds
 BRIEFING_MORNING_END_HOUR = 10
@@ -109,8 +110,10 @@ def _load_latest_weekly_reflection() -> dict[str, str] | None:
 def _load_flow_md(today: str) -> tuple[str | None, float | None]:
     """Load today's flow.md content and mtime. Returns (content, mtime) or (None, None)."""
     try:
-        journal = Path(get_journal())
-        flow_path = journal / today / "talents" / "flow.md"
+        # flow.md is no longer produced by any current talent (the flow talent was
+        # removed); this fallback is presently inert and will light up only if a
+        # flow producer returns. Resolve via day_path so the path can't rot.
+        flow_path = day_path(today, create=False) / "talents" / "flow.md"
         if flow_path.exists():
             return flow_path.read_text(), flow_path.stat().st_mtime
     except Exception:
@@ -118,43 +121,25 @@ def _load_flow_md(today: str) -> tuple[str | None, float | None]:
     return None, None
 
 
-def _load_pulse_md() -> tuple[str | None, dict | None, list[str]]:
-    """Load identity/pulse.md if current for today.
-
-    Returns (content, metadata, needs_you) or (None, None, []).
-    """
+def _load_pulse_narrative(today: str) -> tuple[str | None, str | None, list[str]]:
+    """Load today's latest pulse record as narrative content."""
     try:
-        journal = Path(get_journal())
-        pulse_path = journal / "identity" / "pulse.md"
-        if not pulse_path.exists():
+        record = read_latest(today, "pulse", lookback_days=0)
+        if not record:
             return None, None, []
-        post = frontmatter.load(str(pulse_path))
-        updated = post.metadata.get("updated")
-        if not updated:
+
+        full_details = record.get("full_details")
+        if not isinstance(full_details, str) or not full_details.strip():
             return None, None, []
-        # Parse ISO datetime and check if from today
-        if isinstance(updated, str):
-            updated_dt = datetime.fromisoformat(updated)
-        else:
-            updated_dt = updated  # frontmatter may parse datetime objects
-        if updated_dt.date() != datetime.now().date():
-            return None, None, []
-        # Extract ## needs you section
-        needs = []
-        in_needs = False
-        for line in post.content.splitlines():
-            if line.strip().lower() == "## needs you":
-                in_needs = True
-                continue
-            if in_needs:
-                if line.startswith("## "):
-                    break
-                stripped = line.strip()
-                if stripped.startswith("- "):
-                    needs.append(stripped[2:].strip())
-        return post.content, post.metadata, needs
+
+        needs = [str(n) for n in record.get("needs_you", []) if str(n).strip()]
+        updated_at = None
+        ts = record.get("ts")
+        if isinstance(ts, (int, float)):
+            updated_at = datetime.fromtimestamp(ts / 1000).strftime("%H:%M")
+        return full_details, updated_at, needs
     except Exception:
-        logger.warning("home: failed to load pulse.md", exc_info=True)
+        logger.warning("home: failed to load pulse record", exc_info=True)
         return None, None, []
 
 
@@ -950,22 +935,13 @@ def _build_pulse_context() -> dict[str, Any]:
     if flow_mtime:
         flow_updated_at = datetime.fromtimestamp(flow_mtime).strftime("%H:%M")
 
-    # Try pulse.md as primary narrative, fall back to flow.md
-    pulse_content, pulse_meta, pulse_needs = _load_pulse_md()
+    # Try today's pulse record as primary narrative, fall back to flow.md
+    pulse_content, pulse_time, pulse_needs = _load_pulse_narrative(today)
     if pulse_content:
         narrative_content = pulse_content
         narrative_source = "pulse"
         narrative_header = "pulse"
-        updated = pulse_meta.get("updated", "")
-        if isinstance(updated, str):
-            try:
-                narrative_updated_at = datetime.fromisoformat(updated).strftime("%H:%M")
-            except ValueError:
-                narrative_updated_at = flow_updated_at
-        elif hasattr(updated, "strftime"):
-            narrative_updated_at = updated.strftime("%H:%M")
-        else:
-            narrative_updated_at = flow_updated_at
+        narrative_updated_at = pulse_time or flow_updated_at
     else:
         narrative_content = flow_content
         narrative_source = "flow"

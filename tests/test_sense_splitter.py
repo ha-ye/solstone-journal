@@ -30,7 +30,6 @@ def _make_sense_output(**overrides):
         "recommend": {
             "screen_record": False,
             "speaker_attribution": False,
-            "pulse_update": False,
         },
         "emotional_register": "neutral",
     }

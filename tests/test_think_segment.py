@@ -499,44 +499,6 @@ class TestRunSegmentSense:
 
         assert "timeline:segment_summary" not in spawned
 
-    def test_pulse_dispatch(self, segment_dir, monkeypatch):
-        from solstone.think import thinking as think
-
-        spawned = []
-        _write_sense_output(
-            segment_dir,
-            {"density": "active", "recommend": {"pulse_update": True}, "facets": []},
-        )
-
-        monkeypatch.setattr(
-            think,
-            "get_talent_configs",
-            lambda schedule=None, **kwargs: _segment_configs(
-                "sense", "entities", "pulse"
-            ),
-        )
-        monkeypatch.setattr(
-            think,
-            "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
-        )
-        monkeypatch.setattr(
-            think,
-            "wait_for_uses",
-            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
-        )
-        monkeypatch.setattr(think, "_callosum", None)
-
-        think.run_segment_sense(
-            "20240115",
-            "120000_300",
-            refresh=False,
-            verbose=False,
-            stream="default",
-        )
-
-        assert spawned == ["sense", "entities", "pulse"]
-
     def test_sense_failure_stops_orchestrator(self, segment_dir, monkeypatch):
         from solstone.think import thinking as think
 
@@ -1087,7 +1049,6 @@ class TestThinkJSONLEvents:
                 "recommend": {
                     "screen_record": False,
                     "speaker_attribution": False,
-                    "pulse_update": False,
                 },
                 "facets": [],
             },
@@ -1131,4 +1092,3 @@ class TestThinkJSONLEvents:
         assert ("documents", "no_config") in skip_pairs
         assert ("screen", "not_recommended") in skip_pairs
         assert ("speaker_attribution", "not_recommended") in skip_pairs
-        assert ("pulse", "not_recommended") in skip_pairs

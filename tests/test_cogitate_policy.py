@@ -52,13 +52,8 @@ def test_policy_denies_write_tools(tmp_path):
 @pytest.mark.parametrize(
     "command",
     [
-        "journal identity pulse",
-        "journal identity awareness --write --value update",
         "journal health logs --since 1h",
         "journal talent logs --daily -c 10",
-        "journal identity pulse --write --value 'a; quoted value'",
-        "journal identity pulse --write --value '>'",
-        "journal identity pulse --write --value '|'",
     ],
 )
 def test_policy_allows_approved_journal_invocations(tmp_path, command):
@@ -78,7 +73,6 @@ def test_policy_allows_approved_journal_invocations(tmp_path, command):
         "journal supervisor status",
         "journal indexer --rescan-full",
         "journal identity ; rm -rf journal",
-        "journal identity pulse --value $(rm -rf journal)",
     ],
 )
 def test_policy_denies_unapproved_journal_invocations(tmp_path, command):
@@ -94,9 +88,6 @@ def test_policy_denies_unapproved_journal_invocations(tmp_path, command):
     "command",
     [
         "journal identity ; rm -rf journal",
-        "journal identity pulse --value $(rm -rf journal)",
-        "journal identity pulse --value '$(rm -rf journal)'",
-        "journal identity pulse --value '`rm -rf journal`'",
         "sol call journal search x > out",
         "sol call journal search x 2>&1",
         "sol call journal search x <(journal health)",

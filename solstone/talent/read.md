@@ -44,7 +44,7 @@ files. Pick the right one; don't ask which.
 | transcripts (what was said) | `sol call transcripts read` / `scan` / `segments` |
 | people, projects, relationships | `sol call entities search` / `list` / `show` / `observations` |
 | what's scheduled or happened | `sol call activities list` (add `--source anticipated` for calendar-derived items) / `get` |
-| identity & current state | `journal identity partner` / `pulse` / `briefing` |
+| identity & current state | `journal identity partner` / `briefing` |
 | speaker library | `sol call speakers status` / `suggest` |
 | system state | `sol call awareness status` |
 | a raw file with no `sol` command | `read_file` (journal root only) |

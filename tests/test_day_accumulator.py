@@ -117,7 +117,19 @@ def test_missing_day_reads_do_not_create_directories_or_files(journal):
 def test_append_record_indexes_under_accumulator_name(journal):
     day = "20260611"
 
-    append_record(day, "pulse", {"summary": "ran a deep focus block", "ts": 100})
+    append_record(
+        day,
+        "pulse",
+        {
+            "title": "Focus block",
+            "one_sentence": "The owner ran a deep focus block.",
+            "full_details": "The morning centered on a deep focus block.",
+            "needs_you": [],
+            "model": "test-model",
+            "generated_at": "2026-06-11T12:00:00Z",
+            "ts": 100,
+        },
+    )
 
     from solstone.think.indexer.journal import search_journal
 

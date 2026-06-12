@@ -230,6 +230,33 @@
       "title": "Participation",
       "type": "generate"
     },
+    "pulse": {
+      "accumulate": true,
+      "cadence_minutes": 5,
+      "color": "#6c757d",
+      "description": "Living situational read of the owner's day — the shape of today, what needs them, and a one-line glance.",
+      "hook": {
+        "post": "pulse",
+        "pre": "pulse"
+      },
+      "load": {
+        "percepts": false,
+        "talents": false,
+        "transcripts": false
+      },
+      "max_output_tokens": 700,
+      "mtime": 0,
+      "output": "json",
+      "path": "<PROJECT>/solstone/talent/pulse.md",
+      "priority": 50,
+      "schedule": "cadence",
+      "schema": "pulse.schema.json",
+      "source": "system",
+      "thinking_budget": 1024,
+      "tier": 3,
+      "title": "Pulse",
+      "type": "generate"
+    },
     "schedule": {
       "color": "#5e35b1",
       "description": "Extracts future scheduled items from screen and transcript content into anticipated activity records. Captures dates, times, participants, and cancellation state.",

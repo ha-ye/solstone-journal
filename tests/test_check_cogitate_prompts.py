@@ -90,8 +90,6 @@ def test_bare_journal_flags_fenced_commands() -> None:
 @pytest.mark.parametrize(
     "body",
     [
-        "`journal identity pulse --write --value '>'`",
-        "`journal identity pulse --write --value '|'`",
         "`journal health`",
         "`journal talent logs --daily`",
         "`sol doctor`",
@@ -125,27 +123,6 @@ def test_lint_prompt_flags_shell_composition(body: str) -> None:
     assert [(line, kind) for line, kind, _detail in findings] == [
         (1, "shell-composition")
     ]
-
-
-def test_lint_prompt_allows_multiline_pulse_value_example() -> None:
-    body = """```bash
-journal identity pulse --write --value "---
-updated: 2026-03-22T14:35:00
-segment: 143022_300
-source: pulse-cogitate
----
-
-[Your narrative here]
-
-## needs you
-- Item 1
-- Item 2"
-```
-"""
-
-    findings = ccp.lint_prompt(body)
-
-    assert "shell-composition" not in [kind for _line, kind, _detail in findings]
 
 
 def test_lint_prompt_allows_multiline_partner_value_example() -> None:
@@ -193,14 +170,14 @@ def test_extract_command_spans_scans_fences_per_line_without_inline_double_scan(
         "echo `journal health`\n"
         "\n"
         "```\n"
-        "After `journal identity pulse`.\n"
+        "After `journal identity partner`.\n"
     )
 
     assert ccp.extract_command_spans(body) == [
         (1, "journal navigate"),
         (3, "journal supervisor"),
         (4, "echo `journal health`"),
-        (7, "journal identity pulse"),
+        (7, "journal identity partner"),
     ]
 
     findings = ccp.lint_prompt(body)

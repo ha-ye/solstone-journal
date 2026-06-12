@@ -272,7 +272,6 @@ def check_callosum_available() -> bool:
 
 
 _SKIPPED: object = object()
-NEVER_SKIP_DAILY = frozenset({"pulse", "awareness_tender"})
 _SEND_RETRY_DELAYS = (0.5, 1.0)  # seconds between retries (3 attempts total)
 
 
@@ -502,14 +501,11 @@ def _check_daily_skip(
     *,
     mode: str,
     completed: set[tuple[str, str, str | None]],
-    never_skip: frozenset[str],
     deterministic_failures: dict[tuple[str, str | None], DeterministicFailure],
     retry_on_deterministic_failure: bool = False,
     from_scratch: bool = False,
 ) -> tuple[bool, str | None]:
     if mode != "daily":
-        return (False, None)
-    if name in never_skip:
         return (False, None)
     if from_scratch:
         return (False, None)
@@ -624,8 +620,6 @@ def run_segment_sense(
 
     day_dir = day_path(day)
     seg_dir = _segment_dir(day, segment, stream)
-    pulse_config = _cfg("pulse")
-
     start_time = time.time()
     total_success = 0
     total_failed = 0
@@ -955,10 +949,7 @@ def run_segment_sense(
                 segment=segment,
             )
 
-    total_expected = 1 + len(agents_to_run)
-    if recommend.get("pulse_update") and pulse_config:
-        total_expected += 1
-    _update_status(agents_total=total_expected)
+    _update_status(agents_total=1 + len(agents_to_run))
 
     spawned: list[tuple[str, str, dict, str | None]] = []
     for agent_name, config in agents_to_run:
@@ -1118,124 +1109,6 @@ def run_segment_sense(
                 max_concurrency=max_concurrency,
             )
 
-    awareness_tender_config = _cfg("awareness_tender")
-    if awareness_tender_config:
-        at_agent_id = _dispatch_agent("awareness_tender", awareness_tender_config)
-        if at_agent_id is None:
-            _log_skip(
-                "awareness_tender",
-                "send_failed",
-                "All cortex request attempts failed for awareness_tender",
-                mode=target_schedule,
-                day=day,
-                segment=segment,
-            )
-            total_failed += 1
-            all_failed_names.append("awareness_tender (send)")
-            _update_status(agents_completed=total_success + total_failed)
-        elif at_agent_id is not _SKIPPED:
-            emit(
-                "talent_started",
-                mode=target_schedule,
-                day=day,
-                segment=segment,
-                name="awareness_tender",
-                use_id=at_agent_id,
-            )
-            _jsonl_log(
-                "talent.dispatch",
-                mode=target_schedule,
-                day=day,
-                segment=segment,
-                name="awareness_tender",
-                use_id=at_agent_id,
-                **({"stream": stream} if stream else {}),
-            )
-            _update_status(current_agents=["awareness_tender"])
-            s, f, fn = _drain_priority_batch(
-                [(at_agent_id, "awareness_tender", awareness_tender_config, None)],
-                target_schedule,
-                day,
-                segment,
-                stream,
-                timeout,
-            )
-            total_success += s
-            total_failed += f
-            all_failed_names.extend(fn)
-            _update_status(
-                agents_completed=total_success + total_failed,
-                current_agents=[],
-            )
-
-    if recommend.get("pulse_update") and pulse_config:
-        pulse_agent_id = _dispatch_agent("pulse", pulse_config)
-        if pulse_agent_id is None:
-            _log_skip(
-                "pulse",
-                "send_failed",
-                "All cortex request attempts failed for pulse",
-                mode=target_schedule,
-                day=day,
-                segment=segment,
-            )
-            total_failed += 1
-            all_failed_names.append("pulse (send)")
-            _update_status(agents_completed=total_success + total_failed)
-        elif pulse_agent_id is not _SKIPPED:
-            emit(
-                "talent_started",
-                mode=target_schedule,
-                day=day,
-                segment=segment,
-                name="pulse",
-                use_id=pulse_agent_id,
-            )
-            _jsonl_log(
-                "talent.dispatch",
-                mode=target_schedule,
-                day=day,
-                segment=segment,
-                name="pulse",
-                use_id=pulse_agent_id,
-                **({"stream": stream} if stream else {}),
-            )
-            _update_status(current_agents=["pulse"])
-            s, f, fn = _drain_priority_batch(
-                [(pulse_agent_id, "pulse", pulse_config, None)],
-                target_schedule,
-                day,
-                segment,
-                stream,
-                timeout,
-            )
-            total_success += s
-            total_failed += f
-            all_failed_names.extend(fn)
-            _update_status(
-                agents_completed=total_success + total_failed,
-                current_agents=[],
-            )
-    elif not recommend.get("pulse_update"):
-        _log_skip(
-            "pulse",
-            "not_recommended",
-            "pulse_update not recommended by sense",
-            mode=target_schedule,
-            day=day,
-            segment=segment,
-        )
-    elif not pulse_config:
-        _log_skip(
-            "pulse",
-            "no_config",
-            "pulse config not found",
-            mode=target_schedule,
-            day=day,
-            segment=segment,
-            **({"stream": stream} if stream else {}),
-        )
-
     duration_ms = int((time.time() - start_time) * 1000)
     emit(
         "completed",
@@ -1267,8 +1140,21 @@ def _apply_output_persistence(
     ``refresh`` (so the output-exists guard in _run_talent is bypassed and the
     talent regenerates). Cogitate talents with no declared output are left
     untouched — they do not persist. ``refresh`` is left absent when not
-    forcing, matching the existing dispatch-config representation.
+    forcing, matching the existing dispatch-config representation. Talents that
+    declare ``accumulate`` persist from their post-hook and suppress this
+    single-file output path.
     """
+    # Accumulate talents persist via their post-hook's day_accumulator.append_record
+    # (chronicle/<day>/talents/<name>.jsonl). Suppress the framework's single-file
+    # write by leaving request_config["output"] unset -> prepare_config computes no
+    # output_path -> talent_emit_event skips _write_output. The talent still declares
+    # output:json + schema: in frontmatter, so config validation passes and the JSON
+    # schema still reaches the model. NOTE: this covers schedules that route through
+    # _apply_output_persistence (cadence + daily/weekly); segment/activity/flush set
+    # output directly and are not covered — intentional, no consumer needs them.
+    if config.get("accumulate"):
+        return
+
     is_generate = config["type"] == "generate"
     if is_generate or config.get("output"):
         request_config["output"] = config.get("output") or "md"
@@ -1431,7 +1317,6 @@ def run_daily_prompts(
                             facet_name,
                             mode=target_schedule,
                             completed=completed_units,
-                            never_skip=NEVER_SKIP_DAILY,
                             deterministic_failures=deterministic_failures,
                             retry_on_deterministic_failure=config.get(
                                 "retry_on_deterministic_failure", False
@@ -1560,7 +1445,6 @@ def run_daily_prompts(
                         None,
                         mode=target_schedule,
                         completed=completed_units,
-                        never_skip=NEVER_SKIP_DAILY,
                         deterministic_failures=deterministic_failures,
                         retry_on_deterministic_failure=config.get(
                             "retry_on_deterministic_failure", False
@@ -2865,7 +2749,6 @@ def dry_run(
                 "speaker_attribution",
                 "if recommend.speaker_attribution + audio embeddings",
             ),
-            ("pulse", "if recommend.pulse_update"),
         ]:
             cfg = prompts.get(name)
             if not cfg:
@@ -3226,9 +3109,9 @@ def parse_args() -> argparse.ArgumentParser:
         default="",
         help=(
             "Comma-separated segment-scheduled talent names to suppress during "
-            "--segments/--segment runs (e.g., 'awareness_tender,pulse' for "
+            "--segments/--segment runs (e.g., 'screen,speaker_attribution' for "
             "realizer-backfill speedup). Recognized: sense, entities, documents, "
-            "screen, speaker_attribution, awareness_tender, pulse. Skipping 'sense' "
+            "screen, speaker_attribution. Skipping 'sense' "
             "relies on a cached talents/sense.json from a prior run."
         ),
     )

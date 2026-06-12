@@ -100,7 +100,7 @@ def _build_packet(
         gaps,
     )
 
-    pulse = _read_identity_file(journal_root, "pulse.md", "pulse surface", gaps)
+    pulse = _read_pulse_surface(day, gaps)
     partner = _read_identity_file(journal_root, "partner.md", "partner profile", gaps)
     health = _read_identity_file(
         journal_root,
@@ -261,6 +261,33 @@ def _read_identity_file(
     if not content:
         gaps.append(f"{label} empty")
     return content
+
+
+def _read_pulse_surface(day: str, gaps: list[str]) -> str | None:
+    from solstone.think.day_accumulator import read_latest
+
+    try:
+        record = read_latest(day, "pulse")
+    except Exception as exc:
+        logger.warning("morning briefing pulse read unavailable: %s", exc)
+        gaps.append(f"pulse surface unavailable: {exc}")
+        return None
+    if not record:
+        gaps.append("pulse surface")
+        return None
+
+    parts = []
+    details = str(record.get("full_details") or "").strip()
+    if details:
+        parts.append(details)
+    needs = [str(n).strip() for n in record.get("needs_you", []) if str(n).strip()]
+    if needs:
+        parts.append("Needs you:\n" + "\n".join(f"- {n}" for n in needs))
+    text = "\n\n".join(parts).strip()
+    if not text:
+        gaps.append("pulse surface")
+        return None
+    return text
 
 
 def _render_facets(facets: dict[str, dict[str, object]]) -> str:

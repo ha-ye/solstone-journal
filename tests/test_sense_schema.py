@@ -137,7 +137,6 @@ def test_sense_schema_speculative_facet_nullable_and_required():
         "recommend": {
             "screen_record": False,
             "speaker_attribution": False,
-            "pulse_update": False,
         },
         "emotional_register": "focused",
     }

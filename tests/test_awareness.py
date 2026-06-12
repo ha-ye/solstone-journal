@@ -568,10 +568,6 @@ class TestEnsureIdentityDirectory:
         assert not (identity_dir / ("self" + ".md")).exists()
         assert not (identity_dir / "agency.md").exists()
 
-        assert (identity_dir / "awareness.md").exists()
-        awareness_content = (identity_dir / "awareness.md").read_text()
-        assert awareness_content.strip() == "not yet updated"
-
         assert not (identity_dir / "digest.md").exists()
         assert (identity_dir / "health.md").exists()
 
@@ -579,13 +575,12 @@ class TestEnsureIdentityDirectory:
         from solstone.think.identity import ensure_identity_directory
 
         identity_dir = ensure_identity_directory()
-        # Modify awareness.md
-        awareness_path = identity_dir / "awareness.md"
-        awareness_path.write_text("custom content", encoding="utf-8")
+        partner_path = identity_dir / "partner.md"
+        partner_path.write_text("custom content", encoding="utf-8")
 
         # Call again — should NOT overwrite
         ensure_identity_directory()
-        assert awareness_path.read_text() == "custom content"
+        assert partner_path.read_text() == "custom content"
 
     def test_creates_partner_md(self, tmp_path):
         from solstone.think.identity import ensure_identity_directory

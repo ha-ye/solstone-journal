@@ -251,14 +251,6 @@
       "tier": 2,
       "type": "cogitate"
     },
-    "talent.system.awareness_tender": {
-      "disabled": false,
-      "group": "Think",
-      "label": "Awareness Tender",
-      "schedule": "segment",
-      "tier": 2,
-      "type": "cogitate"
-    },
     "talent.system.chat": {
       "disabled": false,
       "group": "Think",
@@ -356,9 +348,9 @@
       "disabled": false,
       "group": "Think",
       "label": "Pulse",
-      "schedule": "segment",
-      "tier": 2,
-      "type": "cogitate"
+      "schedule": "cadence",
+      "tier": 3,
+      "type": "generate"
     },
     "talent.system.read": {
       "disabled": false,

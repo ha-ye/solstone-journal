@@ -25,7 +25,6 @@ SEGMENTS = [
             "recommend": {
                 "screen_record": False,
                 "speaker_attribution": False,
-                "pulse_update": False,
             },
             "entities": [
                 {
@@ -51,7 +50,6 @@ SEGMENTS = [
             "recommend": {
                 "screen_record": False,
                 "speaker_attribution": False,
-                "pulse_update": False,
             },
             "entities": [
                 {
@@ -77,7 +75,6 @@ SEGMENTS = [
             "recommend": {
                 "screen_record": False,
                 "speaker_attribution": False,
-                "pulse_update": False,
             },
             "entities": [
                 {
@@ -103,7 +100,6 @@ SEGMENTS = [
             "recommend": {
                 "screen_record": False,
                 "speaker_attribution": False,
-                "pulse_update": False,
             },
             "entities": [
                 {
@@ -129,7 +125,6 @@ SEGMENTS = [
             "recommend": {
                 "screen_record": False,
                 "speaker_attribution": False,
-                "pulse_update": False,
             },
             "entities": [],
             "emotional_register": "neutral",
@@ -147,7 +142,6 @@ SEGMENTS = [
             "recommend": {
                 "screen_record": False,
                 "speaker_attribution": False,
-                "pulse_update": False,
             },
             "entities": [
                 {

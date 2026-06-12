@@ -181,7 +181,8 @@ def _patch_minimal_pulse_context(monkeypatch, pipeline_status):
         "solstone.apps.home.routes._load_flow_md", lambda today: (None, None)
     )
     monkeypatch.setattr(
-        "solstone.apps.home.routes._load_pulse_md", lambda: (None, None, [])
+        "solstone.apps.home.routes._load_pulse_narrative",
+        lambda today: (None, None, []),
     )
     monkeypatch.setattr(
         "solstone.apps.home.routes._load_briefing_md", lambda today: ({}, None, [])
@@ -651,7 +652,8 @@ def test_build_pulse_context_includes_yesterday_processing(monkeypatch):
         "solstone.apps.home.routes._load_flow_md", lambda today: (None, None)
     )
     monkeypatch.setattr(
-        "solstone.apps.home.routes._load_pulse_md", lambda: (None, None, [])
+        "solstone.apps.home.routes._load_pulse_narrative",
+        lambda today: (None, None, []),
     )
     monkeypatch.setattr(
         "solstone.apps.home.routes._load_briefing_md", lambda today: ({}, None, [])

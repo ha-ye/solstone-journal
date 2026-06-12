@@ -3,10 +3,8 @@
 
 """CLI commands for the journal identity directory.
 
-Provides read and write access to ``{journal}/identity/partner.md``,
-``{journal}/identity/pulse.md``, and ``{journal}/identity/awareness.md`` —
-sol's identity and initiative files. Also provides read access to the morning
-briefing at
+Provides read and write access to ``{journal}/identity/partner.md`` and read access
+to sol's health surface. Also provides read access to the morning briefing at
 ``{journal}/YYYYMMDD/talents/morning_briefing.md``.
 
 Top-level ``journal identity`` command.
@@ -39,7 +37,7 @@ from solstone.think.steward import (
 from solstone.think.utils import day_dirs, day_path, get_journal, require_solstone
 
 app = typer.Typer(
-    help="Journal identity directory — partner.md, pulse.md, awareness.md, and morning briefing.",
+    help="Journal identity directory — partner.md, health.md, and morning briefing.",
     invoke_without_command=True,
     no_args_is_help=False,
 )
@@ -82,7 +80,7 @@ def _hydrate() -> str:
     """Return the combined identity hydration document."""
     identity_dir = Path(get_journal()) / "identity"
     chunks = [f"# species\n\n{_SPECIES_PREAMBLE}\n"]
-    for stem in ("partner", "awareness"):
+    for stem in ("partner",):
         path = identity_dir / f"{stem}.md"
         content = (
             path.read_text(encoding="utf-8").strip()
@@ -176,78 +174,6 @@ def partner_cmd(
         typer.echo("partner.md not found.", err=True)
         raise typer.Exit(1)
     typer.echo(partner_path.read_text(encoding="utf-8"))
-
-
-@app.command("pulse")
-def pulse_cmd(
-    write: bool = typer.Option(
-        False,
-        "--write",
-        "-w",
-        help="Overwrite pulse.md (content via --value or stdin).",
-    ),
-    value: str | None = typer.Option(
-        None, "--value", help="Content to write (alternative to stdin)."
-    ),
-) -> None:
-    """Read or write identity/pulse.md."""
-    identity_dir = _identity_dir()
-    pulse_path = identity_dir / "pulse.md"
-
-    if write:
-        content = _resolve_content(value)
-        write_identity(
-            "pulse.md",
-            actor=_actor_for_cmd("pulse", "--write"),
-            op="replace",
-            section=None,
-            content=content,
-            reason="manual replace",
-        )
-        typer.echo("pulse.md updated.")
-        return
-
-    # Read mode
-    if not pulse_path.exists():
-        typer.echo("pulse.md not found.", err=True)
-        raise typer.Exit(1)
-    typer.echo(pulse_path.read_text(encoding="utf-8"))
-
-
-@app.command("awareness")
-def awareness_cmd(
-    write: bool = typer.Option(
-        False,
-        "--write",
-        "-w",
-        help="Overwrite awareness.md (content via --value or stdin).",
-    ),
-    value: str | None = typer.Option(
-        None, "--value", help="Content to write (alternative to stdin)."
-    ),
-) -> None:
-    """Read or write identity/awareness.md."""
-    identity_dir = _identity_dir()
-    awareness_path = identity_dir / "awareness.md"
-
-    if write:
-        content = _resolve_content(value)
-        write_identity(
-            "awareness.md",
-            actor=_actor_for_cmd("awareness", "--write"),
-            op="replace",
-            section=None,
-            content=content,
-            reason="manual replace",
-        )
-        typer.echo("awareness.md updated.")
-        return
-
-    # Read mode
-    if not awareness_path.exists():
-        typer.echo("awareness.md not found.", err=True)
-        raise typer.Exit(1)
-    typer.echo(awareness_path.read_text(encoding="utf-8"))
 
 
 @app.command("health")

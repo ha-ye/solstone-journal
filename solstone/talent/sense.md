@@ -122,7 +122,6 @@ Prefer complete canonical forms (full names when identifiable). Do NOT include t
 Processing recommendations for downstream agents:
 - **screen_record**: `true` if density is "active" AND there is meaningful screen content worth documenting (not just a static/repetitive screen)
 - **speaker_attribution**: `true` if `meeting_detected` is true AND there are multiple speakers to attribute
-- **pulse_update**: `true` if this segment represents a meaningful change in activity — new activity started, activity ended, significant context shift, or noteworthy event occurred. `false` for continuation of the same activity with no notable change.
 
 ### emotional_register
 The observable emotional tone of the segment based on conversation tone, speech patterns, and behavioral signals — not inferred feelings. Choose the single best match:

@@ -46,24 +46,24 @@ def _read_history(journal_path: Path) -> list[dict]:
 
 def test_write_identity_first_write(tmp_path):
     write_identity(
-        "pulse.md",
+        "partner.md",
         actor="test writer",
         op="replace",
         section=None,
-        content="first pulse\n",
+        content="first partner\n",
         reason="test",
     )
 
-    pulse_path = tmp_path / "identity" / "pulse.md"
-    assert pulse_path.read_text(encoding="utf-8") == "first pulse\n"
+    partner_path = tmp_path / "identity" / "partner.md"
+    assert partner_path.read_text(encoding="utf-8") == "first partner\n"
 
     records = _read_history(tmp_path)
     assert len(records) == 1
     record = records[0]
     assert record["before_hash"] == hashlib.sha256(b"").hexdigest()
     assert record["bytes_before"] == 0
-    assert record["after_hash"] == hashlib.sha256(b"first pulse\n").hexdigest()
-    assert record["bytes_after"] == len("first pulse\n".encode("utf-8"))
+    assert record["after_hash"] == hashlib.sha256(b"first partner\n").hexdigest()
+    assert record["bytes_after"] == len("first partner\n".encode("utf-8"))
 
 
 def test_write_identity_atomic_failure(tmp_path, monkeypatch):
@@ -169,11 +169,11 @@ def test_write_identity_lock_serializes(tmp_path):
 
 def test_write_identity_history_schema(tmp_path):
     write_identity(
-        "awareness.md",
+        "partner.md",
         actor="schema test",
         op="replace",
         section=None,
-        content="awareness\n",
+        content="partner\n",
         reason="test",
     )
 
@@ -190,7 +190,7 @@ def test_write_identity_history_schema(tmp_path):
         "bytes_before",
         "bytes_after",
     ]
-    assert record["file"] == "awareness.md"
+    assert record["file"] == "partner.md"
     assert record["actor"] == "schema test"
     assert record["op"] == "replace"
     assert record["section"] is None

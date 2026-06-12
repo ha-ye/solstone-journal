@@ -17,19 +17,17 @@ def journal_path(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_identity_hydrate_reads_all_sections(journal_path):
+def test_identity_hydrate_reads_partner_section(journal_path):
     identity_dir = journal_path / "identity"
     identity_dir.mkdir()
     (identity_dir / "partner.md").write_text("partner body")
-    (identity_dir / "awareness.md").write_text("awareness body")
 
     output = _hydrate()
 
-    expected = ["# partner", "# awareness"]
+    expected = ["# species", "# partner"]
     positions = [output.index(marker) for marker in expected]
     assert positions == sorted(positions)
     assert "partner body" in output
-    assert "awareness body" in output
 
 
 def test_identity_hydrate_marks_missing_sections(journal_path):
@@ -40,27 +38,24 @@ def test_identity_hydrate_marks_missing_sections(journal_path):
     output = _hydrate()
 
     assert "# partner\n\npartner body\n" in output
-    assert "# awareness\n\n(not present)\n" in output
 
 
 def test_identity_hydrate_handles_empty_identity_directory(journal_path):
     output = _hydrate()
 
-    for stem in ("partner", "awareness"):
-        assert f"# {stem}\n\n(not present)\n" in output
+    assert "# partner\n\n(not present)\n" in output
 
 
 def test_identity_hydrate_starts_with_species_preamble(journal_path):
     identity_dir = journal_path / "identity"
     identity_dir.mkdir()
     (identity_dir / "partner.md").write_text("partner body")
-    (identity_dir / "awareness.md").write_text("awareness body")
 
     output = _hydrate()
 
     assert output.startswith("# species\n\n")
     assert _SPECIES_PREAMBLE in output
-    expected = ["# species", "# partner", "# awareness"]
+    expected = ["# species", "# partner"]
     positions = [output.index(marker) for marker in expected]
     assert positions == sorted(positions)
 
@@ -69,7 +64,6 @@ def test_identity_hydrate_strips_duplicate_section_heading(journal_path):
     identity_dir = journal_path / "identity"
     identity_dir.mkdir()
     (identity_dir / "partner.md").write_text("# partner\n\npartner body\n")
-    (identity_dir / "awareness.md").write_text("awareness body")
 
     output = _hydrate()
 
@@ -81,7 +75,6 @@ def test_identity_hydrate_preserves_non_matching_heading(journal_path):
     identity_dir = journal_path / "identity"
     identity_dir.mkdir()
     (identity_dir / "partner.md").write_text("# My Custom Heading\n\npartner body\n")
-    (identity_dir / "awareness.md").write_text("awareness body")
 
     output = _hydrate()
 

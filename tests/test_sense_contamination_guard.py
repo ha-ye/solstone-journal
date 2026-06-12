@@ -78,7 +78,6 @@ def _sense_payload(*, meeting_detected: bool) -> dict:
         "recommend": {
             "screen_record": False,
             "speaker_attribution": False,
-            "pulse_update": False,
         },
         "emotional_register": "neutral",
     }

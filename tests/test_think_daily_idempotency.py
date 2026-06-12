@@ -125,7 +125,6 @@ def test_check_daily_skip_predicate():
         None,
         mode="daily",
         completed=completed,
-        never_skip=mod.NEVER_SKIP_DAILY,
         deterministic_failures=deterministic_failures,
     ) == (True, "already_complete")
     assert mod._check_daily_skip(
@@ -133,7 +132,6 @@ def test_check_daily_skip_predicate():
         None,
         mode="daily",
         completed=completed,
-        never_skip=mod.NEVER_SKIP_DAILY,
         deterministic_failures=deterministic_failures,
     ) == (False, None)
     assert mod._check_daily_skip(
@@ -141,7 +139,6 @@ def test_check_daily_skip_predicate():
         None,
         mode="segment",
         completed=completed,
-        never_skip=mod.NEVER_SKIP_DAILY,
         deterministic_failures=deterministic_failures,
     ) == (False, None)
     assert mod._check_daily_skip(
@@ -149,23 +146,13 @@ def test_check_daily_skip_predicate():
         None,
         mode="daily",
         completed=completed,
-        never_skip=mod.NEVER_SKIP_DAILY,
         deterministic_failures=deterministic_failures,
-    ) == (False, None)
-    assert mod._check_daily_skip(
-        "awareness_tender",
-        None,
-        mode="daily",
-        completed={("daily", "awareness_tender", None)},
-        never_skip=mod.NEVER_SKIP_DAILY,
-        deterministic_failures=deterministic_failures,
-    ) == (False, None)
+    ) == (True, "already_complete")
     assert mod._check_daily_skip(
         "alpha",
         None,
         mode="daily",
         completed=completed,
-        never_skip=frozenset(),
         deterministic_failures=deterministic_failures,
         from_scratch=True,
     ) == (False, None)

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from solstone.convey.chat_stream import append_chat_event
 from solstone.convey.sol_initiated.copy import KIND_SOL_CHAT_REQUEST
+from solstone.think.day_accumulator import append_record
 
 TEMPLATE_VAR_KEYS = {
     "active_talents",
@@ -21,6 +22,7 @@ TEMPLATE_VAR_KEYS = {
     "since_ts",
     "trigger_talent",
     "location",
+    "situational",
 }
 
 
@@ -158,6 +160,51 @@ def test_chat_prompt_has_no_digest_slot():
 
     assert "$digest_contents" not in prompt
     assert "digest" not in prompt.lower()
+
+
+def test_render_situational_uses_pulse_record_with_cold_open_lookback(
+    monkeypatch, tmp_path
+):
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    module = _load_chat_context_module()
+
+    assert module._render_situational("20260420") == ""
+
+    append_record(
+        "20260419",
+        "pulse",
+        {
+            "title": "Yesterday's read",
+            "one_sentence": "Yesterday still has the freshest context.",
+            "full_details": "The prior day ended with a useful shape.",
+            "needs_you": ["Review the carryover note."],
+            "ts": 100,
+        },
+    )
+
+    cold_open = module._render_situational("20260420")
+    assert "Yesterday's read" in cold_open
+    assert "Yesterday still has the freshest context." in cold_open
+    assert "- Review the carryover note." in cold_open
+
+    append_record(
+        "20260420",
+        "pulse",
+        {
+            "title": "Today's read",
+            "one_sentence": "Today now has a current pulse.",
+            "full_details": "The current day has taken over the situational read.",
+            "needs_you": ["Prep the current meeting."],
+            "ts": 200,
+        },
+    )
+
+    current = module._render_situational("20260420")
+    assert "Today's read" in current
+    assert "Today now has a current pulse." in current
+    assert "- Prep the current meeting." in current
+    assert "Yesterday's read" not in current
 
 
 def test_chat_context_owner_message_anchors_empty_tail(monkeypatch, tmp_path):

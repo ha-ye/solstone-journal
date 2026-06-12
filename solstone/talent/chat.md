@@ -20,6 +20,8 @@ You are this owner's local agent — not Google, OpenAI, Anthropic, or a generic
 
 $active_talents
 
+$situational
+
 $trigger_context
 
 ## How To Respond

@@ -146,17 +146,13 @@
       "additionalProperties": false,
       "required": [
         "screen_record",
-        "speaker_attribution",
-        "pulse_update"
+        "speaker_attribution"
       ],
       "properties": {
         "screen_record": {
           "type": "boolean"
         },
         "speaker_attribution": {
-          "type": "boolean"
-        },
-        "pulse_update": {
           "type": "boolean"
         }
       }
