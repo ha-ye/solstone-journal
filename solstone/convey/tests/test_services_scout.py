@@ -19,6 +19,7 @@ from solstone.think.services import portal_client
 from solstone.think.services.portal_client import PollOutcome
 from solstone.think.services.scout import (
     JournalNotInitializedError,
+    ScoutPayloadError,
     provision_scout_handoff,
 )
 
@@ -266,7 +267,7 @@ def test_status_sse_happy_path(
         response.close()
 
 
-def test_pending_payload_still_emits_failed(
+def test_pending_payload_emits_scout_pending(
     convey_env_setup_pending,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -288,9 +289,106 @@ def test_pending_payload_still_emits_failed(
     response = _status(env.client, nonce_id)
     try:
         assert _next_event(response)[0] == "subscribed"
+        assert _next_event(response) == (
+            "scout-pending",
+            {"since": 1_700_000_000_000},
+        )
+        config = _read_config(env.journal)
+        assert config["services"]["scout"]["state"] == "pending"
+        assert "GOOGLE_API_KEY" not in config.get("env", {})
+    finally:
+        response.close()
+
+
+def test_pending_missing_account_id_emits_failed(
+    convey_env_setup_pending,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = convey_env_setup_pending()
+    monkeypatch.setattr(
+        portal_client,
+        "poll_handoff_once",
+        lambda *_a, **_k: PollOutcome(
+            kind="success",
+            payload={
+                "state": "pending",
+                "account_id": "",
+                "since": 1_700_000_000_000,
+            },
+        ),
+    )
+    start_response = _start(env.client)
+    nonce_id = start_response.get_json()["nonce_id"]
+    response = _status(env.client, nonce_id)
+    try:
+        assert _next_event(response)[0] == "subscribed"
         name, data = _next_event(response)
         assert name == "failed"
         assert data["reason"] == "unexpected_payload"
+    finally:
+        response.close()
+
+
+def test_unknown_state_emits_failed(
+    convey_env_setup_pending,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = convey_env_setup_pending()
+    monkeypatch.setattr(
+        portal_client,
+        "poll_handoff_once",
+        lambda *_a, **_k: PollOutcome(
+            kind="success",
+            payload={"state": "bogus", "account_id": "a"},
+        ),
+    )
+    start_response = _start(env.client)
+    nonce_id = start_response.get_json()["nonce_id"]
+    response = _status(env.client, nonce_id)
+    try:
+        assert _next_event(response)[0] == "subscribed"
+        name, data = _next_event(response)
+        assert name == "failed"
+        assert data["reason"] == "unexpected_payload"
+    finally:
+        response.close()
+
+
+def test_revoked_payload_emits_scout_revoked(
+    convey_env_setup_pending,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = convey_env_setup_pending()
+    release_poll = threading.Event()
+    poll_entered = threading.Event()
+
+    def fake_poll(*_args, **_kwargs):
+        poll_entered.set()
+        release_poll.wait(2)
+        return PollOutcome(
+            kind="success",
+            payload={"state": "revoked", "account_id": "a"},
+        )
+
+    monkeypatch.setattr(
+        portal_client,
+        "poll_handoff_once",
+        fake_poll,
+    )
+    start_response = _start(env.client)
+    nonce_id = start_response.get_json()["nonce_id"]
+    assert poll_entered.wait(1)
+    provision_scout_handoff(_payload("rev"))
+    release_poll.set()
+    response = _status(env.client, nonce_id)
+    try:
+        assert _next_event(response)[0] == "subscribed"
+        assert _next_event(response) == (
+            "scout-revoked",
+            {"env_key_preserved": False},
+        )
+        config = _read_config(env.journal)
+        assert "GOOGLE_API_KEY" not in config.get("env", {})
     finally:
         response.close()
 
@@ -321,6 +419,38 @@ def test_status_replays_terminal_event_for_late_subscriber(
     try:
         assert _next_event(response)[0] == "subscribed"
         assert _next_event(response) == ("scout-enabled", {"account_id": "acct-late"})
+        with pytest.raises(StopIteration):
+            next(iter(response.response))
+    finally:
+        response.close()
+
+
+def test_status_replays_pending_event_for_late_subscriber(
+    convey_env_setup_pending,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = convey_env_setup_pending()
+    since = 1_700_000_000_000
+    monkeypatch.setattr(
+        portal_client,
+        "poll_handoff_once",
+        lambda *_a, **_k: PollOutcome(
+            kind="success",
+            payload={
+                "state": "pending",
+                "account_id": "acct-late-pending",
+                "since": since,
+            },
+        ),
+    )
+    start_response = _start(env.client)
+    nonce_id = start_response.get_json()["nonce_id"]
+    _wait_until(lambda: _terminal_event(nonce_id) is not None)
+
+    response = _status(env.client, nonce_id)
+    try:
+        assert _next_event(response)[0] == "subscribed"
+        assert _next_event(response) == ("scout-pending", {"since": since})
         with pytest.raises(StopIteration):
             next(iter(response.response))
     finally:
@@ -399,12 +529,15 @@ def test_status_failed_poll_mappings(
 @pytest.mark.parametrize(
     ("exc", "reason"),
     [
-        (ValueError("missing field"), "unexpected_payload"),
+        (
+            ScoutPayloadError("unexpected_payload", "missing field"),
+            "unexpected_payload",
+        ),
         (JournalNotInitializedError("missing config"), "journal_not_initialized"),
         (OSError("disk full"), "write_failed"),
     ],
 )
-def test_status_failed_provision_mappings(
+def test_status_failed_apply_mappings(
     convey_env_setup_pending,
     monkeypatch: pytest.MonkeyPatch,
     exc: Exception,
@@ -413,10 +546,10 @@ def test_status_failed_provision_mappings(
     env = convey_env_setup_pending()
     _install_success_poll(monkeypatch)
 
-    def fail_provision(_payload):
+    def fail_apply(_payload):
         raise exc
 
-    monkeypatch.setattr(services_scout, "provision_scout_handoff", fail_provision)
+    monkeypatch.setattr(services_scout, "apply_scout_state", fail_apply)
     start_response = _start(env.client)
     nonce_id = start_response.get_json()["nonce_id"]
 

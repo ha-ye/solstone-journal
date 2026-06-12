@@ -182,6 +182,65 @@ def disable_scout() -> DisableOutcome:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
+class ScoutPayloadError(Exception):
+    """Malformed or unrecognized portal handoff payload."""
+
+    def __init__(self, token: str, detail: str | None = None) -> None:
+        super().__init__(detail or token)
+        self.token = token
+        self.detail = detail
+
+
+@dataclass(frozen=True)
+class ScoutStateResult:
+    kind: str  # "approved" | "pending" | "revoked"
+    account_id: str | None = None
+    since: Any = None
+    env_key_preserved: bool = False
+
+
+def apply_scout_state(payload: dict[str, Any]) -> ScoutStateResult:
+    """Classify a portal handoff payload by state and apply the side-effect.
+
+    Presentation-neutral: returns a discriminated result; raises
+    ScoutPayloadError on malformed/unknown payloads (carrying the CLI token
+    the caller should surface). JournalNotInitializedError propagates.
+    """
+
+    state = payload.get("state")
+    if state == "approved":
+        try:
+            provision_scout_handoff(payload)
+        except ValueError as exc:
+            raise ScoutPayloadError("scout_server_bad_payload", str(exc)) from exc
+        return ScoutStateResult(kind="approved", account_id=payload.get("account_id"))
+    if state == "pending":
+        account_id = payload.get("account_id")
+        since = payload.get("since")
+        try:
+            record_scout_pending(account_id, since)
+        except ValueError as exc:
+            raise ScoutPayloadError("scout_server_bad_payload", str(exc)) from exc
+        return ScoutStateResult(kind="pending", account_id=account_id, since=since)
+    if state == "revoked":
+        outcome = disable_scout()
+        return ScoutStateResult(
+            kind="revoked",
+            env_key_preserved=outcome.env_key_preserved,
+        )
+    if state is None:
+        # ROLLOUT-WINDOW: the pre-state worker sends a bare 4-field approved
+        # payload with no "state". Treat as approved. Remove this branch once
+        # the state-aware worker ships (J-follow-up: clean-break removal).
+        try:
+            provision_scout_handoff(payload)
+        except ValueError as exc:
+            raise ScoutPayloadError("unexpected_payload", str(exc)) from exc
+        return ScoutStateResult(kind="approved", account_id=payload.get("account_id"))
+    # Unknown state value => client too old to understand it.
+    raise ScoutPayloadError("unexpected_payload")
+
+
 def is_scout_enabled() -> bool:
     """Return whether scout is enabled through service provisioning."""
 

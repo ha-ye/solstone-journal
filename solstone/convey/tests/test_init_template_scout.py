@@ -68,6 +68,9 @@ def test_init_scout_structure_renders(convey_env_setup_pending) -> None:
         "your observers, your journal, and sol, all right here — no services needed."
         in html
     )
+    assert "scout request applied — pending review" in html
+    assert "scout access has ended." in html
+    assert 'id="scout-pending-since"' in html
 
 
 def test_init_scout_inline_script_contract(convey_env_setup_pending) -> None:
@@ -84,6 +87,10 @@ def test_init_scout_inline_script_contract(convey_env_setup_pending) -> None:
     assert "the consent link expired. try again." in html
     assert "the consent session expired. try again." in html
     assert "couldn't save the key to your journal. try again." in html
+    assert "addEventListener('scout-pending'" in html
+    assert "addEventListener('scout-revoked'" in html
+    assert "function formatScoutSince" in html
+    assert "'recently'" in html
 
 
 def test_init_scout_stubs_removed(convey_env_setup_pending) -> None:

@@ -128,6 +128,30 @@ function assert(c, m) { if (!c) throw new Error(m); }
     subprocess.run([node, "-e", script], check=True, text=True)
 
 
+def test_format_scout_since_matches_format_since() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not available")
+
+    source = INIT_HTML.read_text(encoding="utf-8")
+    format_scout_since = _extract_function(source, "formatScoutSince")
+    script = (
+        format_scout_since
+        + """
+
+function assert(c, m) { if (!c) throw new Error(m); }
+assert(
+  formatScoutSince(1700000000000) === '2023-11-14',
+  'epoch ms must format as UTC YYYY-MM-DD'
+);
+assert(formatScoutSince(null) === 'recently', 'null must be recently');
+assert(formatScoutSince(0) === 'recently', 'zero must be recently');
+assert(formatScoutSince('garbage') === 'recently', 'garbage must be recently');
+"""
+    )
+    subprocess.run([node, "-e", script], check=True, text=True)
+
+
 def test_subscribe_scout_stream_retries_then_renders_unreachable() -> None:
     node = shutil.which("node")
     if node is None:

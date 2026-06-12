@@ -277,35 +277,17 @@ def _apply_handoff(payload: dict) -> str:
     Returns the STDOUT message; raises _CliError for known bad-payload tokens.
     """
 
-    state = payload.get("state")
-    if state == "approved":
-        try:
-            scout.provision_scout_handoff(payload)
-        except ValueError as exc:
-            raise _CliError("scout_server_bad_payload", str(exc)) from exc
+    try:
+        result = scout.apply_scout_state(payload)
+    except scout.ScoutPayloadError as exc:
+        raise _CliError(exc.token, exc.detail) from exc
+    if result.kind == "approved":
         return STDOUT_SUCCESS
-    if state == "pending":
-        try:
-            scout.record_scout_pending(payload.get("account_id"), payload.get("since"))
-        except ValueError as exc:
-            raise _CliError("scout_server_bad_payload", str(exc)) from exc
-        return STDOUT_PENDING.format(since=_format_since(payload.get("since")))
-    if state == "revoked":
-        outcome = scout.disable_scout()
-        if outcome.env_key_preserved:
-            return STDOUT_REVOKED_PRESERVED_MANUAL_KEY
-        return STDOUT_REVOKED
-    if state is None:
-        # ROLLOUT-WINDOW: the pre-state worker sends a bare 4-field approved
-        # payload with no "state". Treat as approved. Remove this branch once the
-        # state-aware worker ships (J-follow-up: clean-break removal).
-        try:
-            scout.provision_scout_handoff(payload)
-        except ValueError as exc:
-            raise _CliError("unexpected_payload", str(exc)) from exc
-        return STDOUT_SUCCESS
-    # Unknown state value => client too old to understand it.
-    raise _CliError("unexpected_payload")
+    if result.kind == "pending":
+        return STDOUT_PENDING.format(since=_format_since(result.since))
+    if result.env_key_preserved:
+        return STDOUT_REVOKED_PRESERVED_MANUAL_KEY
+    return STDOUT_REVOKED
 
 
 def _enable_scout(args: argparse.Namespace) -> int:

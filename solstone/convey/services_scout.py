@@ -27,9 +27,10 @@ from solstone.convey.utils import error_response
 from solstone.think.services import portal_client
 from solstone.think.services.scout import (
     JournalNotInitializedError,
+    ScoutPayloadError,
+    apply_scout_state,
     is_manual_key_present,
     is_scout_enabled,
-    provision_scout_handoff,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,7 +42,9 @@ TRANSIENT_RETRY_BACKOFF_SECONDS = 5
 GRACE_SECONDS = 60
 SSE_HEARTBEAT_SECONDS = 20
 
-_TERMINAL_EVENTS = frozenset({"scout-enabled", "failed", "timeout"})
+_TERMINAL_EVENTS = frozenset(
+    {"scout-enabled", "scout-pending", "scout-revoked", "failed", "timeout"}
+)
 _REGISTRY_LOCK = threading.Lock()
 
 
@@ -140,12 +143,12 @@ def _run_orchestrator(entry: OrchestratorEntry, base_url: str) -> None:
             if outcome.kind == "success":
                 payload = outcome.payload or {}
                 try:
-                    provision_scout_handoff(payload)
-                except ValueError as exc:
+                    result = apply_scout_state(payload)
+                except ScoutPayloadError as exc:
                     _record_terminal(
                         entry,
                         "failed",
-                        {"reason": "unexpected_payload", "detail": str(exc)},
+                        {"reason": "unexpected_payload", "detail": exc.detail},
                     )
                     return
                 except JournalNotInitializedError:
@@ -156,17 +159,27 @@ def _run_orchestrator(entry: OrchestratorEntry, base_url: str) -> None:
                     )
                     return
                 except Exception as exc:
-                    logger.exception("scout provision write_failed")
+                    logger.exception("scout apply write_failed")
                     _record_terminal(
                         entry,
                         "failed",
                         {"reason": "write_failed", "detail": str(exc)},
                     )
                     return
+                if result.kind == "pending":
+                    _record_terminal(entry, "scout-pending", {"since": result.since})
+                    return
+                if result.kind == "revoked":
+                    _record_terminal(
+                        entry,
+                        "scout-revoked",
+                        {"env_key_preserved": result.env_key_preserved},
+                    )
+                    return
                 _record_terminal(
                     entry,
                     "scout-enabled",
-                    {"account_id": str(payload["account_id"])},
+                    {"account_id": str(result.account_id)},
                 )
                 return
 

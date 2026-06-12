@@ -177,6 +177,14 @@
           <p class="field-status status-saved">✓  solstone scout enabled</p>
           <p class="section-hint">sol pbc set up a Gemini key for you and put it on this machine — you never had to touch it, and nothing from your journal crossed to set it up. <a href="https://services.solstone.app/" target="_blank" rel="noopener noreferrer">manage solstone scout anytime in your services</a>.</p>
         </div>
+        <div data-scout-state="pending" hidden>
+          <p class="field-status status-saved">✓  scout request applied — pending review</p>
+          <p class="section-hint">sol pbc has your request — <span id="scout-pending-since">submitted recently</span>. you can finish setup now; scout turns on here automatically once it's approved. <a href="https://services.solstone.app/" target="_blank" rel="noopener noreferrer">check your services anytime</a>.</p>
+        </div>
+        <div data-scout-state="revoked" hidden>
+          <p class="field-status status-error">scout access has ended.</p>
+          <p class="section-hint">finish setup with a pasted Gemini key below, or re-request scout later from your services.</p>
+        </div>
         <div data-scout-state="error" data-reason="" hidden>
           <p class="field-status status-error" id="scout-error-message"></p>
           <button type="button" id="scout-try-again" class="settings-preset-btn">try again</button>
@@ -324,6 +332,14 @@
       }
     }
 
+    function formatScoutSince(since) {
+      const ms = Number(since);
+      if (!Number.isFinite(ms) || ms <= 0) return 'recently';
+      const when = new Date(ms);
+      if (Number.isNaN(when.getTime())) return 'recently';
+      return when.toISOString().slice(0, 10);
+    }
+
     function renderScoutState(state, opts = {}) {
       document.querySelectorAll('[data-scout-state]').forEach(el => {
         el.hidden = el.dataset.scoutState !== state;
@@ -349,6 +365,11 @@
       if (state === 'waiting') {
         const link = document.getElementById('scout-manual-link');
         if (link && opts.portalUrl) link.href = opts.portalUrl;
+      }
+
+      if (state === 'pending') {
+        const sinceEl = document.getElementById('scout-pending-since');
+        if (sinceEl) sinceEl.textContent = 'submitted ' + formatScoutSince(opts.since);
       }
 
       if (state === 'error') {
@@ -412,6 +433,17 @@
       scoutStream.addEventListener('scout-enabled', () => {
         closeScoutStream();
         renderScoutState('success');
+      });
+
+      scoutStream.addEventListener('scout-pending', event => {
+        const data = readScoutEventData(event);
+        closeScoutStream();
+        renderScoutState('pending', { since: data.since });
+      });
+
+      scoutStream.addEventListener('scout-revoked', () => {
+        closeScoutStream();
+        renderScoutState('revoked');
       });
 
       scoutStream.addEventListener('failed', event => {
