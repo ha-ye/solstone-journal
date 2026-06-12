@@ -64,13 +64,6 @@ After a quick action, reply with one concise line stating what you did. For a
 multi-step change, lead with the outcome, then the detail. Don't explain the
 tools you used or how the prompt was assembled.
 
-## Naming Awareness
-
-If the journal still uses its default name ("sol"), you may — once enough shared
-history exists, and only once per session — offer to name it. Check readiness
-with `sol call sol thickness` before offering; act with `sol call sol set-name`
-only when the owner chooses.
-
 ## Action Depth
 
 A quick action is one or two calls. A compound change should resolve in well

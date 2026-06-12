@@ -511,47 +511,18 @@ class TestApiUpdatedDays:
         assert "error" in payload
 
 
-class TestApiThickness:
-    """Tests for identity and thickness endpoints."""
+class TestApiIdentity:
+    """Tests for identity endpoint."""
 
-    def test_api_thickness_returns_six_signal_keys(self, agents_client):
-        resp = agents_client.get("/app/sol/api/thickness")
-
-        assert resp.status_code == 200
-        assert set(resp.get_json().keys()) == {
-            "entity_depth",
-            "conversation_count",
-            "recall_success",
-            "facet_count",
-            "journal_days",
-            "ready",
-        }
-
-    def test_api_identity_still_returns_three_keys(self, agents_client):
+    def test_api_identity_returns_agent_and_identity_keys(self, agents_client):
         resp = agents_client.get("/app/sol/api/identity")
 
         assert resp.status_code == 200
-        assert set(resp.get_json().keys()) == {"agent", "identity", "thickness"}
+        assert set(resp.get_json().keys()) == {"agent", "identity"}
 
 
 class TestSolIdentityRoutes:
     """Tests for the sol call HTTP cutover routes."""
-
-    def test_api_agent_returns_rich_default_when_agent_key_absent(
-        self, sol_identity_client
-    ):
-        client, _journal = sol_identity_client
-        write_journal_config({})
-
-        resp = client.get("/app/sol/api/agent")
-
-        assert resp.status_code == 200
-        assert resp.get_json() == {
-            "name": "sol",
-            "name_status": "default",
-            "named_date": None,
-            "proposal_count": 0,
-        }
 
     def test_api_set_name_updates_agent(self, sol_identity_client):
         client, _journal = sol_identity_client
@@ -577,7 +548,6 @@ class TestSolIdentityRoutes:
                     "name": "aria",
                     "name_status": "chosen",
                     "named_date": "2026-04-19",
-                    "proposal_count": 2,
                 }
             }
         )
@@ -589,7 +559,6 @@ class TestSolIdentityRoutes:
             "name": "sol",
             "name_status": "default",
             "named_date": None,
-            "proposal_count": 2,
         }
         assert read_journal_config()["agent"]["name"] == "sol"
 

@@ -244,84 +244,9 @@ def _recent_chat_exchanges(limit: int = 10000) -> list[dict[str, Any]]:
     return exchanges[-limit:]
 
 
-def compute_thickness() -> dict[str, Any]:
-    """Compute journal thickness signals for naming ceremony readiness.
-
-    Returns a dict with five signals and a composite ``ready`` boolean:
-
-    - ``entity_depth``: count of entities with observation_depth >= 2
-    - ``conversation_count``: conversation exchanges excluding legacy onboarding
-    - ``recall_success``: exchanges where an entity name appears in agent_response
-    - ``facet_count``: number of enabled (non-muted) facets
-    - ``journal_days``: number of day directories with at least one segment
-    - ``ready``: True when the naming ceremony should trigger
-    """
-    from solstone.think.entities.observations import (
-        count_entities_with_min_observation_depth,
-        iter_entity_names_for_recall,
-    )
-    from solstone.think.facets import get_enabled_facets
-    from solstone.think.utils import day_dirs, iter_segments
-
-    try:
-        entity_depth = count_entities_with_min_observation_depth(2)
-        entity_names = iter_entity_names_for_recall()
-    except Exception:
-        entity_depth = 0
-        entity_names = []
-
-    try:
-        exchanges = _recent_chat_exchanges(limit=10000)
-    except Exception:
-        exchanges = []
-    non_onboarding = [
-        ex
-        for ex in exchanges
-        if (ex.get("talent") or ex.get(_LEGACY_AGENT_FIELD, "")) != "onboarding"
-    ]
-    conversation_count = len(non_onboarding)
-
-    recall_success = 0
-    for ex in non_onboarding:
-        resp = (ex.get("agent_response") or "").lower()
-        if resp and any(name in resp for name in entity_names):
-            recall_success += 1
-
-    try:
-        facet_count = len(get_enabled_facets())
-    except Exception:
-        facet_count = 0
-
-    try:
-        days = day_dirs()
-    except Exception:
-        days = {}
-    journal_days = 0
-    for _day_name, day_path in days.items():
-        try:
-            if iter_segments(day_path):
-                journal_days += 1
-        except Exception:
-            pass
-
-    ready = (
-        entity_depth >= 10 and conversation_count >= 5 and recall_success >= 1
-    ) and (facet_count >= 2 or journal_days >= 3)
-
-    return {
-        "entity_depth": entity_depth,
-        "conversation_count": conversation_count,
-        "recall_success": recall_success,
-        "facet_count": facet_count,
-        "journal_days": journal_days,
-        "ready": ready,
-    }
-
-
 def owner_detection_ready() -> dict[str, Any]:
     """Check if owner voice detection should be surfaced to the user.
 
-    Same pattern as ``compute_thickness()`` for the naming ceremony.
     Returns a dict with a ``ready`` boolean and contextual fields.
 
     Checks in order:

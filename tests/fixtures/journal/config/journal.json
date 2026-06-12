@@ -76,7 +76,6 @@
   "agent": {
     "name": "sol",
     "name_status": "default",
-    "named_date": null,
-    "proposal_count": 0
+    "named_date": null
   }
 }

@@ -36,7 +36,7 @@ EMIT_FINAL_SCHEDULES = {"daily", "weekly", "activity"}
             "emit_final",
         ),
         (
-            "naming",
+            "exec",
             lambda c: (
                 c.get("schedule") not in EMIT_FINAL_SCHEDULES
                 and not c.get("output_path")

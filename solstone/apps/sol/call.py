@@ -17,14 +17,6 @@ from solstone.think.convey_client import convey_cli, get_client
 app = typer.Typer(help="Agent identity — name and status.")
 
 
-@app.command("name")
-@convey_cli
-def name() -> None:
-    """Show the current agent name and status."""
-    agent = get_client().request("GET", "/app/sol/api/agent")
-    typer.echo(json.dumps(agent, indent=2))
-
-
 @app.command("set-name")
 @convey_cli
 def set_name(
@@ -51,14 +43,6 @@ def reset() -> None:
     """Reset the agent name to default."""
     agent = get_client().request("POST", "/app/sol/api/reset")
     typer.echo(json.dumps(agent, indent=2))
-
-
-@app.command("thickness")
-@convey_cli
-def thickness() -> None:
-    """Show journal thickness signals for naming readiness."""
-    body = get_client().request("GET", "/app/sol/api/thickness")
-    typer.echo(json.dumps(body, indent=2))
 
 
 @app.command("set-owner")

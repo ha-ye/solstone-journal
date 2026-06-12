@@ -321,19 +321,19 @@ def test_show_prompt_context_day_format_validation(capsys):
     assert "invalid --day format" in output.lower()
 
 
-def test_show_effective_prompt_naming_omits_read_scope_hint(capsys):
+def test_show_effective_prompt_exec_omits_read_scope_hint(capsys):
     """Cogitate prompt view omits the read-scope hint when no read_scope is set."""
-    config = get_talent("naming")
+    config = get_talent("exec")
     body, system_instruction = assemble_prompt(config, sol_tool_name="sol")
 
-    show_effective_prompt("naming", full=True)
+    show_effective_prompt("exec", full=True)
     output = capsys.readouterr().out
 
     assert system_instruction is not None
     assert system_instruction.startswith(COGITATE_RUNTIME_PREAMBLE)
     assert "through the `sol` tool" in system_instruction
     assert "Limit filesystem reads to today's segment dir" not in system_instruction
-    assert "naming ceremony agent" in body
+    assert "You make the change the owner asked for" in body
     assert system_instruction in output
     assert body in output
     assert "tier: normal" in output
@@ -378,8 +378,8 @@ def test_inventory_rows_normalize_and_lockstep_with_config():
     # steward is a deterministic + lite-generate talent now, not cogitate, so it
     # is no longer part of the cogitate inventory.
     assert "steward" not in by_name
-    assert by_name["naming"]["access_tier"] == "normal"
-    assert by_name["naming"]["schedule"] == "-"
+    assert by_name["exec"]["access_tier"] == "normal"
+    assert by_name["exec"]["schedule"] == "-"
 
 
 def test_tier_inventory_matches_capabilities():
@@ -408,9 +408,9 @@ def test_inventory_json_uses_verbatim_rows_and_table_uses_same_values(capsys):
 
     _render_inventory_table(rows)
     table = capsys.readouterr().out
-    assert "naming" in table
-    assert by_name["naming"]["access_tier"] in table
-    assert by_name["naming"]["finalize"] in table
+    assert "exec" in table
+    assert by_name["exec"]["access_tier"] in table
+    assert by_name["exec"]["finalize"] in table
 
 
 def test_inventory_command_outputs_json(capsys):

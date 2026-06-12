@@ -36,7 +36,6 @@ def mock_journal_with_config(tmp_path, monkeypatch):
             "name": "sol",
             "name_status": "default",
             "named_date": None,
-            "proposal_count": 0,
         },
     }
 

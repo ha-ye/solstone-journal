@@ -321,13 +321,6 @@
       "tier": 2,
       "type": "generate"
     },
-    "talent.system.naming": {
-      "disabled": false,
-      "group": "Think",
-      "label": "Naming",
-      "tier": 2,
-      "type": "cogitate"
-    },
     "talent.system.participation": {
       "disabled": false,
       "group": "Think",

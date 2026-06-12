@@ -1044,41 +1044,6 @@
   background: var(--facet-border, #e5e0db);
 }
 
-.sol-identity-card .identity-signals {
-  display: flex;
-  gap: 1rem;
-  margin-left: auto;
-}
-
-.sol-identity-card .signal {
-  text-align: center;
-}
-
-.sol-identity-card .signal-value {
-  font-weight: 600;
-  color: var(--text-primary, #2c2825);
-}
-
-.sol-identity-card .signal-label {
-  font-size: 0.75rem;
-}
-
-.sol-identity-card .ready-badge {
-  padding: 0.15rem 0.5rem;
-  border-radius: 4px;
-  font-size: 0.8rem;
-  font-weight: 600;
-}
-
-.sol-identity-card .ready-badge.ready-true {
-  background: #e8f5e9;
-  color: #2e7d32;
-}
-
-.sol-identity-card .ready-badge.ready-false {
-  background: #fff3e0;
-  color: #e65100;
-}
 </style>
 
 <div class="sol-identity" id="sol-identity">
@@ -1090,7 +1055,6 @@
     <div style="color: var(--text-secondary, #6b6560)">
       <span id="identity-owner"></span>
     </div>
-    <div class="identity-signals" id="identity-signals"></div>
   </div>
 </div>
 
@@ -1211,7 +1175,6 @@
       .then(data => {
         const agent = data.agent || {};
         const identity = data.identity || {};
-        const thickness = data.thickness || {};
 
         document.getElementById('identity-name').textContent = agent.name || 'sol';
         const statusEl = document.getElementById('identity-status');
@@ -1221,17 +1184,6 @@
         if (identity.name) {
           ownerEl.textContent = 'owner: ' + identity.name;
         }
-
-        const signalsEl = document.getElementById('identity-signals');
-        signalsEl.innerHTML = [
-          { label: 'Entities', value: thickness.entity_depth ?? '—' },
-          { label: 'Conversations', value: thickness.conversation_count ?? '—' },
-          { label: 'Active days', value: thickness.journal_days ?? '—' },
-          { label: 'Facets', value: thickness.facet_count ?? '—' },
-        ].map(s => '<div class="signal"><div class="signal-value">' + s.value + '</div><div class="signal-label">' + s.label + '</div></div>').join('')
-          + '<div class="ready-badge ready-' + (thickness.ready ? 'true' : 'false') + '">'
-          + (thickness.ready ? 'Ready' : 'Growing')
-          + '</div>';
       })
       .catch((err) => {
         window.logError(err, { context: 'sol: loadIdentity failed' });

@@ -203,17 +203,6 @@
       "title": "Morning Briefing",
       "type": "generate"
     },
-    "naming": {
-      "app": null,
-      "color": "#6c757d",
-      "description": "Proposes a personalized name for the owner's journal assistant",
-      "multi_facet": false,
-      "output_format": null,
-      "schedule": null,
-      "source": "system",
-      "title": "Naming",
-      "type": "cogitate"
-    },
     "participation": {
       "app": null,
       "color": "#6c757d",

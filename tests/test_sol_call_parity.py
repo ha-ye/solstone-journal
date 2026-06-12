@@ -29,37 +29,6 @@ def runner(journal, monkeypatch):
     return CliRunner()
 
 
-def test_name_empty_config_returns_rich_default(runner) -> None:
-    result = runner.invoke(app, ["name"])
-
-    assert result.exit_code == 0
-    assert json.loads(result.stdout) == {
-        "name": "sol",
-        "name_status": "default",
-        "named_date": None,
-        "proposal_count": 0,
-    }
-
-
-def test_thickness_returns_json(runner, monkeypatch) -> None:
-    mock_result = {
-        "entity_depth": 5,
-        "conversation_count": 3,
-        "recall_success": 1,
-        "facet_count": 2,
-        "journal_days": 4,
-        "ready": False,
-    }
-    monkeypatch.setattr(
-        "solstone.think.awareness.compute_thickness", lambda: mock_result
-    )
-
-    result = runner.invoke(app, ["thickness"])
-
-    assert result.exit_code == 0
-    assert json.loads(result.stdout) == mock_result
-
-
 def test_set_name_updates_config(runner) -> None:
     write_journal_config({})
 
@@ -80,7 +49,6 @@ def test_reset_updates_agent(runner) -> None:
                 "name": "aria",
                 "name_status": "chosen",
                 "named_date": "2026-04-19",
-                "proposal_count": 2,
             }
         }
     )
@@ -92,7 +60,6 @@ def test_reset_updates_agent(runner) -> None:
         "name": "sol",
         "name_status": "default",
         "named_date": None,
-        "proposal_count": 2,
     }
     assert read_journal_config()["agent"]["name"] == "sol"
 
@@ -139,7 +106,7 @@ def test_convey_down_prints_require_solstone_message(journal, monkeypatch) -> No
     monkeypatch.delenv("SOL_SKIP_SUPERVISOR_CHECK", raising=False)
     monkeypatch.delenv("SOL_SUPERVISOR_SPAWNED", raising=False)
 
-    result = CliRunner().invoke(app, ["name"])
+    result = CliRunner().invoke(app, ["reset"])
 
     assert result.exit_code == 1
     assert (

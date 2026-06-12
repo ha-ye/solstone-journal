@@ -58,7 +58,6 @@ DEFAULT_AGENT = {
     "name": "sol",
     "name_status": "default",
     "named_date": None,
-    "proposal_count": 0,
 }
 
 
@@ -729,21 +728,18 @@ def api_updated_days() -> Any:
 
 @sol_bp.route("/api/identity")
 def api_identity() -> Any:
-    """Return talent identity and thickness signals."""
+    """Return talent identity."""
     try:
-        from solstone.think.awareness import compute_thickness
         from solstone.think.utils import get_config
 
         config = get_config()
         agent = config.get("agent", {})
         identity = config.get("identity", {})
-        thickness = compute_thickness()
 
         return jsonify(
             {
                 "agent": agent,
                 "identity": identity,
-                "thickness": thickness,
             }
         )
     except Exception:
@@ -752,12 +748,6 @@ def api_identity() -> Any:
             TALENT_OPERATION_FAILED,
             detail="Unable to load identity data",
         )
-
-
-@sol_bp.route("/api/agent")
-def api_agent() -> Any:
-    config = read_journal_config()
-    return jsonify(config.get("agent", dict(DEFAULT_AGENT)))
 
 
 @sol_bp.route("/api/set-name", methods=["POST"])
@@ -830,18 +820,3 @@ def api_sol_init() -> Any:
     except LockTimeout:
         return error_response(IDENTITY_BUSY, detail="identity is busy; try again")
     return jsonify({"identity_dir": str(identity_dir), "status": "ok"})
-
-
-@sol_bp.route("/api/thickness")
-def api_thickness() -> Any:
-    """Return relationship/thickness signals (also bundled in /api/identity)."""
-    try:
-        from solstone.think.awareness import compute_thickness
-
-        return jsonify(compute_thickness())
-    except Exception:
-        logging.exception("api_thickness failed")
-        return error_response(
-            TALENT_OPERATION_FAILED,
-            detail="Unable to load thickness signals",
-        )
