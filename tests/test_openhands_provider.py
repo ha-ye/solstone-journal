@@ -906,8 +906,8 @@ def test_schedule_gated_cogitate_prompts_use_emit_final():
         if config.get("schedule") in {"daily", "weekly", "activity"}
         and "output" not in config
     }
-    # steward is no longer a cogitate talent (deterministic render + lite generate).
-    assert len(converted) == 5
+    # steward and facet_newsletter are generate talents now, not cogitate prompts.
+    assert len(converted) == 4
 
     for name, config in converted.items():
         body = Path(config["path"]).read_text(encoding="utf-8")

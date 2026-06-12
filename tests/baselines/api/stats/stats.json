@@ -187,6 +187,24 @@
       "title": "Event Story",
       "type": "generate"
     },
+    "facet_newsletter": {
+      "accumulate": true,
+      "color": "#0d47a1",
+      "description": "Creates comprehensive daily newsletters for each facet, capturing activities, progress, and insights",
+      "hook": {
+        "post": "facet_newsletter",
+        "pre": "facet_newsletter"
+      },
+      "mtime": 0,
+      "multi_facet": true,
+      "output": "md",
+      "path": "<PROJECT>/solstone/talent/facet_newsletter.md",
+      "priority": 40,
+      "schedule": "daily",
+      "source": "system",
+      "title": "Facet Newsletter Generator",
+      "type": "generate"
+    },
     "morning_briefing": {
       "color": "#1565c0",
       "degradation_check": true,

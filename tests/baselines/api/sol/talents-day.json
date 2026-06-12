@@ -186,11 +186,11 @@
       "color": "#0d47a1",
       "description": "Creates comprehensive daily newsletters for each facet, capturing activities, progress, and insights",
       "multi_facet": true,
-      "output_format": null,
+      "output_format": "md",
       "schedule": "daily",
       "source": "system",
       "title": "Facet Newsletter Generator",
-      "type": "cogitate"
+      "type": "generate"
     },
     "morning_briefing": {
       "app": null,

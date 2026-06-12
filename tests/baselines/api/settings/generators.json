@@ -18,6 +18,14 @@
     },
     {
       "app": null,
+      "description": "Creates comprehensive daily newsletters for each facet, capturing activities, progress, and insights",
+      "disabled": false,
+      "key": "facet_newsletter",
+      "source": "system",
+      "title": "Facet Newsletter Generator"
+    },
+    {
+      "app": null,
       "description": "Extracts future scheduled items from screen and transcript content into anticipated activity records. Captures dates, times, participants, and cancellation state.",
       "disabled": false,
       "key": "schedule",

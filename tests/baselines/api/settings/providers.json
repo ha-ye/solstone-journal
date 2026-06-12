@@ -311,7 +311,7 @@
       "label": "Facet Newsletter Generator",
       "schedule": "daily",
       "tier": 2,
-      "type": "cogitate"
+      "type": "generate"
     },
     "talent.system.morning_briefing": {
       "disabled": false,
