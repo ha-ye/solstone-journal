@@ -913,7 +913,7 @@ button.day-header {
       return;
     }
 
-    searchSummary.textContent = `${data.total} results across ${data.total_days} day${data.total_days !== 1 ? 's' : ''}`;
+    searchSummary.textContent = `${data.total} result${data.total !== 1 ? 's' : ''} across ${data.total_days} day${data.total_days !== 1 ? 's' : ''}`;
     searchSummary.style.display = 'block';
     announce(searchSummary.textContent);
   }
