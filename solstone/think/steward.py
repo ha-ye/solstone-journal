@@ -27,6 +27,7 @@ from solstone.think.data_state import (
     derive_modality_state,
     repair_modality_markers,
 )
+from solstone.think.day_accumulator import read_latest
 from solstone.think.identity import (
     STEWARD_SECTION_ATTENTION,
     STEWARD_SECTION_AUTO_REPAIRS,
@@ -741,7 +742,7 @@ def render_health_body(
     """Render the byte-exact 4-section health.md body from deterministic facts.
 
     Output is guaranteed to satisfy ``validate_steward_health``. No LLM is
-    involved; the model only writes the human-friendly summaries (steward.json).
+    involved; the model only appends the human-friendly summaries to steward.jsonl.
     """
     status = _status_sentence(
         pipeline_day=pipeline_day,
@@ -776,11 +777,6 @@ def render_health_body(
 # ---------------------------------------------------------------------------
 # Human-friendly summaries (the lite generate talent output)
 # ---------------------------------------------------------------------------
-
-
-def _summary_path(day: str, journal: Path | None = None) -> Path:
-    """Path to a day's steward generate output (the human summaries)."""
-    return _journal_path(journal) / "chronicle" / day / "talents" / "steward.json"
 
 
 def _coerce_summary(raw: str | dict) -> dict | None:
@@ -842,44 +838,28 @@ def normalize_summary(result: str, default: dict) -> dict:
     return summary
 
 
-def load_previous_summary(today: str, journal: Path | None = None) -> dict | None:
-    """Return the most recent prior-day steward summary (for continuity)."""
-    try:
-        start = datetime.strptime(today, "%Y%m%d")
-    except ValueError:
-        return None
-    for offset in range(1, 8):
-        probe = (start - timedelta(days=offset)).strftime("%Y%m%d")
-        try:
-            raw = _summary_path(probe, journal).read_text(encoding="utf-8")
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-        summary = _coerce_summary(raw)
-        if summary is not None:
-            return summary
-    return None
+def read_steward_summary(day: str | None = None) -> dict | None:
+    """Latest human-friendly steward summary for the home widget.
 
-
-def read_steward_summary(
-    journal: Path | None = None, day: str | None = None
-) -> dict | None:
-    """Return the latest human-friendly steward summary for the home widget."""
+    Reads the newest record from the day-jsonl accumulator
+    (chronicle/<day>/talents/steward.jsonl), walking back prior days.
+    """
     if day is None:
         day = datetime.now().strftime("%Y%m%d")
-    try:
-        start = datetime.strptime(day, "%Y%m%d")
-    except ValueError:
+    record = read_latest(day, "steward")
+    if record is None:
         return None
-    for offset in range(0, 8):
-        probe = (start - timedelta(days=offset)).strftime("%Y%m%d")
-        try:
-            raw = _summary_path(probe, journal).read_text(encoding="utf-8")
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-        summary = _coerce_summary(raw)
-        if summary is not None:
-            return summary
-    return None
+    return _coerce_summary(record)
+
+
+def load_previous_summary(today: str) -> dict | None:
+    """Previous steward summary for run-to-run continuity.
+
+    Delegates to read_steward_summary: the pre-hook reads before this run
+    appends, so this returns the genuinely-previous run (earlier today, else a
+    prior day). Empty journal -> None ("first run").
+    """
+    return read_steward_summary(day=today)
 
 
 def latest_daily_run_complete_ts(today: str) -> int | None:

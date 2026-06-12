@@ -395,7 +395,7 @@
       "disabled": false,
       "group": "Think",
       "label": "Steward",
-      "schedule": "daily",
+      "schedule": "cadence",
       "tier": 3,
       "type": "generate"
     },

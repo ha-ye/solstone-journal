@@ -3,12 +3,14 @@
 
   "title": "Steward",
   "description": "Writes the owner-facing health summary (headline, sentence, suggested action) from the deterministic health surface.",
-  "schedule": "daily",
+  "schedule": "cadence",
+  "cadence_minutes": 30,
   "priority": 45,
   "tier": 3,
   "hook": {"pre": "steward", "post": "steward"},
   "output": "json",
   "schema": "steward.schema.json",
+  "accumulate": true,
   "thinking_budget": 1024,
   "max_output_tokens": 400,
   "load": {"transcripts": false, "percepts": false, "talents": false}

@@ -308,7 +308,7 @@
       "description": "Writes the owner-facing health summary (headline, sentence, suggested action) from the deterministic health surface.",
       "multi_facet": false,
       "output_format": "json",
-      "schedule": "daily",
+      "schedule": "cadence",
       "source": "system",
       "title": "Steward",
       "type": "generate"

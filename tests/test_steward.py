@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from solstone.think.day_accumulator import append_record
 from solstone.think.identity import (
     STEWARD_SECTION_ATTENTION,
     STEWARD_SECTION_AUTO_REPAIRS,
@@ -681,16 +682,13 @@ def test_render_health_body_first_attention_bullet_drives_widget(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _write_summary(journal: Path, day: str, payload: dict | str) -> None:
-    path = journal / "chronicle" / day / "talents" / "steward.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    body = payload if isinstance(payload, str) else json.dumps(payload)
-    path.write_text(body, encoding="utf-8")
+def _seed_summary(day: str, payload: dict) -> None:
+    append_record(day, "steward", dict(payload))
 
 
-def test_read_steward_summary_returns_latest(tmp_path):
-    _write_summary(
-        tmp_path,
+def test_read_steward_summary_returns_latest(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+    _seed_summary(
         "20260607",
         {
             "headline": "All clear",
@@ -699,16 +697,16 @@ def test_read_steward_summary_returns_latest(tmp_path):
         },
     )
 
-    assert read_steward_summary(tmp_path, day="20260607") == {
+    assert read_steward_summary(day="20260607") == {
         "headline": "All clear",
         "summary_sentence": "Sol is well.",
         "suggested_action": "none",
     }
 
 
-def test_read_steward_summary_walks_back(tmp_path):
-    _write_summary(
-        tmp_path,
+def test_read_steward_summary_walks_back(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+    _seed_summary(
         "20260605",
         {
             "headline": "Pipeline gap",
@@ -717,18 +715,19 @@ def test_read_steward_summary_walks_back(tmp_path):
         },
     )
 
-    summary = read_steward_summary(tmp_path, day="20260607")
+    summary = read_steward_summary(day="20260607")
     assert summary is not None
     assert summary["headline"] == "Pipeline gap"
 
 
-def test_read_steward_summary_missing_returns_none(tmp_path):
-    assert read_steward_summary(tmp_path, day="20260607") is None
+def test_read_steward_summary_missing_returns_none(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+    assert read_steward_summary(day="20260607") is None
 
 
-def test_read_steward_summary_clamps_bad_enum(tmp_path):
-    _write_summary(
-        tmp_path,
+def test_read_steward_summary_clamps_bad_enum(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+    _seed_summary(
         "20260607",
         {
             "headline": "X",
@@ -737,15 +736,17 @@ def test_read_steward_summary_clamps_bad_enum(tmp_path):
         },
     )
 
-    summary = read_steward_summary(tmp_path, day="20260607")
+    summary = read_steward_summary(day="20260607")
     assert summary is not None
     assert summary["suggested_action"] == "none"
 
 
-def test_read_steward_summary_malformed_returns_none(tmp_path):
-    _write_summary(tmp_path, "20260607", "not json")
+def test_read_steward_summary_malformed_returns_none(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+    # A record that fails coercion yields None.
+    _seed_summary("20260607", {"headline": "x"})
 
-    assert read_steward_summary(tmp_path, day="20260607") is None
+    assert read_steward_summary(day="20260607") is None
 
 
 def test_normalize_summary_passthrough():
@@ -823,9 +824,9 @@ def test_default_summary_from_body_escalation_suggests_support():
     assert summary["suggested_action"] == "open_support"
 
 
-def test_read_steward_summary_preserves_open_support(tmp_path):
-    _write_summary(
-        tmp_path,
+def test_read_steward_summary_preserves_open_support(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+    _seed_summary(
         "20260607",
         {
             "headline": "Repairs failing",
@@ -834,6 +835,32 @@ def test_read_steward_summary_preserves_open_support(tmp_path):
         },
     )
 
-    summary = read_steward_summary(tmp_path, day="20260607")
+    summary = read_steward_summary(day="20260607")
     assert summary is not None
     assert summary["suggested_action"] == "open_support"
+
+
+def test_accumulate_suppresses_single_file_output_path(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+    from solstone.think.talent import get_talent, get_talent_configs
+    from solstone.think.talents import prepare_config
+    from solstone.think.thinking import _apply_output_persistence
+
+    raw_config = get_talent_configs()["steward"]
+    steward_config = get_talent("steward")
+    assert raw_config["output"] == "json"
+    assert raw_config["schema"] == "steward.schema.json"
+    assert steward_config["json_schema"]["required"] == [
+        "headline",
+        "summary_sentence",
+        "suggested_action",
+    ]
+    assert steward_config["accumulate"] is True
+
+    request_config = {}
+    _apply_output_persistence(request_config, steward_config, force_refresh=False)
+    assert "output" not in request_config
+    assert "refresh" not in request_config
+
+    prepared = prepare_config({"name": "steward", "day": "20260607"})
+    assert "output_path" not in prepared

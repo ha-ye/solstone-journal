@@ -1,21 +1,23 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Hooks for the steward daily health talent.
+"""Hooks for the steward cadence health talent.
 
 The 4-section health.md body is rendered **deterministically** in the pre-hook
 (no LLM in that write path). The talent itself is a tiny ``lite`` generate that
-writes only the human-friendly summaries the home widget surfaces. Repair is not
-steward's job — it runs in the deterministic overnight ``journal heartbeat``
-(``heartbeat.py``); the pre-hook only *reads* the latest pass event.
+writes only the human-friendly summaries the home widget surfaces, appending
+them to the day-jsonl accumulator. Repair is not steward's job — it runs in the
+deterministic overnight ``journal heartbeat`` (``heartbeat.py``); the pre-hook
+only *reads* the latest pass event.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 
+from solstone.think.day_accumulator import append_record
 from solstone.think.steward import (
     acquire_steward_lock,
     default_summary_from_body,
@@ -27,6 +29,7 @@ from solstone.think.steward import (
     render_health_body,
     write_health_md,
 )
+from solstone.think.utils import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +39,10 @@ def _today_from_config(config: dict) -> str:
     if isinstance(day, str) and day:
         return day
     return datetime.now().strftime("%Y%m%d")
+
+
+def _generated_at() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def pre_process(config: dict) -> dict | None:
@@ -100,11 +107,19 @@ def pre_process(config: dict) -> dict | None:
 
 
 def post_process(result: str, config: dict) -> str:
-    """Normalize the model's summary JSON to the closed contract."""
+    """Normalize the model's summary and append it to the day accumulator."""
     default = config.get("_steward_default_summary") or {
         "headline": "Health summary unavailable",
         "summary_sentence": "Sol could not produce a health summary this run.",
         "suggested_action": "open_health_detail",
     }
     summary = normalize_summary(result, default)
+    day = _today_from_config(config)
+    record = {
+        **summary,
+        "model": config.get("model"),
+        "generated_at": _generated_at(),
+        "ts": now_ms(),
+    }
+    append_record(day, "steward", record)
     return json.dumps(summary, indent=2, sort_keys=True)
