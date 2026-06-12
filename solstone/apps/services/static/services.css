@@ -139,9 +139,14 @@
   opacity: 0.55;
 }
 
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   .services-shell {
     padding: 1rem;
+    padding-left: calc(var(--menu-bar-width-minimal) + 1rem);
+  }
+
+  body.menu-full .services-shell {
+    padding-left: calc(var(--menu-bar-width-full) + 1rem);
   }
 
   .services-row {
@@ -151,5 +156,11 @@
   .services-row-actions {
     justify-content: flex-start;
     min-width: 0;
+  }
+}
+
+@media (max-width: 480px) {
+  .services-shell {
+    padding-bottom: calc(var(--app-bar-height) + 4rem);
   }
 }
