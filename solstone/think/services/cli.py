@@ -15,6 +15,7 @@ from typing import Any
 
 from solstone.think.journal_config import get_journal_config_path
 from solstone.think.services import portal_client, scout, spl
+from solstone.think.services.constants import SERVICE_SCOUT
 
 logger = logging.getLogger(__name__)
 
@@ -252,14 +253,25 @@ def _open_browser(url: str) -> bool:
         return False
 
 
-def _poll_handoff(base_url: str, nonce: str, wait_seconds: int) -> dict:
+def _poll_handoff(
+    base_url: str,
+    nonce: str,
+    wait_seconds: int,
+    *,
+    service: str = SERVICE_SCOUT,
+) -> dict:
     deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:
         timeout = min(
             portal_client.POLL_TIMEOUT_SECONDS,
             max(0.1, deadline - time.monotonic()),
         )
-        outcome = portal_client.poll_handoff_once(base_url, nonce, timeout=timeout)
+        outcome = portal_client.poll_handoff_once(
+            base_url,
+            nonce,
+            timeout=timeout,
+            service=service,
+        )
         if outcome.kind == "success":
             return outcome.payload or {}
         if outcome.kind == "continue":
@@ -306,12 +318,21 @@ def _enable_scout(args: argparse.Namespace) -> int:
     base_url = portal_client.portal_base_url()
     try:
         nonce = portal_client.mint_nonce()
-        browser_url = portal_client.browser_url(base_url, nonce)
+        browser_url = portal_client.browser_url(
+            base_url,
+            nonce,
+            service=SERVICE_SCOUT,
+        )
         print(STDOUT_LINK_TEMPLATE.format(url=browser_url))
         if _open_browser(browser_url):
             print(STDOUT_OPENED_BROWSER)
         print(STDOUT_WAITING)
-        payload = _poll_handoff(base_url, nonce, args.wait)
+        payload = _poll_handoff(
+            base_url,
+            nonce,
+            args.wait,
+            service=SERVICE_SCOUT,
+        )
         message = _apply_handoff(payload)
     except _CliError as exc:
         _print_error(exc.token, exc.detail)
@@ -335,12 +356,21 @@ def _refresh_scout(args: argparse.Namespace) -> int:
     base_url = portal_client.portal_base_url()
     try:
         nonce = portal_client.mint_nonce()
-        browser_url = portal_client.browser_url(base_url, nonce)
+        browser_url = portal_client.browser_url(
+            base_url,
+            nonce,
+            service=SERVICE_SCOUT,
+        )
         print(STDOUT_LINK_TEMPLATE.format(url=browser_url))
         if _open_browser(browser_url):
             print(STDOUT_OPENED_BROWSER)
         print(STDOUT_WAITING)
-        payload = _poll_handoff(base_url, nonce, args.wait)
+        payload = _poll_handoff(
+            base_url,
+            nonce,
+            args.wait,
+            service=SERVICE_SCOUT,
+        )
         message = _apply_handoff(payload)
     except _CliError as exc:
         _print_error(exc.token, exc.detail)

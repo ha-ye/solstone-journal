@@ -57,14 +57,8 @@ def authorized_clients_path() -> Path:
     return link_root() / "authorized_clients.json"
 
 
-def tokens_dir() -> Path:
-    d = link_root() / "tokens"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
 def service_token_path() -> Path:
-    return tokens_dir() / "account.json"
+    return Path(get_journal()) / "link" / "tokens" / "account.json"
 
 
 def totp_secret_path() -> Path:

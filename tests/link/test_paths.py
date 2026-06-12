@@ -169,6 +169,16 @@ def test_load_service_token_missing(
     _set_journal(monkeypatch, tmp_path)
 
     assert load_service_token() is None
+    assert not (tmp_path / "link").exists()
+
+
+def test_service_token_path_does_not_create_token_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_journal(monkeypatch, tmp_path)
+
+    assert service_token_path() == tmp_path / "link" / "tokens" / "account.json"
+    assert not (tmp_path / "link").exists()
 
 
 def test_save_and_load_service_token_roundtrip(

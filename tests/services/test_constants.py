@@ -7,6 +7,9 @@ from solstone.think.services.constants import (
     NONCE_ALPHABET,
     NONCE_LENGTH_CHARS,
     NONCE_REGEX,
+    SERVICE_SCOUT,
+    SERVICE_SPL,
+    SUPPORTED_SERVICES,
 )
 from solstone.think.services.portal_client import mint_nonce
 
@@ -23,3 +26,9 @@ def test_minted_nonces_match_regex_and_are_high_cardinality() -> None:
     assert all(NONCE_REGEX.fullmatch(sample) for sample in samples)
     assert all(set(sample) <= set(NONCE_ALPHABET) for sample in samples)
     assert len(set(samples)) >= 990
+
+
+def test_supported_services_are_explicit_allow_list() -> None:
+    assert SERVICE_SCOUT == "scout"
+    assert SERVICE_SPL == "spl"
+    assert SUPPORTED_SERVICES == frozenset({"scout", "spl"})

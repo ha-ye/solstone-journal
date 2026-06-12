@@ -19,6 +19,8 @@ from typing import Any
 from solstone.think.services.constants import (
     NONCE_ALPHABET,
     NONCE_LENGTH_CHARS,
+    SERVICE_SCOUT,
+    SUPPORTED_SERVICES,
 )
 
 DEFAULT_PORTAL_URL = "https://services.solstone.app"
@@ -58,12 +60,16 @@ def request_headers(component: str) -> dict[str, str]:
     }
 
 
-def poll_url(base_url: str, nonce: str) -> str:
-    return f"{base_url}/handoff/scout?nonce={nonce}"
+def poll_url(base_url: str, nonce: str, *, service: str = SERVICE_SCOUT) -> str:
+    if service not in SUPPORTED_SERVICES:
+        raise ValueError(f"unsupported handoff service: {service!r}")
+    return f"{base_url}/handoff/{service}?nonce={nonce}"
 
 
-def browser_url(base_url: str, nonce: str) -> str:
-    return f"{base_url}/enable/scout?nonce={nonce}"
+def browser_url(base_url: str, nonce: str, *, service: str = SERVICE_SCOUT) -> str:
+    if service not in SUPPORTED_SERVICES:
+        raise ValueError(f"unsupported handoff service: {service!r}")
+    return f"{base_url}/enable/{service}?nonce={nonce}"
 
 
 def is_timeout_error(exc: BaseException) -> bool:
@@ -98,9 +104,11 @@ def poll_handoff_once(
     *,
     timeout: float = POLL_TIMEOUT_SECONDS,
     component: str = "cli",
+    service: str = SERVICE_SCOUT,
 ) -> PollOutcome:
+    url = poll_url(base_url, nonce, service=service)
     request = urllib.request.Request(
-        poll_url(base_url, nonce),
+        url,
         headers=request_headers(component),
         method="GET",
     )
