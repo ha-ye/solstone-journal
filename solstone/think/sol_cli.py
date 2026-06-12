@@ -76,6 +76,7 @@ SOL_HELP_GROUP_ALIASES = "Aliases"
 
 COMMANDS: dict[str, Command] = {
     # think package - daily processing and analysis
+    "backup": Command("solstone.think.backup_cli", "service"),
     "import": Command("solstone.think.importers.cli", "access"),
     "think": Command("solstone.think.thinking", "service"),
     "indexer": Command("solstone.think.indexer", "service"),

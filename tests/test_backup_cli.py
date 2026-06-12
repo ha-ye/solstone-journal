@@ -1,0 +1,563 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from typing import Any
+from unittest.mock import Mock
+
+import pytest
+from typer.testing import CliRunner
+
+from solstone.think import backup_cli, sol_cli
+from solstone.think.backup.destination import Destination, DestinationStatus
+from solstone.think.backup.engine import BackupResult, PruneResult
+from solstone.think.backup.keys import format_recovery_key_display
+from solstone.think.backup.restore import RestoreResult
+from solstone.think.backup.rotation import RotationResult
+from solstone.think.backup.state import BackupKeys
+from solstone.think.backup.teardown import TeardownResult
+
+
+def _config_path(journal: Path) -> Path:
+    return journal / "config" / "journal.json"
+
+
+def _write_config(journal: Path, payload: dict[str, Any]) -> None:
+    config_path = _config_path(journal)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _destination() -> Destination:
+    return Destination(
+        repository="s3:safe-bucket/path",
+        backend="s3",
+        credentials={
+            "access_key_id": "access-key",
+            "secret_access_key": "secret-key",
+        },
+    )
+
+
+def _destination_config() -> dict[str, Any]:
+    destination = _destination()
+    return {
+        "repository": destination.repository,
+        "backend": destination.backend,
+        "credentials": destination.credentials,
+    }
+
+
+def _status(reason_code: str) -> DestinationStatus:
+    if reason_code == "repo_missing":
+        return DestinationStatus(
+            reachable=True,
+            repo_exists=False,
+            reason_code="repo_missing",
+            message="backup destination is reachable and needs setup",
+        )
+    if reason_code == "auth_failed":
+        return DestinationStatus(
+            reachable=True,
+            repo_exists=True,
+            reason_code="auth_failed",
+            message="repository password was rejected",
+        )
+    return DestinationStatus(
+        reachable=True,
+        repo_exists=True,
+        reason_code="repo_exists",
+        message="backup repository is reachable",
+    )
+
+
+def test_registry_and_command_tree(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert sol_cli.COMMANDS["backup"].module == "solstone.think.backup_cli"
+    assert sol_cli.COMMANDS["backup"].surface == "service"
+
+    captured: dict[str, object] = {}
+
+    def fake_run_command(module_path: str) -> int:
+        captured["module"] = module_path
+        captured["argv"] = list(sys.argv)
+        return 0
+
+    monkeypatch.setattr(sol_cli, "run_command", fake_run_command)
+    monkeypatch.setattr(sol_cli.setproctitle, "setproctitle", lambda _title: None)
+    monkeypatch.setattr(sys, "argv", ["journal", "backup", "status"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        sol_cli.journal_main()
+
+    assert exc_info.value.code == 0
+    assert captured == {
+        "module": "solstone.think.backup_cli",
+        "argv": ["journal backup", "status"],
+    }
+
+    runner = CliRunner()
+    root_help = runner.invoke(backup_cli.app, ["--help"])
+    assert root_help.exit_code == 0
+    for command in (
+        "enable",
+        "destination",
+        "run",
+        "prune",
+        "status",
+        "recovery-key",
+        "restore",
+        "off",
+    ):
+        assert command in root_help.output
+
+    destination_help = runner.invoke(backup_cli.app, ["destination", "--help"])
+    assert destination_help.exit_code == 0
+    assert "set" in destination_help.output
+    assert "show" in destination_help.output
+
+    recovery_help = runner.invoke(backup_cli.app, ["recovery-key", "--help"])
+    assert recovery_help.exit_code == 0
+    assert "show" in recovery_help.output
+    assert "rotate" in recovery_help.output
+
+
+@pytest.mark.parametrize(
+    ("reason_code", "expected_exit"),
+    [
+        ("repo_missing", 0),
+        ("auth_failed", 1),
+    ],
+)
+def test_destination_set_reads_stdin_and_keeps_secrets_off_argv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reason_code: str,
+    expected_exit: int,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, {})
+    captured: dict[str, Any] = {}
+
+    def fake_set_destination(destination: Destination) -> None:
+        captured["destination"] = destination
+
+    def fake_validate_destination(
+        destination: Destination,
+        password: str,
+        *,
+        restic_path: Path,
+    ) -> DestinationStatus:
+        captured["argv"] = list(sys.argv)
+        captured["password"] = password
+        captured["restic_path"] = restic_path
+        return _status(reason_code)
+
+    monkeypatch.setattr(backup_cli, "set_destination", fake_set_destination)
+    monkeypatch.setattr(backup_cli, "ensure_restic", lambda: Path("/restic"))
+    monkeypatch.setattr(backup_cli, "generate_daily_key", lambda: "probe-secret")
+    monkeypatch.setattr(backup_cli, "validate_destination", fake_validate_destination)
+
+    payload = {
+        "repository": "s3:safe-bucket/path",
+        "backend": "s3",
+        "credentials": {
+            "access_key_id": "AKIASECRET",
+            "secret_access_key": "TOPSECRET",
+        },
+    }
+    result = CliRunner().invoke(
+        backup_cli.app,
+        ["destination", "set"],
+        input=json.dumps(payload),
+    )
+
+    assert result.exit_code == expected_exit
+    destination = captured["destination"]
+    assert destination.credentials == payload["credentials"]
+    assert captured["password"] == "probe-secret"
+    assert captured["restic_path"] == Path("/restic")
+    assert "TOPSECRET" not in " ".join(captured["argv"])
+    assert "AKIASECRET" not in " ".join(captured["argv"])
+    assert "TOPSECRET" not in result.output
+    assert "AKIASECRET" not in result.output
+
+
+def test_status_and_destination_show_are_redacted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    recovery_key = "A" * 64
+    _write_config(
+        tmp_path,
+        {
+            "backup": {
+                "destination": {
+                    "repository": "s3:safe-bucket/path",
+                    "backend": "s3",
+                    "credentials": {
+                        "access_key_id": "ACCESSSECRET",
+                        "secret_access_key": "BACKENDSECRET",
+                    },
+                },
+                "daily_key": "DAILYSECRET",
+                "recovery_key": recovery_key,
+            }
+        },
+    )
+    runner = CliRunner()
+
+    status_result = runner.invoke(backup_cli.app, ["status"])
+    destination_result = runner.invoke(backup_cli.app, ["destination", "show"])
+
+    assert status_result.exit_code == 0
+    assert destination_result.exit_code == 0
+    output = status_result.output + destination_result.output
+    for secret in ("DAILYSECRET", recovery_key, "ACCESSSECRET", "BACKENDSECRET"):
+        assert secret not in output
+    assert "credentials_set" in output
+
+
+def test_enable_accepts_lookalike_recovery_key_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, {"backup": {"destination": _destination_config()}})
+    recovery_key = ("0" * 32) + ("1" * 32)
+    display = format_recovery_key_display(recovery_key)
+    keys = BackupKeys(
+        daily_key="daily-secret",
+        recovery_key=recovery_key,
+        recovery_key_display=display,
+    )
+    calls: dict[str, Any] = {}
+
+    def fake_set_recovery_key_confirmed(confirmed: bool = True) -> None:
+        calls["confirmed"] = confirmed
+
+    def fake_set_enabled(enabled: bool) -> None:
+        calls["enabled"] = enabled
+
+    def fake_init_repository(
+        destination: Destination,
+        *,
+        daily_key: str,
+        recovery_key: str,
+        restic_path: Path,
+    ) -> None:
+        calls["init"] = {
+            "destination": destination,
+            "daily_key": daily_key,
+            "recovery_key": recovery_key,
+            "restic_path": restic_path,
+        }
+
+    monkeypatch.setattr(backup_cli, "generate_and_store_keys", lambda: keys)
+    monkeypatch.setattr(backup_cli, "ensure_restic", lambda: Path("/restic"))
+    monkeypatch.setattr(
+        backup_cli,
+        "set_recovery_key_confirmed",
+        fake_set_recovery_key_confirmed,
+    )
+    monkeypatch.setattr(backup_cli, "set_enabled", fake_set_enabled)
+    monkeypatch.setattr(backup_cli, "init_repository", fake_init_repository)
+
+    entered = display.replace("0", "O").replace("1", "I")
+    result = CliRunner().invoke(backup_cli.app, ["enable"], input=entered)
+
+    assert result.exit_code == 0
+    assert calls["confirmed"] is True
+    assert calls["enabled"] is True
+    assert calls["init"]["daily_key"] == "daily-secret"
+    assert calls["init"]["recovery_key"] == recovery_key
+
+
+def test_off_requires_yes_before_teardown(monkeypatch: pytest.MonkeyPatch) -> None:
+    teardown_backup = Mock(return_value=TeardownResult(status="ok", reason_code=None))
+    monkeypatch.setattr(backup_cli, "teardown_backup", teardown_backup)
+    runner = CliRunner()
+
+    refused = runner.invoke(backup_cli.app, ["off"])
+    accepted = runner.invoke(backup_cli.app, ["off", "--yes"])
+
+    assert refused.exit_code == 1
+    assert "Refusing" in refused.output
+    teardown_backup.assert_called_once_with()
+    assert accepted.exit_code == 0
+    assert "Backup turned off." in accepted.output
+
+
+def test_enable_power_user_skips_ceremony(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(
+        tmp_path,
+        {
+            "backup": {
+                "destination": _destination_config(),
+                "daily_key": "manual-daily",
+                "recovery_key": None,
+            }
+        },
+    )
+    set_enabled = Mock()
+    monkeypatch.setattr(
+        backup_cli,
+        "generate_and_store_keys",
+        lambda: pytest.fail("ceremony should be skipped"),
+    )
+    monkeypatch.setattr(
+        backup_cli,
+        "set_recovery_key_confirmed",
+        lambda *_args, **_kwargs: pytest.fail("confirmation should not be set"),
+    )
+    monkeypatch.setattr(backup_cli, "ensure_restic", lambda: Path("/restic"))
+    monkeypatch.setattr(
+        backup_cli, "validate_destination", lambda *a, **k: _status("ok")
+    )
+    monkeypatch.setattr(backup_cli, "set_enabled", set_enabled)
+
+    result = CliRunner().invoke(backup_cli.app, ["enable"])
+
+    assert result.exit_code == 0
+    assert "Your recovery key" not in result.output
+    set_enabled.assert_called_once_with(True)
+
+
+def test_enable_power_user_requires_existing_repository(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(
+        tmp_path,
+        {
+            "backup": {
+                "destination": _destination_config(),
+                "daily_key": "manual-daily",
+                "recovery_key": None,
+            }
+        },
+    )
+    set_enabled = Mock()
+    monkeypatch.setattr(backup_cli, "ensure_restic", lambda: Path("/restic"))
+    monkeypatch.setattr(
+        backup_cli,
+        "validate_destination",
+        lambda *a, **k: _status("repo_missing"),
+    )
+    monkeypatch.setattr(backup_cli, "set_enabled", set_enabled)
+
+    result = CliRunner().invoke(backup_cli.app, ["enable"])
+
+    assert result.exit_code == 1
+    assert "Repository not found" in result.output
+    set_enabled.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("result", "expected_exit", "expected_text"),
+    [
+        (BackupResult("ok", "snap123", None), 0, "snap123"),
+        (BackupResult("skipped", None, None), 0, "skipped"),
+        (BackupResult("error", None, "auth_failed"), 1, "auth_failed"),
+    ],
+)
+def test_run_maps_engine_status(
+    monkeypatch: pytest.MonkeyPatch,
+    result: BackupResult,
+    expected_exit: int,
+    expected_text: str,
+) -> None:
+    monkeypatch.setattr(backup_cli, "run_backup", lambda: result)
+
+    invoke_result = CliRunner().invoke(backup_cli.app, ["run"])
+
+    assert invoke_result.exit_code == expected_exit
+    assert expected_text in invoke_result.output
+
+
+@pytest.mark.parametrize(
+    ("result", "expected_exit", "expected_text"),
+    [
+        (PruneResult("ok", None), 0, "Retention prune complete."),
+        (PruneResult("skipped", None), 0, "skipped"),
+        (PruneResult("error", "auth_failed"), 1, "auth_failed"),
+    ],
+)
+def test_prune_maps_engine_status(
+    monkeypatch: pytest.MonkeyPatch,
+    result: PruneResult,
+    expected_exit: int,
+    expected_text: str,
+) -> None:
+    monkeypatch.setattr(backup_cli, "run_prune", lambda: result)
+
+    invoke_result = CliRunner().invoke(backup_cli.app, ["prune"])
+
+    assert invoke_result.exit_code == expected_exit
+    assert expected_text in invoke_result.output
+
+
+def test_recovery_key_show_prints_display_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    recovery_key = "A" * 64
+    display = format_recovery_key_display(recovery_key)
+    _write_config(
+        tmp_path,
+        {
+            "backup": {
+                "daily_key": "daily-secret",
+                "recovery_key": recovery_key,
+            }
+        },
+    )
+
+    result = CliRunner().invoke(backup_cli.app, ["recovery-key", "show"])
+
+    assert result.exit_code == 0
+    assert "AAAA AAAA AAAA AAAA" in result.output
+    assert recovery_key not in result.output
+    assert display.replace(" ", "") not in result.output
+
+
+def test_recovery_key_show_errors_without_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, {})
+
+    result = CliRunner().invoke(backup_cli.app, ["recovery-key", "show"])
+
+    assert result.exit_code == 1
+    assert "No recovery key is set." in result.output
+
+
+def test_recovery_key_rotate_prints_display_not_canonical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canonical = "B" * 64
+    display = format_recovery_key_display(canonical)
+    monkeypatch.setattr(
+        backup_cli,
+        "rotate_recovery_key",
+        lambda: RotationResult(
+            status="ok",
+            reason_code=None,
+            recovery_key=canonical,
+            recovery_key_display=display,
+        ),
+    )
+
+    result = CliRunner().invoke(backup_cli.app, ["recovery-key", "rotate"])
+
+    assert result.exit_code == 0
+    assert "BBBB BBBB BBBB BBBB" in result.output
+    assert canonical not in result.output
+
+
+def test_recovery_key_rotate_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        backup_cli,
+        "rotate_recovery_key",
+        lambda: RotationResult(
+            status="error",
+            reason_code="auth_failed",
+            recovery_key=None,
+            recovery_key_display=None,
+        ),
+    )
+
+    result = CliRunner().invoke(backup_cli.app, ["recovery-key", "rotate"])
+
+    assert result.exit_code == 1
+    assert "auth_failed" in result.output
+
+
+def test_restore_reads_secret_from_stdin_and_reports_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_restore_journal(
+        destination: Destination,
+        recovery_key: str,
+    ) -> RestoreResult:
+        captured["destination"] = destination
+        captured["recovery_key"] = recovery_key
+        captured["argv"] = list(sys.argv)
+        return RestoreResult(
+            status="ok",
+            reason_code=None,
+            integrity_ok=False,
+            resumable=True,
+            bytes_restored=123,
+        )
+
+    monkeypatch.setattr(backup_cli, "restore_journal", fake_restore_journal)
+    payload = {
+        "repository": "b2:bucket:path",
+        "backend": "b2",
+        "credentials": {
+            "account_id": "account-id",
+            "account_key": "account-secret",
+        },
+        "recovery_key": "RECOVERYSECRET",
+    }
+
+    result = CliRunner().invoke(
+        backup_cli.app,
+        ["restore"],
+        input=json.dumps(payload),
+    )
+
+    assert result.exit_code == 0
+    assert captured["destination"].backend == "b2"
+    assert captured["recovery_key"] == "RECOVERYSECRET"
+    assert "RECOVERYSECRET" not in " ".join(captured["argv"])
+    assert "RECOVERYSECRET" not in result.output
+    assert "Warning: integrity check did not pass." in result.output
+
+
+def test_restore_maps_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        backup_cli,
+        "restore_journal",
+        lambda *_args: RestoreResult(
+            status="error",
+            reason_code="invalid_key",
+            integrity_ok=False,
+            resumable=False,
+            bytes_restored=None,
+        ),
+    )
+    payload = {
+        "repository": "s3:safe-bucket/path",
+        "backend": "s3",
+        "credentials": {
+            "access_key_id": "access-key",
+            "secret_access_key": "secret-key",
+        },
+        "recovery_key": "RECOVERYSECRET",
+    }
+
+    result = CliRunner().invoke(
+        backup_cli.app,
+        ["restore"],
+        input=json.dumps(payload),
+    )
+
+    assert result.exit_code == 1
+    assert "invalid_key" in result.output
+    assert "RECOVERYSECRET" not in result.output
