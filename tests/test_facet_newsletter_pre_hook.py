@@ -65,6 +65,7 @@ def _install_common(monkeypatch, tmp_path: Path) -> Path:
     monkeypatch.setattr(facet_newsletter, "get_facet_news", _empty_newsletter)
     monkeypatch.setattr(facet_newsletter, "get_facet", _facet_summary)
     monkeypatch.setattr(facet_newsletter, "search_journal", _empty_search)
+    monkeypatch.setattr(facet_newsletter, "load_entities", lambda facet, day=None: [])
     monkeypatch.setattr(
         facet_newsletter,
         "load_activity_records",
@@ -84,6 +85,13 @@ def test_pre_hook_builds_source_packet_when_substance_present(tmp_path, monkeypa
         encoding="utf-8",
     )
 
+    def fake_search(query, limit=10, offset=0, **kwargs):
+        if kwargs.get("agent") == "span":
+            return 1, [_result(agent="span", text="Indexed span context.")]
+        return 0, []
+
+    monkeypatch.setattr(facet_newsletter, "search_journal", fake_search)
+
     packet = facet_newsletter.pre_process({"facet": FACET, "day": DAY})["template_vars"]
 
     assert {
@@ -94,6 +102,9 @@ def test_pre_hook_builds_source_packet_when_substance_present(tmp_path, monkeypa
     } <= set(packet)
     assert "Launch review" in packet["source_packet"]
     assert "Narrative launch context." in packet["source_packet"]
+    assert "Indexed span context." in packet["source_packet"]
+    assert "activity_record_available" in packet["source_counts"]
+    assert "activity_record_included" in packet["source_counts"]
     assert isinstance(json.loads(packet["source_gaps"]), list)
 
 
@@ -147,7 +158,68 @@ def test_pre_hook_search_scoping(tmp_path, monkeypatch):
     entity_calls = [call for call in calls if call.get("agent") == "entity"]
     assert len(entity_calls) == 1
     assert entity_calls[0].get("facet") == FACET
-    assert "day" not in entity_calls[0]
+    assert entity_calls[0].get("day") == DAY
+
+
+def test_pre_hook_includes_attached_detected_and_indexed_entities(
+    tmp_path, monkeypatch
+):
+    _install_common(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        facet_newsletter, "load_activity_records", lambda facet, day: []
+    )
+
+    def fake_load_entities(facet, day=None):
+        assert facet == FACET
+        if day is None:
+            return [
+                {
+                    "id": "alice",
+                    "type": "Person",
+                    "name": "Alice",
+                    "description": "Product lead.",
+                    "last_seen": DAY,
+                }
+            ]
+        assert day == DAY
+        return [
+            {
+                "id": "bob",
+                "type": "Person",
+                "name": "Bob",
+                "description": "Detected collaborator.",
+            }
+        ]
+
+    def fake_search(query, limit=10, offset=0, **kwargs):
+        if kwargs.get("agent") == "flow":
+            return 1, [_result(agent="flow", text="Launch flow context.")]
+        if kwargs.get("agent") == "entity":
+            assert kwargs.get("facet") == FACET
+            assert kwargs.get("day") == DAY
+            return 1, [
+                _result(
+                    agent="entity",
+                    text="Alice appears in launch planning.",
+                    path="entity_search:alice",
+                )
+            ]
+        return 0, []
+
+    monkeypatch.setattr(facet_newsletter, "load_entities", fake_load_entities)
+    monkeypatch.setattr(facet_newsletter, "search_journal", fake_search)
+
+    packet = facet_newsletter.pre_process({"facet": FACET, "day": DAY})["template_vars"]
+
+    assert "facet_entities:attached" in packet["source_packet"]
+    assert "facet_entities:detected" in packet["source_packet"]
+    assert "facet_entities:indexed" in packet["source_packet"]
+    assert "Product lead." in packet["source_packet"]
+    assert "Detected collaborator." in packet["source_packet"]
+    assert "Alice appears in launch planning." in packet["source_packet"]
+    assert "facet_entities:attached_available: 1" in packet["source_counts"]
+    assert "facet_entities:detected_available: 1" in packet["source_counts"]
+    assert "facet_entities:indexed_available: 1" in packet["source_counts"]
 
 
 def test_pre_hook_tier_three_only_skips_no_substantive_sources(tmp_path, monkeypatch):
@@ -252,7 +324,7 @@ def test_pre_hook_caps_and_clips_sources(tmp_path, monkeypatch):
 
 def test_pre_hook_total_budget_drops_lower_tier_items(tmp_path, monkeypatch):
     _install_common(monkeypatch, tmp_path)
-    monkeypatch.setattr(facet_newsletter, "_MAX_PACKET_CHARS", 260)
+    monkeypatch.setattr(facet_newsletter, "_MAX_PACKET_CHARS", 800)
     monkeypatch.setattr(
         facet_newsletter,
         "get_facet",

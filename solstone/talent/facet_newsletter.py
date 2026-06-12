@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from solstone.think.activities import load_activity_records
+from solstone.think.entities.loading import load_entities
 from solstone.think.facets import get_facet_news
 from solstone.think.indexer.journal import search_journal
 from solstone.think.tools.facets import facet_news, get_facet
@@ -23,6 +24,8 @@ logger = logging.getLogger(__name__)
 _MAX_ACTIVITY_RECORDS = 12
 _MAX_NARRATIVES_PER_ACTIVITY = 4
 _INDEX_RESULTS_PER_AGENT = 10
+_MAX_ATTACHED_ENTITY_RECORDS = 12
+_MAX_DETECTED_ENTITY_RECORDS = 12
 _MAX_ENTITY_RESULTS = 12
 _MAX_TITLE_CHARS = 220
 _MAX_DESCRIPTION_CHARS = 700
@@ -35,8 +38,8 @@ _MAX_PRIOR_NEWSLETTER_CHARS = 4000
 _MAX_FACET_SUMMARY_CHARS = 3000
 _MAX_PACKET_CHARS = 56000
 
-_TIER_ONE_INDEX_AGENTS = ("event", "meetings", "decisions", "followups")
-_TIER_TWO_INDEX_AGENTS = ("flow", "span")
+_TIER_ONE_INDEX_AGENTS = ("flow", "span", "event", "meetings")
+_TIER_TWO_INDEX_AGENTS = ("decisions", "followups")
 
 
 def pre_process(config: dict) -> dict | None:
@@ -127,13 +130,15 @@ def _gather_packet(*, facet: str, day: str, journal_root: Path) -> dict[str, Any
         items.extend(_search_day_evidence(agent, facet=facet, day=day, gaps=gaps))
 
     items.extend(_load_facet_metadata(facet, gaps))
+    items.extend(_load_facet_entity_context(facet, day, gaps))
     items.extend(_load_prior_newsletter(facet, day, gaps))
-    items.extend(_search_facet_entities(facet, gaps))
+    items.extend(_search_facet_entities(facet, day, gaps))
 
     included, dropped_gaps = _gather_budgeted_items(items)
     gaps.extend(dropped_gaps)
 
     counts = _gather_source_counts(included)
+    _add_available_source_counts(counts, items)
     substantive_items = sum(1 for item in included if item["tier"] in (1, 2))
     counts["substantive_items"] = substantive_items
 
@@ -285,12 +290,12 @@ def _search_day_evidence(
 
     tier = 1 if agent in _TIER_ONE_INDEX_AGENTS else 2
     source_order = {
-        "event": 2,
-        "meetings": 3,
-        "decisions": 4,
-        "followups": 5,
-        "flow": 0,
-        "span": 1,
+        "flow": 2,
+        "span": 3,
+        "event": 4,
+        "meetings": 5,
+        "decisions": 6,
+        "followups": 7,
     }.get(agent, 9)
     return [
         _gather_index_item(
@@ -397,26 +402,116 @@ def _load_facet_metadata(facet: str, gaps: list[str]) -> list[dict[str, Any]]:
     ]
 
 
-def _search_facet_entities(facet: str, gaps: list[str]) -> list[dict[str, Any]]:
+def _load_facet_entity_context(
+    facet: str, day: str, gaps: list[str]
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+
+    try:
+        attached = load_entities(facet)
+    except Exception as exc:
+        logger.warning(
+            "facet newsletter attached entities failed for %s: %s", facet, exc
+        )
+        gaps.append(f"failed: facet_entities:attached failed for {facet}: {exc}")
+        attached = []
+
+    if not attached:
+        gaps.append(f"missing: facet_entities:attached absent for {facet}")
+    else:
+        if len(attached) > _MAX_ATTACHED_ENTITY_RECORDS:
+            gaps.append(
+                "capped: facet_entities:attached limited to "
+                f"{_MAX_ATTACHED_ENTITY_RECORDS}/{len(attached)} items"
+            )
+            attached = attached[:_MAX_ATTACHED_ENTITY_RECORDS]
+        for index, entity in enumerate(attached):
+            origin = _render_entity_origin(
+                "attached", entity, fallback=f"attached-{index}"
+            )
+            text, clipped = _render_entity_text(entity, origin, "attached", gaps)
+            items.append(
+                _gather_item(
+                    source_class="facet_entities",
+                    origin=origin,
+                    tier=3,
+                    text=text,
+                    clipped=clipped,
+                    agent="attached",
+                    source_label="facet_entities:attached",
+                    order_key=(2, 0, index, origin),
+                )
+            )
+
+    try:
+        detected = load_entities(facet, day)
+    except Exception as exc:
+        logger.warning(
+            "facet newsletter detected entities failed for %s %s: %s",
+            facet,
+            day,
+            exc,
+        )
+        gaps.append(f"failed: facet_entities:detected failed for {facet} {day}: {exc}")
+        detected = []
+
+    if not detected:
+        gaps.append(f"missing: facet_entities:detected absent for {facet} {day}")
+    else:
+        if len(detected) > _MAX_DETECTED_ENTITY_RECORDS:
+            gaps.append(
+                "capped: facet_entities:detected limited to "
+                f"{_MAX_DETECTED_ENTITY_RECORDS}/{len(detected)} items"
+            )
+            detected = detected[:_MAX_DETECTED_ENTITY_RECORDS]
+        for index, entity in enumerate(detected):
+            origin = _render_entity_origin(
+                "detected", entity, fallback=f"detected-{index}"
+            )
+            text, clipped = _render_entity_text(entity, origin, "detected", gaps)
+            items.append(
+                _gather_item(
+                    source_class="facet_entities",
+                    origin=origin,
+                    tier=3,
+                    text=text,
+                    clipped=clipped,
+                    agent="detected",
+                    source_label="facet_entities:detected",
+                    order_key=(2, 1, index, origin),
+                )
+            )
+
+    return items
+
+
+def _search_facet_entities(
+    facet: str, day: str, gaps: list[str]
+) -> list[dict[str, Any]]:
     try:
         total, results = search_journal(
             "",
             limit=_MAX_ENTITY_RESULTS,
             offset=0,
+            day=day,
             facet=facet,
             agent="entity",
         )
     except Exception as exc:
-        logger.warning("facet newsletter entity search failed for %s: %s", facet, exc)
-        gaps.append(f"failed: facet_entities failed for {facet}: {exc}")
+        logger.warning(
+            "facet newsletter entity search failed for %s %s: %s", facet, day, exc
+        )
+        gaps.append(f"failed: facet_entities:indexed failed for {facet} {day}: {exc}")
         return []
 
     if not results:
-        gaps.append(f"missing: facet_entities absent for {facet}")
+        gaps.append(f"missing: facet_entities:indexed absent for {facet} {day}")
         return []
 
     if total > len(results):
-        gaps.append(f"capped: facet_entities limited to {len(results)}/{total} items")
+        gaps.append(
+            f"capped: facet_entities:indexed limited to {len(results)}/{total} items"
+        )
 
     return [
         _gather_index_item(
@@ -426,7 +521,8 @@ def _search_facet_entities(facet: str, gaps: list[str]) -> list[dict[str, Any]]:
             tier=3,
             text_limit=_MAX_ENTITY_TEXT_CHARS,
             gaps=gaps,
-            order_key=(2, index, _render_result_path(result), result.get("id", "")),
+            source_label="facet_entities:indexed",
+            order_key=(2, 2, index, _render_result_path(result), result.get("id", "")),
         )
         for index, result in enumerate(results)
     ]
@@ -441,6 +537,7 @@ def _gather_index_item(
     text_limit: int,
     gaps: list[str],
     order_key: tuple,
+    source_label: str | None = None,
 ) -> dict[str, Any]:
     path = _render_result_path(result)
     origin = f"{result.get('id', path)} ({path}; agent={agent})"
@@ -462,6 +559,7 @@ def _gather_index_item(
         agent=agent,
         path=path,
         result_id=str(result.get("id") or ""),
+        source_label=source_label,
         order_key=order_key,
     )
 
@@ -477,9 +575,11 @@ def _gather_item(
     agent: str | None = None,
     path: str | None = None,
     result_id: str | None = None,
+    source_label: str | None = None,
 ) -> dict[str, Any]:
     return {
         "source_class": source_class,
+        "source_label": source_label,
         "agent": agent,
         "origin": origin,
         "tier": tier,
@@ -497,12 +597,9 @@ def _gather_budgeted_items(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     included: list[dict[str, Any]] = []
     gaps: list[str] = []
-    remaining = _MAX_PACKET_CHARS
     for item in sorted(items, key=lambda row: (row["tier"], row["order_key"])):
-        length = int(item.get("length") or 0)
-        if length <= remaining:
+        if len(_render_packet([*included, item])) <= _MAX_PACKET_CHARS:
             included.append(item)
-            remaining -= length
             continue
         gaps.append(
             "dropped: "
@@ -528,7 +625,9 @@ def _gather_source_counts(items: list[dict[str, Any]]) -> dict[str, int]:
         "index_result:span": 0,
         "prior_newsletter": 0,
         "facet_metadata": 0,
-        "facet_entities": 0,
+        "facet_entities:attached": 0,
+        "facet_entities:detected": 0,
+        "facet_entities:indexed": 0,
     }
     for item in items:
         tier_key = f"tier{item['tier']}_included"
@@ -536,6 +635,21 @@ def _gather_source_counts(items: list[dict[str, Any]]) -> dict[str, int]:
         label = _render_source_label(item)
         counts[label] = counts.get(label, 0) + 1
     return counts
+
+
+def _add_available_source_counts(
+    counts: dict[str, int], available_items: list[dict[str, Any]]
+) -> None:
+    available = _gather_source_counts(available_items)
+    counts["total_available"] = available["total_included"]
+    counts["tier1_available"] = available["tier1_included"]
+    counts["tier2_available"] = available["tier2_included"]
+    counts["tier3_available"] = available["tier3_included"]
+    for key, value in available.items():
+        if key == "total_included" or key.startswith("tier"):
+            continue
+        counts[f"{key}_available"] = value
+        counts[f"{key}_included"] = counts.get(key, 0)
 
 
 def _render_activity_order(record: dict[str, Any]) -> tuple[int, str, str]:
@@ -652,11 +766,61 @@ def _render_result_path(result: dict[str, Any]) -> str:
 
 
 def _render_source_label(item: dict[str, Any]) -> str:
+    source_label = item.get("source_label")
+    if source_label:
+        return str(source_label)
     source_class = str(item.get("source_class") or "")
     agent = item.get("agent")
     if source_class == "index_result" and agent:
         return f"index_result:{agent}"
+    if source_class == "facet_entities" and agent:
+        entity_kind = "indexed" if agent == "entity" else str(agent)
+        return f"facet_entities:{entity_kind}"
     return source_class
+
+
+def _render_entity_origin(kind: str, entity: dict[str, Any], *, fallback: str) -> str:
+    name = str(entity.get("name") or entity.get("id") or fallback).strip()
+    entity_id = str(entity.get("id") or "").strip()
+    if entity_id and entity_id != name:
+        return f"{kind}:{name} ({entity_id})"
+    return f"{kind}:{name}"
+
+
+def _render_entity_text(
+    entity: dict[str, Any], origin: str, kind: str, gaps: list[str]
+) -> tuple[str, bool]:
+    payload = {
+        key: value
+        for key, value in entity.items()
+        if value not in (None, "", [], {})
+        and key
+        in {
+            "id",
+            "type",
+            "name",
+            "description",
+            "aka",
+            "relationship",
+            "attached_at",
+            "updated_at",
+            "last_seen",
+            "last_active_day",
+            "count",
+        }
+    }
+    text = json.dumps(
+        payload or entity, default=str, ensure_ascii=False, sort_keys=True
+    )
+    return _render_clipped_text(
+        text,
+        _MAX_ENTITY_TEXT_CHARS,
+        gaps,
+        "facet_entities",
+        origin,
+        "json",
+        agent=kind,
+    )
 
 
 def _render_packet(items: list[dict[str, Any]]) -> str:
