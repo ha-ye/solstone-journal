@@ -260,10 +260,12 @@ def test_historical_events_without_thinking_replay_unchanged(tmp_path, monkeypat
     state = reduce_chat_state("20260420")
     assert state["latest_sol_message"] is not None
     assert "thinking" not in state["latest_sol_message"]
+    assert state["latest_sol_message"]["offer"] is None
 
     import solstone.convey.chat_stream as chat_stream
 
     assert "thinking" not in chat_stream._VALID_KINDS["sol_message"]
+    assert "offer" not in chat_stream._VALID_KINDS["sol_message"]
     assert "thinking" not in chat_stream._VALID_KINDS["talent_finished"]
 
 
@@ -483,6 +485,7 @@ def test_reduce_chat_state_extracts_latest_sol_and_active_talents(
         "notes": "planning",
         "requested_target": "exec",
         "requested_task": "compare drafts",
+        "offer": None,
     }
     assert reduced["active_talents"] == [
         {
@@ -502,6 +505,40 @@ def test_reduce_chat_state_extracts_latest_sol_and_active_talents(
         }
     ]
     assert reduced["queue_depth"] == 0
+
+
+def test_reduce_chat_state_includes_offer_and_clears_on_later_sol_message(
+    tmp_path, monkeypatch
+):
+    _setup_journal(tmp_path, monkeypatch)
+    start = _ms(2026, 4, 20, 12, 0, 0)
+
+    append_chat_event(
+        "sol_message",
+        ts=start,
+        use_id="chat-offer",
+        text="I can bring in solstone support.",
+        notes="offer support",
+        requested_target=None,
+        requested_task=None,
+        offer={"kind": "support"},
+    )
+
+    reduced = reduce_chat_state("20260420")
+    assert reduced["latest_sol_message"]["offer"] == {"kind": "support"}
+
+    append_chat_event(
+        "sol_message",
+        ts=start + 1_000,
+        use_id="chat-answer",
+        text="done",
+        notes="answered",
+        requested_target=None,
+        requested_task=None,
+    )
+
+    reduced = reduce_chat_state("20260420")
+    assert reduced["latest_sol_message"]["offer"] is None
 
 
 def test_reduce_chat_state_returns_last_queue_depth(tmp_path, monkeypatch):

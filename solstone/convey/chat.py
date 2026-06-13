@@ -437,6 +437,7 @@ def _on_cortex_finish(message: dict[str, Any]) -> None:
                     if parsed["talent_request"]
                     else None
                 )
+                offer = parsed["offer"]
                 trigger = _current_chat_state.get("trigger") or {}
                 trigger_type = trigger.get("type")
                 if trigger_type in {"talent_finished", "talent_errored"}:
@@ -463,6 +464,8 @@ def _on_cortex_finish(message: dict[str, Any]) -> None:
                 }
                 if thinking is not None:
                     sol_message_fields["thinking"] = thinking
+                if offer is not None:
+                    sol_message_fields["offer"] = offer
                 append_chat_event(
                     "sol_message",
                     **sol_message_fields,
@@ -1256,9 +1259,23 @@ def _parse_chat_result(result: Any, use_id: str | None = None) -> dict[str, Any]
     if message is not None and not isinstance(message, str):
         raise ValueError("chat result message must be a string or null")
 
+    offer = payload.get("offer")
+    if offer is not None:
+        if not isinstance(offer, dict):
+            raise ValueError("chat result offer must be an object or null")
+        offer_kind = offer.get("kind")
+        if offer_kind not in {"support"}:
+            raise ValueError("chat result offer.kind must be support")
+        offer = {"kind": offer_kind}
+
     talent_request = payload.get("talent_request")
     if talent_request is None:
-        return {"message": message, "notes": payload["notes"], "talent_request": None}
+        return {
+            "message": message,
+            "notes": payload["notes"],
+            "talent_request": None,
+            "offer": offer,
+        }
     if not isinstance(talent_request, dict):
         raise ValueError("chat talent_request must be an object or null")
     target = talent_request.get("target")
@@ -1310,14 +1327,25 @@ def _parse_chat_result(result: Any, use_id: str | None = None) -> dict[str, Any]
         context = raw_context
     else:
         raise ValueError("chat talent_request.context must be a JSON object string")
+    normalized_talent_request = {
+        "target": target,
+        "task": task,
+        "context": context,
+    }
+    if offer is not None:
+        logger.info(
+            "chat parser dropped talent_request because offer was also present "
+            "use_id=%s target=%s",
+            use_id,
+            target,
+        )
+        normalized_talent_request = None
+
     return {
         "message": message,
         "notes": payload["notes"],
-        "talent_request": {
-            "target": target,
-            "task": task,
-            "context": context,
-        },
+        "talent_request": normalized_talent_request,
+        "offer": offer,
     }
 
 

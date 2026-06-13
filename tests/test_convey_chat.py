@@ -206,6 +206,34 @@ def test_cortex_thinking_reaches_talent_finished(chat_client, monkeypatch):
     }
 
 
+def test_cortex_offer_reaches_sol_message_without_spawning_talent(
+    chat_client, monkeypatch
+):
+    import solstone.convey.chat as chat
+
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_cortex_event", lambda *_args, **_kwargs: None
+    )
+    _set_current_chat(chat, "logical-chat", "raw-chat")
+
+    chat._on_cortex_finish(
+        {
+            "use_id": "raw-chat",
+            "result": {
+                "message": "I can bring in solstone support.",
+                "notes": "offer support",
+                "talent_request": None,
+                "offer": {"kind": "support"},
+            },
+        }
+    )
+
+    events = read_chat_events(date.today().strftime("%Y%m%d"))
+    sol_message = next(event for event in events if event["kind"] == "sol_message")
+    assert sol_message["offer"] == {"kind": "support"}
+    assert [event for event in events if event["kind"] == "talent_spawned"] == []
+
+
 def test_sol_message_omits_thinking_when_not_emitted(chat_client, monkeypatch, caplog):
     import solstone.convey.chat as chat
 
@@ -232,6 +260,35 @@ def test_sol_message_omits_thinking_when_not_emitted(chat_client, monkeypatch, c
         if event["kind"] == "sol_message"
     )
     assert "thinking" not in sol_message
+    assert caplog.records == []
+
+
+def test_sol_message_omits_offer_when_not_emitted(chat_client, monkeypatch, caplog):
+    import solstone.convey.chat as chat
+
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_cortex_event", lambda *_args, **_kwargs: None
+    )
+    _set_current_chat(chat, "logical-chat", "raw-chat")
+
+    with caplog.at_level(logging.WARNING, logger="solstone.convey.chat"):
+        chat._on_cortex_finish(
+            {
+                "use_id": "raw-chat",
+                "result": {
+                    "message": "done",
+                    "notes": "ok",
+                    "talent_request": None,
+                },
+            }
+        )
+
+    sol_message = next(
+        event
+        for event in read_chat_events(date.today().strftime("%Y%m%d"))
+        if event["kind"] == "sol_message"
+    )
+    assert "offer" not in sol_message
     assert caplog.records == []
 
 

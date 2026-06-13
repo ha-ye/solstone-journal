@@ -2026,7 +2026,96 @@ def test_parse_chat_result_accepts_null_talent_request():
         {"message": "hi", "notes": "n", "talent_request": None}
     )
 
-    assert parsed == {"message": "hi", "notes": "n", "talent_request": None}
+    assert parsed == {
+        "message": "hi",
+        "notes": "n",
+        "talent_request": None,
+        "offer": None,
+    }
+
+
+def test_parse_chat_result_accepts_support_offer():
+    import solstone.convey.chat as chat
+
+    parsed = chat._parse_chat_result(
+        {
+            "message": "I can bring in solstone support.",
+            "notes": "offer support",
+            "talent_request": None,
+            "offer": {"kind": "support"},
+        }
+    )
+
+    assert parsed["offer"] == {"kind": "support"}
+    assert parsed["talent_request"] is None
+
+
+@pytest.mark.parametrize("raw_offer", (None, "absent"))
+def test_parse_chat_result_absent_or_null_offer_returns_none(raw_offer):
+    import solstone.convey.chat as chat
+
+    payload = {"message": "hi", "notes": "n", "talent_request": None}
+    if raw_offer is None:
+        payload["offer"] = None
+
+    parsed = chat._parse_chat_result(payload)
+
+    assert parsed["offer"] is None
+
+
+def test_parse_chat_result_rejects_non_dict_offer():
+    import solstone.convey.chat as chat
+
+    with pytest.raises(ValueError, match="chat result offer must be an object or null"):
+        chat._parse_chat_result(
+            {
+                "message": "I can bring in solstone support.",
+                "notes": "offer support",
+                "talent_request": None,
+                "offer": "support",
+            }
+        )
+
+
+def test_parse_chat_result_rejects_unknown_offer_kind():
+    import solstone.convey.chat as chat
+
+    with pytest.raises(ValueError, match="chat result offer.kind must be support"):
+        chat._parse_chat_result(
+            {
+                "message": "I can bring in solstone support.",
+                "notes": "offer support",
+                "talent_request": None,
+                "offer": {"kind": "billing"},
+            }
+        )
+
+
+def test_parse_chat_result_offer_wins_over_talent_request(caplog):
+    import solstone.convey.chat as chat
+
+    with caplog.at_level(logging.INFO, logger="solstone.convey.chat"):
+        parsed = chat._parse_chat_result(
+            {
+                "message": "I can bring in solstone support.",
+                "notes": "offer support",
+                "talent_request": {
+                    "target": "support",
+                    "task": "File a bug report",
+                    "context": None,
+                },
+                "offer": {"kind": "support"},
+            },
+            use_id="test-use-id",
+        )
+
+    assert parsed["offer"] == {"kind": "support"}
+    assert parsed["talent_request"] is None
+    assert any(
+        "chat parser dropped talent_request because offer was also present "
+        "use_id=test-use-id target=support" == record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_parse_chat_result_rejects_unknown_target():
