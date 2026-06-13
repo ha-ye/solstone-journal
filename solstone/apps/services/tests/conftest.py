@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from solstone.apps.services import routes as services_routes
+from solstone.think.services import operations
 
 
 @dataclass
@@ -25,9 +25,9 @@ class Env:
 
 @pytest.fixture(autouse=True)
 def clear_services_registry():
-    services_routes._clear_registry()
+    operations.clear_registry()
     yield
-    services_routes._clear_registry()
+    operations.clear_registry()
 
 
 @pytest.fixture

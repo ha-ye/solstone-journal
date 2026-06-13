@@ -16,6 +16,7 @@ from pathlib import Path
 from solstone.apps.services import routes as services_routes
 from solstone.apps.services.copy import services_copy_values
 from solstone.think.journal_config import write_journal_config
+from solstone.think.services import operations, scout_handoff
 
 
 def _read_config(env):
@@ -179,7 +180,7 @@ def test_spb_mutations_make_no_back_channel_call_and_write_nothing(
         raise AssertionError("spb reached the back-channel")
 
     monkeypatch.setattr(services_routes, "run_spl_handoff", _raise)
-    monkeypatch.setattr(services_routes, "run_scout_handoff", _raise)
+    monkeypatch.setattr(scout_handoff, "run_scout_handoff", _raise)
     monkeypatch.setattr(services_routes.spl, "disable_spl", _raise)
 
     before = (env.journal / "config" / "journal.json").read_bytes()
@@ -281,7 +282,7 @@ def test_same_service_concurrent_operation_returns_service_busy(
     def slow_flow(**_kwargs):
         started.set()
         release.wait(2)
-        return services_routes.ScoutOpResult(
+        return operations.HandoffResult(
             phase="enabled",
             guidance=None,
             retryable=False,
@@ -289,7 +290,7 @@ def test_same_service_concurrent_operation_returns_service_busy(
             portal_url=None,
         )
 
-    monkeypatch.setattr(services_routes, "run_scout_handoff", slow_flow)
+    monkeypatch.setattr(scout_handoff, "run_scout_handoff", slow_flow)
 
     first = env.client.post("/app/services/scout/enable")
     wait_until_helper(started.is_set)
@@ -314,14 +315,14 @@ def test_different_services_can_run_concurrently(
     def scout_flow(**_kwargs):
         scout_started.set()
         release.wait(2)
-        return services_routes.ScoutOpResult("pending", None, False, True, None)
+        return operations.HandoffResult("pending", None, False, True, None)
 
     def spl_flow(**_kwargs):
         spl_started.set()
         release.wait(2)
-        return services_routes.SplOpResult("revoked", None, False, True, None)
+        return operations.HandoffResult("revoked", None, False, True, None)
 
-    monkeypatch.setattr(services_routes, "run_scout_handoff", scout_flow)
+    monkeypatch.setattr(scout_handoff, "run_scout_handoff", scout_flow)
     monkeypatch.setattr(services_routes, "run_spl_handoff", spl_flow)
 
     scout_response = env.client.post("/app/services/scout/enable")
@@ -344,7 +345,7 @@ def test_scout_refresh_failure_without_state_write(
     before = (env.journal / "config" / "journal.json").read_bytes()
 
     def failed_flow(**_kwargs):
-        return services_routes.ScoutOpResult(
+        return operations.HandoffResult(
             phase="error",
             guidance="try again",
             retryable=True,
@@ -352,7 +353,7 @@ def test_scout_refresh_failure_without_state_write(
             portal_url=None,
         )
 
-    monkeypatch.setattr(services_routes, "run_scout_handoff", failed_flow)
+    monkeypatch.setattr(scout_handoff, "run_scout_handoff", failed_flow)
 
     response = env.client.post("/app/services/scout/refresh")
     assert response.status_code == 202

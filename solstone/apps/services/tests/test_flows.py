@@ -12,7 +12,8 @@ import pytest
 from solstone.apps.services import routes as services_routes
 from solstone.think.link.paths import load_service_token, load_totp_secret
 from solstone.think.link.window import read_posture
-from solstone.think.services import outcomes
+from solstone.think.services import outcomes, scout_handoff
+from solstone.think.services import status as service_status
 from solstone.think.services.portal_client import PollOutcome
 
 
@@ -33,11 +34,11 @@ def _read_config(journal):
 def test_run_scout_handoff_maps_approved_to_enabled(services_env, monkeypatch):
     services_env()
     monkeypatch.setattr(
-        services_routes.portal_client, "portal_base_url", lambda: "http://portal.test"
+        scout_handoff.portal_client, "portal_base_url", lambda: "http://portal.test"
     )
-    monkeypatch.setattr(services_routes.portal_client, "mint_nonce", lambda: "NONCE")
+    monkeypatch.setattr(scout_handoff.portal_client, "mint_nonce", lambda: "NONCE")
 
-    result = services_routes.run_scout_handoff(
+    result = scout_handoff.run_scout_handoff(
         refresh=False,
         open_browser=lambda _url: True,
         poll_once=lambda *_args, **_kwargs: PollOutcome(
@@ -50,7 +51,7 @@ def test_run_scout_handoff_maps_approved_to_enabled(services_env, monkeypatch):
     assert result.retryable is False
     assert result.browser_open_succeeded is True
     assert result.portal_url is None
-    assert services_routes.service_status.scout_status()["state"] == "enabled"
+    assert service_status.scout_status()["state"] == "enabled"
 
 
 def test_browser_open_failure_is_surfaced_but_flow_continues_to_poll_terminal(
@@ -59,11 +60,11 @@ def test_browser_open_failure_is_surfaced_but_flow_continues_to_poll_terminal(
 ):
     services_env()
     monkeypatch.setattr(
-        services_routes.portal_client, "portal_base_url", lambda: "http://portal.test"
+        scout_handoff.portal_client, "portal_base_url", lambda: "http://portal.test"
     )
-    monkeypatch.setattr(services_routes.portal_client, "mint_nonce", lambda: "NONCE")
+    monkeypatch.setattr(scout_handoff.portal_client, "mint_nonce", lambda: "NONCE")
 
-    result = services_routes.run_scout_handoff(
+    result = scout_handoff.run_scout_handoff(
         refresh=False,
         open_browser=lambda _url: False,
         poll_once=lambda *_args, **_kwargs: PollOutcome(
@@ -75,17 +76,17 @@ def test_browser_open_failure_is_surfaced_but_flow_continues_to_poll_terminal(
     assert result.phase == "enabled"
     assert result.browser_open_succeeded is False
     assert result.portal_url == "http://portal.test/enable/scout?nonce=NONCE"
-    assert services_routes.service_status.scout_status()["state"] == "enabled"
+    assert service_status.scout_status()["state"] == "enabled"
 
 
 def test_run_scout_handoff_maps_pending_and_revoked(services_env, monkeypatch):
     services_env()
     monkeypatch.setattr(
-        services_routes.portal_client, "portal_base_url", lambda: "http://portal.test"
+        scout_handoff.portal_client, "portal_base_url", lambda: "http://portal.test"
     )
-    monkeypatch.setattr(services_routes.portal_client, "mint_nonce", lambda: "NONCE")
+    monkeypatch.setattr(scout_handoff.portal_client, "mint_nonce", lambda: "NONCE")
 
-    pending = services_routes.run_scout_handoff(
+    pending = scout_handoff.run_scout_handoff(
         refresh=True,
         open_browser=lambda _url: True,
         poll_once=lambda *_args, **_kwargs: PollOutcome(
@@ -97,7 +98,7 @@ def test_run_scout_handoff_maps_pending_and_revoked(services_env, monkeypatch):
             },
         ),
     )
-    revoked = services_routes.run_scout_handoff(
+    revoked = scout_handoff.run_scout_handoff(
         refresh=True,
         open_browser=lambda _url: True,
         poll_once=lambda *_args, **_kwargs: PollOutcome(
@@ -130,11 +131,11 @@ def test_run_scout_handoff_maps_error_outcomes(
     before_env = services_env()
     before = (before_env.journal / "config" / "journal.json").read_bytes()
     monkeypatch.setattr(
-        services_routes.portal_client, "portal_base_url", lambda: "http://portal.test"
+        scout_handoff.portal_client, "portal_base_url", lambda: "http://portal.test"
     )
-    monkeypatch.setattr(services_routes.portal_client, "mint_nonce", lambda: "NONCE")
+    monkeypatch.setattr(scout_handoff.portal_client, "mint_nonce", lambda: "NONCE")
 
-    result = services_routes.run_scout_handoff(
+    result = scout_handoff.run_scout_handoff(
         refresh=True,
         open_browser=lambda _url: True,
         poll_once=lambda *_args, **_kwargs: PollOutcome(kind="failed", reason=reason),
@@ -157,11 +158,11 @@ def test_run_scout_handoff_timeout_retryable_without_state_write(
         return now["value"]
 
     monkeypatch.setattr(
-        services_routes.portal_client, "portal_base_url", lambda: "http://portal.test"
+        scout_handoff.portal_client, "portal_base_url", lambda: "http://portal.test"
     )
-    monkeypatch.setattr(services_routes.portal_client, "mint_nonce", lambda: "NONCE")
+    monkeypatch.setattr(scout_handoff.portal_client, "mint_nonce", lambda: "NONCE")
 
-    result = services_routes.run_scout_handoff(
+    result = scout_handoff.run_scout_handoff(
         refresh=True,
         open_browser=lambda _url: True,
         poll_once=lambda *_args, **_kwargs: PollOutcome(kind="continue"),
