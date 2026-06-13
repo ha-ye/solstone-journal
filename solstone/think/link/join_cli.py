@@ -191,7 +191,11 @@ def _parse_pair_request(code: str, home: str | None) -> PairRequest:
         return _parse_pair_link(code, home)
     canonical_code = normalize_manual_code(code)
     if not MANUAL_CODE_RE.fullmatch(canonical_code):
-        raise ValueError("Invalid pair code")
+        raise ValueError(
+            f"Pair code did not match an accepted form. Use a pair-link like "
+            f"https://{PAIR_LINK_HOST}{PAIR_LINK_PATH}#... or an 8-character manual "
+            f"code with --home."
+        )
     if not home:
         raise ValueError("--home is required for manual pair codes")
     base_url = home.rstrip("/")
@@ -202,14 +206,24 @@ def _parse_pair_request(code: str, home: str | None) -> PairRequest:
 
 
 def _parse_pair_link(pair_link: str, home: str | None) -> PairRequest:
+    from solstone.apps.link.copy import PAIR_LINK_HOST, PAIR_LINK_PATH
+
     parsed = urllib.parse.urlparse(pair_link)
     fragment = parsed.fragment
     try:
         blob = crockford_decode(fragment)
     except ValueError as exc:
-        raise ValueError("Invalid pair link") from exc
+        raise ValueError(
+            f"Malformed pair-link. Use the full "
+            f"https://{PAIR_LINK_HOST}{PAIR_LINK_PATH}#... value from the pairing "
+            f"output."
+        ) from exc
     if len(blob) != 40 or blob[0] != 0x04 or blob[1] != 0x01:
-        raise ValueError("Invalid pair link")
+        raise ValueError(
+            f"Malformed pair-link. Use the full "
+            f"https://{PAIR_LINK_HOST}{PAIR_LINK_PATH}#... value from the pairing "
+            f"output."
+        )
     ipv4 = str(ipaddress.IPv4Address(blob[2:6]))
     port = int.from_bytes(blob[6:8], "big")
     nonce_hex = blob[8:24].hex()
@@ -314,6 +328,8 @@ def _post_pair(url: str, body: dict[str, str]) -> PairResponse:
     try:
         with urllib.request.urlopen(request, timeout=30, context=context) as response:
             status = int(getattr(response, "status", response.getcode()))
+            landing_url = response.geturl()
+            content_type = response.headers.get_content_type()
             raw_body = response.read()
     except urllib.error.HTTPError as exc:
         excerpt = exc.read().decode("utf-8", errors="replace")[:500]
@@ -325,6 +341,11 @@ def _post_pair(url: str, body: dict[str, str]) -> PairResponse:
     if status != 200:
         excerpt = raw_body.decode("utf-8", errors="replace")[:500]
         raise ValueError(f"Pair request failed with HTTP {status}: {excerpt}")
+    if content_type != "application/json":
+        raise ValueError(
+            f"Pair request reached an auth bounce or non-pairing endpoint: "
+            f"attempted {url}; landed at {landing_url}; content-type {content_type}."
+        )
     try:
         payload = json.loads(raw_body.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:

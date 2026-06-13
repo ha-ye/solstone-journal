@@ -16,10 +16,27 @@ from solstone.think.link import join_cli
 from solstone.think.link.ca import generate_ca
 
 
+class _FakeHeaders:
+    def __init__(self, content_type: str) -> None:
+        self._content_type = content_type
+
+    def get_content_type(self) -> str:
+        return self._content_type
+
+
 class _FakeResponse:
-    def __init__(self, body: bytes, *, status: int = 200) -> None:
+    def __init__(
+        self,
+        body: bytes,
+        *,
+        status: int = 200,
+        url: str = "",
+        content_type: str = "application/json",
+    ) -> None:
         self._body = body
         self.status = status
+        self._url = url
+        self.headers = _FakeHeaders(content_type)
 
     def __enter__(self) -> _FakeResponse:
         return self
@@ -32,6 +49,9 @@ class _FakeResponse:
 
     def getcode(self) -> int:
         return self.status
+
+    def geturl(self) -> str:
+        return self._url
 
 
 def _args() -> argparse.Namespace:
@@ -76,7 +96,7 @@ def _mock_urlopen(
                     json.loads(request.data.decode("utf-8")),
                 )
             )
-        return _FakeResponse(body, status=status)
+        return _FakeResponse(body, status=status, url=request.full_url)
 
     monkeypatch.setattr(join_cli.urllib.request, "urlopen", fake_urlopen)
 
