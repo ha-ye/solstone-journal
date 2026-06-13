@@ -28,5 +28,5 @@ def test_head_scripts_all_deferred():
 
     script_tags = re.findall(r"<script src=[^>]+>", text)
 
-    assert len(script_tags) == 12
+    assert len(script_tags) == 15
     assert all("defer" in tag or "async" in tag for tag in script_tags)
