@@ -15,7 +15,7 @@ SERVICES_COMING_SOON_LABEL = "coming soon"
 
 SCOUT_DESCRIPTION = "join solstone scout — we'll set you up with a Gemini key on your machine and bring you into the alpha cohort"
 SCOUT_MANAGE_AFFORDANCE = "manage on the web →"
-SPL_DESCRIPTION = "reach your journal from anywhere, privately"
+SPL_DESCRIPTION = "reach your journal from your other devices, privately"
 SPL_MANAGE_AFFORDANCE = "manage in link →"
 SPB_DESCRIPTION = (
     "keep an encrypted copy of your journal somewhere safe — only you can read it"
@@ -24,6 +24,11 @@ SPB_MANAGE_AFFORDANCE = "manage in backup →"
 SPN_DESCRIPTION = (
     "let sol reach you on your other devices when there's something worth a look"
 )
+SCOUT_LABEL = "solstone scout"
+SPL_LABEL = "solstone private link"
+SPB_LABEL = "solstone backup"
+SPN_LABEL = "solstone private notifications"
+SERVICES_PROMISE = "your journal is always private, only yours."
 
 STATE_LABELS = {
     "disabled": "off",
@@ -58,12 +63,13 @@ def services_copy_payload() -> dict[str, Any]:
         "heading": SERVICES_HEADING,
         "umbrella": SERVICES_UMBRELLA,
         "coming_soon_label": SERVICES_COMING_SOON_LABEL,
+        "promise": SERVICES_PROMISE,
         "state_labels": dict(STATE_LABELS),
         "action_labels": dict(ACTION_LABELS),
         "services": [
             {
                 "id": "scout",
-                "label": "scout",
+                "label": SCOUT_LABEL,
                 "description": SCOUT_DESCRIPTION,
                 "manage_affordance": SCOUT_MANAGE_AFFORDANCE,
                 "manage_href": portal_client.portal_base_url(),
@@ -71,7 +77,7 @@ def services_copy_payload() -> dict[str, Any]:
             },
             {
                 "id": "spl",
-                "label": "spl",
+                "label": SPL_LABEL,
                 "description": SPL_DESCRIPTION,
                 "manage_affordance": SPL_MANAGE_AFFORDANCE,
                 "manage_href": "/app/link",
@@ -79,7 +85,7 @@ def services_copy_payload() -> dict[str, Any]:
             },
             {
                 "id": "spb",
-                "label": "spb",
+                "label": SPB_LABEL,
                 "description": SPB_DESCRIPTION,
                 "manage_affordance": SPB_MANAGE_AFFORDANCE,
                 "manage_href": "/app/backup",
@@ -87,7 +93,7 @@ def services_copy_payload() -> dict[str, Any]:
             },
             {
                 "id": "spn",
-                "label": "spn",
+                "label": SPN_LABEL,
                 "description": SPN_DESCRIPTION,
                 "manage_affordance": "",
                 "manage_href": None,

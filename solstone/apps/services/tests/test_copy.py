@@ -20,13 +20,21 @@ def test_services_copy_verbatim_strings():
         payload["umbrella"]
         == "solstone runs on your machine. these services are optional — turn them on when they help, turn them off whenever you want. nothing here is required to use solstone."
     )
+    assert payload["promise"] == "your journal is always private, only yours."
     rows = {row["id"]: row for row in payload["services"]}
+    assert rows["scout"]["label"] == "solstone scout"
+    assert rows["spl"]["label"] == "solstone private link"
+    assert rows["spb"]["label"] == "solstone backup"
+    assert rows["spn"]["label"] == "solstone private notifications"
     assert (
         rows["scout"]["description"]
         == "join solstone scout — we'll set you up with a Gemini key on your machine and bring you into the alpha cohort"
     )
     assert rows["scout"]["manage_affordance"] == "manage on the web →"
-    assert rows["spl"]["description"] == "reach your journal from anywhere, privately"
+    assert (
+        rows["spl"]["description"]
+        == "reach your journal from your other devices, privately"
+    )
     assert rows["spl"]["manage_affordance"] == "manage in link →"
     assert (
         rows["spb"]["description"]
@@ -97,7 +105,13 @@ def test_all_copy_constants_referenced_by_render_surface():
 
     missing = [
         key
-        for key in ("heading", "umbrella", "coming_soon_label", "state_labels")
+        for key in (
+            "heading",
+            "umbrella",
+            "coming_soon_label",
+            "state_labels",
+            "promise",
+        )
         if key not in surface
     ]
 
