@@ -19,14 +19,9 @@ from solstone.think.command_polarity import classify_verb
 
 ROOT = Path(__file__).resolve().parents[2]
 
-FRAGMENT_SOURCES: dict[str, Path] = {
-    "activities": Path("solstone/apps/activities/talent/activities/SKILL.md"),
-    "entities": Path("solstone/apps/entities/talent/entities/SKILL.md"),
-    "health": Path("solstone/apps/health/talent/health/SKILL.md"),
-    "speakers": Path("solstone/apps/speakers/talent/speakers/SKILL.md"),
-    "support": Path("solstone/apps/support/talent/support/SKILL.md"),
-    "transcripts": Path("solstone/apps/transcripts/talent/transcripts/SKILL.md"),
-}
+# Test hook: leave as None in production so new app fragments are discovered at
+# build/check time instead of being registered in a second source list.
+FRAGMENT_SOURCES: tuple[Path, ...] | None = None
 HEALTH_JOURNAL_NAMESPACES = ("journal health", "journal talent")
 JOURNAL_NAMESPACE_CONTRIBUTIONS = {"health": HEALTH_JOURNAL_NAMESPACES}
 
@@ -57,6 +52,25 @@ def _repo_relative(path: Path) -> str:
         return path.relative_to(ROOT).as_posix()
     except ValueError:
         return path.as_posix()
+
+
+def discover_fragment_sources(root: Path | None = None) -> tuple[Path, ...]:
+    """Return app-owned skill fragments in deterministic repo-relative order."""
+    base = root or ROOT
+    apps_dir = base / "solstone" / "apps"
+    return tuple(
+        sorted(
+            path.relative_to(base)
+            for path in apps_dir.glob("*/talent/*/SKILL.md")
+            if path.is_file()
+        )
+    )
+
+
+def _fragment_sources() -> tuple[Path, ...]:
+    if FRAGMENT_SOURCES is not None:
+        return tuple(FRAGMENT_SOURCES)
+    return discover_fragment_sources(ROOT)
 
 
 def _parse_triggers(description: str) -> tuple[str, ...]:
@@ -106,18 +120,16 @@ def _load_fragment(rel_path: Path) -> Fragment:
 def _load_fragments() -> dict[str, Fragment]:
     fragments: dict[str, Fragment] = {}
     seen_names: dict[str, Path] = {}
-    for app_key, rel_path in FRAGMENT_SOURCES.items():
+    source_paths = _fragment_sources()
+    if not source_paths:
+        raise ValueError(f"{ROOT / 'solstone' / 'apps'}: no app skill fragments found")
+    for rel_path in source_paths:
         fragment = _load_fragment(rel_path)
         previous = seen_names.get(fragment.app)
         if previous is not None:
             raise ValueError(
                 f"{fragment.path}: duplicate app key {fragment.app!r}: "
                 f"{previous} and {fragment.path}"
-            )
-        if fragment.app != app_key:
-            raise ValueError(
-                f"{fragment.path}: fragment key {app_key!r} does not match name "
-                f"{fragment.app!r}"
             )
         seen_names[fragment.app] = fragment.path
         fragments[fragment.app] = fragment

@@ -17,7 +17,7 @@ REAL_ROOT = Path(__file__).resolve().parents[1]
 
 def _copy_fragment_tree(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
-    for rel_path in skills_build.FRAGMENT_SOURCES.values():
+    for rel_path in skills_build.discover_fragment_sources(REAL_ROOT):
         src = REAL_ROOT / rel_path
         dst = root / rel_path
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -91,7 +91,7 @@ def test_malformed_fragment_raises_with_path_without_partial_output(
 ):
     root = _copy_fragment_tree(tmp_path)
     _patch_root(monkeypatch, root)
-    target = root / skills_build.FRAGMENT_SOURCES["activities"]
+    target = root / "solstone/apps/activities/talent/activities/SKILL.md"
     target.write_text(content, encoding="utf-8")
 
     with pytest.raises(ValueError) as exc_info:
@@ -111,9 +111,10 @@ def test_duplicate_fragment_name_raises_with_path_without_partial_output(
     duplicate = Path("solstone/apps/entities-copy/talent/entities/SKILL.md")
     duplicate_path = root / duplicate
     duplicate_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(root / skills_build.FRAGMENT_SOURCES["entities"], duplicate_path)
-    sources = dict(skills_build.FRAGMENT_SOURCES)
-    sources["entities_copy"] = duplicate
+    shutil.copy2(
+        root / "solstone/apps/entities/talent/entities/SKILL.md", duplicate_path
+    )
+    sources = skills_build.discover_fragment_sources(root) + (duplicate,)
     monkeypatch.setattr(skills_build, "FRAGMENT_SOURCES", sources)
 
     with pytest.raises(ValueError) as exc_info:
@@ -152,8 +153,39 @@ def test_health_contributes_to_both_router_references(monkeypatch, tmp_path):
     assert "Guidance: `solstone/apps/health/talent/health/SKILL.md`" in journal
 
 
+def test_fragments_are_discovered_from_app_talent_dirs(monkeypatch, tmp_path):
+    root = _copy_fragment_tree(tmp_path)
+    extra = root / "solstone/apps/newapp/talent/newapp/SKILL.md"
+    extra.parent.mkdir(parents=True)
+    extra.write_text(
+        "---\n"
+        "name: newapp\n"
+        "description: >\n"
+        "  New app commands. TRIGGER: new app, extra route.\n"
+        "---\n"
+        "\n"
+        "# New App\n",
+        encoding="utf-8",
+    )
+    _patch_root(monkeypatch, root)
+    monkeypatch.setattr(
+        skills_build,
+        "_command_names",
+        lambda app_name, _source: ("list",) if app_name == "newapp" else ("status",),
+    )
+
+    outputs = skills_build.render()
+    sol = outputs[str(root / skills_build.SOL_COMMANDS_PATH)]
+
+    assert "## newapp — `sol call newapp`" in sol
+    assert "Triggers: `new app`, `extra route`" in sol
+    assert "Guidance: `solstone/apps/newapp/talent/newapp/SKILL.md`" in sol
+
+
 def test_trigger_parsing_matches_fragment_description():
-    post = frontmatter.load(REAL_ROOT / skills_build.FRAGMENT_SOURCES["activities"])
+    post = frontmatter.load(
+        REAL_ROOT / "solstone/apps/activities/talent/activities/SKILL.md"
+    )
 
     assert skills_build._parse_triggers(post.metadata["description"]) == (
         "activity",

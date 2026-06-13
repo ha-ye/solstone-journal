@@ -132,7 +132,9 @@ def list_items(
 
 2. **That's it for the CLI.** Auto-discovery picks it up on next run.
 
-3. **Update the app command fragment** (if agents should use these commands):
+3. **Update the app command fragment** (if agents should use these commands).
+   `sol skills build` discovers these fragments automatically from
+   `solstone/apps/*/talent/*/SKILL.md`:
 
 ```markdown
 # solstone/apps/myapp/talent/myapp/SKILL.md
