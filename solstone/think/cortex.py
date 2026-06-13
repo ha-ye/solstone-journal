@@ -317,6 +317,9 @@ class CortexService:
 
                 talent_key = str(config["name"])
                 talent_meta = get_talent(talent_key)
+                with self.lock:
+                    if use_id in self.use_requests:
+                        self.use_requests[use_id]["type"] = talent_meta.get("type")
                 if talent_meta.get("type") == "cogitate":
                     # Resolve here because prepare_config() runs inside solstone.think.talents.
                     cwd_value = talent_meta.get("cwd")
@@ -483,7 +486,11 @@ class CortexService:
 
                                 # Log token usage if available
                                 usage_data = event.get("usage")
-                                if usage_data and original_request:
+                                if (
+                                    usage_data
+                                    and original_request
+                                    and original_request.get("type") == "cogitate"
+                                ):
                                     try:
                                         from solstone.think.models import (
                                             log_token_usage,

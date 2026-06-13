@@ -816,6 +816,7 @@ def test_monitor_stdout_finish_prefers_model_version(cortex_service, mock_journa
             "prompt": "test",
             "name": "test_agent",
             "model": "claude-haiku-4-5",
+            "type": "cogitate",
         }
     }
 
@@ -865,6 +866,7 @@ def test_monitor_stdout_finish_falls_back_to_request_model(
             "prompt": "test",
             "name": "test_agent",
             "model": "claude-haiku-4-5",
+            "type": "cogitate",
         }
     }
 
@@ -895,6 +897,55 @@ def test_monitor_stdout_finish_falls_back_to_request_model(
             cortex_service._monitor_stdout(agent)
 
     assert mock_log_token_usage.call_args.kwargs["model"] == "claude-haiku-4-5"
+
+
+def test_monitor_stdout_finish_generate_skips_token_logging(
+    cortex_service, mock_journal
+):
+    """Test generate finish usage is not logged again by cortex."""
+    from solstone.think.cortex import TalentProcess
+
+    use_id = "generate_usage_test"
+    active_path = mock_journal / "talents" / f"{use_id}_active.jsonl"
+    cortex_service.use_requests = {
+        use_id: {
+            "event": "request",
+            "prompt": "test",
+            "name": "test_agent",
+            "model": "claude-haiku-4-5",
+            "type": "generate",
+        }
+    }
+
+    mock_process = MagicMock()
+    mock_stdout = [
+        '{"event": "start", "ts": 1000}\n',
+        json.dumps(
+            {
+                "event": "finish",
+                "ts": 2000,
+                "result": "X",
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "total_tokens": 15,
+                    "model_version": "claude-haiku-4-5-20251001",
+                },
+            }
+        )
+        + "\n",
+    ]
+    mock_process.stdout = MockPipe(mock_stdout)
+    mock_process.wait.return_value = 0
+
+    agent = TalentProcess(use_id, mock_process, active_path)
+
+    with patch("solstone.think.models.log_token_usage") as mock_log_token_usage:
+        with patch.object(cortex_service, "_complete_use_file"):
+            cortex_service._monitor_stdout(agent)
+
+    # Generate talents self-log inside the subprocess; cortex must not duplicate it.
+    mock_log_token_usage.assert_not_called()
 
 
 def test_recover_orphaned_uses(cortex_service, mock_journal):
