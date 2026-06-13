@@ -286,6 +286,17 @@
     if (sendBtn) sendBtn.disabled = pendingSend;
   }
 
+  function clearPendingLivenessStatus() {
+    if (chatBarPendingPlaceholders.length > 0) chatBarPendingPlaceholders.shift();
+    if (statusWrap) {
+      statusWrap.classList.remove('chat-bar-status--thinking');
+      statusWrap.classList.remove('chat-bar-status--error');
+      statusWrap.removeAttribute('role');
+      statusWrap.removeAttribute('tabindex');
+    }
+    statusErrorActive = false;
+  }
+
   function getTalentEntries() {
     return Array.from(talentState.values()).sort(function(a, b) {
       var aActive = a.status === 'running' ? 1 : 0;
@@ -913,14 +924,7 @@
     }
     if (eventName === 'sol_message') {
       if (solRequestState) return;
-      if (chatBarPendingPlaceholders.length > 0) chatBarPendingPlaceholders.shift();
-      if (statusWrap) {
-        statusWrap.classList.remove('chat-bar-status--thinking');
-        statusWrap.classList.remove('chat-bar-status--error');
-        statusWrap.removeAttribute('role');
-        statusWrap.removeAttribute('tabindex');
-      }
-      statusErrorActive = false;
+      clearPendingLivenessStatus();
       setStatus(msg.text || '', msg.notes || msg.text || '');
       return;
     }
@@ -958,6 +962,10 @@
       if (modalUseId && modalUseId === String(msg.use_id || '')) {
         refreshTalentView(modalUseId);
       }
+      if (!solRequestState && chatBarPendingPlaceholders.length > 0) {
+        clearPendingLivenessStatus();
+        setStatus('', '');
+      }
       return;
     }
     if (eventName === 'talent_errored') {
@@ -969,6 +977,10 @@
       });
       if (modalUseId && modalUseId === String(msg.use_id || '')) {
         refreshTalentView(modalUseId);
+      }
+      if (!solRequestState && chatBarPendingPlaceholders.length > 0) {
+        clearPendingLivenessStatus();
+        setStatus('', '');
       }
       return;
     }

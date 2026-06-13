@@ -79,10 +79,12 @@ def test_chat_bar_enter_submits(chat_html):
 
 
 def test_chat_bar_terminal_overwrites_liveness_without_retry_button(chat_html):
+    assert "function clearPendingLivenessStatus()" in chat_html
     assert (
         "if (chatBarPendingPlaceholders.length > 0) chatBarPendingPlaceholders.shift();"
         in chat_html
     )
+    assert "clearPendingLivenessStatus();" in chat_html
     assert "setStatus(msg.text || '', msg.notes || msg.text || '');" in chat_html
     assert (
         "setStatus(renderedReason.message, renderedReason.message, renderedReason.action);"
@@ -98,3 +100,14 @@ def test_chat_bar_terminal_overwrites_liveness_without_retry_button(chat_html):
     )
     retry_class = "-".join(("chat", "error", "retry"))
     assert retry_class not in app_template
+
+
+def test_chat_bar_talent_terminal_clears_liveness(chat_html):
+    assert "if (eventName === 'talent_finished')" in chat_html
+    assert "if (eventName === 'talent_errored')" in chat_html
+    assert (
+        "if (!solRequestState && chatBarPendingPlaceholders.length > 0) {\n"
+        "        clearPendingLivenessStatus();\n"
+        "        setStatus('', '');\n"
+        "      }"
+    ) in chat_html
