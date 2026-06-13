@@ -12,8 +12,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from solstone.apps.settings import local_bootstrap
-from solstone.apps.settings.install_copy import INSTALL_FAILED_NO_PROGRESS
+from solstone.apps.thinking import local_bootstrap
+from solstone.apps.thinking.install_copy import INSTALL_FAILED_NO_PROGRESS
 from solstone.convey import create_app
 from solstone.think.models import LOCAL_MODEL, QWEN_35_9B
 from solstone.think.providers import memory
@@ -154,7 +154,7 @@ def test_local_availability_payload_exact_shape(settings_env, monkeypatch):
     )
     client = _client(journal_path)
 
-    response = client.get("/app/settings/api/local/availability")
+    response = client.get("/app/thinking/api/local/availability")
 
     assert response.status_code == 200
     payload = response.get_json()
@@ -237,7 +237,7 @@ def test_local_models_route_returns_settings_shape(settings_env):
     journal_path, _config = settings_env(_settings_config())
     client = _client(journal_path)
 
-    response = client.get("/app/settings/api/local/models")
+    response = client.get("/app/thinking/api/local/models")
 
     assert response.status_code == 200
     assert response.get_json() == [
@@ -255,7 +255,7 @@ def test_mlx_models_route_returns_settings_shape(settings_env, monkeypatch):
     monkeypatch.setattr(local_bootstrap, "_is_mlx_backend", lambda: True)
     client = _client(journal_path)
 
-    response = client.get("/app/settings/api/local/models")
+    response = client.get("/app/thinking/api/local/models")
 
     assert response.status_code == 200
     assert response.get_json() == [
@@ -283,7 +283,7 @@ def test_mlx_availability_accepts_first_fetch_alias(settings_env, monkeypatch):
     )
     client = _client(journal_path)
 
-    response = client.get(f"/app/settings/api/local/availability?model={LOCAL_MODEL}")
+    response = client.get(f"/app/thinking/api/local/availability?model={LOCAL_MODEL}")
 
     assert response.status_code == 200
     assert response.get_json()["model"] == QWEN_35_9B
@@ -326,7 +326,7 @@ def test_local_availability_warns_but_does_not_block_on_low_memory(
     )
     client = _client(journal_path)
 
-    response = client.get("/app/settings/api/local/availability")
+    response = client.get("/app/thinking/api/local/availability")
 
     assert response.status_code == 200
     payload = response.get_json()
@@ -339,9 +339,9 @@ def test_local_availability_warns_but_does_not_block_on_low_memory(
 @pytest.mark.parametrize(
     ("method", "path"),
     [
-        ("get", "/app/settings/api/local/availability"),
-        ("post", "/app/settings/api/local/bootstrap"),
-        ("get", "/app/settings/api/local/bootstrap/status"),
+        ("get", "/app/thinking/api/local/availability"),
+        ("post", "/app/thinking/api/local/bootstrap"),
+        ("get", "/app/thinking/api/local/bootstrap/status"),
     ],
 )
 def test_local_routes_reject_unknown_model(settings_env, method, path):
@@ -362,19 +362,19 @@ def test_local_routes_reject_unknown_model(settings_env, method, path):
     [
         (
             "get",
-            "/app/settings/api/local/availability",
+            "/app/thinking/api/local/availability",
             "get_availability_payload",
             {"available": True},
         ),
         (
             "post",
-            "/app/settings/api/local/bootstrap",
+            "/app/thinking/api/local/bootstrap",
             "start_bootstrap",
             ({"install_state": "installed"}, 200),
         ),
         (
             "get",
-            "/app/settings/api/local/bootstrap/status",
+            "/app/thinking/api/local/bootstrap/status",
             "get_state",
             {"install_state": "idle"},
         ),
@@ -410,7 +410,7 @@ def test_local_bootstrap_post_rejects_unqualified_host(settings_env, monkeypatch
     )
     client = _client(journal_path)
 
-    response = client.post("/app/settings/api/local/bootstrap")
+    response = client.post("/app/thinking/api/local/bootstrap")
 
     assert response.status_code == 400
     payload = response.get_json()
@@ -427,7 +427,7 @@ def test_local_bootstrap_post_rejects_byo_endpoint(settings_env):
     _write_config(journal_path, config)
     client = _client(journal_path)
 
-    response = client.post("/app/settings/api/local/bootstrap")
+    response = client.post("/app/thinking/api/local/bootstrap")
 
     assert response.status_code == 400
     payload = response.get_json()
@@ -554,7 +554,7 @@ def test_local_bootstrap_status_returns_canonical_shape(settings_env):
         local_bootstrap._INSTALL_PROGRESS[LOCAL_MODEL] = (12, 24)
     client = _client(journal_path)
 
-    response = client.get("/app/settings/api/local/bootstrap/status")
+    response = client.get("/app/thinking/api/local/bootstrap/status")
 
     assert response.status_code == 200
     payload = response.get_json()
@@ -922,14 +922,14 @@ def test_mlx_worker_preserves_install_error_and_cleans_thread(
 
 
 def test_routes_import_registers_local_endpoints(settings_env):
-    routes = importlib.import_module("solstone.apps.settings.routes")
+    routes = importlib.import_module("solstone.apps.thinking.routes")
     journal_path, _config = settings_env(_settings_config())
     app = create_app(str(journal_path))
     registered = {rule.rule for rule in app.url_map.iter_rules()}
 
-    assert routes.settings_bp is not None
-    assert "/app/settings/api/providers/local/status" in registered
-    assert "/app/settings/api/local/availability" in registered
-    assert "/app/settings/api/local/bootstrap" in registered
-    assert "/app/settings/api/local/bootstrap/status" in registered
-    assert "/app/settings/api/local/models" in registered
+    assert routes.thinking_bp is not None
+    assert "/app/thinking/api/providers/local/status" in registered
+    assert "/app/thinking/api/local/availability" in registered
+    assert "/app/thinking/api/local/bootstrap" in registered
+    assert "/app/thinking/api/local/bootstrap/status" in registered
+    assert "/app/thinking/api/local/models" in registered

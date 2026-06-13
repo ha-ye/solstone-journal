@@ -88,7 +88,7 @@ class ConveyClient:
         json: Any = None,
     ) -> Any:
         method = method.upper()
-        if method not in {"GET", "POST"}:
+        if method not in {"DELETE", "GET", "POST", "PUT"}:
             raise ValueError(f"unsupported convey method: {method}")
         if not path.startswith("/"):
             raise ValueError("convey path must start with '/'")
@@ -101,6 +101,10 @@ class ConveyClient:
         try:
             if method == "GET":
                 response = self._session.get(url)
+            elif method == "DELETE":
+                response = self._session.delete(url)
+            elif method == "PUT":
+                response = self._session.put(url, json=json)
             else:
                 response = self._session.post(url, json=json)
         except requests.exceptions.RequestException as exc:

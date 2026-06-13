@@ -39,6 +39,7 @@ READINESS_REASON_CODES = frozenset(
         "local_model_loading",
         "local_endpoint_unreachable",
         "local_endpoint_contract_failed",
+        "gpu_probe_failed",
         "gpu_unavailable",
         "local_server_unhealthy",
     }
@@ -463,6 +464,16 @@ def _local_readiness_for_provider(
             "local_model_installing",
             model=model_id,
             message=str(readiness["install_state"]),
+            source="local_install",
+        )
+
+    if not readiness.get("gpu_probe_ok", True):
+        return _state(
+            provider,
+            interface,
+            "blocked",
+            "gpu_probe_failed",
+            model=model_id,
             source="local_install",
         )
 

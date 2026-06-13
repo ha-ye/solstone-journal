@@ -40,9 +40,10 @@ def _readiness(
     model: bool = True,
     ram: bool = True,
     gpu: bool = True,
+    gpu_probe_ok: bool | None = None,
     install_state: str = "installed",
 ) -> dict:
-    return {
+    payload = {
         "install_state": install_state,
         "binary_installed": binary,
         "model_installed": model,
@@ -53,6 +54,9 @@ def _readiness(
         "model_id": LOCAL_MODEL,
         "install_error": None,
     }
+    if gpu_probe_ok is not None:
+        payload["gpu_probe_ok"] = gpu_probe_ok
+    return payload
 
 
 def _byo_endpoint() -> local_endpoint.LocalEndpoint:
@@ -324,6 +328,50 @@ def test_local_readiness_gpu_unavailable_blocks_before_missing_artifacts(monkeyp
     assert provider_state.source == "local_install"
 
 
+@pytest.mark.parametrize("gpu_available", [True, False])
+def test_local_readiness_gpu_probe_failed_precedes_gpu_unavailable(
+    monkeypatch, gpu_available
+):
+    monkeypatch.setattr(
+        local_install,
+        "inspect_readiness",
+        lambda _model=None: _readiness(
+            gpu=gpu_available,
+            gpu_probe_ok=False,
+        ),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "probe_state",
+        lambda: (_ for _ in ()).throw(AssertionError("server probe not expected")),
+    )
+
+    provider_state = state.readiness_for_provider("local", "generate")
+
+    assert provider_state.status == "blocked"
+    assert provider_state.reason_code == "gpu_probe_failed"
+    assert provider_state.source == "local_install"
+
+
+def test_local_readiness_gpu_probe_ok_true_keeps_gpu_unavailable(monkeypatch):
+    monkeypatch.setattr(
+        local_install,
+        "inspect_readiness",
+        lambda _model=None: _readiness(gpu=False, gpu_probe_ok=True),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "probe_state",
+        lambda: (_ for _ in ()).throw(AssertionError("server probe not expected")),
+    )
+
+    provider_state = state.readiness_for_provider("local", "generate")
+
+    assert provider_state.status == "blocked"
+    assert provider_state.reason_code == "gpu_unavailable"
+    assert provider_state.source == "local_install"
+
+
 def test_local_readiness_gpu_unavailable_flows_from_inspect_without_launch(
     tmp_path, monkeypatch
 ):
@@ -361,6 +409,59 @@ def test_local_readiness_gpu_unavailable_flows_from_inspect_without_launch(
     assert readiness["gpu_available"] is False
     assert provider_state.status == "blocked"
     assert provider_state.reason_code == "gpu_unavailable"
+    assert provider_state.source == "local_install"
+
+
+def test_local_readiness_gpu_probe_failed_flows_from_inspect_without_launch(
+    tmp_path, monkeypatch
+):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "journal.json").write_text(
+        json.dumps({"providers": {}}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    binary = local_install.binary_path_for_pin()
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_text("binary", encoding="utf-8")
+    binary.chmod(0o755)
+    gguf = local_install.model_path(LOCAL_MODEL)
+    gguf.parent.mkdir(parents=True, exist_ok=True)
+    gguf.write_text("model", encoding="utf-8")
+    mmproj = local_install.mmproj_path(LOCAL_MODEL)
+    if mmproj is not None:
+        mmproj.write_text("mmproj", encoding="utf-8")
+
+    monkeypatch.setattr(
+        local_vulkan,
+        "detect_gpus",
+        lambda: [
+            local_vulkan.VulkanDevice(
+                0,
+                "NVIDIA Test GPU",
+                local_vulkan.VK_TYPE_DISCRETE,
+                8192,
+            )
+        ],
+    )
+    monkeypatch.setattr(local_vulkan, "gpu_probe_ok", lambda: False)
+    monkeypatch.setattr(
+        local_server,
+        "probe_state",
+        lambda: (_ for _ in ()).throw(AssertionError("server probe not expected")),
+    )
+
+    readiness = local_install.inspect_readiness(LOCAL_MODEL)
+    provider_state = state.readiness_for_provider("local", "generate")
+
+    assert readiness["binary_installed"] is True
+    assert readiness["model_installed"] is True
+    assert readiness["gpu_available"] is True
+    assert readiness["gpu_probe_ok"] is False
+    assert provider_state.status == "blocked"
+    assert provider_state.reason_code == "gpu_probe_failed"
     assert provider_state.source == "local_install"
 
 

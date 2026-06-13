@@ -12,10 +12,7 @@ from typing import Any
 import typer
 
 from solstone.convey.reasons import (
-    FILE_NOT_FOUND,
     INVALID_CONFIG_VALUE,
-    INVALID_JSON_REQUEST,
-    MISSING_REQUIRED_FIELD,
     NETWORK_SECURITY_REQUIRES_PASSWORD,
 )
 from solstone.think.convey_client import ConveyClientError, convey_cli, get_client
@@ -24,12 +21,18 @@ from solstone.think.convey_client import ConveyClientError, convey_cli, get_clie
 # used in the "Invalid env var" message); reconstructed here rather than
 # imported (HTTP-only gate) or read from the response (Flask sorts JSON keys).
 _API_KEY_ENV_VARS = [
-    "GOOGLE_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "OPENAI_API_KEY",
     "REVAI_ACCESS_TOKEN",
     "PLAUD_ACCESS_TOKEN",
 ]
+_AI_KEY_ENV_VARS = {
+    "GOOGLE_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+}
+_SERVICE_KEY_VALIDATION_NAME = {
+    "REVAI_ACCESS_TOKEN": "revai",
+    "PLAUD_ACCESS_TOKEN": "plaud",
+}
 CONVEY_MOVED_NETWORK_ENABLE = (
     "moved to `journal settings convey network-access enable` — run that instead."
 )
@@ -77,10 +80,6 @@ def _get_config() -> dict[str, Any]:
     return _request("GET", "/app/settings/api/config")
 
 
-def _get_providers() -> dict[str, Any]:
-    return _request("GET", "/app/settings/api/providers")
-
-
 def _post_config(
     section: str,
     data: dict[str, Any] | None = None,
@@ -107,17 +106,21 @@ def _exit_with(message: str) -> None:
 
 
 def _validate_env_var_or_exit(env_var: str) -> None:
+    if env_var in _AI_KEY_ENV_VARS:
+        typer.echo(
+            "Moved to `sol call thinking keys …` — run that instead.",
+            err=True,
+        )
+        raise typer.Exit(2)
     if env_var not in _API_KEY_ENV_VARS:
         _exit_with(
             f"Invalid env var: {env_var}. Must be one of: {', '.join(_API_KEY_ENV_VARS)}"
         )
 
 
-def _provider_for_env_var(providers: dict[str, Any], env_var: str) -> str | None:
-    for provider in providers.get("providers", []):
-        if provider.get("env_key") == env_var:
-            return provider.get("name")
-    return None
+def _moved_stub(command: str) -> None:
+    typer.echo(f"Moved to `sol call thinking {command}` — run that instead.", err=True)
+    raise typer.Exit(2)
 
 
 @network_access_app.command("enable")
@@ -211,18 +214,10 @@ def show() -> None:
     """Show a summary of journal settings."""
 
     config = _get_config()
-    providers = _get_providers()
     env_config = config.get("env", {})
     keys = {key: bool(env_config.get(key)) for key in _API_KEY_ENV_VARS}
     summary = {
         "identity": config.get("identity", {}),
-        "providers": {
-            "generate": providers.get("generate", {}),
-            "cogitate": providers.get("cogitate", {}),
-            "google_backend": providers.get("google_backend", "auto"),
-            "local_override": providers.get("local_override", {}),
-            "key_validation": providers.get("key_validation", {}),
-        },
         "transcribe": config.get("transcribe", {}),
         "observe": config.get("observe", {}),
         "keys": keys,
@@ -250,12 +245,10 @@ def keys_set(
     """Set an API key in journal config."""
 
     _validate_env_var_or_exit(env_var)
-    providers = _get_providers()
-    provider = _provider_for_env_var(providers, env_var)
     response = _post_config("env", key=env_var, value=value)
-    validation = None
-    if provider:
-        validation = response.get("key_validation", {}).get(provider)
+    validation = response.get("key_validation", {}).get(
+        _SERVICE_KEY_VALIDATION_NAME.get(env_var, ""),
+    )
     _echo_json({"env_var": env_var, "set": True, "validation": validation})
 
 
@@ -286,52 +279,12 @@ def keys_validate(
 
 
 @providers_app.command("show")
-@convey_cli
 def providers_show(
     human: bool = typer.Option(False, "--human", help="Print one-line statuses."),
 ) -> None:
-    """Show provider configuration."""
+    """Moved to ``sol call thinking providers show``."""
 
-    response = _get_providers()
-    provider_status = response.get("provider_status", {})
-    if human:
-        for name in sorted(provider_status):
-            status = provider_status[name]
-            issues = status.get("issues", [])
-            if issues:
-                status_text = issues[0]
-            elif status.get("cogitate_ready") or (
-                not status.get("cogitate_cli") and status.get("generate_ready")
-            ):
-                status_text = "ready"
-            else:
-                status_text = "not ready"
-            typer.echo(f"{name}: {status_text}")
-        local_override = response.get("local_override", {})
-        if local_override.get("enabled"):
-            credential = (
-                "configured"
-                if local_override.get("credential_configured")
-                else "not configured"
-            )
-            typer.echo(
-                "local endpoint: "
-                f"{local_override.get('endpoint_url', '')} "
-                f"model: {local_override.get('served_model_id', '')} "
-                f"credential: {credential}"
-            )
-        return
-    _echo_json(
-        {
-            "providers": response.get("providers", []),
-            "provider_status": provider_status,
-            "generate": response.get("generate", {}),
-            "cogitate": response.get("cogitate", {}),
-            "local_override": response.get("local_override", {}),
-            "api_keys": response.get("api_keys", {}),
-            "key_validation": response.get("key_validation", {}),
-        }
-    )
+    _moved_stub("providers show")
 
 
 @providers_app.command("install")
@@ -344,7 +297,6 @@ def providers_install(
 
 
 @providers_app.command("set-local-endpoint")
-@convey_cli
 def providers_set_local_endpoint(
     url: str = typer.Option(..., "--url", help="OpenAI-compatible endpoint URL."),
     model: str = typer.Option(..., "--model", help="Served model id."),
@@ -354,177 +306,80 @@ def providers_set_local_endpoint(
         help="Optional bearer credential for the endpoint.",
     ),
 ) -> None:
-    """Set the BYO local provider endpoint."""
+    """Moved to ``sol call thinking set-local-endpoint``."""
 
-    body: dict[str, object] = {
-        "endpoint_url": url,
-        "served_model_id": model,
-    }
-    if credential is not None:
-        body["credential"] = credential
-    response = _request(
-        "POST",
-        "/app/settings/api/local/endpoint",
-        json_body=body,
-    )
-    _echo_json(response.get("local_endpoint", response))
+    _moved_stub("set-local-endpoint")
 
 
 @providers_app.command("clear-local-endpoint")
-@convey_cli
 def providers_clear_local_endpoint() -> None:
-    """Clear the BYO local provider endpoint."""
+    """Moved to ``sol call thinking clear-local-endpoint``."""
 
-    response = _request("DELETE", "/app/settings/api/local/endpoint")
-    _echo_json(response.get("local_endpoint", response))
-
-
-def _set_provider_type(
-    agent_type: str,
-    provider: str | None,
-    tier: int | None,
-    backup: str | None,
-) -> dict[str, Any]:
-    if tier is not None and tier not in {1, 2, 3}:
-        _exit_with(f"Invalid tier: {tier}. Must be 1, 2, or 3.")
-    payload = {
-        key: value
-        for key, value in {
-            "provider": provider,
-            "tier": tier,
-            "backup": backup,
-        }.items()
-        if value is not None
-    }
-    try:
-        response = _request(
-            "POST",
-            "/app/settings/api/providers",
-            json_body={agent_type: payload},
-        )
-    except ConveyClientError as err:
-        if err.reason_code == INVALID_CONFIG_VALUE.code and err.detail:
-            _exit_with(err.detail)
-        raise
-    return response.get(agent_type, {})
+    _moved_stub("clear-local-endpoint")
 
 
 @providers_app.command("set-generate")
-@convey_cli
 def providers_set_generate(
     provider: str | None = typer.Option(None, "--provider", help="Primary provider."),
     tier: int | None = typer.Option(None, "--tier", help="Tier (1, 2, or 3)."),
     backup: str | None = typer.Option(None, "--backup", help="Backup provider."),
 ) -> None:
-    """Set generate provider defaults."""
-    _echo_json(_set_provider_type("generate", provider, tier, backup))
+    """Moved to ``sol call thinking providers set-generate``."""
+
+    _moved_stub("providers set-generate")
 
 
 @providers_app.command("set-cogitate")
-@convey_cli
 def providers_set_cogitate(
     provider: str | None = typer.Option(None, "--provider", help="Primary provider."),
     tier: int | None = typer.Option(None, "--tier", help="Tier (1, 2, or 3)."),
     backup: str | None = typer.Option(None, "--backup", help="Backup provider."),
 ) -> None:
-    """Set cogitate provider defaults."""
-    _echo_json(_set_provider_type("cogitate", provider, tier, backup))
+    """Moved to ``sol call thinking providers set-cogitate``."""
+
+    _moved_stub("providers set-cogitate")
 
 
 @google_backend_app.command("show")
-@convey_cli
 def google_backend_show() -> None:
-    """Show Google backend status."""
+    """Moved to ``sol call thinking google-backend show``."""
 
-    providers = _get_providers()
-    _echo_json(
-        {
-            "google_backend": providers.get("google_backend", "auto"),
-            "vertex_credentials_configured": providers.get(
-                "vertex_credentials_configured", False
-            ),
-            "vertex_credentials_email": providers.get("vertex_credentials_email", ""),
-        }
-    )
+    _moved_stub("google-backend show")
 
 
 @google_backend_app.command("set")
-@convey_cli
 def google_backend_set(
     backend: str = typer.Argument(..., help="Google backend to use."),
 ) -> None:
-    """Set the Google provider backend."""
-    if backend not in ("auto", "aistudio", "vertex"):
-        _exit_with(
-            f"Invalid google_backend: {backend}. Must be 'auto', 'aistudio', or 'vertex'."
-        )
+    """Moved to ``sol call thinking google-backend set``."""
 
-    _request(
-        "POST",
-        "/app/settings/api/providers",
-        json_body={"google_backend": backend},
-    )
-    _echo_json({"google_backend": backend})
+    _moved_stub("google-backend set")
 
 
 @vertex_app.command("show")
-@convey_cli
 def vertex_credentials_show() -> None:
-    """Show Vertex credential status without secrets."""
+    """Moved to ``sol call thinking vertex-credentials show``."""
 
-    config = _get_config()
-    providers = _get_providers()
-    providers_config = config.get("providers", {})
-    validation = providers.get("key_validation", {}).get("google_vertex", {})
-    _echo_json(
-        {
-            "configured": providers.get("vertex_credentials_configured", False),
-            "email": providers.get("vertex_credentials_email", ""),
-            "path": providers_config.get("vertex_credentials") or "",
-            "validation": validation,
-        }
-    )
+    _moved_stub("vertex-credentials show")
 
 
 @vertex_app.command("import")
-@convey_cli
 def vertex_credentials_import(
     file_path: str = typer.Argument(..., help="Path to service account JSON."),
     skip_validation: bool = typer.Option(
         False, "--skip-validation", help="Skip API validation of credentials."
     ),
 ) -> None:
-    """Import Vertex service account credentials into the journal config."""
+    """Moved to ``sol call thinking vertex-credentials import``."""
 
-    try:
-        response = _request(
-            "POST",
-            "/app/settings/api/vertex-credentials/import",
-            json_body={"path": file_path, "skip_validation": skip_validation},
-        )
-    except ConveyClientError as err:
-        if err.reason_code == FILE_NOT_FOUND.code:
-            _exit_with(f"Credential file not found: {err.detail}")
-        if err.reason_code == INVALID_JSON_REQUEST.code:
-            _exit_with(f"Invalid JSON in credential file: {err.detail}")
-        if err.reason_code == MISSING_REQUIRED_FIELD.code:
-            _exit_with(f"Missing required fields: {err.detail}")
-        typer.echo(err.error, err=True)
-        raise typer.Exit(1)
-    _echo_json(response)
+    _moved_stub("vertex-credentials import")
 
 
 @vertex_app.command("clear")
-@convey_cli
 def vertex_credentials_clear() -> None:
-    """Clear stored Vertex credentials."""
+    """Moved to ``sol call thinking vertex-credentials clear``."""
 
-    _request(
-        "POST",
-        "/app/settings/api/providers",
-        json_body={"vertex_credentials": ""},
-    )
-    _echo_json({"configured": False})
+    _moved_stub("vertex-credentials clear")
 
 
 @transcribe_app.command("show")

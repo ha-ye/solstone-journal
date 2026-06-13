@@ -40,7 +40,7 @@ from google.genai import types
 
 from solstone.think.models import GEMINI_FLASH
 
-from .shared import GenerateResult
+from .shared import GenerateResult, classify_provider_error
 
 # Vertex's `maxOutputTokens` accepts 1..65535 inclusive — exactly 65536 returns
 # 400 INVALID_ARGUMENT ("supported range is from 1 (inclusive) to 65536
@@ -698,7 +698,11 @@ def validate_key(api_key: str) -> dict:
         _detected_backend = backend  # only cache after successful validation
         return {"valid": True, "backend": backend}
     except Exception as e:
-        return {"valid": False, "error": str(e)}
+        return {
+            "valid": False,
+            "error": str(e),
+            "reason_code": classify_provider_error(e, "google"),
+        }
 
 
 def validate_vertex_credentials(
@@ -733,7 +737,11 @@ def validate_vertex_credentials(
         list(client.models.list(config={"page_size": 1}))
         return {"valid": True, "email": creds.service_account_email}
     except Exception as e:
-        return {"valid": False, "error": str(e)}
+        return {
+            "valid": False,
+            "error": str(e),
+            "reason_code": classify_provider_error(e, "google"),
+        }
 
 
 __all__ = [

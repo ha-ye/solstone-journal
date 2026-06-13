@@ -460,6 +460,7 @@ def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
         "mmproj_installed": mmproj_installed,
         "ram_sufficient": memory_verdict.severity != "blocked",
         "gpu_available": gpu_available,
+        "gpu_probe_ok": local_vulkan.gpu_probe_ok(),
         "binary_path": str(binary_path),
         "model_path": str(gguf_path),
         "mmproj_path": str(resolved_mmproj) if resolved_mmproj is not None else None,

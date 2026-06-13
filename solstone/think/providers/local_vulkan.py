@@ -30,7 +30,7 @@ _VK_PHYSICAL_DEVICE_NAME_SIZE = 256
 _VK_MAX_MEMORY_TYPES = 32
 _VK_MAX_MEMORY_HEAPS = 16
 
-_DETECT_CACHE: list["VulkanDevice"] | None = None
+_DETECT_CACHE: tuple[list["VulkanDevice"], bool] | None = None
 
 
 @dataclass(frozen=True)
@@ -367,7 +367,7 @@ def _devices_from_json(text: str) -> list[VulkanDevice]:
     return devices
 
 
-def _enumerate_gpus() -> list[VulkanDevice]:
+def _enumerate_gpus() -> tuple[list[VulkanDevice], bool]:
     try:
         completed = subprocess.run(
             [sys.executable, "-m", "solstone.think.providers.local_vulkan"],
@@ -378,25 +378,25 @@ def _enumerate_gpus() -> list[VulkanDevice]:
         )
     except subprocess.TimeoutExpired:
         logger.warning("Vulkan GPU probe timed out after %.0fs", _PROBE_TIMEOUT_S)
-        return []
+        return [], False
     except OSError as exc:
         logger.warning("Vulkan GPU probe could not start: %s", exc)
-        return []
+        return [], False
 
     if completed.returncode != 0:
         logger.warning("Vulkan GPU probe exited with status %s", completed.returncode)
-        return []
+        return [], False
 
     try:
         devices = _devices_from_json(completed.stdout)
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         logger.warning("Vulkan GPU probe returned invalid JSON: %s", exc)
-        return []
+        return [], False
 
     if not devices:
         logger.warning("Vulkan GPU probe returned no devices")
-        return []
-    return devices
+        return [], True
+    return devices, True
 
 
 def device_local_used_mib(index: int) -> int | None:
@@ -446,7 +446,16 @@ def detect_gpus() -> list[VulkanDevice]:
     global _DETECT_CACHE
     if _DETECT_CACHE is None:
         _DETECT_CACHE = _enumerate_gpus()
-    return list(_DETECT_CACHE)
+    devices, _probe_ok = _DETECT_CACHE
+    return list(devices)
+
+
+def gpu_probe_ok() -> bool:
+    global _DETECT_CACHE
+    if _DETECT_CACHE is None:
+        _DETECT_CACHE = _enumerate_gpus()
+    _devices, probe_ok = _DETECT_CACHE
+    return probe_ok
 
 
 def reset_detect_cache() -> None:

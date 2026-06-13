@@ -47,7 +47,7 @@ from anthropic.types import (
 from solstone.think.models import CLAUDE_SONNET_4, model_supports
 from solstone.think.providers._image import encode_image_part, is_image_part
 
-from .shared import GenerateResult
+from .shared import GenerateResult, classify_provider_error
 
 # Default values are now handled internally
 _DEFAULT_MODEL = CLAUDE_SONNET_4
@@ -447,7 +447,11 @@ def validate_key(api_key: str) -> dict:
         list(client.models.list(limit=1))
         return {"valid": True}
     except Exception as e:
-        return {"valid": False, "error": str(e)}
+        return {
+            "valid": False,
+            "error": str(e),
+            "reason_code": classify_provider_error(e, "anthropic"),
+        }
 
 
 __all__ = [

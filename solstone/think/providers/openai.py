@@ -39,7 +39,7 @@ from typing import Any
 from solstone.think.models import GPT_5, OPENAI_EFFORT_SUFFIXES
 from solstone.think.providers._image import encode_image_part, is_image_part
 
-from .shared import GenerateResult
+from .shared import GenerateResult, classify_provider_error
 
 # Agent configuration is now loaded via get_talent() in cortex.py
 
@@ -351,7 +351,11 @@ def validate_key(api_key: str) -> dict:
         list(client.models.list())
         return {"valid": True}
     except Exception as e:
-        return {"valid": False, "error": str(e)}
+        return {
+            "valid": False,
+            "error": str(e),
+            "reason_code": classify_provider_error(e, "openai"),
+        }
 
 
 __all__ = [

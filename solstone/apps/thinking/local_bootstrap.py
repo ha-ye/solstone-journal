@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Local provider first-run bootstrap helpers for Settings."""
+"""Local provider first-run bootstrap helpers for Thinking."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import sys
 import threading
 from pathlib import Path
 
-from solstone.apps.settings.install_copy import (
+from solstone.apps.thinking.install_copy import (
     INSTALL_FAILED_NO_PROGRESS,
     LOCAL_MEMORY_WARNING_LOW_TEMPLATE,
     LOCAL_MEMORY_WARNING_UNKNOWN,

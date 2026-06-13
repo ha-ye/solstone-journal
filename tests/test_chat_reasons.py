@@ -14,6 +14,7 @@ EXPECTED_CODES = {
     "provider_key_missing",
     "ram_insufficient",
     "gpu_unavailable",
+    "gpu_probe_failed",
     "local_model_missing",
     "model_missing",
     "binary_missing",
@@ -123,7 +124,7 @@ def test_render_known_codes():
         if code == "provider_key_invalid":
             assert rendered["action"] == {
                 "label": "Open Settings",
-                "href": "/app/settings/#providers",
+                "href": "/app/thinking/#providers",
             }
         else:
             assert rendered["action"] == reason["action"]

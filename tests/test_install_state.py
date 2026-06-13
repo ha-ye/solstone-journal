@@ -10,7 +10,7 @@ from typing import get_args
 
 import pytest
 
-from solstone.apps.settings.install_copy import (
+from solstone.apps.thinking.install_copy import (
     INSTALL_BUTTON_INSTALL,
     INSTALL_BUTTON_INSTALLING,
     INSTALL_BUTTON_RETRY,

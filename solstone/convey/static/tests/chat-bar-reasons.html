@@ -83,7 +83,7 @@
         assert(`${code} action presence`, hasAction ? !!action : !action);
         if (hasAction) {
           assert(`${code} action label`, action.textContent === 'Open Settings');
-          assert(`${code} action href`, action.getAttribute('href') === '/app/settings/#providers');
+          assert(`${code} action href`, action.getAttribute('href') === '/app/thinking/#providers');
         }
       });
 

@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from solstone.apps.settings import routes as settings_routes
+from solstone.apps.thinking import routes as thinking_routes
 from solstone.convey import create_app
 
 PLACEHOLDER_CREDENTIAL = "test-token-PLACEHOLDER"
@@ -49,12 +49,12 @@ def test_local_endpoint_post_sets_normalized_values_and_masks_credential(
     journal_path, _config = _ready_settings_env(settings_env)
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        settings_routes, "log_app_action", lambda **kwargs: calls.append(kwargs)
+        thinking_routes, "log_app_action", lambda **kwargs: calls.append(kwargs)
     )
     client = _client(journal_path)
 
     response = client.post(
-        "/app/settings/api/local/endpoint",
+        "/app/thinking/api/local/endpoint",
         json={
             "endpoint_url": " http://host.test:8080/openai/v1/ ",
             "served_model_id": " served-model ",
@@ -77,14 +77,14 @@ def test_local_endpoint_post_sets_normalized_values_and_masks_credential(
         "credential": PLACEHOLDER_CREDENTIAL,
     }
 
-    public_config = client.get("/app/settings/api/config").get_json()
-    public_local = public_config["providers"]["local"]
-    assert public_local == {
+    public_providers = client.get("/app/thinking/api/providers").get_json()
+    assert public_providers["local_override"] == {
+        "enabled": True,
         "endpoint_url": "http://host.test:8080/openai",
         "served_model_id": "served-model",
         "credential_configured": True,
     }
-    assert PLACEHOLDER_CREDENTIAL not in json.dumps(public_config)
+    assert PLACEHOLDER_CREDENTIAL not in json.dumps(public_providers)
     assert PLACEHOLDER_CREDENTIAL not in json.dumps(payload)
 
     audit = json.dumps(calls)
@@ -104,7 +104,7 @@ def test_local_endpoint_post_preserves_credential_when_absent(settings_env):
     client = _client(journal_path)
 
     response = client.post(
-        "/app/settings/api/local/endpoint",
+        "/app/thinking/api/local/endpoint",
         json={
             "endpoint_url": "https://new.test/v1",
             "served_model_id": "new-model",
@@ -131,7 +131,7 @@ def test_local_endpoint_post_empty_credential_clears_secret(settings_env):
     client = _client(journal_path)
 
     response = client.post(
-        "/app/settings/api/local/endpoint",
+        "/app/thinking/api/local/endpoint",
         json={
             "endpoint_url": "http://old.test",
             "served_model_id": "old-model",
@@ -157,11 +157,11 @@ def test_local_endpoint_delete_clears_values_and_masks_audit(
     _write_config(journal_path, config)
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        settings_routes, "log_app_action", lambda **kwargs: calls.append(kwargs)
+        thinking_routes, "log_app_action", lambda **kwargs: calls.append(kwargs)
     )
     client = _client(journal_path)
 
-    response = client.delete("/app/settings/api/local/endpoint")
+    response = client.delete("/app/thinking/api/local/endpoint")
 
     assert response.status_code == 200
     assert response.get_json()["local_endpoint"] == {
@@ -185,7 +185,7 @@ def test_local_endpoint_post_rejects_bad_url(settings_env):
     client = _client(journal_path)
 
     response = client.post(
-        "/app/settings/api/local/endpoint",
+        "/app/thinking/api/local/endpoint",
         json={"endpoint_url": "localhost:8080", "served_model_id": "model"},
     )
 

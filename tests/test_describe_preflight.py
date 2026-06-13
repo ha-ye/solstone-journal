@@ -90,7 +90,7 @@ def test_preflight_blocked_emits_one_keyed_notification_and_writes_no_jsonl(
     assert payload["provider"] == "google"
     assert payload["context"] == describe_module.FRAME_CONTEXT
     assert payload["title"] == "Screen descriptions paused"
-    assert payload["action"] == "/app/settings/#providers"
+    assert payload["action"] == "/app/thinking/#providers"
     assert not video_path.with_suffix(".jsonl").exists()
 
 

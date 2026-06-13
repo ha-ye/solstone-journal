@@ -48,7 +48,7 @@ def _readiness_snapshot(severity: str = "neutral") -> dict:
                 "detail": "Open provider setup.",
                 "recovery_action": {
                     "label": "Open Settings",
-                    "href": "/app/settings/#providers",
+                    "href": "/app/thinking/#providers",
                 },
                 "operator_detail": "reason_code=provider_key_missing provider=anthropic",
             }

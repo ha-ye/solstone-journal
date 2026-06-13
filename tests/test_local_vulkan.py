@@ -97,9 +97,10 @@ def test_enumerate_gpus_parses_subprocess_json(monkeypatch):
 
     monkeypatch.setattr(local_vulkan.subprocess, "run", fake_run)
 
-    devices = local_vulkan._enumerate_gpus()
+    devices, probe_ok = local_vulkan._enumerate_gpus()
 
     assert [device.index for device in devices] == [0, 1, 2]
+    assert probe_ok is True
 
 
 def test_enumerate_gpus_returns_empty_on_timeout(monkeypatch):
@@ -108,7 +109,9 @@ def test_enumerate_gpus_returns_empty_on_timeout(monkeypatch):
 
     monkeypatch.setattr(local_vulkan.subprocess, "run", fake_run)
 
-    assert local_vulkan._enumerate_gpus() == []
+    devices, probe_ok = local_vulkan._enumerate_gpus()
+    assert devices == []
+    assert probe_ok is False
 
 
 def test_enumerate_gpus_returns_empty_on_nonzero_or_bad_json(monkeypatch):
@@ -120,7 +123,9 @@ def test_enumerate_gpus_returns_empty_on_nonzero_or_bad_json(monkeypatch):
         ),
     )
 
-    assert local_vulkan._enumerate_gpus() == []
+    devices, probe_ok = local_vulkan._enumerate_gpus()
+    assert devices == []
+    assert probe_ok is False
 
     monkeypatch.setattr(
         local_vulkan.subprocess,
@@ -130,7 +135,24 @@ def test_enumerate_gpus_returns_empty_on_nonzero_or_bad_json(monkeypatch):
         ),
     )
 
-    assert local_vulkan._enumerate_gpus() == []
+    devices, probe_ok = local_vulkan._enumerate_gpus()
+    assert devices == []
+    assert probe_ok is False
+
+
+def test_enumerate_gpus_valid_empty_result_keeps_probe_ok(monkeypatch):
+    monkeypatch.setattr(
+        local_vulkan.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            _args[0], 0, stdout="[]", stderr=""
+        ),
+    )
+
+    devices, probe_ok = local_vulkan._enumerate_gpus()
+
+    assert devices == []
+    assert probe_ok is True
 
 
 def test_device_local_used_mib_parses_subprocess_json(monkeypatch):

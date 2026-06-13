@@ -32,7 +32,7 @@ REQUIRED_TRACKED_PATHS = {
     Path("journal/AGENTS.md"),
     Path("tests/fixtures/journal/AGENTS.md"),
     Path("tests/fixtures/journal/identity/partner.md"),
-    Path("tests/baselines/api/settings/providers.json"),
+    Path("tests/baselines/api/thinking/providers.json"),
 }
 BAN_PATTERNS = (
     re.compile(r"sol call " r"(navigate|routines|identity)\b"),

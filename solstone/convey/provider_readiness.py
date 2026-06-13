@@ -68,11 +68,11 @@ PROVIDER_LEVEL_CODES = frozenset(
 
 _SETTINGS_ACTION = RecoveryAction(
     label="Open Settings",
-    target="/app/settings/#providers",
+    target="/app/thinking/#providers",
 )
 _LOCAL_SETUP_ACTION = RecoveryAction(
     label="Open Local Model Setup",
-    target="/app/settings/#providers",
+    target="/app/thinking/#providers",
 )
 
 _LOCAL_SETUP_DETAIL = "Finish local model setup, then try the request again."
@@ -102,6 +102,15 @@ _ENTRIES: dict[str, _Entry] = {
         detail=(
             "Local models require a supported GPU. This computer has no GPU "
             "acceleration available."
+        ),
+        recovery_action=_SETTINGS_ACTION,
+    ),
+    "gpu_probe_failed": _Entry(
+        klass="setup",
+        summary="local GPU check couldn't finish",
+        detail=(
+            "Local model setup couldn't confirm GPU acceleration — try again, "
+            "or use a cloud provider if it keeps failing."
         ),
         recovery_action=_SETTINGS_ACTION,
     ),

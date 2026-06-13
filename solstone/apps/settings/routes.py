@@ -12,7 +12,6 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from flask import Blueprint, abort, jsonify, render_template, request
 
@@ -23,14 +22,10 @@ from solstone.apps.chat.config import (
     save_chat_config,
 )
 from solstone.apps.settings import copy as settings_copy
-from solstone.apps.settings import install_copy, local_bootstrap, transcribe_resource
+from solstone.apps.settings import install_copy, transcribe_resource
 from solstone.apps.settings.copy import (
     CONVEY_REFUSE_NO_PASSWORD_NETWORK,
     CONVEY_REFUSE_NO_PASSWORD_TRUST,
-)
-from solstone.apps.settings.vertex_credentials import (
-    delete_vertex_credentials,
-    save_vertex_credentials,
 )
 from solstone.apps.utils import log_app_action
 from solstone.convey import chat_stream, state
@@ -39,17 +34,14 @@ from solstone.convey.network_access import (
     NetworkAccessPasswordRequired,
     set_network_access,
 )
-from solstone.convey.readiness_snapshot import build_readiness_snapshot
 from solstone.convey.reasons import (
     ACTIVITY_INVALID,
     ACTIVITY_NOT_FOUND,
     ACTIVITY_PROTECTED,
     FACET_ALREADY_EXISTS,
     FACET_NOT_FOUND,
-    FILE_NOT_FOUND,
     FILE_READ_FAILED,
     INVALID_CONFIG_VALUE,
-    INVALID_JSON_REQUEST,
     INVALID_REQUEST_VALUE,
     LOCAL_REQUEST_REQUIRED,
     MISSING_REQUEST_BODY,
@@ -72,15 +64,7 @@ from solstone.convey.sol_initiated.settings import (
 from solstone.convey.utils import error_response, respond_collection
 from solstone.think import facets
 from solstone.think.journal_config import (
-    hold_config_lock,
-    read_journal_config,
     write_journal_config,
-)
-from solstone.think.models import LOCAL_MODEL
-from solstone.think.providers.google import validate_vertex_credentials
-from solstone.think.providers.local_endpoint import (
-    normalize_local_endpoint_url,
-    resolve_local_endpoint,
 )
 from solstone.think.retention import (
     _human_bytes,
@@ -138,12 +122,10 @@ def _public_facet_record(name: str, data: dict[str, object]) -> dict[str, object
 # API keys that can be configured in the env section
 # Used for system env checks and allowed env fields validation
 API_KEY_ENV_VARS = [
-    "GOOGLE_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "OPENAI_API_KEY",
     "REVAI_ACCESS_TOKEN",
     "PLAUD_ACCESS_TOKEN",
 ]
+SERVICE_KEY_VALIDATION_KEYS = frozenset({"revai", "plaud"})
 
 
 def _compute_runtime_label() -> str:
@@ -176,107 +158,37 @@ def _request_has_local_authority() -> bool:
     return not any(header in request.headers for header in FORWARDED_AUTHORITY_HEADERS)
 
 
+def _service_key_validation(config: dict[str, Any]) -> dict[str, Any]:
+    providers_config = config.get("providers", {})
+    key_validation = (
+        providers_config.get("key_validation", {})
+        if isinstance(providers_config, dict)
+        else {}
+    )
+    if not isinstance(key_validation, dict):
+        key_validation = {}
+    return {
+        key: value
+        for key, value in key_validation.items()
+        if key in SERVICE_KEY_VALIDATION_KEYS
+    }
+
+
 def _project_public_config(config: dict[str, Any]) -> dict[str, Any]:
     projected = copy.deepcopy(config)
+    service_validation = _service_key_validation(config)
+    if service_validation:
+        projected["key_validation"] = service_validation
     if "env" in projected:
         projected["env"] = {k: bool(v) for k, v in projected["env"].items()}
+    projected.pop("providers", None)
     convey_config = projected.setdefault("convey", {})
     convey_config.pop("secret", None)
     has_pw = bool(convey_config.pop("password_hash", None))
     convey_config.pop("password", None)
     convey_config["has_password"] = has_pw
-    providers_config = projected.get("providers")
-    if isinstance(providers_config, dict) and "local" in providers_config:
-        local_config = providers_config.get("local")
-        if not isinstance(local_config, dict):
-            local_config = {}
-            providers_config["local"] = local_config
-        credential = local_config.pop("credential", None)
-        local_config["credential_configured"] = bool(str(credential or "").strip())
     projected["runtime_env"] = {k: bool(os.getenv(k)) for k in API_KEY_ENV_VARS}
     return projected
-
-
-def _read_local_provider_config(config: dict[str, Any]) -> dict[str, Any]:
-    providers_config = config.get("providers", {})
-    if not isinstance(providers_config, dict):
-        return {}
-    local_config = providers_config.get("local", {})
-    return local_config if isinstance(local_config, dict) else {}
-
-
-def _ensure_local_provider_config(config: dict[str, Any]) -> dict[str, Any]:
-    providers_config = config.get("providers")
-    if not isinstance(providers_config, dict):
-        providers_config = {}
-        config["providers"] = providers_config
-    local_config = providers_config.get("local")
-    if not isinstance(local_config, dict):
-        local_config = {}
-        providers_config["local"] = local_config
-    return local_config
-
-
-def _local_credential_configured(local_config: dict[str, Any]) -> bool:
-    return bool(str(local_config.get("credential") or "").strip())
-
-
-def _local_endpoint_public_payload(config: dict[str, Any]) -> dict[str, object]:
-    local_config = _read_local_provider_config(config)
-    endpoint_url = str(local_config.get("endpoint_url") or "").strip()
-    served_model_id = str(local_config.get("served_model_id") or "").strip()
-    return {
-        "enabled": bool(endpoint_url and served_model_id),
-        "endpoint_url": endpoint_url,
-        "served_model_id": served_model_id,
-        "credential_configured": _local_credential_configured(local_config),
-    }
-
-
-def _local_override_payload(config: dict[str, Any]) -> dict[str, object]:
-    endpoint = resolve_local_endpoint()
-    local_config = _read_local_provider_config(config)
-    return {
-        "enabled": not endpoint.is_bundled,
-        "endpoint_url": "" if endpoint.is_bundled else endpoint.base_url,
-        "served_model_id": "" if endpoint.is_bundled else endpoint.served_model_id,
-        "credential_configured": _local_credential_configured(local_config),
-    }
-
-
-def _masked_local_endpoint_changes(
-    before: dict[str, Any],
-    after: dict[str, Any],
-    *,
-    credential_touched: bool,
-) -> dict[str, dict[str, object]]:
-    changed_fields: dict[str, dict[str, object]] = {}
-    for key in ("endpoint_url", "served_model_id"):
-        old_value = str(before.get(key) or "")
-        new_value = str(after.get(key) or "")
-        if old_value != new_value:
-            changed_fields[key] = {"old": old_value, "new": new_value}
-
-    if credential_touched:
-        old_credential = str(before.get("credential") or "")
-        new_credential = str(after.get("credential") or "")
-        if old_credential != new_credential:
-            changed_fields["credential"] = {
-                "old": "***" if old_credential else "",
-                "new": "***" if new_credential else "",
-            }
-    return changed_fields
-
-
-def _validate_local_endpoint_url(endpoint_url: str) -> str | Any:
-    normalized = normalize_local_endpoint_url(endpoint_url)
-    parsed = urlsplit(normalized)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return error_response(
-            INVALID_CONFIG_VALUE,
-            detail="endpoint_url must be an http or https URL with a host",
-        )
-    return normalized
 
 
 @settings_bp.app_context_processor
@@ -486,34 +398,10 @@ def update_config() -> Any:
                             config[section][backend_key][nested_key] = new_value
 
         if section == "env" and changed_fields:
-            from solstone.think.providers import PROVIDER_METADATA
-
-            # Build reverse map: env_key -> provider name
-            env_to_provider = {
-                meta["env_key"]: name
-                for name, meta in PROVIDER_METADATA.items()
-                if "env_key" in meta
-            }
             if "providers" not in config:
                 config["providers"] = {}
-
-            # Validate changed provider API keys
             if "key_validation" not in config["providers"]:
                 config["providers"]["key_validation"] = {}
-            for env_var in changed_fields:
-                provider = env_to_provider.get(env_var)
-                if provider:
-                    new_val = data.get(env_var, "")
-                    if new_val:
-                        from solstone.think.providers import (
-                            validate_key as _validate_key,
-                        )
-
-                        result = _validate_key(provider, new_val)
-                        result["timestamp"] = datetime.now(timezone.utc).isoformat()
-                        config["providers"]["key_validation"][provider] = result
-                    else:
-                        config["providers"]["key_validation"].pop(provider, None)
 
             # Validate service tokens (Rev.ai, Plaud) — not AI providers,
             # so they use their own validators instead of think.providers.
@@ -554,11 +442,10 @@ def update_config() -> Any:
                 params={"changed_fields": log_fields},
             )
 
-        key_validation = config.get("providers", {}).get("key_validation", {})
         return jsonify(
             {
                 "config": _project_public_config(config),
-                "key_validation": key_validation,
+                "key_validation": _service_key_validation(config),
                 "success": True,
             }
         )
@@ -926,359 +813,15 @@ def _sol_voice_response(settings: SolVoiceSettings) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Providers API
+# Service Token Validation API
 # ---------------------------------------------------------------------------
-
-VALID_TIERS = {1, 2, 3}
-
-
-def _local_model_error(model: str) -> Any:
-    return error_response(
-        INVALID_REQUEST_VALUE,
-        detail=(
-            f"Unknown local model: {model}. "
-            f"Must be one of: {', '.join(local_bootstrap.local_model_ids())}"
-        ),
-    )
-
-
-def _local_model_from_request() -> tuple[str | None, Any | None]:
-    raw = request.args.get("model")
-    model = local_bootstrap.accepted_request_model(raw)
-    if model is None:
-        return None, _local_model_error(raw or LOCAL_MODEL)
-    return model, None
-
-
-@settings_bp.route("/api/local/availability")
-def get_local_availability() -> Any:
-    try:
-        model, error = _local_model_from_request()
-        if error is not None:
-            return error
-        assert model is not None
-        return jsonify(local_bootstrap.get_availability_payload(model))
-    except Exception:
-        logger.exception("error loading local provider availability")
-        return _settings_operation_failed()
-
-
-@settings_bp.route("/api/local/bootstrap", methods=["POST"])
-def start_local_bootstrap() -> Any:
-    try:
-        model, error = _local_model_from_request()
-        if error is not None:
-            return error
-        assert model is not None
-        payload, status = local_bootstrap.start_bootstrap(model)
-        return jsonify(payload), status
-    except local_bootstrap.LocalBootstrapUnavailableError as exc:
-        return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
-    except local_bootstrap.LocalBootstrapStartError as exc:
-        logger.exception("error starting local provider bootstrap")
-        return _settings_operation_failed(str(exc))
-    except Exception:
-        logger.exception("error starting local provider bootstrap")
-        return _settings_operation_failed()
-
-
-@settings_bp.route("/api/local/bootstrap/status")
-def get_local_bootstrap_status() -> Any:
-    try:
-        model, error = _local_model_from_request()
-        if error is not None:
-            return error
-        assert model is not None
-        return jsonify(local_bootstrap.get_state(model))
-    except Exception:
-        logger.exception("error loading local provider bootstrap status")
-        return _settings_operation_failed()
-
-
-@settings_bp.route("/api/local/models")
-def get_local_models() -> Any:
-    try:
-        return jsonify(local_bootstrap.list_local_models())
-    except Exception:
-        logger.exception("error loading local provider models")
-        return _settings_operation_failed()
-
-
-@settings_bp.route("/api/local/endpoint", methods=["POST"])
-def update_local_endpoint() -> Any:
-    try:
-        request_data = request.get_json(silent=True)
-        if not isinstance(request_data, dict):
-            return error_response(MISSING_REQUEST_BODY, detail="No data provided")
-
-        raw_endpoint_url = request_data.get("endpoint_url")
-        if not isinstance(raw_endpoint_url, str) or not raw_endpoint_url.strip():
-            return error_response(MISSING_REQUIRED_FIELD, detail="endpoint_url")
-        endpoint_url = _validate_local_endpoint_url(raw_endpoint_url)
-        if not isinstance(endpoint_url, str):
-            return endpoint_url
-
-        raw_served_model_id = request_data.get("served_model_id")
-        if not isinstance(raw_served_model_id, str) or not raw_served_model_id.strip():
-            return error_response(MISSING_REQUIRED_FIELD, detail="served_model_id")
-        served_model_id = raw_served_model_id.strip()
-
-        credential_touched = "credential" in request_data
-        raw_credential = request_data.get("credential")
-        if (
-            credential_touched
-            and raw_credential is not None
-            and not isinstance(raw_credential, str)
-        ):
-            return error_response(INVALID_REQUEST_VALUE, detail="credential")
-
-        with hold_config_lock():
-            config = read_journal_config()
-            local_config = _ensure_local_provider_config(config)
-            before = dict(local_config)
-            local_config["endpoint_url"] = endpoint_url
-            local_config["served_model_id"] = served_model_id
-            if credential_touched:
-                credential = str(raw_credential or "").strip()
-                if credential:
-                    local_config["credential"] = credential
-                else:
-                    local_config.pop("credential", None)
-            changed_fields = _masked_local_endpoint_changes(
-                before,
-                local_config,
-                credential_touched=credential_touched,
-            )
-            write_journal_config(config)
-
-        if changed_fields:
-            log_app_action(
-                app="settings",
-                facet=None,
-                action="local_endpoint_update",
-                params={"changed_fields": changed_fields},
-            )
-        return jsonify(
-            {
-                "success": True,
-                "local_endpoint": _local_endpoint_public_payload(config),
-            }
-        )
-    except CorruptConfigError:
-        raise
-    except Exception:
-        logger.exception("error updating local endpoint")
-        return _settings_operation_failed()
-
-
-@settings_bp.route("/api/local/endpoint", methods=["DELETE"])
-def clear_local_endpoint() -> Any:
-    try:
-        with hold_config_lock():
-            config = read_journal_config()
-            local_config = _ensure_local_provider_config(config)
-            before = dict(local_config)
-            for key in ("endpoint_url", "served_model_id", "credential"):
-                local_config.pop(key, None)
-            changed_fields = _masked_local_endpoint_changes(
-                before,
-                local_config,
-                credential_touched=True,
-            )
-            write_journal_config(config)
-
-        if changed_fields:
-            log_app_action(
-                app="settings",
-                facet=None,
-                action="local_endpoint_clear",
-                params={"changed_fields": changed_fields},
-            )
-        return jsonify(
-            {
-                "success": True,
-                "local_endpoint": _local_endpoint_public_payload(config),
-            }
-        )
-    except CorruptConfigError:
-        raise
-    except Exception:
-        logger.exception("error clearing local endpoint")
-        return _settings_operation_failed()
-
-
-@settings_bp.route("/api/providers")
-def get_providers() -> Any:
-    """Return providers configuration with context defaults and API key status.
-
-    Returns:
-        - providers: List of available providers with labels
-        - generate: Current generate provider, tier, and backup
-        - cogitate: Current cogitate provider, tier, and backup
-        - contexts: Configured context overrides from journal.json
-        - context_defaults: Context registry with labels/groups for UI
-          (includes talent configs with type, schedule, and disabled state)
-        - api_keys: Boolean status for each provider's API key
-    """
-    try:
-        from solstone.think.models import (
-            TYPE_DEFAULTS,
-            get_context_registry,
-        )
-        from solstone.think.providers import (
-            build_provider_status,
-            get_provider_list,
-        )
-        from solstone.think.talent import get_talent_configs
-
-        config = get_journal_config()
-        providers_config = config.get("providers", {})
-
-        # Build type-specific settings from config with system defaults
-        type_settings = {}
-        for agent_type in ("generate", "cogitate"):
-            defaults = TYPE_DEFAULTS[agent_type]
-            type_config = providers_config.get(agent_type, {})
-            type_settings[agent_type] = {
-                "provider": type_config.get("provider", defaults["provider"]),
-                "tier": type_config.get("tier", defaults["tier"]),
-                "backup": type_config.get("backup", defaults["backup"]),
-            }
-
-        # Get context overrides from config
-        contexts = providers_config.get("contexts", {})
-
-        # Build context defaults with metadata for UI (uses dynamic registry)
-        context_defaults = {}
-        for pattern, ctx_config in get_context_registry().items():
-            context_defaults[pattern] = {
-                "tier": ctx_config["tier"],
-                "label": ctx_config["label"],
-                "group": ctx_config["group"],
-            }
-            # Include type for talent contexts
-            if "type" in ctx_config:
-                context_defaults[pattern]["type"] = ctx_config["type"]
-
-        # Enhance talent contexts with additional metadata from get_talent_configs
-        from solstone.think.talent import key_to_context
-
-        talent_configs = get_talent_configs(include_disabled=True)
-        for key, info in talent_configs.items():
-            context_key = key_to_context(key)
-
-            if context_key in context_defaults:
-                # Add talent-specific fields
-                if "schedule" in info:
-                    context_defaults[context_key]["schedule"] = info["schedule"]
-                context_defaults[context_key]["disabled"] = info.get("disabled", False)
-
-        # Get providers list from registry
-        providers_list = get_provider_list()
-
-        # Check API key status for each provider using os.getenv()
-        # This reflects runtime availability (loaded from journal.json via setup_cli)
-        api_keys = {}
-        for p in providers_list:
-            env_key = p.get("env_key", "")
-            api_keys[p["name"]] = bool(os.getenv(env_key)) if env_key else False
-
-        # Get cached key validation results
-        key_validation = providers_config.get("key_validation", {})
-
-        # Vertex SA credentials status (never expose secrets)
-        vertex_creds_path = providers_config.get("vertex_credentials")
-        vertex_creds_configured = False
-        vertex_creds_email = ""
-        if vertex_creds_path and Path(vertex_creds_path).exists():
-            vertex_creds_configured = True
-            try:
-                creds_data = json.loads(Path(vertex_creds_path).read_text())
-                vertex_creds_email = creds_data.get("client_email", "")
-            except Exception:
-                pass
-
-        provider_status = build_provider_status(providers_list, vertex_creds_configured)
-        local_override = _local_override_payload(config)
-        raw_local_model = request.args.get("local_model")
-        local_model_id = local_bootstrap.accepted_request_model(raw_local_model)
-        if local_model_id is None:
-            return _local_model_error(raw_local_model or LOCAL_MODEL)
-        local_status = local_bootstrap.get_state(local_model_id)
-        ai_readiness = build_readiness_snapshot(
-            local_model_id=local_model_id,
-            include_local=not local_bootstrap._is_mlx_backend(),
-        )
-
-        return jsonify(
-            {
-                "providers": providers_list,
-                "provider_status": provider_status,
-                "ai_readiness": ai_readiness,
-                "generate": type_settings["generate"],
-                "cogitate": type_settings["cogitate"],
-                "contexts": contexts,
-                "context_defaults": context_defaults,
-                "api_keys": api_keys,
-                "key_validation": key_validation,
-                "local": local_status,
-                "local_override": local_override,
-                "local_backend": "mlx"
-                if local_bootstrap._is_mlx_backend()
-                else "local",
-                "google_backend": providers_config.get("google_backend", "auto"),
-                "vertex_credentials_configured": vertex_creds_configured,
-                "vertex_credentials_email": vertex_creds_email,
-            }
-        )
-    except Exception:
-        logger.exception("error loading providers")
-        return _settings_operation_failed()
-
-
-@settings_bp.route("/api/providers/local/status")
-def get_local_provider_status() -> Any:
-    """Return local provider readiness status."""
-
-    try:
-        from solstone.think.providers import build_provider_status, get_provider_list
-
-        providers_list = get_provider_list()
-        local_provider = next(
-            provider for provider in providers_list if provider["name"] == "local"
-        )
-        provider_status = build_provider_status([local_provider], False)
-        return jsonify(provider_status["local"])
-    except Exception:
-        logger.exception("error loading local provider status")
-        return _settings_operation_failed()
 
 
 def _compute_key_validation(config: dict[str, Any]) -> dict[str, Any]:
-    """Validate configured provider and service keys without mutating config."""
-
-    from solstone.think.providers import PROVIDER_METADATA
-    from solstone.think.providers import validate_key as _validate_key
+    """Validate configured Rev.ai and Plaud tokens without mutating config."""
 
     env_config = config.get("env", {})
-
-    # Build reverse map: env_key -> provider name
-    env_to_provider = {
-        meta["env_key"]: name
-        for name, meta in PROVIDER_METADATA.items()
-        if "env_key" in meta
-    }
-
-    key_validation = {}
-
-    for env_var, provider in env_to_provider.items():
-        api_key = env_config.get(env_var, "")
-        if api_key:
-            result = _validate_key(provider, api_key)
-            result["timestamp"] = datetime.now(timezone.utc).isoformat()
-            key_validation[provider] = result
-
-    # Validate service tokens (Rev.ai, Plaud)
+    key_validation: dict[str, Any] = {}
     service_token_validators = {
         "REVAI_ACCESS_TOKEN": ("revai", "solstone.observe.transcribe.revai"),
         "PLAUD_ACCESS_TOKEN": ("plaud", "solstone.think.importers.plaud"),
@@ -1292,30 +835,13 @@ def _compute_key_validation(config: dict[str, Any]) -> dict[str, Any]:
             result = mod.validate_token(api_key)
             result["timestamp"] = datetime.now(timezone.utc).isoformat()
             key_validation[val_key] = result
-
-    # Validate vertex credentials if configured
-    providers_config = config.get("providers", {})
-    if providers_config.get("google_backend") == "vertex" and providers_config.get(
-        "vertex_credentials"
-    ):
-        from solstone.think.providers.google import validate_vertex_credentials
-
-        result = validate_vertex_credentials(
-            providers_config["vertex_credentials"],
-        )
-        result["timestamp"] = datetime.now(timezone.utc).isoformat()
-        key_validation["google"] = result
-
     return key_validation
 
 
 @settings_bp.route("/api/validate-keys", methods=["GET", "POST"])
 def validate_all_keys() -> Any:
-    """Re-validate all configured provider API keys.
+    """Re-validate configured transcription/import service tokens."""
 
-    Reads keys from journal.json config (not environment), validates each
-    against the provider API, and stores results on POST only.
-    """
     try:
         config = get_journal_config()
         key_validation = _compute_key_validation(config)
@@ -1323,483 +849,16 @@ def validate_all_keys() -> Any:
         if request.method == "GET":
             return jsonify({"key_validation": key_validation})
 
-        if "providers" not in config:
-            config["providers"] = {}
-        config["providers"]["key_validation"] = key_validation
+        providers_config = config.setdefault("providers", {})
+        existing = providers_config.setdefault("key_validation", {})
+        for key in ("revai", "plaud"):
+            existing.pop(key, None)
+        existing.update(key_validation)
         write_journal_config(config)
 
         return jsonify({"success": True, "key_validation": key_validation})
     except Exception:
-        logger.exception("error validating keys")
-        return _settings_operation_failed()
-
-
-@settings_bp.route("/api/providers", methods=["PUT", "POST"])
-def update_providers() -> Any:
-    """Update providers configuration.
-
-    Accepts JSON with optional keys:
-        - generate: {provider?, tier?, backup?} - Set generate defaults
-        - cogitate: {provider?, tier?, backup?} - Set cogitate defaults
-        - contexts: {pattern: {provider?, tier?, disabled?, extract?} | null}
-          Set or clear context overrides
-
-    Setting a context to null removes the override.
-    For talent contexts, disabled and extract can also be set.
-    """
-    try:
-        from solstone.think.providers import PROVIDER_REGISTRY
-
-        request_data = request.get_json()
-        if not request_data:
-            return error_response(MISSING_REQUEST_BODY, detail="No data provided")
-
-        # Load existing config
-        config = get_journal_config()
-        old_providers = copy.deepcopy(config.get("providers", {}))
-
-        # Ensure providers section exists
-        if "providers" not in config:
-            config["providers"] = {}
-
-        changed_fields = {}
-
-        # Handle type-specific updates (generate, cogitate)
-        for agent_type in ("generate", "cogitate"):
-            if agent_type not in request_data:
-                continue
-
-            type_data = request_data[agent_type]
-            if agent_type not in config["providers"]:
-                config["providers"][agent_type] = {}
-
-            old_type = old_providers.get(agent_type, {})
-
-            # Validate and update provider
-            if "provider" in type_data:
-                provider = type_data["provider"]
-                if provider not in PROVIDER_REGISTRY:
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail=(
-                            f"Invalid provider: {provider}. "
-                            f"Must be one of: {', '.join(sorted(PROVIDER_REGISTRY.keys()))}"
-                        ),
-                    )
-                if old_type.get("provider") != provider:
-                    changed_fields[f"{agent_type}.provider"] = {
-                        "old": old_type.get("provider"),
-                        "new": provider,
-                    }
-                config["providers"][agent_type]["provider"] = provider
-
-            # Validate and update tier
-            if "tier" in type_data:
-                tier = type_data["tier"]
-                if tier not in VALID_TIERS:
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail=f"Invalid tier: {tier}. Must be 1, 2, or 3.",
-                    )
-                if old_type.get("tier") != tier:
-                    changed_fields[f"{agent_type}.tier"] = {
-                        "old": old_type.get("tier"),
-                        "new": tier,
-                    }
-                config["providers"][agent_type]["tier"] = tier
-
-            # Validate and update backup
-            if "backup" in type_data:
-                backup = type_data["backup"]
-                if backup not in PROVIDER_REGISTRY:
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail=(
-                            f"Invalid backup provider: {backup}. "
-                            f"Must be one of: {', '.join(sorted(PROVIDER_REGISTRY.keys()))}"
-                        ),
-                    )
-                if old_type.get("backup") != backup:
-                    changed_fields[f"{agent_type}.backup"] = {
-                        "old": old_type.get("backup"),
-                        "new": backup,
-                    }
-                config["providers"][agent_type]["backup"] = backup
-
-        # Handle context overrides
-        if "contexts" in request_data:
-            contexts_data = request_data["contexts"]
-            if "contexts" not in config["providers"]:
-                config["providers"]["contexts"] = {}
-
-            old_contexts = old_providers.get("contexts", {})
-
-            for pattern, ctx_config in contexts_data.items():
-                old_ctx = old_contexts.get(pattern)
-
-                # null means remove the override
-                if ctx_config is None:
-                    if pattern in config["providers"]["contexts"]:
-                        changed_fields[f"contexts.{pattern}"] = {
-                            "old": old_ctx,
-                            "new": None,
-                        }
-                        del config["providers"]["contexts"][pattern]
-                    continue
-
-                # Validate provider if specified
-                if "provider" in ctx_config:
-                    provider = ctx_config["provider"]
-                    if provider not in PROVIDER_REGISTRY:
-                        return error_response(
-                            INVALID_CONFIG_VALUE,
-                            detail=f"Invalid provider for {pattern}: {provider}",
-                        )
-
-                # Validate tier if specified
-                if "tier" in ctx_config:
-                    tier = ctx_config["tier"]
-                    if tier not in VALID_TIERS:
-                        return error_response(
-                            INVALID_CONFIG_VALUE,
-                            detail=f"Invalid tier for {pattern}: {tier}",
-                        )
-
-                # Validate disabled if specified (must be boolean)
-                if "disabled" in ctx_config:
-                    if not isinstance(ctx_config["disabled"], bool):
-                        return error_response(
-                            INVALID_CONFIG_VALUE,
-                            detail=f"disabled for {pattern} must be a boolean",
-                        )
-
-                # Validate extract if specified (must be boolean)
-                if "extract" in ctx_config:
-                    if not isinstance(ctx_config["extract"], bool):
-                        return error_response(
-                            INVALID_CONFIG_VALUE,
-                            detail=f"extract for {pattern} must be a boolean",
-                        )
-
-                # Only store if there's something to override
-                if ctx_config:
-                    if old_ctx != ctx_config:
-                        changed_fields[f"contexts.{pattern}"] = {
-                            "old": old_ctx,
-                            "new": ctx_config,
-                        }
-                    config["providers"]["contexts"][pattern] = ctx_config
-
-        # Handle Google backend settings
-        if "google_backend" in request_data:
-            backend = request_data["google_backend"]
-            if backend not in ("auto", "aistudio", "vertex"):
-                return error_response(
-                    INVALID_CONFIG_VALUE,
-                    detail=(
-                        f"Invalid google_backend: {backend}. "
-                        "Must be 'auto', 'aistudio', or 'vertex'."
-                    ),
-                )
-            old_val = old_providers.get("google_backend", "auto")
-            if old_val != backend:
-                changed_fields["google_backend"] = {"old": old_val, "new": backend}
-            config["providers"]["google_backend"] = backend
-
-        # Handle vertex credentials
-        if "vertex_credentials" in request_data:
-            vertex_creds_value = request_data["vertex_credentials"]
-
-            if vertex_creds_value:
-                # Parse and validate JSON structure
-                try:
-                    creds_data = (
-                        json.loads(vertex_creds_value)
-                        if isinstance(vertex_creds_value, str)
-                        else vertex_creds_value
-                    )
-                except json.JSONDecodeError:
-                    return error_response(
-                        INVALID_JSON_REQUEST,
-                        detail="Invalid JSON in vertex_credentials",
-                    )
-
-                required_fields = (
-                    "type",
-                    "project_id",
-                    "client_email",
-                    "private_key",
-                )
-                missing = [f for f in required_fields if f not in creds_data]
-                if missing:
-                    return error_response(
-                        MISSING_REQUIRED_FIELD,
-                        detail=f"Missing required fields: {', '.join(missing)}",
-                    )
-
-                # Save credentials file
-                creds_file = save_vertex_credentials(
-                    creds_data,
-                    Path(state.journal_root),
-                )
-
-                # Store path in config
-                old_val = old_providers.get("vertex_credentials", "")
-                creds_path_str = str(creds_file)
-                if old_val != creds_path_str:
-                    changed_fields["vertex_credentials"] = {
-                        "old": old_val,
-                        "new": creds_path_str,
-                    }
-                config["providers"]["vertex_credentials"] = creds_path_str
-
-                # Validate credentials by attempting to list models
-                validation = validate_vertex_credentials(creds_path_str)
-
-                if not validation.get("valid"):
-                    # Still save the file, but report the error.
-                    # Don't block save - credentials may be valid with the right service account.
-                    pass
-
-                # Store validation result
-                if "key_validation" not in config["providers"]:
-                    config["providers"]["key_validation"] = {}
-                config["providers"]["key_validation"]["google_vertex"] = {
-                    **validation,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
-
-            else:
-                # Remove credentials — only delete the canonical path
-                old_path = config["providers"].get("vertex_credentials")
-                if old_path:
-                    changed_fields["vertex_credentials"] = {
-                        "old": old_path,
-                        "new": None,
-                    }
-                    # Only delete the file we created, not arbitrary paths
-                    delete_vertex_credentials(old_path, Path(state.journal_root))
-                    config["providers"].pop("vertex_credentials", None)
-                    # Clear validation
-                    kv = config["providers"].get("key_validation", {})
-                    kv.pop("google_vertex", None)
-
-        write_journal_config(config)
-
-        # Log if something changed
-        if changed_fields:
-            log_app_action(
-                app="settings",
-                facet=None,
-                action="providers_update",
-                params={"changed_fields": changed_fields},
-            )
-
-        # Return updated providers config
-        return get_providers()
-
-    except Exception:
-        logger.exception("error saving providers")
-        return _settings_operation_failed()
-
-
-@settings_bp.route("/api/vertex-credentials/import", methods=["POST"])
-def import_vertex_credentials() -> Any:
-    """Import Vertex service-account credentials from a server-side path."""
-
-    try:
-        request_data = request.get_json()
-        if not isinstance(request_data, dict):
-            return error_response(MISSING_REQUEST_BODY, detail="No data provided")
-
-        raw_path = request_data.get("path")
-        if not isinstance(raw_path, str) or not raw_path.strip():
-            return error_response(MISSING_REQUIRED_FIELD, detail="path")
-
-        source = Path(raw_path)
-        if not source.exists():
-            return error_response(FILE_NOT_FOUND, detail=raw_path)
-
-        try:
-            creds_data = json.loads(source.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return error_response(INVALID_JSON_REQUEST, detail=raw_path)
-        except OSError:
-            return error_response(FILE_READ_FAILED, detail=raw_path)
-
-        required_fields = ("type", "project_id", "client_email", "private_key")
-        missing = [field for field in required_fields if field not in creds_data]
-        if missing:
-            return error_response(
-                MISSING_REQUIRED_FIELD,
-                detail=", ".join(missing),
-            )
-
-        creds_file = save_vertex_credentials(creds_data, Path(get_journal()))
-        config = get_journal_config()
-        config.setdefault("providers", {})
-        config["providers"]["vertex_credentials"] = str(creds_file)
-
-        validation = None
-        if not bool(request_data.get("skip_validation", False)):
-            validation = validate_vertex_credentials(str(creds_file))
-            validation["timestamp"] = datetime.now(timezone.utc).isoformat()
-            config["providers"].setdefault("key_validation", {})
-            config["providers"]["key_validation"]["google_vertex"] = validation
-
-        write_journal_config(config)
-
-        return jsonify(
-            {
-                "configured": True,
-                "email": creds_data.get("client_email", ""),
-                "path": str(creds_file),
-                "validation": validation,
-            }
-        )
-    except Exception:
-        logger.exception("error importing vertex credentials")
-        return _settings_operation_failed()
-
-
-# ---------------------------------------------------------------------------
-# Generators API (compatibility layer for Settings UI)
-# ---------------------------------------------------------------------------
-
-
-def _build_generator_info(key: str, info: dict) -> dict:
-    """Build generator info dict using talent config for Settings UI.
-
-    Transforms talent config metadata into the format expected by the
-    Settings UI Insights section.
-    """
-    return {
-        "key": key,
-        "title": info.get("title", info.get("label", key)),
-        "description": info.get("description", ""),
-        "source": info.get("source", "system"),
-        "app": info.get("app"),
-        "disabled": info.get("disabled", False),
-    }
-
-
-@settings_bp.route("/api/generators")
-def get_generators() -> Any:
-    """Return generators grouped by schedule for Settings UI.
-
-    This is a compatibility layer that transforms the unified talent config
-    into the format expected by the Settings UI Insights section.
-
-    Returns:
-        - segment: List of segment-schedule generators
-        - daily: List of daily-schedule generators
-    """
-    try:
-        from solstone.think.talent import get_talent_configs
-
-        # Get all generate prompts
-        all_generators = get_talent_configs(type="generate", include_disabled=True)
-
-        segment = []
-        daily = []
-
-        for key, info in all_generators.items():
-            gen_info = _build_generator_info(key, info)
-            schedule = info.get("schedule")
-
-            if schedule == "segment":
-                segment.append(gen_info)
-            elif schedule == "daily":
-                daily.append(gen_info)
-            # Skip generators without valid schedule
-
-        return jsonify({"segment": segment, "daily": daily})
-
-    except Exception:
-        logger.exception("error loading generators")
-        return _settings_operation_failed()
-
-
-@settings_bp.route("/api/generators", methods=["PUT"])
-def update_generators() -> Any:
-    """Update generator settings via providers.contexts.
-
-    This is a compatibility layer that accepts the old generators API
-    format and stores settings in the unified providers.contexts location.
-
-    Accepts JSON with generator keys mapping to {disabled?, extract?}.
-    """
-    try:
-        request_data = request.get_json()
-        if not request_data:
-            return error_response(MISSING_REQUEST_BODY, detail="No data provided")
-
-        # Load existing config
-        config = get_journal_config()
-        old_providers = copy.deepcopy(config.get("providers", {}))
-
-        if "providers" not in config:
-            config["providers"] = {}
-        if "contexts" not in config["providers"]:
-            config["providers"]["contexts"] = {}
-
-        old_contexts = old_providers.get("contexts", {})
-        changed_fields = {}
-
-        from solstone.think.talent import key_to_context
-
-        for key, updates in request_data.items():
-            if not isinstance(updates, dict):
-                continue
-
-            context_key = key_to_context(key)
-
-            # Get or create context config
-            ctx_config = config["providers"]["contexts"].get(context_key, {})
-            old_ctx = old_contexts.get(context_key, {})
-
-            # Apply updates
-            if "disabled" in updates:
-                if not isinstance(updates["disabled"], bool):
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail=f"disabled must be boolean for {key}",
-                    )
-                ctx_config["disabled"] = updates["disabled"]
-
-            if "extract" in updates:
-                if not isinstance(updates["extract"], bool):
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail=f"extract must be boolean for {key}",
-                    )
-                ctx_config["extract"] = updates["extract"]
-
-            # Only store if there's something to override
-            if ctx_config:
-                if old_ctx != ctx_config:
-                    changed_fields[f"contexts.{context_key}"] = {
-                        "old": old_ctx if old_ctx else None,
-                        "new": ctx_config,
-                    }
-                config["providers"]["contexts"][context_key] = ctx_config
-
-        write_journal_config(config)
-
-        # Log if something changed
-        if changed_fields:
-            log_app_action(
-                app="settings",
-                facet=None,
-                action="generators_update",
-                params={"changed_fields": changed_fields},
-            )
-
-        # Return updated generators
-        return get_generators()
-
-    except Exception:
-        logger.exception("error saving generators")
+        logger.exception("error validating service tokens")
         return _settings_operation_failed()
 
 

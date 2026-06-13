@@ -242,8 +242,13 @@ def test_validate_key_dispatcher_success():
 
 
 def test_validate_key_dispatcher_unknown_provider():
-    with pytest.raises(ValueError, match="Unknown provider"):
+    with pytest.raises(ValueError, match="Unknown provider") as exc_info:
         validate_key("bogus", "test-key")
+
+    assert (
+        str(exc_info.value)
+        == "Unknown provider: 'bogus'. Valid providers: anthropic, google, local, openai"
+    )
 
 
 def test_validate_key_timeout():
@@ -258,16 +263,16 @@ def test_validate_key_timeout():
     assert "timed out" in result["error"]
 
 
-def test_update_config_saves_key_validation(settings_client):
+def test_thinking_keys_saves_key_validation(settings_client):
     client, journal = settings_client
 
     with patch(
-        "solstone.think.providers.validate_key",
+        "solstone.apps.thinking.routes.validate_key",
         return_value={"valid": False, "error": "bad key"},
     ):
         response = client.put(
-            "/app/settings/api/config",
-            json={"section": "env", "data": {"GOOGLE_API_KEY": "bad-key"}},
+            "/app/thinking/api/keys",
+            json={"env_var": "GOOGLE_API_KEY", "value": "bad-key"},
         )
 
     assert response.status_code == 200
@@ -281,7 +286,38 @@ def test_update_config_saves_key_validation(settings_client):
     assert config["providers"]["key_validation"]["google"]["valid"] is False
 
 
-def test_update_config_clears_key_validation(settings_client):
+@pytest.mark.parametrize(
+    ("reason_code", "error"),
+    [
+        ("provider_key_invalid", "invalid credentials"),
+        ("chat_timeout", "provider timed out"),
+        ("network_unreachable", "network down"),
+    ],
+)
+def test_thinking_keys_surfaces_distinct_validation_failures(
+    settings_client, reason_code, error
+):
+    client, _journal = settings_client
+
+    with patch(
+        "solstone.apps.thinking.routes.validate_key",
+        return_value={"valid": False, "error": error, "reason_code": reason_code},
+    ):
+        response = client.put(
+            "/app/thinking/api/keys",
+            json={"env_var": "OPENAI_API_KEY", "value": "bad-key"},
+        )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    validation = payload["key_validation"]["openai"]
+    assert validation["valid"] is False
+    assert validation["reason_code"] == reason_code
+    assert validation["error"] == error
+    assert validation.get("ready") is not True
+
+
+def test_thinking_keys_clears_key_validation(settings_client):
     client, journal = settings_client
     config_path = journal / "config" / "journal.json"
     config = json.loads(config_path.read_text())
@@ -292,8 +328,8 @@ def test_update_config_clears_key_validation(settings_client):
     config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
     response = client.put(
-        "/app/settings/api/config",
-        json={"section": "env", "data": {"GOOGLE_API_KEY": ""}},
+        "/app/thinking/api/keys",
+        json={"env_var": "GOOGLE_API_KEY", "value": ""},
     )
 
     assert response.status_code == 200
@@ -302,31 +338,32 @@ def test_update_config_clears_key_validation(settings_client):
     assert "google" not in payload["key_validation"]
 
     saved = json.loads(config_path.read_text())
+    assert "GOOGLE_API_KEY" not in saved["env"]
     assert "google" not in saved["providers"]["key_validation"]
 
 
-def test_update_config_env_mirrors_os_environ(settings_client, monkeypatch):
+def test_thinking_keys_env_mirrors_os_environ(settings_client, monkeypatch):
     """The HTTP env-section save path must mirror into os.environ in-process,
-    matching the CLI pattern (apps/settings/call.py keys_set/keys_clear).
+    matching the CLI pattern (apps/thinking/call.py keys_set/keys_clear).
     Without this, /api/providers reports `configured: false` until restart."""
     client, _ = settings_client
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
     with patch(
-        "solstone.think.providers.validate_key",
+        "solstone.apps.thinking.routes.validate_key",
         return_value={"valid": True},
     ):
         response = client.put(
-            "/app/settings/api/config",
-            json={"section": "env", "data": {"GOOGLE_API_KEY": "live-key"}},
+            "/app/thinking/api/keys",
+            json={"env_var": "GOOGLE_API_KEY", "value": "live-key"},
         )
 
     assert response.status_code == 200
     assert os.environ.get("GOOGLE_API_KEY") == "live-key"
 
     response = client.put(
-        "/app/settings/api/config",
-        json={"section": "env", "data": {"GOOGLE_API_KEY": ""}},
+        "/app/thinking/api/keys",
+        json={"env_var": "GOOGLE_API_KEY", "value": ""},
     )
 
     assert response.status_code == 200
@@ -342,7 +379,7 @@ def test_get_providers_includes_key_validation(settings_client):
     }
     config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
-    response = client.get("/app/settings/api/providers")
+    response = client.get("/app/thinking/api/providers")
 
     assert response.status_code == 200
     payload = response.get_json()
@@ -363,8 +400,8 @@ def test_validate_all_keys_endpoint(settings_client):
             "error": "" if provider == "google" else "bad key",
         }
 
-    with patch("solstone.think.providers.validate_key", side_effect=fake_validate):
-        response = client.post("/app/settings/api/validate-keys")
+    with patch("solstone.apps.thinking.routes.validate_key", side_effect=fake_validate):
+        response = client.post("/app/thinking/api/validate-keys")
 
     assert response.status_code == 200
     payload = response.get_json()
@@ -377,12 +414,41 @@ def test_validate_all_keys_endpoint(settings_client):
     assert set(saved["providers"]["key_validation"]) == {"google", "openai"}
 
 
+def test_thinking_lane_switch_requires_byo_provider(settings_client):
+    client, _journal = settings_client
+
+    response = client.put("/app/thinking/api/providers", json={"lane": "byo"})
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["reason_code"] == "invalid_config_value"
+    assert payload["detail"] == (
+        "No BYO provider selected. Must be one of: anthropic, google, openai"
+    )
+
+
+def test_thinking_lane_switch_rejects_unsupported_byo_provider(settings_client):
+    client, _journal = settings_client
+
+    response = client.put(
+        "/app/thinking/api/providers",
+        json={"lane": "byo", "provider": "bogus"},
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["reason_code"] == "invalid_config_value"
+    assert payload["detail"] == (
+        "Invalid provider for BYO lane. Must be one of: anthropic, google, openai"
+    )
+
+
 def test_providers_google_backend_roundtrip(settings_client):
     """PUT/GET google_backend."""
     client, journal = settings_client
 
     response = client.put(
-        "/app/settings/api/providers",
+        "/app/thinking/api/providers",
         json={"google_backend": "vertex"},
     )
     assert response.status_code == 200
@@ -394,7 +460,7 @@ def test_providers_google_backend_roundtrip(settings_client):
     assert config["providers"]["google_backend"] == "vertex"
 
     # GET returns the same
-    response = client.get("/app/settings/api/providers")
+    response = client.get("/app/thinking/api/providers")
     payload = response.get_json()
     assert payload["google_backend"] == "vertex"
 
@@ -416,14 +482,14 @@ def test_providers_vertex_credentials_roundtrip(settings_client):
 
     # Mock validation (don't actually call Google API)
     with patch(
-        "solstone.apps.settings.routes.validate_vertex_credentials",
+        "solstone.apps.thinking.routes.validate_vertex_credentials",
         return_value={
             "valid": True,
             "email": "test@test-project.iam.gserviceaccount.com",
         },
     ):
         response = client.put(
-            "/app/settings/api/providers",
+            "/app/thinking/api/providers",
             json={"vertex_credentials": sa_json},
         )
     assert response.status_code == 200
@@ -444,7 +510,7 @@ def test_providers_vertex_credentials_roundtrip(settings_client):
     assert config["providers"]["vertex_credentials"] == str(creds_file)
 
     # GET returns status without secrets
-    response = client.get("/app/settings/api/providers")
+    response = client.get("/app/thinking/api/providers")
     payload = response.get_json()
     assert payload["vertex_credentials_configured"] is True
     assert (
@@ -455,7 +521,7 @@ def test_providers_vertex_credentials_roundtrip(settings_client):
 
     # Remove credentials
     response = client.put(
-        "/app/settings/api/providers",
+        "/app/thinking/api/providers",
         json={"vertex_credentials": ""},
     )
     assert response.status_code == 200
@@ -470,7 +536,7 @@ def test_providers_vertex_credentials_invalid_json(settings_client):
     client, _journal = settings_client
 
     response = client.put(
-        "/app/settings/api/providers",
+        "/app/thinking/api/providers",
         json={"vertex_credentials": "not json"},
     )
     assert response.status_code == 400
@@ -484,7 +550,7 @@ def test_providers_vertex_credentials_missing_fields(settings_client):
     client, _journal = settings_client
 
     response = client.put(
-        "/app/settings/api/providers",
+        "/app/thinking/api/providers",
         json={"vertex_credentials": json.dumps({"type": "service_account"})},
     )
     assert response.status_code == 400
@@ -498,7 +564,7 @@ def test_providers_google_backend_invalid(settings_client):
     client, _journal = settings_client
 
     response = client.put(
-        "/app/settings/api/providers",
+        "/app/thinking/api/providers",
         json={"google_backend": "invalid"},
     )
     assert response.status_code == 400
@@ -521,13 +587,42 @@ def test_validate_all_keys_with_vertex_credentials(settings_client):
     config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
     with patch(
-        "solstone.think.providers.google.validate_vertex_credentials",
+        "solstone.apps.thinking.routes.validate_vertex_credentials",
         return_value={"valid": True, "backend": "vertex"},
     ) as mock_validate:
-        response = client.post("/app/settings/api/validate-keys")
+        response = client.post("/app/thinking/api/validate-keys")
 
     assert response.status_code == 200
     payload = response.get_json()
-    assert payload["key_validation"]["google"]["valid"] is True
-    assert payload["key_validation"]["google"]["backend"] == "vertex"
+    assert payload["key_validation"]["google_vertex"]["valid"] is True
+    assert payload["key_validation"]["google_vertex"]["backend"] == "vertex"
     mock_validate.assert_called_once()
+
+
+def test_validate_all_keys_surfaces_vertex_credential_failure(settings_client):
+    client, journal = settings_client
+    config_path = journal / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
+    config.setdefault("providers", {})["google_backend"] = "vertex"
+    config["providers"]["vertex_credentials"] = str(
+        journal / "config" / "vertex-credentials.json"
+    )
+    config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+
+    with patch(
+        "solstone.apps.thinking.routes.validate_vertex_credentials",
+        return_value={
+            "valid": False,
+            "error": "Application Default Credentials failed",
+            "reason_code": "provider_key_invalid",
+        },
+    ):
+        response = client.get("/app/thinking/api/validate-keys")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    validation = payload["key_validation"]["google_vertex"]
+    assert validation["valid"] is False
+    assert validation["reason_code"] == "provider_key_invalid"
+    assert validation["error"] == "Application Default Credentials failed"
+    assert validation.get("ready") is not True

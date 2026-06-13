@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from solstone.apps.settings.vertex_credentials import (
+from solstone.apps.thinking.vertex_credentials import (
     delete_vertex_credentials,
     save_vertex_credentials,
 )
