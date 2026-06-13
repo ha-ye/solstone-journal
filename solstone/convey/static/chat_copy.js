@@ -14,9 +14,9 @@
       "errored": "Couldn't finish the change"
     },
     "support": {
-      "running": "Reaching sol pbc…",
-      "finished": "Reached sol pbc",
-      "errored": "Couldn't reach sol pbc"
+      "running": "Reaching solstone support…",
+      "finished": "Reached solstone support",
+      "errored": "Couldn't reach solstone support"
     }
   };
 
@@ -35,6 +35,10 @@
     CHAT_QUEUE_DEPTH_CAP_MESSAGE: "Give sol a moment to catch up — you have 10 messages waiting.",
     CHAT_LIVENESS_THINKING: "sol is thinking…",
     CHAT_LIVENESS_TASK_FORMAT: "{label} {task}",
+    CHAT_LIVENESS_SUPPORT: "reaching solstone support on your behalf…",
+    CHAT_CAPACITY_SUPPORT_ROUTE_FROM: "sol",
+    CHAT_CAPACITY_SUPPORT_ROUTE_TO: "solstone support",
+    CHAT_CAPACITY_SUPPORT_SUB: "reaching out on your behalf · nothing leaves without your ok",
     CHAT_CLOSER_LOOP_EXHAUSTED_PREFIX: "Here's what I have so far:",
     CHAT_CLOSER_DIFFERENT_ANGLE_SUFFIX: "Want me to try a different angle?",
     CHAT_CLOSER_TALENT_ERRORED_FORMAT: "I couldn't finish that lookup — {reason}. Want to try a different angle, or rephrase the question?",

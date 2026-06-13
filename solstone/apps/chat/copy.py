@@ -11,9 +11,9 @@ TALENT_LABEL_READ_ERRORED = "Couldn't finish reading your journal"
 TALENT_LABEL_EXEC_RUNNING = "Making that change…"
 TALENT_LABEL_EXEC_FINISHED = "Made the change"
 TALENT_LABEL_EXEC_ERRORED = "Couldn't finish the change"
-TALENT_LABEL_SUPPORT_RUNNING = "Reaching sol pbc…"
-TALENT_LABEL_SUPPORT_FINISHED = "Reached sol pbc"
-TALENT_LABEL_SUPPORT_ERRORED = "Couldn't reach sol pbc"
+TALENT_LABEL_SUPPORT_RUNNING = "Reaching solstone support…"
+TALENT_LABEL_SUPPORT_FINISHED = "Reached solstone support"
+TALENT_LABEL_SUPPORT_ERRORED = "Couldn't reach solstone support"
 
 # T1.4 — queue depth indicators (lowercase "sol" per system-anatomy canon)
 CHAT_QUEUE_INDICATOR_SINGULAR = "1 message waiting"

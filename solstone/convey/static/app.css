@@ -1680,6 +1680,22 @@ body.menu-all .menu-bar {
   box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.05), 0 2px 12px rgba(0, 0, 0, 0.08);
 }
 
+.app-bar--support {
+  --facet-color: #01579b;
+  --facet-bg:    #0288d114;
+  --facet-border:#bfe2f2;
+  box-shadow: inset 3px 0 0 #0288d1, 0 -4px 12px rgba(0,0,0,.05), 0 2px 12px rgba(0,0,0,.08);
+}
+.chat-bar-capacity {
+  flex: 1 0 100%; display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px; line-height: 1.3; color: #01579b; padding-bottom: 2px;
+}
+.chat-bar-capacity[hidden] { display: none; }
+.chat-bar-capacity-dot { width:8px; height:8px; border-radius:50%; background:#0288d1; flex:0 0 auto; animation: sol-ping-pulse 1.6s ease-in-out infinite; }
+.chat-bar-capacity-route { font-weight:700; }
+.chat-bar-capacity-route .cap-arrow { opacity:.6; margin:0 5px; font-weight:400; }
+.chat-bar-capacity-sub { color:#5a6b78; font-weight:400; }
+
 .app-bar::before {
   content: '';
   position: absolute;

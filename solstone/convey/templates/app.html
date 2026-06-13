@@ -166,6 +166,7 @@
   const solPingDot = document.getElementById('chatBarSolPingDot');
   const statusText = document.getElementById('chatBarStatusText');
   const queueStatus = document.getElementById('chatBarQueue');
+  const capacityEl = document.getElementById('chatBarCapacity');
   const solPingDismiss = document.getElementById('chatBarSolPingDismiss');
   const talentsTray = document.getElementById('chatBarTalents');
   const form = document.getElementById('chatBarForm');
@@ -194,6 +195,7 @@
   let solPingOfflineTimer = null;
   let solPingConnectionUnsub = null;
   let statusErrorActive = false;
+  let supportCapacityActive = false;
 
   function escapeHtml(value) {
     return String(value || '')
@@ -295,6 +297,44 @@
       statusWrap.removeAttribute('tabindex');
     }
     statusErrorActive = false;
+  }
+
+  function isSupportTalentRunning() {
+    for (const entry of talentState.values()) {
+      if (entry && entry.name === 'support' && entry.status === 'running') return true;
+    }
+    return false;
+  }
+
+  function populateSupportCapacityCopy() {
+    if (!capacityEl) return;
+    var from = capacityEl.querySelector('.cap-from');
+    var to = capacityEl.querySelector('.cap-to');
+    var sub = capacityEl.querySelector('.chat-bar-capacity-sub');
+    if (from) from.textContent = window.solChatCopy.CHAT_CAPACITY_SUPPORT_ROUTE_FROM;
+    if (to) to.textContent = window.solChatCopy.CHAT_CAPACITY_SUPPORT_ROUTE_TO;
+    if (sub) sub.textContent = window.solChatCopy.CHAT_CAPACITY_SUPPORT_SUB;
+  }
+
+  function enterSupportCapacity() {
+    supportCapacityActive = true;
+    if (appBar) appBar.classList.add('app-bar--support');
+    if (capacityEl) capacityEl.hidden = false;
+    var live = window.solChatCopy.CHAT_LIVENESS_SUPPORT;
+    setStatus(live, live);
+    if (statusWrap) {
+      statusWrap.classList.add('chat-bar-status--thinking');
+      statusWrap.classList.remove('chat-bar-status--error');
+      statusWrap.removeAttribute('role');
+      statusWrap.removeAttribute('tabindex');
+    }
+    statusErrorActive = false;
+  }
+
+  function exitSupportCapacity() {
+    supportCapacityActive = false;
+    if (appBar) appBar.classList.remove('app-bar--support');
+    if (capacityEl) capacityEl.hidden = true;
   }
 
   function getTalentEntries() {
@@ -905,6 +945,7 @@
     }
     if (eventName === 'owner_message') {
       setPendingState(false);
+      if (supportCapacityActive && !isSupportTalentRunning()) exitSupportCapacity();
       if (!solRequestState) {
         chatBarPendingPlaceholders.push({ ownerText: msg.text || '', ts: msg.ts || Date.now() });
         setStatus(window.solChatCopy.CHAT_LIVENESS_THINKING, window.solChatCopy.CHAT_LIVENESS_THINKING);
@@ -926,6 +967,7 @@
       if (solRequestState) return;
       clearPendingLivenessStatus();
       setStatus(msg.text || '', msg.notes || msg.text || '');
+      if (supportCapacityActive && !isSupportTalentRunning()) exitSupportCapacity();
       return;
     }
     if (eventName === 'talent_spawned') {
@@ -936,6 +978,10 @@
         status: 'running',
         updatedAt: msg.started_at || msg.ts || Date.now()
       });
+      if (String(msg.name || '') === 'support') {
+        enterSupportCapacity();
+        return;
+      }
       if (!solRequestState && chatBarPendingPlaceholders.length > 0) {
         const task = String(msg.task || '').trim();
         if (task) {
@@ -1001,6 +1047,7 @@
 
   async function hydrateChatBar() {
     if (!appBar) return;
+    populateSupportCapacityCopy();
     if (window.solChatBarSeed) {
       renderSolPing(window.solChatBarSeed);
     } else {
