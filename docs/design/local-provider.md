@@ -8,13 +8,21 @@ Justification: `local` is the owner-facing backend identity. The old `ollama` im
 
 Implementation note: update `solstone/think/providers/__init__.py`. `build_provider_status` must remove the Ollama `/api/version` probe and add a `local` branch whose readiness is true only when the pinned llama-server binary is installed, the selected GGUF is present and sha256-verified, and the loopback daemon is healthy. Report distinct issue codes for `binary_missing`, `model_missing`, `server_unhealthy`, and `ram_insufficient`.
 
+## BYO OpenAI-compatible endpoint override
+
+Decision: `providers.local` may also carry a power-user endpoint override with non-secret `endpoint_url` and `served_model_id` fields plus secret `credential`. The override is active only when both non-secret fields are non-empty; otherwise `local` uses the bundled llama-server path described below.
+
+Justification: this keeps the owner-facing provider identity as `local` while allowing an explicitly configured OpenAI-compatible endpoint to receive local generate and cogitate requests. The top-level `env` subtree remains reserved for cloud provider API keys keyed by environment variable name.
+
+Implementation note: the settings surface owns writes through `POST /app/settings/api/local/endpoint` and `DELETE /app/settings/api/local/endpoint`. Public config and provider payloads expose only `{enabled, endpoint_url, served_model_id, credential_configured}` for the override and never return `providers.local.credential`. BYO readiness uses a shallow endpoint-root reachability probe; vision and JSON-schema support are classified as runtime contract failures when the endpoint rejects actual requests.
+
 ## D2 OpenHands facade branch
 
-Decision: add a `local` branch to `solstone/think/providers/openhands.py::_build_llm`. The exact kwargs are `model=f"openai/{local_model_id}"`, `base_url=f"http://127.0.0.1:{port}/v1"`, `api_key="EMPTY"`, `native_tool_calling=False`, `input_cost_per_token=0`, and `litellm_extra_body={"chat_template_kwargs": {"enable_thinking": False}}`.
+Decision: add a `local` branch to `solstone/think/providers/openhands.py::_build_llm`. The bundled kwargs are `model=f"openai/{local_model_id}"`, `base_url=f"http://127.0.0.1:{port}/v1"`, `api_key="EMPTY"`, `native_tool_calling=False`, `input_cost_per_token=0`, and `litellm_extra_body={"chat_template_kwargs": {"enable_thinking": False}}`. When the BYO endpoint override is active, the same branch uses `model=f"openai/{served_model_id}"`, `base_url=f"{endpoint_root}/v1"`, and the configured credential or `"EMPTY"`.
 
 Justification: llama-server exposes an OpenAI-compatible loopback API, but it does not provide native OpenHands tool calling or cloud API-key semantics. LiteLLM should treat it as an OpenAI-compatible custom endpoint with zero cost.
 
-Implementation note: obtain `port` by calling `solstone.think.providers.local_server.ensure_running(local_model_id)` before constructing the `LLM`. Do not add `local` to `_GENERATE_MODULES` or `_API_KEY_ENV`; `local` generate is owned by `solstone.think.providers.local`, while `local` cogitate delegates through `openhands.run_cogitate`. Add `"local"` to `_KNOWN_MODEL_PREFIXES` so `_prefixed_model` can strip local-prefixed ids when a caller hands one to cloud code, but make the `local` branch return before `_MODEL_PREFIXES` lookup. `local.py::run_cogitate(config, on_event=None)` should import and call `openhands.run_cogitate(config, on_event)` after daemon readiness is established.
+Implementation note: call `solstone.think.providers.local_server.connect()` before constructing the bundled `LLM`; skip that call entirely when `resolve_local_endpoint().is_bundled` is false. Do not add `local` to `_GENERATE_MODULES` or `_API_KEY_ENV`; `local` generate is owned by `solstone.think.providers.local`, while `local` cogitate delegates through `openhands.run_cogitate`. Add `"local"` to `_KNOWN_MODEL_PREFIXES` so `_prefixed_model` can strip local-prefixed ids when a caller hands one to cloud code, but make the `local` branch return before `_MODEL_PREFIXES` lookup. `local.py::run_cogitate(config, on_event=None)` should import and call `openhands.run_cogitate(config, on_event)` after bundled readiness is established or the BYO endpoint is resolved.
 
 ## D3 Model-id scheme
 
@@ -94,7 +102,7 @@ Decision: `solstone.think.providers.local`, `solstone.think.providers.local_serv
 
 Justification: provider registration and settings pages must work before the owner enables the local backend. Imports must not trigger downloads, subprocess starts, or optional SDK imports.
 
-Implementation note: keep OpenHands/LiteLLM imports inside `openhands` functions, keep Hugging Face and HTTP download imports inside bootstrap/install functions, and keep daemon startup inside `ensure_running()`. Nothing fetches or installs until the owner runs the Local bootstrap/install action.
+Implementation note: keep OpenHands/LiteLLM imports inside `openhands` functions, keep Hugging Face and HTTP download imports inside bootstrap/install functions, and keep daemon startup inside `start_local_server()` / `local_server.connect()` paths. Nothing fetches or installs until the owner runs the Local bootstrap/install action.
 
 ## Deferred decisions and completion notes
 

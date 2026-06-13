@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import importlib
+import json
 import sys
 import types
 from types import SimpleNamespace
@@ -236,6 +238,256 @@ def test_openhands_local_llm_kwargs(monkeypatch):
     }
     assert "chat_template_kwargs" not in captured
     assert openhands._prefixed_model("local", LOCAL_MODEL) == f"openai/{LOCAL_MODEL}"
+
+
+def _byo_endpoint(credential: str | None = "test-token-PLACEHOLDER"):
+    from solstone.think.providers.local_endpoint import (
+        LocalEndpoint,
+        normalize_local_endpoint_url,
+    )
+
+    return LocalEndpoint(
+        base_url=normalize_local_endpoint_url("http://byo.example/openai/v1/"),
+        served_model_id="served-model",
+        credential=credential,
+        is_bundled=False,
+    )
+
+
+def test_run_generate_byo_posts_to_normalized_endpoint_and_skips_connect(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.connect",
+        lambda: (_ for _ in ()).throw(AssertionError("connect not expected")),
+    )
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {"content": "hello"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+
+    def fake_post(url, **kwargs):
+        captured.update({"url": url, **kwargs})
+        return Response()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    result = provider.run_generate("hello", model=LOCAL_MODEL)
+
+    assert captured["url"] == "http://byo.example/openai/v1/chat/completions"
+    assert captured["json"]["model"] == "served-model"
+    assert captured["headers"] == {"Authorization": "Bearer test-token-PLACEHOLDER"}
+    assert result["text"] == "hello"
+
+
+def test_run_generate_byo_omits_auth_header_without_credential(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(provider, "resolve_local_endpoint", lambda: _byo_endpoint(None))
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    def fake_post(url, **kwargs):
+        captured.update({"url": url, **kwargs})
+        return Response()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    provider.run_generate("hello", model=LOCAL_MODEL)
+
+    assert "headers" not in captured
+
+
+def test_run_generate_byo_network_error_maps_to_unreachable(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
+
+    import httpx
+
+    monkeypatch.setattr(
+        httpx,
+        "post",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            httpx.ConnectError("connection refused")
+        ),
+    )
+
+    with pytest.raises(provider.LocalProviderError) as exc:
+        provider.run_generate("hello", model=LOCAL_MODEL)
+
+    assert exc.value.reason_code == "local_endpoint_unreachable"
+    assert str(exc.value) == provider.LOCAL_ENDPOINT_UNREACHABLE_COPY
+    assert isinstance(exc.value.__cause__, httpx.ConnectError)
+
+
+def test_run_generate_byo_http_status_maps_to_contract_failed(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
+
+    import httpx
+
+    request = httpx.Request("POST", "http://byo.example/openai/v1/chat/completions")
+    response = httpx.Response(400, request=request)
+
+    class Response:
+        def raise_for_status(self):
+            raise httpx.HTTPStatusError(
+                "bad request", request=request, response=response
+            )
+
+    monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: Response())
+
+    with pytest.raises(provider.LocalProviderError) as exc:
+        provider.run_generate("hello", model=LOCAL_MODEL)
+
+    assert exc.value.reason_code == "local_endpoint_contract_failed"
+    assert str(exc.value) == provider.LOCAL_ENDPOINT_CONTRACT_COPY
+
+
+def test_run_generate_byo_invalid_shape_maps_to_contract_failed(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": []}
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: Response())
+
+    with pytest.raises(provider.LocalProviderError) as exc:
+        provider.run_generate("hello", model=LOCAL_MODEL)
+
+    assert exc.value.reason_code == "local_endpoint_contract_failed"
+    assert str(exc.value) == provider.LOCAL_ENDPOINT_CONTRACT_COPY
+
+
+def test_run_generate_byo_json_decode_maps_to_contract_failed(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            raise json.JSONDecodeError("bad json", "not-json", 0)
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: Response())
+
+    with pytest.raises(provider.LocalProviderError) as exc:
+        provider.run_generate("hello", model=LOCAL_MODEL)
+
+    assert exc.value.reason_code == "local_endpoint_contract_failed"
+    assert str(exc.value) == provider.LOCAL_ENDPOINT_CONTRACT_COPY
+
+
+def test_run_cogitate_byo_classified_error_uses_fixed_copy_and_redacts(
+    monkeypatch,
+):
+    provider = _provider()
+    token = "test-token-PLACEHOLDER"
+    events: list[dict] = []
+
+    class BadRequestError(RuntimeError):
+        status_code = 400
+
+    async def fail_cogitate(*_args, **_kwargs):
+        raise BadRequestError(f"bad request with {token}")
+
+    monkeypatch.setattr(
+        provider, "resolve_local_endpoint", lambda: _byo_endpoint(token)
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.connect",
+        lambda: (_ for _ in ()).throw(AssertionError("connect not expected")),
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.openhands.run_cogitate",
+        fail_cogitate,
+    )
+
+    with pytest.raises(provider.LocalProviderError) as exc:
+        asyncio.run(
+            provider.run_cogitate({"model": LOCAL_MODEL}, on_event=events.append)
+        )
+
+    assert exc.value.reason_code == "local_endpoint_contract_failed"
+    assert str(exc.value) == provider.LOCAL_ENDPOINT_CONTRACT_COPY
+    assert token not in str(exc.value)
+    assert getattr(exc.value, "_evented") is True
+    assert events[0]["error"] == provider.LOCAL_ENDPOINT_CONTRACT_COPY
+    assert events[0]["reason_code"] == "local_endpoint_contract_failed"
+    assert token not in events[0]["trace"]
+
+
+@pytest.mark.parametrize(
+    ("credential", "expected_key"),
+    [
+        ("test-token-PLACEHOLDER", "test-token-PLACEHOLDER"),
+        (None, "EMPTY"),
+    ],
+)
+def test_openhands_local_byo_llm_kwargs(monkeypatch, credential, expected_key):
+    from solstone.think.providers import local_endpoint, openhands
+
+    captured = {}
+
+    class FakeLLM:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    sdk_module = types.ModuleType("openhands.sdk")
+    sdk_module.LLM = FakeLLM
+    monkeypatch.setitem(sys.modules, "openhands.sdk", sdk_module)
+    monkeypatch.setattr(
+        local_endpoint,
+        "resolve_local_endpoint",
+        lambda: _byo_endpoint(credential),
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.connect",
+        lambda: (_ for _ in ()).throw(AssertionError("connect not expected")),
+    )
+
+    llm = openhands._build_llm("local", LOCAL_MODEL)
+
+    assert isinstance(llm, FakeLLM)
+    assert captured == {
+        "model": "openai/served-model",
+        "base_url": "http://byo.example/openai/v1",
+        "api_key": expected_key,
+        "native_tool_calling": False,
+        "input_cost_per_token": 0,
+        "output_cost_per_token": 0,
+        "litellm_extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+    }
 
 
 def test_llama_server_pins_are_real_b9291_digests():

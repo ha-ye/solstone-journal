@@ -11,8 +11,13 @@ import openai
 import pytest
 
 from solstone.think.cogitate_policy import MaxTurnsExhausted
+from solstone.think.models import LOCAL_MODEL
 from solstone.think.providers import openhands
 from solstone.think.providers.cli import QuotaExhaustedError
+from solstone.think.providers.local_endpoint import (
+    LOCAL_ENDPOINT_CONTRACT_COPY,
+    LocalEndpoint,
+)
 from tests.openhands_fakes import install_fake_openhands
 
 
@@ -118,6 +123,43 @@ def test_run_cogitate_generic_error_emits_event_and_marks_evented(
     assert events[0]["provider"] == "openai"
     assert "RuntimeError: boom" in events[0]["trace"]
     assert events[0]["ts"] == 123456
+
+
+def test_run_cogitate_local_byo_error_event_uses_fixed_copy_and_redacts(
+    fake_openhands,
+    run_env,
+    monkeypatch,
+):
+    token = "test-token-PLACEHOLDER"
+    endpoint = LocalEndpoint(
+        base_url="http://byo.example/openai",
+        served_model_id="served-model",
+        credential=token,
+        is_bundled=False,
+    )
+
+    class BadRequestError(RuntimeError):
+        status_code = 400
+
+    async def fail(_conversation):
+        raise BadRequestError(f"bad request with {token}")
+
+    monkeypatch.setattr(
+        "solstone.think.providers.local_endpoint.resolve_local_endpoint",
+        lambda: endpoint,
+    )
+    fake_openhands.Conversation.arun_impl = fail
+    events: list[dict] = []
+    local_env = {**run_env, "provider": "local", "model": LOCAL_MODEL}
+
+    with pytest.raises(BadRequestError):
+        asyncio.run(openhands.run_cogitate(local_env, events.append))
+
+    assert len(events) == 1
+    assert events[0]["event"] == "error"
+    assert events[0]["error"] == LOCAL_ENDPOINT_CONTRACT_COPY
+    assert events[0]["reason_code"] == "local_endpoint_contract_failed"
+    assert token not in events[0]["trace"]
 
 
 def test_run_cogitate_propagates_max_turns_unwrapped(

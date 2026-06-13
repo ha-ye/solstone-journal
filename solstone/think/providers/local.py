@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Bundled local provider backed by llama-server on 127.0.0.1.
+"""Local provider backed by bundled llama-server or a configured endpoint.
 
 The module must remain importable before the local runtime or GGUF files exist.
 Network clients and daemon startup are created only inside provider functions.
@@ -18,6 +18,14 @@ from typing import Any
 
 from solstone.think.models import LOCAL_MODEL
 from solstone.think.providers._image import encode_image_part, is_image_part
+from solstone.think.providers.local_endpoint import (
+    LOCAL_ENDPOINT_CONTRACT_COPY,
+    LOCAL_ENDPOINT_UNREACHABLE_COPY,
+    classify_byo_cogitate_error,
+    local_endpoint_reason_copy,
+    redact_local_endpoint_credential,
+    resolve_local_endpoint,
+)
 from solstone.think.providers.shared import (
     GenerateResult,
     classify_provider_error,
@@ -209,6 +217,31 @@ def _parse_response(data: dict[str, Any]) -> GenerateResult:
     )
 
 
+def _classify_byo_generate_error(exc: BaseException) -> LocalProviderError:
+    import httpx
+
+    if isinstance(
+        exc,
+        (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.PoolTimeout,
+            httpx.TimeoutException,
+            httpx.NetworkError,
+            httpx.RequestError,
+        ),
+    ):
+        return LocalProviderError(
+            "local_endpoint_unreachable",
+            LOCAL_ENDPOINT_UNREACHABLE_COPY,
+        )
+    return LocalProviderError(
+        "local_endpoint_contract_failed",
+        LOCAL_ENDPOINT_CONTRACT_COPY,
+    )
+
+
 def run_generate(
     contents: str | list[Any],
     model: str,
@@ -222,14 +255,35 @@ def run_generate(
     **kwargs: Any,
 ) -> GenerateResult:
     del thinking_budget, kwargs
-    from solstone.think.providers import local_server
-
+    endpoint = resolve_local_endpoint()
     # Validate the requested logical id; served id comes from the server.
     normalize_model_id(model)
     messages = _build_messages(contents, system_instruction)
-    server = local_server.connect()
+    if endpoint.is_bundled:
+        from solstone.think.providers import local_server
+
+        server = local_server.connect()
+        body = _build_request_body(
+            server.served_model_id,
+            messages,
+            temperature,
+            max_output_tokens,
+            json_output,
+            json_schema,
+        )
+
+        import httpx
+
+        response = httpx.post(
+            f"{server.base_url}/v1/chat/completions",
+            json=body,
+            timeout=timeout_s or _DEFAULT_TIMEOUT,
+        )
+        response.raise_for_status()
+        return _parse_response(response.json())
+
     body = _build_request_body(
-        server.served_model_id,
+        endpoint.served_model_id,
         messages,
         temperature,
         max_output_tokens,
@@ -239,13 +293,21 @@ def run_generate(
 
     import httpx
 
-    response = httpx.post(
-        f"{server.base_url}/v1/chat/completions",
-        json=body,
-        timeout=timeout_s or _DEFAULT_TIMEOUT,
-    )
-    response.raise_for_status()
-    return _parse_response(response.json())
+    post_kwargs: dict[str, Any] = {
+        "json": body,
+        "timeout": timeout_s or _DEFAULT_TIMEOUT,
+    }
+    if endpoint.credential:
+        post_kwargs["headers"] = {"Authorization": f"Bearer {endpoint.credential}"}
+    try:
+        response = httpx.post(
+            f"{endpoint.base_url}/v1/chat/completions",
+            **post_kwargs,
+        )
+        response.raise_for_status()
+        return _parse_response(response.json())
+    except Exception as exc:
+        raise _classify_byo_generate_error(exc) from exc
 
 
 async def run_agenerate(
@@ -282,25 +344,47 @@ async def run_cogitate(
     from solstone.think.providers import local_server, openhands
 
     config = {**config, "model": normalize_model_id(config.get("model", LOCAL_MODEL))}
+    endpoint = resolve_local_endpoint()
     try:
-        local_server.connect()
+        if endpoint.is_bundled:
+            local_server.connect()
         return await openhands.run_cogitate(config, on_event=on_event)
     except Exception as exc:
-        if on_event and not getattr(exc, "_evented", False):
-            reason_code = getattr(exc, "reason_code", None) or classify_provider_error(
-                exc, "local"
+        reason_code = None
+        if not endpoint.is_bundled:
+            reason_code = classify_byo_cogitate_error(exc) or getattr(
+                exc, "reason_code", None
             )
+        if on_event and not getattr(exc, "_evented", False):
+            reason_code = (
+                reason_code
+                or getattr(exc, "reason_code", None)
+                or classify_provider_error(exc, "local")
+            )
+            error_text = str(exc)
+            trace_text = traceback.format_exc()
+            fixed_copy = local_endpoint_reason_copy(reason_code)
+            if fixed_copy:
+                error_text = fixed_copy
+            if not endpoint.is_bundled:
+                error_text = redact_local_endpoint_credential(error_text, endpoint)
+                trace_text = redact_local_endpoint_credential(trace_text, endpoint)
             on_event(
                 {
                     "event": "error",
-                    "error": str(exc),
+                    "error": error_text,
                     "reason_code": reason_code,
                     "provider": "local",
-                    "trace": traceback.format_exc(),
+                    "trace": trace_text,
                     "raw": safe_raw([{"reason_code": reason_code}]),
                 }
             )
             setattr(exc, "_evented", True)
+        fixed_copy = local_endpoint_reason_copy(reason_code)
+        if fixed_copy:
+            wrapped = LocalProviderError(reason_code or "unknown", fixed_copy)
+            setattr(wrapped, "_evented", getattr(exc, "_evented", False))
+            raise wrapped from exc
         raise
 
 

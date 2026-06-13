@@ -220,6 +220,7 @@ def show() -> None:
             "generate": providers.get("generate", {}),
             "cogitate": providers.get("cogitate", {}),
             "google_backend": providers.get("google_backend", "auto"),
+            "local_override": providers.get("local_override", {}),
             "key_validation": providers.get("key_validation", {}),
         },
         "transcribe": config.get("transcribe", {}),
@@ -306,6 +307,19 @@ def providers_show(
             else:
                 status_text = "not ready"
             typer.echo(f"{name}: {status_text}")
+        local_override = response.get("local_override", {})
+        if local_override.get("enabled"):
+            credential = (
+                "configured"
+                if local_override.get("credential_configured")
+                else "not configured"
+            )
+            typer.echo(
+                "local endpoint: "
+                f"{local_override.get('endpoint_url', '')} "
+                f"model: {local_override.get('served_model_id', '')} "
+                f"credential: {credential}"
+            )
         return
     _echo_json(
         {
@@ -313,6 +327,7 @@ def providers_show(
             "provider_status": provider_status,
             "generate": response.get("generate", {}),
             "cogitate": response.get("cogitate", {}),
+            "local_override": response.get("local_override", {}),
             "api_keys": response.get("api_keys", {}),
             "key_validation": response.get("key_validation", {}),
         }
@@ -326,6 +341,42 @@ def providers_install(
     """Moved to `journal install-provider`."""
     typer.echo("Moved to `journal install-provider` — run that instead.", err=True)
     raise typer.Exit(2)
+
+
+@providers_app.command("set-local-endpoint")
+@convey_cli
+def providers_set_local_endpoint(
+    url: str = typer.Option(..., "--url", help="OpenAI-compatible endpoint URL."),
+    model: str = typer.Option(..., "--model", help="Served model id."),
+    credential: str | None = typer.Option(
+        None,
+        "--credential",
+        help="Optional bearer credential for the endpoint.",
+    ),
+) -> None:
+    """Set the BYO local provider endpoint."""
+
+    body: dict[str, object] = {
+        "endpoint_url": url,
+        "served_model_id": model,
+    }
+    if credential is not None:
+        body["credential"] = credential
+    response = _request(
+        "POST",
+        "/app/settings/api/local/endpoint",
+        json_body=body,
+    )
+    _echo_json(response.get("local_endpoint", response))
+
+
+@providers_app.command("clear-local-endpoint")
+@convey_cli
+def providers_clear_local_endpoint() -> None:
+    """Clear the BYO local provider endpoint."""
+
+    response = _request("DELETE", "/app/settings/api/local/endpoint")
+    _echo_json(response.get("local_endpoint", response))
 
 
 def _set_provider_type(

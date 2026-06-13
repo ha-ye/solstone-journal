@@ -467,6 +467,12 @@
     "progress_bytes_total": null
   },
   "local_backend": "local",
+  "local_override": {
+    "credential_configured": false,
+    "enabled": false,
+    "endpoint_url": "",
+    "served_model_id": ""
+  },
   "provider_status": {
     "anthropic": {
       "cogitate_ready": false,

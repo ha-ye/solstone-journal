@@ -39,6 +39,7 @@ _PROVIDER_DOWN_REASONS = {
     "provider_quota_exceeded",
     "provider_unavailable",
     "local_server_unhealthy",
+    "local_endpoint_unreachable",
 }
 
 

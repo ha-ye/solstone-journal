@@ -5112,6 +5112,7 @@ const COGITATE_KEY_GUIDANCE = {
   openai: 'This provider needs an API key to run agents. Get one at platform.openai.com, then add it in API keys below.',
 };
 const LOCAL_SCOPE_COPY = 'on-device generate and cogitate using bundled llama-server.';
+const LOCAL_ENDPOINT_DISCLOSURE = {{ settings_copy.LOCAL_ENDPOINT_DISCLOSURE | tojson }};
 const LOCAL_MODEL_LABELS = {
   'local/qwen3.5-4b': 'qwen 3.5 4B VLM — 8 GB',
 };
@@ -5127,9 +5128,15 @@ async function loadProviders() {
     const response = await fetch('api/providers');
     providersData = await response.json();
     if (providersData.error) throw new Error(providersData.error);
-    localModels = await loadLocalModels();
-    providersData.local_models = localModels;
-    providersData.local_availability = await loadLocalAvailability();
+    if (localOverrideEnabled(providersData)) {
+      localModels = [];
+      providersData.local_models = [];
+      providersData.local_availability = null;
+    } else {
+      localModels = await loadLocalModels();
+      providersData.local_models = localModels;
+      providersData.local_availability = await loadLocalAvailability();
+    }
     populateProviders(providersData);
   } catch (err) {
     console.error('Error loading providers:', err);
@@ -5360,9 +5367,18 @@ function populateLocalModelPicker(data) {
 
 function providerKind(providerId, data = providersData) {
   if (providerId === 'local') {
+    if (localOverrideEnabled(data)) return 'local-byo';
     return data?.local_backend === "mlx" ? 'local-mlx' : 'local';
   }
   return 'cloud';
+}
+
+function localEndpointOverride(data = providersData) {
+  return data?.local_override || {};
+}
+
+function localOverrideEnabled(data = providersData) {
+  return !!localEndpointOverride(data).enabled;
 }
 
 function providerPanelStates(data) {
@@ -5370,7 +5386,7 @@ function providerPanelStates(data) {
   return {
     anthropic: providerStatus.anthropic,
     openai: providerStatus.openai,
-    local: data?.local,
+    local: localOverrideEnabled(data) ? providerStatus.local : data?.local,
   };
 }
 
@@ -5497,7 +5513,7 @@ function renderProvidersPanel(data) {
         state,
         kind,
         getProviderAvailability(providerId),
-        providerId === 'local' && kind === 'local' ? localProviderReadiness(data) : null
+        providerId === 'local' && ['local', 'local-byo'].includes(kind) ? localProviderReadiness(data) : null
       )
     );
   }
@@ -5577,6 +5593,19 @@ function renderProviderCard(providerId, state, kind, availability, readiness = n
 }
 
 function providerCardMetaLine(state, kind, availability) {
+  if (kind === 'local-byo') {
+    const override = localEndpointOverride();
+    const block = document.createElement('div');
+    block.className = 'provider-card__resource-meta';
+    appendProviderMetaLine(block, `endpoint: ${override.endpoint_url || 'not configured'}`);
+    appendProviderMetaLine(block, `served model: ${override.served_model_id || 'not configured'}`);
+    appendProviderMetaLine(
+      block,
+      `credential: ${override.credential_configured ? 'configured' : 'not configured'}`
+    );
+    appendProviderMetaLine(block, LOCAL_ENDPOINT_DISCLOSURE);
+    return block;
+  }
   if (!['local', 'local-mlx'].includes(kind) || !availability) return null;
   const block = document.createElement('div');
   block.className = 'provider-card__resource-meta';
@@ -5702,6 +5731,25 @@ function providerCardMeta(state, kind, availability, readiness = null) {
       showKeyPill: true,
       keyPillLabel: configured ? 'Key set' : 'Needs API key',
       keyPillTone: configured ? 'ok' : 'warn',
+      showByteCounter: false,
+      byteLabel: '',
+      issueText: firstProviderIssue(state),
+    };
+  }
+
+  if (kind === 'local-byo') {
+    if (readiness) return localReadinessMeta(readiness);
+    const ready = !!(state?.generate_ready || state?.cogitate_ready);
+    return {
+      badgeLabel: ready ? 'Endpoint ready' : 'Endpoint not ready',
+      badgeTone: ready ? 'ok' : 'warn',
+      primaryLabel: null,
+      primaryAction: null,
+      primaryHref: null,
+      primaryDisabled: true,
+      showKeyPill: false,
+      keyPillLabel: '',
+      keyPillTone: 'muted',
       showByteCounter: false,
       byteLabel: '',
       issueText: firstProviderIssue(state),
@@ -5921,6 +5969,18 @@ function updateLocalModelIdentifier() {
   const identifier = document.getElementById('localModelIdentifier');
   const scopeCopy = document.getElementById('localScopeCopy');
   const selected = isLocalProviderSelected();
+  const override = localEndpointOverride();
+  if (override.enabled) {
+    if (scopeCopy) {
+      scopeCopy.textContent = LOCAL_ENDPOINT_DISCLOSURE;
+      scopeCopy.style.display = selected ? '' : 'none';
+    }
+    if (identifier) {
+      identifier.textContent = selected ? `served model: ${override.served_model_id || 'not configured'}` : '';
+      identifier.style.display = selected ? '' : 'none';
+    }
+    return;
+  }
   const availability = getLocalAvailability();
   const installed = !!(availability?.binary_present && availability?.model_present);
   if (scopeCopy) {
@@ -5955,6 +6015,10 @@ function syncProviderAutoFire() {
 }
 
 function maybeAutoStartLocalBootstrap() {
+  if (localOverrideEnabled()) {
+    localBootstrapPostStarted = false;
+    return;
+  }
   if (!isLocalProviderSelected()) {
     localBootstrapPostStarted = false;
     return;
@@ -5974,6 +6038,7 @@ function maybeAutoStartLocalBootstrap() {
 }
 
 async function refreshLocalAvailability() {
+  if (localOverrideEnabled()) return;
   try {
     const availability = await loadLocalAvailability();
     providersData = providersData || {};

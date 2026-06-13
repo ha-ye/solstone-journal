@@ -24,6 +24,7 @@ Status = Literal["ready", "blocked", "unhealthy", "unknown"]
 Source = Literal[
     "config",
     "local_install",
+    "local_endpoint",
     "local_server",
     "active_check",
     "runtime_failure",
@@ -36,6 +37,8 @@ READINESS_REASON_CODES = frozenset(
         "local_model_missing",
         "local_model_installing",
         "local_model_loading",
+        "local_endpoint_unreachable",
+        "local_endpoint_contract_failed",
         "gpu_unavailable",
         "local_server_unhealthy",
     }
@@ -265,12 +268,30 @@ def cloud_key_configured(env_key: str) -> bool:
 def local_status_dict() -> dict:
     """Build the legacy local provider status dict."""
     from solstone.think.models import is_local_provider_needed
+    from solstone.think.providers.local_endpoint import (
+        probe_local_endpoint,
+        resolve_local_endpoint,
+    )
+
+    endpoint = resolve_local_endpoint()
+    selected = is_local_provider_needed()
+    if not endpoint.is_bundled:
+        reachable, _ = probe_local_endpoint(endpoint)
+        return {
+            "configured": True,
+            "selected": selected,
+            "generate_ready": reachable,
+            "cogitate_ready": reachable,
+            "cogitate_cli": None,
+            "cogitate_cli_found": False,
+            "issues": [] if reachable else ["local_endpoint_unreachable"],
+        }
+
     from solstone.think.providers import local_install, local_server
 
     readiness = local_install.inspect_readiness()
     binary_installed = bool(readiness["binary_installed"])
     model_installed = bool(readiness["model_installed"])
-    selected = is_local_provider_needed()
     configured = binary_installed and model_installed
 
     if not selected:
@@ -401,6 +422,31 @@ def _local_readiness_for_provider(
     interface: str,
     model: str | None,
 ) -> ProviderState:
+    from solstone.think.providers.local_endpoint import (
+        probe_local_endpoint,
+        resolve_local_endpoint,
+    )
+
+    endpoint = resolve_local_endpoint()
+    if not endpoint.is_bundled:
+        reachable, error = probe_local_endpoint(endpoint)
+        if reachable:
+            return _ready_state(
+                provider,
+                interface,
+                model=endpoint.served_model_id,
+                source="local_endpoint",
+            )
+        return _state(
+            provider,
+            interface,
+            "unhealthy",
+            "local_endpoint_unreachable",
+            model=endpoint.served_model_id,
+            message=error,
+            source="local_endpoint",
+        )
+
     from solstone.think.models import LOCAL_MODEL
     from solstone.think.providers import local_install, local_server
     from solstone.think.providers.install_state import IN_FLIGHT_STATES

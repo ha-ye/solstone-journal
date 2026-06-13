@@ -6,6 +6,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from solstone.think.providers.local_endpoint import (
+    LOCAL_ENDPOINT_CONTRACT_COPY,
+    LOCAL_ENDPOINT_UNREACHABLE_COPY,
+)
 from solstone.think.providers.state import ProviderState
 
 
@@ -54,6 +58,7 @@ PROVIDER_LEVEL_CODES = frozenset(
         "provider_quota_exceeded",
         "provider_unavailable",
         "network_unreachable",
+        "local_endpoint_unreachable",
         "chat_timeout",
         "chat_pipeline_unavailable",
         "unknown",
@@ -141,6 +146,21 @@ _ENTRIES: dict[str, _Entry] = {
         summary="the local model isn't responding",
         detail="Restart local model setup or try a cloud provider.",
         recovery_action=_LOCAL_SETUP_ACTION,
+    ),
+    "local_endpoint_unreachable": _Entry(
+        klass="provider",
+        summary=LOCAL_ENDPOINT_UNREACHABLE_COPY,
+        detail="Check the endpoint URL, confirm the server is running, then retry.",
+        recovery_action=_SETTINGS_ACTION,
+    ),
+    "local_endpoint_contract_failed": _Entry(
+        klass="generic",
+        summary=LOCAL_ENDPOINT_CONTRACT_COPY,
+        detail=(
+            "Confirm the endpoint serves /v1/chat/completions with vision and "
+            "JSON-schema response_format support."
+        ),
+        recovery_action=_SETTINGS_ACTION,
     ),
     "unsupported_platform": _Entry(
         klass="setup",

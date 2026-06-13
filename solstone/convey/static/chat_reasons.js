@@ -50,6 +50,14 @@
       "template": "the local model isn't responding",
       "action": {"label": "Open Local Model Setup", "href": "/app/settings/#providers"}
     },
+    "local_endpoint_unreachable": {
+      "template": "The inference endpoint you configured could not be reached.",
+      "action": {"label": "Open Settings", "href": "/app/settings/#providers"}
+    },
+    "local_endpoint_contract_failed": {
+      "template": "The configured endpoint did not respond in the expected format.",
+      "action": {"label": "Open Settings", "href": "/app/settings/#providers"}
+    },
     "unsupported_platform": {
       "template": "this machine is not supported for local model setup",
       "action": {"label": "Open Local Model Setup", "href": "/app/settings/#providers"}

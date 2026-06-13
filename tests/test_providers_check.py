@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import json
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -457,6 +458,10 @@ def test_check_cogitate_local_missing_runtime_names_local_install_hint(monkeypat
         "solstone.think.providers.state.readiness_for_provider",
         lambda *_args: type("FakeState", (), {"reason_code": "local_model_missing"})(),
     )
+    monkeypatch.setattr(
+        "solstone.think.providers.local_endpoint.resolve_local_endpoint",
+        lambda: SimpleNamespace(is_bundled=True),
+    )
 
     status, msg, reason_code = asyncio.run(
         providers_cli._check_cogitate("local", 2, 30)
@@ -465,6 +470,40 @@ def test_check_cogitate_local_missing_runtime_names_local_install_hint(monkeypat
     assert status == "skip"
     assert reason_code == "local_model_missing"
     assert "journal install-provider local" in msg
+
+
+def test_check_cogitate_local_endpoint_unreachable_uses_endpoint_reason(monkeypatch):
+    import solstone.think.providers_cli as providers_cli
+
+    monkeypatch.setattr(
+        providers_cli,
+        "_provider_status",
+        lambda _name: {
+            "configured": True,
+            "cogitate_cli_found": False,
+            "cogitate_ready": False,
+            "issues": ["local_endpoint_unreachable"],
+        },
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.state.readiness_for_provider",
+        lambda *_args: type(
+            "FakeState", (), {"reason_code": "local_endpoint_unreachable"}
+        )(),
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.local_endpoint.resolve_local_endpoint",
+        lambda: SimpleNamespace(is_bundled=False),
+    )
+
+    status, msg, reason_code = asyncio.run(
+        providers_cli._check_cogitate("local", 2, 30)
+    )
+
+    assert status == "skip"
+    assert msg == "local_endpoint_unreachable"
+    assert reason_code == "local_endpoint_unreachable"
+    assert "journal install-provider local" not in msg
 
 
 def test_check_cogitate_local_gpu_unavailable_uses_issue_copy(monkeypatch):

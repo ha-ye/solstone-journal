@@ -21,6 +21,8 @@ EXPECTED_CODES = {
     "local_model_loading",
     "local_model_not_ready",
     "local_server_unhealthy",
+    "local_endpoint_unreachable",
+    "local_endpoint_contract_failed",
     "unsupported_platform",
     "unsupported_model",
     "sha256_mismatch",

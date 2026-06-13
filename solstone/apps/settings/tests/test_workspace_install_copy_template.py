@@ -8,6 +8,7 @@ import re
 
 import pytest
 
+from solstone.apps.settings import copy as settings_copy
 from solstone.apps.settings import install_copy
 from solstone.convey import create_app
 
@@ -39,3 +40,11 @@ def test_workspace_embeds_install_copy(settings_client):
     assert set(payload) == set(install_copy.__all__)
     for name in install_copy.__all__:
         assert payload[name] == getattr(install_copy, name)
+
+
+def test_workspace_renders_local_endpoint_disclosure(settings_client):
+    response = settings_client.get("/app/settings/", follow_redirects=True)
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert settings_copy.LOCAL_ENDPOINT_DISCLOSURE in html

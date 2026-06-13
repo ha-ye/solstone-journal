@@ -51,6 +51,13 @@ def _settings_client_with_journal(settings_env):
     return app.test_client(), journal_path
 
 
+def _write_config(journal_path, config: dict) -> None:
+    (journal_path / "config" / "journal.json").write_text(
+        json.dumps(config, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _valid_vertex_creds() -> dict:
     return {
         "type": "service_account",
@@ -143,6 +150,12 @@ def test_get_providers_includes_local_install_state(settings_client):
     assert "bundled" not in payload
     assert "ai_readiness" in payload
     assert isinstance(payload["local"], dict)
+    assert payload["local_override"] == {
+        "enabled": False,
+        "endpoint_url": "",
+        "served_model_id": "",
+        "credential_configured": False,
+    }
     assert REMOVED_PROVIDER not in payload
     _assert_install_status(payload["local"])
 
@@ -173,6 +186,67 @@ def test_providers_payload_omits_auth(settings_client):
     assert response.status_code == 200
     payload = response.get_json()
     assert "auth" not in payload
+
+
+def test_providers_payload_includes_secret_free_local_override(
+    settings_client_with_journal,
+    monkeypatch,
+):
+    client, journal_path = settings_client_with_journal
+    config = json.loads((journal_path / "config" / "journal.json").read_text())
+    config["providers"]["local"] = {
+        "endpoint_url": "http://host.test:8080/openai/v1",
+        "served_model_id": "served-model",
+        "credential": "test-token-PLACEHOLDER",
+    }
+    _write_config(journal_path, config)
+    monkeypatch.setattr(
+        "solstone.think.providers.local_endpoint.probe_local_endpoint",
+        lambda _endpoint, timeout_s=1.0: (True, None),
+    )
+
+    response = client.get("/app/settings/api/providers")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["local_override"] == {
+        "enabled": True,
+        "endpoint_url": "http://host.test:8080/openai",
+        "served_model_id": "served-model",
+        "credential_configured": True,
+    }
+    assert "test-token-PLACEHOLDER" not in json.dumps(payload)
+
+
+def test_providers_payload_local_status_uses_endpoint_readiness_under_byo(
+    settings_client_with_journal,
+    monkeypatch,
+):
+    client, journal_path = settings_client_with_journal
+    config = json.loads((journal_path / "config" / "journal.json").read_text())
+    config["providers"]["local"] = {
+        "endpoint_url": "http://host.test:8080/v1",
+        "served_model_id": "served-model",
+    }
+    _write_config(journal_path, config)
+    monkeypatch.setattr(
+        "solstone.think.providers.local_endpoint.probe_local_endpoint",
+        lambda _endpoint, timeout_s=1.0: (True, None),
+    )
+
+    response = client.get("/app/settings/api/providers")
+
+    assert response.status_code == 200
+    local_status = response.get_json()["provider_status"]["local"]
+    assert local_status == {
+        "configured": True,
+        "selected": False,
+        "generate_ready": True,
+        "cogitate_ready": True,
+        "cogitate_cli": None,
+        "cogitate_cli_found": False,
+        "issues": [],
+    }
 
 
 def test_get_providers_uses_requested_local_model(settings_client, monkeypatch):
@@ -291,6 +365,8 @@ def test_get_providers_ai_readiness_cloud_unknown_is_neutral(
         ("ram_insufficient", "blocked", "blocker"),
         ("gpu_unavailable", "blocked", "blocker"),
         ("local_server_unhealthy", "unhealthy", "attention"),
+        ("local_endpoint_unreachable", "unhealthy", "attention"),
+        ("local_endpoint_contract_failed", "unhealthy", "attention"),
     ],
 )
 def test_get_providers_ai_readiness_local_blockers_group_coherently(

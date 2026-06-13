@@ -127,6 +127,12 @@ async def _check_cogitate(
                 or "unknown"
             )
             if not status.get("cogitate_cli_found"):
+                from solstone.think.providers.local_endpoint import (
+                    resolve_local_endpoint,
+                )
+
+                if not resolve_local_endpoint().is_bundled:
+                    return "skip", _local_readiness_message(status), reason_code
                 from solstone.think.providers import local_install
 
                 return (

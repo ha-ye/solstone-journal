@@ -113,6 +113,7 @@ def test_show_and_read_verbs_select_http_fields(journal_copy: Path) -> None:
     ]
     assert show_payload["identity"]["name"] == "Test User"
     assert show_payload["providers"]["generate"]["provider"] == "google"
+    assert show_payload["providers"]["local_override"]["enabled"] is False
     assert list(show_payload["keys"]) == [
         "GOOGLE_API_KEY",
         "ANTHROPIC_API_KEY",
@@ -124,7 +125,9 @@ def test_show_and_read_verbs_select_http_fields(journal_copy: Path) -> None:
     assert keys.exit_code == 0
     assert json.loads(keys.stdout) == {key: False for key in show_payload["keys"]}
     assert providers.exit_code == 0
-    assert json.loads(providers.stdout)["cogitate"]["provider"] == "openai"
+    providers_payload = json.loads(providers.stdout)
+    assert providers_payload["cogitate"]["provider"] == "openai"
+    assert providers_payload["local_override"]["enabled"] is False
     assert google.exit_code == 0
     assert json.loads(google.stdout) == {
         "google_backend": "auto",
@@ -265,6 +268,118 @@ def test_providers_show_human_and_set_errors(
     )
     assert bad_tier.exit_code == 1
     assert bad_tier.stderr == "Invalid tier: 9. Must be 1, 2, or 3.\n"
+
+
+def test_providers_local_endpoint_verbs_use_http_shapes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_request(
+        method: str,
+        path: str,
+        *,
+        params: dict[str, object] | None = None,
+        json_body: dict[str, object] | None = None,
+    ) -> dict[str, Any]:
+        calls.append(
+            {
+                "method": method,
+                "path": path,
+                "params": params,
+                "json_body": json_body,
+            }
+        )
+        return {
+            "local_endpoint": {
+                "enabled": method != "DELETE",
+                "endpoint_url": "http://host.test",
+                "served_model_id": "served-model",
+                "credential_configured": bool((json_body or {}).get("credential")),
+            }
+        }
+
+    monkeypatch.setattr(settings_call, "_request", fake_request)
+
+    no_credential = runner.invoke(
+        settings_call.app,
+        [
+            "providers",
+            "set-local-endpoint",
+            "--url",
+            "http://host.test",
+            "--model",
+            "served-model",
+        ],
+    )
+
+    assert no_credential.exit_code == 0
+    assert calls[-1] == {
+        "method": "POST",
+        "path": "/app/settings/api/local/endpoint",
+        "params": None,
+        "json_body": {
+            "endpoint_url": "http://host.test",
+            "served_model_id": "served-model",
+        },
+    }
+
+    with_credential = runner.invoke(
+        settings_call.app,
+        [
+            "providers",
+            "set-local-endpoint",
+            "--url",
+            "http://host.test",
+            "--model",
+            "served-model",
+            "--credential",
+            "test-token-PLACEHOLDER",
+        ],
+    )
+
+    assert with_credential.exit_code == 0
+    assert calls[-1]["json_body"] == {
+        "endpoint_url": "http://host.test",
+        "served_model_id": "served-model",
+        "credential": "test-token-PLACEHOLDER",
+    }
+
+    cleared = runner.invoke(settings_call.app, ["providers", "clear-local-endpoint"])
+
+    assert cleared.exit_code == 0
+    assert calls[-1] == {
+        "method": "DELETE",
+        "path": "/app/settings/api/local/endpoint",
+        "params": None,
+        "json_body": None,
+    }
+
+
+def test_providers_show_human_reports_local_override(
+    journal_copy: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _read_config(journal_copy)
+    config["providers"]["local"] = {
+        "endpoint_url": "http://host.test:8080/v1",
+        "served_model_id": "served-model",
+        "credential": "test-token-PLACEHOLDER",
+    }
+    _write_config(journal_copy, config)
+    monkeypatch.setattr(
+        "solstone.think.providers.local_endpoint.probe_local_endpoint",
+        lambda _endpoint, timeout_s=1.0: (True, None),
+    )
+
+    result = runner.invoke(settings_call.app, ["providers", "show", "--human"])
+
+    assert result.exit_code == 0
+    assert (
+        "local endpoint: http://host.test:8080 "
+        "model: served-model credential: configured\n"
+    ) in result.stdout
+    assert "test-token-PLACEHOLDER" not in result.stdout
 
 
 def test_google_backend_and_transcribe_setters(journal_copy: Path) -> None:

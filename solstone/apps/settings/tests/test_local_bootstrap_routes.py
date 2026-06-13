@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import threading
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -43,6 +44,13 @@ def _settings_config() -> dict:
             "auth": {"google": "api_key", "openai": "api_key"},
         },
     }
+
+
+def _write_config(journal_path, config: dict) -> None:
+    (journal_path / "config" / "journal.json").write_text(
+        json.dumps(config, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -408,6 +416,23 @@ def test_local_bootstrap_post_rejects_unqualified_host(settings_env, monkeypatch
     payload = response.get_json()
     assert payload["reason_code"] == "invalid_request_value"
     assert payload["detail"] == "unsupported platform"
+
+
+def test_local_bootstrap_post_rejects_byo_endpoint(settings_env):
+    journal_path, config = settings_env(_settings_config())
+    config["providers"]["local"] = {
+        "endpoint_url": "http://host.test:8080",
+        "served_model_id": "served-model",
+    }
+    _write_config(journal_path, config)
+    client = _client(journal_path)
+
+    response = client.post("/app/settings/api/local/bootstrap")
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["reason_code"] == "invalid_request_value"
+    assert payload["detail"] == "BYO local endpoint is active"
 
 
 @pytest.mark.parametrize(

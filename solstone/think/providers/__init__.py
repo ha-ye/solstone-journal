@@ -17,7 +17,7 @@ Available providers:
 - google: Google Gemini models
 - openai: OpenAI GPT models
 - anthropic: Anthropic Claude models
-- local: bundled on-device llama-server models
+- local: bundled llama-server or configured OpenAI-compatible endpoint
 """
 
 import shutil

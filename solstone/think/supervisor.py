@@ -1348,6 +1348,10 @@ def _handle_supervisor_start_local(message: dict) -> None:
         return
     if _is_remote_mode:
         return
+    from solstone.think.providers.local_endpoint import resolve_local_endpoint
+
+    if not resolve_local_endpoint().is_bundled:
+        return
 
     for proc in _managed_procs:
         if proc.name in _LOCAL_SERVER_PROCTITLES and proc.is_running():
@@ -1383,6 +1387,10 @@ def _handle_cortex_outcome(message: dict) -> None:
 
     provider = _wedge_state["providers"].get(use_id)
     if provider != "local":
+        return
+    from solstone.think.providers.local_endpoint import resolve_local_endpoint
+
+    if not resolve_local_endpoint().is_bundled:
         return
 
     if time.monotonic() < _wedge_state["cooldown_until"]:
@@ -1610,6 +1618,11 @@ def _gpu_unavailable_reason(devices: list[Any], override: int | None) -> str:
 
 def start_local_server() -> RunnerManagedProcess | None:
     """Launch the supervisor-owned local llama-server when artifacts are present."""
+    from solstone.think.providers.local_endpoint import resolve_local_endpoint
+
+    if not resolve_local_endpoint().is_bundled:
+        return None
+
     if sys.platform == "darwin":
         return _start_mlx_local_server()
 
@@ -1962,6 +1975,10 @@ def _nudge_catchup_drain() -> None:
 async def _check_local_server_recovery() -> None:
     """Detect a recovered local server after supervisor-managed relaunch."""
     if _is_remote_mode or not _recovery_state["local_server_down"]:
+        return
+    from solstone.think.providers.local_endpoint import resolve_local_endpoint
+
+    if not resolve_local_endpoint().is_bundled:
         return
 
     port = read_service_port("local")
@@ -2681,7 +2698,9 @@ def main() -> None:
             procs.append(proc)
             wait_for_convey_ready(proc)
             print("  Convey ready", flush=True)
-        if is_local_provider_needed():
+        from solstone.think.providers.local_endpoint import resolve_local_endpoint
+
+        if is_local_provider_needed() and resolve_local_endpoint().is_bundled:
             proc = start_local_server()
             if proc is not None:
                 procs.append(proc)

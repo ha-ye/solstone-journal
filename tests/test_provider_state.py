@@ -4,8 +4,16 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from solstone.think.models import LOCAL_MODEL
-from solstone.think.providers import local_install, local_server, local_vulkan, state
+from solstone.think.providers import (
+    local_endpoint,
+    local_install,
+    local_server,
+    local_vulkan,
+    state,
+)
 from solstone.think.providers.shared import (
     RUNTIME_REASON_CODES,
     classify_provider_error,
@@ -45,6 +53,15 @@ def _readiness(
         "model_id": LOCAL_MODEL,
         "install_error": None,
     }
+
+
+def _byo_endpoint() -> local_endpoint.LocalEndpoint:
+    return local_endpoint.LocalEndpoint(
+        base_url="http://byo.example",
+        served_model_id="served-model",
+        credential=None,
+        is_bundled=False,
+    )
 
 
 def test_runtime_reason_codes_are_state_reason_codes():
@@ -423,6 +440,91 @@ def test_local_readiness_ready(monkeypatch):
     assert provider_state.status == "ready"
     assert provider_state.reason_code is None
     assert provider_state.source == "local_server"
+
+
+def test_local_readiness_byo_reachable_skips_bundled_checks(monkeypatch):
+    monkeypatch.setattr(local_endpoint, "resolve_local_endpoint", _byo_endpoint)
+    monkeypatch.setattr(
+        local_endpoint, "probe_local_endpoint", lambda _endpoint: (True, None)
+    )
+    monkeypatch.setattr(
+        local_install,
+        "inspect_readiness",
+        lambda _model=None: (_ for _ in ()).throw(
+            AssertionError("install check not expected")
+        ),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "probe_state",
+        lambda: (_ for _ in ()).throw(AssertionError("server probe not expected")),
+    )
+
+    provider_state = state.readiness_for_provider("local", "generate")
+
+    assert provider_state.status == "ready"
+    assert provider_state.reason_code is None
+    assert provider_state.model == "served-model"
+    assert provider_state.source == "local_endpoint"
+
+
+def test_local_readiness_byo_unreachable(monkeypatch):
+    monkeypatch.setattr(local_endpoint, "resolve_local_endpoint", _byo_endpoint)
+    monkeypatch.setattr(
+        local_endpoint,
+        "probe_local_endpoint",
+        lambda _endpoint: (False, "connection refused"),
+    )
+
+    provider_state = state.readiness_for_provider("local", "cogitate")
+
+    assert provider_state.status == "unhealthy"
+    assert provider_state.reason_code == "local_endpoint_unreachable"
+    assert provider_state.model == "served-model"
+    assert provider_state.message == "connection refused"
+    assert provider_state.source == "local_endpoint"
+
+
+@pytest.mark.parametrize(
+    ("selected_config", "reachable", "expected_issues"),
+    [
+        ({"providers": {"generate": {"provider": "local"}}}, True, []),
+        (
+            {"providers": {"generate": {"provider": "google"}}},
+            False,
+            ["local_endpoint_unreachable"],
+        ),
+    ],
+)
+def test_local_status_dict_byo(
+    monkeypatch, selected_config, reachable, expected_issues
+):
+    monkeypatch.setattr("solstone.think.models.get_config", lambda: selected_config)
+    monkeypatch.setattr(local_endpoint, "resolve_local_endpoint", _byo_endpoint)
+    monkeypatch.setattr(
+        local_endpoint,
+        "probe_local_endpoint",
+        lambda _endpoint: (reachable, None if reachable else "connection refused"),
+    )
+    monkeypatch.setattr(
+        local_install,
+        "inspect_readiness",
+        lambda _model=None: (_ for _ in ()).throw(
+            AssertionError("install check not expected")
+        ),
+    )
+
+    status = state.local_status_dict()
+
+    assert status == {
+        "configured": True,
+        "selected": selected_config["providers"]["generate"]["provider"] == "local",
+        "generate_ready": reachable,
+        "cogitate_ready": reachable,
+        "cogitate_cli": None,
+        "cogitate_cli_found": False,
+        "issues": expected_issues,
+    }
 
 
 def test_readiness_for_context_routes_to_resolved_local_provider(monkeypatch):

@@ -122,6 +122,20 @@ def _build_llm(provider: str, model: str) -> Any:
     from openhands.sdk import LLM
 
     if provider == "local":
+        from solstone.think.providers.local_endpoint import resolve_local_endpoint
+
+        endpoint = resolve_local_endpoint()
+        if not endpoint.is_bundled:
+            return LLM(
+                model=f"openai/{endpoint.served_model_id}",
+                base_url=f"{endpoint.base_url}/v1",
+                api_key=endpoint.credential or "EMPTY",
+                native_tool_calling=False,
+                input_cost_per_token=0,
+                output_cost_per_token=0,
+                litellm_extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            )
+
         from solstone.think.providers import local_server
 
         server = local_server.connect()
@@ -1017,17 +1031,47 @@ async def run_cogitate(
         raise
     except Exception as exc:
         provider_exc = _unwrap_provider_exception(exc)
-        if classify_provider_error(provider_exc, provider) == "provider_quota_exceeded":
+        reason_code = None
+        local_endpoint = None
+        if provider == "local":
+            from solstone.think.providers.local_endpoint import (
+                classify_byo_cogitate_error,
+                local_endpoint_reason_copy,
+                redact_local_endpoint_credential,
+                resolve_local_endpoint,
+            )
+
+            local_endpoint = resolve_local_endpoint()
+            if not local_endpoint.is_bundled:
+                reason_code = classify_byo_cogitate_error(provider_exc)
+                if reason_code:
+                    setattr(exc, "reason_code", reason_code)
+                    setattr(provider_exc, "reason_code", reason_code)
+        reason_code = reason_code or classify_provider_error(provider_exc, provider)
+        error_text = str(exc)
+        trace_text = traceback.format_exc()
+        if local_endpoint is not None:
+            fixed_copy = local_endpoint_reason_copy(reason_code)
+            if fixed_copy:
+                error_text = fixed_copy
+            if not local_endpoint.is_bundled:
+                error_text = redact_local_endpoint_credential(
+                    error_text, local_endpoint
+                )
+                trace_text = redact_local_endpoint_credential(
+                    trace_text, local_endpoint
+                )
+        if reason_code == "provider_quota_exceeded":
             raise QuotaExhaustedError(
                 str(provider_exc), _retry_delay_ms(provider_exc)
             ) from exc
         callback.emit(
             {
                 "event": "error",
-                "error": str(exc),
-                "reason_code": classify_provider_error(provider_exc, provider),
+                "error": error_text,
+                "reason_code": reason_code,
                 "provider": provider,
-                "trace": traceback.format_exc(),
+                "trace": trace_text,
                 "ts": now_ms(),
             }
         )

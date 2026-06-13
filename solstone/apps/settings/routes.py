@@ -12,6 +12,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from flask import Blueprint, abort, jsonify, render_template, request
 
@@ -70,9 +71,17 @@ from solstone.convey.sol_initiated.settings import (
 )
 from solstone.convey.utils import error_response, respond_collection
 from solstone.think import facets
-from solstone.think.journal_config import write_journal_config
+from solstone.think.journal_config import (
+    hold_config_lock,
+    read_journal_config,
+    write_journal_config,
+)
 from solstone.think.models import LOCAL_MODEL
 from solstone.think.providers.google import validate_vertex_credentials
+from solstone.think.providers.local_endpoint import (
+    normalize_local_endpoint_url,
+    resolve_local_endpoint,
+)
 from solstone.think.retention import (
     _human_bytes,
     check_storage_health,
@@ -176,8 +185,98 @@ def _project_public_config(config: dict[str, Any]) -> dict[str, Any]:
     has_pw = bool(convey_config.pop("password_hash", None))
     convey_config.pop("password", None)
     convey_config["has_password"] = has_pw
+    providers_config = projected.get("providers")
+    if isinstance(providers_config, dict) and "local" in providers_config:
+        local_config = providers_config.get("local")
+        if not isinstance(local_config, dict):
+            local_config = {}
+            providers_config["local"] = local_config
+        credential = local_config.pop("credential", None)
+        local_config["credential_configured"] = bool(str(credential or "").strip())
     projected["runtime_env"] = {k: bool(os.getenv(k)) for k in API_KEY_ENV_VARS}
     return projected
+
+
+def _read_local_provider_config(config: dict[str, Any]) -> dict[str, Any]:
+    providers_config = config.get("providers", {})
+    if not isinstance(providers_config, dict):
+        return {}
+    local_config = providers_config.get("local", {})
+    return local_config if isinstance(local_config, dict) else {}
+
+
+def _ensure_local_provider_config(config: dict[str, Any]) -> dict[str, Any]:
+    providers_config = config.get("providers")
+    if not isinstance(providers_config, dict):
+        providers_config = {}
+        config["providers"] = providers_config
+    local_config = providers_config.get("local")
+    if not isinstance(local_config, dict):
+        local_config = {}
+        providers_config["local"] = local_config
+    return local_config
+
+
+def _local_credential_configured(local_config: dict[str, Any]) -> bool:
+    return bool(str(local_config.get("credential") or "").strip())
+
+
+def _local_endpoint_public_payload(config: dict[str, Any]) -> dict[str, object]:
+    local_config = _read_local_provider_config(config)
+    endpoint_url = str(local_config.get("endpoint_url") or "").strip()
+    served_model_id = str(local_config.get("served_model_id") or "").strip()
+    return {
+        "enabled": bool(endpoint_url and served_model_id),
+        "endpoint_url": endpoint_url,
+        "served_model_id": served_model_id,
+        "credential_configured": _local_credential_configured(local_config),
+    }
+
+
+def _local_override_payload(config: dict[str, Any]) -> dict[str, object]:
+    endpoint = resolve_local_endpoint()
+    local_config = _read_local_provider_config(config)
+    return {
+        "enabled": not endpoint.is_bundled,
+        "endpoint_url": "" if endpoint.is_bundled else endpoint.base_url,
+        "served_model_id": "" if endpoint.is_bundled else endpoint.served_model_id,
+        "credential_configured": _local_credential_configured(local_config),
+    }
+
+
+def _masked_local_endpoint_changes(
+    before: dict[str, Any],
+    after: dict[str, Any],
+    *,
+    credential_touched: bool,
+) -> dict[str, dict[str, object]]:
+    changed_fields: dict[str, dict[str, object]] = {}
+    for key in ("endpoint_url", "served_model_id"):
+        old_value = str(before.get(key) or "")
+        new_value = str(after.get(key) or "")
+        if old_value != new_value:
+            changed_fields[key] = {"old": old_value, "new": new_value}
+
+    if credential_touched:
+        old_credential = str(before.get("credential") or "")
+        new_credential = str(after.get("credential") or "")
+        if old_credential != new_credential:
+            changed_fields["credential"] = {
+                "old": "***" if old_credential else "",
+                "new": "***" if new_credential else "",
+            }
+    return changed_fields
+
+
+def _validate_local_endpoint_url(endpoint_url: str) -> str | Any:
+    normalized = normalize_local_endpoint_url(endpoint_url)
+    parsed = urlsplit(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return error_response(
+            INVALID_CONFIG_VALUE,
+            detail="endpoint_url must be an http or https URL with a host",
+        )
+    return normalized
 
 
 @settings_bp.app_context_processor
@@ -905,6 +1004,109 @@ def get_local_models() -> Any:
         return _settings_operation_failed()
 
 
+@settings_bp.route("/api/local/endpoint", methods=["POST"])
+def update_local_endpoint() -> Any:
+    try:
+        request_data = request.get_json(silent=True)
+        if not isinstance(request_data, dict):
+            return error_response(MISSING_REQUEST_BODY, detail="No data provided")
+
+        raw_endpoint_url = request_data.get("endpoint_url")
+        if not isinstance(raw_endpoint_url, str) or not raw_endpoint_url.strip():
+            return error_response(MISSING_REQUIRED_FIELD, detail="endpoint_url")
+        endpoint_url = _validate_local_endpoint_url(raw_endpoint_url)
+        if not isinstance(endpoint_url, str):
+            return endpoint_url
+
+        raw_served_model_id = request_data.get("served_model_id")
+        if not isinstance(raw_served_model_id, str) or not raw_served_model_id.strip():
+            return error_response(MISSING_REQUIRED_FIELD, detail="served_model_id")
+        served_model_id = raw_served_model_id.strip()
+
+        credential_touched = "credential" in request_data
+        raw_credential = request_data.get("credential")
+        if (
+            credential_touched
+            and raw_credential is not None
+            and not isinstance(raw_credential, str)
+        ):
+            return error_response(INVALID_REQUEST_VALUE, detail="credential")
+
+        with hold_config_lock():
+            config = read_journal_config()
+            local_config = _ensure_local_provider_config(config)
+            before = dict(local_config)
+            local_config["endpoint_url"] = endpoint_url
+            local_config["served_model_id"] = served_model_id
+            if credential_touched:
+                credential = str(raw_credential or "").strip()
+                if credential:
+                    local_config["credential"] = credential
+                else:
+                    local_config.pop("credential", None)
+            changed_fields = _masked_local_endpoint_changes(
+                before,
+                local_config,
+                credential_touched=credential_touched,
+            )
+            write_journal_config(config)
+
+        if changed_fields:
+            log_app_action(
+                app="settings",
+                facet=None,
+                action="local_endpoint_update",
+                params={"changed_fields": changed_fields},
+            )
+        return jsonify(
+            {
+                "success": True,
+                "local_endpoint": _local_endpoint_public_payload(config),
+            }
+        )
+    except CorruptConfigError:
+        raise
+    except Exception:
+        logger.exception("error updating local endpoint")
+        return _settings_operation_failed()
+
+
+@settings_bp.route("/api/local/endpoint", methods=["DELETE"])
+def clear_local_endpoint() -> Any:
+    try:
+        with hold_config_lock():
+            config = read_journal_config()
+            local_config = _ensure_local_provider_config(config)
+            before = dict(local_config)
+            for key in ("endpoint_url", "served_model_id", "credential"):
+                local_config.pop(key, None)
+            changed_fields = _masked_local_endpoint_changes(
+                before,
+                local_config,
+                credential_touched=True,
+            )
+            write_journal_config(config)
+
+        if changed_fields:
+            log_app_action(
+                app="settings",
+                facet=None,
+                action="local_endpoint_clear",
+                params={"changed_fields": changed_fields},
+            )
+        return jsonify(
+            {
+                "success": True,
+                "local_endpoint": _local_endpoint_public_payload(config),
+            }
+        )
+    except CorruptConfigError:
+        raise
+    except Exception:
+        logger.exception("error clearing local endpoint")
+        return _settings_operation_failed()
+
+
 @settings_bp.route("/api/providers")
 def get_providers() -> Any:
     """Return providers configuration with context defaults and API key status.
@@ -997,6 +1199,7 @@ def get_providers() -> Any:
                 pass
 
         provider_status = build_provider_status(providers_list, vertex_creds_configured)
+        local_override = _local_override_payload(config)
         raw_local_model = request.args.get("local_model")
         local_model_id = local_bootstrap.accepted_request_model(raw_local_model)
         if local_model_id is None:
@@ -1019,6 +1222,7 @@ def get_providers() -> Any:
                 "api_keys": api_keys,
                 "key_validation": key_validation,
                 "local": local_status,
+                "local_override": local_override,
                 "local_backend": "mlx"
                 if local_bootstrap._is_mlx_backend()
                 else "local",

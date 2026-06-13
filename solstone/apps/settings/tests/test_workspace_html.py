@@ -113,6 +113,18 @@ def test_workspace_unified_provider_panel_keeps_bootstrap_endpoints_and_polling(
     assert "providersPanelActionPending" in text
 
 
+def test_workspace_local_endpoint_override_suppresses_bundled_install_affordance():
+    text = _workspace_text()
+
+    assert "settings_copy.LOCAL_ENDPOINT_DISCLOSURE" in text
+    assert "function localOverrideEnabled(data = providersData)" in text
+    assert "return 'local-byo'" in text
+    assert "kind === 'local-byo'" in text
+    assert "appendProviderMetaLine(block, LOCAL_ENDPOINT_DISCLOSURE)" in text
+    assert "localOverrideEnabled(data) ? providerStatus.local : data?.local" in text
+    assert "if (localOverrideEnabled())" in text
+
+
 def test_workspace_local_issue_copy_includes_gpu_unavailable():
     text = _workspace_text()
 

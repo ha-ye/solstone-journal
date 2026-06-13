@@ -34,6 +34,7 @@ from solstone.think.providers.local import (
     LocalProviderError,
     normalize_model_id,
 )
+from solstone.think.providers.local_endpoint import resolve_local_endpoint
 from solstone.think.providers.memory import (
     MLX_AVAILABLE_FLOOR_BYTES,
     assess_memory,
@@ -300,6 +301,10 @@ def get_state(model: str) -> dict[str, int | str | None]:
 
 def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
     """Start the local provider bootstrap worker if needed."""
+    if not resolve_local_endpoint().is_bundled:
+        logger.info("local bootstrap refused: BYO local endpoint is active")
+        raise LocalBootstrapUnavailableError("BYO local endpoint is active")
+
     model_id = _resolve_model_id(model)
     get_state(model_id)
     status = _read_status()

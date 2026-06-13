@@ -32,6 +32,7 @@ CONVEY_NETWORK_ACCESS_CONFIG_REJECTED = (
 CONVEY_NETWORK_LOCAL_ONLY_REASON = (
     "network access can only be changed from this machine."
 )
+LOCAL_ENDPOINT_DISCLOSURE = "inference runs on the endpoint you configured; your requests, including screen content for vision, are sent there."
 CONVEY_NETWORK_ACCESS_LABEL = "network access"
 CONVEY_NETWORK_ACCESS_HINT = (
     "lets devices on your network reach convey. changing this restarts convey."
@@ -64,4 +65,5 @@ __all__ = [
     "FACET_DETAIL_SUCCESS_HEADING",
     "FACET_DETAIL_TERTIARY_ESCAPE",
     "FACET_DETAIL_VALUE_FRAMING",
+    "LOCAL_ENDPOINT_DISCLOSURE",
 ]
