@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from cryptography import x509
 from cryptography.hazmat.primitives import serialization
+from cryptography.x509.oid import NameOID
 
 from solstone.apps.link.routes import _build_pair_link
 from solstone.think.link import join_cli
@@ -40,7 +42,7 @@ def _args(
     home: str | None = "http://receiver",
     code: str = "ABCD-EFGH",
     as_role: str | None = None,
-    label: str = "laptop",
+    label: str | None = "laptop",
 ) -> argparse.Namespace:
     return argparse.Namespace(home=home, code=code, as_role=as_role, label=label)
 
@@ -89,6 +91,11 @@ def _configure_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return config_home
 
 
+def _csr_common_name(csr_pem: str) -> str:
+    csr = x509.load_pem_x509_csr(csr_pem.encode("utf-8"))
+    return csr.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
+
+
 def test_short_code_happy_path_writes_bundle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -123,6 +130,49 @@ def test_short_code_happy_path_writes_bundle(
     assert peer["fingerprint"].startswith("sha256:")
     assert peer["local_endpoints"] == [{"host": "127.0.0.1", "port": 7657}]
     assert peer["role"] == ""
+
+
+def test_short_code_omitted_label_uses_sanitized_hostname(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_home = _configure_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(join_cli.socket, "gethostname", lambda: "Lab Host.local")
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _mock_urlopen(monkeypatch, _success_payload(tmp_path), calls=calls)
+
+    result = join_cli.main(_args(label=None))
+
+    assert result == 0
+    assert calls[0][1]["device_label"] == "Lab-Host.local"
+    assert _csr_common_name(calls[0][1]["csr"]) == "Lab-Host.local"
+    bundle = config_home / "solstone-observer" / "spl" / "Lab-Host.local"
+    assert bundle.is_dir()
+    peer = json.loads((bundle / "peer.json").read_text("utf-8"))
+    assert peer["label"] == "Lab-Host.local"
+
+
+@pytest.mark.parametrize("hostname", ["", "!!!"])
+def test_short_code_omitted_label_falls_back_to_default_client_label(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    hostname: str,
+) -> None:
+    config_home = _configure_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(join_cli.socket, "gethostname", lambda: hostname)
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _mock_urlopen(monkeypatch, _success_payload(tmp_path), calls=calls)
+
+    result = join_cli.main(_args(label=None))
+
+    assert join_cli.DEFAULT_CLIENT_LABEL == "linked-system"
+    assert join_cli._label_error(join_cli.DEFAULT_CLIENT_LABEL) is None
+    assert result == 0
+    assert calls[0][1]["device_label"] == join_cli.DEFAULT_CLIENT_LABEL
+    bundle = config_home / "solstone-observer" / "spl" / join_cli.DEFAULT_CLIENT_LABEL
+    assert bundle.is_dir()
+    peer = json.loads((bundle / "peer.json").read_text("utf-8"))
+    assert peer["label"] == join_cli.DEFAULT_CLIENT_LABEL
 
 
 def test_url_happy_path_posts_to_pair_token(

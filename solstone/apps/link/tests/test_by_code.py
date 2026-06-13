@@ -35,6 +35,11 @@ def _make_csr(label: str = "test") -> str:
     return csr.public_bytes(serialization.Encoding.PEM).decode("ascii")
 
 
+def _cert_common_name(cert_pem: str) -> str:
+    cert = x509.load_pem_x509_certificate(cert_pem.encode("utf-8"))
+    return cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
+
+
 def _start_pair(env, device_label: str = "Test Phone") -> dict:
     response = env.client.post(
         "/app/link/pair-start",
@@ -63,7 +68,82 @@ def test_by_code_happy_path(link_env) -> None:
     )
 
     assert response.status_code == 200
-    _assert_pair_response(response.get_json())
+    payload = response.get_json()
+    _assert_pair_response(payload)
+    assert _cert_common_name(payload["client_cert"]) == "Test Phone"
+    entries = link_routes._authorized().snapshot()
+    assert len(entries) == 1
+    assert entries[0].device_label == "Test Phone"
+    assert entries[0].client_label == ""
+
+
+def test_by_code_stores_distinct_assigned_and_client_labels(link_env) -> None:
+    env = link_env()
+    started = _start_pair(env, "Assigned Phone")
+
+    response = env.client.post(
+        "/app/link/by-code",
+        json={
+            "code": started["manual_code"],
+            "csr": _make_csr("client-csr"),
+            "device_label": "Client Phone",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    _assert_pair_response(payload)
+    assert _cert_common_name(payload["client_cert"]) == "Client Phone"
+    entries = link_routes._authorized().snapshot()
+    assert len(entries) == 1
+    assert entries[0].device_label == "Assigned Phone"
+    assert entries[0].client_label == "Client Phone"
+
+
+def test_by_code_client_only_label_stores_assigned_empty(link_env) -> None:
+    env = link_env()
+    started = _start_pair(env, "")
+
+    response = env.client.post(
+        "/app/link/by-code",
+        json={
+            "code": started["manual_code"],
+            "csr": _make_csr("client-only"),
+            "device_label": "Client Only",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    _assert_pair_response(payload)
+    assert _cert_common_name(payload["client_cert"]) == "Client Only"
+    entries = link_routes._authorized().snapshot()
+    assert len(entries) == 1
+    assert entries[0].device_label == ""
+    assert entries[0].client_label == "Client Only"
+
+
+def test_by_code_empty_labels_use_default_for_certificate_only(
+    link_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = link_env()
+    monkeypatch.setattr(link_routes, "_default_device_label", lambda: "Default Device")
+    started = _start_pair(env, "")
+
+    response = env.client.post(
+        "/app/link/by-code",
+        json={"code": started["manual_code"], "csr": _make_csr("empty-labels")},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    _assert_pair_response(payload)
+    assert _cert_common_name(payload["client_cert"]) == "Default Device"
+    entries = link_routes._authorized().snapshot()
+    assert len(entries) == 1
+    assert entries[0].device_label == ""
+    assert entries[0].client_label == ""
 
 
 @pytest.mark.parametrize("variant", ["lowercase", "no_hyphen", "whitespace"])
@@ -220,3 +300,33 @@ def test_successful_pairing_emits_pair_complete_once(
         r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",
         kwargs["paired_at"],
     )
+
+
+def test_pair_complete_event_uses_display_label(
+    link_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = link_env()
+    calls = []
+
+    def mock_emit(*args, **kwargs):
+        calls.append((args, kwargs))
+        return True
+
+    monkeypatch.setattr("solstone.apps.link.routes.emit", mock_emit)
+    started = _start_pair(env, "Assigned Phone")
+
+    response = env.client.post(
+        "/app/link/by-code",
+        json={
+            "code": started["manual_code"],
+            "csr": _make_csr("display-event"),
+            "device_label": "Client Phone",
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args == ("link", "pair_complete")
+    assert kwargs["device_label"] == "Assigned Phone (Client Phone)"

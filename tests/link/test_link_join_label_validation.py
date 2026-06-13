@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 
 import pytest
 
 from solstone.think.link import join_cli
 
 
-def _args(label: str) -> argparse.Namespace:
+def _args(label: str | None) -> argparse.Namespace:
     return argparse.Namespace(
         home="http://receiver",
         code="ABCD-EFGH",
@@ -64,3 +65,23 @@ def test_valid_labels_reach_http_stage(
 
     assert result == 1
     assert len(calls) == 1
+
+
+def test_explicit_valid_label_is_sent_verbatim(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    calls = []
+
+    def fake_urlopen(request, **_kwargs):
+        calls.append(json.loads(request.data.decode("utf-8")))
+        raise join_cli.urllib.error.URLError("stop")
+
+    monkeypatch.setattr(join_cli.urllib.request, "urlopen", fake_urlopen)
+
+    result = join_cli.main(_args("Laptop.v2"))
+
+    assert result == 1
+    assert len(calls) == 1
+    assert calls[0]["device_label"] == "Laptop.v2"

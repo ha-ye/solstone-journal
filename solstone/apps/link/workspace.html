@@ -188,7 +188,7 @@
 
         <label class="link-modal-label link-pair-label-edit">
           {{ link_copy.DEVICE_LABEL_FIELD_LABEL }}
-          <input type="text" id="link-device-label" placeholder="{{ link_copy.DEVICE_LABEL_PLACEHOLDER }}" data-default-label-format="{{ link_copy.DEVICE_LABEL_DEFAULT_FORMAT }}" maxlength="80" />
+          <input type="text" id="link-device-label" placeholder="{{ link_copy.DEVICE_LABEL_PLACEHOLDER }}" maxlength="80" />
         </label>
 
         <details class="link-pair-details">
@@ -1318,7 +1318,7 @@
         const persisted = typeof data.label === 'string' ? data.label : input.value.trim();
         device.device_label = persisted;
         replaceRenameInput(input, persisted);
-        renderRecentlyPaired(latestDevices);
+        refreshDevices();
       } catch (err) {
         device.device_label = previous;
         replaceRenameInput(input, previous);
@@ -1368,7 +1368,7 @@
 
     const label = document.createElement('span');
     label.className = 'link-device-label';
-    label.textContent = device.device_label || '';
+    label.textContent = device.display_label || '';
     title.appendChild(statusWrap);
     title.appendChild(label);
 
@@ -1567,7 +1567,7 @@
       const suffix = device.role === 'observer' || device.role === 'peer'
         ? ` (${device.role})`
         : '';
-      label.textContent = `${device.device_label || ''}${suffix}`;
+      label.textContent = `${device.display_label || ''}${suffix}`;
       const network = document.createElement('span');
       network.textContent = networkLabel(device.network);
       const time = document.createElement('span');
@@ -1948,7 +1948,7 @@
   function openUnpair(device) {
     unpairTarget = device;
     unpairTitle.textContent = (window.LinkCopy.UNPAIR_TITLE_FORMAT || "unpair '{label}'?")
-      .replace('{label}', device.device_label || '');
+      .replace('{label}', device.display_label || device.device_label || '');
     unpairModal.hidden = false;
     unpairConfirm.focus();
   }

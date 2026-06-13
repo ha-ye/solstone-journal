@@ -160,6 +160,14 @@ def _default_device_label() -> str:
     )
 
 
+def _display_label(assigned: str, client: str) -> str:
+    assigned = (assigned or "").strip()
+    client = (client or "").strip()
+    if assigned and client and assigned != client:
+        return f"{assigned} ({client})"
+    return assigned or client
+
+
 def _rough_network(mode: str) -> str:
     return "anywhere" if mode == "pl-via-spl" else "network"
 
@@ -537,9 +545,7 @@ def api_pair_nonce_status() -> Any:
 def pair_start() -> Any:
     """Generate a single-use 5-minute nonce and return link-ready payload."""
     payload = request.get_json(silent=True) or {}
-    device_label = (
-        str(payload.get("device_label") or "").strip() or _default_device_label()
-    )
+    device_label = str(payload.get("device_label") or "").strip()
     raw_role = payload.get("role", "")
     role = "" if raw_role is None else raw_role
     if not isinstance(role, str) or role not in VALID_ROLES:
@@ -614,13 +620,15 @@ def pair_start() -> Any:
 def _complete_pairing(
     consumed: Nonce,
     csr_pem: str,
-    device_label: str,
+    assigned_label: str,
+    client_label: str,
     *,
     network: str,
     sender_instance_id: str | None = None,
 ) -> tuple[dict[str, Any], str, str]:
     ca = load_or_generate_ca(ca_dir())
-    client_cert_pem, fingerprint = sign_csr(ca, csr_pem, device_label)
+    cert_label = client_label or assigned_label or _default_device_label()
+    client_cert_pem, fingerprint = sign_csr(ca, csr_pem, cert_label)
 
     state = LinkState.load_or_create()
     paired_at = _utc_now_iso()
@@ -643,18 +651,19 @@ def _complete_pairing(
         if is_peer(consumed.role):
             journal_source_record_path = mint_pl_journal_source_record(
                 fingerprint=fingerprint,
-                device_label=device_label,
+                device_label=cert_label,
                 paired_at=paired_at,
                 peer_instance_id=sender_instance_id,
             )
             create_state_directory(Path(get_journal()), journal_source_record_path.stem)
         _authorized().add(
             fingerprint=fingerprint,
-            device_label=device_label,
+            device_label=assigned_label,
             instance_id=state.instance_id,
             role="peer" if is_peer(consumed.role) else "",
             paired_at=paired_at,
             network=network,
+            client_label=client_label,
         )
     except Exception:
         if journal_source_record_path is not None:
@@ -693,7 +702,7 @@ def pair() -> Any:
     Body  (JSON):
         {
           "csr":          "<PEM>",      // required
-          "device_label": "<string>",   // optional (falls back to nonce label)
+          "device_label": "<string>",   // optional client self-name
           "nonce":        "<hex>"       // optional: may be in body instead of query
         }
 
@@ -736,21 +745,28 @@ def pair() -> Any:
             detail="nonce expired or used",
         )
 
-    effective_label = device_label or (consumed.device_label or _default_device_label())
+    assigned_label = consumed.device_label
+    client_label = device_label
 
     network = _rough_network(g.identity.mode)
     try:
         response, fingerprint, paired_at = _complete_pairing(
             consumed,
             csr_pem,
-            effective_label,
+            assigned_label,
+            client_label,
             network=network,
             sender_instance_id=sender_instance_id,
         )
     except ValueError as exc:
         logger.info("pair: bad csr: %s", exc)
         return error_response(PAIRING_KEY_INVALID, detail=f"bad csr: {exc}")
-    _emit_pair_complete(effective_label, fingerprint, paired_at, network=network)
+    _emit_pair_complete(
+        _display_label(assigned_label, client_label),
+        fingerprint,
+        paired_at,
+        network=network,
+    )
     return jsonify(response)
 
 
@@ -790,20 +806,27 @@ def by_code() -> Any:
             detail="nonce expired or used",
         )
 
-    effective_label = device_label or consumed.device_label or _default_device_label()
+    assigned_label = consumed.device_label
+    client_label = device_label
     network = _rough_network(g.identity.mode)
     try:
         response, fingerprint, paired_at = _complete_pairing(
             consumed,
             csr_pem,
-            effective_label,
+            assigned_label,
+            client_label,
             network=network,
             sender_instance_id=sender_instance_id,
         )
     except ValueError as exc:
         logger.info("by-code: bad csr: %s", exc)
         return error_response(PAIRING_KEY_INVALID, detail=f"bad csr: {exc}")
-    _emit_pair_complete(effective_label, fingerprint, paired_at, network=network)
+    _emit_pair_complete(
+        _display_label(assigned_label, client_label),
+        fingerprint,
+        paired_at,
+        network=network,
+    )
     return jsonify(response)
 
 
@@ -919,6 +942,7 @@ def _entry_to_json(entry: ClientEntry) -> dict[str, Any]:
         "fingerprint": entry.fingerprint,
         "fingerprint_short": short_fp,
         "device_label": entry.device_label,
+        "display_label": _display_label(entry.device_label, entry.client_label),
         "paired_at": entry.paired_at,
         "last_seen_at": entry.last_seen_at,
         "role": entry.role,

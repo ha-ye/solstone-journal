@@ -3,9 +3,10 @@
 
 """authorized_clients.json — the PL revocation ledger.
 
-Entry shape is fixed by the spl protocol (see github.com/solpbc/spl
-proto/pairing.md §6), plus solstone-specific `last_seen_at` and `network`
-fields for UX:
+The spl-protocol-fixed core shape is unchanged: `fingerprint`, `device_label`,
+`paired_at`, `instance_id`, and `role`. `device_label` is the home-assigned,
+renameable label for the paired client. Solstone also stores local-only
+`last_seen_at`, `network`, and `client_label` fields for UX:
 
             {
               "fingerprint": "sha256:<hex>",
@@ -14,7 +15,8 @@ fields for UX:
               "instance_id": "<home_instance_id>",
               "role": "",
               "last_seen_at": "2026-04-19T18:03:12Z",  // optional; null/absent = never
-              "network": "network"                     // optional; local display label source
+              "network": "network",                    // optional; local display label source
+              "client_label": "jer-laptop"             // optional; client self-name/hostname
             }
 
 Role-less linked systems are stored with `role: ""`; peers are stored with
@@ -23,7 +25,8 @@ takes effect within ~500 ms of the file write. Convey's pair and unpair routes
 own the pairing writer surface; the secure listener updates `last_seen_at` and
 uses this ledger for TLS verification and per-request authorization.
 
-`last_seen_at` and `network` are local-only — never transmitted externally.
+`last_seen_at`, `network`, and `client_label` are local-only — never transmitted
+externally.
 """
 
 from __future__ import annotations
@@ -52,6 +55,7 @@ class ClientEntry:
     role: str = ""
     last_seen_at: str | None = None
     network: str | None = None
+    client_label: str = ""
 
 
 class AuthorizedClients:
@@ -99,6 +103,7 @@ class AuthorizedClients:
         role: str = "",
         paired_at: str | None = None,
         network: str | None = None,
+        client_label: str = "",
     ) -> None:
         paired_at = paired_at or dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         entry = ClientEntry(
@@ -109,6 +114,7 @@ class AuthorizedClients:
             role=role,
             last_seen_at=None,
             network=network,
+            client_label=client_label,
         )
         with self._lock:
             with hold_lock(self._path):
@@ -176,7 +182,7 @@ class AuthorizedClients:
         self.reload_if_stale()
         with self._lock:
             for entry in self._entries.values():
-                if entry.device_label == label:
+                if label and entry.device_label == label:
                     return entry
         return None
 
@@ -206,6 +212,7 @@ class AuthorizedClients:
                     continue
                 last_seen = item.get("last_seen_at")
                 network = item.get("network")
+                client_label = item.get("client_label")
                 out[fp] = ClientEntry(
                     fingerprint=fp,
                     device_label=str(item.get("device_label", "")),
@@ -214,6 +221,7 @@ class AuthorizedClients:
                     role=item.get("role") if isinstance(item.get("role"), str) else "",
                     last_seen_at=last_seen if isinstance(last_seen, str) else None,
                     network=network if isinstance(network, str) else None,
+                    client_label=client_label if isinstance(client_label, str) else "",
                 )
         return out
 
@@ -227,6 +235,7 @@ class AuthorizedClients:
                 "role": e.role,
                 **({"last_seen_at": e.last_seen_at} if e.last_seen_at else {}),
                 **({"network": e.network} if e.network else {}),
+                **({"client_label": e.client_label} if e.client_label else {}),
             }
             for e in entries.values()
         ]

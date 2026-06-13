@@ -64,9 +64,17 @@ def _add_device(
     role: str = "",
     paired_at: str = PAIRED_AT,
     last_seen_at: str | None = None,
+    client_label: str = "",
 ) -> None:
     store = _authorized()
-    store.add(fingerprint, label, "inst-1", role=role, paired_at=paired_at)
+    store.add(
+        fingerprint,
+        label,
+        "inst-1",
+        role=role,
+        paired_at=paired_at,
+        client_label=client_label,
+    )
     if last_seen_at is not None:
         store.touch_last_seen(fingerprint, now=_parse_iso(last_seen_at))
 
@@ -170,6 +178,25 @@ def test_pair_mints_default_and_peer_roles(
     assert nonces[0].role == expected_role
 
 
+def test_pair_without_device_label_mints_empty_label(
+    runner,
+    monkeypatch,
+):
+    monkeypatch.setattr(link_call, "_detect_lan_ip", lambda: None)
+    monkeypatch.setattr(link_call, "time", _TimeoutTime())
+
+    result = runner.invoke(
+        link_call.app,
+        ["pair", "--timeout", "1"],
+    )
+
+    assert result.exit_code == 2
+    assert "\nDevice: " not in result.stdout
+    nonces = _nonces().snapshot()
+    assert len(nonces) == 1
+    assert nonces[0].device_label == ""
+
+
 def test_pair_uses_minted_port_and_convey_host_override(runner, monkeypatch):
     monkeypatch.setattr(link_call, "_detect_lan_ip", lambda: "192.168.1.50")
     monkeypatch.setattr(link_call, "time", _TimeoutTime())
@@ -207,6 +234,28 @@ def test_pair_reports_newly_paired_device(runner, monkeypatch):
     assert result.exit_code == 0
     assert (
         "Paired: Phone\n"
+        "  fingerprint: sha256:1111111111111111111111111111111111111111111111111111111111111111\n"
+        f"  paired_at:   {PAIRED_AT}\n"
+    ) in result.stdout
+
+
+def test_pair_reports_display_label_for_newly_paired_device(runner, monkeypatch):
+    def add_device() -> None:
+        if not _authorized().snapshot():
+            _add_device(
+                "sha256:" + ("1" * 64),
+                "",
+                client_label="client-host",
+            )
+
+    monkeypatch.setattr(link_call, "_detect_lan_ip", lambda: None)
+    monkeypatch.setattr(link_call, "time", _PairingTime(on_sleep=add_device))
+
+    result = runner.invoke(link_call.app, ["pair", "--timeout", "5"])
+
+    assert result.exit_code == 0
+    assert (
+        "Paired: client-host\n"
         "  fingerprint: sha256:1111111111111111111111111111111111111111111111111111111111111111\n"
         f"  paired_at:   {PAIRED_AT}\n"
     ) in result.stdout
@@ -287,6 +336,24 @@ def test_list_grouped_output_and_device_line(runner, monkeypatch):
         "\n"
         "Peers:\n"
         "- peer — added 1 hour ago — last seen never [cccccccccccccccc]\n"
+    )
+
+
+def test_list_uses_display_label_when_assigned_label_is_empty(runner, monkeypatch):
+    monkeypatch.setattr(link_call, "_now_utc", lambda: _parse_iso(FROZEN_NOW))
+    _add_device(
+        "sha256:0123456789abcdef0000",
+        "",
+        paired_at=PAIRED_AT,
+        client_label="client-host",
+    )
+
+    result = runner.invoke(link_call.app, ["list"])
+
+    assert result.exit_code == 0
+    assert result.stdout == (
+        "Linked systems:\n"
+        "- client-host — added 1 hour ago — last seen never [0123456789abcdef]\n"
     )
 
 

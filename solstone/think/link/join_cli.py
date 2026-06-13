@@ -32,6 +32,7 @@ import ipaddress
 import json
 import os
 import re
+import socket
 import ssl
 import sys
 import urllib.error
@@ -55,6 +56,7 @@ from solstone.think.utils import get_journal
 VALID_ROLES = {"", "phone", "observer", "peer"}
 MANUAL_CODE_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{8}$")
 LABEL_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+DEFAULT_CLIENT_LABEL = "linked-system"
 BUNDLE_FILES = {
     "private.pem",
     "cert.pem",
@@ -85,7 +87,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--home", help="Receiver base URL")
     parser.add_argument("--code", required=True, help="Manual code or pair-link URL")
     parser.add_argument("--as", dest="as_role", help="Optional tag to join as")
-    parser.add_argument("--label", required=True, help="Local credentials label")
+    parser.add_argument(
+        "--label",
+        required=False,
+        default=None,
+        help="Local credentials label (defaults to this machine's hostname)",
+    )
 
 
 def main(args: argparse.Namespace) -> int:
@@ -93,10 +100,13 @@ def main(args: argparse.Namespace) -> int:
     if as_role not in VALID_ROLES:
         return _fail("invalid role; expected one of: phone, observer, peer", code=2)
 
-    label = str(args.label)
-    label_error = _label_error(label)
-    if label_error is not None:
-        return _fail(label_error, code=2)
+    if args.label is not None:
+        label = str(args.label)
+        label_error = _label_error(label)
+        if label_error is not None:
+            return _fail(label_error, code=2)
+    else:
+        label = _hostname_client_label()
 
     try:
         pair_request = _parse_pair_request(str(args.code).strip(), args.home)
@@ -224,6 +234,25 @@ def _label_error(label: str) -> str | None:
     if not LABEL_RE.fullmatch(label):
         return "--label may contain only letters, numbers, '-', '_', and '.'"
     return None
+
+
+def _sanitize_client_label(raw: str) -> str:
+    if not re.search(r"[A-Za-z0-9_.-]", raw):
+        return ""
+    label = re.sub(r"[^A-Za-z0-9_.-]", "-", raw)
+    label = re.sub(r"\.{2,}", "-", label)
+    label = label.lstrip(".")[:80]
+    if not label or _label_error(label) is not None:
+        return ""
+    return label
+
+
+def _hostname_client_label() -> str:
+    try:
+        raw = socket.gethostname()
+    except OSError:
+        raw = ""
+    return _sanitize_client_label(raw) or DEFAULT_CLIENT_LABEL
 
 
 def _validate_instance_id(value: str) -> str | None:

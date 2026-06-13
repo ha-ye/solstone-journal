@@ -97,6 +97,7 @@ def test_add_then_last_seen_key_absent_in_payload(tmp_path: Path) -> None:
     payload = _load_payload(path)
     assert payload[0]["role"] == ""
     assert "last_seen_at" not in payload[0]
+    assert "client_label" not in payload[0]
 
 
 def test_network_round_trips(tmp_path: Path) -> None:
@@ -111,6 +112,20 @@ def test_network_round_trips(tmp_path: Path) -> None:
     reloaded = AuthorizedClients(path).get("sha256:abc")
     assert reloaded is not None
     assert reloaded.network == "anywhere"
+
+
+def test_client_label_round_trips(tmp_path: Path) -> None:
+    path = tmp_path / "auth.json"
+    store = AuthorizedClients(path)
+
+    store.add("sha256:abc", "Assigned", "inst-1", client_label="client-host")
+
+    payload = _load_payload(path)
+    assert payload[0]["client_label"] == "client-host"
+
+    reloaded = AuthorizedClients(path).get("sha256:abc")
+    assert reloaded is not None
+    assert reloaded.client_label == "client-host"
 
 
 def test_missing_network_defaults_to_none(tmp_path: Path) -> None:
@@ -135,6 +150,30 @@ def test_missing_network_defaults_to_none(tmp_path: Path) -> None:
 
     assert entry is not None
     assert entry.network is None
+
+
+def test_missing_client_label_defaults_to_empty(tmp_path: Path) -> None:
+    path = tmp_path / "auth.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "fingerprint": "sha256:abc",
+                    "device_label": "Jer",
+                    "paired_at": "2026-04-19T00:00:00Z",
+                    "instance_id": "inst-1",
+                }
+            ],
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    entry = AuthorizedClients(path).get("sha256:abc")
+
+    assert entry is not None
+    assert entry.client_label == ""
 
 
 def test_touch_last_seen_unknown_fp_returns_false(tmp_path: Path) -> None:
@@ -222,6 +261,20 @@ def test_update_label_preserves_network(tmp_path: Path) -> None:
     assert _load_payload(path)[0]["network"] == "anywhere"
 
 
+def test_update_label_preserves_client_label(tmp_path: Path) -> None:
+    path = tmp_path / "auth.json"
+    store = AuthorizedClients(path)
+
+    store.add("sha256:abc", "old name", "inst-1", client_label="client-host")
+    assert store.update_label("sha256:abc", "new name") is True
+
+    entry = store.get("sha256:abc")
+    assert entry is not None
+    assert entry.device_label == "new name"
+    assert entry.client_label == "client-host"
+    assert _load_payload(path)[0]["client_label"] == "client-host"
+
+
 @pytest.mark.parametrize(
     ("label", "message"),
     [
@@ -278,11 +331,14 @@ def test_find_by_label(tmp_path: Path) -> None:
     assert store.find_by_label("Jer") is None
 
     store.add("sha256:abc", "Jer", "inst-1")
+    store.add("sha256:empty", "", "inst-1", client_label="client-host")
     entry = store.find_by_label("Jer")
     assert entry is not None
     assert entry.fingerprint == "sha256:abc"
     assert entry.role == ""
     assert store.find_by_label("Nope") is None
+    assert store.find_by_label("") is None
+    assert store.find_by_label("client-host") is None
 
     time.sleep(0.02)
     path.write_text(

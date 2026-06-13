@@ -21,6 +21,7 @@ def _add_device() -> None:
         "old name",
         "inst-1",
         paired_at=PAIRED_AT,
+        client_label="client-host",
     )
 
 
@@ -38,6 +39,7 @@ def test_rename_updates_paired_device_label(link_env) -> None:
     entry = _authorized().get(FINGERPRINT)
     assert entry is not None
     assert entry.device_label == "new name"
+    assert entry.client_label == "client-host"
 
 
 def test_rename_empty_label_returns_invalid_request(link_env) -> None:

@@ -57,6 +57,53 @@ def test_pair_start_shape_and_locked_order(link_env) -> None:
     assert "qr_payload" not in payload
 
 
+def test_pair_start_omitted_assigned_label_stores_empty(link_env) -> None:
+    env = link_env()
+
+    response = env.client.post("/app/link/pair-start", json={})
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert list(payload.keys()) == PAIR_START_KEYS
+    assert payload["device_label"] == ""
+    snap = link_routes._nonces().snapshot()
+    assert len(snap) == 1
+    assert snap[0].device_label == ""
+
+
+def test_pair_start_blank_assigned_label_stores_empty(link_env) -> None:
+    env = link_env()
+
+    response = env.client.post(
+        "/app/link/pair-start",
+        json={"device_label": "   "},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["device_label"] == ""
+    snap = link_routes._nonces().snapshot()
+    assert len(snap) == 1
+    assert snap[0].device_label == ""
+
+
+def test_pair_start_allows_lenient_assigned_label(link_env) -> None:
+    env = link_env()
+    label = "device — added Jun 13!"
+
+    response = env.client.post(
+        "/app/link/pair-start",
+        json={"device_label": label},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["device_label"] == label
+    snap = link_routes._nonces().snapshot()
+    assert len(snap) == 1
+    assert snap[0].device_label == label
+
+
 def test_pair_start_mints_distinct_nonce_and_manual_code(link_env) -> None:
     env = link_env()
 

@@ -175,6 +175,30 @@ def test_pair_complete_single_refresh(link_env) -> None:
     assert "refreshDevices" in init_body
 
 
+def test_workspace_uses_server_display_label_for_device_titles(link_env) -> None:
+    env = link_env()
+    response = env.client.get("/app/link/")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+
+    assert "label.textContent = device.display_label || '';" in body
+    assert "label.textContent = `${device.display_label || ''}${suffix}`;" in body
+    assert (
+        ".replace('{label}', device.display_label || device.device_label || '')" in body
+    )
+    assert "const previous = device.device_label || '';" in body
+    assert "String(device.device_label || '').toLowerCase().includes(needle)" in body
+
+    commit_start = body.index("async function commit()")
+    commit_end = body.index("function cancel()", commit_start)
+    commit_body = body[commit_start:commit_end]
+    assert "device.device_label = persisted;" in commit_body
+    assert "replaceRenameInput(input, persisted);" in commit_body
+    assert "refreshDevices();" in commit_body
+    assert "renderRecentlyPaired(latestDevices);" not in commit_body
+
+
 def test_pair_modal_error_state_present(link_env) -> None:
     env = link_env()
     response = env.client.get("/app/link/")

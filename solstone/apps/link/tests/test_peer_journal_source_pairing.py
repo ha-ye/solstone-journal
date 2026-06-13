@@ -44,10 +44,13 @@ def _pair(
     *,
     role: str,
     label: str = "Pair Device",
+    client_label: str | None = None,
     sender_instance_id: object = None,
 ) -> dict:
     started = _start_pair(env, role=role, label=label)
     body = {"nonce": started["nonce"], "csr": _make_csr(label)}
+    if client_label is not None:
+        body["device_label"] = client_label
     if sender_instance_id is not None:
         body["sender_instance_id"] = sender_instance_id
     response = env.client.post(
@@ -114,6 +117,32 @@ def test_peer_role_pairing_mints_journal_source_state_dir_and_authorized(
     assert len(entries) == 1
     assert entries[0].fingerprint == response["fingerprint"]
     assert entries[0].role == "peer"
+    assert entries[0].device_label == "Peer Laptop"
+    assert entries[0].client_label == ""
+
+
+def test_peer_pairing_uses_client_label_for_source_and_preserves_assigned(
+    link_env,
+) -> None:
+    env = link_env()
+
+    response = _pair(
+        env,
+        role="peer",
+        label="Assigned Peer",
+        client_label="Client Peer",
+    )
+
+    source = journal_sources.load_journal_source_by_fingerprint(response["fingerprint"])
+    assert source is not None
+    assert source["device_label"] == "Client Peer"
+
+    entries = link_routes._authorized().snapshot()
+    assert len(entries) == 1
+    assert entries[0].fingerprint == response["fingerprint"]
+    assert entries[0].role == "peer"
+    assert entries[0].device_label == "Assigned Peer"
+    assert entries[0].client_label == "Client Peer"
 
 
 def test_peer_role_pairing_records_sender_instance_id(link_env) -> None:
@@ -270,6 +299,7 @@ def test_peer_journal_source_mint_failure_does_not_add_authorized(
             _consumed_nonce("peer"),
             _make_csr("mint"),
             "Peer Laptop",
+            "",
             network="network",
         )
 
@@ -325,6 +355,7 @@ def test_peer_state_dir_failure_unlinks_journal_source_and_skips_authorized(
             _consumed_nonce("peer"),
             _make_csr("state-dir"),
             "Peer Laptop",
+            "",
             network="network",
         )
 
@@ -376,6 +407,7 @@ def test_peer_journal_source_rolls_back_when_authorized_add_fails(
             _consumed_nonce("peer"),
             _make_csr("rollback"),
             "Peer Laptop",
+            "",
             network="network",
         )
 

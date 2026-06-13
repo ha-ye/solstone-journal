@@ -272,8 +272,8 @@ def private_link_disable() -> None:
 @app.command()
 @convey_cli
 def pair(
-    device_label: str = typer.Option(
-        ..., "--device-label", help="Label for the linked system being paired"
+    device_label: str | None = typer.Option(
+        None, "--device-label", help="Label for the linked system being paired"
     ),
     as_role: str | None = typer.Option(
         None,
@@ -305,7 +305,7 @@ def pair(
         raise typer.Exit(2)
 
     client = get_client()
-    payload = {"device_label": device_label}
+    payload = {"device_label": device_label or ""}
     if as_role is not None:
         payload["role"] = as_role
     mint = client.request(
@@ -325,7 +325,8 @@ def pair(
     typer.echo(f"manual code: {manual_code}")
     typer.echo(f"Pair URL: {url}")
     typer.echo(f"CA fingerprint: sha256:{ca_fp}")
-    typer.echo(f"Device: {device_label}{' (peer)' if as_role == 'peer' else ''}")
+    if device_label:
+        typer.echo(f"Device: {device_label}{' (peer)' if as_role == 'peer' else ''}")
     typer.echo("")
     typer.echo("Waiting for linked system…")
 
@@ -341,7 +342,8 @@ def pair(
         if new_entries:
             entry = new_entries[-1]
             suffix = " (peer)" if entry["role"] == "peer" else ""
-            typer.echo(f"Paired: {entry['device_label']}{suffix}")
+            label = entry.get("display_label") or entry["device_label"]
+            typer.echo(f"Paired: {label}{suffix}")
             typer.echo(f"  fingerprint: {entry['fingerprint']}")
             typer.echo(f"  paired_at:   {entry['paired_at']}")
             raise typer.Exit(0)
@@ -387,8 +389,9 @@ def list_devices() -> None:
             typer.echo("")
         typer.echo(heading)
         for device in entries:
+            label = device.get("display_label") or device["device_label"]
             typer.echo(
-                f"- {device['device_label']}"
+                f"- {label}"
                 f" — added {_relative_time(device['paired_at'])}"
                 f" — last seen {_relative_time(device['last_seen_at'])}"
                 f" [{device['fingerprint_short']}]"

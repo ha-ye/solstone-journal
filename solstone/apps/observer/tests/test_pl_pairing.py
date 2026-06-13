@@ -168,6 +168,7 @@ def test_attestation_failure_does_not_write_observer_or_authorized(
             consumed,
             _make_csr("attestation"),
             "Observer Laptop",
+            "",
             network="network",
         )
 
@@ -201,6 +202,7 @@ def test_peer_journal_source_rolls_back_when_authorized_add_fails(
             consumed,
             _make_csr("rollback"),
             "Peer Laptop",
+            "",
             network="network",
         )
 
