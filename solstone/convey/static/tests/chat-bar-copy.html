@@ -58,6 +58,9 @@
       assert('exec running label', window.solChatCopy.talentLabel('exec', 'running') === 'Making that change…');
       assert('support errored label', window.solChatCopy.talentLabel('support', 'errored') === "Couldn't reach solstone support");
       assert('liveness thinking copy', window.solChatCopy.CHAT_LIVENESS_THINKING === 'sol is thinking…');
+      assert('offer yes label', window.solChatCopy.CHAT_OFFER_SUPPORT_YES === 'yes, get support');
+      assert('offer no label', window.solChatCopy.CHAT_OFFER_SUPPORT_NO === 'not now');
+      assert('offer fallback copy', window.solChatCopy.CHAT_OFFER_SUPPORT_FALLBACK === 'want me to bring in solstone support?');
       assert('error detail expander copy', window.solChatCopy.CHAT_ERROR_DETAIL_EXPANDER_LABEL === 'Show details');
       assert('error detail collapser copy', window.solChatCopy.CHAT_ERROR_DETAIL_COLLAPSER_LABEL === 'Hide details');
       assert('liveness task format copy', window.solChatCopy.CHAT_LIVENESS_TASK_FORMAT === '{label} {task}');

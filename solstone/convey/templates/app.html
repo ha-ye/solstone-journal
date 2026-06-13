@@ -167,6 +167,10 @@
   const statusText = document.getElementById('chatBarStatusText');
   const queueStatus = document.getElementById('chatBarQueue');
   const capacityEl = document.getElementById('chatBarCapacity');
+  const offerEl = document.getElementById('chatBarOffer');
+  const offerTextEl = offerEl ? offerEl.querySelector('.offer-text') : null;
+  const offerYesBtn = document.getElementById('chatBarOfferYes');
+  const offerNoBtn = document.getElementById('chatBarOfferNo');
   const solPingDismiss = document.getElementById('chatBarSolPingDismiss');
   const talentsTray = document.getElementById('chatBarTalents');
   const form = document.getElementById('chatBarForm');
@@ -335,6 +339,23 @@
     supportCapacityActive = false;
     if (appBar) appBar.classList.remove('app-bar--support');
     if (capacityEl) capacityEl.hidden = true;
+  }
+
+  function populateSupportOfferCopy() {
+    if (offerYesBtn) offerYesBtn.textContent = window.solChatCopy.CHAT_OFFER_SUPPORT_YES;
+    if (offerNoBtn) offerNoBtn.textContent = window.solChatCopy.CHAT_OFFER_SUPPORT_NO;
+  }
+
+  function showSupportOffer(text) {
+    if (!offerEl) return;
+    if (offerTextEl) offerTextEl.textContent = text || window.solChatCopy.CHAT_OFFER_SUPPORT_FALLBACK;
+    offerEl.hidden = false;
+    setStatus('', '');
+  }
+
+  function hideSupportOffer() {
+    if (!offerEl) return;
+    offerEl.hidden = true;
   }
 
   function getTalentEntries() {
@@ -945,6 +966,7 @@
     }
     if (eventName === 'owner_message') {
       setPendingState(false);
+      hideSupportOffer();
       if (supportCapacityActive && !isSupportTalentRunning()) exitSupportCapacity();
       if (!solRequestState) {
         chatBarPendingPlaceholders.push({ ownerText: msg.text || '', ts: msg.ts || Date.now() });
@@ -966,7 +988,12 @@
     if (eventName === 'sol_message') {
       if (solRequestState) return;
       clearPendingLivenessStatus();
-      setStatus(msg.text || '', msg.notes || msg.text || '');
+      if (msg.offer && msg.offer.kind === 'support') {
+        showSupportOffer(msg.text || '');
+      } else {
+        hideSupportOffer();
+        setStatus(msg.text || '', msg.notes || msg.text || '');
+      }
       if (supportCapacityActive && !isSupportTalentRunning()) exitSupportCapacity();
       return;
     }
@@ -1048,6 +1075,7 @@
   async function hydrateChatBar() {
     if (!appBar) return;
     populateSupportCapacityCopy();
+    populateSupportOfferCopy();
     if (window.solChatBarSeed) {
       renderSolPing(window.solChatBarSeed);
     } else {
@@ -1056,10 +1084,14 @@
     try {
       var data = await window.apiJson('/api/chat/session');
       if (data.latest_sol_message && !solRequestState) {
-        setStatus(
-          data.latest_sol_message.text || '',
-          data.latest_sol_message.notes || data.latest_sol_message.text || ''
-        );
+        if (data.latest_sol_message.offer && data.latest_sol_message.offer.kind === 'support') {
+          showSupportOffer(data.latest_sol_message.text || '');
+        } else {
+          setStatus(
+            data.latest_sol_message.text || '',
+            data.latest_sol_message.notes || data.latest_sol_message.text || ''
+          );
+        }
       }
       (data.active_talents || []).forEach(function(talent) {
         upsertTalent({
@@ -1091,12 +1123,7 @@
     }
   }
 
-  async function handleSubmit(event) {
-    event.preventDefault();
-    if (!input || !sendBtn || pendingSend) return;
-    var message = input.value.trim();
-    if (!message) return;
-
+  async function postChatMessage(message) {
     setPendingState(true);
     try {
       var body = {
@@ -1123,22 +1150,41 @@
         } catch (_jsonErr) {}
         if (response.status === 429 && errorBody.reason_code === 'chat_queue_full') {
           showQueueCapMessage();
-          return;
+          return false;
         }
         throw new Error('request failed');
       }
       window.__needsYouPendingSource = null;
       window.__needsYouPendingPrompt = null;
       setQueueDepth(0);
-      input.value = '';
-      resizeComposer();
+      return true;
     } catch (_err) {
       var renderedReason = window.renderChatReason('unknown', '');
       setStatus(renderedReason.message, renderedReason.message, renderedReason.action);
+      return false;
     } finally {
       setPendingState(false);
-      input.focus();
     }
+  }
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    if (!input || !sendBtn || pendingSend) return;
+    var message = input.value.trim();
+    if (!message) return;
+
+    var ok = await postChatMessage(message);
+    if (ok) {
+      input.value = '';
+      resizeComposer();
+    }
+    input.focus();
+  }
+
+  function sendOfferResponse(message) {
+    if (pendingSend) return;
+    hideSupportOffer();
+    postChatMessage(message);
   }
 
   function initChatChrome() {
@@ -1200,6 +1246,17 @@
         event.stopPropagation();
         if (!solRequestState) return;
         solPingApiJson(solPingEndpoint('dismissed'), solRequestState.request_id);
+      });
+    }
+
+    if (offerYesBtn) {
+      offerYesBtn.addEventListener('click', function() {
+        sendOfferResponse(window.solChatCopy.CHAT_OFFER_SUPPORT_YES);
+      });
+    }
+    if (offerNoBtn) {
+      offerNoBtn.addEventListener('click', function() {
+        sendOfferResponse(window.solChatCopy.CHAT_OFFER_SUPPORT_NO);
       });
     }
 
