@@ -137,9 +137,33 @@ def test_pair_start_uses_host_address_override_for_direct_qr(link_env) -> None:
     decoded = _decode_pair_link(payload["pair_link"])
     assert decoded[0:2] == b"\x04\x01"
     assert decoded[2:6] == ipaddress.IPv4Address("192.0.2.44").packed
-    assert int.from_bytes(decoded[6:8], "big") == 7070
+    assert int.from_bytes(decoded[6:8], "big") == link_routes._secure_listener_port()
+    assert int.from_bytes(decoded[6:8], "big") != 7070
     assert payload["lan_url"] == "192.0.2.44:7070"
     assert "://" not in payload["lan_url"]
+
+
+def test_pair_start_direct_pair_link_port_uses_secure_listener_source(
+    link_env,
+    monkeypatch,
+) -> None:
+    env = link_env()
+    config_path = env.journal / "config" / "journal.json"
+    config = json.loads(config_path.read_text("utf-8"))
+    config["pairing"] = {"host_url": "http://192.0.2.44:7070"}
+    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    monkeypatch.setattr(link_routes.interface_watcher, "LINK_DIRECT_PORT", 8765)
+
+    response = env.client.post(
+        "/app/link/pair-start",
+        json={"device_label": "Test Phone"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    decoded = _decode_pair_link(payload["pair_link"])
+    assert decoded[2:6] == ipaddress.IPv4Address("192.0.2.44").packed
+    assert int.from_bytes(decoded[6:8], "big") == 8765
 
 
 def test_pair_start_rejects_non_ipv4_pair_link_host(link_env, monkeypatch) -> None:

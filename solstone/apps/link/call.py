@@ -9,7 +9,7 @@ Every verb reaches the journal only over HTTP via the Convey client.
 
 import datetime as dt
 import math
-import socket
+import shlex
 import time
 from typing import Any
 
@@ -18,6 +18,7 @@ import typer
 from solstone.convey.reasons import (
     INVALID_OPERATION_FOR_STATE,
     PAIRED_DEVICE_NOT_FOUND,
+    PAIRING_REQUEST_INVALID,
     SERVICE_BUSY,
     SERVICE_OPERATION_FAILED,
 )
@@ -52,18 +53,14 @@ PRIVATE_LINK_STATE_LABELS = {
     "not_enabled": "not enabled",
     "inconsistent": "needs repair",
 }
-
-
-def _detect_lan_ip() -> str | None:
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            sock.connect(("8.8.8.8", 80))
-            return sock.getsockname()[0]
-        finally:
-            sock.close()
-    except OSError:
-        return None
+CLI_PAIR_LINK_LABEL = "pair-link"
+CLI_PAIR_JOIN_HINT = "link this device with:"
+CLI_PAIR_CA_FINGERPRINT_LABEL = "CA fingerprint"
+CLI_PAIR_RELAY_CODE_LABEL = "relay short-code (no copy-paste; use with --home)"
+CLI_PAIR_NO_LAN_ADDRESS = (
+    "can't start pairing — your solstone isn't reachable on a network address "
+    "yet. use the relay short-code from the link page instead."
+)
 
 
 def _plural(value: int, unit: str) -> str:
@@ -283,23 +280,13 @@ def pair(
             "only peer has special behavior. One of: phone, observer, peer."
         ),
     ),
-    convey_host: str = typer.Option(
-        "",
-        "--convey-host",
-        help="Override host[:port] for the pair URL (default: auto-detect LAN IP)",
-    ),
-    convey_port: int = typer.Option(
-        0,
-        "--convey-port",
-        help="Override convey port (default: read from service port file or 5015)",
-    ),
     timeout_seconds: int = typer.Option(
         PAIR_TIMEOUT_SECONDS,
         "--timeout",
         help="How long to wait for the linked system before giving up",
     ),
 ) -> None:
-    """Mint a one-shot nonce, print the pair URL + QR-ready payload, wait for completion."""
+    """Start a pairing link, print join-ready credentials, wait for completion."""
     if as_role is not None and as_role not in VALID_ROLES:
         typer.echo("invalid role; expected one of: phone, observer, peer", err=True)
         raise typer.Exit(2)
@@ -308,23 +295,26 @@ def pair(
     payload = {"device_label": device_label or ""}
     if as_role is not None:
         payload["role"] = as_role
-    mint = client.request(
-        "POST",
-        "/app/link/api/pair/mint",
-        json=payload,
-    )
-    value = mint["nonce"]
-    manual_code = mint["manual_code"]
-    ca_fp = mint["ca_fingerprint"]
+    try:
+        resp = client.request("POST", "/app/link/pair-start", json=payload)
+    except ConveyClientError as err:
+        if err.reason_code == PAIRING_REQUEST_INVALID.code:
+            typer.echo(CLI_PAIR_NO_LAN_ADDRESS, err=True)
+            raise typer.Exit(1) from err
+        raise
+    nonce = resp["nonce"]
+    pair_link = resp["pair_link"]
+    manual_code = resp["manual_code"]
+    ca_fp = resp["ca_fingerprint"]
 
-    host = convey_host or _detect_lan_ip() or "localhost"
-    port = convey_port or mint.get("port") or 5015
-    url = f"http://{host}:{port}/app/link/pair?token={value}"
-
-    typer.echo(f"Pair code: {value} (expires in 5 minutes)")
-    typer.echo(f"manual code: {manual_code}")
-    typer.echo(f"Pair URL: {url}")
-    typer.echo(f"CA fingerprint: sha256:{ca_fp}")
+    typer.echo(f"{CLI_PAIR_LINK_LABEL}: {pair_link}")
+    typer.echo(CLI_PAIR_JOIN_HINT)
+    join_cmd = ["sol", "link", "join", "--code", pair_link]
+    if device_label:
+        join_cmd += ["--label", device_label]
+    typer.echo("  " + shlex.join(join_cmd))
+    typer.echo(f"{CLI_PAIR_CA_FINGERPRINT_LABEL}: sha256:{ca_fp}")
+    typer.echo(f"{CLI_PAIR_RELAY_CODE_LABEL}: {manual_code}")
     if device_label:
         typer.echo(f"Device: {device_label}{' (peer)' if as_role == 'peer' else ''}")
     typer.echo("")
@@ -350,7 +340,7 @@ def pair(
         nonce_status = client.request(
             "GET",
             "/app/link/api/pair/nonce-status",
-            params={"nonce": value},
+            params={"nonce": nonce},
         )
         if nonce_status["used"]:
             typer.echo(

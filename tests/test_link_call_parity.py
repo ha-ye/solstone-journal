@@ -9,6 +9,7 @@ import requests
 from typer.testing import CliRunner
 
 from solstone.apps.link import call as link_call
+from solstone.apps.link import routes as link_routes
 from solstone.think.convey_client import ConveyClient
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.nonces import NonceStore
@@ -122,7 +123,7 @@ def test_pair_rejects_invalid_roles_without_minting(runner):
 
 
 def test_pair_mints_nonce_prints_payload_and_times_out(runner, monkeypatch):
-    monkeypatch.setattr(link_call, "_detect_lan_ip", lambda: None)
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
     monkeypatch.setattr(link_call, "time", _TimeoutTime())
 
     result = runner.invoke(
@@ -132,13 +133,24 @@ def test_pair_mints_nonce_prints_payload_and_times_out(runner, monkeypatch):
 
     assert result.exit_code == 2
     assert result.stderr == ""
-    assert "Pair code: " in result.stdout
-    assert re.search(
-        r"manual code: [0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}",
+    pair_link_match = re.search(
+        r"pair-link: (https://link\.solpbc\.org/p#[0-9A-HJKMNP-TV-Z]{64})",
         result.stdout,
     )
-    assert "Pair URL: http://localhost:5015/app/link/pair?token=" in result.stdout
+    assert pair_link_match
+    pair_link = pair_link_match.group(1)
+    assert "link this device with:\n" in result.stdout
+    assert "  sol link join --code " in result.stdout
+    assert pair_link in result.stdout
+    assert "--label" in result.stdout
     assert "CA fingerprint: sha256:" in result.stdout
+    assert re.search(
+        r"relay short-code \(no copy-paste; use with --home\): "
+        r"[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}",
+        result.stdout,
+    )
+    assert "Pair URL: http" not in result.stdout
+    assert "Pair code:" not in result.stdout
     assert "Device: Test Phone\n\nWaiting for linked system…\n" in result.stdout
     assert result.stdout.endswith("Timed out. Pair code expired.\n")
     nonces = _nonces().snapshot()
@@ -157,7 +169,7 @@ def test_pair_mints_nonce_prints_payload_and_times_out(runner, monkeypatch):
 def test_pair_mints_default_and_peer_roles(
     runner, monkeypatch, extra_args, expected_role
 ):
-    monkeypatch.setattr(link_call, "_detect_lan_ip", lambda: None)
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
     monkeypatch.setattr(link_call, "time", _TimeoutTime())
 
     result = runner.invoke(
@@ -182,7 +194,7 @@ def test_pair_without_device_label_mints_empty_label(
     runner,
     monkeypatch,
 ):
-    monkeypatch.setattr(link_call, "_detect_lan_ip", lambda: None)
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
     monkeypatch.setattr(link_call, "time", _TimeoutTime())
 
     result = runner.invoke(
@@ -197,33 +209,12 @@ def test_pair_without_device_label_mints_empty_label(
     assert nonces[0].device_label == ""
 
 
-def test_pair_uses_minted_port_and_convey_host_override(runner, monkeypatch):
-    monkeypatch.setattr(link_call, "_detect_lan_ip", lambda: "192.168.1.50")
-    monkeypatch.setattr(link_call, "time", _TimeoutTime())
-
-    result = runner.invoke(
-        link_call.app,
-        [
-            "pair",
-            "--device-label",
-            "Phone",
-            "--convey-host",
-            "lab.local",
-            "--timeout",
-            "1",
-        ],
-    )
-
-    assert result.exit_code == 2
-    assert "Pair URL: http://lab.local:5015/app/link/pair?token=" in result.stdout
-
-
 def test_pair_reports_newly_paired_device(runner, monkeypatch):
     def add_device() -> None:
         if not _authorized().snapshot():
             _add_device("sha256:" + ("1" * 64), "Phone")
 
-    monkeypatch.setattr(link_call, "_detect_lan_ip", lambda: None)
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
     monkeypatch.setattr(link_call, "time", _PairingTime(on_sleep=add_device))
 
     result = runner.invoke(
@@ -248,7 +239,7 @@ def test_pair_reports_display_label_for_newly_paired_device(runner, monkeypatch)
                 client_label="client-host",
             )
 
-    monkeypatch.setattr(link_call, "_detect_lan_ip", lambda: None)
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
     monkeypatch.setattr(link_call, "time", _PairingTime(on_sleep=add_device))
 
     result = runner.invoke(link_call.app, ["pair", "--timeout", "5"])
@@ -267,7 +258,7 @@ def test_pair_reports_nonce_consumed_fallback(runner, monkeypatch):
         if nonces and not nonces[0].used:
             _nonces().consume(nonces[0].value)
 
-    monkeypatch.setattr(link_call, "_detect_lan_ip", lambda: None)
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
     monkeypatch.setattr(link_call, "time", _PairingTime(on_sleep=consume_nonce))
 
     result = runner.invoke(
@@ -280,6 +271,19 @@ def test_pair_reports_nonce_consumed_fallback(runner, monkeypatch):
         "Pair request completed; device should appear in `sol call link list`.\n"
         in result.stdout
     )
+
+
+def test_pair_reports_no_lan_address_without_nonce(runner, monkeypatch):
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: None)
+
+    result = runner.invoke(
+        link_call.app,
+        ["pair", "--device-label", "Phone", "--timeout", "1"],
+    )
+
+    assert result.exit_code == 1
+    assert "isn't reachable on a network address" in result.stderr
+    assert _nonces().snapshot() == []
 
 
 def test_list_empty_store(runner):

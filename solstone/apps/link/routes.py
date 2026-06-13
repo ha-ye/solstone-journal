@@ -82,6 +82,7 @@ from solstone.convey.reasons import (
     SERVICE_OPERATION_FAILED,
 )
 from solstone.convey.utils import error_response
+from solstone.think.link import interface_watcher
 from solstone.think.link.auth import AuthorizedClients, ClientEntry, is_peer
 from solstone.think.link.ca import (
     generate_nonce,
@@ -189,6 +190,16 @@ def _read_link_connection_event() -> str | None:
 def _current_local_endpoints() -> list[LocalEndpoint]:
     watcher = get_interface_watcher()
     return watcher.snapshot() if watcher else []
+
+
+def _secure_listener_port() -> int:
+    """Port the journal advertises in its secure-listener local endpoints.
+
+    Read at call time (monkeypatch-able) and independent of whether the
+    interface-watcher snapshot is populated — it can be empty in the CLI/test
+    path, so do not read it from _current_local_endpoints().
+    """
+    return interface_watcher.LINK_DIRECT_PORT
 
 
 def _resolve_host_port() -> str:
@@ -505,36 +516,6 @@ def local_endpoints() -> Any:
 # ---------------------------------------------------------------------------
 
 
-def _request_host_port() -> int | None:
-    _, _, port = request.host.rpartition(":")
-    return int(port) if port.isdigit() else None
-
-
-@link_bp.route("/api/pair/mint", methods=["POST"])
-def api_pair_mint() -> Any:
-    payload = request.get_json(silent=True) or {}
-    device_label = payload.get("device_label")
-    role = payload.get("role")
-
-    value = generate_nonce()
-    manual = generate_manual_code()
-    _nonces().add(
-        value,
-        str(device_label or ""),
-        role=str(role or ""),
-        manual_code=normalize_manual_code(manual),
-    )
-    ca_fp = load_or_generate_ca(ca_dir()).fingerprint_sha256()
-    return jsonify(
-        {
-            "nonce": value,
-            "manual_code": manual,
-            "ca_fingerprint": ca_fp,
-            "port": _request_host_port(),
-        }
-    )
-
-
 @link_bp.route("/api/pair/nonce-status")
 def api_pair_nonce_status() -> Any:
     entry = _nonces().peek(request.args.get("nonce", ""))
@@ -552,7 +533,7 @@ def pair_start() -> Any:
         return error_response(PAIRING_REQUEST_INVALID, detail="invalid role")
 
     lan_url = override_host_port() or _resolve_host_port()
-    hostname, _, port_str = lan_url.partition(":")
+    hostname, _, _ = lan_url.partition(":")
 
     nonce_ttl: int | None = None
     if read_posture() == "spl":
@@ -588,10 +569,9 @@ def pair_start() -> Any:
                 PAIRING_REQUEST_INVALID,
                 detail=f"pair-link requires an IPv4 LAN address; got {hostname!r}",
             )
-        port = int(port_str) if port_str else 80
         ca_fp = _ca_fingerprint()
         nonce = generate_nonce()
-        pair_link = _build_pair_link(hostname, port, nonce, ca_fp)
+        pair_link = _build_pair_link(hostname, _secure_listener_port(), nonce, ca_fp)
         expires_in = 300
 
     manual_code_hyphenated = generate_manual_code()
