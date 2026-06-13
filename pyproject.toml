@@ -94,6 +94,10 @@ dependencies = [
     # base and raise the onnxruntime floor only on supported Linux hosts.
     "onnx-asr>=0.11.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "onnxruntime>=1.25.0,!=1.24.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    # Linux/aarch64 default-STT (whisper) ride-along: faster-whisper bundles its
+    # own CTranslate2 runtime; the base onnxruntime floor already covers VAD +
+    # the WeSpeaker embedder, so no onnxruntime bump here.
+    "faster-whisper>=1.0.0; sys_platform == 'linux' and platform_machine == 'aarch64'",
     "kaldi-native-fbank>=1.22",
     # solstone/apps/speakers/{owner,discovery}.py use sklearn.cluster.HDBSCAN. Previously
     # pulled transitively via resemblyzer; now a direct dep.

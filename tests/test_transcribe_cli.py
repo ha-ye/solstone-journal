@@ -54,6 +54,10 @@ def test_main_accepts_journal_relative_path(tmp_path, monkeypatch):
             "solstone.observe.transcribe.main.stt_local_floor_bytes",
             return_value=4 * 1024**3,
         ),
+        patch(
+            "solstone.observe.transcribe.main.local_stt_backend",
+            return_value="parakeet",
+        ),
     ):
         from solstone.observe.transcribe.main import main
 
@@ -77,6 +81,10 @@ def test_main_errors_on_nonexistent_absolute_path(tmp_path, monkeypatch, capsys)
         patch(
             "solstone.observe.transcribe.main.stt_local_floor_bytes",
             return_value=4 * 1024**3,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.local_stt_backend",
+            return_value="parakeet",
         ),
     ):
         with pytest.raises(SystemExit):
@@ -143,6 +151,10 @@ def test_all_batch_processes_unprocessed_skips_transcribed(
             "solstone.observe.transcribe.main.stt_local_floor_bytes",
             return_value=4 * 1024**3,
         ),
+        patch(
+            "solstone.observe.transcribe.main.local_stt_backend",
+            return_value="parakeet",
+        ),
     ):
         from solstone.observe.transcribe.main import main
 
@@ -177,6 +189,10 @@ def test_all_redo_reprocesses_transcribed(tmp_path, monkeypatch):
             "solstone.observe.transcribe.main.stt_local_floor_bytes",
             return_value=4 * 1024**3,
         ),
+        patch(
+            "solstone.observe.transcribe.main.local_stt_backend",
+            return_value="parakeet",
+        ),
     ):
         from solstone.observe.transcribe.main import main
 
@@ -202,6 +218,10 @@ def test_all_and_audio_path_mutually_exclusive(tmp_path, monkeypatch):
                 "solstone.observe.transcribe.main.stt_local_floor_bytes",
                 return_value=4 * 1024**3,
             ),
+            patch(
+                "solstone.observe.transcribe.main.local_stt_backend",
+                return_value="parakeet",
+            ),
         ):
             with pytest.raises(SystemExit):
                 main()
@@ -225,6 +245,7 @@ def test_resolve_default_backend_auto_switches_to_gemini(monkeypatch):
     monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
     monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 2 * 1024**3)
     monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
 
     assert transcribe_main.resolve_default_backend(_args(), {}) == "gemini"
 
@@ -244,6 +265,7 @@ def test_resolve_default_backend_surfaces_when_no_viable_backend(monkeypatch):
         transcribe_main, "read_available_bytes", fake_read_available_bytes
     )
     monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
 
     with pytest.raises(SystemExit) as exc_info:
         transcribe_main.resolve_default_backend(_args(), {})
@@ -257,6 +279,7 @@ def test_resolve_default_backend_warns_but_honors_explicit_local(monkeypatch, ca
 
     monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 2 * 1024**3)
     monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
 
     with caplog.at_level(logging.WARNING):
         backend = transcribe_main.resolve_default_backend(_args(backend="parakeet"), {})
@@ -271,6 +294,7 @@ def test_resolve_default_backend_honors_config_backend(monkeypatch):
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 2 * 1024**3)
     monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
 
     assert (
         transcribe_main.resolve_default_backend(_args(), {"backend": "gemini"})
@@ -284,8 +308,20 @@ def test_resolve_default_backend_uses_parakeet_when_memory_fits(monkeypatch):
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 5 * 1024**3)
     monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
 
     assert transcribe_main.resolve_default_backend(_args(), {}) == "parakeet"
+
+
+def test_resolve_default_backend_uses_whisper_when_memory_fits(monkeypatch):
+    transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
+
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 5 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "whisper")
+
+    assert transcribe_main.resolve_default_backend(_args(), {}) == "whisper"
 
 
 def test_all_batch_reads_memory_once_and_reuses_default_backend(tmp_path, monkeypatch):
@@ -321,6 +357,10 @@ def test_all_batch_reads_memory_once_and_reuses_default_backend(tmp_path, monkey
         patch(
             "solstone.observe.transcribe.main.stt_local_floor_bytes",
             return_value=4 * 1024**3,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.local_stt_backend",
+            return_value="parakeet",
         ),
     ):
         from solstone.observe.transcribe.main import main

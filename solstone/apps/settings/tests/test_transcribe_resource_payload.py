@@ -34,6 +34,7 @@ def _payload(monkeypatch, *, available_bytes, floor_bytes, google_key, configure
     monkeypatch.setattr(
         transcribe_resource, "stt_local_floor_bytes", lambda: floor_bytes
     )
+    monkeypatch.setattr(transcribe_resource, "local_stt_backend", lambda: "parakeet")
     return transcribe_resource.get_transcribe_resource_payload(
         google_key_present=google_key,
         configured_backend=configured,

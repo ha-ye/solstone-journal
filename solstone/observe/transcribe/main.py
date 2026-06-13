@@ -83,6 +83,7 @@ from solstone.observe.transcribe import transcribe as stt_transcribe
 from solstone.observe.transcribe.overlap import compute_overlap_and_logprobs
 from solstone.observe.transcribe.resource import (
     STT_SURFACE,
+    local_stt_backend,
     select_stt_backend,
     stt_local_floor_bytes,
 )
@@ -162,6 +163,7 @@ def resolve_default_backend(args: argparse.Namespace, transcribe_config: dict) -
     """
     available_bytes = read_available_bytes()
     floor_bytes = stt_local_floor_bytes()
+    local_backend = local_stt_backend()
     google_key_present = bool(os.getenv("GOOGLE_API_KEY"))
     configured_backend = transcribe_config.get("backend")
     if args.backend or configured_backend:
@@ -173,6 +175,7 @@ def resolve_default_backend(args: argparse.Namespace, transcribe_config: dict) -
         available_bytes,
         google_key_present=google_key_present,
         floor_bytes=floor_bytes,
+        local_backend=local_backend,
     )
     if backend == STT_SURFACE:
         _surface_stt_requirement(available_bytes, floor_bytes)
