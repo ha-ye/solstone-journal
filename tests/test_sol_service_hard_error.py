@@ -108,9 +108,8 @@ def test_stale_sol_unit_execs_journal(monkeypatch):
     with pytest.raises(RuntimeError, match="execv called"):
         sol_cli.main()
 
-    # Shim routes through `journal start` (the canonical refresh-doing entry),
-    # not `journal supervisor`, so the version-marker / wrapper / skill refresh
-    # fires on this boot rather than waiting for the next restart.
+    # Shim routes through `journal start`, the canonical service entry point,
+    # not directly through `journal supervisor`.
     execv.assert_called_once_with("/tmp/journal", ["/tmp/journal", "start", "5015"])
 
 

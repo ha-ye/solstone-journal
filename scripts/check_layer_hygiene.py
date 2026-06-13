@@ -32,6 +32,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from solstone.think.command_polarity import is_read_verb
+
 ROOT = Path(__file__).resolve().parent.parent
 
 # Module families scrutinized as "infrastructure" per L1/L6/L7.
@@ -68,37 +70,6 @@ TARGET_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"\b(?:entity|facet|observation|observations?)_(?:path|dir|file|json)\b"
     ),
-)
-
-# Read verbs per docs/coding-standards.md § L3. Match against any
-# underscore-split segment of the function name.
-READ_VERBS: frozenset[str] = frozenset(
-    {
-        "load",
-        "get",
-        "read",
-        "scan",
-        "list",
-        "show",
-        "find",
-        "match",
-        "resolve",
-        "query",
-        "lookup",
-        "status",
-        "check",
-        "validate",
-        "discover",
-        "format",
-        "render",
-        "extract",
-        "parse",
-        "view",
-        "inspect",
-        "info",
-        "describe",
-        "search",
-    }
 )
 
 # Temporary, file-scoped exceptions for known layer-hygiene violations.
@@ -153,8 +124,7 @@ def scan_lines(lines: list[str]) -> list[tuple[int, str]]:
 
 
 def has_read_verb(name: str) -> bool:
-    base = name.lstrip("_")
-    return any(part in READ_VERBS for part in base.split("_") if part)
+    return is_read_verb(name)
 
 
 def check_call_py(rel: Path, source: str) -> list[tuple[int, str, str]]:

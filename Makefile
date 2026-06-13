@@ -127,6 +127,7 @@ preflight:
 
 # Setup skill symlinks
 skills:
+	@$(VENV_BIN)/sol skills build
 	@$(VENV_BIN)/sol skills install --project journal --agent all
 
 # Start local dev stack against fixture journal (no observers, no daily processing)
@@ -403,6 +404,9 @@ install-checks: .installed
 	@echo "=== Running cogitate-prompt check ==="
 	@$(MAKE) check-cogitate-prompts
 	@echo ""
+	@echo "=== Checking generated skill references ==="
+	@$(MAKE) check-skill-references
+	@echo ""
 	@echo "=== Checking extras consistency ==="
 	@$(VENV_BIN)/python scripts/check_extras_consistency.py
 	@echo ""
@@ -488,6 +492,10 @@ check-tools-http-only: .installed
 # Cogitate-prompt static gate (prompts use only on-contract command forms)
 check-cogitate-prompts: .installed
 	$(VENV_BIN)/python scripts/check_cogitate_prompts.py
+
+# Generated router skill references gate
+check-skill-references: .installed
+	$(VENV_BIN)/sol skills build --check
 
 # Re-run the live four-backend integrated-façade cogitate smoke. Spawns the
 # archived runner (extro `vpe/workspace/archived/`) against this venv so the

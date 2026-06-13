@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import IO, Callable, Sequence
 
 from solstone.think import features as _features
-from solstone.think import parakeet_readiness
+from solstone.think import parakeet_readiness, skills_cli
 from solstone.think.health_cli import fetch_supervisor_status
 from solstone.think.probe import (
     CONFIG_DIR_READABLE_CHECK,
@@ -91,6 +91,7 @@ Runner = Callable[[Args], CheckResult]
 
 SOL_IMPORTABLE_CHECK = Check("sol_importable", "blocker", ("linux", "darwin"))
 STALE_ALIAS_CHECK = Check("stale_alias_symlink", "blocker", ("linux", "darwin"))
+SKILL_STATE_CHECK = Check("skill_state", "advisory", ("linux", "darwin"))
 JOURNAL_DIR_WRITABLE_CHECK = Check(
     "journal_dir_writable", "blocker", ("linux", "darwin")
 )
@@ -437,6 +438,80 @@ def stale_alias_symlink_check(args: Args, binary: str) -> CheckResult:
     )
 
 
+def _skill_state_problem_detail(
+    skills_dir: Path, expected_sources: dict[str, Path]
+) -> list[str]:
+    problems: list[str] = []
+    expected_names = set(expected_sources)
+
+    for name, source in sorted(expected_sources.items()):
+        link = skills_dir / name
+        if not link.is_symlink():
+            problems.append(f"missing router {name} at {link}")
+            continue
+        target_text = os.readlink(link)
+        target_path = (skills_dir / target_text).resolve(strict=False)
+        if target_path != source.resolve(strict=False):
+            problems.append(f"foreign router {name} at {link} -> {target_text}")
+
+    for link in sorted(skills_dir.iterdir()):
+        if link.name in expected_names or not link.is_symlink():
+            continue
+        problems.append(f"stale skill link {link.name} at {link}")
+
+    return problems
+
+
+def skill_state_check(args: Args) -> CheckResult:
+    del args
+    check = SKILL_STATE_CHECK
+    if is_packaged_install():
+        return make_result(
+            check,
+            "skip",
+            "project skill links are a source-checkout concept",
+        )
+
+    journal_text, _source = get_journal_info()
+    journal_path = Path(journal_text)
+    if not journal_path.exists():
+        return make_result(check, "skip", "no local journal")
+
+    try:
+        sources = skills_cli.discover_project_sources(ROOT)
+    except Exception as exc:
+        return make_result(check, "skip", f"project skill sources unavailable: {exc}")
+
+    expected_sources = {source.name: source for source in sources}
+    skill_dirs = [
+        journal_path / ".claude" / "skills",
+        journal_path / ".agents" / "skills",
+    ]
+    existing_dirs = [path for path in skill_dirs if path.is_dir()]
+    if not existing_dirs:
+        return make_result(check, "skip", "no installed project skill dirs")
+
+    problems: list[str] = []
+    for skills_dir in existing_dirs:
+        problems.extend(_skill_state_problem_detail(skills_dir, expected_sources))
+
+    if not problems:
+        names = ", ".join(
+            name for name in skills_cli.ROUTER_SKILL_NAMES if name in expected_sources
+        )
+        return make_result(
+            check,
+            "ok",
+            f"router skills {names} are installed and current",
+        )
+
+    fix = (
+        f"repair {', '.join(str(path) for path in existing_dirs)}: run `journal setup` "
+        f"or `sol skills install --project {journal_path} --agent all`"
+    )
+    return make_result(check, "warn", "; ".join(problems), fix)
+
+
 def launchd_stale_plist_check(args: Args) -> CheckResult:
     del args
     check = LAUNCHD_STALE_PLIST_CHECK
@@ -608,6 +683,7 @@ UNIVERSAL_CHECKS: list[tuple[Check, Runner]] = [
     (SOL_IMPORTABLE_CHECK, sol_importable_check),
     (LOCAL_BIN_SOL_REACHABLE_CHECK, local_bin_sol_reachable_check),
     (STALE_ALIAS_CHECK, partial(stale_alias_symlink_check, binary="sol")),
+    (SKILL_STATE_CHECK, skill_state_check),
 ]
 
 JOURNAL_CHECKS: list[tuple[Check, Runner]] = [
@@ -621,6 +697,7 @@ JOURNAL_CHECKS: list[tuple[Check, Runner]] = [
     (STALE_ALIAS_CHECK, partial(stale_alias_symlink_check, binary="journal")),
     (LAUNCHD_STALE_PLIST_CHECK, launchd_stale_plist_check),
     (DEFAULT_STT_READY_CHECK, default_stt_ready_check),
+    (SKILL_STATE_CHECK, skill_state_check),
     *FEATURE_CHECKS.values(),
 ]
 

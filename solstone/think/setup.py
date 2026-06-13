@@ -1162,9 +1162,9 @@ def step_install_models(ctx: SetupContext, step_index: int) -> StepResult:
 
 def skills_user_paths() -> list[Path]:
     return [
-        Path.home() / ".claude" / "skills" / "solstone" / "SKILL.md",
-        Path.home() / ".codex" / "skills" / "solstone" / "SKILL.md",
-        Path.home() / ".gemini" / "skills" / "solstone" / "SKILL.md",
+        Path.home() / ".claude" / "skills" / "sol" / "SKILL.md",
+        Path.home() / ".codex" / "skills" / "sol" / "SKILL.md",
+        Path.home() / ".gemini" / "skills" / "sol" / "SKILL.md",
     ]
 
 
@@ -1636,7 +1636,7 @@ def print_plan(ctx: SetupContext, *, dry_run: bool) -> None:
         narrate(ctx, f"  would run: {format_command(install_models_command(ctx))}")
     narrate(
         ctx,
-        f"[step 4/7] {_STEP_NAME[step_skills_user]} - installs solstone bundle for claude / codex / gemini",
+        f"[step 4/7] {_STEP_NAME[step_skills_user]} - installs the sol skill for claude / codex / gemini",
     )
     if ctx.skip_skills:
         narrate(ctx, "  skipped: --skip-skills")

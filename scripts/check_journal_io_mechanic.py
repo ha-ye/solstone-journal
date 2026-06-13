@@ -114,11 +114,12 @@ EXCLUDED_FILES: frozenset[str] = frozenset(
         "solstone/observe/transcribe/_parakeet_coreml.py",
         "solstone/observe/transcribe/revai.py",
         "solstone/think/journal_export.py",
-        # UI/pipeline runtime state, not owner journal content.
+        # UI/pipeline runtime state and generated source artifacts, not owner journal content.
         "solstone/apps/home/routes.py",
         "solstone/apps/transcripts/routes.py",
         "solstone/think/data_state.py",
         "solstone/think/skills_cli.py",
+        "solstone/think/skills_build.py",
     }
 )
 

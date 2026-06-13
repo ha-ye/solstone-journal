@@ -63,3 +63,4 @@ For the full table, see [storage](references/storage.md).
 - [Captures and Extracts](references/captures.md) — layers, imports, segment layout
 - [Logs](references/logs.md) — action logs, token usage, talent logs, health
 - [Storage](references/storage.md) — top-level layout, app storage, search index
+- [Commands](references/commands.md) — journal-host command guidance contributed by apps (generated)

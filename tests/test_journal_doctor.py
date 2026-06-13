@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import plistlib
 from pathlib import Path
 from types import SimpleNamespace
@@ -60,6 +61,29 @@ def patch_alias_absent(doctor, monkeypatch):
         "import_install_guard",
         lambda: (install_guard.AliasState, install_guard.check_alias),
     )
+
+
+def tree_snapshot(root: Path) -> list[tuple[str, str, str]]:
+    snapshot: list[tuple[str, str, str]] = []
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            snapshot.append((rel, "symlink", os.readlink(path)))
+        elif path.is_file():
+            snapshot.append((rel, "file", path.read_text(encoding="utf-8")))
+        elif path.is_dir():
+            snapshot.append((rel, "dir", ""))
+    return snapshot
+
+
+def install_router_skill_links(doctor, journal: Path) -> None:
+    sources = doctor.skills_cli.discover_project_sources(doctor.ROOT)
+    for rel_dir in [Path(".claude/skills"), Path(".agents/skills")]:
+        skills_dir = journal / rel_dir
+        skills_dir.mkdir(parents=True)
+        for source in sources:
+            link = skills_dir / source.name
+            link.symlink_to(os.path.relpath(source, skills_dir))
 
 
 def test_service_running_ok(doctor, monkeypatch):
@@ -202,10 +226,64 @@ def test_role_skip_without_local_journal(doctor, monkeypatch, tmp_path, home_roo
     assert by_name["journal_sync"].status == "skip"
     assert by_name["service_identity"].status == "skip"
     assert by_name["service_running"].status == "skip"
+    assert by_name["skill_state"].status == "skip"
     assert by_name["disk_space"].status in {"ok", "warn"}
     assert by_name["config_dir_readable"].status == "ok"
     assert by_name["feature:pdf"].status in {"ok", "warn"}
     assert by_name["feature:whisper"].status in {"ok", "warn"}
+
+
+def test_skill_state_no_local_journal_skips(doctor, monkeypatch, tmp_path):
+    journal = tmp_path / "missing-journal"
+    monkeypatch.setattr(doctor, "get_journal_info", lambda: (str(journal), "env"))
+    monkeypatch.setattr(doctor, "is_packaged_install", lambda: False)
+
+    result = doctor.skill_state_check(args(doctor))
+
+    assert result.status == "skip"
+    assert result.detail == "no local journal"
+
+
+def test_skill_state_current_router_links_ok(doctor, monkeypatch, tmp_path):
+    journal = tmp_path / "journal"
+    journal.mkdir()
+    install_router_skill_links(doctor, journal)
+    monkeypatch.setattr(doctor, "get_journal_info", lambda: (str(journal), "env"))
+    monkeypatch.setattr(doctor, "is_packaged_install", lambda: False)
+
+    result = doctor.skill_state_check(args(doctor))
+
+    assert result.status == "ok"
+    assert result.detail == "router skills sol, journal are installed and current"
+
+
+def test_skill_state_warns_for_stale_and_missing_links_without_writing(
+    doctor, monkeypatch, tmp_path
+):
+    journal = tmp_path / "journal"
+    skills_dir = journal / ".claude" / "skills"
+    skills_dir.mkdir(parents=True)
+    sources = {
+        source.name: source
+        for source in doctor.skills_cli.discover_project_sources(doctor.ROOT)
+    }
+    (skills_dir / "journal").symlink_to(os.path.relpath(sources["journal"], skills_dir))
+    (skills_dir / "entities").symlink_to(
+        "../../../solstone/apps/entities/talent/entities"
+    )
+    before = tree_snapshot(journal)
+    monkeypatch.setattr(doctor, "get_journal_info", lambda: (str(journal), "env"))
+    monkeypatch.setattr(doctor, "is_packaged_install", lambda: False)
+
+    result = doctor.skill_state_check(args(doctor))
+
+    assert result.status == "warn"
+    assert f"missing router sol at {skills_dir / 'sol'}" in result.detail
+    assert f"stale skill link entities at {skills_dir / 'entities'}" in result.detail
+    assert result.fix is not None
+    assert "journal setup" in result.fix
+    assert f"sol skills install --project {journal} --agent all" in result.fix
+    assert tree_snapshot(journal) == before
 
 
 class TestJournalAlias:

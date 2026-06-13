@@ -364,6 +364,7 @@ def test_default_universal_battery_check_names(doctor):
         "sol_importable",
         "local_bin_sol_reachable",
         "stale_alias_symlink",
+        "skill_state",
     }
 
 
@@ -877,6 +878,7 @@ def test_sol_doctor_subprocess_json_shape():
         "sol_importable",
         "local_bin_sol_reachable",
         "stale_alias_symlink",
+        "skill_state",
     }
 
 
@@ -907,6 +909,7 @@ def test_doctor_runs_with_minimal_path_env(tmp_path):
         "sol_importable",
         "local_bin_sol_reachable",
         "stale_alias_symlink",
+        "skill_state",
     }
     assert not any(
         name.startswith("service_")

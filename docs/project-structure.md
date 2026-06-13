@@ -9,7 +9,7 @@ solstone/
 │   └── sol_cli.py  # Unified CLI entry point (run: sol <command>)
 ├── convey/         # Web app frontend & backend
 ├── solstone/apps/           # Convey app extensions (see docs/APPS.md)
-├── talent/           # Agent/generator configs + Agent Skills (talent/*/SKILL.md)
+├── talent/           # Agent/generator configs + sol/journal router skills
 ├── tests/          # Pytest test suites + test fixtures under tests/fixtures/
 ├── docs/           # All documentation (*.md files)
 ├── AGENTS.md       # Development guidelines (this file)
@@ -34,14 +34,14 @@ Each package has a README.md symlink pointing to its documentation in `docs/`.
 
 ## Agent & Skill Organization
 
-`solstone/talent/*.md` stores agent personas and generator templates. Apps can add their own in `solstone/apps/*/talent/*.md`. Skills live at `solstone/talent/*/SKILL.md` and are symlinked into `journal/.agents/skills/` and `journal/.claude/skills/` via `sol skills install --project`, wrapped by `make skills`.
+`solstone/talent/*.md` stores agent personas and generator templates. The installed project skills are the two router skills at `solstone/talent/sol/` and `solstone/talent/journal/`. App command fragments under `solstone/apps/*/talent/*/SKILL.md` are builder source for generated router references, not top-level installed skills.
 
 ## File Locations
 
 - **Entry Points**: `solstone/think/sol_cli.py` `COMMANDS` dict
 - **Test Fixtures**: `tests/fixtures/journal/` - complete mock journal
 - **Live Logs**: `journal/health/<service>.log`
-- **Agent Personas**: `solstone/talent/*.md` (apps can add their own in `solstone/talent/`, see [docs/APPS.md](docs/APPS.md))
-- **Generator Templates**: `solstone/talent/*.md` (apps can add their own in `solstone/talent/`, see [docs/APPS.md](docs/APPS.md))
-- **Agent Skills**: `solstone/talent/*/SKILL.md` - symlinked into `journal/.agents/skills/` and `journal/.claude/skills/` via `sol skills install --project`, wrapped by `make skills`; read https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices to create the best skills
+- **Agent Personas**: `solstone/talent/*.md` (apps can add their own talent files under `solstone/apps/*/talent/`, see [docs/APPS.md](docs/APPS.md))
+- **Generator Templates**: `solstone/talent/*.md` (apps can add their own talent files under `solstone/apps/*/talent/`, see [docs/APPS.md](docs/APPS.md))
+- **Agent Skills**: `solstone/talent/{sol,journal}/SKILL.md` - the two router skills installed into `journal/.agents/skills/` and `journal/.claude/skills/`; app `SKILL.md` fragments feed generated references via `sol skills build`
 - **Scratch Space**: `scratch/` - git-ignored local workspace

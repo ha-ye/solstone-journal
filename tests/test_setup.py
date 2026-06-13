@@ -353,9 +353,9 @@ def prior_artifact_paths(journal: Path) -> dict[str, list[Path]]:
         "journal": [setup.config_path(), journal],
         "install_models": setup.model_paths(),
         "skills_user": [
-            Path.home() / ".claude" / "skills" / "solstone" / "SKILL.md",
-            Path.home() / ".codex" / "skills" / "solstone" / "SKILL.md",
-            Path.home() / ".gemini" / "skills" / "solstone" / "SKILL.md",
+            Path.home() / ".claude" / "skills" / "sol" / "SKILL.md",
+            Path.home() / ".codex" / "skills" / "sol" / "SKILL.md",
+            Path.home() / ".gemini" / "skills" / "sol" / "SKILL.md",
         ],
         "skills_journal": [
             journal / ".claude" / "skills",
@@ -1702,7 +1702,7 @@ def test_setup_wrapper_round_trip_closure(
         assert state is install_guard.AliasState.OWNED
 
 
-def test_step_skills_user_installs_solstone_bundle_for_all_agents(
+def test_step_skills_user_installs_sol_skill_for_all_agents(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

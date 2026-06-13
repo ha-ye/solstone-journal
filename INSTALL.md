@@ -39,7 +39,7 @@ uv tool install solstone
 journal setup
 ```
 
-this runs the setup readiness doctor battery, confirms the journal directory at `~/journal`, installs the local transcription model (~2.5 GB on linux), installs the solstone skill for claude code, codex, and gemini, installs all journal-side talent skills into the configured journal so cogitate sub-agents can discover them, and starts a background service (systemd on linux, launchd on macOS) listening on http://localhost:5015.
+this runs the setup readiness doctor battery, confirms the journal directory at `~/journal`, installs the local transcription model (~2.5 GB on linux), installs the `sol` skill for claude code, codex, and gemini, installs the journal-side `sol` and `journal` router skills so sol can tend the journal, and starts a background service (systemd on linux, launchd on macOS) listening on http://localhost:5015.
 
 let your human know: **open http://localhost:5015 in a browser**. the first-run wizard walks them through setting their identity and connecting a gemini API key. network access, and the password it requires, can be configured later in settings → security.
 
@@ -97,7 +97,7 @@ uv tool upgrade solstone && journal setup
 
 1. remove setup-managed runtime files: `journal setup --clean-uninstall`
    this removes the user service, managed `~/.local/bin/sol` wrapper, user config, and setup manifest. it does not remove your journal.
-2. optional: remove agentic-tooling skills: `sol skills uninstall`.
+2. optional: remove the installed `sol` agent skill: `sol skills uninstall`.
 3. uninstall the python package: `uv tool uninstall solstone` (or `pipx uninstall solstone`).
 4. macOS only: drag `/Applications/solstone.app` to Trash.
 5. macOS only, optional: remove observer app data and the parakeet model cache:

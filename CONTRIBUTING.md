@@ -53,9 +53,9 @@ make install
 .venv/bin/journal setup
 ```
 
-`make install` creates `.venv/`, syncs dependencies from `pyproject.toml` and `uv.lock`, installs the package in editable mode, and refreshes the project skill symlinks into the journal.
+`make install` creates `.venv/`, syncs dependencies from `pyproject.toml` and `uv.lock`, installs the package in editable mode, regenerates router skill references, and refreshes the `sol` + `journal` project skill symlinks into the journal.
 
-`.venv/bin/journal setup` runs doctor diagnostics, confirms the journal path, installs local transcription models, installs the `solstone` skill for Claude Code when Claude is configured, creates or refreshes the source-checkout wrappers at `~/.local/bin/sol` and `~/.local/bin/journal`, and starts the background service. The default web interface listens on http://localhost:5015. Use `.venv/bin/journal setup --port 8000` to choose another port on the first run.
+`.venv/bin/journal setup` runs doctor diagnostics, confirms the journal path, installs local transcription models, installs the `sol` user skill for Claude Code / Codex / Gemini when those agents are configured, installs the `sol` + `journal` router skills into the journal, creates or refreshes the source-checkout wrappers at `~/.local/bin/sol` and `~/.local/bin/journal`, and starts the background service. The default web interface listens on http://localhost:5015. Use `.venv/bin/journal setup --port 8000` to choose another port on the first run.
 
 After the first setup run, the wrapper lets you use `sol` from anywhere:
 
@@ -156,13 +156,15 @@ If you change the helper source, rebuild it before testing the CoreML parakeet p
 
 Talent prompts live under `solstone/talent/<name>.md`; apps may add app-specific talent files under `solstone/apps/<app>/talent/`. Talent frontmatter declares type, schedule, provider/model behavior, hooks, priority, and output expectations.
 
-Skills are `SKILL.md` files under `solstone/talent/` or `solstone/apps/*/talent/`. After adding or renaming a skill, run:
+The installed project skills are the two router skills under `solstone/talent/sol/` and `solstone/talent/journal/`. App command fragments under `solstone/apps/<app>/talent/<app>/SKILL.md` feed the generated router references; they are not installed as top-level skills.
+
+After changing a router skill or an app command fragment, run:
 
 ```bash
 make skills
 ```
 
-That refreshes the `.claude/` and `.agents/` skill symlinks inside the journal. `make install` also runs this target.
+That target first runs `sol skills build` to regenerate the checked-in references, then refreshes the `sol` + `journal` router skill symlinks inside the journal. `make install` also runs this target, and `make ci` / `make install-checks` runs `sol skills build --check` to catch stale generated references.
 
 ## Migrating from a source install to a packaged install
 

@@ -48,6 +48,7 @@ def test_journal_skill_references_exist_and_linked():
         "references/captures.md",
         "references/logs.md",
         "references/storage.md",
+        "references/commands.md",
     ]
 
     for rel_path in references:
