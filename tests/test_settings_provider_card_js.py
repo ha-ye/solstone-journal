@@ -39,11 +39,31 @@ def test_thinking_static_uses_moved_endpoints_and_local_reason():
         "api/local/availability",
         "api/local/bootstrap",
         "api/local/endpoint",
+        "api/scout",
     ):
         assert endpoint in text
     assert "gpu_probe_failed" in text
     assert "gpu_unavailable" in text
     assert "/app/settings" not in text
+
+
+def test_thinking_static_has_scout_orchestration_structures():
+    text = _static_text()
+
+    for name in (
+        "refreshScout",
+        "renderScout",
+        "pollScoutUntilTerminal",
+        "enableScout",
+        "refreshScoutOp",
+        "disableScout",
+    ):
+        assert f"function {name}(" in text
+    assert "switchLane('scout')" in text
+    assert "phase === 'repair_needed'" in text
+    assert "api('api/scout/enable'" in text
+    assert "api('api/scout/refresh'" in text
+    assert "api('api/scout/disable'" in text
 
 
 def test_thinking_surface_avoids_forbidden_owner_terms():

@@ -9,6 +9,7 @@ import copy
 import json
 import logging
 import os
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,8 @@ from urllib.parse import urlsplit
 
 from flask import Blueprint, jsonify, render_template, request
 
-from solstone.apps.thinking import local_bootstrap
+from solstone.apps.thinking import copy as thinking_copy
+from solstone.apps.thinking import local_bootstrap, scout_lane
 from solstone.apps.thinking.copy import thinking_copy_payload
 from solstone.apps.thinking.vertex_credentials import (
     delete_vertex_credentials,
@@ -30,9 +32,11 @@ from solstone.convey.reasons import (
     FILE_READ_FAILED,
     INVALID_CONFIG_VALUE,
     INVALID_JSON_REQUEST,
+    INVALID_OPERATION_FOR_STATE,
     INVALID_REQUEST_VALUE,
     MISSING_REQUEST_BODY,
     MISSING_REQUIRED_FIELD,
+    SERVICE_BUSY,
     SETTINGS_OPERATION_FAILED,
 )
 from solstone.convey.utils import error_response
@@ -53,7 +57,7 @@ from solstone.think.providers.local_endpoint import (
     normalize_local_endpoint_url,
     resolve_local_endpoint,
 )
-from solstone.think.services import scout
+from solstone.think.services import operations, scout, scout_handoff
 from solstone.think.utils import CorruptConfigError, get_journal
 from solstone.think.utils import get_config as get_journal_config
 
@@ -87,6 +91,26 @@ GENERIC_THINKING_ERROR = (
 
 def _thinking_operation_failed(detail: str = GENERIC_THINKING_ERROR) -> Any:
     return error_response(SETTINGS_OPERATION_FAILED, detail=detail)
+
+
+def _start_scout_operation(
+    kind: str,
+    flow: Callable[[Callable[[str], bool]], operations.HandoffResult],
+) -> Any:
+    try:
+        payload = operations.start_operation("scout", kind, flow)
+    except operations.OperationBusyError:
+        return error_response(SERVICE_BUSY, detail="operation already running")
+    return (
+        jsonify(
+            {
+                "success": True,
+                "service": "scout",
+                "operation": scout_lane.remap_operation(payload),
+            }
+        ),
+        202,
+    )
 
 
 def _read_local_provider_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -386,6 +410,85 @@ def index() -> str:
         thinking_copy=thinking_copy_payload(),
         thinking_initial=_initial_payload(),
     )
+
+
+@thinking_bp.route("/api/scout")
+def scout_status() -> Any:
+    try:
+        return jsonify({"success": True, **scout_lane.status_payload()})
+    except Exception:
+        logger.exception("error loading scout status")
+        return _thinking_operation_failed()
+
+
+@thinking_bp.route("/api/scout/enable", methods=["POST"])
+def scout_enable() -> Any:
+    try:
+        state = scout_lane.resting_state()
+        if state == thinking_copy.SCOUT_STATE_ON:
+            return error_response(
+                INVALID_OPERATION_FOR_STATE,
+                detail="Scout is already on.",
+            )
+        if state == thinking_copy.SCOUT_STATE_MANUAL_KEY_PRESENT:
+            return error_response(
+                INVALID_OPERATION_FOR_STATE,
+                detail=thinking_copy.SCOUT_MANUAL_KEY_BLOCK_COPY,
+            )
+        return _start_scout_operation(
+            "enable",
+            lambda opener: scout_handoff.run_scout_handoff(
+                refresh=False,
+                open_browser=opener,
+            ),
+        )
+    except Exception:
+        logger.exception("error enabling scout")
+        return _thinking_operation_failed()
+
+
+@thinking_bp.route("/api/scout/refresh", methods=["POST"])
+def scout_refresh() -> Any:
+    try:
+        state = scout_lane.resting_state()
+        if state not in {
+            thinking_copy.SCOUT_STATE_REQUESTED,
+            thinking_copy.SCOUT_STATE_ON,
+        }:
+            return error_response(
+                INVALID_OPERATION_FOR_STATE,
+                detail="Scout refresh isn't available right now.",
+            )
+        return _start_scout_operation(
+            "refresh",
+            lambda opener: scout_handoff.run_scout_handoff(
+                refresh=True,
+                open_browser=opener,
+            ),
+        )
+    except Exception:
+        logger.exception("error refreshing scout")
+        return _thinking_operation_failed()
+
+
+@thinking_bp.route("/api/scout/disable", methods=["POST"])
+def scout_disable() -> Any:
+    try:
+        outcome = scout.disable_scout()
+        return jsonify(
+            {
+                "success": True,
+                "service": "scout",
+                "result": {
+                    "was_enabled": outcome.was_enabled,
+                    "env_key_preserved": outcome.env_key_preserved,
+                },
+                "status": scout_lane.status_payload(),
+            }
+        )
+    except Exception:
+        logger.exception("error disabling scout")
+        return _thinking_operation_failed()
 
 
 @thinking_bp.route("/api/keys", methods=["GET", "PUT"])

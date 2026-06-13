@@ -32,6 +32,10 @@ def test_workspace_renders_each_lane(settings_env):
     assert 'id="lane-scout"' in html
     assert 'id="lane-byo"' in html
     assert 'id="lane-local"' in html
+    assert 'id="scoutEnable"' in html
+    assert 'id="scoutRefresh"' in html
+    assert 'id="scoutDisable"' in html
+    assert 'id="scoutLaneOperation"' in html
     assert "window.THINKING =" in html
     assert "thinking/static/thinking.js" in html
 

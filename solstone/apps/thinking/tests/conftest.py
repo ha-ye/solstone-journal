@@ -9,11 +9,20 @@ import json
 
 import pytest
 
+from solstone.think.services import operations
+
 
 @pytest.fixture(autouse=True)
 def _skip_supervisor_check(monkeypatch):
     """Allow app CLI tests to run without a live solstone supervisor."""
     monkeypatch.setenv("SOL_SKIP_SUPERVISOR_CHECK", "1")
+
+
+@pytest.fixture(autouse=True)
+def _clear_service_operations():
+    operations.clear_registry()
+    yield
+    operations.clear_registry()
 
 
 @pytest.fixture
@@ -97,3 +106,9 @@ def settings_env(tmp_path, monkeypatch):
         return tmp_path, config
 
     return _create
+
+
+@pytest.fixture
+def journal_copy(settings_env):
+    journal_path, _config = settings_env()
+    return journal_path

@@ -13,7 +13,9 @@ from typer.testing import CliRunner
 
 import solstone.apps.thinking.call as thinking_call
 import solstone.apps.thinking.routes as thinking_routes
+from solstone.apps.thinking import copy as thinking_copy
 from solstone.think.convey_client import ConveyClient
+from solstone.think.services import operations, scout, scout_handoff
 from tests._baseline_harness import make_logged_in_test_client
 
 runner = CliRunner()
@@ -44,6 +46,13 @@ def _thinking_client(journal_copy: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     )
     monkeypatch.setattr(thinking_call, "get_client", lambda: client)
     monkeypatch.setenv("SOL_SKIP_SUPERVISOR_CHECK", "1")
+
+
+@pytest.fixture(autouse=True)
+def _clear_service_operations() -> None:
+    operations.clear_registry()
+    yield
+    operations.clear_registry()
 
 
 @pytest.fixture
@@ -85,6 +94,28 @@ def _fake_creds(email: str = "test@test.iam.gservice.test") -> dict[str, str]:
     }
 
 
+def _approved_scout_payload(key: str = "google-scout-key") -> dict[str, str]:
+    return {
+        "state": "approved",
+        "google_api_key": key,
+        "dispatch_token": "dispatch-secret",
+        "account_id": "acct-secret",
+        "created_at": "2026-05-24T00:00:00Z",
+    }
+
+
+def _clear_scout(journal: Path) -> None:
+    config = _read_config(journal)
+    config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
+    config.setdefault("services", {}).pop("scout", None)
+    _write_config(journal, config)
+
+
+def _first_json(stdout: str) -> tuple[Any, str]:
+    payload, index = json.JSONDecoder().raw_decode(stdout)
+    return payload, stdout[index:].strip()
+
+
 def test_show_verbs_select_http_fields() -> None:
     keys = runner.invoke(thinking_call.app, ["keys", "show"])
     providers = runner.invoke(thinking_call.app, ["providers", "show"])
@@ -115,6 +146,118 @@ def test_show_verbs_select_http_fields() -> None:
     }
     assert vertex.exit_code == 0
     assert json.loads(vertex.stdout)["configured"] is False
+
+
+def test_scout_status_matches_http_payload(journal_copy: Path) -> None:
+    _clear_scout(journal_copy)
+    expected = thinking_call._get_scout_status()
+
+    result = runner.invoke(thinking_call.app, ["scout", "status"])
+
+    assert result.exit_code == 0
+    payload, guidance = _first_json(result.stdout)
+    assert payload == expected
+    assert guidance == thinking_call._SCOUT_GUIDANCE[thinking_copy.SCOUT_STATE_OFF]
+
+
+def test_scout_disable_matches_http_response(journal_copy: Path) -> None:
+    _clear_scout(journal_copy)
+    scout.provision_scout_handoff(_approved_scout_payload())
+    expected_response = thinking_call._request(
+        "POST",
+        "/app/thinking/api/scout/disable",
+    )
+
+    scout.provision_scout_handoff(_approved_scout_payload())
+    result = runner.invoke(thinking_call.app, ["scout", "disable"])
+
+    _assert_json(
+        result,
+        {
+            "result": expected_response["result"],
+            "status": expected_response["status"],
+        },
+    )
+
+
+def test_scout_enable_polls_terminal_success(
+    journal_copy: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_scout(journal_copy)
+
+    def runner_result(**_kwargs):
+        scout.provision_scout_handoff(_approved_scout_payload())
+        return operations.HandoffResult("enabled", None, False, True, None)
+
+    monkeypatch.setattr(scout_handoff, "run_scout_handoff", runner_result)
+
+    result = runner.invoke(
+        thinking_call.app,
+        ["scout", "enable", "--wait-seconds", "2", "--poll-interval", "0"],
+    )
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    assert "state: on\n" in result.stdout
+    assert "operation: invited\n" in result.stdout
+    assert thinking_call._SCOUT_GUIDANCE[thinking_copy.SCOUT_STATE_INVITED] in (
+        result.stdout
+    )
+
+
+def test_scout_enable_exits_nonzero_on_repair_needed(
+    journal_copy: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_scout(journal_copy)
+    monkeypatch.setattr(
+        scout_handoff,
+        "run_scout_handoff",
+        lambda **_kwargs: operations.HandoffResult(
+            "error",
+            "Try again.",
+            True,
+            False,
+            "http://portal.test/enable/scout",
+        ),
+    )
+
+    result = runner.invoke(
+        thinking_call.app,
+        ["scout", "enable", "--wait-seconds", "2", "--poll-interval", "0"],
+    )
+
+    assert result.exit_code == 1
+    assert result.stderr == ""
+    assert "operation: repair_needed\n" in result.stdout
+    assert "Try again.\n" in result.stdout
+    assert (
+        thinking_call._SCOUT_GUIDANCE[thinking_copy.SCOUT_STATE_REPAIR_NEEDED]
+        in result.stdout
+    )
+
+
+def test_scout_cli_copy_mirror_matches_thinking_copy() -> None:
+    local_states = {
+        thinking_call._SCOUT_STATE_OFF,
+        thinking_call._SCOUT_STATE_REQUESTED,
+        thinking_call._SCOUT_STATE_INVITED,
+        thinking_call._SCOUT_STATE_ON,
+        thinking_call._SCOUT_STATE_ENDED,
+        thinking_call._SCOUT_STATE_MANUAL_KEY_PRESENT,
+        thinking_call._SCOUT_STATE_REPAIR_NEEDED,
+    }
+
+    assert local_states == set(thinking_copy.SCOUT_STATE_LABELS)
+    assert thinking_call._SCOUT_PRODUCT_STATES == set(thinking_copy.SCOUT_STATE_LABELS)
+    assert set(thinking_call._SCOUT_GUIDANCE) == set(thinking_copy.SCOUT_STATE_LABELS)
+    assert thinking_call._SCOUT_TERMINAL_PHASES == {
+        thinking_copy.SCOUT_STATE_INVITED,
+        thinking_copy.SCOUT_STATE_REQUESTED,
+        thinking_copy.SCOUT_STATE_ENDED,
+        thinking_copy.SCOUT_STATE_REPAIR_NEEDED,
+    }
 
 
 def test_keys_set_clear_validate_and_invalid_env(

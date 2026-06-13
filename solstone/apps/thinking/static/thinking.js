@@ -7,8 +7,13 @@
     keys: window.THINKING?.keys || {},
     localModels: [],
     localAvailability: null,
+    scout: null,
   };
   const copy = window.THINKING_COPY || {};
+  const scoutCopy = copy.scout || {};
+  const scoutTerminalPhases = new Set(['invited', 'requested', 'ended', 'repair_needed']);
+  const scoutPollIntervalMs = 1500;
+  const scoutPollMaxMs = 15 * 60 * 1000;
   const providerEnv = {
     anthropic: 'ANTHROPIC_API_KEY',
     google: 'GOOGLE_API_KEY',
@@ -49,6 +54,10 @@
       throw new Error(payload.detail || payload.error || 'request failed');
     }
     return payload;
+  }
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   function activeLaneLabel(lane) {
@@ -104,6 +113,65 @@
     setMessage('scoutLaneStatus', laneStatus('scout'));
     setMessage('byoLaneStatus', laneStatus('byo'));
     setMessage('localLaneStatus', laneStatus('local'));
+  }
+
+  function scoutLabel(stateName) {
+    return (scoutCopy.state_labels || {})[stateName] || stateName || 'unknown';
+  }
+
+  function setButtonState(id, visible, disabled) {
+    const button = $(id);
+    if (!button) return;
+    button.hidden = !visible;
+    button.disabled = !!disabled;
+  }
+
+  function renderScout() {
+    const scout = state.scout;
+    if (!scout) {
+      setMessage('scoutLaneStatus', laneStatus('scout'));
+      setMessage('scoutLaneOperation', '');
+      setButtonState('scoutEnable', false, true);
+      setButtonState('scoutRefresh', false, true);
+      setButtonState('scoutDisable', false, true);
+      const switchButton = document.querySelector('#lane-scout [data-switch-lane="scout"]');
+      if (switchButton) {
+        switchButton.hidden = true;
+        switchButton.disabled = true;
+      }
+      return;
+    }
+
+    const scoutState = scout.state || '';
+    const label = scoutLabel(scoutState);
+    const guidance = scout.guidance || (scoutCopy.resting_guidance || {})[scoutState] || '';
+    setMessage('scoutLaneStatus', guidance ? `${label} - ${guidance}` : label);
+
+    const operation = scout.operation;
+    const operationActive = !!operation && !scoutTerminalPhases.has(operation.phase);
+    const actions = scout.actions || {};
+    setButtonState('scoutEnable', !!actions.enable, operationActive || !actions.enable);
+    setButtonState('scoutRefresh', !!actions.refresh, operationActive || !actions.refresh);
+    setButtonState('scoutDisable', !!actions.disable, operationActive || !actions.disable);
+
+    const switchButton = document.querySelector('#lane-scout [data-switch-lane="scout"]');
+    if (switchButton) {
+      switchButton.hidden = scoutState !== 'on';
+      switchButton.disabled = scoutState !== 'on';
+    }
+
+    if (operation) {
+      const phase = operation.phase || '';
+      const phaseLabel = scoutLabel(phase);
+      const operationGuidance = operation.guidance || '';
+      setMessage(
+        'scoutLaneOperation',
+        operationGuidance ? `${phaseLabel} - ${operationGuidance}` : phaseLabel,
+        phase === 'repair_needed' ? 'error' : '',
+      );
+    } else {
+      setMessage('scoutLaneOperation', '');
+    }
   }
 
   function populateProviderSelect(select, selected) {
@@ -180,6 +248,7 @@
     renderAdvanced();
     renderKeys();
     renderLocalEndpoint();
+    renderScout();
   }
 
   async function refreshProviders() {
@@ -192,6 +261,23 @@
   async function refreshKeys() {
     state.keys = await api('api/keys');
     renderAll();
+  }
+
+  async function refreshScout() {
+    state.scout = await api('api/scout');
+    renderScout();
+  }
+
+  async function pollScoutUntilTerminal() {
+    const started = Date.now();
+    while (Date.now() - started < scoutPollMaxMs) {
+      await refreshScout();
+      const operation = state.scout?.operation;
+      if (!operation || scoutTerminalPhases.has(operation.phase)) return operation || null;
+      await sleep(scoutPollIntervalMs);
+    }
+    await refreshScout();
+    return state.scout?.operation || null;
   }
 
   async function refreshLocalModels() {
@@ -216,6 +302,53 @@
       body: JSON.stringify(payload),
     });
     renderAll();
+  }
+
+  async function enableScout() {
+    setMessage('scoutLaneOperation', '');
+    try {
+      await api('api/scout/enable', {method: 'POST'});
+    } catch (err) {
+      setMessage('scoutLaneOperation', err.message, 'error');
+      return;
+    }
+
+    const operation = await pollScoutUntilTerminal();
+    const phase = operation?.phase;
+    if (state.scout?.state === 'on' || phase === 'invited') {
+      await switchLane('scout');
+      await Promise.all([refreshScout(), refreshProviders(), refreshKeys()]);
+      return;
+    }
+    if (phase === 'repair_needed') {
+      setMessage(
+        'scoutLaneOperation',
+        operation?.guidance || 'Scout needs repair; try again from Thinking.',
+        'error',
+      );
+      return;
+    }
+    if (phase === 'requested') {
+      setMessage(
+        'scoutLaneOperation',
+        operation?.guidance || state.scout?.guidance || 'Scout is waiting for approval.',
+      );
+    }
+  }
+
+  async function refreshScoutOp() {
+    await api('api/scout/refresh', {method: 'POST'});
+    await pollScoutUntilTerminal();
+    if (state.scout?.state === 'on') {
+      await Promise.all([refreshProviders(), refreshKeys()]);
+    }
+    renderScout();
+  }
+
+  async function disableScout() {
+    const result = await api('api/scout/disable', {method: 'POST'});
+    state.scout = result.status || state.scout;
+    await Promise.all([refreshScout(), refreshProviders(), refreshKeys()]);
   }
 
   async function saveByoKey() {
@@ -328,6 +461,9 @@
     $('byoSaveKey')?.addEventListener('click', () => saveByoKey().catch((err) => setMessage('byoLaneStatus', err.message, 'error')));
     $('byoClearKey')?.addEventListener('click', () => clearByoKey().catch((err) => setMessage('byoLaneStatus', err.message, 'error')));
     $('byoValidateKey')?.addEventListener('click', () => validateKeys().catch((err) => setMessage('byoLaneStatus', err.message, 'error')));
+    $('scoutEnable')?.addEventListener('click', () => enableScout().catch((err) => setMessage('scoutLaneOperation', err.message, 'error')));
+    $('scoutRefresh')?.addEventListener('click', () => refreshScoutOp().catch((err) => setMessage('scoutLaneOperation', err.message, 'error')));
+    $('scoutDisable')?.addEventListener('click', () => disableScout().catch((err) => setMessage('scoutLaneOperation', err.message, 'error')));
     $('localRefresh')?.addEventListener('click', () => refreshProviders().catch((err) => setMessage('localLaneStatus', err.message, 'error')));
     $('localBootstrap')?.addEventListener('click', () => startLocalBootstrap().catch((err) => setMessage('localLaneStatus', err.message, 'error')));
     $('localModelSelect')?.addEventListener('change', () => Promise.all([
@@ -351,7 +487,7 @@
     try {
       await refreshLocalModels();
       await refreshLocalAvailability();
-      await Promise.all([refreshProviders(), refreshKeys()]);
+      await Promise.all([refreshProviders(), refreshKeys(), refreshScout()]);
     } catch (err) {
       setMessage('thinkingActiveDetail', err.message, 'error');
     }

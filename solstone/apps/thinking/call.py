@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import typer
@@ -14,6 +15,7 @@ from solstone.convey.reasons import (
     FILE_NOT_FOUND,
     INVALID_CONFIG_VALUE,
     INVALID_JSON_REQUEST,
+    INVALID_OPERATION_FOR_STATE,
     MISSING_REQUIRED_FIELD,
 )
 from solstone.think.convey_client import ConveyClientError, convey_cli, get_client
@@ -34,6 +36,40 @@ _PROVIDERS = ("anthropic", "google", "openai", "local")
 _CLOUD_PROVIDERS = ("anthropic", "google", "openai")
 _GOOGLE_BACKENDS = ("auto", "aistudio", "vertex")
 
+# Mirrors solstone.apps.thinking.copy; reconstructed here so this call.py
+# remains a pure Convey HTTP client.
+_SCOUT_STATE_OFF = "off"
+_SCOUT_STATE_REQUESTED = "requested"
+_SCOUT_STATE_INVITED = "invited"
+_SCOUT_STATE_ON = "on"
+_SCOUT_STATE_ENDED = "ended"
+_SCOUT_STATE_MANUAL_KEY_PRESENT = "manual_key_present"
+_SCOUT_STATE_REPAIR_NEEDED = "repair_needed"
+_SCOUT_PRODUCT_STATES = {
+    _SCOUT_STATE_OFF,
+    _SCOUT_STATE_REQUESTED,
+    _SCOUT_STATE_INVITED,
+    _SCOUT_STATE_ON,
+    _SCOUT_STATE_ENDED,
+    _SCOUT_STATE_MANUAL_KEY_PRESENT,
+    _SCOUT_STATE_REPAIR_NEEDED,
+}
+_SCOUT_TERMINAL_PHASES = {
+    _SCOUT_STATE_INVITED,
+    _SCOUT_STATE_REQUESTED,
+    _SCOUT_STATE_ENDED,
+    _SCOUT_STATE_REPAIR_NEEDED,
+}
+_SCOUT_GUIDANCE = {
+    _SCOUT_STATE_OFF: "Scout is off.",
+    _SCOUT_STATE_REQUESTED: "Scout is waiting for approval.",
+    _SCOUT_STATE_INVITED: "Scout is ready; use the Scout lane in Thinking.",
+    _SCOUT_STATE_ON: "Scout is on.",
+    _SCOUT_STATE_ENDED: "Scout has ended; enable Scout to use it again.",
+    _SCOUT_STATE_MANUAL_KEY_PRESENT: "Clear the BYO Gemini key before enabling Scout.",
+    _SCOUT_STATE_REPAIR_NEEDED: "Scout needs repair; try again from Thinking.",
+}
+
 app = typer.Typer(help="Thinking providers, keys, and local model setup.")
 
 keys_app = typer.Typer(help="AI key management.")
@@ -46,6 +82,8 @@ vertex_app = typer.Typer(help="Vertex credentials.")
 app.add_typer(vertex_app, name="vertex-credentials")
 local_app = typer.Typer(help="Local model readiness and setup.")
 app.add_typer(local_app, name="local")
+scout_app = typer.Typer(help="Scout hosted Gemini lane.")
+app.add_typer(scout_app, name="scout")
 
 
 def _request(
@@ -106,6 +144,141 @@ def _get_providers() -> dict[str, Any]:
 
 def _get_keys() -> dict[str, Any]:
     return _request("GET", "/app/thinking/api/keys")
+
+
+def _get_scout_status() -> dict[str, Any]:
+    return _request("GET", "/app/thinking/api/scout")
+
+
+def _post_scout_action(path: str) -> dict[str, Any]:
+    try:
+        return _request("POST", path)
+    except ConveyClientError as err:
+        if err.reason_code == INVALID_OPERATION_FOR_STATE.code and err.detail:
+            _exit_with(err.detail)
+        raise
+
+
+def _scout_guidance(key: Any) -> str | None:
+    return _SCOUT_GUIDANCE.get(str(key or ""))
+
+
+def _echo_scout_guidance(key: Any) -> None:
+    guidance = _scout_guidance(key)
+    if guidance:
+        typer.echo(guidance)
+
+
+def _poll_scout_until_terminal(
+    *,
+    wait_seconds: float,
+    poll_interval: float,
+) -> tuple[dict[str, Any], str | None, str | None]:
+    deadline = time.monotonic() + max(0.0, wait_seconds)
+    interval = max(0.0, poll_interval)
+
+    while True:
+        status = _get_scout_status()
+        operation = status.get("operation")
+        if not isinstance(operation, dict):
+            return status, None, None
+
+        phase = str(operation.get("phase") or "")
+        if phase in _SCOUT_TERMINAL_PHASES:
+            guidance = operation.get("guidance")
+            return status, phase, str(guidance) if guidance else None
+
+        if time.monotonic() >= deadline:
+            return (
+                status,
+                _SCOUT_STATE_REPAIR_NEEDED,
+                "Timed out waiting for Scout.",
+            )
+
+        if interval:
+            time.sleep(interval)
+
+
+def _echo_scout_terminal(
+    status: dict[str, Any],
+    phase: str | None,
+    operation_guidance: str | None,
+) -> None:
+    state = status.get("state")
+    typer.echo(f"state: {state}")
+    if phase:
+        typer.echo(f"operation: {phase}")
+    if operation_guidance:
+        typer.echo(operation_guidance)
+    _echo_scout_guidance(phase or state)
+
+
+@scout_app.command("status")
+@convey_cli
+def scout_status() -> None:
+    """Show Scout hosted Gemini lane status."""
+
+    response = _get_scout_status()
+    _echo_json(response)
+    _echo_scout_guidance(response.get("state"))
+
+
+@scout_app.command("enable")
+@convey_cli
+def scout_enable(
+    wait_seconds: float = typer.Option(
+        900.0, "--wait-seconds", help="Maximum seconds to wait for the operation."
+    ),
+    poll_interval: float = typer.Option(
+        1.0, "--poll-interval", help="Seconds between status polls."
+    ),
+) -> None:
+    """Enable Scout hosted Gemini."""
+
+    _post_scout_action("/app/thinking/api/scout/enable")
+    status, phase, operation_guidance = _poll_scout_until_terminal(
+        wait_seconds=wait_seconds,
+        poll_interval=poll_interval,
+    )
+    _echo_scout_terminal(status, phase, operation_guidance)
+    if phase == _SCOUT_STATE_REPAIR_NEEDED:
+        raise typer.Exit(1)
+
+
+@scout_app.command("refresh")
+@convey_cli
+def scout_refresh(
+    wait_seconds: float = typer.Option(
+        900.0, "--wait-seconds", help="Maximum seconds to wait for the operation."
+    ),
+    poll_interval: float = typer.Option(
+        1.0, "--poll-interval", help="Seconds between status polls."
+    ),
+) -> None:
+    """Refresh Scout hosted Gemini status."""
+
+    _post_scout_action("/app/thinking/api/scout/refresh")
+    status, phase, operation_guidance = _poll_scout_until_terminal(
+        wait_seconds=wait_seconds,
+        poll_interval=poll_interval,
+    )
+    _echo_scout_terminal(status, phase, operation_guidance)
+    if phase == _SCOUT_STATE_REPAIR_NEEDED:
+        raise typer.Exit(1)
+
+
+@scout_app.command("disable")
+@convey_cli
+def scout_disable() -> None:
+    """Disable Scout hosted Gemini."""
+
+    response = _post_scout_action("/app/thinking/api/scout/disable")
+    _echo_json(
+        {
+            "result": response.get("result", {}),
+            "status": response.get("status", {}),
+        }
+    )
 
 
 @keys_app.command("show")

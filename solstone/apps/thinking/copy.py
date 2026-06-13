@@ -61,6 +61,33 @@ ACTION_LABELS = {
     "install": "Install",
     "refresh": "Refresh",
 }
+SCOUT_STATE_OFF = "off"
+SCOUT_STATE_REQUESTED = "requested"
+SCOUT_STATE_INVITED = "invited"
+SCOUT_STATE_ON = "on"
+SCOUT_STATE_ENDED = "ended"
+SCOUT_STATE_MANUAL_KEY_PRESENT = "manual_key_present"
+SCOUT_STATE_REPAIR_NEEDED = "repair_needed"
+SCOUT_OP_STARTING = "starting"
+SCOUT_OP_WAITING = "waiting"
+SCOUT_STATE_LABELS = {
+    SCOUT_STATE_OFF: "off",
+    SCOUT_STATE_REQUESTED: "requested",
+    SCOUT_STATE_INVITED: "invited",
+    SCOUT_STATE_ON: "on",
+    SCOUT_STATE_ENDED: "ended",
+    SCOUT_STATE_MANUAL_KEY_PRESENT: "BYO key",
+    SCOUT_STATE_REPAIR_NEEDED: "repair needed",
+}
+SCOUT_RESTING_GUIDANCE = {
+    SCOUT_STATE_OFF: "Scout is off.",
+    SCOUT_STATE_REQUESTED: "Scout is waiting for approval.",
+    SCOUT_STATE_ON: "Scout is on; sol pbc keeps a Gemini key on this machine for you.",
+    SCOUT_STATE_MANUAL_KEY_PRESENT: "A Gemini key you manage is already set.",
+}
+SCOUT_MANUAL_KEY_BLOCK_COPY = (
+    "A Gemini key you manage is already set. Clear it in BYO first, then enable Scout."
+)
 
 
 def thinking_copy_payload() -> dict[str, Any]:
@@ -75,6 +102,11 @@ def thinking_copy_payload() -> dict[str, Any]:
         "key_labels": dict(KEY_LABELS),
         "state_labels": dict(STATE_LABELS),
         "action_labels": dict(ACTION_LABELS),
+        "scout": {
+            "state_labels": dict(SCOUT_STATE_LABELS),
+            "resting_guidance": dict(SCOUT_RESTING_GUIDANCE),
+            "manual_key_block": SCOUT_MANUAL_KEY_BLOCK_COPY,
+        },
     }
 
 
