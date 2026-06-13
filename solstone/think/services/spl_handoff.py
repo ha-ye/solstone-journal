@@ -11,7 +11,7 @@ import webbrowser
 from collections.abc import Callable
 from typing import Any
 
-from solstone.think.services import outcomes, portal_client, spl
+from solstone.think.services import operations, outcomes, portal_client, spl
 from solstone.think.services.constants import SERVICE_SPL
 
 log = logging.getLogger(__name__)
@@ -125,3 +125,38 @@ def enable_spl_via_consent(
         return outcomes.outcome_for_code(outcomes.APPROVED)
 
     return outcomes.outcome_for_code(outcomes.EXPIRED)
+
+
+def run_spl_handoff(
+    *,
+    poll_once: Callable[
+        ..., portal_client.PollOutcome
+    ] = portal_client.poll_handoff_once,
+    open_browser: Callable[[str], bool] = operations._open_browser,
+    clock: Callable[[], float] = time.monotonic,
+    wait_seconds: int = portal_client.DEFAULT_WAIT_SECONDS,
+) -> operations.HandoffResult:
+    """Run the spl browser-consent flow synchronously for route/thread callers."""
+
+    browser_open_succeeded: bool | None = None
+    manual_url: str | None = None
+
+    def wrapped_open_browser(url: str) -> bool:
+        nonlocal browser_open_succeeded, manual_url
+        browser_open_succeeded, manual_url = operations.open_for_handoff(
+            url, open_browser
+        )
+        return browser_open_succeeded
+
+    outcome = enable_spl_via_consent(
+        open_browser=wrapped_open_browser,
+        poll_once=poll_once,
+        clock=clock,
+        wait_seconds=wait_seconds,
+    )
+    return operations._outcome_result(
+        outcome.code,
+        outcome.guidance,
+        browser_open_succeeded,
+        manual_url,
+    )

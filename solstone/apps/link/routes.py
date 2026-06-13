@@ -32,6 +32,7 @@ import logging
 import re
 import socket
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from importlib import import_module
 from pathlib import Path
@@ -77,6 +78,8 @@ from solstone.convey.reasons import (
     PAIRED_DEVICE_NOT_FOUND,
     PAIRING_KEY_INVALID,
     PAIRING_REQUEST_INVALID,
+    SERVICE_BUSY,
+    SERVICE_OPERATION_FAILED,
 )
 from solstone.convey.utils import error_response
 from solstone.think.link.auth import AuthorizedClients, ClientEntry, is_peer
@@ -113,6 +116,8 @@ from solstone.think.pairing.config import (
     set_host_url,
     validate_host_url,
 )
+from solstone.think.services import operations, spl, spl_handoff
+from solstone.think.services import status as service_status
 from solstone.think.utils import get_config, get_journal, now_ms
 
 logger = logging.getLogger(__name__)
@@ -315,6 +320,35 @@ def _derive_reachability(
     }[relay_state]
 
 
+def _private_link_status() -> dict[str, Any]:
+    resting = service_status.spl_status()
+    state = str(resting["state"])
+    return {
+        "service": "spl",
+        "state": state,
+        "posture": read_posture(),
+        "enrolled": load_service_token() is not None,
+        "relay_url": relay_url(),
+        "actions": {
+            "enable": state in {"not_enabled", "inconsistent"},
+            "disable": state in {"enabled", "inconsistent"},
+        },
+        "operation": operations.operation_for_service("spl"),
+    }
+
+
+def _start_operation_response(
+    service: str,
+    kind: str,
+    flow: Callable[[Callable[[str], bool]], operations.HandoffResult],
+) -> tuple[Response, int]:
+    try:
+        operation = operations.start_operation(service, kind, flow)
+    except operations.OperationBusyError:
+        return error_response(SERVICE_BUSY, detail="operation already running")
+    return jsonify({"success": True, "service": service, "operation": operation}), 202
+
+
 # ---------------------------------------------------------------------------
 # dashboard
 # ---------------------------------------------------------------------------
@@ -363,6 +397,45 @@ def api_status() -> Any:
             "home_address": home_address,
             "vpn": {"active": None, "candidates": vpn_candidates},
         }
+    )
+
+
+@link_bp.route("/api/private-link")
+def api_private_link() -> Any:
+    return jsonify({"success": True, **_private_link_status()})
+
+
+@link_bp.route("/private-link/enable", methods=["POST"])
+def private_link_enable() -> tuple[Response, int]:
+    if _private_link_status()["state"] == "enabled":
+        return error_response(
+            INVALID_OPERATION_FOR_STATE,
+            detail="solstone private link is already on",
+        )
+    return _start_operation_response(
+        "spl",
+        "spl_enable",
+        lambda opener: spl_handoff.run_spl_handoff(open_browser=opener),
+    )
+
+
+@link_bp.route("/private-link/disable", methods=["POST"])
+def private_link_disable() -> tuple[Response, int]:
+    try:
+        outcome = spl.disable_spl()
+    except Exception:
+        logger.exception("link private-link disable failed")
+        return error_response(SERVICE_OPERATION_FAILED)
+    return (
+        jsonify(
+            {
+                "success": True,
+                "service": "spl",
+                "result": {"was_enabled": outcome.was_enabled},
+                "status": _private_link_status(),
+            }
+        ),
+        200,
     )
 
 

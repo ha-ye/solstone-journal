@@ -50,17 +50,27 @@ def test_workspace_renders_reach_shell_copy_and_static_guards(link_env) -> None:
     assert copy.REACH_HOST_ADDRESS_APPLY_LABEL in body_text
     assert copy.REACH_HOST_ADDRESS_CLEAR_LABEL in body_text
     assert copy.REACH_UPGRADE_LINK_LABEL in body_text
+    direct_start = body.index('<section id="link-reach-card"')
+    direct_end = body.index('<section id="link-spl-reach-card"', direct_start)
+    direct_card = body[direct_start:direct_end]
+    assert 'id="link-private-link-setup"' in direct_card
+    assert "https://services.solstone.app/" not in direct_card
     for expected in (
         'id="link-host-address-override"',
         'id="link-host-address-input"',
         'id="link-host-address-apply"',
         'id="link-host-address-clear"',
         'id="link-host-address-error"',
+        'id="link-posture-spl-setup"',
+        'id="link-private-link-operation"',
         "REACH_HOST_ADDRESS_DISCLOSURE",
         "REACH_HOST_ADDRESS_PLACEHOLDER",
         "REACH_HOST_ADDRESS_APPLY_LABEL",
         "REACH_HOST_ADDRESS_CLEAR_LABEL",
         "'/app/link/host-address'",
+        "'/app/link/private-link/enable'",
+        "'/app/link/api/private-link'",
+        "'/app/link/private-link/disable'",
     ):
         assert expected in body
 
@@ -102,6 +112,7 @@ def test_workspace_renders_spl_reach_card_and_states(link_env) -> None:
         copy.REACH_SPL_ACTIVE_BODY,
         copy.REACH_SPL_TRUST_LINE,
         copy.REACH_SPL_MANAGE_LABEL,
+        copy.PRIVATE_LINK_DISABLE_CTA,
     ):
         assert value in body_text
     spl_start = body_text.index('<section id="link-spl-reach-card"')
@@ -114,12 +125,14 @@ def test_workspace_renders_spl_reach_card_and_states(link_env) -> None:
         + r"</a>",
         spl_card,
     )
+    assert 'id="link-private-link-disable"' in spl_card
 
     assert 'id="link-spl-connecting-note"' in body
     assert copy.REACH_SPL_CONNECTING_NOTE in body_text
     assert 'id="link-spl-check-again"' in body
     assert f"[ {copy.CHECK_AGAIN_LABEL} ]" in body_text
-    assert "splCheckAgain.addEventListener('click', refreshStatus)" in body
+    assert "splCheckAgain.addEventListener('click', () => {" in body
+    assert "refreshPrivateLinkStatus();" in body
 
 
 def test_workspace_keeps_spl_trust_line_out_of_header_and_direct_card(

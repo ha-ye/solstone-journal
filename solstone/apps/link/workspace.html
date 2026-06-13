@@ -85,7 +85,7 @@
     <div class="link-reach-upgrade">
       <h3>{{ link_copy.REACH_UPGRADE_TITLE }}</h3>
       <p>{{ link_copy.REACH_UPGRADE_BODY }}</p>
-      <a href="https://services.solstone.app/" target="_blank" rel="noopener noreferrer">{{ link_copy.REACH_UPGRADE_LINK_LABEL }}</a>
+      <button type="button" id="link-private-link-setup" class="link-private-link-setup">{{ link_copy.REACH_UPGRADE_LINK_LABEL }}</button>
     </div>
   </section>
 
@@ -103,8 +103,16 @@
     </div>
     <div class="link-reach-upgrade">
       <a href="https://services.solstone.app/" target="_blank" rel="noopener noreferrer">{{ link_copy.REACH_SPL_MANAGE_LABEL }}</a>
+      <button type="button" id="link-private-link-disable" class="link-private-link-disable">{{ link_copy.PRIVATE_LINK_DISABLE_CTA }}</button>
     </div>
   </section>
+
+  <div id="link-private-link-operation" class="link-private-link-operation" role="status" aria-live="polite" hidden>
+    <p id="link-private-link-operation-headline"></p>
+    <p id="link-private-link-operation-detail"></p>
+    <a id="link-private-link-operation-link" href="" target="_blank" rel="noopener noreferrer" hidden></a>
+    <button type="button" id="link-private-link-operation-retry" hidden>{{ link_copy.PRIVATE_LINK_RETRY_CTA }}</button>
+  </div>
 
   <section id="link-paired-section" class="link-paired-section" aria-labelledby="link-paired-h2">
     <div class="link-section-heading">
@@ -235,6 +243,15 @@
       STATUS_SENTENCES: {{ link_copy.STATUS_SENTENCES|tojson }},
       POSTURE_SPL_SETUP_LABEL: {{ link_copy.POSTURE_SPL_SETUP_LABEL|tojson }},
       POSTURE_SPL_MANAGE_LABEL: {{ link_copy.POSTURE_SPL_MANAGE_LABEL|tojson }},
+      PRIVATE_LINK_DISABLE_CTA: {{ link_copy.PRIVATE_LINK_DISABLE_CTA|tojson }},
+      PRIVATE_LINK_SETTING_UP: {{ link_copy.PRIVATE_LINK_SETTING_UP|tojson }},
+      PRIVATE_LINK_BROWSER_FALLBACK: {{ link_copy.PRIVATE_LINK_BROWSER_FALLBACK|tojson }},
+      PRIVATE_LINK_SETUP_SUCCESS: {{ link_copy.PRIVATE_LINK_SETUP_SUCCESS|tojson }},
+      PRIVATE_LINK_SETUP_FAILED: {{ link_copy.PRIVATE_LINK_SETUP_FAILED|tojson }},
+      PRIVATE_LINK_DISABLE_SUCCESS: {{ link_copy.PRIVATE_LINK_DISABLE_SUCCESS|tojson }},
+      PRIVATE_LINK_DISABLE_FAILED: {{ link_copy.PRIVATE_LINK_DISABLE_FAILED|tojson }},
+      PRIVATE_LINK_NEEDS_REPAIR: {{ link_copy.PRIVATE_LINK_NEEDS_REPAIR|tojson }},
+      PRIVATE_LINK_RETRY_CTA: {{ link_copy.PRIVATE_LINK_RETRY_CTA|tojson }},
       REACH_HOST_ADDRESS_DISCLOSURE: {{ link_copy.REACH_HOST_ADDRESS_DISCLOSURE|tojson }},
       REACH_HOST_ADDRESS_PLACEHOLDER: {{ link_copy.REACH_HOST_ADDRESS_PLACEHOLDER|tojson }},
       REACH_HOST_ADDRESS_APPLY_LABEL: {{ link_copy.REACH_HOST_ADDRESS_APPLY_LABEL|tojson }},
@@ -278,11 +295,11 @@
           <h4>{{ link_copy.REACH_DIRECT_LABEL }}</h4>
           <p>{{ link_copy.POSTURE_DIRECT_DESC }}</p>
         </div>
-        <a href="https://services.solstone.app/" target="_blank" rel="noopener noreferrer">
+        <button type="button" id="link-posture-spl-setup" class="link-posture-option link-posture-spl-action">
           <span class="link-posture-option-title">{{ link_copy.POSTURE_SPL_TITLE }}</span>
           <span class="link-posture-option-desc">{{ link_copy.POSTURE_SPL_DESC }}</span>
           <span id="link-posture-spl-label" class="link-posture-option-action">{{ link_copy.POSTURE_SPL_SETUP_LABEL }}</span>
-        </a>
+        </button>
       </div>
       <p class="link-posture-footer">{{ link_copy.POSTURE_MODAL_FOOTER }}</p>
       <div class="link-modal-actions">
@@ -381,7 +398,16 @@
   .link-reach-upgrade { margin-top: 1em; padding-top: 1em; border-top: 1px solid #ede5da; }
   .link-reach-upgrade h3 { margin: 0 0 0.35em; font-size: 1em; color: #444; }
   .link-reach-upgrade p { margin: 0 0 0.55em; color: #666; }
-  .link-reach-upgrade a { color: #1e6bd0; font-weight: 500; }
+  .link-reach-upgrade a,
+  .link-reach-upgrade button { color: #1e6bd0; font-weight: 500; }
+  .link-reach-upgrade button { border: 0; background: transparent; padding: 0; cursor: pointer; font: inherit; text-align: left; }
+  .link-private-link-disable { margin-left: 1em; color: #a53a1f !important; }
+  .link-private-link-operation { margin: 0 0 1.25em; border: 1px solid #e0d8cc; border-radius: 8px; background: #fffdfa; padding: 0.9em; }
+  .link-private-link-operation[hidden] { display: none; }
+  .link-private-link-operation p { margin: 0 0 0.55em; color: #444; }
+  .link-private-link-operation p:first-child { font-weight: 600; color: #222; }
+  .link-private-link-operation a { color: #1e6bd0; overflow-wrap: anywhere; }
+  .link-private-link-operation button { margin-top: 0.6em; border: 1px solid #b8cceb; background: #f7fbff; color: #1e6bd0; border-radius: 5px; padding: 0.55em 0.8em; cursor: pointer; font-weight: 500; }
   .link-spl-reach-option { display: flex; align-items: center; gap: 0.5em; flex-wrap: wrap; }
   .link-spl-connecting-note { margin: 0.35em 0 0; color: #666; font-size: 0.95em; }
   .link-spl-check-again { margin-top: 0.35em; padding: 0; border: 0; background: transparent; color: #1e6bd0; cursor: pointer; font: inherit; font-weight: 500; }
@@ -452,7 +478,7 @@
   #link-posture-modal a:focus-visible { outline: 2px solid #b06a1a; outline-offset: 2px; }
   .link-posture-options { display: grid; gap: 0.75em; }
   .link-posture-option,
-  .link-posture-options > a { border: 1px solid #e0d8cc; border-radius: 8px; padding: 0.9em; background: #fffdfa; color: #222; text-decoration: none; }
+  .link-posture-options > button { border: 1px solid #e0d8cc; border-radius: 8px; padding: 0.9em; background: #fffdfa; color: #222; text-decoration: none; text-align: left; font: inherit; cursor: pointer; }
   .link-posture-option.is-selected { border-color: #1e7b42; box-shadow: inset 3px 0 0 #1e7b42; }
   .link-posture-option h4,
   .link-posture-option-title { display: block; margin: 0 0 0.3em; font-size: 1em; font-weight: 600; color: #222; }
@@ -563,10 +589,22 @@
   const postureModal = document.getElementById('link-posture-modal');
   const postureCancel = document.getElementById('link-posture-cancel');
   const postureSave = document.getElementById('link-posture-save');
+  const postureSplSetup = document.getElementById('link-posture-spl-setup');
   const postureSplLabel = document.getElementById('link-posture-spl-label');
+  const privateLinkSetup = document.getElementById('link-private-link-setup');
+  const privateLinkDisable = document.getElementById('link-private-link-disable');
+  const privateLinkOperation = document.getElementById('link-private-link-operation');
+  const privateLinkOperationHeadline = document.getElementById('link-private-link-operation-headline');
+  const privateLinkOperationDetail = document.getElementById('link-private-link-operation-detail');
+  const privateLinkOperationLink = document.getElementById('link-private-link-operation-link');
+  const privateLinkOperationRetry = document.getElementById('link-private-link-operation-retry');
   let devicesEverLoaded = false;
   let latestStatus = null;
+  let latestPrivateLink = null;
   let isFirstRun = false;
+  const PRIVATE_LINK_TERMINAL_PHASES = new Set(['enabled', 'revoked', 'error']);
+  const PRIVATE_LINK_POLL_TIMEOUT_MS = 900000;
+  let privateLinkRetryAction = null;
 
   const pairBtn = document.getElementById('link-pair-btn');
   const pairModal = document.getElementById('link-pair-modal');
@@ -840,7 +878,7 @@
 
   function updatePostureModal(data) {
     const label = data?.posture === 'spl'
-      ? window.LinkCopy.POSTURE_SPL_MANAGE_LABEL
+      ? window.LinkCopy.PRIVATE_LINK_DISABLE_CTA
       : window.LinkCopy.POSTURE_SPL_SETUP_LABEL;
     postureSplLabel.textContent = label;
   }
@@ -868,6 +906,168 @@
         serverMessage: err.serverMessage,
         detail: err,
       }));
+    }
+  }
+
+  function privateLinkSleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function setPrivateLinkButtonsBusy(busy) {
+    [privateLinkSetup, privateLinkDisable, postureSplSetup, privateLinkOperationRetry]
+      .filter(Boolean)
+      .forEach((button) => {
+        button.disabled = busy;
+        button.setAttribute('aria-busy', String(busy));
+      });
+  }
+
+  function setPrivateLinkOperation(headline, detail = '', options = {}) {
+    if (!privateLinkOperation || !privateLinkOperationHeadline || !privateLinkOperationDetail) return;
+    privateLinkRetryAction = typeof options.retryAction === 'function' ? options.retryAction : null;
+    privateLinkOperation.hidden = !headline;
+    privateLinkOperationHeadline.textContent = headline || '';
+    privateLinkOperationDetail.textContent = detail || '';
+    privateLinkOperationDetail.hidden = !detail;
+    if (privateLinkOperationLink) {
+      const portalUrl = typeof options.portalUrl === 'string' ? options.portalUrl : '';
+      privateLinkOperationLink.hidden = !portalUrl;
+      privateLinkOperationLink.href = portalUrl;
+      privateLinkOperationLink.textContent = portalUrl;
+    }
+    if (privateLinkOperationRetry) {
+      privateLinkOperationRetry.hidden = !privateLinkRetryAction;
+      privateLinkOperationRetry.textContent = window.LinkCopy.PRIVATE_LINK_RETRY_CTA || 'try again';
+    }
+  }
+
+  function renderPrivateLinkStatus(data) {
+    latestPrivateLink = data || {};
+    const operation = latestPrivateLink.operation;
+    if (!operation) {
+      if (latestPrivateLink.state === 'inconsistent') {
+        setPrivateLinkOperation(
+          window.LinkCopy.PRIVATE_LINK_NEEDS_REPAIR || 'solstone private link needs setting up again.',
+          '',
+          { retryAction: startPrivateLinkSetup },
+        );
+      } else {
+        setPrivateLinkOperation('');
+      }
+      return;
+    }
+
+    const phase = operation.phase;
+    let headline = window.LinkCopy.PRIVATE_LINK_SETTING_UP || 'setting up solstone private link...';
+    let detail = typeof operation.guidance === 'string' ? operation.guidance : '';
+    let retryAction = null;
+
+    if (phase === 'enabled') {
+      headline = window.LinkCopy.PRIVATE_LINK_SETUP_SUCCESS || 'solstone private link is on.';
+    } else if (phase === 'revoked' || phase === 'error') {
+      headline = window.LinkCopy.PRIVATE_LINK_SETUP_FAILED || "couldn't finish setting up solstone private link.";
+      retryAction = startPrivateLinkSetup;
+    }
+
+    const portalUrl = operation.browser_open_succeeded === false && operation.portal_url
+      ? operation.portal_url
+      : '';
+    if (portalUrl) {
+      const fallback = window.LinkCopy.PRIVATE_LINK_BROWSER_FALLBACK || "couldn't open your browser. open this link to finish:";
+      detail = detail ? `${detail} ${fallback}` : fallback;
+    }
+
+    setPrivateLinkOperation(headline, detail, { portalUrl, retryAction });
+  }
+
+  async function fetchPrivateLinkStatus() {
+    const data = await window.apiJson('/app/link/api/private-link', { headers: { accept: 'application/json' } });
+    renderPrivateLinkStatus(data || {});
+    return data || {};
+  }
+
+  async function refreshPrivateLinkStatus() {
+    try {
+      await fetchPrivateLinkStatus();
+    } catch (err) {
+      window.logError?.(err, { context: 'link: private link status failed' });
+    }
+  }
+
+  async function pollPrivateLinkUntilTerminal() {
+    const deadline = Date.now() + PRIVATE_LINK_POLL_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      const status = await fetchPrivateLinkStatus();
+      const phase = status?.operation?.phase;
+      if (PRIVATE_LINK_TERMINAL_PHASES.has(phase)) {
+        return status;
+      }
+      await privateLinkSleep(1000);
+    }
+    setPrivateLinkOperation(
+      window.LinkCopy.PRIVATE_LINK_SETUP_FAILED || "couldn't finish setting up solstone private link.",
+      'timed out waiting for solstone private link.',
+      { retryAction: startPrivateLinkSetup },
+    );
+    return null;
+  }
+
+  async function startPrivateLinkSetup() {
+    setPrivateLinkButtonsBusy(true);
+    setPrivateLinkOperation(window.LinkCopy.PRIVATE_LINK_SETTING_UP || 'setting up solstone private link...');
+    try {
+      const start = await window.apiJson('/app/link/private-link/enable', { method: 'POST' });
+      renderPrivateLinkStatus({ operation: start?.operation || null });
+      await pollPrivateLinkUntilTerminal();
+      await refreshStatus();
+      closePostureModal();
+    } catch (err) {
+      setPrivateLinkOperation(
+        window.LinkCopy.PRIVATE_LINK_SETUP_FAILED || "couldn't finish setting up solstone private link.",
+        err?.rawDetail || err?.serverMessage || err?.message || '',
+        { retryAction: startPrivateLinkSetup },
+      );
+      window.logError?.(err, { context: 'link: private link setup failed' });
+    } finally {
+      setPrivateLinkButtonsBusy(false);
+    }
+  }
+
+  async function disablePrivateLink() {
+    setPrivateLinkButtonsBusy(true);
+    try {
+      const result = await window.apiJson('/app/link/private-link/disable', { method: 'POST' });
+      const status = result?.status || {};
+      latestPrivateLink = status;
+      if (status.state === 'not_enabled') {
+        setPrivateLinkOperation(window.LinkCopy.PRIVATE_LINK_DISABLE_SUCCESS || 'solstone private link is off.');
+      } else {
+        setPrivateLinkOperation(
+          window.LinkCopy.PRIVATE_LINK_NEEDS_REPAIR || 'solstone private link needs setting up again.',
+          '',
+          { retryAction: startPrivateLinkSetup },
+        );
+      }
+      await refreshStatus();
+      closePostureModal();
+    } catch (err) {
+      setPrivateLinkOperation(
+        window.LinkCopy.PRIVATE_LINK_DISABLE_FAILED || "couldn't turn off solstone private link.",
+        err?.rawDetail || err?.serverMessage || err?.message || '',
+        { retryAction: disablePrivateLink },
+      );
+      window.logError?.(err, { context: 'link: private link disable failed' });
+    } finally {
+      setPrivateLinkButtonsBusy(false);
+    }
+  }
+
+  function handlePostureSplAction() {
+    const posture = latestPrivateLink?.posture || latestStatus?.posture;
+    if (posture === 'spl') {
+      disablePrivateLink();
+    } else {
+      startPrivateLinkSetup();
     }
   }
 
@@ -1670,9 +1870,18 @@
   hostAddressApply?.addEventListener('click', applyHostAddressOverride);
   hostAddressClear?.addEventListener('click', clearHostAddressOverride);
   hostAddressInput?.addEventListener('input', () => setHostAddressError(''));
-  splCheckAgain.addEventListener('click', refreshStatus);
+  splCheckAgain.addEventListener('click', () => {
+    refreshStatus();
+    refreshPrivateLinkStatus();
+  });
   heroHowReach.addEventListener('click', openPostureModal);
   reachChange.addEventListener('click', openPostureModal);
+  privateLinkSetup?.addEventListener('click', startPrivateLinkSetup);
+  privateLinkDisable?.addEventListener('click', disablePrivateLink);
+  postureSplSetup?.addEventListener('click', handlePostureSplAction);
+  privateLinkOperationRetry?.addEventListener('click', () => {
+    if (privateLinkRetryAction) privateLinkRetryAction();
+  });
   postureCancel.addEventListener('click', closePostureModal);
   postureSave.addEventListener('click', closePostureModal);
   postureModal.addEventListener('keydown', handlePostureModalKeys);
@@ -1793,6 +2002,7 @@
 
   function initLink() {
     refreshStatus();
+    refreshPrivateLinkStatus();
     refreshDevices();
     if (window.appEvents) {
       window.appEvents.listen('link', (payload) => {
@@ -1800,6 +2010,7 @@
       });
     }
     setInterval(refreshStatus, 15000);
+    setInterval(refreshPrivateLinkStatus, 15000);
     setInterval(refreshDevices, 10000);
   }
 

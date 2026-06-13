@@ -13,7 +13,6 @@ import threading
 import time
 from pathlib import Path
 
-from solstone.apps.services import routes as services_routes
 from solstone.apps.services.copy import services_copy_values
 from solstone.think.journal_config import write_journal_config
 from solstone.think.services import operations, scout_handoff
@@ -179,9 +178,7 @@ def test_spb_mutations_make_no_back_channel_call_and_write_nothing(
     def _raise(*_a, **_k):
         raise AssertionError("spb reached the back-channel")
 
-    monkeypatch.setattr(services_routes, "run_spl_handoff", _raise)
     monkeypatch.setattr(scout_handoff, "run_scout_handoff", _raise)
-    monkeypatch.setattr(services_routes.spl, "disable_spl", _raise)
 
     before = (env.journal / "config" / "journal.json").read_bytes()
 
@@ -191,6 +188,29 @@ def test_spb_mutations_make_no_back_channel_call_and_write_nothing(
     assert env.client.post("/app/services/spb/disable").status_code == 403
     assert env.client.post("/app/services/spb/refresh").status_code == 403
 
+    assert (env.journal / "config" / "journal.json").read_bytes() == before
+
+
+def test_spl_mutations_neutralized(services_env):
+    env = services_env()
+    before = (env.journal / "config" / "journal.json").read_bytes()
+
+    response = env.client.get("/app/services/spl/status")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["service"] == "spl"
+    assert data["state"] == "not_enabled"
+    assert data["actions"] == {"enable": False, "refresh": False, "disable": False}
+    assert data["operation"] is None
+
+    for action in ("enable", "disable", "refresh"):
+        mutation = env.client.post(f"/app/services/spl/{action}")
+        assert mutation.status_code == 403
+
+    html = env.client.get("/app/services/").get_data(as_text=True)
+    assert 'href="/app/link"' in html
+    assert "manage in link →" in html
     assert (env.journal / "config" / "journal.json").read_bytes() == before
 
 
@@ -300,39 +320,6 @@ def test_same_service_concurrent_operation_returns_service_busy(
     assert first.status_code == 202
     assert second.status_code == 503
     assert second.get_json()["reason_code"] == "service_busy"
-
-
-def test_different_services_can_run_concurrently(
-    services_env,
-    monkeypatch,
-    wait_until_helper,
-):
-    env = services_env()
-    scout_started = threading.Event()
-    spl_started = threading.Event()
-    release = threading.Event()
-
-    def scout_flow(**_kwargs):
-        scout_started.set()
-        release.wait(2)
-        return operations.HandoffResult("pending", None, False, True, None)
-
-    def spl_flow(**_kwargs):
-        spl_started.set()
-        release.wait(2)
-        return operations.HandoffResult("revoked", None, False, True, None)
-
-    monkeypatch.setattr(scout_handoff, "run_scout_handoff", scout_flow)
-    monkeypatch.setattr(services_routes, "run_spl_handoff", spl_flow)
-
-    scout_response = env.client.post("/app/services/scout/enable")
-    spl_response = env.client.post("/app/services/spl/enable")
-    wait_until_helper(scout_started.is_set)
-    wait_until_helper(spl_started.is_set)
-    release.set()
-
-    assert scout_response.status_code == 202
-    assert spl_response.status_code == 202
 
 
 def test_scout_refresh_failure_without_state_write(

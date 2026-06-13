@@ -11,20 +11,47 @@ import datetime as dt
 import math
 import socket
 import time
+from typing import Any
 
 import typer
 
-from solstone.convey.reasons import PAIRED_DEVICE_NOT_FOUND
+from solstone.convey.reasons import (
+    INVALID_OPERATION_FOR_STATE,
+    PAIRED_DEVICE_NOT_FOUND,
+    SERVICE_BUSY,
+    SERVICE_OPERATION_FAILED,
+)
 from solstone.think.convey_client import ConveyClientError, convey_cli, get_client
 
 app = typer.Typer(
     help="Link — tunnel service for reaching this solstone from linked systems."
 )
+private_link_app = typer.Typer(help="solstone private link — reach home from anywhere.")
+app.add_typer(private_link_app, name="private-link")
 
 PAIR_TIMEOUT_SECONDS = 300
 VALID_ROLES = {"", "phone", "observer", "peer"}
 LINKED_SYSTEMS_HEADING = "Linked systems:"
 PEERS_HEADING = "Peers:"
+PRIVATE_LINK_TERMINAL_PHASES = {"enabled", "revoked", "error"}
+PRIVATE_LINK_SETTING_UP = "setting up solstone private link..."
+PRIVATE_LINK_SETUP_SUCCESS = (
+    "solstone private link is on. your devices can reach home from anywhere."
+)
+PRIVATE_LINK_SETUP_FAILED = "couldn't finish setting up solstone private link."
+PRIVATE_LINK_BROWSER_FALLBACK = "couldn't open your browser. open this link to finish:"
+PRIVATE_LINK_DISABLE_SUCCESS = (
+    "solstone private link is off. devices connect directly again."
+)
+PRIVATE_LINK_DISABLE_FAILED = (
+    "couldn't turn off solstone private link — it's still on. try again."
+)
+PRIVATE_LINK_NEEDS_REPAIR = "solstone private link needs setting up again."
+PRIVATE_LINK_STATE_LABELS = {
+    "enabled": "enabled",
+    "not_enabled": "not enabled",
+    "inconsistent": "needs repair",
+}
 
 
 def _detect_lan_ip() -> str | None:
@@ -80,6 +107,166 @@ def _relative_time(iso: str | None) -> str:
     now = _now_utc()
     delta_seconds = max(0, (now - then).total_seconds())
     return f"{relative_time(delta_seconds)} ago"
+
+
+def _exit_with(message: str, code: int = 1) -> None:
+    typer.echo(message, err=True)
+    raise typer.Exit(code)
+
+
+def _private_link_state_label(state: Any) -> str:
+    return PRIVATE_LINK_STATE_LABELS.get(str(state or ""), str(state or "unknown"))
+
+
+def _get_private_link_status() -> dict[str, Any]:
+    return get_client().request("GET", "/app/link/api/private-link")
+
+
+def _post_private_link(path: str) -> dict[str, Any]:
+    try:
+        return get_client().request("POST", path)
+    except ConveyClientError as err:
+        if err.reason_code == INVALID_OPERATION_FOR_STATE.code and err.detail:
+            _exit_with(err.detail)
+        if err.reason_code == SERVICE_BUSY.code:
+            _exit_with(err.detail or "operation already running")
+        raise
+
+
+def _maybe_echo_private_link_portal(
+    operation: dict[str, Any],
+    *,
+    already_echoed: bool,
+) -> bool:
+    if already_echoed:
+        return True
+    if operation.get("browser_open_succeeded") is not False:
+        return False
+    portal_url = operation.get("portal_url")
+    if not portal_url:
+        return False
+    typer.echo(f"{PRIVATE_LINK_BROWSER_FALLBACK} {portal_url}")
+    return True
+
+
+def _poll_private_link_until_terminal(
+    *,
+    wait_seconds: float,
+    poll_interval: float,
+) -> tuple[dict[str, Any], str | None, str | None]:
+    deadline = time.monotonic() + max(0.0, wait_seconds)
+    interval = max(0.0, poll_interval)
+    portal_echoed = False
+
+    while True:
+        status = _get_private_link_status()
+        operation = status.get("operation")
+        if not isinstance(operation, dict):
+            return status, None, None
+
+        portal_echoed = _maybe_echo_private_link_portal(
+            operation,
+            already_echoed=portal_echoed,
+        )
+        phase = str(operation.get("phase") or "")
+        if phase in PRIVATE_LINK_TERMINAL_PHASES:
+            guidance = operation.get("guidance")
+            return status, phase, str(guidance) if guidance else None
+
+        if time.monotonic() >= deadline:
+            return status, "timeout", "timed out waiting for solstone private link."
+
+        if interval:
+            time.sleep(interval)
+
+
+def _echo_private_link_status(status: dict[str, Any]) -> None:
+    posture = "solstone private link" if status.get("posture") == "spl" else "direct"
+    typer.echo(f"posture: {posture}")
+    typer.echo(f"state: {_private_link_state_label(status.get('state'))}")
+    typer.echo(f"enrolled: {'yes' if status.get('enrolled') else 'no'}")
+    if status.get("state") == "enabled" and status.get("relay_url"):
+        typer.echo(f"relay URL: {status['relay_url']}")
+    operation = status.get("operation")
+    if isinstance(operation, dict):
+        phase = operation.get("phase")
+        if phase:
+            typer.echo(f"operation: {phase}")
+        guidance = operation.get("guidance")
+        if guidance:
+            typer.echo(str(guidance))
+
+
+def _echo_private_link_terminal(
+    status: dict[str, Any],
+    phase: str | None,
+    operation_guidance: str | None,
+) -> None:
+    if phase == "enabled":
+        typer.echo(PRIVATE_LINK_SETUP_SUCCESS)
+        return
+    if phase == "revoked":
+        typer.echo(PRIVATE_LINK_SETUP_FAILED, err=True)
+        if operation_guidance:
+            typer.echo(operation_guidance, err=True)
+        raise typer.Exit(1)
+    if phase in {"error", "timeout"}:
+        typer.echo(PRIVATE_LINK_SETUP_FAILED, err=True)
+        if operation_guidance:
+            typer.echo(operation_guidance, err=True)
+        raise typer.Exit(1)
+    _echo_private_link_status(status)
+
+
+@private_link_app.command("status")
+@convey_cli
+def private_link_status() -> None:
+    """Show solstone private link status."""
+
+    _echo_private_link_status(_get_private_link_status())
+
+
+@private_link_app.command("setup")
+@convey_cli
+def private_link_setup(
+    wait_seconds: float = typer.Option(
+        900.0, "--wait-seconds", help="Maximum seconds to wait for the operation."
+    ),
+    poll_interval: float = typer.Option(
+        1.0, "--poll-interval", help="Seconds between status polls."
+    ),
+) -> None:
+    """Set up solstone private link."""
+
+    typer.echo(PRIVATE_LINK_SETTING_UP)
+    _post_private_link("/app/link/private-link/enable")
+    status, phase, operation_guidance = _poll_private_link_until_terminal(
+        wait_seconds=wait_seconds,
+        poll_interval=poll_interval,
+    )
+    _echo_private_link_terminal(status, phase, operation_guidance)
+
+
+@private_link_app.command("disable")
+@convey_cli
+def private_link_disable() -> None:
+    """Turn off solstone private link."""
+
+    try:
+        response = _post_private_link("/app/link/private-link/disable")
+    except ConveyClientError as err:
+        if err.reason_code == SERVICE_OPERATION_FAILED.code:
+            typer.echo(PRIVATE_LINK_DISABLE_FAILED, err=True)
+            raise typer.Exit(1) from err
+        raise
+
+    status = response.get("status") if isinstance(response, dict) else None
+    state = status.get("state") if isinstance(status, dict) else None
+    if state == "not_enabled":
+        typer.echo(PRIVATE_LINK_DISABLE_SUCCESS)
+        return
+    typer.echo(PRIVATE_LINK_NEEDS_REPAIR, err=True)
+    raise typer.Exit(1)
 
 
 @app.command()
@@ -241,6 +428,7 @@ def status() -> None:
     """Report enrollment, listen-WS state, active tunnel count, relay endpoint."""
     client = get_client()
     state = client.request("GET", "/app/link/api/status")
+    private_link = client.request("GET", "/app/link/api/private-link")
     paired_count = len(client.request("GET", "/app/link/api/devices")["devices"])
     if state["instance_id"] is None:
         typer.echo("Instance ID:   (not provisioned — pair a device to provision)")
@@ -250,5 +438,10 @@ def status() -> None:
         typer.echo(f"Home label:    {state['home_label']}")
     typer.echo(f"Relay URL:     {state['relay_url']}")
     typer.echo(f"Enrolled:      {'yes' if state['enrolled'] else 'no'}")
+    posture = (
+        "solstone private link" if private_link.get("posture") == "spl" else "direct"
+    )
+    typer.echo(f"Reach posture: {posture}")
+    typer.echo(f"Private link:  {_private_link_state_label(private_link.get('state'))}")
     typer.echo(f"Paired devices: {paired_count}")
     typer.echo("Listen-WS state: (query convey /app/link/api/status for live state)")

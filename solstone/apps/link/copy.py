@@ -93,7 +93,7 @@ LAN_BANNER_DIY_BODY = (
 
 # --- U2 reach-shell copy ---
 # No unconditional header trust line: relay-trust messaging is posture-specific
-# (direct card = "no one in the middle"; sol private link card = POSTURE_SPL_DESC). An always-on
+# (direct card = "no one in the middle"; solstone private link card = POSTURE_SPL_DESC). An always-on
 # "sol pbc carries the connection" claim is false in direct posture (spec § problem).
 POSTURE_MODAL_FOOTER = "switching is gentle — devices you've paired keep working either way, no re-pairing."
 STATUS_SENTENCES = {
@@ -103,7 +103,7 @@ STATUS_SENTENCES = {
     "offline": "can't reach your solstone right now.",
     "lan_unreachable": "your solstone is running, but devices can't reach it to pair yet.",
     "spl_online": "your solstone is reachable from anywhere.",
-    "spl_finishing_setup": "finishing setup with sol private link...",
+    "spl_finishing_setup": "finishing setup with solstone private link...",
     "spl_offline": (
         "your solstone isn't reaching the network right now — devices can't connect "
         "from away. on your home wifi they still work."
@@ -124,24 +124,37 @@ REACH_VPN_CANDIDATE_LABEL = "VPN address"
 REACH_VPN_USE_THIS = "use this"
 REACH_CHANGE_LABEL = "change"
 REACH_UPGRADE_TITLE = "reach from anywhere"
-REACH_UPGRADE_BODY = (
-    "when you're away, sol private link can carry the connection for paired devices."
-)
-REACH_UPGRADE_LINK_LABEL = "set up sol private link at services.solstone.app"
+REACH_UPGRADE_BODY = "when you're away, solstone private link can carry the connection for paired devices."
+REACH_UPGRADE_LINK_LABEL = "set up solstone private link"
 REACH_SPL_ACTIVE_BODY = "your devices reach home over the internet, wherever you are."
 REACH_SPL_TRUST_LINE = (
     "the connection is end-to-end encrypted — sol pbc and cloudflare can see "
     "that your device and home met, and nothing inside."
 )
-REACH_SPL_MANAGE_LABEL = "manage sol private link at services.solstone.app →"
+REACH_SPL_MANAGE_LABEL = "manage solstone private link at services.solstone.app →"
 REACH_SPL_CONNECTING_NOTE = "your home is connecting. this is usually quick."
 CHECK_AGAIN_LABEL = "check again"
 POSTURE_MODAL_TITLE = "how should your devices reach home?"
 POSTURE_DIRECT_DESC = "devices connect locally or through your own VPN."
-POSTURE_SPL_TITLE = "from anywhere · sol private link"
+POSTURE_SPL_TITLE = "from anywhere · solstone private link"
 POSTURE_SPL_DESC = "sol pbc carries the connection and cannot see inside it."
-POSTURE_SPL_SETUP_LABEL = "set up sol private link at services.solstone.app →"
+POSTURE_SPL_SETUP_LABEL = "set up solstone private link"
 POSTURE_SPL_MANAGE_LABEL = "manage at services.solstone.app →"
+PRIVATE_LINK_DISABLE_CTA = "turn off solstone private link"
+PRIVATE_LINK_SETTING_UP = "setting up solstone private link…"
+PRIVATE_LINK_BROWSER_FALLBACK = "couldn't open your browser. open this link to finish:"
+PRIVATE_LINK_SETUP_SUCCESS = (
+    "solstone private link is on. your devices can reach home from anywhere."
+)
+PRIVATE_LINK_SETUP_FAILED = "couldn't finish setting up solstone private link."
+PRIVATE_LINK_DISABLE_SUCCESS = (
+    "solstone private link is off. devices connect directly again."
+)
+PRIVATE_LINK_DISABLE_FAILED = (
+    "couldn't turn off solstone private link — it's still on. try again."
+)
+PRIVATE_LINK_NEEDS_REPAIR = "solstone private link needs setting up again."
+PRIVATE_LINK_RETRY_CTA = "try again"
 
 # --- U3 device-section copy ---
 DEVICE_SECTION_TITLE = "your devices"

@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from solstone.think.journal_config import write_journal_config
-from solstone.think.link.paths import load_service_token
+from solstone.think.link.paths import load_service_token, load_totp_secret
 from solstone.think.link.window import read_posture
 from solstone.think.services import outcomes, portal_client, spl_handoff, status
 from solstone.think.spl import relay_client
@@ -312,3 +312,81 @@ def test_browser_open_false_still_polls_and_can_succeed(
 
     assert outcome.code == outcomes.APPROVED
     assert read_posture() == "spl"
+
+
+def test_run_spl_handoff_sets_posture_and_service_token(
+    journal_copy: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        spl_handoff.spl,
+        "enroll_home",
+        lambda *_args, **_kwargs: "fake-service-token",
+    )
+
+    result = spl_handoff.run_spl_handoff(
+        open_browser=lambda _url: True,
+        poll_once=lambda *_args, **_kwargs: portal_client.PollOutcome(
+            kind="success",
+            payload={"service": "spl", "state": outcomes.APPROVED, "approved_at": 1},
+        ),
+    )
+
+    assert result.phase == "enabled"
+    assert read_posture() == "spl"
+    assert load_service_token() is not None
+    assert load_totp_secret() is not None
+
+
+def test_run_spl_handoff_local_error_retryable_without_enabled_state(
+    journal_copy: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_enroll(*_args, **_kwargs):
+        raise RuntimeError("relay rejected")
+
+    monkeypatch.setattr(spl_handoff.spl, "enroll_home", fail_enroll)
+
+    result = spl_handoff.run_spl_handoff(
+        open_browser=lambda _url: True,
+        poll_once=lambda *_args, **_kwargs: portal_client.PollOutcome(
+            kind="success",
+            payload={"service": "spl", "state": outcomes.APPROVED, "approved_at": 1},
+        ),
+    )
+
+    assert result.phase == "error"
+    assert result.retryable is True
+    assert read_posture() == "direct"
+    assert load_service_token() is None
+
+
+def test_run_spl_handoff_maps_terminal_outcomes(journal_copy: Path) -> None:
+    revoked = spl_handoff.run_spl_handoff(
+        open_browser=lambda _url: True,
+        poll_once=lambda *_args, **_kwargs: portal_client.PollOutcome(
+            kind="success",
+            payload={"service": "spl", "state": outcomes.REVOKED},
+        ),
+    )
+    expired = spl_handoff.run_spl_handoff(
+        open_browser=lambda _url: True,
+        poll_once=lambda *_args, **_kwargs: portal_client.PollOutcome(
+            kind="failed",
+            reason="consent_link_expired",
+        ),
+    )
+    malformed = spl_handoff.run_spl_handoff(
+        open_browser=lambda _url: True,
+        poll_once=lambda *_args, **_kwargs: portal_client.PollOutcome(
+            kind="success",
+            payload={"service": "spl", "state": "bad"},
+        ),
+    )
+
+    assert revoked.phase == "revoked"
+    assert revoked.retryable is False
+    assert expired.phase == "error"
+    assert expired.retryable is True
+    assert malformed.phase == "error"
+    assert malformed.retryable is False

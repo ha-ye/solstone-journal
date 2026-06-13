@@ -343,6 +343,8 @@ def test_status_provisioned_and_not_provisioned(journal, runner):
         f"Home label:    {state.home_label}\n"
         "Relay URL:     https://spl-relay-staging.jer-3f2.workers.dev\n"
         "Enrolled:      no\n"
+        "Reach posture: direct\n"
+        "Private link:  not enabled\n"
         "Paired devices: 1\n"
         "Listen-WS state: (query convey /app/link/api/status for live state)\n"
     )
@@ -362,6 +364,8 @@ def test_status_unprovisioned_does_not_write_state(journal, runner, monkeypatch)
         "Home label:    (not provisioned)\n"
         "Relay URL:     https://spl-relay-staging.jer-3f2.workers.dev\n"
         "Enrolled:      no\n"
+        "Reach posture: direct\n"
+        "Private link:  not enabled\n"
         "Paired devices: 0\n"
         "Listen-WS state: (query convey /app/link/api/status for live state)\n"
     )

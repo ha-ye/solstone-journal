@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import logging
-import time
 from collections.abc import Callable
 from typing import Any
 
@@ -24,11 +23,8 @@ from solstone.convey.utils import error_response, time_since
 from solstone.think.backup import state as backup_state
 from solstone.think.services import (
     operations,
-    portal_client,
     scout,
     scout_handoff,
-    spl,
-    spl_handoff,
 )
 from solstone.think.services import status as service_status
 
@@ -48,44 +44,9 @@ SERVICE_SPB = "spb"
 SERVICE_SPN = "spn"
 SERVICES = (SERVICE_SCOUT, SERVICE_SPL, SERVICE_SPB, SERVICE_SPN)
 COMING_SOON_SERVICES = frozenset({SERVICE_SPN})
-# spb is a local manage-only row: it links to /app/backup and must never
-# reach the SPL back-channel. Guarded in every POST handler below.
-MANAGE_ONLY_SERVICES = frozenset({SERVICE_SPB})
-
-
-def run_spl_handoff(
-    *,
-    poll_once: Callable[
-        ..., portal_client.PollOutcome
-    ] = portal_client.poll_handoff_once,
-    open_browser: Callable[[str], bool] = operations._open_browser,
-    clock: Callable[[], float] = time.monotonic,
-    wait_seconds: int = portal_client.DEFAULT_WAIT_SECONDS,
-) -> operations.HandoffResult:
-    """Run the spl browser-consent flow synchronously for route/thread callers."""
-
-    browser_open_succeeded: bool | None = None
-    manual_url: str | None = None
-
-    def wrapped_open_browser(url: str) -> bool:
-        nonlocal browser_open_succeeded, manual_url
-        browser_open_succeeded, manual_url = operations.open_for_handoff(
-            url, open_browser
-        )
-        return browser_open_succeeded
-
-    outcome = spl_handoff.enable_spl_via_consent(
-        open_browser=wrapped_open_browser,
-        poll_once=poll_once,
-        clock=clock,
-        wait_seconds=wait_seconds,
-    )
-    return operations._outcome_result(
-        outcome.code,
-        outcome.guidance,
-        browser_open_succeeded,
-        manual_url,
-    )
+# Local manage-only rows link to their owning apps and must never reach the
+# browser-consent back-channel. Guarded in every POST handler below.
+MANAGE_ONLY_SERVICES = frozenset({SERVICE_SPB, SERVICE_SPL})
 
 
 def _scout_actions(state: str) -> dict[str, bool]:
@@ -93,14 +54,6 @@ def _scout_actions(state: str) -> dict[str, bool]:
         "enable": state == "disabled",
         "refresh": state in {"enabled", "pending"},
         "disable": state in {"enabled", "pending"},
-    }
-
-
-def _spl_actions(state: str) -> dict[str, bool]:
-    return {
-        "enable": state in {"not_enabled", "inconsistent"},
-        "refresh": False,
-        "disable": state in {"enabled", "inconsistent"},
     }
 
 
@@ -124,8 +77,8 @@ def _service_status(service: str) -> dict[str, Any]:
             "state": state,
             "guidance": resting.get("guidance"),
             "provenance": {},
-            "actions": _spl_actions(state),
-            "operation": operations.operation_for_service(SERVICE_SPL),
+            "actions": {"enable": False, "refresh": False, "disable": False},
+            "operation": None,
         }
     if service == SERVICE_SPB:
         view = backup_state.status_view()
@@ -223,11 +176,7 @@ def enable(service: str) -> tuple[dict[str, Any], int] | tuple[Response, int]:
                 refresh=False, open_browser=opener
             ),
         )
-    return _start_operation_response(
-        SERVICE_SPL,
-        "spl_enable",
-        lambda opener: run_spl_handoff(open_browser=opener),
-    )
+    return _unsupported()
 
 
 @services_bp.route("/<service>/refresh", methods=["POST"])
@@ -254,15 +203,11 @@ def disable(service: str) -> tuple[Response, int]:
     if service in MANAGE_ONLY_SERVICES:
         return _unsupported()
     try:
-        if service == SERVICE_SCOUT:
-            outcome = scout.disable_scout()
-            result = {
-                "was_enabled": outcome.was_enabled,
-                "env_key_preserved": outcome.env_key_preserved,
-            }
-        else:
-            outcome = spl.disable_spl()
-            result = {"was_enabled": outcome.was_enabled}
+        outcome = scout.disable_scout()
+        result = {
+            "was_enabled": outcome.was_enabled,
+            "env_key_preserved": outcome.env_key_preserved,
+        }
     except Exception:
         logger.exception("service disable failed")
         return _operation_failed()

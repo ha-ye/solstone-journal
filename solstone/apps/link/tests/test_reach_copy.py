@@ -36,6 +36,15 @@ U2_COPY_VALUES = [
     copy.POSTURE_SPL_DESC,
     copy.POSTURE_SPL_SETUP_LABEL,
     copy.POSTURE_SPL_MANAGE_LABEL,
+    copy.PRIVATE_LINK_DISABLE_CTA,
+    copy.PRIVATE_LINK_SETTING_UP,
+    copy.PRIVATE_LINK_BROWSER_FALLBACK,
+    copy.PRIVATE_LINK_SETUP_SUCCESS,
+    copy.PRIVATE_LINK_SETUP_FAILED,
+    copy.PRIVATE_LINK_DISABLE_SUCCESS,
+    copy.PRIVATE_LINK_DISABLE_FAILED,
+    copy.PRIVATE_LINK_NEEDS_REPAIR,
+    copy.PRIVATE_LINK_RETRY_CTA,
     *copy.STATUS_SENTENCES.values(),
 ]
 
@@ -68,7 +77,7 @@ def test_reach_shell_spec_fixed_copy_is_locked() -> None:
         "offline": "can't reach your solstone right now.",
         "lan_unreachable": "your solstone is running, but devices can't reach it to pair yet.",
         "spl_online": "your solstone is reachable from anywhere.",
-        "spl_finishing_setup": "finishing setup with sol private link...",
+        "spl_finishing_setup": "finishing setup with solstone private link...",
         "spl_offline": (
             "your solstone isn't reaching the network right now — devices can't "
             "connect from away. on your home wifi they still work."
@@ -98,13 +107,42 @@ def test_reach_shell_corrected_copy_is_locked() -> None:
     )
     assert (
         copy.REACH_SPL_MANAGE_LABEL
-        == "manage sol private link at services.solstone.app →"
+        == "manage solstone private link at services.solstone.app →"
     )
     assert (
         copy.REACH_SPL_CONNECTING_NOTE
         == "your home is connecting. this is usually quick."
     )
     assert copy.CHECK_AGAIN_LABEL == "check again"
+    assert copy.REACH_UPGRADE_LINK_LABEL == "set up solstone private link"
+    assert copy.POSTURE_SPL_SETUP_LABEL == "set up solstone private link"
+    assert copy.PRIVATE_LINK_DISABLE_CTA == "turn off solstone private link"
+    assert copy.PRIVATE_LINK_SETTING_UP == "setting up solstone private link…"
+    assert (
+        copy.PRIVATE_LINK_BROWSER_FALLBACK
+        == "couldn't open your browser. open this link to finish:"
+    )
+    assert (
+        copy.PRIVATE_LINK_SETUP_SUCCESS
+        == "solstone private link is on. your devices can reach home from anywhere."
+    )
+    assert (
+        copy.PRIVATE_LINK_SETUP_FAILED
+        == "couldn't finish setting up solstone private link."
+    )
+    assert (
+        copy.PRIVATE_LINK_DISABLE_SUCCESS
+        == "solstone private link is off. devices connect directly again."
+    )
+    assert (
+        copy.PRIVATE_LINK_DISABLE_FAILED
+        == "couldn't turn off solstone private link — it's still on. try again."
+    )
+    assert (
+        copy.PRIVATE_LINK_NEEDS_REPAIR
+        == "solstone private link needs setting up again."
+    )
+    assert copy.PRIVATE_LINK_RETRY_CTA == "try again"
 
 
 def test_lan_banner_copy_is_locked() -> None:
@@ -149,7 +187,12 @@ def test_pair_web_password_settings_link_is_locked() -> None:
 
 def test_reach_shell_copy_stays_in_bounds() -> None:
     banned_terms = (
+        "sign in",
         "account",
+        "subscribe",
+        "upgrade",
+        "your services",
+        "sol private link",
         "price",
         "$",
         "billing",
@@ -169,3 +212,12 @@ def test_reach_shell_copy_stays_in_bounds() -> None:
         for term in banned_terms:
             assert term not in lowered, value
         assert not acronym_re.search(lowered), value
+
+    spl_values = [
+        copy.POSTURE_SPL_TITLE,
+        copy.POSTURE_SPL_SETUP_LABEL,
+        copy.REACH_UPGRADE_LINK_LABEL,
+        copy.REACH_SPL_MANAGE_LABEL,
+        copy.PRIVATE_LINK_DISABLE_CTA,
+    ]
+    assert all("solstone private link" in value for value in spl_values)
