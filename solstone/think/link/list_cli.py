@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from solstone.convey.utils import relative_time
 from solstone.think.link.observer_paths import observer_spl_root
 from solstone.think.utils import get_journal
 
@@ -154,6 +153,8 @@ def _absolute(path: Path) -> str:
 
 
 def _relative_time(iso: str | None) -> str:
+    from solstone.convey.utils import relative_time
+
     if not iso:
         return "never"
     try:

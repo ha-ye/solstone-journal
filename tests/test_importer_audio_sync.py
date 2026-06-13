@@ -730,7 +730,7 @@ def test_run_sync_dry_run_hint_includes_path_for_audio(tmp_path, monkeypatch, ca
     mod._run_sync("audio", dry_run=True, source_path=source_dir)
 
     output = capsys.readouterr().out
-    assert f"sol import --sync audio --save --path {source_dir}" in output
+    assert f"journal importer --sync audio --save --path {source_dir}" in output
 
 
 def test_run_sync_dry_run_hint_omits_path_for_pathless_backend(
@@ -778,7 +778,7 @@ def test_run_sync_dry_run_hint_omits_path_for_pathless_backend(
     mod._run_sync("audio", dry_run=True, source_path=source_dir)
 
     output = capsys.readouterr().out
-    assert "sol import --sync audio --save" in output
+    assert "journal importer --sync audio --save" in output
     assert "--path" not in output
 
 

@@ -33,7 +33,17 @@ def client(journal_env):
     return app.test_client()
 
 
-def test_import_start_moves_staging_dir_and_updates_file_path(client, journal_env):
+def test_import_start_moves_staging_dir_and_updates_file_path(
+    client, journal_env, monkeypatch
+):
+    emitted: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        import_routes,
+        "emit",
+        lambda tract, event, **payload: emitted.append(
+            {"tract": tract, "event": event, **payload}
+        ),
+    )
     old_ts = "20260101_120000"
     new_ts = "20260101_121500"
     import_dir = journal_env / "imports" / old_ts
@@ -46,7 +56,12 @@ def test_import_start_moves_staging_dir_and_updates_file_path(client, journal_en
 
     response = client.post(
         "/app/import/api/start",
-        json={"path": str(media_path), "timestamp": new_ts},
+        json={
+            "path": str(media_path),
+            "timestamp": new_ts,
+            "source": "audio",
+            "force": True,
+        },
     )
 
     assert response.status_code == 200
@@ -56,6 +71,24 @@ def test_import_start_moves_staging_dir_and_updates_file_path(client, journal_en
     assert not import_dir.exists()
     metadata = json.loads((new_dir / "import.json").read_text(encoding="utf-8"))
     assert metadata["file_path"] == str(new_dir / media_path.name)
+    assert emitted == [
+        {
+            "tract": "supervisor",
+            "event": "request",
+            "ref": response.get_json()["task_id"],
+            "cmd": [
+                "journal",
+                "importer",
+                str(new_dir / media_path.name),
+                new_ts,
+                "--facet",
+                "work",
+                "--source",
+                "audio",
+                "--force",
+            ],
+        }
+    ]
 
 
 def test_import_start_missing_source_returns_import_not_found(client, journal_env):

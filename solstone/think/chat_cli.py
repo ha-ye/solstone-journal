@@ -20,7 +20,6 @@ from solstone.apps.chat.copy import (
     talent_label_for,
 )
 from solstone.convey.chat_stream import read_chat_events
-from solstone.convey.provider_readiness import chat_view
 from solstone.think.callosum import CallosumConnection
 from solstone.think.utils import read_service_port, require_solstone, setup_cli
 
@@ -187,6 +186,8 @@ def _terminal_error_message(
     use_id: str,
     day: str,
 ) -> str:
+    from solstone.convey.provider_readiness import chat_view
+
     resolved_provider = provider or ""
     if not resolved_provider and use_id:
         persisted = _persisted_terminal(use_id, day)

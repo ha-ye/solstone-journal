@@ -79,7 +79,7 @@ def test_non_dream_entries_preserved_byte_for_byte(tmp_path):
     initial = {
         "daily_time": "03:17",
         "sync:plaud": {
-            "cmd": ["sol", "import", "--sync", "plaud", "--save"],
+            "cmd": ["journal", "importer", "--sync", "plaud", "--save"],
             "every": "hourly",
             "enabled": True,
         },

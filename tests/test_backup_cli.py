@@ -81,9 +81,11 @@ def test_registry_and_command_tree(monkeypatch: pytest.MonkeyPatch) -> None:
 
     captured: dict[str, object] = {}
 
-    def fake_run_command(module_path: str) -> int:
+    def fake_run_command(module_path: str, *, surface: str, binary: str) -> int:
         captured["module"] = module_path
         captured["argv"] = list(sys.argv)
+        captured["surface"] = surface
+        captured["binary"] = binary
         return 0
 
     monkeypatch.setattr(sol_cli, "run_command", fake_run_command)
@@ -97,6 +99,8 @@ def test_registry_and_command_tree(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured == {
         "module": "solstone.think.backup_cli",
         "argv": ["journal backup", "status"],
+        "surface": "service",
+        "binary": "journal",
     }
 
     runner = CliRunner()

@@ -334,9 +334,11 @@ def _run_sync(
                 print("Run with --save to import:")
                 src = sync_kwargs.get("source_path")
                 if src:
-                    print(f"  sol import --sync {backend_name} --save --path {src}")
+                    print(
+                        f"  journal importer --sync {backend_name} --save --path {src}"
+                    )
                 else:
-                    print(f"  sol import --sync {backend_name} --save")
+                    print(f"  journal importer --sync {backend_name} --save")
 
     if verbose and state:
         files = state.get("files", {})
@@ -492,7 +494,9 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
             else:
                 print(f"Detected timestamp: {detected_timestamp} ({display})")
                 print("\nRun:")
-                print(f"  sol import {args.media} --timestamp {detected_timestamp}")
+                print(
+                    f"  journal importer {args.media} --timestamp {detected_timestamp}"
+                )
                 return {
                     "skipped": True,
                     "reason": "timestamp_required",

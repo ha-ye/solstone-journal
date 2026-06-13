@@ -2506,7 +2506,7 @@ def update_sync() -> Any:
                     # Ensure the entry exists with full config
                     if "sync:plaud" not in schedules:
                         schedules["sync:plaud"] = {
-                            "cmd": ["sol", "import", "--sync", "plaud", "--save"],
+                            "cmd": ["journal", "importer", "--sync", "plaud", "--save"],
                             "every": "hourly",
                         }
                     schedules["sync:plaud"]["enabled"] = enabled
@@ -2537,8 +2537,8 @@ def update_sync() -> Any:
                     if "sync:granola" not in schedules:
                         schedules["sync:granola"] = {
                             "cmd": [
-                                "sol",
-                                "import",
+                                "journal",
+                                "importer",
                                 "--sync",
                                 "granola",
                                 "--save",
@@ -2573,8 +2573,8 @@ def update_sync() -> Any:
                     if "sync:obsidian" not in schedules:
                         schedules["sync:obsidian"] = {
                             "cmd": [
-                                "sol",
-                                "import",
+                                "journal",
+                                "importer",
                                 "--sync",
                                 "obsidian",
                                 "--save",

@@ -5,8 +5,16 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from .identity import ConveyIdentity
-from .runtime import get_authorized_clients, start_secure_listener, stop_secure_listener
+
+if TYPE_CHECKING:
+    from .runtime import (
+        get_authorized_clients,
+        start_secure_listener,
+        stop_secure_listener,
+    )
 
 __all__ = [
     "ConveyIdentity",
@@ -14,3 +22,15 @@ __all__ = [
     "start_secure_listener",
     "stop_secure_listener",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name in {
+        "get_authorized_clients",
+        "start_secure_listener",
+        "stop_secure_listener",
+    }:
+        from . import runtime
+
+        return getattr(runtime, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

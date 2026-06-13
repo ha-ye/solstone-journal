@@ -34,7 +34,9 @@ def _setup_journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     journal = tmp_path / "journal"
     journal.mkdir()
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    monkeypatch.setattr("solstone.convey.chat_stream.index_file", lambda *_args: True)
+    monkeypatch.setattr(
+        "solstone.think.indexer.journal.index_file", lambda *_args: True
+    )
     return journal
 
 

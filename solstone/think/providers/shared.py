@@ -12,7 +12,6 @@ This module contains:
 
 from __future__ import annotations
 
-import importlib
 import json
 from typing import Any, Callable, Literal, Optional, Union
 
@@ -172,58 +171,8 @@ _CLI_AUTH_PATTERNS = (
 )
 
 
-def _import_exception_type(module_name: str, name: str) -> type[BaseException] | None:
-    try:
-        module = importlib.import_module(module_name)
-    except ImportError:
-        return None
-    value = getattr(module, name, None)
-    if isinstance(value, type) and issubclass(value, BaseException):
-        return value
-    return None
-
-
-_ANTHROPIC_API_STATUS_ERROR = _import_exception_type("anthropic", "APIStatusError")
-_ANTHROPIC_API_CONNECTION_ERROR = _import_exception_type(
-    "anthropic", "APIConnectionError"
-)
-_ANTHROPIC_API_TIMEOUT_ERROR = _import_exception_type("anthropic", "APITimeoutError")
-_ANTHROPIC_AUTHENTICATION_ERROR = _import_exception_type(
-    "anthropic", "AuthenticationError"
-)
-_ANTHROPIC_PERMISSION_DENIED_ERROR = _import_exception_type(
-    "anthropic", "PermissionDeniedError"
-)
-_ANTHROPIC_RATE_LIMIT_ERROR = _import_exception_type("anthropic", "RateLimitError")
-
-_OPENAI_API_STATUS_ERROR = _import_exception_type("openai", "APIStatusError")
-_OPENAI_API_CONNECTION_ERROR = _import_exception_type("openai", "APIConnectionError")
-_OPENAI_API_TIMEOUT_ERROR = _import_exception_type("openai", "APITimeoutError")
-_OPENAI_AUTHENTICATION_ERROR = _import_exception_type("openai", "AuthenticationError")
-_OPENAI_PERMISSION_DENIED_ERROR = _import_exception_type(
-    "openai", "PermissionDeniedError"
-)
-_OPENAI_RATE_LIMIT_ERROR = _import_exception_type("openai", "RateLimitError")
-_OPENAI_INTERNAL_SERVER_ERROR = _import_exception_type("openai", "InternalServerError")
-
-_GOOGLE_CLIENT_ERROR = _import_exception_type("google.genai.errors", "ClientError")
-_GOOGLE_SERVER_ERROR = _import_exception_type("google.genai.errors", "ServerError")
-_GOOGLE_UNKNOWN_RESPONSE_ERROR = _import_exception_type(
-    "google.genai.errors", "UnknownApiResponseError"
-)
-
-_HTTPX_HTTP_STATUS_ERROR = _import_exception_type("httpx", "HTTPStatusError")
-_HTTPX_NETWORK_ERROR = _import_exception_type("httpx", "NetworkError")
-_HTTPX_REQUEST_ERROR = _import_exception_type("httpx", "RequestError")
-_HTTPX_TIMEOUT_EXCEPTION = _import_exception_type("httpx", "TimeoutException")
-
-
-def _isinstance(exc: BaseException, cls: type[BaseException] | None) -> bool:
-    return cls is not None and isinstance(exc, cls)
-
-
 def _status_code(exc: BaseException) -> int | None:
-    for attr in ("status_code", "code"):
+    for attr in ("status_code", "_status_code", "code"):
         value = getattr(exc, attr, None)
         if isinstance(value, int):
             return value
@@ -233,11 +182,26 @@ def _status_code(exc: BaseException) -> int | None:
 
 
 def _status_text(exc: BaseException) -> str:
-    return str(getattr(exc, "status", "") or "").upper()
+    return str(
+        getattr(exc, "status", "")
+        or getattr(exc, "_status", "")
+        or getattr(exc, "_status_text", "")
+        or ""
+    ).upper()
 
 
 def _contains_any(text: str, patterns: tuple[str, ...]) -> bool:
     return any(pattern in text for pattern in patterns)
+
+
+def _module_matches(module_name: str, package: str) -> bool:
+    return module_name == package or module_name.startswith(f"{package}.")
+
+
+def _exception_name_matches(
+    exc_name: str, exc_qualname: str, names: tuple[str, ...]
+) -> bool:
+    return exc_name in names or any(exc_qualname.endswith(f".{name}") for name in names)
 
 
 RUNTIME_REASON_CODES = frozenset(
@@ -259,7 +223,10 @@ def classify_provider_error(exc: BaseException, provider: str) -> str:
     """Return a chat reason code for a provider exception."""
     try:
         exc_name = type(exc).__name__
+        exc_qualname = type(exc).__qualname__
+        exc_module = type(exc).__module__
         exc_name_lower = exc_name.lower()
+        exc_identity_lower = f"{exc_module}.{exc_qualname}".lower()
         message_lower = str(exc).lower()
         explicit_reason_code = getattr(exc, "reason_code", None)
         if isinstance(explicit_reason_code, str) and explicit_reason_code:
@@ -277,56 +244,99 @@ def classify_provider_error(exc: BaseException, provider: str) -> str:
         if isinstance(exc, ValueError) and "no response from model" in message_lower:
             return "provider_response_invalid"
 
-        if _isinstance(exc, _ANTHROPIC_AUTHENTICATION_ERROR) or _isinstance(
-            exc, _ANTHROPIC_PERMISSION_DENIED_ERROR
+        is_anthropic = _module_matches(exc_module, "anthropic")
+        is_openai = _module_matches(exc_module, "openai")
+        is_google = _module_matches(exc_module, "google.genai")
+        is_httpx = _module_matches(exc_module, "httpx")
+        status_code = _status_code(exc)
+        status_text = _status_text(exc)
+
+        if (is_anthropic or is_openai) and _exception_name_matches(
+            exc_name,
+            exc_qualname,
+            ("AuthenticationError", "PermissionDeniedError"),
         ):
             return "provider_key_invalid"
-        if _isinstance(exc, _OPENAI_AUTHENTICATION_ERROR) or _isinstance(
-            exc, _OPENAI_PERMISSION_DENIED_ERROR
+        if (
+            is_google
+            and _exception_name_matches(exc_name, exc_qualname, ("ClientError",))
+            and status_code in (401, 403)
         ):
-            return "provider_key_invalid"
-        if _isinstance(exc, _GOOGLE_CLIENT_ERROR) and _status_code(exc) in (401, 403):
             return "provider_key_invalid"
 
-        if _isinstance(exc, _ANTHROPIC_RATE_LIMIT_ERROR) or _isinstance(
-            exc, _OPENAI_RATE_LIMIT_ERROR
+        if (is_anthropic or is_openai) and _exception_name_matches(
+            exc_name, exc_qualname, ("RateLimitError",)
         ):
             return "provider_quota_exceeded"
-        if _isinstance(exc, _GOOGLE_CLIENT_ERROR) and (
-            _status_code(exc) == 429 or _status_text(exc) == "RESOURCE_EXHAUSTED"
+        if (
+            is_google
+            and _exception_name_matches(exc_name, exc_qualname, ("ClientError",))
+            and (status_code == 429 or status_text == "RESOURCE_EXHAUSTED")
         ):
             return "provider_quota_exceeded"
 
-        if _isinstance(exc, _ANTHROPIC_API_TIMEOUT_ERROR) or _isinstance(
-            exc, _OPENAI_API_TIMEOUT_ERROR
+        if (is_anthropic or is_openai) and _exception_name_matches(
+            exc_name, exc_qualname, ("APITimeoutError",)
         ):
             return "chat_timeout"
-        if _isinstance(exc, _HTTPX_TIMEOUT_EXCEPTION):
+        if is_httpx and (
+            "timeout" in exc_name_lower
+            or _exception_name_matches(
+                exc_name,
+                exc_qualname,
+                (
+                    "TimeoutException",
+                    "ConnectTimeout",
+                    "PoolTimeout",
+                    "ReadTimeout",
+                    "WriteTimeout",
+                ),
+            )
+        ):
             return "chat_timeout"
 
-        if _isinstance(exc, _ANTHROPIC_API_CONNECTION_ERROR) or _isinstance(
-            exc, _OPENAI_API_CONNECTION_ERROR
+        if (is_anthropic or is_openai) and _exception_name_matches(
+            exc_name, exc_qualname, ("APIConnectionError",)
         ):
             return "network_unreachable"
-        if _isinstance(exc, _HTTPX_NETWORK_ERROR) or _isinstance(
-            exc, _HTTPX_REQUEST_ERROR
+        if is_httpx and (
+            _exception_name_matches(
+                exc_name,
+                exc_qualname,
+                ("NetworkError", "RequestError", "ConnectError"),
+            )
+            or "connection" in exc_name_lower
+            or "connect" in exc_name_lower
         ):
             return "network_unreachable"
         if isinstance(exc, ConnectionError):
             return "network_unreachable"
 
-        if _isinstance(exc, _OPENAI_INTERNAL_SERVER_ERROR) or _isinstance(
-            exc, _GOOGLE_SERVER_ERROR
+        if is_openai and _exception_name_matches(
+            exc_name, exc_qualname, ("InternalServerError",)
+        ):
+            return "provider_unavailable"
+        if is_google and _exception_name_matches(
+            exc_name, exc_qualname, ("ServerError",)
         ):
             return "provider_unavailable"
         if (
-            _isinstance(exc, _ANTHROPIC_API_STATUS_ERROR)
-            or _isinstance(exc, _OPENAI_API_STATUS_ERROR)
-            or _isinstance(exc, _HTTPX_HTTP_STATUS_ERROR)
-        ) and (_status_code(exc) or 0) >= 500:
+            (
+                (is_anthropic or is_openai)
+                and _exception_name_matches(exc_name, exc_qualname, ("APIStatusError",))
+            )
+            or (
+                is_httpx
+                and _exception_name_matches(
+                    exc_name, exc_qualname, ("HTTPStatusError",)
+                )
+            )
+        ) and (status_code or 0) >= 500:
             return "provider_unavailable"
 
-        if _isinstance(exc, _GOOGLE_UNKNOWN_RESPONSE_ERROR):
+        if is_google and _exception_name_matches(
+            exc_name, exc_qualname, ("UnknownApiResponseError",)
+        ):
             return "provider_response_invalid"
 
         if isinstance(exc, RuntimeError):
@@ -357,7 +367,7 @@ def classify_provider_error(exc: BaseException, provider: str) -> str:
             return "network_unreachable"
         if (
             "responsevalidation" in exc_name_lower
-            or "unknownapiresponse" in exc_name_lower
+            or "unknownapiresponse" in exc_identity_lower
         ):
             return "provider_response_invalid"
         if "internalservererror" in exc_name_lower or "servererror" in exc_name_lower:

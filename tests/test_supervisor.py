@@ -1539,9 +1539,11 @@ def test_task_history_records_cap_kill_as_timeout(monkeypatch):
 def test_handle_task_request_skips_still_running(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     queue = mod.TaskQueue(on_queue_change=None)
-    managed = _TaskManagedStub(cmd=["sol", "import"], start_time=100.0)
+    managed = _TaskManagedStub(
+        cmd=["journal", "importer", "--sync", "plaud"], start_time=100.0
+    )
     queue._active["active-ref"] = managed
-    queue.set_cap("import", 50)
+    queue.set_cap("importer", 50)
     callosum = MagicMock()
 
     monkeypatch.setattr(mod, "_task_queue", queue)
@@ -1552,7 +1554,7 @@ def test_handle_task_request_skips_still_running(monkeypatch):
         {
             "tract": "supervisor",
             "event": "request",
-            "cmd": ["sol", "import", "--sync", "plaud"],
+            "cmd": ["journal", "importer", "--sync", "plaud"],
             "ref": "requested-ref",
             "scheduler_name": "sync-plaud",
         }
@@ -1564,7 +1566,7 @@ def test_handle_task_request_skips_still_running(monkeypatch):
         reason="still_running",
         ref="requested-ref",
         active_ref="active-ref",
-        cmd=["sol", "import", "--sync", "plaud"],
+        cmd=["journal", "importer", "--sync", "plaud"],
         scheduler_name="sync-plaud",
     )
     assert queue._queues == {}
@@ -1573,9 +1575,11 @@ def test_handle_task_request_skips_still_running(monkeypatch):
 def test_handle_task_request_skips_wedged(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     queue = mod.TaskQueue(on_queue_change=None)
-    managed = _TaskManagedStub(cmd=["sol", "import"], start_time=100.0)
+    managed = _TaskManagedStub(
+        cmd=["journal", "importer", "--sync", "plaud"], start_time=100.0
+    )
     queue._active["active-ref"] = managed
-    queue.set_cap("import", 50)
+    queue.set_cap("importer", 50)
     callosum = MagicMock()
 
     monkeypatch.setattr(mod, "_task_queue", queue)
@@ -1586,7 +1590,7 @@ def test_handle_task_request_skips_wedged(monkeypatch):
         {
             "tract": "supervisor",
             "event": "request",
-            "cmd": ["sol", "import", "--sync", "plaud"],
+            "cmd": ["journal", "importer", "--sync", "plaud"],
             "ref": "requested-ref",
         }
     )
@@ -1635,11 +1639,11 @@ def test_enforce_deadlines_terminates_when_elapsed_exceeds_cap(caplog, monkeypat
     mod = importlib.import_module("solstone.think.supervisor")
     queue = mod.TaskQueue(on_queue_change=None)
     managed = _TaskManagedStub(
-        cmd=["sol", "import", "--sync", "plaud", "--save"],
+        cmd=["journal", "importer", "--sync", "plaud", "--save"],
         start_time=100.0,
     )
     queue._active["ref-1"] = managed
-    queue.set_cap("import", 50)
+    queue.set_cap("importer", 50)
 
     def terminate_now(key, managed_arg, timeout, reason):
         assert key == "ref-1"
@@ -1654,7 +1658,7 @@ def test_enforce_deadlines_terminates_when_elapsed_exceeds_cap(caplog, monkeypat
 
     managed.terminate.assert_called_once_with(timeout=2.0)
     assert (
-        "Task import (cmd=sol import --sync plaud --save, ref=ref-1) exceeded "
+        "Task importer (cmd=journal importer --sync plaud --save, ref=ref-1) exceeded "
         "max_runtime of 50s (elapsed=100s); terminating"
     ) in caplog.text
 

@@ -46,9 +46,10 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
-from flask import Blueprint
+if TYPE_CHECKING:
+    from flask import Blueprint
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +158,8 @@ class AppRegistry:
     def _load_routes_blueprint(
         self, app_name: str, app_path: Path
     ) -> tuple[Any, Blueprint]:
+        from flask import Blueprint
+
         routes_module = importlib.import_module(f"solstone.apps.{app_name}.routes")
 
         # Find blueprint - look for *_bp attribute
@@ -297,6 +300,8 @@ class AppRegistry:
         Returns:
             Blueprint with proper naming and URL prefix
         """
+        from flask import Blueprint
+
         blueprint = Blueprint(
             f"app:{app_name}",
             __name__,

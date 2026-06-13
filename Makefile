@@ -401,6 +401,9 @@ install-checks: .installed
 	@echo "=== Running tools-http-only check ==="
 	@$(MAKE) check-tools-http-only
 	@echo ""
+	@echo "=== Running access-imports-clean check ==="
+	@$(MAKE) check-access-imports-clean
+	@echo ""
 	@echo "=== Running cogitate-prompt check ==="
 	@$(MAKE) check-cogitate-prompts
 	@echo ""
@@ -488,6 +491,10 @@ check-call-http-only: .installed
 # Built-in sol call tools HTTP-only gate
 check-tools-http-only: .installed
 	$(VENV_BIN)/python scripts/check_tools_http_only.py
+
+# Thin sol access surface import-clean gate
+check-access-imports-clean: .installed
+	$(VENV_BIN)/python scripts/check_access_imports_clean.py
 
 # Cogitate-prompt static gate (prompts use only on-contract command forms)
 check-cogitate-prompts: .installed

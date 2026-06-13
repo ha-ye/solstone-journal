@@ -12,10 +12,6 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from solstone.think.callosum import callosum_send
-from solstone.think.indexer.journal import index_file
-from solstone.think.journal_io import atomic_replace
-from solstone.think.streams import update_stream, write_segment_stream
 from solstone.think.utils import (
     day_path,
     get_journal,
@@ -120,6 +116,8 @@ def _prepare_chat_events(
 def _append_prepared_chat_events_locked_already_held(
     events: list[tuple[str, dict[str, Any]]],
 ) -> list[dict[str, Any]]:
+    from solstone.think.streams import update_stream, write_segment_stream
+
     stored_events: list[dict[str, Any]] = []
 
     for kind, event in events:
@@ -151,6 +149,8 @@ def _append_prepared_chat_events_locked_already_held(
 
 
 def _finalize_chat_event_appends(stored_events: list[dict[str, Any]]) -> None:
+    from solstone.think.indexer.journal import index_file
+
     indexed_paths: set[Path] = set()
     for stored_event in stored_events:
         chat_path = _APPENDED_CHAT_PATHS.pop(id(stored_event), None)
@@ -301,6 +301,8 @@ def _validate_event(kind: str, event: dict[str, Any]) -> None:
 
 
 def _broadcast_chat_event(stored_event: dict[str, Any]) -> None:
+    from solstone.think.callosum import callosum_send
+
     chat_module = sys.modules.get("solstone.convey.chat")
     runtime = (
         getattr(chat_module, "_runtime", None) if chat_module is not None else None
@@ -413,5 +415,7 @@ def _read_events_file(path: Path) -> list[dict[str, Any]]:
 
 
 def _write_events_file(path: Path, events: list[dict[str, Any]]) -> None:
+    from solstone.think.journal_io import atomic_replace
+
     body = "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events)
     atomic_replace(path, body)

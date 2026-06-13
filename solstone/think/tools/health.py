@@ -9,9 +9,7 @@ from typing import NoReturn, Optional
 
 import typer
 
-from solstone.convey.readiness_snapshot import highest_severity_group
 from solstone.think.convey_client import ConveyClientError, get_client
-from solstone.think.pipeline_health import summarize_pipeline_day
 
 app = typer.Typer(
     help="Health: journal-data trust signals (for infrastructure/service liveness, use `journal health`).",
@@ -37,6 +35,8 @@ def _dash(value: object) -> object:
 
 
 def _render_summary(report: dict) -> None:
+    from solstone.convey.readiness_snapshot import highest_severity_group
+
     capture = report["capture_health"]
     synthesis = report["synthesis_health"]
     consumer_signal = report["consumer_signal"]
@@ -217,6 +217,8 @@ def pipeline(
     ),
 ) -> None:
     """Summarize think pipeline health for one day."""
+    from solstone.think.pipeline_health import summarize_pipeline_day
+
     if day is not None and yesterday:
         typer.echo("--day and --yesterday are mutually exclusive", err=True)
         raise typer.Exit(1)

@@ -13,6 +13,7 @@ Discovery scans ``apps/*/call.py``, imports modules, and mounts subcommands.
 
 import importlib
 import logging
+import os
 from pathlib import Path
 
 import typer
@@ -35,6 +36,7 @@ def _discover_app_calls() -> None:
 
     Errors in one app do not prevent others from loading.
     """
+    strict = os.environ.get("SOLSTONE_STRICT_CALL_DISCOVERY") == "1"
     apps_dir = Path(__file__).parent.parent / "apps"
 
     if not apps_dir.exists():
@@ -56,6 +58,10 @@ def _discover_app_calls() -> None:
 
             sub_app = getattr(module, "app", None)
             if not isinstance(sub_app, typer.Typer):
+                if strict:
+                    raise ImportError(
+                        f"apps/{app_name}/call.py has no 'app' Typer instance"
+                    )
                 logger.warning(
                     f"apps/{app_name}/call.py has no 'app' Typer instance, skipping"
                 )
@@ -64,6 +70,10 @@ def _discover_app_calls() -> None:
             call_app.add_typer(sub_app, name=app_name)
             logger.info(f"Loaded CLI commands from app: {app_name}")
         except Exception as e:
+            if strict:
+                raise ImportError(
+                    f"Failed to load CLI from app '{app_name}': {e}"
+                ) from e
             logger.error(
                 f"Failed to load CLI from app '{app_name}': {e}", exc_info=True
             )

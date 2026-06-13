@@ -22,7 +22,6 @@ from pathlib import Path
 
 import typer
 
-from solstone.think.entities import scan_facet_relationships
 from solstone.think.facets import (
     create_facet,
     delete_facet,
@@ -42,8 +41,6 @@ from solstone.think.importers.utils import (
     get_import_details,
     list_import_timestamps,
 )
-from solstone.think.indexer.journal import search_counts as search_counts_impl
-from solstone.think.indexer.journal import search_journal as search_journal_impl
 from solstone.think.journal_config import write_journal_config
 from solstone.think.utils import (
     day_path,
@@ -104,6 +101,9 @@ def search(
     ),
 ) -> None:
     """Search the journal index."""
+    from solstone.think.indexer.journal import search_counts as search_counts_impl
+    from solstone.think.indexer.journal import search_journal as search_journal_impl
+
     kwargs = {}
     if day is not None:
         kwargs["day"] = day
@@ -381,6 +381,7 @@ def merge(
     ),
 ) -> None:
     """Merge all data from SOURCE facet into DEST facet, then delete SOURCE."""
+    from solstone.think.entities import scan_facet_relationships
     from solstone.think.entities.observations import (
         load_observations,
         save_observations,

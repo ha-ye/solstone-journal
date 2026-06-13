@@ -862,7 +862,7 @@ def import_start() -> Any:
     setting = metadata.get("setting")
 
     # Build command
-    cmd = ["sol", "import", path, ts]
+    cmd = ["journal", "importer", path, ts]
     if facet:
         cmd.extend(["--facet", facet])
     if setting:

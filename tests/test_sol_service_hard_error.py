@@ -40,7 +40,9 @@ def test_sol_service_commands_hard_error(monkeypatch, capsys, name):
     monkeypatch.setattr(
         sol_cli,
         "run_command",
-        lambda _module_path: pytest.fail("service command should not run"),
+        lambda _module_path, *, surface, binary: pytest.fail(
+            "service command should not run"
+        ),
     )
     monkeypatch.setattr(sys, "argv", ["sol", name])
 
@@ -58,7 +60,9 @@ def test_sol_service_aliases_hard_error(monkeypatch, capsys, name):
     monkeypatch.setattr(
         sol_cli,
         "run_command",
-        lambda _module_path: pytest.fail("service alias should not run"),
+        lambda _module_path, *, surface, binary: pytest.fail(
+            "service alias should not run"
+        ),
     )
     monkeypatch.setattr(sys, "argv", ["sol", name])
 
@@ -73,9 +77,11 @@ def test_sol_service_aliases_hard_error(monkeypatch, capsys, name):
 def test_sol_access_commands_still_dispatch(monkeypatch):
     result: dict[str, object] = {}
 
-    def fake_run_command(module_path: str) -> int:
+    def fake_run_command(module_path: str, *, surface: str, binary: str) -> int:
         result["module"] = module_path
         result["argv"] = sys.argv[:]
+        result["surface"] = surface
+        result["binary"] = binary
         return 0
 
     monkeypatch.setattr(sol_cli, "run_command", fake_run_command)
@@ -89,6 +95,8 @@ def test_sol_access_commands_still_dispatch(monkeypatch):
     assert result == {
         "module": sol_cli.COMMANDS["chat"].module,
         "argv": ["sol chat"],
+        "surface": "access",
+        "binary": "sol",
     }
 
 

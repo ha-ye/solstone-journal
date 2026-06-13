@@ -6,12 +6,12 @@
 Usage:
     sol                     Show status and available commands
     sol <command> [args]    Run a subcommand
-    sol <module> [args]     Run by module path (e.g., sol solstone.think.importers.cli)
+    journal <module.path> [args]  Run a service module by dotted path
 
 Examples:
     sol import data.json    Import data into journal
     journal think 20250101      Run daily processing for a day
-    sol solstone.think.talents -h    Show help for specific module
+    journal solstone.think.talents -h    Show help for a service module
 """
 
 from __future__ import annotations
@@ -65,6 +65,12 @@ SOL_SERVICE_CMD_REMOVED_ERROR = (
     "('sol' is the journal-access surface; 'journal' surfaces journal-service "
     "commands; see 'journal --help'.)"
 )
+JOURNAL_EXTRA_INSTALL_HINT = (
+    "Error: this command needs the journal host dependencies.\n"
+    "Install them with:\n"
+    "  pip install 'solstone[journal]'\n"
+    "  uv tool install 'solstone[journal]'"
+)
 
 SOL_HELP_GROUP_CONVERSATION = "Conversation"
 SOL_HELP_GROUP_YOUR_JOURNAL = "Your journal"
@@ -77,7 +83,8 @@ SOL_HELP_GROUP_ALIASES = "Aliases"
 COMMANDS: dict[str, Command] = {
     # think package - daily processing and analysis
     "backup": Command("solstone.think.backup_cli", "service"),
-    "import": Command("solstone.think.importers.cli", "access"),
+    "import": Command("solstone.think.import_client", "access"),
+    "importer": Command("solstone.think.importers.cli", "service"),
     "think": Command("solstone.think.thinking", "service"),
     "indexer": Command("solstone.think.indexer", "service"),
     "start": Command("solstone.think.start", "service"),
@@ -314,11 +321,29 @@ def resolve_command(name: str) -> tuple[str, list[str], str]:
     )
 
 
-def run_command(module_path: str) -> int:
+def _missing_journal_host_dep(
+    exc: ImportError,
+    *,
+    surface: str,
+    binary: str,
+) -> bool:
+    if not isinstance(exc, ModuleNotFoundError):
+        return False
+    if surface != "service" and not (surface == "universal" and binary == "journal"):
+        return False
+    missing_name = exc.name
+    if not missing_name:
+        return False
+    return missing_name != "solstone" and not missing_name.startswith("solstone.")
+
+
+def run_command(module_path: str, *, surface: str, binary: str) -> int:
     """Import and run a module's main() function.
 
     Args:
         module_path: Dotted module path (e.g., "solstone.think.importers.cli")
+        surface: Resolved command surface.
+        binary: CLI binary used for dispatch (`sol` or `journal`).
 
     Returns:
         Exit code (0 for success)
@@ -326,6 +351,9 @@ def run_command(module_path: str) -> int:
     try:
         module = importlib.import_module(module_path)
     except ImportError as e:
+        if _missing_journal_host_dep(e, surface=surface, binary=binary):
+            print(JOURNAL_EXTRA_INSTALL_HINT, file=sys.stderr)
+            return 1
         print(f"Error: Could not import module '{module_path}': {e}", file=sys.stderr)
         return 1
 
@@ -444,13 +472,13 @@ def _dispatch(binary: str, allowed_surfaces: frozenset[str] | None) -> None:
     setproctitle.setproctitle(f"{binary}:{cmd}")
 
     # Adjust sys.argv for the subcommand
-    # Original: ["sol", "import", "--day", "20250101"]
-    # Becomes:  ["sol import", "--day", "20250101"]
+    # Original: ["sol", "chat", "--help"]
+    # Becomes:  ["sol chat", "--help"]
     # This makes argparse show "usage: <binary> <command> ..." in help.
     sys.argv = [f"{binary} {cmd}"] + preset_args + rest
 
     # Run the command
-    exit_code = run_command(module_path)
+    exit_code = run_command(module_path, surface=surface, binary=binary)
     sys.exit(exit_code)
 
 

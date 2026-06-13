@@ -42,9 +42,11 @@ def test_local_commands_run_under_journal(
 ) -> None:
     captured = {}
 
-    def run_command(module_path: str) -> int:
+    def run_command(module_path: str, *, surface: str, binary: str) -> int:
         captured["module_path"] = module_path
         captured["argv"] = list(sys.argv)
+        captured["surface"] = surface
+        captured["binary"] = binary
         return 0
 
     monkeypatch.setattr(sol_cli, "run_command", run_command)
@@ -57,6 +59,8 @@ def test_local_commands_run_under_journal(
     assert captured == {
         "module_path": LOCAL_COMMANDS[command],
         "argv": [f"journal {command}", *extra_args],
+        "surface": "service",
+        "binary": "journal",
     }
 
 

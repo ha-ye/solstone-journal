@@ -213,14 +213,28 @@ def test_update_sync_preserves_unrelated_schedule_entry(settings_env):
 
     response = client.put(
         "/app/settings/api/sync",
-        json={"plaud": {"enabled": True}},
+        json={
+            "plaud": {"enabled": True},
+            "granola": {"enabled": True},
+            "obsidian": {"enabled": True},
+        },
     )
 
     assert response.status_code == 200
     raw = json.loads(schedules_path.read_text(encoding="utf-8"))
     assert raw["unrelated"] == unrelated
     assert raw["sync:plaud"] == {
-        "cmd": ["sol", "import", "--sync", "plaud", "--save"],
+        "cmd": ["journal", "importer", "--sync", "plaud", "--save"],
+        "every": "hourly",
+        "enabled": True,
+    }
+    assert raw["sync:granola"] == {
+        "cmd": ["journal", "importer", "--sync", "granola", "--save"],
+        "every": "hourly",
+        "enabled": True,
+    }
+    assert raw["sync:obsidian"] == {
+        "cmd": ["journal", "importer", "--sync", "obsidian", "--save"],
         "every": "hourly",
         "enabled": True,
     }
@@ -232,3 +246,7 @@ def test_update_sync_preserves_unrelated_schedule_entry(settings_env):
     assert set(payload["obsidian"]) == {"available", "enabled", "configured"}
     assert payload["plaud"]["enabled"] is True
     assert payload["plaud"]["configured"] is True
+    assert payload["granola"]["enabled"] is True
+    assert payload["granola"]["configured"] is True
+    assert payload["obsidian"]["enabled"] is True
+    assert payload["obsidian"]["configured"] is True

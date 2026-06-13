@@ -104,7 +104,7 @@ class TestLoadConfig:
             journal_path,
             {
                 "sync:plaud": {
-                    "cmd": ["sol", "import", "--sync", "plaud"],
+                    "cmd": ["journal", "importer", "--sync", "plaud"],
                     "every": "hourly",
                 },
             },
@@ -114,7 +114,12 @@ class TestLoadConfig:
         entries = load_config()
         assert "sync:plaud" in entries
         assert entries["sync:plaud"]["every"] == "hourly"
-        assert entries["sync:plaud"]["cmd"] == ["sol", "import", "--sync", "plaud"]
+        assert entries["sync:plaud"]["cmd"] == [
+            "journal",
+            "importer",
+            "--sync",
+            "plaud",
+        ]
 
     def test_missing_file_returns_empty(self, journal_path):
         from solstone.think.scheduler import load_config
@@ -220,7 +225,7 @@ class TestLoadConfig:
             journal_path,
             {
                 "sync:plaud": {
-                    "cmd": ["sol", "import", "--sync", "plaud"],
+                    "cmd": ["journal", "importer", "--sync", "plaud"],
                     "every": "hourly",
                     "max_runtime": "30m",
                 },
@@ -236,7 +241,7 @@ class TestLoadConfig:
             journal_path,
             {
                 "sync:plaud": {
-                    "cmd": ["sol", "import", "--sync", "plaud"],
+                    "cmd": ["journal", "importer", "--sync", "plaud"],
                     "every": "hourly",
                     "max_runtime": 1800,
                 },
@@ -254,7 +259,7 @@ class TestLoadConfig:
             journal_path,
             {
                 "sync:plaud": {
-                    "cmd": ["sol", "import", "--sync", "plaud"],
+                    "cmd": ["journal", "importer", "--sync", "plaud"],
                     "every": "hourly",
                     "max_runtime": -5,
                 },
@@ -271,7 +276,7 @@ class TestLoadConfig:
             journal_path,
             {
                 "sync:plaud": {
-                    "cmd": ["sol", "import", "--sync", "plaud"],
+                    "cmd": ["journal", "importer", "--sync", "plaud"],
                     "every": "hourly",
                     "max_runtime": "garbage",
                 },
@@ -288,7 +293,7 @@ class TestLoadConfig:
             journal_path,
             {
                 "sync:plaud": {
-                    "cmd": ["sol", "import", "--sync", "plaud"],
+                    "cmd": ["journal", "importer", "--sync", "plaud"],
                     "every": "hourly",
                     "max_runtime": [1, 2],
                 },
@@ -305,7 +310,7 @@ class TestLoadConfig:
             journal_path,
             {
                 "sync:plaud": {
-                    "cmd": ["sol", "import", "--sync", "plaud"],
+                    "cmd": ["journal", "importer", "--sync", "plaud"],
                     "every": "hourly",
                     "max_runtime": "30m",
                 },
@@ -320,7 +325,7 @@ class TestLoadConfig:
         mod.init(Mock())
 
         assert mod.collect_runtime_caps() == [
-            (["sol", "import", "--sync", "plaud"], 1800)
+            (["journal", "importer", "--sync", "plaud"], 1800)
         ]
 
 
@@ -1607,7 +1612,7 @@ class TestCLI:
             journal_path,
             {
                 "sync:plaud": {
-                    "cmd": ["sol", "import", "--sync", "plaud"],
+                    "cmd": ["journal", "importer", "--sync", "plaud"],
                     "every": "hourly",
                 },
             },

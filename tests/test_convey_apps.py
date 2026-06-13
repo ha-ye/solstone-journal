@@ -16,7 +16,9 @@ from solstone.convey.sol_initiated.copy import CATEGORIES, KIND_SOL_CHAT_REQUEST
 def _temp_journal(monkeypatch, tmp_path):
     """Ensure journaling defaults remain isolated from developer data."""
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr("solstone.convey.chat_stream.index_file", lambda *_args: True)
+    monkeypatch.setattr(
+        "solstone.think.indexer.journal.index_file", lambda *_args: True
+    )
 
 
 def _context(

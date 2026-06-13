@@ -2,6 +2,7 @@
 # Copyright (c) 2026 sol pbc
 
 import json
+from types import SimpleNamespace
 
 from solstone.think.models import LOCAL_MODEL
 from solstone.think.providers import local_install, local_server, local_vulkan, state
@@ -9,6 +10,20 @@ from solstone.think.providers.shared import (
     RUNTIME_REASON_CODES,
     classify_provider_error,
 )
+
+
+def _provider_exc(
+    module: str,
+    name: str,
+    *,
+    message: str = "provider error",
+    attrs: dict[str, object] | None = None,
+) -> BaseException:
+    exc_type = type(name, (Exception,), {"__module__": module})
+    exc = exc_type(message)
+    for attr, value in (attrs or {}).items():
+        setattr(exc, attr, value)
+    return exc
 
 
 def _readiness(
@@ -59,6 +74,93 @@ def test_runtime_reason_codes_are_state_reason_codes():
     assert {
         classify_provider_error(exc, "google") for exc in samples
     } <= RUNTIME_REASON_CODES
+
+
+def test_classify_provider_error_matches_provider_exception_names():
+    cases = [
+        (
+            _provider_exc("anthropic", "AuthenticationError"),
+            "anthropic",
+            "provider_key_invalid",
+        ),
+        (
+            _provider_exc("openai", "PermissionDeniedError"),
+            "openai",
+            "provider_key_invalid",
+        ),
+        (
+            _provider_exc(
+                "google.genai.errors",
+                "ClientError",
+                attrs={"_status_code": 403},
+            ),
+            "google",
+            "provider_key_invalid",
+        ),
+        (
+            _provider_exc("anthropic", "RateLimitError"),
+            "anthropic",
+            "provider_quota_exceeded",
+        ),
+        (
+            _provider_exc(
+                "google.genai.errors",
+                "ClientError",
+                attrs={"_status_code": 429},
+            ),
+            "google",
+            "provider_quota_exceeded",
+        ),
+        (
+            _provider_exc(
+                "google.genai.errors",
+                "ClientError",
+                attrs={"_status_text": "RESOURCE_EXHAUSTED"},
+            ),
+            "google",
+            "provider_quota_exceeded",
+        ),
+        (_provider_exc("openai", "APITimeoutError"), "openai", "chat_timeout"),
+        (_provider_exc("httpx", "TimeoutException"), "openai", "chat_timeout"),
+        (
+            _provider_exc("anthropic", "APIConnectionError"),
+            "anthropic",
+            "network_unreachable",
+        ),
+        (_provider_exc("httpx", "RequestError"), "openai", "network_unreachable"),
+        (
+            _provider_exc("openai", "InternalServerError"),
+            "openai",
+            "provider_unavailable",
+        ),
+        (
+            _provider_exc("google.genai.errors", "ServerError"),
+            "google",
+            "provider_unavailable",
+        ),
+        (
+            _provider_exc("anthropic", "APIStatusError", attrs={"status_code": 503}),
+            "anthropic",
+            "provider_unavailable",
+        ),
+        (
+            _provider_exc(
+                "httpx",
+                "HTTPStatusError",
+                attrs={"response": SimpleNamespace(status_code=502)},
+            ),
+            "openai",
+            "provider_unavailable",
+        ),
+        (
+            _provider_exc("google.genai.errors", "UnknownApiResponseError"),
+            "google",
+            "provider_response_invalid",
+        ),
+    ]
+
+    for exc, provider, expected in cases:
+        assert classify_provider_error(exc, provider) == expected
 
 
 def test_cloud_readiness_missing_key(monkeypatch):

@@ -12,7 +12,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from solstone.think.entities import get_identity_names
 from solstone.think.journal_io import append_text, atomic_replace, hold_lock
 from solstone.think.utils import day_dirs, day_path, get_journal, iter_segments
 
@@ -23,6 +22,8 @@ def _get_principal_display_name() -> str | None:
     Returns the first identity name (preferred if set, else full name).
     Returns None if identity is not configured.
     """
+    from solstone.think.entities import get_identity_names
+
     names = get_identity_names()
     return names[0] if names else None
 
