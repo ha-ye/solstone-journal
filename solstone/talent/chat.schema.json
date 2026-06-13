@@ -1,7 +1,7 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["message", "notes", "talent_request", "offer"],
+  "required": ["message", "notes", "talent_request"],
   "properties": {
     "message": {"type": ["string", "null"]},
     "notes": {"type": "string"},
@@ -13,14 +13,6 @@
         "target": {"type": "string", "enum": ["read", "exec", "support"]},
         "task": {"type": "string"},
         "context": {"type": ["string", "null"]}
-      }
-    },
-    "offer": {
-      "type": ["object", "null"],
-      "additionalProperties": false,
-      "required": ["kind"],
-      "properties": {
-        "kind": {"type": "string", "enum": ["support"]}
       }
     }
   }

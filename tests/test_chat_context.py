@@ -865,20 +865,6 @@ def test_chat_prompt_v4_sentinels_are_present():
     assert "## Stop-And-Report Contract" in prompt_text
 
 
-def test_chat_prompt_support_offer_contract_present():
-    prompt_text = _chat_prompt_text()
-    heading = "## Offer Support Before Dispatching"
-    section_start = prompt_text.index(heading)
-    next_heading = prompt_text.index("\n## Stop-And-Report Contract", section_start)
-    offer_section = prompt_text[section_start:next_heading]
-
-    assert heading in prompt_text
-    assert "bring in solstone support" in offer_section
-    assert '`{"kind":"support"}`' in offer_section
-    assert "$" not in offer_section
-    assert "sol pbc" not in prompt_text
-
-
 def test_chat_prompt_frontmatter_pins_generation_budget():
     metadata = _chat_prompt_frontmatter()
 

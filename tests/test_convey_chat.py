@@ -10,6 +10,10 @@ from datetime import date, datetime
 import pytest
 from flask import Flask
 
+from solstone.apps.chat.copy import (
+    CHAT_OFFER_SUPPORT_DECLINE,
+    CHAT_OFFER_SUPPORT_PROMPT,
+)
 from solstone.convey.chat import ChatSpawnResult, chat_bp
 from solstone.convey.chat_stream import append_chat_event, read_chat_events
 from solstone.think.cortex_client import CortexSpawnUnavailable
@@ -76,6 +80,14 @@ def _set_current_chat(chat_module, logical_use_id: str, raw_use_id: str | None) 
             "location": {"app": "sol", "path": "/app/sol", "facet": "work"},
             "retry_count": 0,
         }
+
+
+def _talent_route_result(target: str, task: str = "file a ticket") -> dict:
+    return {
+        "message": "let me file that",
+        "notes": target,
+        "talent_request": {"target": target, "task": task},
+    }
 
 
 @pytest.fixture
@@ -206,9 +218,7 @@ def test_cortex_thinking_reaches_talent_finished(chat_client, monkeypatch):
     }
 
 
-def test_cortex_offer_reaches_sol_message_without_spawning_talent(
-    chat_client, monkeypatch
-):
+def test_first_support_route_intercepts_with_offer(chat_client, monkeypatch):
     import solstone.convey.chat as chat
 
     monkeypatch.setattr(
@@ -219,18 +229,143 @@ def test_cortex_offer_reaches_sol_message_without_spawning_talent(
     chat._on_cortex_finish(
         {
             "use_id": "raw-chat",
-            "result": {
-                "message": "I can bring in solstone support.",
-                "notes": "offer support",
-                "talent_request": None,
-                "offer": {"kind": "support"},
-            },
+            "result": _talent_route_result("support"),
         }
     )
 
     events = read_chat_events(date.today().strftime("%Y%m%d"))
     sol_message = next(event for event in events if event["kind"] == "sol_message")
     assert sol_message["offer"] == {"kind": "support"}
+    assert sol_message["text"] == CHAT_OFFER_SUPPORT_PROMPT
+    assert [event for event in events if event["kind"] == "talent_spawned"] == []
+
+
+def test_support_route_with_pending_offer_allows_spawn(chat_client, monkeypatch):
+    import solstone.convey.chat as chat
+
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_cortex_event", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr("solstone.convey.chat._run_next_action", lambda _action: None)
+    append_chat_event(
+        "owner_message",
+        text="x",
+        app="sol",
+        path="/app/sol",
+        facet="work",
+    )
+    append_chat_event(
+        "sol_message",
+        use_id="seed-offer",
+        text=CHAT_OFFER_SUPPORT_PROMPT,
+        notes="offer",
+        requested_target=None,
+        requested_task=None,
+        offer={"kind": "support"},
+    )
+    _set_current_chat(chat, "logical-chat", "raw-chat")
+
+    chat._on_cortex_finish(
+        {
+            "use_id": "raw-chat",
+            "result": _talent_route_result("support"),
+        }
+    )
+
+    events = read_chat_events(date.today().strftime("%Y%m%d"))
+    assert any(
+        event["kind"] == "talent_spawned" and event["name"] == "support"
+        for event in events
+    )
+    sol_message = next(
+        event
+        for event in events
+        if event["kind"] == "sol_message" and event["use_id"] == "logical-chat"
+    )
+    assert "offer" not in sol_message
+
+
+def test_support_route_after_support_spawn_allows_spawn(chat_client, monkeypatch):
+    import solstone.convey.chat as chat
+
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_cortex_event", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr("solstone.convey.chat._run_next_action", lambda _action: None)
+    append_chat_event(
+        "talent_spawned",
+        use_id="prior",
+        name="support",
+        task="t",
+        started_at=1,
+    )
+    _set_current_chat(chat, "logical-chat", "raw-chat")
+
+    chat._on_cortex_finish(
+        {
+            "use_id": "raw-chat",
+            "result": _talent_route_result("support"),
+        }
+    )
+
+    events = read_chat_events(date.today().strftime("%Y%m%d"))
+    support_spawns = [
+        event
+        for event in events
+        if event["kind"] == "talent_spawned" and event["name"] == "support"
+    ]
+    assert len(support_spawns) == 2
+    sol_message = next(
+        event
+        for event in events
+        if event["kind"] == "sol_message" and event["use_id"] == "logical-chat"
+    )
+    assert "offer" not in sol_message
+
+
+@pytest.mark.parametrize("target", ("read", "exec"))
+def test_non_outbound_routes_are_not_gated(chat_client, monkeypatch, target):
+    import solstone.convey.chat as chat
+
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_cortex_event", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr("solstone.convey.chat._run_next_action", lambda _action: None)
+    _set_current_chat(chat, "logical-chat", "raw-chat")
+
+    chat._on_cortex_finish(
+        {
+            "use_id": "raw-chat",
+            "result": _talent_route_result(target, "do the work"),
+        }
+    )
+
+    events = read_chat_events(date.today().strftime("%Y%m%d"))
+    assert any(
+        event["kind"] == "talent_spawned" and event["name"] == target
+        for event in events
+    )
+    sol_message = next(
+        event
+        for event in events
+        if event["kind"] == "sol_message" and event["use_id"] == "logical-chat"
+    )
+    assert "offer" not in sol_message
+
+
+def test_decline_offer_endpoint_appends_local_sol_message(chat_client, monkeypatch):
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_cortex_event", lambda *_args, **_kwargs: None
+    )
+
+    response = chat_client.post("/api/chat/offer/decline", json={})
+
+    assert response.status_code == 200
+    assert response.get_json() == {"ok": True}
+    events = read_chat_events(date.today().strftime("%Y%m%d"))
+    sol_message = next(event for event in events if event["kind"] == "sol_message")
+    assert sol_message["text"] == CHAT_OFFER_SUPPORT_DECLINE
+    assert "offer" not in sol_message
     assert [event for event in events if event["kind"] == "talent_spawned"] == []
 
 

@@ -1256,7 +1256,17 @@
     }
     if (offerNoBtn) {
       offerNoBtn.addEventListener('click', function() {
-        sendOfferResponse(window.solChatCopy.CHAT_OFFER_SUPPORT_NO);
+        if (pendingSend) return;
+        hideSupportOffer();
+        if (!window.apiJson) return;
+        window.apiJson('/api/chat/offer/decline', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}'
+        }).catch(function(err) {
+          if (window.logError) window.logError(err, { context: 'chat-offer-decline' });
+          return null;
+        });
       });
     }
 

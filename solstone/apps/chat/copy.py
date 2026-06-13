@@ -40,6 +40,11 @@ CHAT_THINKING_OPT_ON_TAP = "Show on tap"
 CHAT_THINKING_OPT_ALWAYS = "Always show"
 CHAT_THINKING_OPT_NEVER = "Never show"
 CHAT_THINKING_SETTING_HELP = "sol does some thinking before replying. Choose how much you want to see."
+
+# Deterministic support-offer gate (backend-emitted; rides the sol_message text).
+# Brand rule: "solstone support", never "sol pbc".
+CHAT_OFFER_SUPPORT_PROMPT = "Sounds like something's not working — want me to bring in solstone support?"
+CHAT_OFFER_SUPPORT_DECLINE = "Okay — I'll keep this local. Tell me if you'd like me to bring in solstone support after all."
 # fmt: on
 
 from typing import Literal

@@ -27,6 +27,8 @@ from solstone.apps.chat.copy import (
     CHAT_CLOSER_LOOP_EXHAUSTED_PREFIX,
     CHAT_CLOSER_TALENT_ERRORED_FORMAT,
     CHAT_CLOSER_TALENT_ERRORED_GENERIC,
+    CHAT_OFFER_SUPPORT_DECLINE,
+    CHAT_OFFER_SUPPORT_PROMPT,
 )
 from solstone.convey.chat_stream import (
     append_chat_event,
@@ -238,6 +240,25 @@ def chat_session() -> Any:
     return jsonify(reduce_chat_state(_today_day()))
 
 
+@chat_bp.route("/offer/decline", methods=["POST"])
+def decline_offer() -> Any:
+    """Owner declined a pending support offer. Append a local sol_message with no
+    offer field so it supersedes the pending offer (chips clear on reload). This is
+    a standalone write — it does not read or mutate active-turn state, so it's safe
+    whether or not a turn is in flight. No talent spawn, no brain call."""
+    with _state_lock:
+        use_id = _reserve_use_id_locked()
+    append_chat_event(
+        "sol_message",
+        use_id=use_id,
+        text=CHAT_OFFER_SUPPORT_DECLINE,
+        notes="owner declined the support offer",
+        requested_target=None,
+        requested_task=None,
+    )
+    return jsonify(ok=True)
+
+
 @chat_bp.route("/talent-log/<use_id>", methods=["GET"])
 def get_talent_log(use_id: str) -> Any:
     """Return a talent-use timeline from the JSONL log."""
@@ -437,7 +458,7 @@ def _on_cortex_finish(message: dict[str, Any]) -> None:
                     if parsed["talent_request"]
                     else None
                 )
-                offer = parsed["offer"]
+                offer: dict[str, Any] | None = None
                 trigger = _current_chat_state.get("trigger") or {}
                 trigger_type = trigger.get("type")
                 if trigger_type in {"talent_finished", "talent_errored"}:
@@ -454,6 +475,17 @@ def _on_cortex_finish(message: dict[str, Any]) -> None:
                     )
                     requested_target = None
                     requested_task = None
+                if requested_target in OUTBOUND_TALENTS:
+                    consent = _support_consent_state(_today_day())
+                    if consent == "none":
+                        # First outbound dispatch this conversation: intercept it
+                        # into an offer. The model proposed support; code gates the
+                        # consequence so the offer always precedes the engage.
+                        message_text = CHAT_OFFER_SUPPORT_PROMPT
+                        offer = {"kind": "support"}
+                        requested_target = None
+                        requested_task = None
+                    # consent in {"pending", "confirmed"}: allow the spawn, no offer.
                 thinking = _drain_thinking_locked(use_id, message)
                 sol_message_fields: dict[str, Any] = {
                     "use_id": logical_use_id,
@@ -736,6 +768,14 @@ DISPATCH_SPAWN_NAMES = {
     # App talents spawn under "app:talent"; dispatch vocabulary stays bare.
     "support": "support:support",
 }
+
+# Outbound-tier dispatch vocab — mirrors the talent-config `access_tier: outbound`
+# declared in solstone/apps/support/talent/support.md. The first dispatch of one
+# of these in a conversation is intercepted into an offer (see _support_consent_state).
+# Hardcoded to match this file's LOCKED-enum convention (TARGET_ALIASES); do NOT
+# couple chat.py to heavy talent-config loading. Generalize here if more outbound
+# talents appear.
+OUTBOUND_TALENTS = {"support"}
 
 
 def _spawn_talent(action: dict[str, Any]) -> bool:
@@ -1259,22 +1299,12 @@ def _parse_chat_result(result: Any, use_id: str | None = None) -> dict[str, Any]
     if message is not None and not isinstance(message, str):
         raise ValueError("chat result message must be a string or null")
 
-    offer = payload.get("offer")
-    if offer is not None:
-        if not isinstance(offer, dict):
-            raise ValueError("chat result offer must be an object or null")
-        offer_kind = offer.get("kind")
-        if offer_kind not in {"support"}:
-            raise ValueError("chat result offer.kind must be support")
-        offer = {"kind": offer_kind}
-
     talent_request = payload.get("talent_request")
     if talent_request is None:
         return {
             "message": message,
             "notes": payload["notes"],
             "talent_request": None,
-            "offer": offer,
         }
     if not isinstance(talent_request, dict):
         raise ValueError("chat talent_request must be an object or null")
@@ -1332,20 +1362,10 @@ def _parse_chat_result(result: Any, use_id: str | None = None) -> dict[str, Any]
         "task": task,
         "context": context,
     }
-    if offer is not None:
-        logger.info(
-            "chat parser dropped talent_request because offer was also present "
-            "use_id=%s target=%s",
-            use_id,
-            target,
-        )
-        normalized_talent_request = None
-
     return {
         "message": message,
         "notes": payload["notes"],
         "talent_request": normalized_talent_request,
-        "offer": offer,
     }
 
 
@@ -1704,3 +1724,30 @@ def _reserve_use_id_locked() -> str:
 
 def _today_day() -> str:
     return datetime.now().strftime("%Y%m%d")
+
+
+def _support_consent_state(day: str) -> str:
+    """Deterministic, day-scoped support-consent state for the conversation.
+
+    Day-scoped to match the chat stream / reduce_chat_state granularity. Returns:
+      "confirmed" — support already dispatched today (a talent_spawned with
+                    name == "support" exists).
+      "pending"   — the most recent sol_message carries offer {"kind": "support"}
+                    (an offer awaiting the owner's reply) and support has not been
+                    dispatched.
+      "none"      — otherwise.
+    Precedence: confirmed, then pending, else none. Computed from history BEFORE
+    the current turn's sol_message is appended.
+    """
+    latest_sol_message: dict[str, Any] | None = None
+    for event in read_chat_events(day):
+        kind = event.get("kind")
+        if kind == "talent_spawned" and event.get("name") == "support":
+            return "confirmed"
+        if kind == "sol_message":
+            latest_sol_message = event
+    if latest_sol_message is not None and latest_sol_message.get("offer") == {
+        "kind": "support"
+    }:
+        return "pending"
+    return "none"
