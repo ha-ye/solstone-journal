@@ -49,6 +49,30 @@ def test_install_hint_literal() -> None:
     assert local_install.install_hint() == "journal install-provider local"
 
 
+def test_llama_server_pins_cover_expected_platforms() -> None:
+    pins = local_install.LLAMA_SERVER_PINS
+    # macOS arm64 (Metal) + both Linux arches on the cross-vendor Vulkan build.
+    assert {
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+    } <= set(pins)
+    for key, pin in pins.items():
+        assert pin["release_tag"] == "b9291"
+        assert pin["binary_name"] == "llama-server"
+        # sha256 is a 64-char hex digest.
+        assert len(pin["sha256"]) == 64
+        int(pin["sha256"], 16)
+        # Linux GPU acceleration rides the cross-vendor Vulkan prebuilt on both
+        # arches (NVIDIA + AMD + Intel from one binary).
+        if key.endswith("-unknown-linux-gnu"):
+            assert "vulkan" in pin["filename"]
+    assert (
+        pins["aarch64-unknown-linux-gnu"]["filename"]
+        == "llama-b9291-bin-ubuntu-vulkan-arm64.tar.gz"
+    )
+
+
 def test_install_llama_server_relocates_binary_and_libraries(tmp_path, monkeypatch):
     _init_journal(tmp_path, monkeypatch)
     pin = local_install.pin_for_current_platform()

@@ -65,6 +65,12 @@ LLAMA_SERVER_PINS: dict[str, dict[str, str]] = {
         "sha256": "7e3bf4202bedc71c2c9fbfbe02d10075b8d596bb963e7ab006663582dc2e92c2",
         "binary_name": "llama-server",
     },
+    "aarch64-unknown-linux-gnu": {
+        "release_tag": "b9291",
+        "filename": "llama-b9291-bin-ubuntu-vulkan-arm64.tar.gz",
+        "sha256": "c88f06cc72f746d7cbbd69b705f0788488d8b9fe9051995a5e59b3b8b1e8fe61",
+        "binary_name": "llama-server",
+    },
 }
 
 
