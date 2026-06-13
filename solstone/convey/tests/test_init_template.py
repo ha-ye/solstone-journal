@@ -12,8 +12,9 @@ INIT_HTML = Path(__file__).resolve().parents[1] / "templates" / "init.html"
 BRAND_CANON_RE = re.compile(
     r"\b("
     r"sign\s+in|signed\s+in|signing\s+in|log\s+in|logged\s+in|"
-    r"your\s+account|account\s+settings|linked|authenticate|"
-    r"log\s+into|sign\s+into"
+    r"account|account_id|account\s+settings|linked|authenticate|"
+    r"log\s+into|sign\s+into|your\s+services|journal\s+services|"
+    r"capture|watch|record|monitor|track|collect"
     r")\b",
     re.IGNORECASE,
 )
@@ -36,7 +37,7 @@ def _write_config(journal: Path, config: dict[str, Any]) -> None:
 
 def _finalize_body(gemini_key: str) -> dict[str, Any]:
     return {
-        "name": "Scout Test",
+        "name": "Setup Test",
         "preferred": "",
         "timezone": "UTC",
         "gemini_key": gemini_key,
@@ -45,52 +46,19 @@ def _finalize_body(gemini_key: str) -> dict[str, Any]:
     }
 
 
-def test_init_scout_structure_renders(convey_env_setup_pending) -> None:
+def test_init_provider_section_is_basics_only(convey_env_setup_pending) -> None:
     html = _render_init(convey_env_setup_pending)
 
-    assert "enable solstone scout" in html
-    assert (
-        "no key to copy. opens your services in a browser — sol pbc sets up a "
-        "Gemini key on your behalf and sends it back to this machine."
-    ) in html
-    assert '<aside class="portal-unreachable" hidden>' in html
-    assert "can't reach sol pbc right now." in html
-    assert (
-        "no problem — finish setting up locally and turn on services whenever "
-        "you want. nothing here needs sol pbc to work."
-    ) in html
-    assert (
-        "your journal stays on your machine. solstone runs right here — nothing "
-        "leaves unless you send it."
-    ) in html
-    assert "solstone runs on your machine." in html
-    assert (
-        "your observers, your journal, and sol, all right here — no services needed."
-        in html
-    )
-    assert "scout request applied — pending review" in html
-    assert "scout access has ended." in html
-    assert 'id="scout-pending-since"' in html
-
-
-def test_init_scout_inline_script_contract(convey_env_setup_pending) -> None:
-    html = _render_init(convey_env_setup_pending)
-
-    assert "✓  solstone scout enabled" in html
-    assert "sol pbc set up a Gemini key" in html
-    assert "manage solstone scout anytime in your services" in html
-    assert (
-        "a gemini key is already on this machine. to swap it for a "
-        "scout-provisioned key, use `journal services enable scout --force` from a "
-        "terminal."
-    ) in html
-    assert "the consent link expired. try again." in html
-    assert "the consent session expired. try again." in html
-    assert "couldn't save the key to your journal. try again." in html
-    assert "addEventListener('scout-pending'" in html
-    assert "addEventListener('scout-revoked'" in html
-    assert "function formatScoutSince" in html
-    assert "'recently'" in html
+    assert 'id="gemini-key"' in html
+    assert 'id="gemini-validate"' in html
+    assert "choose how sol thinks" in html
+    assert "choose Scout, your own cloud key, or a local model in Thinking" in html
+    assert "data-scout-state" not in html
+    assert "enableScout" not in html
+    assert "subscribeScoutStream" not in html
+    assert "/init/services/scout" not in html
+    assert ".portal-unreachable" not in html
+    assert "portal-unreachable" not in html
 
 
 def test_init_scout_stubs_removed(convey_env_setup_pending) -> None:
@@ -110,7 +78,7 @@ def test_init_rendered_html_is_brand_canon_clean(convey_env_setup_pending) -> No
     assert BRAND_CANON_RE.search(html) is None
 
 
-def test_finalize_empty_gemini_key_preserves_scout_config(
+def test_finalize_empty_gemini_key_preserves_existing_scout_config(
     convey_env_setup_pending,
 ) -> None:
     env = convey_env_setup_pending()

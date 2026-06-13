@@ -132,13 +132,16 @@ class TestInitDetection:
 
     def test_init_sol_agent_section_renders(self, fresh_client):
         resp = fresh_client.get("/init")
-        assert b">set up Gemini for sol<" in resp.data
-        assert b"the sol agent curates your journal" in resp.data
+        assert b">choose how sol thinks<" in resp.data
+        assert b"paste a Gemini API key now" in resp.data
 
     def test_init_sol_agent_paragraphs(self, fresh_client):
         resp = fresh_client.get("/init")
-        assert b"the sol agent curates your journal" in resp.data
-        assert b"the fastest start is a Gemini key" in resp.data
+        assert (
+            b"choose Scout, your own cloud key, or a local model in Thinking"
+            in resp.data
+        )
+        assert b"a Gemini API key comes from Google AI Studio" in resp.data
 
     def test_init_no_legacy_trust_note(self, fresh_client):
         resp = fresh_client.get("/init")
@@ -221,15 +224,17 @@ class TestInitDetection:
         text = resp.data.decode()
         assert (
             re.search(
-                r"\bwatch\b|\bcapture\b|\bmonitor\b|\btrack\b|\bcollect\b", text, re.I
+                r"\bwatch\b|\bcapture\b|\bmonitor\b|\btrack\b|\bcollect\b|\brecord\b",
+                text,
+                re.I,
             )
             is None
         )
 
     def test_portal_unreachable_stub_inert_on_default_path(self, fresh_client):
         resp = fresh_client.get("/init")
-        assert b'<aside class="portal-unreachable" hidden>' in resp.data
-        assert b"can't reach sol pbc right now." in resp.data
+        assert b"portal-unreachable" not in resp.data
+        assert b"can't reach sol pbc right now." not in resp.data
         assert b"L11-stub: portal-unreachable" not in resp.data
 
     def test_init_validate_button_present(self, fresh_client):
@@ -541,7 +546,7 @@ class TestInitFinalize:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["success"] is True
-        assert data["redirect"] == "/"
+        assert data["redirect"] == "/app/thinking/"
 
         config = _read_config(journal_copy)
         # Password
@@ -568,7 +573,7 @@ class TestInitFinalize:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["success"] is True
-        assert data["redirect"] == "/"
+        assert data["redirect"] == "/app/thinking/"
         config = _read_config(journal_copy)
         assert "completed_at" in config["setup"]
         assert config["convey"]["allow_network_access"] is False
@@ -642,11 +647,14 @@ class TestInitFinalize:
         assert "completed_at" in config["setup"]
 
     def test_finalize_auto_login(self, fresh_client, journal_copy):
-        fresh_client.post(
+        response = fresh_client.post(
             "/init/finalize",
             json={},
             content_type="application/json",
         )
+        assert response.get_json()["redirect"] == "/app/thinking/"
+        with fresh_client.session_transaction() as session:
+            assert session["logged_in"] is True
         resp = fresh_client.get("/", headers={"X-Forwarded-For": "1.2.3.4"})
         assert resp.status_code == 302
         location = resp.headers["Location"]

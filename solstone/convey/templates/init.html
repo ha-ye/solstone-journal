@@ -40,17 +40,6 @@
       font-family: 'Comfortaa', system-ui, sans-serif;
     }
     .machine-card p { margin: 0; font-size: 0.9rem; line-height: 1.5; }
-    .portal-unreachable {
-      margin-bottom: 2rem;
-      padding: 0.9rem 1rem;
-      border: 1px solid #f4c78e;
-      border-radius: 8px;
-      background: #fff8ef;
-      color: #5f3a14;
-      font-size: 0.9rem;
-    }
-    .portal-unreachable p { margin: 0 0 0.4rem; }
-    .portal-unreachable p:last-child { margin-bottom: 0; }
     .field-group { margin-bottom: 0.75rem; }
     .field-group label { display: block; font-size: 0.85rem; color: #444; margin-bottom: 0.25rem; }
     .field-group input:not([type="checkbox"]):not([type="radio"]) {
@@ -130,11 +119,6 @@
     <h1>set up solstone</h1>
     <p class="product-tagline">your private agentic partner — sol</p>
 
-    <aside class="portal-unreachable" hidden>
-      <p>can't reach sol pbc right now.</p>
-      <p>no problem — finish setting up locally and turn on services whenever you want. nothing here needs sol pbc to work.</p>
-    </aside>
-
     <section id="section-machine-card" class="section machine-card">
       <h2 class="machine-card-headline">solstone runs on your machine.</h2>
       <p>your observers, your journal, and sol, all right here — no services needed. sol pbc offers a few optional services (like setting up a Gemini key for you or reaching your phone when sol has something to surface). turn them on if they help. turn them off whenever you want. or never.</p>
@@ -157,41 +141,10 @@
     </section>
 
     <section class="init-section" id="section-provider">
-      <h3>set up Gemini for sol</h3>
-      <p class="section-hint">the sol agent curates your journal and is powered by ai. you can skip this and set it up later in settings, either a hosted provider or the bundled Local provider.</p>
-      <p class="section-hint"><strong>a hosted provider key is the recommended way to start.</strong> running a capable model locally is a real, supported goal, but it needs capable hardware and a model with strong "thinking" support. it isn't the default daily experience yet. <a href="https://github.com/solpbc/solstone/blob/main/INSTALL.md#choosing-how-to-power-sol" target="_blank" rel="noopener noreferrer">how to power sol &rarr;</a></p>
-      <p class="section-hint">the fastest start is a Gemini key; enter it below. note this is a <strong>developer api key from Google AI Studio</strong> (<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">aistudio.google.com</a>) — not a gemini.google.com chat account. you can tune how much automated processing runs in settings.</p>
-      <p class="section-hint">if you're a scout for solstone you can enter the key provided here, or apply to get a key for testing at <a href="https://scouts.solstone.app" target="_blank" rel="noopener noreferrer">scouts.solstone.app</a></p>
-      <p class="section-hint">prefer Claude or OpenAI? add a developer key in settings &rarr; API keys: Claude from <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer">console.anthropic.com</a> (not the claude.ai chat signup), OpenAI from <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">platform.openai.com</a> (not chatgpt.com).</p>
-      <p class="section-hint">curious what leaves your machine and what doesn't? see <a href="https://github.com/solpbc/solstone/blob/main/DATA-FLOW.md" target="_blank" rel="noopener noreferrer">what solstone sends</a>.</p>
-      <div class="scout-primary">
-        <div data-scout-state="idle">
-          <button type="button" id="scout-enable" class="cta-button">enable solstone scout</button>
-          <p class="section-hint">no key to copy. opens your services in a browser — sol pbc sets up a Gemini key on your behalf and sends it back to this machine.</p>
-        </div>
-        <div data-scout-state="waiting" hidden>
-          <p class="field-status status-saved">opening your services…</p>
-          <p class="section-hint"><a id="scout-manual-link" href="https://services.solstone.app/" target="_blank" rel="noopener noreferrer">open your services to enable scout</a></p>
-        </div>
-        <div data-scout-state="success" hidden>
-          <p class="field-status status-saved">✓  solstone scout enabled</p>
-          <p class="section-hint">sol pbc set up a Gemini key for you and put it on this machine — you never had to touch it, and nothing from your journal crossed to set it up. <a href="https://services.solstone.app/" target="_blank" rel="noopener noreferrer">manage solstone scout anytime in your services</a>.</p>
-        </div>
-        <div data-scout-state="pending" hidden>
-          <p class="field-status status-saved">✓  scout request applied — pending review</p>
-          <p class="section-hint">sol pbc has your request — <span id="scout-pending-since">submitted recently</span>. you can finish setup now; scout turns on here automatically once it's approved. <a href="https://services.solstone.app/" target="_blank" rel="noopener noreferrer">check your services anytime</a>.</p>
-        </div>
-        <div data-scout-state="revoked" hidden>
-          <p class="field-status status-error">scout access has ended.</p>
-          <p class="section-hint">finish setup with a pasted Gemini key below, or re-request scout later from your services.</p>
-        </div>
-        <div data-scout-state="error" data-reason="" hidden>
-          <p class="field-status status-error" id="scout-error-message"></p>
-          <button type="button" id="scout-try-again" class="settings-preset-btn">try again</button>
-        </div>
-      </div>
+      <h3>choose how sol thinks</h3>
+      <p class="section-hint">paste a Gemini API key now if you already have one, or leave this blank and choose Scout, your own cloud key, or a local model in Thinking after setup.</p>
+      <p class="section-hint">a Gemini API key comes from Google AI Studio (<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">aistudio.google.com</a>), not the Gemini chat app.</p>
       <div class="byo-paste">
-        <p class="section-hint">or</p>
         <div class="field-group">
           <label for="gemini-key">Gemini API key</label>
           <div class="provider-key-row">
@@ -207,7 +160,7 @@
           <small class="field-status">&nbsp;</small>
         </div>
       </div>
-      <p class="trust-note">to maximize privacy with Google, use a key tied to a billing account — <a href="https://ai.google.dev/gemini-api/terms" target="_blank" rel="noopener noreferrer" style="color: #b06a1a;">Google Terms</a></p>
+      <p class="trust-note">you can change this anytime in Thinking. <a href="https://github.com/solpbc/solstone/blob/main/INSTALL.md#choosing-how-to-power-sol" target="_blank" rel="noopener noreferrer" style="color: #b06a1a;">how to power sol &rarr;</a></p>
     </section>
 
     <section class="init-section" id="section-observed-media">
@@ -270,22 +223,6 @@
 
     let detectedTimezone = '';
     const RESULT_DISPLAY_MS = 1200;
-    const SCOUT_RETRY_BACKOFF_MS = [1000, 2000, 4000];
-    const SCOUT_ERROR_COPY = {
-      consent_link_expired: 'the consent link expired. try again.',
-      nonce_invalid: 'the consent session expired. try again.',
-      tls_verification_failed: "couldn't verify the connection to sol pbc. try again.",
-      unexpected_payload: 'sol pbc sent something unexpected back. try again.',
-      journal_not_initialized: "this journal isn't ready yet — refresh the page and try again.",
-      write_failed: "couldn't save the key to your journal. try again.",
-      internal_error: 'something went wrong on this machine. try again.',
-      unknown: 'something went wrong. try again, or finish setup with a pasted Gemini key instead.'
-    };
-    const MANUAL_KEY_PRESENT_COPY = 'a gemini key is already on this machine. to swap it for a scout-provisioned key, use `journal services enable scout --force` from a terminal.';
-    const SCOUT_UNREACHABLE_COPY = "can't reach sol pbc right now.";
-    let scoutStream = null;
-    let scoutSubscribed = false;
-    let scoutRetryTimer = null;
 
     function clearKeyStatus() {
       const input = document.getElementById('gemini-key');
@@ -296,190 +233,6 @@
       if (!small) return;
       small.classList.remove('status-saved', 'status-error', 'status-fade');
       small.textContent = '\u00a0';
-    }
-
-    function portalUnreachableAside() {
-      return document.querySelector('.portal-unreachable');
-    }
-
-    function hidePortalUnreachable() {
-      const aside = portalUnreachableAside();
-      if (aside) aside.hidden = true;
-    }
-
-    function showPortalUnreachable() {
-      const aside = portalUnreachableAside();
-      if (aside) aside.hidden = false;
-    }
-
-    function closeScoutStream() {
-      if (scoutRetryTimer) {
-        clearTimeout(scoutRetryTimer);
-        scoutRetryTimer = null;
-      }
-      if (scoutStream) {
-        scoutStream.close();
-        scoutStream = null;
-      }
-      scoutSubscribed = false;
-    }
-
-    function readScoutEventData(event) {
-      try {
-        return JSON.parse(event.data || '{}');
-      } catch (_err) {
-        return {};
-      }
-    }
-
-    function formatScoutSince(since) {
-      const ms = Number(since);
-      if (!Number.isFinite(ms) || ms <= 0) return 'recently';
-      const when = new Date(ms);
-      if (Number.isNaN(when.getTime())) return 'recently';
-      return when.toISOString().slice(0, 10);
-    }
-
-    function renderScoutState(state, opts = {}) {
-      document.querySelectorAll('[data-scout-state]').forEach(el => {
-        el.hidden = el.dataset.scoutState !== state;
-      });
-
-      const byoPaste = document.querySelector('.byo-paste');
-      if (byoPaste) byoPaste.hidden = state === 'success';
-
-      if (state === 'success') {
-        const input = document.getElementById('gemini-key');
-        if (input) input.value = '';
-        clearKeyStatus();
-      }
-
-      if (state === 'idle') {
-        const button = document.getElementById('scout-enable');
-        if (button) {
-          button.disabled = false;
-          button.textContent = 'enable solstone scout';
-        }
-      }
-
-      if (state === 'waiting') {
-        const link = document.getElementById('scout-manual-link');
-        if (link && opts.portalUrl) link.href = opts.portalUrl;
-      }
-
-      if (state === 'pending') {
-        const sinceEl = document.getElementById('scout-pending-since');
-        if (sinceEl) sinceEl.textContent = 'submitted ' + formatScoutSince(opts.since);
-      }
-
-      if (state === 'error') {
-        const reason = opts.reason || 'unknown';
-        const stateEl = document.querySelector('[data-scout-state="error"]');
-        if (stateEl) stateEl.dataset.reason = reason;
-        const messageEl = document.getElementById('scout-error-message');
-        if (messageEl) messageEl.textContent = opts.message || SCOUT_ERROR_COPY[reason] || SCOUT_ERROR_COPY.unknown;
-        const retryButton = document.getElementById('scout-try-again');
-        if (retryButton) retryButton.hidden = opts.retry === false;
-      }
-    }
-
-    async function enableScout() {
-      closeScoutStream();
-      hidePortalUnreachable();
-      renderScoutState('idle');
-      const button = document.getElementById('scout-enable');
-      if (button) {
-        button.disabled = true;
-        button.textContent = 'opening…';
-      }
-      try {
-        const result = await window.apiJson('/init/services/scout/start', {
-          method: 'POST'
-        });
-        if (!result || !result.subscribe_url || !result.portal_url) {
-          throw new Error('missing scout subscription details');
-        }
-        subscribeScoutStream(result.subscribe_url, result.portal_url);
-      } catch (err) {
-        if (err && err.status === 409 && err.reasonCode === 'already_enabled') {
-          renderScoutState('success');
-          return;
-        }
-        if (err && err.status === 409 && err.reasonCode === 'manual_key_present') {
-          renderScoutState('error', {
-            reason: 'manual_key_present',
-            message: MANUAL_KEY_PRESENT_COPY,
-            retry: false
-          });
-          return;
-        }
-        showPortalUnreachable();
-        renderScoutState('idle');
-      }
-    }
-
-    function subscribeScoutStream(subscribeUrl, portalUrl, retryAttempt = 0) {
-      closeScoutStream();
-      scoutStream = new EventSource(subscribeUrl);
-
-      scoutStream.addEventListener('subscribed', event => {
-        const data = readScoutEventData(event);
-        scoutSubscribed = true;
-        renderScoutState('waiting', { portalUrl: data.portal_url || portalUrl });
-      });
-
-      scoutStream.addEventListener('waiting', () => {});
-
-      scoutStream.addEventListener('scout-enabled', () => {
-        closeScoutStream();
-        renderScoutState('success');
-      });
-
-      scoutStream.addEventListener('scout-pending', event => {
-        const data = readScoutEventData(event);
-        closeScoutStream();
-        renderScoutState('pending', { since: data.since });
-      });
-
-      scoutStream.addEventListener('scout-revoked', () => {
-        closeScoutStream();
-        renderScoutState('revoked');
-      });
-
-      scoutStream.addEventListener('failed', event => {
-        const data = readScoutEventData(event);
-        const reason = data.reason || 'unknown';
-        closeScoutStream();
-        renderScoutState('error', {
-          reason,
-          message: SCOUT_ERROR_COPY[reason] || SCOUT_ERROR_COPY.unknown
-        });
-      });
-
-      scoutStream.addEventListener('timeout', () => {
-        closeScoutStream();
-        showPortalUnreachable();
-        renderScoutState('error', {
-          reason: 'timeout',
-          message: SCOUT_UNREACHABLE_COPY
-        });
-      });
-
-      scoutStream.onerror = () => {
-        if (scoutSubscribed) return;
-        closeScoutStream();
-        if (retryAttempt < SCOUT_RETRY_BACKOFF_MS.length) {
-          scoutRetryTimer = setTimeout(() => {
-            subscribeScoutStream(subscribeUrl, portalUrl, retryAttempt + 1);
-          }, SCOUT_RETRY_BACKOFF_MS[retryAttempt]);
-          return;
-        }
-        showPortalUnreachable();
-        renderScoutState('error', {
-          reason: 'timeout',
-          message: SCOUT_UNREACHABLE_COPY
-        });
-      };
     }
 
     async function validateProviderKey() {
@@ -554,12 +307,6 @@
 
     document.addEventListener('DOMContentLoaded', () => {
       detectedTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      document.getElementById('scout-enable').addEventListener('click', enableScout);
-      document.getElementById('scout-try-again').addEventListener('click', () => {
-        closeScoutStream();
-        hidePortalUnreachable();
-        renderScoutState('idle');
-      });
 
       ['name', 'preferred'].forEach(field => {
         document.getElementById(field).addEventListener('blur', function() {

@@ -102,8 +102,6 @@ def require_login() -> Any:
         "root.init_validate_provider",
         "root.init_observers",
         "root.init_finalize",
-        "services_scout.start",
-        "services_scout.status",
         "root.login",
         "static",
         "root.static",
@@ -379,7 +377,7 @@ def init_finalize() -> Any:
 
     session["logged_in"] = True
     session.permanent = True
-    return jsonify({"success": True, "redirect": url_for("root.index")})
+    return jsonify({"success": True, "redirect": url_for("app:thinking.index")})
 
 
 @bp.route("/logout")

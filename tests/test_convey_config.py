@@ -147,7 +147,7 @@ def test_init_finalize_seeds_default_app_navigation(journal_copy):
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["success"] is True
-    assert data["redirect"] == "/"
+    assert data["redirect"] == "/app/thinking/"
 
     config = _read_convey_config(journal_copy)
     assert config["apps"]["starred"] == DEFAULT_RAIL_APPS
@@ -179,7 +179,7 @@ def test_init_finalize_logs_convey_seed_persist_failure(
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["success"] is True
-    assert data["redirect"] == "/"
+    assert data["redirect"] == "/app/thinking/"
     assert "default app navigation seed convey-config PERSIST failed" in caplog.text
 
 
