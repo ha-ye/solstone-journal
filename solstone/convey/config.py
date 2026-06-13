@@ -45,7 +45,7 @@ DEFAULT_RAIL_APPS = [
 # same order they appear in DEFAULT_RAIL_APPS, then pins reflections + news
 # adjacent at the top of the unstarred drawer (sol's proactive journal
 # artifacts — they belong together).
-DEFAULT_APP_ORDER = list(DEFAULT_RAIL_APPS) + ["reflections", "news", "services"]
+DEFAULT_APP_ORDER = list(DEFAULT_RAIL_APPS) + ["reflections", "news"]
 
 
 def _get_config_path() -> Path:

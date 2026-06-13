@@ -7,7 +7,7 @@ import logging
 
 import pytest
 
-from solstone.think.services import cli, outcomes
+from solstone.think.services import outcomes
 
 
 def test_outcome_codes_are_machine_distinct() -> None:
@@ -34,9 +34,7 @@ def test_guidance_is_complete_and_neutral() -> None:
     )
 
 
-def test_cli_tokens_are_all_accounted_for() -> None:
-    accounted = set(outcomes.TOKEN_TO_CODE) | set(outcomes.OUT_OF_DOMAIN_TOKENS)
-    assert set(cli.ERROR_MESSAGES) == accounted
+def test_handoff_token_sets_are_disjoint() -> None:
     assert set(outcomes.TOKEN_TO_CODE).isdisjoint(outcomes.OUT_OF_DOMAIN_TOKENS)
 
 

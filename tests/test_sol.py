@@ -483,6 +483,11 @@ class TestCommandRegistry:
         for cmd in critical:
             assert cmd in sol.COMMANDS, f"Critical command '{cmd}' not registered"
 
+    def test_services_namespace_removed(self):
+        """The dissolved services switchboard is not a journal CLI namespace."""
+        assert "services" not in sol.COMMANDS
+        assert "services" not in sol.service_help_group().commands
+
     def test_pyproject_declares_sol_and_journal_scripts(self):
         """Project scripts expose both top-level CLI entry points."""
         pyproject = tomllib.loads(

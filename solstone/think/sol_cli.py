@@ -133,7 +133,6 @@ COMMANDS: dict[str, Command] = {
     "restart-convey": Command("solstone.convey.restart", "service"),
     "maint": Command("solstone.convey.maint_cli", "service"),
     "service": Command("solstone.think.service", "service"),
-    "services": Command("solstone.think.services", "service"),
     "setup": Command("solstone.think.setup", "service"),
 }
 

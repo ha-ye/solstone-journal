@@ -60,12 +60,32 @@ def test_curation_pinned_in_default_rail():
     assert "curation" in DEFAULT_APP_ORDER
 
 
-def test_services_default_unstarred_after_news():
+def test_services_absent_from_default_app_order():
     from solstone.convey.config import DEFAULT_APP_ORDER, DEFAULT_RAIL_APPS
 
     assert "services" not in DEFAULT_RAIL_APPS
-    assert "services" in DEFAULT_APP_ORDER
-    assert DEFAULT_APP_ORDER.index("news") < DEFAULT_APP_ORDER.index("services")
+    assert "services" not in DEFAULT_APP_ORDER
+
+
+def test_apply_app_order_skips_missing_persisted_app_ids():
+    from solstone.convey.config import apply_app_order
+
+    apps = {
+        "home": {"label": "home"},
+        "news": {"label": "news"},
+        "reflections": {"label": "reflections"},
+    }
+    config = {
+        "apps": {
+            "order": ["home", "services", "news"],
+            "starred": ["home", "services"],
+        }
+    }
+
+    ordered = apply_app_order(apps, config)
+
+    assert list(ordered) == ["home", "news", "reflections"]
+    assert "services" not in ordered
 
 
 def test_seed_default_app_navigation_preserves_present_empty_lists():

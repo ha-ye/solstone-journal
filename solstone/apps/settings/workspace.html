@@ -1988,6 +1988,9 @@ button:focus:not(:focus-visible) {
   <!-- Mobile nav dropdown -->
   <div class="settings-nav-mobile">
     <select class="settings-nav-select" id="navSelect">
+      <optgroup label="overview">
+        <option value="guide" selected>guide</option>
+      </optgroup>
       <optgroup label="identity">
         <option value="profile">profile</option>
         <option value="agent">sol&#32;identity</option>
@@ -2026,8 +2029,12 @@ button:focus:not(:focus-visible) {
   <!-- Desktop nav sidebar -->
   <nav class="settings-nav" id="settingsNav" role="tablist" aria-label="settings sections" aria-orientation="vertical">
     <div class="settings-nav-group">
+      <div class="settings-nav-label">overview</div>
+      <button class="settings-nav-item active" data-section="guide" id="tab-guide" role="tab" aria-selected="true" aria-controls="section-guide" tabindex="0">guide</button>
+    </div>
+    <div class="settings-nav-group">
       <div class="settings-nav-label">identity</div>
-      <button class="settings-nav-item active" data-section="profile" id="tab-profile" role="tab" aria-selected="true" aria-controls="section-profile" tabindex="0">profile</button>
+      <button class="settings-nav-item" data-section="profile" id="tab-profile" role="tab" aria-selected="false" aria-controls="section-profile" tabindex="-1">profile</button>
       <button class="settings-nav-item" data-section="agent" id="tab-agent" role="tab" aria-selected="false" aria-controls="section-agent" tabindex="-1">sol&#32;identity</button>
     </div>
     <div class="settings-nav-group">
@@ -2069,8 +2076,34 @@ button:focus:not(:focus-visible) {
 
   <!-- Content panels -->
   <div class="settings-content">
+    <!-- Guide Section -->
+    <section class="settings-section active" id="section-guide" role="tabpanel" aria-labelledby="tab-guide">
+      <h2>guide</h2>
+      <p class="settings-section-desc">Optional app capabilities you can turn on when they help.</p>
+
+      <div class="settings-field">
+        <h3 class="settings-subsection-title"><a href="/app/thinking">thinking</a></h3>
+        <p class="settings-subsection-desc">Choose how sol thinks: Scout, your own cloud key, or a local model.</p>
+      </div>
+
+      <div class="settings-field">
+        <h3 class="settings-subsection-title"><a href="/app/link">link</a></h3>
+        <p class="settings-subsection-desc">Pair devices and choose how they reach home, including solstone private link for away access.</p>
+      </div>
+
+      <div class="settings-field">
+        <h3 class="settings-subsection-title"><a href="/app/backup">backup</a></h3>
+        <p class="settings-subsection-desc">Prepare encrypted journal backups you can restore from when needed.</p>
+      </div>
+
+      <div class="settings-field">
+        <h3 class="settings-subsection-title">notifications</h3>
+        <p class="settings-subsection-desc">coming later. Sol will be able to nudge you across paired devices when something needs attention.</p>
+      </div>
+    </section>
+
     <!-- Profile Section -->
-    <section class="settings-section active" id="section-profile" role="tabpanel" aria-labelledby="tab-profile">
+    <section class="settings-section" id="section-profile" role="tabpanel" aria-labelledby="tab-profile">
       <h2>profile</h2>
       <p class="settings-section-desc">Your identity information used in AI templates and transcription.</p>
 
@@ -3106,17 +3139,17 @@ setupModalAccessibility('customActivityModal');
 setupModalAccessibility('cleanupModal');
 
 // ========== NAVIGATION ==========
-const VALID_SECTIONS = ['profile', 'agent', 'apikeys', 'transcription', 'observer', 'vision', 'sol-voice', 'chat', 'security', 'sync', 'storage', 'support', 'facets', 'facet-appearance', 'facet-activities', 'facet-activity'];
+const VALID_SECTIONS = ['guide', 'profile', 'agent', 'apikeys', 'transcription', 'observer', 'vision', 'sol-voice', 'chat', 'security', 'sync', 'storage', 'support', 'facets', 'facet-appearance', 'facet-activities', 'facet-activity'];
 
 function switchSection(sectionId, updateHash = true) {
   // Validate section exists
   if (!VALID_SECTIONS.includes(sectionId)) {
-    sectionId = 'profile';
+    sectionId = 'guide';
   }
 
   // Facet sections require a selected facet
   if (sectionId.startsWith('facet-') && !window.selectedFacet) {
-    sectionId = 'profile';
+    sectionId = 'guide';
   }
 
   // Update nav items

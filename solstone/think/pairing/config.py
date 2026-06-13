@@ -17,7 +17,7 @@ from solstone.think.utils import get_config, read_service_port
 HOST_URL_INVALID = "enter an ipv4 address and port, like 192.168.1.44:5015"
 HOST_URL_HOSTNAME_UNSUPPORTED = (
     "this needs an ip address — to reach home by name from anywhere, "
-    "set up sol private link"
+    "set up solstone private link"
 )
 
 

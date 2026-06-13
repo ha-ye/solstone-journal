@@ -13,6 +13,17 @@ def _workspace_text() -> str:
     return WORKSPACE.read_text(encoding="utf-8")
 
 
+def _section_block(text: str, section_id: str) -> str:
+    match = re.search(
+        rf'<section class="settings-section(?: active)?" id="section-{section_id}"'
+        r".*?</section>",
+        text,
+        re.DOTALL,
+    )
+    assert match, f"section-{section_id} not found"
+    return match.group(0)
+
+
 def test_apikeys_inputs_are_masked_by_default():
     text = _workspace_text()
     keys = (
@@ -123,3 +134,59 @@ def test_workspace_security_network_mode_ui_removed_and_link_hint_present():
     assert 'id="field-trust-localhost"' in text
     assert 'href="/app/link"' in text
     assert "{{ convey_copy.SETTINGS_SECURITY_REACH_HINT }}" in text
+
+
+def test_workspace_guide_is_default_static_section():
+    text = _workspace_text()
+
+    assert '<option value="guide" selected>guide</option>' in text
+    assert '<option value="profile">profile</option>' in text
+    assert (
+        '<button class="settings-nav-item active" data-section="guide" id="tab-guide" '
+        'role="tab" aria-selected="true" aria-controls="section-guide" tabindex="0">'
+        "guide</button>"
+    ) in text
+    assert (
+        '<button class="settings-nav-item" data-section="profile" id="tab-profile" '
+        'role="tab" aria-selected="false" aria-controls="section-profile" '
+        'tabindex="-1">profile</button>'
+    ) in text
+
+    guide = _section_block(text, "guide")
+    profile = _section_block(text, "profile")
+    assert guide.startswith('<section class="settings-section active"')
+    assert profile.startswith('<section class="settings-section"')
+    assert "VALID_SECTIONS = ['guide'," in text
+    assert text.count("sectionId = 'guide';") == 2
+
+
+def test_workspace_guide_copy_stays_in_bounds():
+    text = _workspace_text()
+    guide = _section_block(text, "guide")
+    lowered = guide.lower()
+
+    assert "Optional app capabilities you can turn on when they help." in guide
+    assert '<a href="/app/thinking">thinking</a>' in guide
+    assert '<a href="/app/link">link</a>' in guide
+    assert '<a href="/app/backup">backup</a>' in guide
+    assert "notifications" in guide
+
+    banned_terms = (
+        "your services",
+        "sign in",
+        "account",
+        "subscribe",
+        "upgrade",
+        "capture",
+        "watch",
+        "record",
+        "monitor",
+        "track",
+        "collect",
+    )
+    for term in banned_terms:
+        assert term not in lowered
+
+    dynamic_terms = ("fetch(", "/api/", "setInterval", "enable", "disable", "poll")
+    for term in dynamic_terms:
+        assert term not in guide
