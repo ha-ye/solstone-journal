@@ -1,8 +1,23 @@
 # observer-over-pl
 
-> Superseded note, link-mess step 2: the role-at-pair-time mechanism described
-> below is historical. Observers now self-register with `POST
-> /app/observer/register`; pairing is role-less except for the `peer` path.
+> **⚠️ SUPERSEDED — historical design doc.** This describes a now-shipped lode
+> whose implementation diverged from the design below. Do not treat the code
+> references here as current. Current reality:
+> - There is **no `ObserverClient` class** (deleted 2026-05-30). PL observer
+>   transport runs through `TunnelClient` (`solstone/think/link/dialer.py`) +
+>   `PlHttpSession` (`solstone/observe/pl_http.py`), constructed inline in
+>   `send_segments_pl` (`solstone/observe/transfer.py`) and the export path
+>   (`solstone/observe/export.py`); client identity/fingerprint comes from
+>   `load_client_identity` (`solstone/think/link/bundle.py`).
+> - The **DL transport is retired**. `:5015` is loopback-only; the legacy
+>   key-in-URL observer ingest routes and the `url_key` auth fallback are gone.
+>   Observer identity resolves PL-fingerprint-first, then `Authorization: Bearer`.
+> - Observers self-register with `POST /app/observer/register`; pairing is
+>   role-less except for the `peer` path (which provisions a journal-content
+>   source). The role-at-pair-time mechanism described below is historical.
+>
+> For current architecture see `solstone/AGENTS.md` and the connection-topology
+> overview; this file is kept only for design provenance.
 
 ## Summary
 

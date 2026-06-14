@@ -18,7 +18,7 @@ convey
 
 ### Authentication
 
-Password authentication is configured from Settings → Security when enabling network access. For headless setups, use the CLI:
+Password authentication is configured from Settings → Security. For headless setups, use the CLI:
 
 ```bash
 journal password set
