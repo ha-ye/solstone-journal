@@ -2,15 +2,34 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Smoke guard for import-clean `sol` access commands."""
+"""Smoke guard for import-clean `sol` access commands.
+
+Two modes:
+
+* Default (fast, wired into `make ci`): run each access command in a child that
+  installs a `BlockHeavyFinder` on `sys.meta_path` to simulate the heavy host
+  families (`BLOCKED_FAMILIES`) being absent. Fast and offline — the inner-loop
+  gate.
+
+* `--real-install` (faithful, opt-in via `make check-thin-base-install`): build
+  a fresh venv with the REAL thin base partition (`pip install .`, no extras),
+  assert the heavy families are genuinely absent, then run the same battery
+  against that venv's interpreter. This catches what the simulation can't — an
+  access command that imports a *non-blocked* light dep which is not in the thin
+  base. The real install is the authority; `BLOCKED_FAMILIES` is the set we
+  assert absent and the real-install mode verifies it against the partition,
+  rather than standing in for it.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -132,6 +151,7 @@ def _run_case(
     *,
     strict_call_discovery: bool = False,
     extra_env: dict[str, str] | None = None,
+    python: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.setdefault("SOLSTONE_JOURNAL", str(root / "tests" / "fixtures" / "journal"))
@@ -151,7 +171,7 @@ def _run_case(
         "label": label,
     }
     return subprocess.run(
-        [sys.executable, "-c", CHILD, json.dumps(payload)],
+        [python or sys.executable, "-c", CHILD, json.dumps(payload)],
         cwd=root,
         env=env,
         capture_output=True,
@@ -178,6 +198,7 @@ def _check_access_case(
     argv: list[str],
     *,
     extra_env: dict[str, str] | None = None,
+    python: str | None = None,
 ) -> list[str]:
     strict = label == "sol call --help"
     result = _run_case(
@@ -186,6 +207,7 @@ def _check_access_case(
         argv,
         strict_call_discovery=strict,
         extra_env=extra_env,
+        python=python,
     )
     failures: list[str] = []
     if result.returncode != 0:
@@ -206,8 +228,10 @@ def _check_access_case(
     return failures
 
 
-def _check_hint_case(root: Path, label: str, argv: list[str]) -> list[str]:
-    result = _run_case(root, label, argv)
+def _check_hint_case(
+    root: Path, label: str, argv: list[str], *, python: str | None = None
+) -> list[str]:
+    result = _run_case(root, label, argv, python=python)
     output = result.stdout + result.stderr
     failures: list[str] = []
     if result.returncode == 0:
@@ -231,8 +255,10 @@ def _check_routing_case(
     label: str,
     argv: list[str],
     expected: str,
+    *,
+    python: str | None = None,
 ) -> list[str]:
-    result = _run_case(root, label, argv)
+    result = _run_case(root, label, argv, python=python)
     output = result.stdout + result.stderr
     failures: list[str] = []
     if result.returncode == 0:
@@ -246,15 +272,92 @@ def _check_routing_case(
     return failures
 
 
-def run_checks(root: Path, *, extra_env: dict[str, str] | None = None) -> list[str]:
+def run_checks(
+    root: Path,
+    *,
+    extra_env: dict[str, str] | None = None,
+    python: str | None = None,
+) -> list[str]:
     failures: list[str] = []
     for label, argv in ACCESS_CASES:
-        failures.extend(_check_access_case(root, label, argv, extra_env=extra_env))
+        failures.extend(
+            _check_access_case(root, label, argv, extra_env=extra_env, python=python)
+        )
     for label, argv in HINT_CASES:
-        failures.extend(_check_hint_case(root, label, argv))
+        failures.extend(_check_hint_case(root, label, argv, python=python))
     for label, argv, expected in ROUTING_CASES:
-        failures.extend(_check_routing_case(root, label, argv, expected))
+        failures.extend(_check_routing_case(root, label, argv, expected, python=python))
     return failures
+
+
+def _real_base_python(root: Path, tmpdir: str) -> str:
+    """Build a fresh venv with the REAL thin base partition (no extras) and
+    return its interpreter. `pip install .` resolves exactly what
+    [project.dependencies] declares — the faithful counterpart to the in-CI
+    BlockHeavyFinder simulation."""
+    venv = Path(tmpdir) / "thin-base-venv"
+    uv = shutil.which("uv")
+    if uv:
+        subprocess.run(
+            [uv, "venv", str(venv)], check=True, capture_output=True, text=True
+        )
+        python = str(venv / "bin" / "python")
+        subprocess.run(
+            [uv, "pip", "install", "--python", python, str(root)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+    else:
+        subprocess.run(
+            [sys.executable, "-m", "venv", str(venv)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        python = str(venv / "bin" / "python")
+        subprocess.run(
+            [python, "-m", "pip", "install", str(root)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+    return python
+
+
+def _check_heavy_absent(python: str) -> list[str]:
+    """Assert no blocked heavy family is importable in the real thin base."""
+    families = sorted({family.split(".")[0] for family in BLOCKED_FAMILIES})
+    probe = (
+        "import importlib.util as u, json, sys\n"
+        "present = []\n"
+        "for m in json.loads(sys.argv[1]):\n"
+        "    try:\n"
+        "        if u.find_spec(m) is not None: present.append(m)\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "print(json.dumps(present))\n"
+    )
+    result = subprocess.run(
+        [python, "-c", probe, json.dumps(families)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        return [
+            "access-imports-clean: FAIL heavy-absence probe errored\n"
+            f"{result.stdout}\n{result.stderr}"
+        ]
+    present = json.loads(result.stdout or "[]")
+    if present:
+        return [
+            "access-imports-clean: FAIL real base partition contains heavy "
+            f"families: {present}"
+        ]
+    return []
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -262,6 +365,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--inject-heavy-module")
     parser.add_argument("--inject-mounted-app")
+    parser.add_argument(
+        "--real-install",
+        action="store_true",
+        help=(
+            "build a fresh venv with the real thin base partition (no extras) "
+            "and assert against it, instead of the meta_path simulation"
+        ),
+    )
     args = parser.parse_args(argv)
 
     extra_env = {}
@@ -272,12 +383,24 @@ def main(argv: list[str] | None = None) -> int:
     if args.inject_mounted_app:
         extra_env["SOLSTONE_ACCESS_GUARD_INJECT_MOUNTED_APP"] = args.inject_mounted_app
 
-    failures = run_checks(args.root.resolve(), extra_env=extra_env or None)
+    root = args.root.resolve()
+    if args.real_install:
+        with tempfile.TemporaryDirectory(prefix="solstone-thin-base-") as tmpdir:
+            print("access-imports-clean: building real thin-base venv (no extras)...")
+            python = _real_base_python(root, tmpdir)
+            failures = _check_heavy_absent(python)
+            failures.extend(
+                run_checks(root, extra_env=extra_env or None, python=python)
+            )
+    else:
+        failures = run_checks(root, extra_env=extra_env or None)
+
     if failures:
         for failure in failures:
             print(failure, file=sys.stderr)
         return 1
-    print("access-imports-clean: pass")
+    mode = "real-install" if args.real_install else "simulated"
+    print(f"access-imports-clean: pass ({mode})")
     return 0
 
 

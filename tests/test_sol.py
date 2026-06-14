@@ -500,21 +500,38 @@ class TestCommandRegistry:
         assert scripts["sol"].startswith("solstone.think.sol_cli:")
         assert scripts["journal"].startswith("solstone.think.sol_cli:")
 
-    def test_pyproject_declares_linux_parakeet_base_dependencies(self):
-        """Linux/x86_64 base install includes the default Parakeet runtime."""
+    def test_pyproject_declares_journal_parakeet_dependencies(self):
+        """The default Parakeet/STT runtime ships in the journal-host extras,
+        not the thin base. After the package split, base carries no transcription
+        stack: [journal-host] pulls onnx-asr (Linux/x86_64) and [journal] pulls
+        the CPU onnxruntime, while [journal-cuda] swaps in the GPU runtime."""
         pyproject = tomllib.loads(
             (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
         )
-        dependencies = pyproject["project"]["dependencies"]
+        base = pyproject["project"]["dependencies"]
+        extras = pyproject["project"]["optional-dependencies"]
 
-        assert "onnxruntime>=1.20.0,!=1.24.1" in dependencies
-        assert (
-            "onnx-asr>=0.11.0; sys_platform == 'linux' and platform_machine == 'x86_64'"
-            in dependencies
+        # The thin base carries no ONNX / STT runtime.
+        assert not any("onnxruntime" in dep or "onnx-asr" in dep for dep in base), (
+            "thin base must not carry the transcription runtime"
         )
+
+        # [journal] (CPU default) pulls the CPU onnxruntime floor.
+        assert "onnxruntime>=1.20.0,!=1.24.1" in extras["journal"]
         assert (
             "onnxruntime>=1.25.0,!=1.24.1; sys_platform == 'linux' and platform_machine == 'x86_64'"
-            in dependencies
+            in extras["journal"]
+        )
+        # [journal-host] (shared core) pulls the parakeet STT lib on Linux/x86_64.
+        assert (
+            "onnx-asr>=0.11.0; sys_platform == 'linux' and platform_machine == 'x86_64'"
+            in extras["journal-host"]
+        )
+        # [journal-cuda] swaps in the GPU runtime and never the CPU onnxruntime.
+        assert "onnxruntime-gpu>=1.25.0" in extras["journal-cuda"]
+        assert not any(
+            dep.split(";")[0].strip() == "onnxruntime>=1.20.0,!=1.24.1"
+            for dep in extras["journal-cuda"]
         )
 
     def test_every_registry_entry_has_surface_tag(self):

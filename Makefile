@@ -14,7 +14,7 @@ export TMPDIR := /var/tmp
 PYTEST_BASETEMP_INIT := BASETEMP=$$(mktemp -d /var/tmp/solstone-pytest-XXXXXX); trap 'rm -rf "$$BASETEMP"' EXIT INT TERM;
 PYTEST_BASETEMP_FLAG := --basetemp "$$BASETEMP"
 
-.PHONY: install uninstall test test-cov test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api update-api-baselines service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-call-http-only check-tools-http-only check-cogitate-prompts smoke-cogitate release release-test FORCE
+.PHONY: install uninstall test test-cov test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api update-api-baselines service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-call-http-only check-tools-http-only check-access-imports-clean check-thin-base-install check-cogitate-prompts smoke-cogitate release release-test FORCE
 
 # Default target - install package in editable mode
 all: install
@@ -26,20 +26,20 @@ VENV_PY := $(VENV_BIN)/python
 PYTHON := $(VENV_PY)
 PARAKEET_ONNX_VARIANT ?= $(shell if nvidia-smi -L >/dev/null 2>&1; then echo cuda; else echo cpu; fi)
 
-# Dev install extras: NEVER use --all-extras. It enables BOTH parakeet-onnx-cpu
-# and parakeet-onnx-cuda, which are mutually-exclusive hardware backends:
-#   - cpu pulls onnxruntime; cuda pulls onnxruntime-gpu. Both packages own the
-#     SAME onnxruntime/ import dir. The dedicated per-host parakeet step below
-#     (uv sync --extra all --extra parakeet-onnx-$(PARAKEET_ONNX_VARIANT)) then
-#     uninstalls the non-selected variant, and that uninstall deletes the shared
-#     onnxruntime/ files -> `import onnxruntime` fails (ModuleNotFoundError) even
-#     though uv still lists it installed. Surfaces as `journal install-models`
-#     dying with "No module named 'onnxruntime'" on a non-NVIDIA Linux box.
+# Dev install extras: install exactly ONE journal-host bundle for this host.
+# [journal] (CPU) and [journal-cuda] (GPU) are the SAME stack and differ only in
+# the transcription ONNX runtime, so NEVER install both and NEVER use
+# --all-extras:
+#   - [journal] pulls onnxruntime; [journal-cuda] pulls onnxruntime-gpu. Both
+#     packages own the SAME onnxruntime/ import dir and clobber each other ->
+#     `import onnxruntime` fails (ModuleNotFoundError) even though uv still
+#     lists it installed. Surfaces as `journal install-models` dying with "No
+#     module named 'onnxruntime'".
 #   - on Darwin, --all-extras also forces resolution of cuda's nvidia-* wheels,
 #     which have no arm64 builds, so `uv sync` errors out outright.
-# Sync ONLY the platform-agnostic bundle here (`all` = pdf + whisper); the
-# dedicated parakeet step installs exactly one variant for the host.
-EXTRAS_ARGS := --extra all
+# Pick the GPU bundle only on NVIDIA hosts; everyone else gets the CPU bundle.
+JOURNAL_EXTRA := $(if $(filter cuda,$(PARAKEET_ONNX_VARIANT)),journal-cuda,journal)
+EXTRAS_ARGS := --extra $(JOURNAL_EXTRA)
 
 # Require uv only for goals that actually use it. `preflight` is a pure
 # stdlib readiness battery and `install` runs preflight as its own fail-fast
@@ -73,12 +73,9 @@ USER_BIN := $(HOME)/.local/bin
 		echo "Python 3.14+ detected - installing onnxruntime from nightly feed..."; \
 		$(UV) pip install --pre --no-deps --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ORT-Nightly/pypi/simple/ onnxruntime; \
 	fi
-	@OS_NAME=$$(uname -s); \
-	ARCH=$$(uname -m); \
-	if [ "$$OS_NAME" = "Linux" ] && [ "$$ARCH" = "x86_64" ]; then \
-		echo "parakeet install: PARAKEET_ONNX_VARIANT=$(PARAKEET_ONNX_VARIANT)"; \
-		$(UV) sync --extra all --extra parakeet-onnx-$(PARAKEET_ONNX_VARIANT) || { echo "parakeet install: uv sync --extra all --extra parakeet-onnx-$(PARAKEET_ONNX_VARIANT) failed" >&2; exit 1; }; \
-	fi
+	@# The `--extra $(JOURNAL_EXTRA)` sync above already pulls the right
+	@# transcription ONNX runtime ([journal] = CPU, [journal-cuda] = GPU), so no
+	@# separate per-host parakeet sync is needed here anymore.
 	@$(MAKE) --no-print-directory skills
 	@touch .installed
 
@@ -104,14 +101,14 @@ install: .installed
 		$(MAKE) parakeet-helper || { echo 'parakeet install: helper build failed' >&2; exit 1; }; \
 	elif [ "$$OS_NAME" = "Linux" ]; then \
 		if [ "$$ARCH" = "x86_64" ]; then \
-			echo "parakeet install: PARAKEET_ONNX_VARIANT=$(PARAKEET_ONNX_VARIANT)"; \
-			$(UV) sync --extra all --extra parakeet-onnx-$(PARAKEET_ONNX_VARIANT) || { echo "parakeet install: uv sync --extra all --extra parakeet-onnx-$(PARAKEET_ONNX_VARIANT) failed" >&2; exit 1; }; \
+			echo "journal install: JOURNAL_EXTRA=$(JOURNAL_EXTRA)"; \
+			$(UV) sync --group dev $(EXTRAS_ARGS) || { echo "journal install: uv sync --group dev $(EXTRAS_ARGS) failed" >&2; exit 1; }; \
 			if [ "$(PARAKEET_ONNX_VARIANT)" = "cuda" ]; then \
 				$(UV) pip install --reinstall onnxruntime-gpu || { echo "parakeet install: failed to force-reinstall onnxruntime-gpu" >&2; exit 1; }; \
 				$(VENV_PY) -c "import onnxruntime as ort; ort.preload_dlls(cuda=True, cudnn=True); assert 'CUDAExecutionProvider' in ort.get_available_providers(), 'CUDAExecutionProvider missing after install'; print('parakeet install: CUDA runtime ready')" || { echo "parakeet install: CUDA runtime validation failed" >&2; exit 1; }; \
 			fi; \
 		else \
-			echo "parakeet install: skipping unsupported Linux arch $$ARCH"; \
+			echo "journal install: skipping unsupported Linux arch $$ARCH"; \
 		fi; \
 	else \
 		echo "parakeet install: unsupported host '$$OS_NAME/$$ARCH'; supported: darwin/arm64, linux/x86_64" >&2; \
@@ -492,9 +489,16 @@ check-call-http-only: .installed
 check-tools-http-only: .installed
 	$(VENV_BIN)/python scripts/check_tools_http_only.py
 
-# Thin sol access surface import-clean gate
+# Thin sol access surface import-clean gate (fast meta_path simulation; in ci)
 check-access-imports-clean: .installed
 	$(VENV_BIN)/python scripts/check_access_imports_clean.py
+
+# Faithful thin-base gate: build a fresh venv with the REAL base partition (no
+# extras) and assert the access surface imports clean against it. Heavier than
+# check-access-imports-clean (does a real install) — operator/release opt-in,
+# NOT part of `make ci` (which uses the fast simulation above).
+check-thin-base-install:
+	python3 scripts/check_access_imports_clean.py --real-install
 
 # Cogitate-prompt static gate (prompts use only on-contract command forms)
 check-cogitate-prompts: .installed

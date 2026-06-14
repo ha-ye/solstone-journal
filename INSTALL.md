@@ -25,13 +25,35 @@ macOS: install xcode command line tools (`xcode-select --install`) and homebrew 
 
 ## install
 
+most people install solstone to **run a journal here** — the full host that
+captures, transcribes, and makes sense of your day:
+
 ```bash
-uv tool install solstone
+uv tool install 'solstone[journal]'
 ```
 
-(or `pipx install solstone` if you prefer pipx — they're equivalent for our purposes.)
+(or `pipx install 'solstone[journal]'` if you prefer pipx — they're equivalent
+for our purposes. the quotes matter — they keep your shell from treating the
+`[journal]` brackets as a glob.)
 
-`uv tool install` puts `sol` at `~/.local/bin/sol`, which most shells already have on PATH. if not: `exec $SHELL -l` or restart your shell.
+`uv tool install` puts `sol` and `journal` at `~/.local/bin/`, which most shells
+already have on PATH. if not: `exec $SHELL -l` or restart your shell.
+
+### just the `sol` client
+
+`pip install solstone` (no extras) installs only the thin `sol` access client —
+talk to a journal running **elsewhere** (a second machine, or a journal you
+reach over your private link). it carries none of the journal host's AI/media
+stack, so it's small and fast:
+
+```bash
+uv tool install solstone        # the sol client, on PATH
+uvx solstone --help             # or ephemerally — no install, one-shot
+```
+
+if you run a journal-host command (`journal setup`, `journal start`, …) from the
+thin client, it tells you to add the journal stack:
+`pip install 'solstone[journal]'`.
 
 ## set up
 
@@ -43,7 +65,9 @@ this runs the setup readiness doctor battery, confirms the journal directory at 
 
 let your human know: **open http://localhost:5015 in a browser**. the first-run wizard walks them through setting their identity and connecting a gemini API key. network access, and the password it requires, can be configured later in settings → security.
 
-if the readiness doctor step (`sol doctor --readiness`) finds missing system libraries or python extras, it will tell you the exact install command to run for your platform. extras (`pdf`, `whisper`) can be added at any time with `uv tool upgrade solstone --extra pdf` or `pip install 'solstone[pdf]'`. on linux, the default parakeet transcription works out of the box — its runtime ships with the install and `journal setup` downloads the model, so there's no extra to add. NVIDIA GPU owners who want GPU-accelerated transcription can add `solstone[parakeet-onnx-cuda]`; `sol doctor` reports whether the default backend's runtime and model are ready.
+a `solstone[journal]` install bundles everything a journal host needs — PDF rendering, whisper, and the default CPU transcription stack are all included; `journal setup` downloads the transcription model. there are no separate à-la-carte extras to add. if the readiness doctor step (`sol doctor --readiness`) finds missing system libraries, it will tell you the exact install command to run for your platform.
+
+NVIDIA GPU owners who want GPU-accelerated transcription install `solstone[journal-cuda]` **instead of** `solstone[journal]` (pick one — the CPU and GPU ONNX runtimes share the same files and must not both be installed). `sol doctor` reports whether the transcription runtime and model are ready.
 
 if the service fails to start, check `journal service logs`.
 

@@ -68,12 +68,16 @@ Python 3.11+, Linux + macOS, AGPL-3.0-only, maintained by [sol pbc](https://solp
 
 ## quick start
 
+run a journal here — the full host:
+
 ```bash
-uv tool install solstone
+uv tool install 'solstone[journal]'
 journal setup
 ```
 
-(or `pipx install solstone && journal setup`.)
+(or `pipx install 'solstone[journal]' && journal setup`.)
+
+want only the thin `sol` client — to talk to a journal running elsewhere? `uv tool install solstone` (no extras), or `uvx solstone` for an ephemeral one-shot.
 
 then open http://localhost:5015 in a browser; the first-run wizard handles identity and the gemini API key. network access, and the password it requires, can be configured later in settings → security.
 

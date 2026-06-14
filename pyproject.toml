@@ -28,7 +28,83 @@ classifiers = [
 keywords = ["audio", "transcription", "screenshot", "multimodal", "ai", "gemini"]
 
 dependencies = [
-    # Core dependencies
+    # The thin `sol` access surface only. `pip install solstone` (the default)
+    # is a thin client that talks to a journal — it carries NO provider SDKs,
+    # no AI/media/ML runtime, no Flask. Running a journal host here is the
+    # deliberate `pip install 'solstone[journal]'` opt-in (the full stack below).
+    #
+    # This partition is the boundary the access-surface import-clean guard
+    # (scripts/check_access_imports_clean.py) and the extras-consistency lint
+    # (scripts/check_extras_consistency.py) enforce. Adding a dependency here
+    # must keep the `sol` access commands import-clean — do not add anything the
+    # journal host needs; that belongs in [journal-host] below.
+    "setproctitle",
+    "typer",
+    "requests",
+    # Natural language time parsing (used by `sol` access paths).
+    "timefhuman",
+    # Link tunnel client (`sol link serve`/`join`, think/link/): TLS 1.3 in
+    # memory-BIO mode over an opaque WebSocket; pyOpenSSL supplies the
+    # handshake-time verify callback that stdlib ssl can't express.
+    "cryptography>=42",
+    "pyOpenSSL>=24.0",
+    "websockets>=13.0",
+    "psutil",
+    "userpath>=1.9.2,<2",
+]
+
+[project.optional-dependencies]
+# ---------------------------------------------------------------------------
+# The journal-host menu. `pip install solstone` is the thin client (above);
+# running a journal here is a deliberate opt-in:
+#
+#   pip install 'solstone[journal]'        # run a journal — full CPU stack
+#   pip install 'solstone[journal-cuda]'   # journal with GPU transcription
+#
+# [journal] and [journal-cuda] are the same stack; they differ ONLY in the
+# transcription ONNX runtime (CPU vs CUDA). They share [journal-host] (the
+# heavy core minus the runtime). Install ONE of them, never both — onnxruntime
+# and onnxruntime-gpu own the same `onnxruntime/` import dir and clobber each
+# other (see the Makefile note on --all-extras).
+#
+# [pdf] / [whisper] / [parakeet-onnx-cpu|cuda] remain as internal building
+# blocks: they back the per-feature install hints (think/features.py,
+# observe/transcribe/parakeet_hints.py) and the lazy-import boundaries, and
+# [journal-host]/[journal] compose them. They are NOT part of the advertised
+# menu — INSTALL.md documents only `solstone` and `solstone[journal]`.
+# ---------------------------------------------------------------------------
+pdf = [
+    "weasyprint>=60.0",
+    "pypdf>=4.0.0",
+    "pdf2image>=1.16.0",
+]
+
+whisper = [
+    "faster-whisper>=1.0.0",
+]
+
+parakeet-onnx-cpu = [
+    "onnx-asr>=0.11.0",
+    "onnxruntime>=1.25.0",
+    "huggingface-hub>=0.24",
+]
+parakeet-onnx-cuda = [
+    "onnx-asr>=0.11.0",
+    "onnxruntime-gpu>=1.25.0",
+    "huggingface-hub>=0.24",
+    "nvidia-cuda-runtime-cu12",
+    "nvidia-cudnn-cu12",
+    "nvidia-cublas-cu12",
+    "nvidia-cufft-cu12",
+    "nvidia-curand-cu12",
+    "nvidia-cuda-nvrtc-cu12",
+    "nvidia-nvjitlink-cu12",
+]
+
+# The full journal-host stack EXCEPT the transcription ONNX runtime (which is
+# the CPU-vs-CUDA choice deferred to [journal]/[journal-cuda] below). Not a
+# user-facing extra — always pulled in via [journal] or [journal-cuda].
+journal-host = [
     "python-dotenv",
     "google-genai>=1.62.0",
     "Flask[async]",
@@ -36,14 +112,9 @@ dependencies = [
     "mistune",
     "python-frontmatter",
     "packaging",
-
-    # Natural language time parsing
-    "timefhuman",
     "Pillow",
     "numpy",
-    "setproctitle",
     "av",
-
     "openai>=1.2.0",
     "openhands-sdk==1.27.*",
     # Pinned to >=1.27.1: that release reverts the Gemini prompt-cache markers
@@ -69,75 +140,49 @@ dependencies = [
     "huggingface-hub>=0.24",
     "httpx",
     "h2",
-    "cryptography>=42",
     "pyjwt>=2.8",
     "jsonschema>=4.26,<5",
     "genai-prices",
-    # Link tunnel service (think/link/): TLS 1.3 in memory-BIO mode over
-    # an opaque WebSocket; requires pyOpenSSL for the handshake-time
-    # verify callback that stdlib ssl can't express.
-    "pyOpenSSL>=24.0",
-    "websockets>=13.0",
     "icalendar",
     "blessed>=1.20.0",
-    "psutil",
     "tzlocal",
     "python-slugify",
     "rapidfuzz",
-    "typer",
-    "userpath>=1.9.2,<2",
-
     # Audio processing
     "soundfile",
-    "onnxruntime>=1.20.0,!=1.24.1",
-    # Linux/x86_64 default-STT (parakeet) ride-along: pull onnx-asr into
-    # base and raise the onnxruntime floor only on supported Linux hosts.
+    # Linux/x86_64 default-STT (parakeet) ride-along: pull onnx-asr in and let
+    # the [journal]/[journal-cuda] runtime line supply onnxruntime.
     "onnx-asr>=0.11.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "onnxruntime>=1.25.0,!=1.24.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
-    # Linux/aarch64 default-STT (whisper) ride-along: faster-whisper bundles its
-    # own CTranslate2 runtime; the base onnxruntime floor already covers VAD +
-    # the WeSpeaker embedder, so no onnxruntime bump here.
-    "faster-whisper>=1.0.0; sys_platform == 'linux' and platform_machine == 'aarch64'",
     "kaldi-native-fbank>=1.22",
-    # solstone/apps/speakers/{owner,discovery}.py use sklearn.cluster.HDBSCAN. Previously
-    # pulled transitively via resemblyzer; now a direct dep.
+    # solstone/apps/speakers/{owner,discovery}.py use sklearn.cluster.HDBSCAN.
+    # Previously pulled transitively via resemblyzer; now a direct dep.
     "scikit-learn>=1.3",
-
     # Media processing
     "opencv-python-headless",
-
-    "requests",
+    # PDF + faster-whisper fold into the journal host ("choose journal, get it
+    # all"). Referenced via the building-block extras so the per-feature hints
+    # stay in sync.
+    "solstone[pdf]",
+    "solstone[whisper]",
 ]
 
-[project.optional-dependencies]
-pdf = [
-    "weasyprint>=60.0",
-    "pypdf>=4.0.0",
-    "pdf2image>=1.16.0",
+# Run a journal here — the full host stack with CPU transcription (default).
+journal = [
+    "solstone[journal-host]",
+    # CPU ONNX runtime: covers VAD + the WeSpeaker embedder everywhere, and the
+    # parakeet STT on Linux/x86_64. Floor raised on x86_64 for the parakeet
+    # backend; !=1.24.1 across the board (known-bad wheel).
+    "onnxruntime>=1.20.0,!=1.24.1",
+    "onnxruntime>=1.25.0,!=1.24.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
-whisper = [
-    "faster-whisper>=1.0.0",
-]
-
-# Bundle of all stdlib extras (excludes parakeet variants — those are
-# mutually-exclusive hardware backends, opt-in).
-all = [
-    "weasyprint>=60.0",
-    "pypdf>=4.0.0",
-    "pdf2image>=1.16.0",
-    "faster-whisper>=1.0.0",
-]
-
-parakeet-onnx-cpu = [
-    "onnx-asr>=0.11.0",
-    "onnxruntime>=1.25.0",
-    "huggingface-hub>=0.24",
-]
-parakeet-onnx-cuda = [
-    "onnx-asr>=0.11.0",
+# Run a journal here with GPU-accelerated transcription (NVIDIA / Linux x86_64).
+# Same stack as [journal] but onnxruntime-gpu in place of the CPU runtime — the
+# GPU wheel supplies the `onnxruntime` namespace (incl. CPU providers) for
+# VAD/embedder. Install this instead of [journal], not alongside it.
+journal-cuda = [
+    "solstone[journal-host]",
     "onnxruntime-gpu>=1.25.0",
-    "huggingface-hub>=0.24",
     "nvidia-cuda-runtime-cu12",
     "nvidia-cudnn-cu12",
     "nvidia-cublas-cu12",
@@ -149,6 +194,11 @@ parakeet-onnx-cuda = [
 
 [project.scripts]
 sol = "solstone.think.sol_cli:main"
+# `solstone` is an alias for the `sol` access CLI so `uvx solstone` /
+# `uv tool run solstone` resolve to the thin client instead of erroring on a
+# missing console script. The thin base's small footprint makes the ephemeral
+# `uvx solstone ...` one-shot fast (CI, Docker, a second machine, agents).
+solstone = "solstone.think.sol_cli:main"
 journal = "solstone.think.sol_cli:journal_main"
 mlx-vlm-server = "solstone.think.providers.mlx_server:main"
 
