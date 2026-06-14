@@ -12,7 +12,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from solstone.convey.secure_listener.accept import CERTLESS_TUNNEL_CAP, SecureListener
+from solstone.convey.secure_listener.accept import (
+    CERTLESS_TUNNEL_CAP,
+    SecureListener,
+    certless_admission_mode,
+)
 from solstone.think.link.nonces import NONCE_TTL_SECONDS, NonceStore
 from solstone.think.link.paths import nonces_path
 from tests.link.certless_helpers import write_config
@@ -89,6 +93,23 @@ def test_stop_all_after_loop_closed_does_not_raise():
         executor.shutdown(wait=True, cancel_futures=True)
 
 
+@pytest.mark.parametrize(
+    ("mode", "window_is_open", "expected"),
+    [
+        ("pl-direct", True, "pl-direct"),
+        ("pl-via-spl", True, "pl-via-spl"),
+        ("pl-direct", False, None),
+        ("pl-via-spl", False, None),
+    ],
+)
+def test_certless_admission_mode(
+    mode: str,
+    window_is_open: bool,
+    expected: str | None,
+) -> None:
+    assert certless_admission_mode(mode, window_is_open) == expected
+
+
 @pytest.mark.asyncio
 async def test_certless_reap_tears_down_on_passive_expiry(
     tmp_path: Path,
@@ -129,7 +150,7 @@ async def test_certless_reap_tears_down_after_nonce_consume(
 
 
 @pytest.mark.asyncio
-async def test_certless_reap_tears_down_when_posture_leaves_spl(
+async def test_certless_not_reaped_while_nonce_live(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -138,11 +159,14 @@ async def test_certless_reap_tears_down_when_posture_leaves_spl(
     listener = _listener()
     handle, writer, mux, _task = _register_fake_certless(listener)
 
-    await listener._reap_certless_if_window_closed(now=1001)
+    try:
+        await listener._reap_certless_if_window_closed(now=1001)
 
-    assert handle.connection_id not in listener._certless_connections
-    assert writer.closed is True
-    assert mux.closed is True
+        assert handle.connection_id in listener._certless_connections
+        assert writer.closed is False
+        assert mux.closed is False
+    finally:
+        await listener._close_certless_connection(handle)
 
 
 @pytest.mark.asyncio

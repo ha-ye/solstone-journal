@@ -8,7 +8,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -88,9 +88,11 @@ def write_config(
     config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
 
-def certless_identity() -> ConveyIdentity:
+def certless_identity(
+    mode: Literal["pl-via-spl", "pl-direct"] = "pl-via-spl",
+) -> ConveyIdentity:
     return ConveyIdentity(
-        mode="pl-via-spl",
+        mode=mode,
         fingerprint=None,
         device_label=None,
         paired_at=None,

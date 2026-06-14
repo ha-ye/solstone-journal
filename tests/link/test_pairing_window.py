@@ -43,13 +43,17 @@ def test_read_posture_exact_match_only(
     assert read_posture() == "spl"
 
 
-def test_window_open_requires_spl_and_live_unused_nonce(
+@pytest.mark.parametrize("posture", ["spl", "direct"])
+def test_window_open_requires_live_unused_nonce_in_any_posture(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    posture: str,
 ) -> None:
     journal = _journal(tmp_path, monkeypatch)
-    write_config(journal, link={"posture": "spl"})
+    write_config(journal, link={"posture": posture})
     store = NonceStore(nonces_path())
+
+    assert window_open(now=1000) is False
 
     store.add("live", "phone", now=1000)
     assert window_open(now=1000 + NONCE_TTL_SECONDS - 1) is True
@@ -61,7 +65,7 @@ def test_window_open_requires_spl_and_live_unused_nonce(
     assert window_open(now=2000 + NONCE_TTL_SECONDS) is False
 
 
-def test_window_closed_when_posture_not_spl(
+def test_window_open_in_direct_posture_with_live_nonce(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -69,15 +73,17 @@ def test_window_closed_when_posture_not_spl(
     write_config(journal, link={"posture": "direct"})
     NonceStore(nonces_path()).add("live", "phone", now=1000)
 
-    assert window_open(now=1001) is False
+    assert window_open(now=1001) is True
 
 
+@pytest.mark.parametrize("posture", ["spl", "direct"])
 def test_window_open_fail_closed_on_corrupt_nonce_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    posture: str,
 ) -> None:
     journal = _journal(tmp_path, monkeypatch)
-    write_config(journal, link={"posture": "spl"})
+    write_config(journal, link={"posture": posture})
     path = nonces_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{not json", encoding="utf-8")
@@ -85,13 +91,15 @@ def test_window_open_fail_closed_on_corrupt_nonce_state(
     assert window_open(now=1000) is False
 
 
+@pytest.mark.parametrize("posture", ["spl", "direct"])
 def test_window_open_fail_closed_on_read_exception(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    posture: str,
 ) -> None:
     journal = _journal(tmp_path, monkeypatch)
-    write_config(journal, link={"posture": "spl"})
+    write_config(journal, link={"posture": posture})
 
     class BrokenNonceStore:
         def __init__(self, _path: Path) -> None:

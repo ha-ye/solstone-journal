@@ -117,9 +117,9 @@ def enable_spl() -> None:
 def disable_spl() -> SplDisableOutcome:
     """Set SPL posture to direct without clearing local or relay-side state.
 
-    Sets `link.posture="direct"` (the authoritative reach gate -
-    `window.read_posture()`/`window_open()` immediately stop admitting cert-less
-    off-LAN pairs, and the status surface reports `direct`). The supervised
+    Sets `link.posture="direct"` (the authoritative reach/status gate). The
+    cert-less pairing window remains bounded by live nonce existence, not
+    posture. The supervised
     `journal spl` daemon observes the posture change and closes its listen WS
     within its poll interval. It does NOT clear the local `totp.json` (kept for
     quick re-enable) or revoke the relay-side copy of the secret (a later lode).

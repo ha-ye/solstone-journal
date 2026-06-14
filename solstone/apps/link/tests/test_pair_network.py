@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -34,9 +36,9 @@ def _start_pair(env) -> dict:
     return response.get_json()
 
 
-def _spl_identity() -> ConveyIdentity:
+def _certless_identity(mode: Literal["pl-via-spl", "pl-direct"]) -> ConveyIdentity:
     return ConveyIdentity(
-        mode="pl-via-spl",
+        mode=mode,
         fingerprint=None,
         device_label=None,
         paired_at=None,
@@ -67,7 +69,8 @@ def _assert_network_result(env, calls, expected_network: str, response) -> None:
     ("environ_overrides", "expected_network"),
     [
         (None, "network"),
-        ({"pl.identity": _spl_identity()}, "anywhere"),
+        ({"pl.identity": _certless_identity("pl-via-spl")}, "anywhere"),
+        ({"pl.identity": _certless_identity("pl-direct")}, "network"),
     ],
 )
 def test_pair_route_network_persists_to_devices_and_pair_complete_event(
@@ -127,7 +130,7 @@ def test_by_code_certless_pairing_is_confined(link_env) -> None:
     response = env.client.post(
         "/app/link/by-code",
         json={"code": started["manual_code"], "csr": _make_csr("by-code-confined")},
-        environ_overrides={"pl.identity": _spl_identity()},
+        environ_overrides={"pl.identity": _certless_identity("pl-via-spl")},
     )
 
     assert response.status_code == 403

@@ -73,6 +73,29 @@ def test_relaxed_context_keeps_allowlisted_cert_fingerprint(tmp_path: Path) -> N
     assert server.peer_fingerprint == fingerprint
 
 
+def test_relaxed_context_rejects_unauthorized_cert(tmp_path: Path) -> None:
+    ca, server_cert, server_key, authorized = _server_material(tmp_path)
+    private_key_pem, csr_pem = _build_csr("pytest stranger")
+    client_cert_pem, fingerprint = sign_csr(ca, csr_pem, "pytest stranger")
+    server_ctx = build_relaxed_server_context(ca, server_cert, server_key, authorized)
+    client_ctx = _build_tls_client_ctx(
+        ClientIdentity(
+            private_key_pem=private_key_pem,
+            client_cert_pem=client_cert_pem,
+            ca_chain_pem=ca.cert.public_bytes(serialization.Encoding.PEM).decode(
+                "ascii"
+            ),
+            fingerprint=fingerprint,
+            home_instance_id="inst-1",
+            home_label="home",
+            home_attestation="attest",
+        )
+    )
+
+    with pytest.raises((TlsError, ClientTlsError)):
+        _complete_handshake(server_ctx, client_ctx)
+
+
 def _server_material(
     tmp_path: Path,
 ) -> tuple[LoadedCa, object, bytes, AuthorizedClients]:

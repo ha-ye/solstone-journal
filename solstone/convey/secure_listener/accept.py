@@ -14,7 +14,7 @@ import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from OpenSSL import SSL
 
@@ -33,6 +33,23 @@ CERTLESS_TUNNEL_CAP = 4
 CERTLESS_PAIR_FAILURE_CAP = 3
 CERTLESS_INVALID_NONCE_BACKOFF_SECONDS = 1.0
 CERTLESS_WINDOW_POLL_SECONDS = 5.0
+
+PeerMode = Literal["pl-direct", "pl-via-spl"]
+
+
+def certless_admission_mode(
+    peer_mode: PeerMode, window_is_open: bool
+) -> PeerMode | None:
+    """Cert-less admission for the secure listener.
+
+    An open pairing window admits a cert-less peer of EITHER origin
+    (loopback ``pl-via-spl`` or LAN-direct ``pl-direct``); the admitted
+    identity is stamped with its true origin. A closed window admits none
+    (the strict, client-cert-required context applies). Admission is
+    origin-agnostic by design: the window bounds which peers may pair, the
+    peer address does not.
+    """
+    return peer_mode if window_is_open else None
 
 
 @dataclass(frozen=True)
@@ -189,9 +206,10 @@ class SecureListener:
         tcp_reader: asyncio.StreamReader,
         tcp_writer: asyncio.StreamWriter,
         connection_id: str,
-        mode: str,
+        mode: PeerMode,
     ) -> None:
-        admitted_certless = mode == "pl-via-spl" and window_open()
+        certless_mode = certless_admission_mode(mode, window_open())
+        admitted_certless = certless_mode is not None
         tls_ctx = self._relaxed_tls_ctx if admitted_certless else self._strict_tls_ctx
         tls = new_server(tls_ctx)
         send_queue: asyncio.Queue[bytes] = asyncio.Queue()
@@ -304,7 +322,7 @@ class SecureListener:
                     certless_handle = maybe_handle
                     certless_registered = True
                     identity = ConveyIdentity(
-                        mode="pl-via-spl",
+                        mode=mode,
                         fingerprint=None,
                         device_label=None,
                         paired_at=None,
@@ -342,10 +360,10 @@ class SecureListener:
                 await writer_task
             await mux.close()
 
-    def _identity_for_peer(self, mode: str, fingerprint: str) -> ConveyIdentity:
+    def _identity_for_peer(self, mode: PeerMode, fingerprint: str) -> ConveyIdentity:
         entry = self._authorized.get(fingerprint)
         return ConveyIdentity(
-            mode=mode,  # type: ignore[arg-type]
+            mode=mode,
             fingerprint=fingerprint,
             device_label=entry.device_label if entry else None,
             paired_at=entry.paired_at if entry else None,
@@ -440,7 +458,7 @@ async def _drain_send_queue(
             await result
 
 
-def _mode_from_peername(peername: object) -> str:
+def _mode_from_peername(peername: object) -> PeerMode:
     host = ""
     if isinstance(peername, tuple) and peername:
         host = str(peername[0])
@@ -461,4 +479,4 @@ def _tls_close_reason(exc: TlsError) -> str:
     return "tls_alert"
 
 
-__all__ = ["SecureListener"]
+__all__ = ["SecureListener", "certless_admission_mode"]

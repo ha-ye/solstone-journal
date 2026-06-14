@@ -84,9 +84,11 @@ def test_named_non_pair_endpoints_are_refused(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["pl-via-spl", "pl-direct"])
 async def test_evasion_paths_are_refused(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    mode: str,
 ) -> None:
     app, _journal = make_convey_app(tmp_path, monkeypatch, link={"posture": "spl"})
     NonceStore(nonces_path()).add("live", "phone")
@@ -103,7 +105,7 @@ async def test_evasion_paths_are_refused(
 
     response = await dispatch_request(
         app,
-        certless_identity(),
+        certless_identity(mode),
         "POST",
         "/app/link%2Fpair",
         body=b"{}",
@@ -115,9 +117,11 @@ async def test_evasion_paths_are_refused(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["pl-via-spl", "pl-direct"])
 async def test_window_recheck_refuses_before_handler(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    mode: str,
 ) -> None:
     app, _journal = make_convey_app(tmp_path, monkeypatch, link={"posture": "spl"})
     called = False
@@ -131,7 +135,7 @@ async def test_window_recheck_refuses_before_handler(
 
     response = await dispatch_request(
         app,
-        certless_identity(),
+        certless_identity(mode),
         "POST",
         "/app/link/pair",
         body=b"{}",

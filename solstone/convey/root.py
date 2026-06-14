@@ -128,7 +128,7 @@ def require_login() -> Any:
     if (
         request.endpoint == "app:link.pair"
         and identity is not None
-        and identity.mode == "pl-via-spl"
+        and identity.mode in {"pl-via-spl", "pl-direct"}
         and identity.fingerprint is None
     ):
         # Cert-less pairing stream; structurally confined to /pair by the C2 gate.

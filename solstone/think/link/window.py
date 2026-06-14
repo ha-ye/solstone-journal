@@ -30,8 +30,6 @@ def window_open(now: float | None = None) -> bool:
     """Return whether cert-less pairing admission is currently allowed."""
     # Unreadable or corrupt nonce state closes the cert-less pairing window. window_open() returns False on any read error.
     try:
-        if read_posture() != "spl":
-            return False
         ts = time.time() if now is None else now
         nonces = NonceStore(nonces_path()).snapshot()
         return any(not nonce.used and nonce.expires_at > ts for nonce in nonces)
