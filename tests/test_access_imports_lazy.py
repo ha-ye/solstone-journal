@@ -92,3 +92,9 @@ def test_access_surface_import_stays_light(module: str) -> None:
     assert module in modules
     leaked = _leaked_families(modules)
     assert not leaked, f"{module} pulled in forbidden modules: {leaked}"
+
+
+def test_chat_cli_import_does_not_load_callosum_or_chat_stream() -> None:
+    modules = _probe_modules("solstone.think.chat_cli")
+    assert "solstone.think.callosum" not in modules
+    assert "solstone.convey.chat_stream" not in modules

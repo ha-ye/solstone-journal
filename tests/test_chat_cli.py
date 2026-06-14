@@ -3,215 +3,198 @@
 
 from __future__ import annotations
 
-import io
 import json
 import sys
-import threading
-import urllib.error
-from datetime import datetime
-from pathlib import Path
+import time
+from collections import deque
+from collections.abc import Iterable
 from typing import Any
 
 import pytest
 
-from solstone.convey.chat_stream import append_chat_event
 from solstone.think import chat_cli
+from solstone.think.convey_client import (
+    ConveyClientError,
+    ConveyUnreachableError,
+)
 
-DAY = "20260605"
 USE_ID = "1713626000000"
+FOREIGN_USE_ID = "1713626000001"
 
 
-class FakeResponse:
-    def __init__(self, body: dict[str, Any] | bytes) -> None:
-        if isinstance(body, bytes):
-            self._body = body
-        else:
-            self._body = json.dumps(body).encode("utf-8")
+class FakeClient:
+    def __init__(self, responses: Iterable[Any]) -> None:
+        self.responses = deque(responses)
+        self.calls: list[tuple[str, str, Any]] = []
+        self.base_url = ""
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, _exc_type, _exc, _tb) -> bool:
-        return False
-
-    def read(self) -> bytes:
-        return self._body
-
-
-def _setup_journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    journal = tmp_path / "journal"
-    journal.mkdir()
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    return journal
-
-
-def _ms(hour: int, minute: int, second: int) -> int:
-    return int(datetime(2026, 6, 5, hour, minute, second).timestamp() * 1000)
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Any = None,
+        json: Any = None,
+    ) -> Any:
+        self.calls.append((method, path, json))
+        if not self.responses:
+            raise AssertionError(f"unexpected request: {method} {path}")
+        response = self.responses.popleft()
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
 
-def _append_sol_message(
-    use_id: str,
-    text: str,
-    *,
-    ts: int | None = None,
-    target: str | None = None,
-    task: str | None = None,
-) -> dict[str, Any]:
-    return append_chat_event(
-        "sol_message",
-        ts=ts or _ms(12, 0, 0),
-        use_id=use_id,
-        text=text,
-        notes="ready",
-        requested_target=target,
-        requested_task=task,
-    )
+class FakeSseResponse:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = chunks
+        self.chunk_size = None
+
+    def iter_content(self, chunk_size=None):
+        self.chunk_size = chunk_size
+        return iter(self.chunks)
 
 
-def _append_chat_error(
-    use_id: str,
-    reason: str,
-    *,
-    ts: int | None = None,
-    provider: str = "",
-    detail: str = "",
-) -> dict[str, Any]:
-    return append_chat_event(
-        "chat_error",
-        ts=ts or _ms(12, 0, 0),
-        use_id=use_id,
-        reason=reason,
-        provider=provider,
-        detail=detail,
-    )
-
-
-def _http_error(
-    body: dict[str, Any] | bytes, code: int = 400
-) -> urllib.error.HTTPError:
-    if isinstance(body, bytes):
-        raw = body
-    else:
-        raw = json.dumps(body).encode("utf-8")
-    return urllib.error.HTTPError(
-        "http://127.0.0.1:5015/api/chat",
-        code,
-        "bad request",
-        hdrs=None,
-        fp=io.BytesIO(raw),
-    )
-
-
-def _install_urlopen(
-    monkeypatch: pytest.MonkeyPatch,
-    item: Any,
-    *,
-    calls: list[tuple[Any, float]] | None = None,
-    order: list[str] | None = None,
-):
-    def fake_urlopen(request, timeout):
-        if order is not None:
-            order.append("post")
-        if calls is not None:
-            calls.append((request, timeout))
-        if isinstance(item, BaseException):
-            raise item
-        if callable(item):
-            return item(request, timeout)
-        return item
-
-    monkeypatch.setattr(chat_cli.urllib.request, "urlopen", fake_urlopen)
-
-
-def _install_main_fakes(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    *,
-    argv: list[str],
-    urlopen_item: Any,
-    order: list[str] | None = None,
-) -> tuple[Path, list[Any], list[tuple[Any, float]]]:
-    journal = _setup_journal(tmp_path, monkeypatch)
-    monkeypatch.setattr(sys, "argv", ["sol chat", *argv])
-    monkeypatch.setattr(chat_cli, "require_solstone", lambda: None)
-    monkeypatch.setattr(chat_cli, "read_service_port", lambda service: 5015)
-    monkeypatch.setattr(chat_cli, "_today", lambda: DAY)
-
+def _patch_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     import solstone.think.identity as identity
 
     monkeypatch.setattr(identity, "ensure_identity_directory", lambda: None)
 
-    instances: list[Any] = []
 
-    class FakeCallosumConnection:
-        def __init__(self) -> None:
-            self.callback = None
-            self.stopped = False
-            instances.append(self)
-
-        def start(self, callback=None) -> None:
-            if order is not None:
-                order.append("start")
-            self.callback = callback
-
-        def stop(self) -> None:
-            self.stopped = True
-
-    monkeypatch.setattr(chat_cli, "CallosumConnection", FakeCallosumConnection)
-    calls: list[tuple[Any, float]] = []
-    _install_urlopen(monkeypatch, urlopen_item, calls=calls, order=order)
-    return journal, instances, calls
+def _frame(event: dict[str, Any]) -> bytes:
+    return b"data: " + json.dumps(event).encode("utf-8") + b"\n\n"
 
 
-def _success_response(use_id: str = USE_ID, *, queued: bool = False) -> FakeResponse:
-    return FakeResponse({"use_id": use_id, "queued": queued})
+def _install_main_fakes(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    argv: list[str],
+    client: FakeClient,
+    sse_chunks: Iterable[bytes] | None,
+    base_url: str = "http://home.example:9999",
+) -> list[str]:
+    monkeypatch.setattr(sys, "argv", ["sol chat", *argv])
+    _patch_identity(monkeypatch)
+    monkeypatch.setattr(chat_cli, "resolve_base_url", lambda: base_url)
+
+    def build_client(resolved_base_url: str) -> FakeClient:
+        client.base_url = resolved_base_url
+        return client
+
+    open_calls: list[str] = []
+
+    def open_sse(resolved_base_url: str) -> Iterable[bytes] | None:
+        open_calls.append(resolved_base_url)
+        if sse_chunks is None:
+            return None
+        return iter(sse_chunks)
+
+    monkeypatch.setattr(chat_cli, "_build_client", build_client)
+    monkeypatch.setattr(chat_cli, "_open_sse", open_sse)
+    return open_calls
 
 
-def test_post_chat_includes_facet_when_supplied(monkeypatch) -> None:
-    calls: list[tuple[Any, float]] = []
-    monkeypatch.setattr(chat_cli, "read_service_port", lambda service: 5015)
-    _install_urlopen(monkeypatch, _success_response(), calls=calls)
+def _post_success(*, queued: bool = False) -> dict[str, Any]:
+    return {"use_id": USE_ID, "queued": queued}
 
-    assert chat_cli._post_chat("find this", "work") == (USE_ID, False)
 
-    request, timeout = calls[0]
-    assert timeout == chat_cli.POST_TIMEOUT_SECONDS
-    assert request.full_url == "http://127.0.0.1:5015/api/chat"
-    assert json.loads(request.data.decode("utf-8")) == {
-        "message": "find this",
-        "facet": "work",
+def _session_finish(
+    *,
+    use_id: str = USE_ID,
+    text: str = "Recovered answer",
+    requested_target: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "latest_sol_message": {
+            "use_id": use_id,
+            "text": text,
+            "requested_target": requested_target,
+        }
     }
 
 
-def test_post_chat_omits_empty_facet(monkeypatch) -> None:
-    calls: list[tuple[Any, float]] = []
-    monkeypatch.setattr(chat_cli, "read_service_port", lambda service: 5015)
-    _install_urlopen(monkeypatch, _success_response(), calls=calls)
+def test_iter_sse_events_handles_comments_chunking_multiline_and_bad_json() -> None:
+    chunks = [
+        b": heartbeat\n\n",
+        b'data: {"a":',
+        b"1}\n\n",
+        b'data: {"b": 2}\n\ndata: {"c": 3}\n\n',
+        b'data: {"multi":\n',
+        b"data: true}\n\n",
+        b"data: not json\n\n",
+        b'data: {"incomplete": true}',
+    ]
 
-    assert chat_cli._post_chat("hello", None) == (USE_ID, False)
+    assert list(chat_cli.iter_sse_events(chunks)) == [
+        {"a": 1},
+        {"b": 2},
+        {"c": 3},
+        {"multi": True},
+    ]
 
-    request, _timeout = calls[0]
-    assert json.loads(request.data.decode("utf-8")) == {"message": "hello"}
+
+def test_open_sse_uses_resolved_events_url_and_stream_timeout(monkeypatch) -> None:
+    response = FakeSseResponse([b": heartbeat\n\n"])
+    captured: dict[str, Any] = {}
+
+    def fake_get(url: str, **kwargs: Any) -> FakeSseResponse:
+        captured["url"] = url
+        captured.update(kwargs)
+        return response
+
+    monkeypatch.setattr(chat_cli.requests, "get", fake_get)
+
+    chunks = chat_cli._open_sse("http://home.example:9999/")
+
+    assert list(chunks or []) == [b": heartbeat\n\n"]
+    assert captured == {
+        "url": "http://home.example:9999/sse/events",
+        "stream": True,
+        "timeout": (chat_cli.POST_TIMEOUT_SECONDS, None),
+    }
+    assert response.chunk_size is None
 
 
-def test_http_error_message_uses_error_and_detail() -> None:
-    exc = _http_error(
-        {
-            "error": "Sol is thinking right now.",
-            "reason_code": "chat_queue_full",
-            "detail": "Try again in a moment.",
-        }
+def test_timeout_session_uses_monkeypatched_post_timeout(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(chat_cli, "POST_TIMEOUT_SECONDS", 0.25)
+
+    def fake_request(self, method, url, **kwargs):
+        captured.update(kwargs)
+        return "ok"
+
+    monkeypatch.setattr(chat_cli.requests.Session, "request", fake_request)
+
+    assert chat_cli._TimeoutSession().request("GET", "http://example.test") == "ok"
+    assert captured["timeout"] == 0.25
+
+
+def test_post_chat_includes_facet_when_supplied() -> None:
+    client = FakeClient([_post_success()])
+
+    assert chat_cli._post_chat(client, "find this", "work") == (USE_ID, False)
+    assert client.calls == [
+        ("POST", "/api/chat", {"message": "find this", "facet": "work"})
+    ]
+
+
+def test_post_chat_omits_empty_facet() -> None:
+    client = FakeClient([_post_success()])
+
+    assert chat_cli._post_chat(client, "hello", None) == (USE_ID, False)
+    assert client.calls == [("POST", "/api/chat", {"message": "hello"})]
+
+
+def test_render_post_error_uses_error_and_detail() -> None:
+    exc = ConveyClientError(
+        "Missing required field.",
+        detail="message is required",
+        status=400,
     )
 
-    assert chat_cli._http_error_message(exc) == (
-        "sol: Sol is thinking right now.\nsol: Try again in a moment."
+    assert chat_cli._render_post_error(exc) == (
+        "sol: Missing required field.\nsol: message is required"
     )
-
-
-def test_http_error_message_falls_back_for_non_json_body() -> None:
-    exc = _http_error(b"plain failure")
-
-    assert chat_cli._http_error_message(exc) == "sol: bad request"
 
 
 @pytest.mark.parametrize(
@@ -325,178 +308,91 @@ def test_render_progress_lines_are_deduped_by_caller_pattern() -> None:
     assert lines == ["sol is thinking…"]
 
 
-def test_persisted_terminal_returns_last_finish(tmp_path, monkeypatch) -> None:
-    _setup_journal(tmp_path, monkeypatch)
-    _append_sol_message(USE_ID, "first", ts=_ms(12, 0, 0))
-    _append_sol_message(USE_ID, "second", ts=_ms(12, 0, 1))
-
-    assert chat_cli._persisted_terminal(USE_ID, DAY) == {
-        "kind": "finish",
-        "result": "second",
-    }
-
-
-def test_persisted_terminal_skips_bridge_sol_message(tmp_path, monkeypatch) -> None:
-    _setup_journal(tmp_path, monkeypatch)
-    _append_sol_message(
-        USE_ID,
-        "checking",
-        ts=_ms(12, 0, 0),
-        target="exec",
-        task="find the note",
-    )
-    _append_sol_message(USE_ID, "answer", ts=_ms(12, 0, 1))
-
-    assert chat_cli._persisted_terminal(USE_ID, DAY) == {
-        "kind": "finish",
-        "result": "answer",
-    }
-
-
-def test_persisted_terminal_returns_error(tmp_path, monkeypatch) -> None:
-    _setup_journal(tmp_path, monkeypatch)
-    _append_chat_error(
-        USE_ID,
-        "chat_timeout",
-        provider="google",
-        detail="raw detail",
-    )
-
-    assert chat_cli._persisted_terminal(USE_ID, DAY) == {
-        "kind": "error",
-        "reason": "chat_timeout",
-        "provider": "google",
-        "detail": "raw detail",
-    }
-
-
-def test_persisted_terminal_returns_none_when_only_bridge(
-    tmp_path, monkeypatch
-) -> None:
-    _setup_journal(tmp_path, monkeypatch)
-    _append_sol_message(
-        USE_ID,
-        "checking",
-        target="exec",
-        task="find the note",
-    )
-
-    assert chat_cli._persisted_terminal(USE_ID, DAY) is None
-
-
-def test_persisted_terminal_keeps_empty_finish_text(tmp_path, monkeypatch) -> None:
-    _setup_journal(tmp_path, monkeypatch)
-    _append_sol_message(USE_ID, "")
-
-    assert chat_cli._persisted_terminal(USE_ID, DAY) == {
-        "kind": "finish",
-        "result": "",
-    }
-
-
 def test_terminal_error_message_uses_chat_view_for_known_reason() -> None:
+    assert chat_cli._terminal_error_message("chat_timeout", "") == (
+        "chat took too long"
+    )
+
+
+def test_session_terminal_finish_only_current_use_id() -> None:
+    assert chat_cli._session_terminal(FakeClient([_session_finish()]), USE_ID) == {
+        "kind": "finish",
+        "result": "Recovered answer",
+    }
     assert (
-        chat_cli._terminal_error_message(
-            "chat_timeout",
-            "",
-            use_id="",
-            day=DAY,
+        chat_cli._session_terminal(
+            FakeClient([_session_finish(use_id=FOREIGN_USE_ID)]),
+            USE_ID,
         )
-        == "chat took too long"
+        is None
+    )
+    assert (
+        chat_cli._session_terminal(
+            FakeClient([_session_finish(requested_target="exec")]),
+            USE_ID,
+        )
+        is None
+    )
+    assert (
+        chat_cli._session_terminal(
+            FakeClient([ConveyClientError("bad", status=500)]),
+            USE_ID,
+        )
+        is None
     )
 
 
-def test_terminal_error_message_enriches_provider_from_persisted_error(
-    tmp_path, monkeypatch
+def test_main_live_sse_finish_prints_answer_without_fallback_warning(
+    monkeypatch, capsys
 ) -> None:
-    _setup_journal(tmp_path, monkeypatch)
-    _append_chat_error(
-        USE_ID,
-        "provider_response_invalid",
-        provider="google",
-    )
-
-    assert chat_cli._terminal_error_message(
-        "provider_response_invalid",
-        "",
-        use_id=USE_ID,
-        day=DAY,
-    ) == (
-        "Gemini's response didn't match the expected shape — try rephrasing "
-        "or asking something more specific."
-    )
-
-
-def test_main_prints_initial_persisted_finish_to_stdout_only(
-    tmp_path, monkeypatch, capsys
-) -> None:
+    client = FakeClient([_post_success()])
     _install_main_fakes(
         monkeypatch,
-        tmp_path,
         argv=["hello"],
-        urlopen_item=_success_response(),
+        client=client,
+        sse_chunks=[
+            _frame(
+                {
+                    "tract": "cortex",
+                    "event": "finish",
+                    "chat_proxy": True,
+                    "use_id": USE_ID,
+                    "result": "Live answer",
+                }
+            )
+        ],
     )
-    _append_sol_message(USE_ID, "Final answer")
 
     chat_cli.main()
 
     captured = capsys.readouterr()
-    assert captured.out == "Final answer\n"
+    assert captured.out == "Live answer\n"
     assert captured.err == ""
+    assert client.calls == [("POST", "/api/chat", {"message": "hello"})]
 
 
-def test_main_starts_listener_before_post(tmp_path, monkeypatch, capsys) -> None:
-    order: list[str] = []
-    _install_main_fakes(
-        monkeypatch,
-        tmp_path,
-        argv=["hello"],
-        urlopen_item=_success_response(),
-        order=order,
-    )
-    _append_sol_message(USE_ID, "Final answer")
-
-    chat_cli.main()
-
-    assert order == ["start", "post"]
-    assert capsys.readouterr().out == "Final answer\n"
-
-
-def test_main_bridge_is_not_printed_as_terminal_answer(
-    tmp_path, monkeypatch, capsys
+def test_main_live_sse_error_prints_terminal_error_without_session_poll(
+    monkeypatch, capsys
 ) -> None:
+    client = FakeClient([_post_success()])
     _install_main_fakes(
         monkeypatch,
-        tmp_path,
-        argv=["find", "it"],
-        urlopen_item=_success_response(),
-    )
-    _append_sol_message(
-        USE_ID,
-        "checking the journal",
-        ts=_ms(12, 0, 0),
-        target="exec",
-        task="find it",
-    )
-    _append_sol_message(USE_ID, "Real answer", ts=_ms(12, 0, 1))
-
-    chat_cli.main()
-
-    captured = capsys.readouterr()
-    assert captured.out == "Real answer\n"
-    assert "checking the journal" not in captured.out
-
-
-def test_main_persisted_chat_error_maps_to_chat_view(
-    tmp_path, monkeypatch, capsys
-) -> None:
-    _install_main_fakes(
-        monkeypatch,
-        tmp_path,
         argv=["hello"],
-        urlopen_item=_success_response(),
+        client=client,
+        sse_chunks=[
+            _frame(
+                {
+                    "tract": "cortex",
+                    "event": "error",
+                    "chat_proxy": True,
+                    "use_id": USE_ID,
+                    "error": "chat_timeout",
+                    "provider": "",
+                    "detail": "",
+                }
+            )
+        ],
     )
-    _append_chat_error(USE_ID, "chat_timeout")
 
     with pytest.raises(SystemExit) as exc_info:
         chat_cli.main()
@@ -505,16 +401,292 @@ def test_main_persisted_chat_error_maps_to_chat_view(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == "sol: chat took too long\n"
+    assert client.calls == [("POST", "/api/chat", {"message": "hello"})]
 
 
-def test_main_empty_result_is_error(tmp_path, monkeypatch, capsys) -> None:
+def test_main_sse_firehose_filtering_preserves_callback_parity(
+    monkeypatch, capsys
+) -> None:
+    client = FakeClient([_post_success()])
+    events = [
+        {"tract": "cortex", "event": "start", "chat_proxy": True, "use_id": USE_ID},
+        {
+            "tract": "cortex",
+            "event": "thinking",
+            "chat_proxy": True,
+            "use_id": FOREIGN_USE_ID,
+            "summary": "foreign",
+        },
+        {"tract": "observe", "event": "status"},
+        {
+            "tract": "cortex",
+            "event": "tool_start",
+            "chat_proxy": True,
+            "use_id": USE_ID,
+            "tool": "journal_search",
+        },
+        {
+            "tract": "chat",
+            "event": "sol_message",
+            "use_id": USE_ID,
+            "requested_target": "exec",
+            "requested_task": "find it",
+        },
+        {
+            "tract": "cortex",
+            "event": "finish",
+            "chat_proxy": True,
+            "use_id": USE_ID,
+            "result": "Done",
+        },
+    ]
     _install_main_fakes(
         monkeypatch,
-        tmp_path,
         argv=["hello"],
-        urlopen_item=_success_response(),
+        client=client,
+        sse_chunks=[_frame(event) for event in events],
     )
-    _append_sol_message(USE_ID, "   ")
+
+    chat_cli.main()
+
+    captured = capsys.readouterr()
+    assert captured.out == "Done\n"
+    assert captured.err == (
+        "sol is thinking…\n· journal_search\nMaking that change… (find it)\n"
+    )
+
+
+def test_main_preserves_talent_finished_without_use_id_match(
+    monkeypatch, capsys
+) -> None:
+    client = FakeClient([_post_success()])
+    _install_main_fakes(
+        monkeypatch,
+        argv=["hello"],
+        client=client,
+        sse_chunks=[
+            _frame(
+                {
+                    "tract": "chat",
+                    "event": "talent_finished",
+                    "use_id": FOREIGN_USE_ID,
+                    "name": "exec",
+                    "summary": "done",
+                }
+            ),
+            _frame(
+                {
+                    "tract": "cortex",
+                    "event": "finish",
+                    "chat_proxy": True,
+                    "use_id": USE_ID,
+                    "result": "Final",
+                }
+            ),
+        ],
+    )
+
+    chat_cli.main()
+
+    captured = capsys.readouterr()
+    assert captured.out == "Final\n"
+    assert captured.err == f"{chat_cli.COMPOSING_MESSAGE}\n"
+
+
+def test_main_uses_resolved_base_url_for_post_sse_and_session(
+    monkeypatch, capsys
+) -> None:
+    client = FakeClient([_post_success(), _session_finish(text="Recovered")])
+    monkeypatch.setattr(chat_cli, "POLL_SECONDS", 0.01)
+    open_calls = _install_main_fakes(
+        monkeypatch,
+        argv=["hello"],
+        client=client,
+        sse_chunks=None,
+        base_url="http://home.example:9999",
+    )
+
+    chat_cli.main()
+
+    captured = capsys.readouterr()
+    assert captured.out == "Recovered\n"
+    assert captured.err == f"{chat_cli.LIVE_PROGRESS_UNAVAILABLE_MESSAGE}\n"
+    assert client.base_url == "http://home.example:9999"
+    assert open_calls == ["http://home.example:9999"]
+    assert client.calls == [
+        ("POST", "/api/chat", {"message": "hello"}),
+        ("GET", "/api/chat/session", None),
+    ]
+
+
+def test_main_dead_sse_recovers_current_turn_from_session(monkeypatch, capsys) -> None:
+    client = FakeClient([_post_success(), _session_finish(text="Recovered answer")])
+    monkeypatch.setattr(chat_cli, "POLL_SECONDS", 0.01)
+    _install_main_fakes(
+        monkeypatch,
+        argv=["hello"],
+        client=client,
+        sse_chunks=None,
+    )
+
+    chat_cli.main()
+
+    captured = capsys.readouterr()
+    assert captured.out == "Recovered answer\n"
+    assert captured.err == f"{chat_cli.LIVE_PROGRESS_UNAVAILABLE_MESSAGE}\n"
+
+
+def test_main_dead_sse_ignores_foreign_session_turn_until_lost_contact(
+    monkeypatch, capsys
+) -> None:
+    client = FakeClient([_post_success(), _session_finish(use_id=FOREIGN_USE_ID)])
+    monkeypatch.setattr(chat_cli, "POLL_SECONDS", 0.01)
+    monkeypatch.setattr(chat_cli, "IDLE_CEILING_SECONDS", 0)
+    _install_main_fakes(
+        monkeypatch,
+        argv=["hello"],
+        client=client,
+        sse_chunks=None,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        chat_cli.main()
+
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == f"{chat_cli.LOST_CONTACT_MESSAGE}\n"
+
+
+def test_main_idle_live_sse_polls_session_at_ceiling(monkeypatch, capsys) -> None:
+    def live_idle_stream():
+        yield _frame(
+            {
+                "tract": "cortex",
+                "event": "start",
+                "chat_proxy": True,
+                "use_id": USE_ID,
+            }
+        )
+        while True:
+            time.sleep(1)
+
+    client = FakeClient([_post_success(), _session_finish(text="Recovered")])
+    monkeypatch.setattr(chat_cli, "POLL_SECONDS", 0.01)
+    monkeypatch.setattr(chat_cli, "IDLE_CEILING_SECONDS", 0)
+    _install_main_fakes(
+        monkeypatch,
+        argv=["hello"],
+        client=client,
+        sse_chunks=live_idle_stream(),
+    )
+
+    chat_cli.main()
+
+    captured = capsys.readouterr()
+    assert captured.out == "Recovered\n"
+    assert captured.err in (
+        f"{chat_cli.LIVE_PROGRESS_UNAVAILABLE_MESSAGE}\n",
+        (
+            f"{chat_cli.CHAT_LIVENESS_THINKING}\n"
+            f"{chat_cli.LIVE_PROGRESS_UNAVAILABLE_MESSAGE}\n"
+        ),
+    )
+
+
+def test_main_dead_sse_no_session_terminal_lost_contact(monkeypatch, capsys) -> None:
+    client = FakeClient([_post_success(), {"latest_sol_message": None}])
+    monkeypatch.setattr(chat_cli, "POLL_SECONDS", 0.01)
+    monkeypatch.setattr(chat_cli, "IDLE_CEILING_SECONDS", 0)
+    _install_main_fakes(
+        monkeypatch,
+        argv=["hello"],
+        client=client,
+        sse_chunks=None,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        chat_cli.main()
+
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == f"{chat_cli.LOST_CONTACT_MESSAGE}\n"
+
+
+def test_main_stream_end_no_terminal_lost_contact(monkeypatch, capsys) -> None:
+    client = FakeClient([_post_success(), {"latest_sol_message": None}])
+    monkeypatch.setattr(chat_cli, "POLL_SECONDS", 0.01)
+    monkeypatch.setattr(chat_cli, "IDLE_CEILING_SECONDS", 0)
+    _install_main_fakes(
+        monkeypatch,
+        argv=["hello"],
+        client=client,
+        sse_chunks=[],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        chat_cli.main()
+
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == f"{chat_cli.LOST_CONTACT_MESSAGE}\n"
+
+
+def test_main_reader_thread_no_stray_progress_after_done(monkeypatch, capsys) -> None:
+    client = FakeClient([_post_success()])
+    _install_main_fakes(
+        monkeypatch,
+        argv=["hello"],
+        client=client,
+        sse_chunks=[
+            _frame(
+                {
+                    "tract": "cortex",
+                    "event": "finish",
+                    "chat_proxy": True,
+                    "use_id": USE_ID,
+                    "result": "Final",
+                }
+            ),
+            _frame(
+                {
+                    "tract": "cortex",
+                    "event": "tool_start",
+                    "chat_proxy": True,
+                    "use_id": USE_ID,
+                    "tool": "late_tool",
+                }
+            ),
+        ],
+    )
+
+    chat_cli.main()
+
+    captured = capsys.readouterr()
+    assert captured.out == "Final\n"
+    assert captured.err == ""
+
+
+def test_main_empty_result_is_error(monkeypatch, capsys) -> None:
+    client = FakeClient([_post_success()])
+    _install_main_fakes(
+        monkeypatch,
+        argv=["hello"],
+        client=client,
+        sse_chunks=[
+            _frame(
+                {
+                    "tract": "cortex",
+                    "event": "finish",
+                    "chat_proxy": True,
+                    "use_id": USE_ID,
+                    "result": "   ",
+                }
+            )
+        ],
+    )
 
     with pytest.raises(SystemExit) as exc_info:
         chat_cli.main()
@@ -525,14 +697,24 @@ def test_main_empty_result_is_error(tmp_path, monkeypatch, capsys) -> None:
     assert captured.err == f"{chat_cli.EMPTY_ANSWER_MESSAGE}\n"
 
 
-def test_main_queued_response_prints_busy_line(tmp_path, monkeypatch, capsys) -> None:
+def test_main_queued_response_prints_busy_line(monkeypatch, capsys) -> None:
+    client = FakeClient([_post_success(queued=True)])
     _install_main_fakes(
         monkeypatch,
-        tmp_path,
         argv=["hello"],
-        urlopen_item=_success_response(queued=True),
+        client=client,
+        sse_chunks=[
+            _frame(
+                {
+                    "tract": "cortex",
+                    "event": "finish",
+                    "chat_proxy": True,
+                    "use_id": USE_ID,
+                    "result": "Queued answer",
+                }
+            )
+        ],
     )
-    _append_sol_message(USE_ID, "Queued answer")
 
     chat_cli.main()
 
@@ -541,129 +723,46 @@ def test_main_queued_response_prints_busy_line(tmp_path, monkeypatch, capsys) ->
     assert captured.err == f"{chat_cli.QUEUED_MESSAGE}\n"
 
 
-def test_main_fast_answer_race_prints_no_live_progress_warning(
-    tmp_path, monkeypatch, capsys
-) -> None:
-    _install_main_fakes(
-        monkeypatch,
-        tmp_path,
-        argv=["hello"],
-        urlopen_item=_success_response(),
-    )
-    _append_sol_message(USE_ID, "Fast answer")
-
-    chat_cli.main()
-
-    assert chat_cli.LIVE_PROGRESS_UNAVAILABLE_MESSAGE not in capsys.readouterr().err
-
-
-def test_main_post_http_error_prints_error_response_body(
-    tmp_path, monkeypatch, capsys
-) -> None:
-    _install_main_fakes(
-        monkeypatch,
-        tmp_path,
-        argv=["hello"],
-        urlopen_item=_http_error(
-            {"error": "Missing required field.", "detail": "message is required"}
+def test_main_post_error_mapping(monkeypatch, capsys) -> None:
+    cases = [
+        (
+            ConveyUnreachableError("down"),
+            f"{chat_cli.SERVICE_DOWN_MESSAGE}\n",
         ),
-    )
+        (
+            ConveyClientError(
+                "Missing required field.",
+                detail="message is required",
+                status=400,
+            ),
+            "sol: Missing required field.\nsol: message is required\n",
+        ),
+        (
+            ConveyClientError("malformed", status=200),
+            f"sol: {chat_cli.MALFORMED_RESPONSE_MESSAGE}\n",
+        ),
+        (
+            {},
+            f"sol: {chat_cli.MALFORMED_RESPONSE_MESSAGE}\n",
+        ),
+    ]
 
-    with pytest.raises(SystemExit) as exc_info:
-        chat_cli.main()
+    for response, expected_err in cases:
+        client = FakeClient([response])
+        _install_main_fakes(
+            monkeypatch,
+            argv=["hello"],
+            client=client,
+            sse_chunks=[],
+        )
 
-    assert exc_info.value.code == 1
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err == "sol: Missing required field.\nsol: message is required\n"
+        with pytest.raises(SystemExit) as exc_info:
+            chat_cli.main()
 
-
-def test_main_post_transport_error_uses_service_down_copy(
-    tmp_path, monkeypatch, capsys
-) -> None:
-    _install_main_fakes(
-        monkeypatch,
-        tmp_path,
-        argv=["hello"],
-        urlopen_item=urllib.error.URLError("refused"),
-    )
-
-    with pytest.raises(SystemExit) as exc_info:
-        chat_cli.main()
-
-    assert exc_info.value.code == 1
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err == f"{chat_cli.SERVICE_DOWN_MESSAGE}\n"
-
-
-def test_main_malformed_post_response_is_error(tmp_path, monkeypatch, capsys) -> None:
-    _install_main_fakes(
-        monkeypatch,
-        tmp_path,
-        argv=["hello"],
-        urlopen_item=FakeResponse({}),
-    )
-
-    with pytest.raises(SystemExit) as exc_info:
-        chat_cli.main()
-
-    assert exc_info.value.code == 1
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err == f"sol: {chat_cli.MALFORMED_RESPONSE_MESSAGE}\n"
-
-
-def test_main_idle_ceiling_uses_final_persisted_terminal_with_warning(
-    tmp_path, monkeypatch, capsys
-) -> None:
-    _install_main_fakes(
-        monkeypatch,
-        tmp_path,
-        argv=["hello"],
-        urlopen_item=_success_response(),
-    )
-    monkeypatch.setattr(chat_cli, "POLL_SECONDS", 0.01)
-    monkeypatch.setattr(chat_cli, "IDLE_CEILING_SECONDS", 0)
-    calls = 0
-
-    def persisted(use_id: str, day: str):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return None
-        return {"kind": "finish", "result": "Recovered answer"}
-
-    monkeypatch.setattr(chat_cli, "_persisted_terminal", persisted)
-
-    chat_cli.main()
-
-    captured = capsys.readouterr()
-    assert captured.out == "Recovered answer\n"
-    assert captured.err == f"{chat_cli.LIVE_PROGRESS_UNAVAILABLE_MESSAGE}\n"
-    assert calls == 2
-
-
-def test_main_idle_ceiling_without_persisted_terminal_loses_contact(
-    tmp_path, monkeypatch, capsys
-) -> None:
-    _install_main_fakes(
-        monkeypatch,
-        tmp_path,
-        argv=["hello"],
-        urlopen_item=_success_response(),
-    )
-    monkeypatch.setattr(chat_cli, "POLL_SECONDS", 0.01)
-    monkeypatch.setattr(chat_cli, "IDLE_CEILING_SECONDS", 0)
-    monkeypatch.setattr(chat_cli, "_persisted_terminal", lambda use_id, day: None)
-
-    with pytest.raises(SystemExit) as exc_info:
-        chat_cli.main()
-
-    assert exc_info.value.code == 1
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err == f"{chat_cli.LOST_CONTACT_MESSAGE}\n"
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == expected_err
 
 
 def test_main_rejects_removed_provider_and_talent_options(monkeypatch) -> None:
@@ -677,70 +776,3 @@ def test_main_rejects_removed_provider_and_talent_options(monkeypatch) -> None:
 
     assert provider_exit.value.code == 2
     assert talent_exit.value.code == 2
-
-
-def test_main_live_proxy_progress_and_finish(tmp_path, monkeypatch, capsys) -> None:
-    posted = threading.Event()
-
-    def urlopen_item(_request, _timeout):
-        posted.set()
-        return _success_response()
-
-    _journal, instances, _calls = _install_main_fakes(
-        monkeypatch,
-        tmp_path,
-        argv=["hello"],
-        urlopen_item=urlopen_item,
-    )
-    monkeypatch.setattr(chat_cli, "POLL_SECONDS", 0.01)
-    monkeypatch.setattr(chat_cli, "IDLE_CEILING_SECONDS", 5)
-    outcome: dict[str, BaseException] = {}
-
-    def run_main() -> None:
-        try:
-            chat_cli.main()
-        except BaseException as exc:  # noqa: BLE001
-            outcome["exc"] = exc
-
-    worker = threading.Thread(target=run_main)
-    worker.start()
-    assert posted.wait(1)
-
-    for _ in range(200):
-        if instances and instances[0].callback is not None:
-            callback = instances[0].callback
-            callback(
-                {
-                    "tract": "cortex",
-                    "event": "start",
-                    "chat_proxy": True,
-                    "use_id": USE_ID,
-                }
-            )
-            callback(
-                {
-                    "tract": "cortex",
-                    "event": "thinking",
-                    "chat_proxy": True,
-                    "use_id": USE_ID,
-                    "summary": "working",
-                }
-            )
-            callback(
-                {
-                    "tract": "cortex",
-                    "event": "finish",
-                    "chat_proxy": True,
-                    "use_id": USE_ID,
-                    "result": "Live answer",
-                }
-            )
-        worker.join(0.01)
-        if not worker.is_alive():
-            break
-
-    assert not worker.is_alive()
-    assert outcome == {}
-    captured = capsys.readouterr()
-    assert captured.out == "Live answer\n"
-    assert captured.err == "sol is thinking…\n"
