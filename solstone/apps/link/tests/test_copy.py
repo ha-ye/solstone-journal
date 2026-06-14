@@ -61,7 +61,7 @@ def test_copy_constants_are_locked() -> None:
     assert copy.SUCCESS_REMOVE_LABEL == "that wasn't me — remove"
     assert copy.HERO_TITLE == "let's connect a device"
     assert copy.HERO_BODY == (
-        "your journal lives here, on this machine. to read it from your phone or "
+        "your journal lives here, on this device. to read it from your phone or "
         "laptop, that device needs a way to reach it. right now it can be reached "
         "on your home network."
     )

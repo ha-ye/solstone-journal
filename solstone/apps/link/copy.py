@@ -55,7 +55,7 @@ PAIR_WEB_PASSWORD_SETTINGS_LINK = "set a web password for this page in settings 
 # --- U4 first-run hero ---
 HERO_TITLE = "let's connect a device"
 HERO_BODY = (
-    "your journal lives here, on this machine. to read it from your phone or "
+    "your journal lives here, on this device. to read it from your phone or "
     "laptop, that device needs a way to reach it. right now it can be reached "
     "on your home network."
 )
@@ -124,11 +124,11 @@ MODE_HOSTED_DESC = (
 )
 MODE_HOSTED_DISCLOSURE = "operated by sol pbc"
 MODE_BYO_BODY_NOTE = (
-    "your journal stays on this machine. your other devices connect straight to it — "
+    "your journal stays on this device. your other devices connect straight to it — "
     "nothing routes through sol pbc."
 )
 MODE_HOSTED_SETUP_NOTE = (
-    "your journal stays on this machine; the relay only passes along encrypted traffic "
+    "your journal stays on this device; the relay only passes along encrypted traffic "
     "it can't read."
 )
 MODE_HOSTED_SETUP_CTA = "set up the relay →"

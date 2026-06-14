@@ -127,8 +127,11 @@ class TestInitDetection:
         assert f"<code>{journal_path}</code>".encode() in resp.data
         assert b"solstone is three things working together" not in resp.data
         assert b"solstone is two things working together" not in resp.data
-        assert b"solstone runs on your machine." in resp.data
-        assert b"your observers, your journal, and sol, all right here" in resp.data
+        assert b"solstone runs on your device." in resp.data
+        assert (
+            b"your observers, your journal, and sol \xe2\x80\x94 all right here"
+            in resp.data
+        )
 
     def test_init_sol_agent_section_renders(self, fresh_client):
         resp = fresh_client.get("/init")
@@ -151,15 +154,15 @@ class TestInitDetection:
 
     def test_machine_card_present_and_verbatim(self, fresh_client):
         resp = fresh_client.get("/init")
-        assert b"solstone runs on your machine." in resp.data
+        assert b"solstone runs on your device." in resp.data
         assert (
-            b"your observers, your journal, and sol, all right here "
-            b"\xe2\x80\x94 no services needed."
+            b"your observers, your journal, and sol "
+            b"\xe2\x80\x94 all right here. nothing else is required to start."
         ) in resp.data
-        assert b"sol pbc offers a few optional services" in resp.data
+        assert b"sol pbc offers a few optional services" not in resp.data
         assert (
             b"turn them on if they help. turn them off whenever you want. or never."
-            in resp.data
+            not in resp.data
         )
         assert (
             b"observers \xe2\x80\x94 experience your day along with you"
@@ -184,7 +187,7 @@ class TestInitDetection:
     def test_footer_note_refresh(self, fresh_client):
         resp = fresh_client.get("/init")
         assert (
-            b"your journal stays on your machine. solstone runs right here "
+            b"your journal stays on your device. solstone runs right here "
             b"\xe2\x80\x94 nothing leaves unless you send it."
         ) in resp.data
         assert b"your data stays on your machine" not in resp.data

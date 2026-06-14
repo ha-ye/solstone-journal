@@ -103,11 +103,11 @@ def test_reach_shell_corrected_copy_is_locked() -> None:
     )
     assert copy.MODE_HOSTED_DISCLOSURE == "operated by sol pbc"
     assert copy.MODE_BYO_BODY_NOTE == (
-        "your journal stays on this machine. your other devices connect straight "
+        "your journal stays on this device. your other devices connect straight "
         "to it — nothing routes through sol pbc."
     )
     assert copy.MODE_HOSTED_SETUP_NOTE == (
-        "your journal stays on this machine; the relay only passes along "
+        "your journal stays on this device; the relay only passes along "
         "encrypted traffic it can't read."
     )
     assert copy.MODE_HOSTED_SETUP_CTA == "set up the relay →"

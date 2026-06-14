@@ -86,7 +86,7 @@ def test_u4_copy_values_are_locked() -> None:
     assert copy.DEVICE_LABEL_PLACEHOLDER == "e.g. my iPhone"
     assert copy.HERO_TITLE == "let's connect a device"
     assert copy.HERO_BODY == (
-        "your journal lives here, on this machine. to read it from your phone or "
+        "your journal lives here, on this device. to read it from your phone or "
         "laptop, that device needs a way to reach it. right now it can be reached "
         "on your home network."
     )
