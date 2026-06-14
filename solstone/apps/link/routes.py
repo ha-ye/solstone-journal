@@ -17,10 +17,12 @@ Routes:
   GET  /link/api/devices        JSON list of paired devices for JS polling
   GET  /link/api/status         service status (for dashboard refresh)
 
-The pair hop is plain HTTP on convey's existing listener — there is no
-separate port. Integrity is provided by the CA-fingerprint pinned in the
-QR, not by transport TLS. A MITM on the LAN can observe the nonce but
-cannot forge a cert signed by the pinned CA.
+Pair-link QR joins target the secure listener advertised by LINK_DIRECT_PORT
+(:7657) and speak its TLS + framed mux protocol before dispatching POST
+/app/link/pair into this Flask route. The open nonce admits a cert-less
+pairing stream; the QR's CA fingerprint pins the home CA before the signed
+client certificate is issued. Manual short-code joins remain over the normal
+Convey HTTP listener via /by-code + --home.
 """
 
 from __future__ import annotations
