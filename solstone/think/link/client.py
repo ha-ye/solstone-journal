@@ -382,7 +382,7 @@ class TunnelSession:
         *,
         transport: EncryptedTransport,
         tls: _TlsClientState,
-        identity: ClientIdentity,
+        identity: ClientIdentity | None = None,
     ) -> None:
         self._transport = transport
         self._tls = tls
@@ -390,9 +390,14 @@ class TunnelSession:
         self._tls_lock = asyncio.Lock()
         self._mux = _DialerMultiplexer(self._send_plaintext)
         self._closed = asyncio.Event()
+        task_name = (
+            f"link-client-{identity.home_instance_id}"
+            if identity is not None
+            else "link-pair"
+        )
         self._reader_task = asyncio.create_task(
             self._read_transport(),
-            name=f"link-client-{identity.home_instance_id}",
+            name=task_name,
         )
 
     async def __aenter__(self) -> TunnelSession:
@@ -582,8 +587,32 @@ async def _open_tunnel_session(
     transport: EncryptedTransport,
     identity: ClientIdentity,
 ) -> TunnelSession:
+    tls = _new_tls_client(_build_tls_client_ctx(identity))
+    pending_plaintext = await _drive_client_handshake(transport, tls)
+    session = TunnelSession(
+        transport=transport,
+        tls=tls,
+        identity=identity,
+    )
+    if pending_plaintext:
+        await session._mux.feed(bytes(pending_plaintext))
+    return session
+
+
+async def _open_pairing_session(transport: EncryptedTransport) -> TunnelSession:
+    tls = _new_tls_client(_build_no_cert_client_ctx())
+    pending_plaintext = await _drive_client_handshake(transport, tls)
+    session = TunnelSession(transport=transport, tls=tls)
+    if pending_plaintext:
+        await session._mux.feed(bytes(pending_plaintext))
+    return session
+
+
+async def _drive_client_handshake(
+    transport: EncryptedTransport,
+    tls: _TlsClientState,
+) -> bytearray:
     try:
-        tls = _new_tls_client(_build_tls_client_ctx(identity))
         pending_plaintext = bytearray()
         outbound, plaintext = _drive_tls_client(tls)
         if outbound:
@@ -603,15 +632,7 @@ async def _open_tunnel_session(
     except Exception:
         await transport.close()
         raise
-
-    session = TunnelSession(
-        transport=transport,
-        tls=tls,
-        identity=identity,
-    )
-    if pending_plaintext:
-        await session._mux.feed(bytes(pending_plaintext))
-    return session
+    return pending_plaintext
 
 
 def _build_csr(device_label: str) -> tuple[str, str]:
@@ -657,6 +678,18 @@ def _build_tls_client_ctx(identity: ClientIdentity) -> SSL.Context:
     ctx.set_verify(SSL.VERIFY_PEER, _verify_server_cert)
     ctx.check_privatekey()
     return ctx
+
+
+def _build_no_cert_client_ctx() -> SSL.Context:
+    ctx = SSL.Context(SSL.TLS_METHOD)
+    ctx.set_min_proto_version(SSL.TLS1_3_VERSION)
+    ctx.set_max_proto_version(SSL.TLS1_3_VERSION)
+    ctx.set_verify(SSL.VERIFY_PEER, _accept_any_server_cert)
+    return ctx
+
+
+def _accept_any_server_cert(*_args: object) -> bool:
+    return True
 
 
 def _verify_server_cert(

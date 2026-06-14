@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives import serialization
-from OpenSSL import SSL, crypto
+from OpenSSL import SSL
 
 from solstone.convey.secure_listener.tls import (
     TlsError,
@@ -22,6 +22,7 @@ from solstone.think.link.ca import LoadedCa, generate_ca, sign_csr
 from solstone.think.link.client import (
     ClientIdentity,
     _build_csr,
+    _build_no_cert_client_ctx,
     _build_tls_client_ctx,
     _drive_tls_client,
     _new_tls_client,
@@ -32,7 +33,7 @@ from solstone.think.link.tls import TlsError as ClientTlsError
 def test_strict_context_rejects_no_cert(tmp_path: Path) -> None:
     ca, server_cert, server_key, authorized = _server_material(tmp_path)
     server_ctx = build_server_context(ca, server_cert, server_key, authorized)
-    client_ctx = _build_no_cert_client_ctx(ca)
+    client_ctx = _build_no_cert_client_ctx()
 
     with pytest.raises((TlsError, ClientTlsError)):
         _complete_handshake(server_ctx, client_ctx)
@@ -41,7 +42,7 @@ def test_strict_context_rejects_no_cert(tmp_path: Path) -> None:
 def test_relaxed_context_accepts_no_cert_with_none_fingerprint(tmp_path: Path) -> None:
     ca, server_cert, server_key, authorized = _server_material(tmp_path)
     server_ctx = build_relaxed_server_context(ca, server_cert, server_key, authorized)
-    client_ctx = _build_no_cert_client_ctx(ca)
+    client_ctx = _build_no_cert_client_ctx()
 
     server = _complete_handshake(server_ctx, client_ctx)
 
@@ -103,17 +104,6 @@ def _server_material(
     server_cert, server_key = issue_server_cert(ca)
     authorized = AuthorizedClients(tmp_path / "authorized_clients.json")
     return ca, server_cert, server_key, authorized
-
-
-def _build_no_cert_client_ctx(ca: LoadedCa) -> SSL.Context:
-    ctx = SSL.Context(SSL.TLS_METHOD)
-    ctx.set_min_proto_version(SSL.TLS1_3_VERSION)
-    ctx.set_max_proto_version(SSL.TLS1_3_VERSION)
-    store = ctx.get_cert_store()
-    assert store is not None
-    store.add_cert(crypto.X509.from_cryptography(ca.cert))
-    ctx.set_verify(SSL.VERIFY_PEER, lambda *_args: True)
-    return ctx
 
 
 def _complete_handshake(server_ctx: SSL.Context, client_ctx: SSL.Context):

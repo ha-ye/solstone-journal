@@ -14,9 +14,9 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.x509.oid import NameOID
 
-from solstone.apps.link.routes import _build_pair_link
 from solstone.think.link import join_cli
 from solstone.think.link.ca import generate_ca
+from tests.link.pairing_harness import pairing_harness
 
 
 class _FakeHeaders:
@@ -199,25 +199,35 @@ def test_url_happy_path_posts_to_pair_token(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _configure_home(tmp_path, monkeypatch)
-    calls: list[tuple[str, dict[str, Any]]] = []
-    _mock_urlopen(monkeypatch, _success_payload(tmp_path), calls=calls)
-    pair_link = _build_pair_link(
-        "192.0.2.42",
-        7070,
-        "a1b2c3d4e5f607181122334455667788",
-        "deadbeefcafebabe0123456789abcdef",
-    )
+    # Criterion 1: pair-link joins use the secure listener's framed transport.
+    config_home = _configure_home(tmp_path, monkeypatch)
+    nonce = "a1b2c3d4e5f607181122334455667788"
+    with pairing_harness(tmp_path, monkeypatch) as harness:
+        harness.seed_nonce(nonce, "laptop")
+        pair_link = harness.pair_link(nonce)
 
-    result = join_cli.main(_args(code=pair_link, home="http://receiver"))
+        result = join_cli.main(_args(code=pair_link, home=None))
 
     assert result == 0
-    assert (
-        calls[0][0]
-        == "http://receiver/app/link/pair?token=a1b2c3d4e5f607181122334455667788"
-    )
-    assert "code" not in calls[0][1]
-    assert calls[0][1]["device_label"] == "laptop"
+    bundle = config_home / "solstone-observer" / "spl" / "laptop"
+    assert stat.S_IMODE(bundle.stat().st_mode) == 0o700
+    for name in join_cli.BUNDLE_FILES:
+        assert (bundle / name).exists()
+        assert stat.S_IMODE((bundle / name).stat().st_mode) == 0o600
+    peer = json.loads((bundle / "peer.json").read_text("utf-8"))
+    assert list(peer.keys()) == [
+        "label",
+        "paired_at",
+        "instance_id",
+        "home_label",
+        "fingerprint",
+        "local_endpoints",
+        "role",
+    ]
+    assert peer["label"] == "laptop"
+    assert peer["home_label"] == "solstone"
+    assert peer["fingerprint"].startswith("sha256:")
+    assert peer["role"] == ""
 
 
 def test_missing_required_response_field_exits_1(

@@ -26,6 +26,7 @@ systems.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import datetime as dt
 import hashlib
 import ipaddress
@@ -49,8 +50,15 @@ from cryptography.x509.oid import NameOID
 
 from solstone.apps.link.crockford32 import decode as crockford_decode
 from solstone.think.link.auth import is_peer
+from solstone.think.link.client import (
+    _CONNECT_TIMEOUT_SECONDS,
+    StreamResetError,
+    _open_pairing_session,
+    _TcpEncryptedTransport,
+)
 from solstone.think.link.observer_paths import observer_bundle_dir
 from solstone.think.link.paths import LinkState
+from solstone.think.link.tls import TlsError
 from solstone.think.utils import get_journal
 
 VALID_ROLES = {"", "phone", "observer", "peer"}
@@ -71,6 +79,7 @@ _INSTANCE_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,256}$")
 class PairRequest:
     url: str
     body_base: dict[str, str]
+    secure: bool
 
 
 @dataclass(frozen=True)
@@ -122,7 +131,7 @@ def main(args: argparse.Namespace) -> int:
         }
         body["sender_instance_id"] = LinkState.load_or_create().instance_id
         try:
-            response = _post_pair(pair_request.url, body)
+            response = _post_pair(pair_request, body)
         except ValueError as exc:
             return _fail(str(exc), code=1)
         instance_id_error = _validate_instance_id(response.instance_id)
@@ -145,7 +154,7 @@ def main(args: argparse.Namespace) -> int:
             "device_label": label,
         }
         try:
-            response = _post_pair(pair_request.url, body)
+            response = _post_pair(pair_request, body)
         except ValueError as exc:
             return _fail(str(exc), code=1)
 
@@ -202,6 +211,7 @@ def _parse_pair_request(code: str, home: str | None) -> PairRequest:
     return PairRequest(
         url=f"{base_url}/app/link/by-code",
         body_base={"code": canonical_code},
+        secure=False,
     )
 
 
@@ -231,6 +241,7 @@ def _parse_pair_link(pair_link: str, home: str | None) -> PairRequest:
     return PairRequest(
         url=f"{base_url}/app/link/pair?token={nonce_hex}",
         body_base={},
+        secure=True,
     )
 
 
@@ -312,7 +323,13 @@ def _build_csr(label: str) -> tuple[bytes, str]:
     return private_key_pem, csr_pem
 
 
-def _post_pair(url: str, body: dict[str, str]) -> PairResponse:
+def _post_pair(pair_request: PairRequest, body: dict[str, str]) -> PairResponse:
+    if pair_request.secure:
+        return _post_pair_framed(pair_request.url, body)
+    return _post_pair_plain(pair_request.url, body)
+
+
+def _post_pair_plain(url: str, body: dict[str, str]) -> PairResponse:
     data = json.dumps(body).encode("utf-8")
     request = urllib.request.Request(
         url,
@@ -351,6 +368,82 @@ def _post_pair(url: str, body: dict[str, str]) -> PairResponse:
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ValueError("Pair response was not valid JSON") from exc
     return _parse_pair_response(payload)
+
+
+def _post_pair_framed(
+    url: str,
+    body: dict[str, str],
+    *,
+    ca_fingerprint_pin: str | None = None,
+) -> PairResponse:
+    host, port, path = _framed_target(url)
+    try:
+        return asyncio.run(_pair_exchange(host, port, path, body, ca_fingerprint_pin))
+    except StreamResetError as exc:
+        raise ValueError(
+            "Pairing stream reset or closed before a response was received."
+        ) from exc
+    except TlsError as exc:
+        raise ValueError(f"TLS handshake with {host}:{port} failed: {exc}") from exc
+    except (asyncio.TimeoutError, TimeoutError) as exc:
+        raise ValueError(f"Timed out connecting to {host}:{port}.") from exc
+    except (ConnectionError, OSError) as exc:
+        raise ValueError(f"Could not connect to {host}:{port}: {exc}") from exc
+
+
+def _framed_target(url: str) -> tuple[str, int, str]:
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname
+    if not host:
+        raise ValueError(f"Pair-link target missing host: {url}")
+    port = parsed.port
+    if port is None:
+        raise ValueError(f"Pair-link target missing explicit port: {url}")
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    return host, port, path
+
+
+async def _pair_exchange(
+    host: str,
+    port: int,
+    path: str,
+    body: dict[str, str],
+    ca_fingerprint_pin: str | None,
+) -> PairResponse:
+    reader, writer = await asyncio.wait_for(
+        asyncio.open_connection(host, port),
+        timeout=_CONNECT_TIMEOUT_SECONDS,
+    )
+    session = await _open_pairing_session(_TcpEncryptedTransport(reader, writer))
+    try:
+        status, _headers, body_bytes = await session.request(
+            "POST",
+            path,
+            headers={"content-type": "application/json"},
+            body=json.dumps(body).encode("utf-8"),
+        )
+        if status != 200:
+            raise ValueError(
+                f"Pairing failed (HTTP {status}): the pairing window is closed "
+                "or the code was already used."
+            )
+        try:
+            payload = json.loads(body_bytes.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ValueError("Pair response was not valid JSON") from exc
+        response = _parse_pair_response(payload)
+        if ca_fingerprint_pin is not None:
+            ca_fingerprint = _ca_fingerprint(_join_chain(response.ca_chain))
+            if ca_fingerprint != ca_fingerprint_pin:
+                raise ValueError(
+                    f"CA fingerprint mismatch: got {ca_fingerprint}, "
+                    f"expected {ca_fingerprint_pin}"
+                )
+        return response
+    finally:
+        await session.close()
 
 
 def _parse_pair_response(payload: Any) -> PairResponse:

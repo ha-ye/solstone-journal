@@ -85,6 +85,7 @@ def test_pair_request_refuses_auth_bounce_html(
 
 
 def test_pair_link_without_home_derives_https_target_url() -> None:
+    # Criterion 2: pair-link parsing marks the request for framed transport.
     nonce = "a1b2c3d4e5f607181122334455667788"
     pair_link = _build_pair_link(
         "192.0.2.42",
@@ -97,6 +98,16 @@ def test_pair_link_without_home_derives_https_target_url() -> None:
 
     assert request.url == f"https://192.0.2.42:7657/app/link/pair?token={nonce}"
     assert request.body_base == {}
+    assert request.secure is True
+
+
+def test_manual_code_derives_plain_target_url() -> None:
+    # Criterion 2: manual-code parsing stays on the plain HTTP transport.
+    request = join_cli._parse_pair_request("ABCD-EFGH", "http://receiver")
+
+    assert request.url == "http://receiver/app/link/by-code"
+    assert request.body_base == {"code": "ABCDEFGH"}
+    assert request.secure is False
 
 
 def test_pair_code_error_names_both_accepted_forms() -> None:
