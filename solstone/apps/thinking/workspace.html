@@ -1,97 +1,239 @@
 <div class="workspace-content thinking-workspace" id="providers">
   <style>
     .thinking-workspace {
-      color: #1f2933;
+      --cream: #FAF3E4;
+      --paper: #FFF;
+      --ink: #1A1A1A;
+      --muted: #6E6255;
+      --orange: #E8923A;
+      --orange-ink: #B06A1A;
+      --orange-wash: #FBEFDD;
+      --hairline: #ECE3D0;
+      --danger: #9F2F1F;
+      --ok: #3F6F46;
+      --radius: 14px;
+      --radius-sm: 9px;
+      color: var(--ink);
+      font-family: "Inter", system-ui, sans-serif;
+      background: var(--cream);
+      border-radius: var(--radius);
     }
 
-    .thinking-header {
+    .thinking-workspace [hidden] {
+      display: none !important;
+    }
+
+    .thinking-workspace .appframe {
+      background: var(--paper);
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius);
+      box-shadow: 0 18px 50px rgba(26, 26, 26, 0.08);
+      padding: 28px;
+    }
+
+    .thinking-workspace .view {
+      display: grid;
+      gap: 22px;
+    }
+
+    .thinking-workspace .topline {
       display: flex;
       align-items: flex-start;
       justify-content: space-between;
-      gap: 1rem;
-      margin-bottom: 1.25rem;
+      gap: 16px;
     }
 
-    .thinking-header h1 {
-      margin: 0 0 0.35rem;
-      font-size: 1.85rem;
+    .thinking-workspace h1,
+    .thinking-workspace h2,
+    .thinking-workspace h3,
+    .thinking-workspace .gval {
+      font-family: "Comfortaa", system-ui, sans-serif;
       letter-spacing: 0;
     }
 
-    .thinking-header p {
+    .thinking-workspace h1,
+    .thinking-workspace h2,
+    .thinking-workspace h3,
+    .thinking-workspace p {
       margin: 0;
-      color: #52616b;
-      max-width: 52rem;
     }
 
-    .thinking-active {
-      min-width: 14rem;
-      padding: 0.75rem 0.9rem;
-      border: 1px solid #c8d0d7;
-      border-radius: 8px;
-      background: #f7f9fb;
+    .thinking-workspace h1 {
+      font-size: clamp(2rem, 4vw, 3.6rem);
+      line-height: 1;
     }
 
-    .thinking-active__label {
-      font-size: 0.75rem;
-      text-transform: uppercase;
-      color: #52616b;
-      letter-spacing: 0.04em;
+    .thinking-workspace h2 {
+      font-size: 1.35rem;
+      line-height: 1.2;
     }
 
-    .thinking-active__value {
-      font-weight: 700;
-      margin-top: 0.2rem;
+    .thinking-workspace h3 {
+      font-size: 1rem;
+      line-height: 1.25;
     }
 
-    .thinking-lanes {
+    .thinking-workspace .intro {
+      max-width: 760px;
+      color: var(--muted);
+      font-size: 1.02rem;
+      line-height: 1.6;
+    }
+
+    .thinking-workspace .brandlock {
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.4;
+    }
+
+    .thinking-workspace .backlink,
+    .thinking-workspace .textlink,
+    .thinking-workspace .trail {
+      border: 0;
+      background: transparent;
+      color: var(--orange-ink);
+      cursor: pointer;
+      font: inherit;
+      padding: 0;
+      text-decoration: none;
+    }
+
+    .thinking-workspace .backlink {
+      align-self: flex-start;
+      font-size: 0.93rem;
+    }
+
+    .thinking-workspace .glance {
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius);
+      background: var(--orange-wash);
+      display: grid;
+      gap: 5px;
+      padding: 18px;
+    }
+
+    .thinking-workspace .glance.none {
+      background: #F7F1E7;
+    }
+
+    .thinking-workspace .glabel,
+    .thinking-workspace .meta,
+    .thinking-workspace .micro {
+      color: var(--muted);
+      font-size: 0.86rem;
+      line-height: 1.45;
+    }
+
+    .thinking-workspace .gval {
+      font-size: clamp(1.45rem, 3vw, 2.2rem);
+      line-height: 1.08;
+    }
+
+    .thinking-workspace .gsub {
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .thinking-workspace .lanegrid,
+    .thinking-workspace .provgrid {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 1rem;
-      margin-bottom: 1.25rem;
+      gap: 14px;
     }
 
-    .thinking-lane {
-      border: 1px solid #d9e1e8;
-      border-radius: 8px;
-      padding: 1rem;
-      background: #ffffff;
+    .thinking-workspace .lane,
+    .thinking-workspace .prov,
+    .thinking-workspace .app-onoff,
+    .thinking-workspace .switchcard,
+    .thinking-workspace .notice,
+    .thinking-workspace .disclosure {
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius);
+      background: var(--paper);
+    }
+
+    .thinking-workspace .lane,
+    .thinking-workspace .prov {
+      display: grid;
+      gap: 12px;
+      min-height: 190px;
+      padding: 16px;
+      text-align: left;
+    }
+
+    .thinking-workspace .lane {
+      cursor: pointer;
+    }
+
+    .thinking-workspace .lane.active {
+      border-color: var(--orange);
+      box-shadow: inset 0 0 0 1px var(--orange);
+    }
+
+    .thinking-workspace .lane.greyed {
+      cursor: default;
+      opacity: 0.68;
+    }
+
+    .thinking-workspace .lanehead,
+    .thinking-workspace .cardtop,
+    .thinking-workspace .actions,
+    .thinking-workspace .inline-actions,
+    .thinking-workspace .switchrow {
       display: flex;
-      flex-direction: column;
-      gap: 0.75rem;
-      min-height: 18rem;
-    }
-
-    .thinking-lane[data-active="true"] {
-      border-color: #2471a3;
-      box-shadow: inset 0 0 0 1px #2471a3;
-    }
-
-    .thinking-lane h2 {
-      margin: 0;
-      font-size: 1.1rem;
-      letter-spacing: 0;
-    }
-
-    .thinking-lane p {
-      margin: 0;
-      color: #52616b;
-    }
-
-    .thinking-status {
-      font-size: 0.9rem;
-      color: #394b59;
-      min-height: 1.4rem;
-    }
-
-    .thinking-actions,
-    .thinking-inline {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.5rem;
       align-items: center;
+      justify-content: space-between;
+      gap: 12px;
     }
 
+    .thinking-workspace .lanebody,
+    .thinking-workspace .panelbody,
+    .thinking-workspace .formgrid {
+      display: grid;
+      gap: 12px;
+    }
+
+    .thinking-workspace .lane p,
+    .thinking-workspace .prov p,
+    .thinking-workspace .notice,
+    .thinking-workspace .checkstrip,
+    .thinking-workspace .field label {
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .thinking-workspace .pill,
+    .thinking-workspace .activetag {
+      border-radius: 999px;
+      border: 1px solid var(--hairline);
+      color: var(--muted);
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 0 9px;
+      font-size: 0.78rem;
+      white-space: nowrap;
+    }
+
+    .thinking-workspace .pill.hot,
+    .thinking-workspace .activetag {
+      border-color: var(--orange);
+      color: var(--orange-ink);
+      background: var(--orange-wash);
+    }
+
+    .thinking-workspace .pill.bad {
+      border-color: rgba(159, 47, 31, 0.2);
+      color: var(--danger);
+      background: #FCF0EA;
+    }
+
+    .thinking-workspace .activetag {
+      justify-self: start;
+      font-size: 0.75rem;
+    }
+
+    .thinking-workspace .btn,
     .thinking-workspace button,
     .thinking-workspace select,
     .thinking-workspace input,
@@ -99,235 +241,462 @@
       font: inherit;
     }
 
-    .thinking-workspace button {
-      border: 1px solid #9fb3c8;
-      border-radius: 6px;
-      background: #f5f7fa;
-      padding: 0.45rem 0.65rem;
+    .thinking-workspace .btn,
+    .thinking-workspace button.btn {
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius-sm);
+      background: var(--paper);
+      color: var(--ink);
       cursor: pointer;
+      min-height: 38px;
+      padding: 8px 13px;
+      text-decoration: none;
     }
 
-    .thinking-workspace button.primary {
-      background: #1f6f8b;
-      border-color: #1f6f8b;
-      color: #fff;
+    .thinking-workspace .btn.primary,
+    .thinking-workspace button.btn.primary {
+      background: var(--orange);
+      border-color: var(--orange);
+      color: var(--ink);
+      font-weight: 700;
     }
 
+    .thinking-workspace .btn.ghost {
+      background: transparent;
+    }
+
+    .thinking-workspace .btn:disabled,
     .thinking-workspace button:disabled {
       cursor: not-allowed;
-      opacity: 0.55;
+      opacity: 0.5;
     }
 
-    .thinking-field {
+    .thinking-workspace .app-onoff,
+    .thinking-workspace .switchcard,
+    .thinking-workspace .notice,
+    .thinking-workspace .disclosure {
+      padding: 16px;
+    }
+
+    .thinking-workspace .checkstrip {
+      align-items: center;
+      background: var(--orange-wash);
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius-sm);
+      display: flex;
+      gap: 12px;
+      justify-content: space-between;
+      padding: 11px 13px;
+    }
+
+    .thinking-workspace .checknow {
+      border: 0;
+      background: transparent;
+      color: var(--orange-ink);
+      cursor: pointer;
+      font: inherit;
+      padding: 0;
+      white-space: nowrap;
+    }
+
+    .thinking-workspace .message {
+      color: var(--muted);
+      font-size: 0.92rem;
+      min-height: 1.35rem;
+    }
+
+    .thinking-workspace .message[data-tone="error"] {
+      color: var(--danger);
+    }
+
+    .thinking-workspace .message[data-tone="ok"] {
+      color: var(--ok);
+    }
+
+    .thinking-workspace .field {
       display: grid;
-      gap: 0.35rem;
+      gap: 6px;
     }
 
-    .thinking-field label {
-      font-weight: 650;
+    .thinking-workspace .field label {
       font-size: 0.9rem;
+      font-weight: 650;
     }
 
-    .thinking-field input,
-    .thinking-field select,
-    .thinking-field textarea {
-      width: 100%;
-      border: 1px solid #c8d0d7;
-      border-radius: 6px;
-      padding: 0.45rem 0.55rem;
+    .thinking-workspace .field input,
+    .thinking-workspace .field select,
+    .thinking-workspace .field textarea {
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius-sm);
       box-sizing: border-box;
+      color: var(--ink);
+      padding: 10px 11px;
+      width: 100%;
     }
 
-    .thinking-panel {
-      border-top: 1px solid #e3e8ee;
-      padding-top: 1rem;
-      margin-top: 1rem;
+    .thinking-workspace .hidden-select {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
     }
 
-    .thinking-panel h2 {
-      font-size: 1.1rem;
-      margin: 0 0 0.75rem;
-      letter-spacing: 0;
+    .thinking-workspace .pastebox {
+      border-top: 1px solid var(--hairline);
+      display: grid;
+      gap: 12px;
+      margin-top: 6px;
+      padding-top: 16px;
     }
 
-    .thinking-grid {
+    .thinking-workspace .details-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 1rem;
+      gap: 14px;
+      margin-top: 14px;
     }
 
-    .thinking-message {
-      color: #52616b;
-      font-size: 0.9rem;
-      min-height: 1.3rem;
+    .thinking-workspace .disclosure summary {
+      cursor: pointer;
+      font-weight: 700;
     }
 
-    .thinking-message[data-tone="error"] {
-      color: #b42318;
+    .thinking-workspace .switchflow {
+      align-items: center;
+      display: grid;
+      gap: 12px;
+      grid-template-columns: 1fr auto 1fr;
     }
 
-    .thinking-message[data-tone="ok"] {
-      color: #1f7a4d;
+    .thinking-workspace .switchnode {
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius-sm);
+      padding: 13px;
     }
 
-    @media (max-width: 900px) {
-      .thinking-header,
-      .thinking-lanes,
-      .thinking-grid {
-        grid-template-columns: 1fr;
-        display: grid;
+    .thinking-workspace .arrow {
+      color: var(--orange-ink);
+      font-size: 1.25rem;
+    }
+
+    @media (max-width: 760px) {
+      .thinking-workspace {
+        border-radius: 0;
       }
 
-      .thinking-active {
-        width: 100%;
-        box-sizing: border-box;
+      .thinking-workspace .appframe {
+        border-radius: var(--radius-sm);
+        padding: 18px;
+      }
+
+      .thinking-workspace .topline,
+      .thinking-workspace .lanehead,
+      .thinking-workspace .cardtop,
+      .thinking-workspace .actions,
+      .thinking-workspace .inline-actions,
+      .thinking-workspace .switchrow,
+      .thinking-workspace .checkstrip {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .thinking-workspace .lanegrid,
+      .thinking-workspace .provgrid,
+      .thinking-workspace .details-grid,
+      .thinking-workspace .switchflow {
+        grid-template-columns: 1fr;
+      }
+
+      .thinking-workspace .arrow {
+        transform: rotate(90deg);
       }
     }
   </style>
 
-  <header class="thinking-header">
-    <div>
-      <h1>{{ thinking_copy.heading }}</h1>
-      <p>{{ thinking_copy.subheading }}</p>
-    </div>
-    <div class="thinking-active" aria-live="polite">
-      <div class="thinking-active__label">active lane</div>
-      <div class="thinking-active__value" id="thinkingActiveLane">loading...</div>
-      <div class="thinking-message" id="thinkingActiveDetail"></div>
-    </div>
-  </header>
+  <div class="appframe">
+    <section class="view" data-view="main">
+      <header class="topline">
+        <div class="panelbody">
+          <p class="brandlock">your journal is always private, only yours.</p>
+          <h1>{{ thinking_copy.heading }}</h1>
+          <p class="intro">sol needs a way to think — to answer you, make sense of your journal, and do what you ask. choose one. you can switch anytime.</p>
+        </div>
+      </header>
 
-  <section class="thinking-lanes" aria-label="thinking lanes">
-    <article class="thinking-lane" id="lane-scout" data-lane="scout">
-      <h2>Scout</h2>
-      <p>Gemini key provided through solstone scout.</p>
-      <div class="thinking-status" id="scoutLaneStatus">loading...</div>
-      <div class="thinking-message" id="scoutLaneOperation"></div>
-      <div class="thinking-actions">
-        <button type="button" id="scoutEnable">Enable Scout</button>
-        <button type="button" id="scoutRefresh">Refresh</button>
-        <button type="button" id="scoutDisable">Disable</button>
-        <button type="button" id="scoutCheck">Check</button>
-        <button type="button" class="primary" data-switch-lane="scout">Use Scout</button>
+      <div class="glance" id="brainGlance" aria-live="polite">
+        <div class="glabel" id="thinkingActiveLane">loading</div>
+        <div class="gval" id="thinkingActiveValue">checking</div>
+        <p class="gsub" id="thinkingActiveDetail"></p>
       </div>
-    </article>
 
-    <article class="thinking-lane" id="lane-byo" data-lane="byo">
-      <h2>BYO cloud</h2>
-      <p>Use your own Claude, Gemini, or GPT key.</p>
-      <div class="thinking-field">
-        <label for="byoProvider">provider</label>
-        <select id="byoProvider">
-          <option value="anthropic">Claude</option>
-          <option value="google">Gemini</option>
-          <option value="openai">GPT</option>
-        </select>
+      <div class="panelbody">
+        <h2>how sol thinks</h2>
+        <p class="micro" id="forkHint">one at a time — the one with the dot is active right now.</p>
       </div>
-      <div class="thinking-field">
-        <label for="byoKeyInput">key</label>
-        <input type="password" id="byoKeyInput" autocomplete="off" data-1p-ignore data-lpignore="true" data-bwignore="true">
-      </div>
-      <div class="thinking-status" id="byoLaneStatus">loading...</div>
-      <div class="thinking-actions">
-        <button type="button" id="byoSaveKey">Save Key</button>
-        <button type="button" id="byoClearKey">Clear Key</button>
-        <button type="button" id="byoValidateKey">Validate</button>
-        <button type="button" class="primary" data-switch-lane="byo">Use BYO cloud</button>
-      </div>
-    </article>
 
-    <article class="thinking-lane" id="lane-local" data-lane="local">
-      <h2>Local</h2>
-      <p>Use the model running on this machine.</p>
-      <div class="thinking-field">
+      <section class="lanegrid" aria-label="thinking options">
+        <article class="lane" id="lane-scout" data-lane="scout" data-open-view="scout-setup" role="button" tabindex="0">
+          <div class="lanehead">
+            <h2>scout</h2>
+            <span class="pill" id="scoutLaneStatus">loading</span>
+          </div>
+          <p id="scoutLaneDescription">be an early tester for solstone — we'll cover your thinking, using Gemini.</p>
+          <span class="activetag" id="scoutActiveTag" hidden>active</span>
+          <button type="button" class="trail" data-open-view="scout-setup" id="scoutLaneTrail">manage →</button>
+        </article>
+
+        <article class="lane" id="lane-byo" data-lane="byo" data-open-view="byo-setup" role="button" tabindex="0">
+          <div class="lanehead">
+            <h2>your own key</h2>
+            <span class="pill" id="byoLanePill">off</span>
+          </div>
+          <p id="byoLaneDescription">your key from Claude, Gemini, or GPT — your billing, your control. stays in your journal.</p>
+          <span class="activetag" id="byoActiveTag" hidden>active</span>
+          <button type="button" class="trail" data-open-view="byo-setup" id="byoLaneStatus">add a key →</button>
+        </article>
+
+        <article class="lane" id="lane-local" data-lane="local" data-open-view="local-setup" role="button" tabindex="0">
+          <div class="lanehead">
+            <h2>local</h2>
+            <span class="pill" id="localLanePill">checking</span>
+          </div>
+          <p id="localLaneDescription">a model runs right in your journal — your data never leaves. this computer can run one.</p>
+          <span class="activetag" id="localActiveTag" hidden>active</span>
+          <button type="button" class="trail" data-open-view="local-setup" id="localLaneStatus">turn on local →</button>
+        </article>
+      </section>
+
+      <details class="disclosure">
+        <summary>advanced provider controls</summary>
+        <div class="details-grid">
+          <div class="field">
+            <label for="field-generate-provider">generate provider</label>
+            <select id="field-generate-provider"></select>
+          </div>
+          <div class="field">
+            <label for="field-cogitate-provider">cogitate provider</label>
+            <select id="field-cogitate-provider"></select>
+          </div>
+          <div class="field">
+            <label for="field-generate-tier">generate tier</label>
+            <select id="field-generate-tier">
+              <option value="1">best</option>
+              <option value="2">balanced</option>
+              <option value="3">lightweight</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="field-cogitate-tier">cogitate tier</label>
+            <select id="field-cogitate-tier">
+              <option value="1">best</option>
+              <option value="2">balanced</option>
+              <option value="3">lightweight</option>
+            </select>
+          </div>
+        </div>
+        <div class="message" id="advancedStatus"></div>
+
+        <div class="details-grid">
+          <div class="field">
+            <label for="field-google-backend">Google backend</label>
+            <select id="field-google-backend">
+              <option value="auto">auto</option>
+              <option value="aistudio">AI Studio</option>
+              <option value="vertex">Vertex</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="vertexCredsInput">Vertex credentials JSON</label>
+            <textarea id="vertexCredsInput" rows="5"></textarea>
+          </div>
+        </div>
+        <div class="inline-actions">
+          <button type="button" class="btn" id="vertexSave">save Vertex credentials</button>
+          <button type="button" class="btn ghost" id="vertexClear">clear Vertex credentials</button>
+        </div>
+        <div class="message" id="vertexStatus"></div>
+
+        <div class="details-grid">
+          <div class="field">
+            <label for="localEndpointUrl">local endpoint URL</label>
+            <input type="url" id="localEndpointUrl">
+          </div>
+          <div class="field">
+            <label for="localEndpointModel">served model</label>
+            <input type="text" id="localEndpointModel">
+          </div>
+          <div class="field">
+            <label for="localEndpointCredential">credential</label>
+            <input type="password" id="localEndpointCredential" autocomplete="off">
+          </div>
+        </div>
+        <div class="inline-actions">
+          <button type="button" class="btn" id="localEndpointSave">save endpoint</button>
+          <button type="button" class="btn ghost" id="localEndpointClear">clear endpoint</button>
+        </div>
+        <div class="message" id="localEndpointStatus"></div>
+      </details>
+    </section>
+
+    <section class="view" data-view="scout-setup" hidden>
+      <button type="button" class="backlink" data-open-view="main">‹ thinking</button>
+      <div class="topline">
+        <div class="panelbody">
+          <h2>solstone scout</h2>
+          <p class="intro">be an early tester for solstone — we'll cover your thinking, using Gemini.</p>
+        </div>
+        <p class="micro"><a class="textlink scoutterms" href="https://services.solstone.app/scout/terms" target="_blank" rel="noopener noreferrer">scout program terms ↗</a> · always here while you're on solstone scout</p>
+      </div>
+
+      <div class="app-onoff">
+        <div class="cardtop">
+          <h3 id="scoutSetupTitle">scout</h3>
+          <span class="pill" id="scoutSetupPill">loading</span>
+        </div>
+        <p class="gsub" id="scoutSetupSub">checking scout</p>
+        <p class="meta" id="scoutSetupMeta"></p>
+      </div>
+
+      <div class="checkstrip" id="scoutCheckstrip" hidden>
+        <span id="scoutCheckstripText"></span>
+        <button type="button" class="checknow" id="scoutCheck">check now</button>
+      </div>
+
+      <div class="message" id="scoutLaneOperation"></div>
+      <div class="notice" id="scoutNotice"></div>
+      <div class="actions">
+        <button type="button" class="btn primary" id="scoutEnable">turn on scout →</button>
+        <button type="button" class="btn" id="scoutRefresh">refresh scout</button>
+        <button type="button" class="btn ghost" id="scoutDisable">turn off</button>
+      </div>
+    </section>
+
+    <section class="view" data-view="byo-setup" hidden>
+      <button type="button" class="backlink" id="byoBackLink">‹ thinking</button>
+      <div class="panelbody">
+        <h2>your own key</h2>
+        <p class="intro">use a key from your own provider — your billing, your control.</p>
+      </div>
+
+      <label class="hidden-select" for="byoProvider">provider</label>
+      <select id="byoProvider" class="hidden-select" aria-label="provider">
+        <option value="anthropic">Claude</option>
+        <option value="google">Gemini</option>
+        <option value="openai">GPT</option>
+      </select>
+
+      <section class="panelbody" id="byoPickPanel">
+        <h3>pick your provider</h3>
+        <p class="micro">all three work the same in solstone. choose the one you have a key for.</p>
+      </section>
+
+      <section class="provgrid" id="byoProviderGrid" aria-label="provider choices">
+        <article class="prov" id="prov-anthropic" data-provider-card="anthropic">
+          <div class="cardtop">
+            <h3>Claude</h3>
+            <span class="pill" id="prov-anthropic-pill">pick</span>
+          </div>
+          <p>use an Anthropic API key.</p>
+          <div class="inline-actions">
+            <button type="button" class="btn primary" data-byo-provider="anthropic">choose Claude</button>
+            <a class="textlink" href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer">get a key ↗</a>
+          </div>
+        </article>
+        <article class="prov" id="prov-google" data-provider-card="google">
+          <div class="cardtop">
+            <h3>Gemini</h3>
+            <span class="pill" id="prov-google-pill">pick</span>
+          </div>
+          <p id="prov-google-desc">use a Google AI Studio key.</p>
+          <div class="inline-actions">
+            <button type="button" class="btn primary" data-byo-provider="google">choose Gemini</button>
+            <a class="textlink" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">get a key ↗</a>
+          </div>
+        </article>
+        <article class="prov" id="prov-openai" data-provider-card="openai">
+          <div class="cardtop">
+            <h3>GPT</h3>
+            <span class="pill" id="prov-openai-pill">pick</span>
+          </div>
+          <p>use an OpenAI API key.</p>
+          <div class="inline-actions">
+            <button type="button" class="btn primary" data-byo-provider="openai">choose GPT</button>
+            <a class="textlink" href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">get a key ↗</a>
+          </div>
+        </article>
+      </section>
+
+      <section class="pastebox" id="byoPastePanel" hidden>
+        <h3 id="byoPasteTitle">paste a key</h3>
+        <div class="field">
+          <label for="byoKeyInput" id="byoKeyLabel">key</label>
+          <input type="password" id="byoKeyInput" autocomplete="off" data-1p-ignore data-lpignore="true" data-bwignore="true">
+        </div>
+        <p class="micro" id="byoKeyHint"></p>
+        <p class="micro" id="byoTermsLine"></p>
+        <div class="message" id="byoLaneStatus">key needed</div>
+        <div class="actions">
+          <button type="button" class="btn primary" id="byoSaveKey">use this key</button>
+          <button type="button" class="btn ghost" id="byoClearKey">clear key</button>
+          <button type="button" class="btn" id="byoValidateKey">validate</button>
+        </div>
+      </section>
+    </section>
+
+    <section class="view" data-view="local-setup" hidden>
+      <button type="button" class="backlink" data-open-view="main">‹ thinking</button>
+      <div class="panelbody">
+        <h2>local</h2>
+        <p class="intro">run a thinking model right in your journal — nothing leaves this computer.</p>
+      </div>
+
+      <div class="app-onoff" id="localSetupCard">
+        <div class="cardtop">
+          <h3 id="localSetupTitle">local</h3>
+          <span class="pill" id="localSetupPill">checking</span>
+        </div>
+        <p class="gsub" id="localSetupSub">checking local readiness</p>
+      </div>
+
+      <div class="field" id="localModelField">
         <label for="localModelSelect">model</label>
         <select id="localModelSelect"></select>
       </div>
-      <div class="thinking-status" id="localLaneStatus">loading...</div>
-      <div class="thinking-actions">
-        <button type="button" id="localRefresh">Refresh</button>
-        <button type="button" id="localBootstrap">Install</button>
-        <button type="button" class="primary" data-switch-lane="local">Use Local</button>
+      <div class="message" id="localSetupMessage"></div>
+      <div class="actions">
+        <button type="button" class="btn" id="localRefresh">check again</button>
+        <button type="button" class="btn" id="localBootstrap">install local model</button>
+        <button type="button" class="btn primary" id="localActivate">turn on local</button>
       </div>
-    </article>
-  </section>
+      <p class="micro" id="localSetupLinks"></p>
+      <div class="notice" id="localNotice">your data never leaves your journal — the model runs on this computer, offline. no cloud, no key, no billing.</div>
+    </section>
 
-  <section class="thinking-panel">
-    <h2>advanced</h2>
-    <div class="thinking-grid">
-      <div class="thinking-field">
-        <label for="field-generate-provider">generate provider</label>
-        <select id="field-generate-provider"></select>
+    <section class="view" data-view="lane-switch" hidden>
+      <button type="button" class="backlink" data-open-view="main">‹ thinking</button>
+      <div class="switchcard">
+        <h2>switch how sol thinks?</h2>
+        <div class="switchflow">
+          <div class="switchnode">
+            <p class="micro">now</p>
+            <h3 id="switchCurrentLabel">current lane</h3>
+          </div>
+          <div class="arrow">→</div>
+          <div class="switchnode">
+            <p class="micro">switch to</p>
+            <h3 id="switchTargetLabel">target lane</h3>
+          </div>
+        </div>
+        <p class="gsub" id="switchNote"></p>
+        <div class="actions">
+          <button type="button" class="btn primary" id="switchConfirmPrimary" data-switch-lane="">switch</button>
+          <button type="button" class="btn ghost" id="switchCancel" data-open-view="main">keep using current</button>
+        </div>
       </div>
-      <div class="thinking-field">
-        <label for="field-cogitate-provider">cogitate provider</label>
-        <select id="field-cogitate-provider"></select>
-      </div>
-      <div class="thinking-field">
-        <label for="field-generate-tier">generate tier</label>
-        <select id="field-generate-tier">
-          <option value="1">best</option>
-          <option value="2">balanced</option>
-          <option value="3">lightweight</option>
-        </select>
-      </div>
-      <div class="thinking-field">
-        <label for="field-cogitate-tier">cogitate tier</label>
-        <select id="field-cogitate-tier">
-          <option value="1">best</option>
-          <option value="2">balanced</option>
-          <option value="3">lightweight</option>
-        </select>
-      </div>
-    </div>
-    <div class="thinking-message" id="advancedStatus"></div>
-  </section>
-
-  <section class="thinking-panel">
-    <h2>Google backend</h2>
-    <div class="thinking-grid">
-      <div class="thinking-field">
-        <label for="field-google-backend">backend</label>
-        <select id="field-google-backend">
-          <option value="auto">auto</option>
-          <option value="aistudio">AI Studio</option>
-          <option value="vertex">Vertex</option>
-        </select>
-      </div>
-      <div class="thinking-field">
-        <label for="vertexCredsInput">Vertex credentials JSON</label>
-        <textarea id="vertexCredsInput" rows="5"></textarea>
-      </div>
-    </div>
-    <div class="thinking-inline">
-      <button type="button" id="vertexSave">Save Vertex Credentials</button>
-      <button type="button" id="vertexClear">Clear Vertex Credentials</button>
-    </div>
-    <div class="thinking-message" id="vertexStatus"></div>
-  </section>
-
-  <section class="thinking-panel">
-    <h2>local endpoint</h2>
-    <div class="thinking-grid">
-      <div class="thinking-field">
-        <label for="localEndpointUrl">endpoint URL</label>
-        <input type="url" id="localEndpointUrl">
-      </div>
-      <div class="thinking-field">
-        <label for="localEndpointModel">served model</label>
-        <input type="text" id="localEndpointModel">
-      </div>
-      <div class="thinking-field">
-        <label for="localEndpointCredential">credential</label>
-        <input type="password" id="localEndpointCredential" autocomplete="off">
-      </div>
-    </div>
-    <div class="thinking-inline">
-      <button type="button" id="localEndpointSave">Save Endpoint</button>
-      <button type="button" id="localEndpointClear">Clear Endpoint</button>
-    </div>
-    <div class="thinking-message" id="localEndpointStatus"></div>
-  </section>
+    </section>
+  </div>
 </div>
 
 <script>

@@ -8,7 +8,6 @@ from __future__ import annotations
 from typing import Any
 
 HEADING = "thinking"
-SUBHEADING = "Choose how sol thinks: scout-provided Gemini, your own cloud key, or a local model."
 ACTIVE_LANE_LABELS = {
     "scout": "Scout",
     "byo": "BYO cloud",
@@ -19,17 +18,17 @@ LANES = [
     {
         "id": "scout",
         "label": "Scout",
-        "description": "Gemini key provided through solstone scout.",
+        "description": "be an early tester for solstone — we'll cover your thinking, using Gemini.",
     },
     {
         "id": "byo",
         "label": "BYO cloud",
-        "description": "Use your own Claude, Gemini, or GPT key.",
+        "description": "your key from Claude, Gemini, or GPT — your billing, your control. stays in your journal.",
     },
     {
         "id": "local",
         "label": "Local",
-        "description": "Use the model running on this machine.",
+        "description": "a model runs right in your journal — your data never leaves.",
     },
 ]
 PROVIDER_LABELS = {
@@ -84,13 +83,11 @@ SCOUT_RESTING_GUIDANCE = {
     SCOUT_STATE_OFF: "Scout is off.",
     SCOUT_STATE_REQUESTED: "Scout is waiting for approval.",
     SCOUT_STATE_INVITED: "Scout is ready.",
-    SCOUT_STATE_ON: "Scout is on; sol pbc keeps a Gemini key on this machine for you.",
+    SCOUT_STATE_ON: "Scout is on — sol can think.",
     SCOUT_STATE_ENDED: "Scout has ended.",
     SCOUT_STATE_MANUAL_KEY_PRESENT: "A Gemini key you manage is already set.",
 }
-SCOUT_MANUAL_KEY_BLOCK_COPY = (
-    "A Gemini key you manage is already set. Clear it in BYO first, then enable Scout."
-)
+SCOUT_MANUAL_KEY_BLOCK_COPY = "a Gemini key you manage is already set — clear it in your own key first, then turn on scout."
 
 
 def thinking_copy_payload() -> dict[str, Any]:
@@ -98,7 +95,6 @@ def thinking_copy_payload() -> dict[str, Any]:
 
     return {
         "heading": HEADING,
-        "subheading": SUBHEADING,
         "active_lane_labels": dict(ACTIVE_LANE_LABELS),
         "lanes": [dict(lane) for lane in LANES],
         "provider_labels": dict(PROVIDER_LABELS),

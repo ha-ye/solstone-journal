@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 WORKSPACE = Path("solstone/apps/thinking/workspace.html")
@@ -15,6 +16,16 @@ def _workspace_text() -> str:
 
 def _static_text() -> str:
     return STATIC.read_text(encoding="utf-8")
+
+
+def _owner_surface_text() -> str:
+    lines = (_workspace_text() + "\n" + _static_text()).splitlines()
+    return "\n".join(
+        line
+        for line in lines
+        if "SPDX-License-Identifier" not in line
+        and "Copyright (c) 2026 sol pbc" not in line
+    )
 
 
 def test_thinking_workspace_exposes_providers_anchor_and_lanes():
@@ -70,7 +81,7 @@ def test_thinking_static_has_scout_orchestration_structures():
 
 
 def test_thinking_surface_avoids_forbidden_owner_terms():
-    combined = (_workspace_text() + "\n" + _static_text()).lower()
+    combined = _owner_surface_text()
 
     for term in (
         "account",
@@ -86,4 +97,7 @@ def test_thinking_surface_avoids_forbidden_owner_terms():
         "track",
         "collect",
     ):
-        assert term not in combined
+        assert re.search(rf"\b{re.escape(term)}\b", combined, re.IGNORECASE) is None
+
+    for phrase in ("sol pbc", "this machine", "this device"):
+        assert re.search(rf"\b{re.escape(phrase)}\b", combined, re.IGNORECASE) is None
