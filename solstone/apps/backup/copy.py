@@ -7,39 +7,63 @@ from __future__ import annotations
 
 from typing import Any
 
-SERVICE_NAME = "private backup"
+SERVICE_NAME = "solstone backup"
 
+# The journal-bound brand-lock (entry point) — the trust promise binds to the
+# journal (the memory store where Article 8 binds), never to the software.
+JOURNAL_BRAND_LOCK = "your journal is always private, only yours."
 INTRO_SUBTITLE = (
-    "Keep an encrypted copy of your journal somewhere safe — only you can read it."
+    "Make an encrypted copy of your journal somewhere safe — only you can read it."
 )
 INTRO_BULLETS = [
-    "End-to-end encrypted",
-    "Optional, always",
-    "Delete anytime",
+    "end-to-end encrypted",
+    "optional, always",
+    "delete anytime",
 ]
+INTRO_STEPS = "you'll save a recovery key, then choose where your backup lives."
+# The byo ⟷ solstone hosted mode selector (destination step). v1 is byo-only;
+# the hosted lane is shown as an honest "coming later" state — never a dead
+# "set up hosting" control, since the hosted service does not exist yet.
+MODE_BYO_TITLE = "your own"
+MODE_BYO_DESC = "your bucket, your credentials. the default."
+# the byo covenant beat — load-bearing ("sol pbc is never in the path").
+MODE_BYO_NOTE = "sol pbc is never in the path."
+MODE_HOSTED_TITLE = "solstone hosted"
+MODE_HOSTED_TAG = "coming later"
+MODE_HOSTED_DESC = "sol pbc runs the off-machine part for you."
+MODE_HOSTED_NOTE = "operated by sol pbc"
+MODE_HOSTED_COMING = (
+    "this isn't available yet. for now, solstone backup uses your own bucket "
+    "— sol pbc is never in the path."
+)
 EDUCATE_STAKES = (
     "If you lose your recovery key, no one can recover your journal — not even sol pbc."
 )
 THEFT_HONESTY = "Anyone with your recovery key can read everything in your backup — store it like a master password."
 CONFIRM_PROMPT = "Enter the recovery key you just recorded."
-CONFIRM_ESCAPE = "See Key Again"
+CONFIRM_ESCAPE = "see key again"
 PM_CAUTION = "Only store your recovery key in a password manager you trust. sol pbc doesn't recommend a specific one."
-DESTRUCTIVE_ACTION = "Turn Off & Delete Backup"
+DESTRUCTIVE_ACTION = "turn off & delete backup"
 DESTRUCTIVE_CAPTION = (
     "This deletes all your backup data. No new backups will be created."
 )
 OBJECT_LOCK_WARNING = "Don't enable Compliance-mode Object Lock on the bucket — it conflicts with backup pruning and lock cleanup. If you need immutability, use Governance mode."
+OBJECT_LOCK_SUMMARY = "bucket setup notes"
 OPTIONAL_INVARIANT = "solstone runs on your machine; this is optional."
-SAVE_PASSWORD_MANAGER = "Save to my password manager"
-SAVE_COPY = "Copy"
-SAVE_CONTINUE = "Continue"
+SAVE_PASSWORD_MANAGER = "save to my password manager"
+SAVE_COPY = "copy"
+SAVE_CONTINUE = "continue"
 CLIPBOARD_CAVEAT = (
     "Copying puts your recovery key on the clipboard — clear it after you save it."
 )
+REPOSITORY_HINT = (
+    "the restic repository for your bucket — e.g. s3:s3.amazonaws.com/your-bucket"
+)
+RETENTION_HINT = "how many recent copies to keep at each interval."
 
 PHASE_LABELS = {
-    "setting_up": "setting up…",
-    "restoring": "restoring…",
+    "setting_up": "setting up your backup…",
+    "restoring": "restoring your journal…",
     "rotating": "making a new recovery key…",
     "tearing_down": "turning off…",
     "done": "done",
@@ -78,50 +102,51 @@ OPERATION_REASON_LABELS = {
 }
 
 ACTION_LABELS = {
-    "start": "Get Started",
-    "understand": "I Understand",
-    "save_destination": "Save Destination",
-    "enable": "Turn On Backup",
-    "backup_now": "Back Up Now",
-    "view_key": "View Recovery Key",
-    "rotate_key": "Regenerate Recovery Key",
+    "start": "get started",
+    "understand": "i understand",
+    "save_destination": "save destination",
+    "enable": "turn on backup",
+    "backup_now": "back up now",
+    "view_key": "view recovery key",
+    "rotate_key": "regenerate recovery key",
     "teardown": DESTRUCTIVE_ACTION,
-    "save_retention": "Save Retention",
-    "restore": "Restore",
-    "try_again": "Try Again",
-    "cancel": "Cancel",
+    "save_retention": "save retention",
+    "restore": "restore",
+    "try_again": "try again",
+    "cancel": "cancel",
+    "use_byo": "use your own bucket",
 }
 
 DESTINATION_FIELD_LABELS = {
-    "repository": "Repository",
-    "backend": "Backend",
+    "repository": "repository",
+    "backend": "backend",
     "s3": "S3",
     "b2": "B2",
-    "access_key_id": "Access Key ID",
-    "secret_access_key": "Secret Access Key",
-    "b2_key_id": "Key ID",
-    "b2_application_key": "Application Key",
+    "access_key_id": "access key id",
+    "secret_access_key": "secret access key",
+    "b2_key_id": "key id",
+    "b2_application_key": "application key",
 }
 
 RETENTION_FIELD_LABELS = {
-    "hourly": "Hourly",
-    "daily": "Daily",
-    "weekly": "Weekly",
-    "monthly": "Monthly",
+    "hourly": "hourly",
+    "daily": "daily",
+    "weekly": "weekly",
+    "monthly": "monthly",
 }
 
 STATUS_LABELS = {
-    "last_backup": "Last Backup",
-    "last_prune": "Last Prune",
-    "storage_used": "Storage Used",
-    "snapshot_history": "Snapshot History",
+    "last_backup": "last backup",
+    "last_prune": "last prune",
+    "storage_used": "storage used",
+    "snapshot_history": "snapshot history",
     "not_available": "not yet available",
     "not_yet": "not yet",
     "enabled": "on",
     "disabled": "off",
-    "destination": "Destination",
-    "retention": "Retention",
-    "setup": "Setup",
+    "destination": "where your backup lives",
+    "retention": "retention",
+    "setup": "set up your recovery key",
 }
 
 RESTORE_EXPECTATION = (
@@ -137,11 +162,13 @@ def backup_copy_payload() -> dict[str, Any]:
 
     return {
         "service_name": SERVICE_NAME,
+        "brand_lock": JOURNAL_BRAND_LOCK,
         "intro": {
             "title": SERVICE_NAME,
             "subtitle": INTRO_SUBTITLE,
             "bullets": list(INTRO_BULLETS),
             "optional": OPTIONAL_INVARIANT,
+            "steps": INTRO_STEPS,
         },
         "educate": {
             "stakes": EDUCATE_STAKES,
@@ -150,7 +177,7 @@ def backup_copy_payload() -> dict[str, Any]:
             "theft_honesty": THEFT_HONESTY,
             "pm_caution": PM_CAUTION,
             "save_password_manager": SAVE_PASSWORD_MANAGER,
-            "copy": SAVE_COPY,
+            "copy_label": SAVE_COPY,
             "continue": SAVE_CONTINUE,
             "clipboard_caveat": CLIPBOARD_CAVEAT,
         },
@@ -159,13 +186,30 @@ def backup_copy_payload() -> dict[str, Any]:
             "escape": CONFIRM_ESCAPE,
         },
         "destination": {
+            "repository_hint": REPOSITORY_HINT,
             "object_lock_warning": OBJECT_LOCK_WARNING,
+            "object_lock_summary": OBJECT_LOCK_SUMMARY,
             "field_labels": dict(DESTINATION_FIELD_LABELS),
             "reason_labels": dict(DESTINATION_REASON_LABELS),
+            "modes": {
+                "byo": {
+                    "title": MODE_BYO_TITLE,
+                    "desc": MODE_BYO_DESC,
+                    "note": MODE_BYO_NOTE,
+                },
+                "hosted": {
+                    "title": MODE_HOSTED_TITLE,
+                    "tag": MODE_HOSTED_TAG,
+                    "desc": MODE_HOSTED_DESC,
+                    "note": MODE_HOSTED_NOTE,
+                    "coming": MODE_HOSTED_COMING,
+                },
+            },
         },
         "management": {
             "destructive_action": DESTRUCTIVE_ACTION,
             "destructive_caption": DESTRUCTIVE_CAPTION,
+            "retention_hint": RETENTION_HINT,
             "status_labels": dict(STATUS_LABELS),
             "retention_labels": dict(RETENTION_FIELD_LABELS),
         },

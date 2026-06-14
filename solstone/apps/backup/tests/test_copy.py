@@ -15,17 +15,20 @@ from solstone.apps.backup.copy import backup_copy_payload, backup_copy_values
 def test_backup_copy_verbatim_strings() -> None:
     payload = backup_copy_payload()
 
-    assert payload["service_name"] == "private backup"
-    assert payload["intro"]["title"] == "private backup"
+    assert payload["service_name"] == "solstone backup"
+    assert payload["intro"]["title"] == "solstone backup"
+    # the journal-bound brand-lock — load-bearing trust beat (CSO-required)
+    assert payload["brand_lock"] == "your journal is always private, only yours."
     assert (
         payload["intro"]["subtitle"]
-        == "Keep an encrypted copy of your journal somewhere safe — only you can read it."
+        == "Make an encrypted copy of your journal somewhere safe — only you can read it."
     )
     assert payload["intro"]["bullets"] == [
-        "End-to-end encrypted",
-        "Optional, always",
-        "Delete anytime",
+        "end-to-end encrypted",
+        "optional, always",
+        "delete anytime",
     ]
+    # load-bearing honesty beats — must survive verbatim (CSO-required)
     assert (
         payload["educate"]["stakes"]
         == "If you lose your recovery key, no one can recover your journal — not even sol pbc."
@@ -35,16 +38,24 @@ def test_backup_copy_verbatim_strings() -> None:
         == "Anyone with your recovery key can read everything in your backup — store it like a master password."
     )
     assert payload["confirm"]["prompt"] == "Enter the recovery key you just recorded."
-    assert payload["confirm"]["escape"] == "See Key Again"
+    assert payload["confirm"]["escape"] == "see key again"
     assert (
         payload["key"]["pm_caution"]
         == "Only store your recovery key in a password manager you trust. sol pbc doesn't recommend a specific one."
     )
-    assert payload["management"]["destructive_action"] == "Turn Off & Delete Backup"
+    assert payload["management"]["destructive_action"] == "turn off & delete backup"
     assert (
         payload["management"]["destructive_caption"]
         == "This deletes all your backup data. No new backups will be created."
     )
+    # the byo covenant beat — "sol pbc is never in the path" (mode selector)
+    assert (
+        payload["destination"]["modes"]["byo"]["note"]
+        == "sol pbc is never in the path."
+    )
+    assert payload["destination"]["modes"]["byo"]["title"] == "your own"
+    assert payload["destination"]["modes"]["hosted"]["title"] == "solstone hosted"
+    assert payload["destination"]["modes"]["hosted"]["note"] == "operated by sol pbc"
     assert (
         payload["destination"]["object_lock_warning"]
         == "Don't enable Compliance-mode Object Lock on the bucket — it conflicts with backup pruning and lock cleanup. If you need immutability, use Governance mode."
@@ -53,13 +64,13 @@ def test_backup_copy_verbatim_strings() -> None:
         payload["intro"]["optional"]
         == "solstone runs on your machine; this is optional."
     )
-    assert payload["key"]["save_password_manager"] == "Save to my password manager"
-    assert payload["key"]["copy"] == "Copy"
-    assert payload["key"]["continue"] == "Continue"
-    assert payload["destination"]["field_labels"]["b2_key_id"] == "Key ID"
+    assert payload["key"]["save_password_manager"] == "save to my password manager"
+    assert payload["key"]["copy_label"] == "copy"
+    assert payload["key"]["continue"] == "continue"
+    assert payload["destination"]["field_labels"]["b2_key_id"] == "key id"
     assert (
         payload["destination"]["field_labels"]["b2_application_key"]
-        == "Application Key"
+        == "application key"
     )
 
 
@@ -77,6 +88,11 @@ def test_no_literal_copy_in_templates_or_static() -> None:
         "not yet available",
         "off",
         "on",
+        # lowercased labels that coincide with structural code tokens
+        # (form field names / panel + route names in backup.js), not display leaks
+        "backend",
+        "repository",
+        "restore",
     }
     hits: list[tuple[Path, str]] = []
     for path in [root / "workspace.html", root / "static" / "backup.js"]:

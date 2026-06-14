@@ -271,6 +271,7 @@
           }
         }
         if (action === 'cancel-restore') showPanel(state.enabled ? 'management' : 'intro');
+        if (action === 'use-byo') setMode('byo');
       } catch (err) {
         showError('[data-operation-error]', err);
       }
@@ -362,6 +363,25 @@
     syncBackendFields('restore');
   }
 
+  function setMode(mode) {
+    for (const button of root.querySelectorAll('.backup-mode')) {
+      const selected = button.getAttribute('data-mode') === mode;
+      button.classList.toggle('is-selected', selected);
+      button.setAttribute('aria-checked', selected ? 'true' : 'false');
+    }
+    for (const item of root.querySelectorAll('[data-mode-panel]')) {
+      item.hidden = item.getAttribute('data-mode-panel') !== mode;
+    }
+  }
+
+  function bindModeSwitching() {
+    for (const button of root.querySelectorAll('.backup-mode')) {
+      button.addEventListener('click', function () {
+        setMode(button.getAttribute('data-mode'));
+      });
+    }
+  }
+
   function initialPanel() {
     if (operationActive(state.operation)) {
       pollUntilTerminal();
@@ -375,6 +395,7 @@
     bindIntro();
     bindForms();
     bindBackendSwitching();
+    bindModeSwitching();
     renderStatus();
     showPanel(initialPanel());
   }
