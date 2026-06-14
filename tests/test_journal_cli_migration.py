@@ -79,6 +79,11 @@ def _skip_line(path: Path, line: str) -> bool:
         and "managed by 'sol config'" in line
     ):
         return True
+    # "how should sol think?" is owner-facing init wizard copy (a question to the
+    # owner), not a `sol think` service-command reference. Exempt the prose phrase
+    # wherever it appears (the init template and the tests that assert it).
+    if "how should sol think" in line:
+        return True
     if path.parts and path.parts[0] == "tests":
         argv_markers = (
             "sys.argv",

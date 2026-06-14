@@ -51,8 +51,17 @@ def test_init_provider_section_is_basics_only(convey_env_setup_pending) -> None:
 
     assert 'id="gemini-key"' in html
     assert 'id="gemini-validate"' in html
-    assert "choose how sol thinks" in html
-    assert "choose Scout, your own cloud key, or a local model in Thinking" in html
+    assert "how should sol think?" in html
+    assert "become a solstone scout" in html
+    assert "use your own key" in html
+    assert "use local thinking models" in html
+    assert (
+        "be an early tester for solstone — we'll cover your thinking, using Gemini."
+        in html
+    )
+    assert "init captures your choice" in html
+    assert "skip for now" in html
+    assert "INSTALL.md#choosing-how-to-power-sol" in html
     assert "data-scout-state" not in html
     assert "enableScout" not in html
     assert "subscribeScoutStream" not in html

@@ -132,16 +132,13 @@ class TestInitDetection:
 
     def test_init_sol_agent_section_renders(self, fresh_client):
         resp = fresh_client.get("/init")
-        assert b">choose how sol thinks<" in resp.data
-        assert b"paste a Gemini API key now" in resp.data
+        assert b">how should sol think?<" in resp.data
+        assert b"become a solstone scout" in resp.data
 
     def test_init_sol_agent_paragraphs(self, fresh_client):
         resp = fresh_client.get("/init")
-        assert (
-            b"choose Scout, your own cloud key, or a local model in Thinking"
-            in resp.data
-        )
-        assert b"a Gemini API key comes from Google AI Studio" in resp.data
+        assert b"Claude, Gemini, or GPT" in resp.data
+        assert b"init captures your choice" in resp.data
 
     def test_init_no_legacy_trust_note(self, fresh_client):
         resp = fresh_client.get("/init")

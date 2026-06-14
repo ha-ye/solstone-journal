@@ -69,7 +69,66 @@
       font-family: 'Comfortaa', system-ui, sans-serif; text-transform: lowercase;
     }
     .cta-button:hover { background: #d17e2e; }
-    .trust-note { font-size: 0.8rem; color: #888; margin: 0.25rem 0 0.5rem; }
+    .lanes { display: grid; grid-template-columns: 1fr; gap: 10px; }
+    .lane {
+      border: 1.5px solid #E2D7BF;
+      border-radius: 9px;
+      padding: 15px 16px;
+      background: #FEFCF8;
+      cursor: pointer;
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+      text-decoration: none;
+      color: inherit;
+      font: inherit;
+      text-align: left;
+      width: 100%;
+      min-width: 0;
+      margin: 0;
+      box-sizing: border-box;
+      appearance: none;
+      -webkit-appearance: none;
+    }
+    .lane:hover { background: #fff; }
+    .lane.active {
+      border-color: #E8923A;
+      background: #FFF;
+      box-shadow: 0 0 0 3px rgba(232,146,58,.14);
+    }
+    .lane .laneic {
+      width: 30px;
+      height: 30px;
+      flex: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 19px;
+      color: #5B5246;
+      margin-top: 1px;
+    }
+    .lane .lanebody { flex: 1 1 auto; min-width: 0; }
+    .lane .lanetop { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .lane .lanename { font-weight: 700; font-size: 1.02rem; color: #222; }
+    .lane .lanedesc { font-size: .86rem; color: #6E6453; margin-top: 3px; line-height: 1.45; }
+    .lane.greyed { background: #F4F1E9; border-color: #ECE3D0; cursor: default; }
+    .lane.greyed .lanename { color: #6E6453; }
+    .lane.greyed .laneic { color: #B8AC8E; }
+    .lane .reqlink { color: #B06A1A; font-weight: 600; text-decoration: none; }
+    .routenote {
+      font-size: .84rem;
+      color: #6E6453;
+      background: #FEFCF8;
+      border: 1px dashed #E2D7BF;
+      border-radius: 9px;
+      padding: 11px 13px;
+      margin-top: 16px;
+      line-height: 1.5;
+    }
+    .routenote b { color: #5B5246; }
+    .skip { font-size: .86rem; color: #6E6453; margin-top: 16px; }
+    .skip a { color: #B06A1A; font-weight: 600; text-decoration: none; }
+    #provider-key-block { min-width: 0; }
     .footer-note { font-size: 0.8rem; color: #767676; margin-top: 1.5rem; text-align: center; }
     .provider-key-row { display: flex; gap: 0.5rem; align-items: center; }
     .provider-key-row input { flex: 1; min-width: 0; width: auto; }
@@ -141,26 +200,49 @@
     </section>
 
     <section class="init-section" id="section-provider">
-      <h3>choose how sol thinks</h3>
-      <p class="section-hint">paste a Gemini API key now if you already have one, or leave this blank and choose Scout, your own cloud key, or a local model in Thinking after setup.</p>
-      <p class="section-hint">a Gemini API key comes from Google AI Studio (<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">aistudio.google.com</a>), not the Gemini chat app.</p>
-      <div class="byo-paste">
-        <div class="field-group">
-          <label for="gemini-key">Gemini API key</label>
-          <div class="provider-key-row">
-            <div class="password-wrap">
-              <input type="password" id="gemini-key" autocomplete="off"
-                     data-1p-ignore data-lpignore="true" data-bwignore="true">
-              <button type="button" class="password-toggle" data-toggle="gemini-key" title="show key">
-                <span>&#128065;</span>
-              </button>
-            </div>
-            <button type="button" id="gemini-validate" class="settings-preset-btn">validate</button>
+      <h3>how should sol think?</h3>
+      <p class="section-hint">sol needs a way to reason about your journal and answer you. pick one now — you can change it anytime in <b>thinking</b>.</p>
+      <div class="lanes">
+        <button type="button" id="provider-lane-scout" class="lane">
+          <div class="laneic">◎</div>
+          <div class="lanebody">
+            <div class="lanetop"><span class="lanename">become a solstone scout</span></div>
+            <div class="lanedesc">be an early tester for solstone — we'll cover your thinking, using Gemini.</div>
           </div>
-          <small class="field-status">&nbsp;</small>
+        </button>
+        <button type="button" id="provider-lane-byo" class="lane active">
+          <div class="laneic">⚿</div>
+          <div class="lanebody">
+            <div class="lanetop"><span class="lanename">use your own key</span></div>
+            <div class="lanedesc">Claude, Gemini, or GPT — your key, working right away.</div>
+          </div>
+        </button>
+        <div id="provider-key-block">
+          <div class="field-group">
+            <label for="gemini-key">Gemini API key</label>
+            <div class="provider-key-row">
+              <div class="password-wrap">
+                <input type="password" id="gemini-key" autocomplete="off"
+                       data-1p-ignore data-lpignore="true" data-bwignore="true">
+                <button type="button" class="password-toggle" data-toggle="gemini-key" title="show key">
+                  <span>&#128065;</span>
+                </button>
+              </div>
+              <button type="button" id="gemini-validate" class="settings-preset-btn">validate</button>
+            </div>
+            <small class="field-status">&nbsp;</small>
+          </div>
+        </div>
+        <div class="lane greyed">
+          <div class="laneic">⌂</div>
+          <div class="lanebody">
+            <div class="lanetop"><span class="lanename">use local thinking models</span></div>
+            <div class="lanedesc">this computer can't run one yet — needs a supported GPU. <a class="reqlink" href="https://github.com/solpbc/solstone/blob/main/INSTALL.md#choosing-how-to-power-sol" target="_blank" rel="noopener noreferrer">requirements ↗</a></div>
+          </div>
         </div>
       </div>
-      <p class="trust-note">you can change this anytime in Thinking. <a href="https://github.com/solpbc/solstone/blob/main/INSTALL.md#choosing-how-to-power-sol" target="_blank" rel="noopener noreferrer" style="color: #b06a1a;">how to power sol &rarr;</a></p>
+      <div class="routenote">init captures your choice. when you finish setup, <b>thinking</b> opens to the lane you picked — paste your key, apply to scout, or turn on local there. the fork lives in thinking from now on.</div>
+      <p class="skip"><a href="#" id="provider-skip">skip for now</a> — sol will keep your journal; choose how it thinks whenever you're ready.</p>
     </section>
 
     <section class="init-section" id="section-observed-media">
@@ -340,6 +422,34 @@
           }
         };
         btn.addEventListener('mousedown', e => e.preventDefault());
+      });
+
+      const scoutLane = document.getElementById('provider-lane-scout');
+      const byoLane = document.getElementById('provider-lane-byo');
+      const keyBlock = document.getElementById('provider-key-block');
+      const skipProvider = document.getElementById('provider-skip');
+
+      function clearProviderKey() {
+        geminiKey.value = '';
+        clearKeyStatus();
+      }
+
+      function selectProviderLane(lane) {
+        const useByo = lane === 'byo';
+        scoutLane.classList.toggle('active', lane === 'scout');
+        byoLane.classList.toggle('active', useByo);
+        keyBlock.hidden = !useByo;
+        if (!useByo) clearProviderKey();
+      }
+
+      byoLane.addEventListener('click', () => selectProviderLane('byo'));
+      scoutLane.addEventListener('click', () => selectProviderLane('scout'));
+      skipProvider.addEventListener('click', e => {
+        e.preventDefault();
+        scoutLane.classList.remove('active');
+        byoLane.classList.remove('active');
+        keyBlock.hidden = true;
+        clearProviderKey();
       });
 
       document.querySelectorAll('input[name="retention_mode"]').forEach(radio => {
