@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Scheduled restic backup and prune engine for sol private backup."""
+"""Scheduled restic backup and prune engine for solstone backup."""
 
 from __future__ import annotations
 

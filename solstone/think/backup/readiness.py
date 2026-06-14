@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Examine-only restic readiness checks for sol private backup.
+"""Examine-only restic readiness checks for solstone backup.
 
 Stdlib-only by contract. Must NOT import third-party packages,
 solstone.observe.*, solstone.think.journal_io, or any module that writes journal

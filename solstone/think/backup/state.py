@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Journal config accessors for sol private backup state."""
+"""Journal config accessors for solstone backup state."""
 
 from __future__ import annotations
 

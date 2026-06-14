@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Acquire and install the pinned restic binary for sol private backup."""
+"""Acquire and install the pinned restic binary for solstone backup."""
 
 from __future__ import annotations
 

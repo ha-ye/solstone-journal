@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Service CLI for sol private backup."""
+"""Service CLI for solstone backup."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ from solstone.think.backup.state import (
 from solstone.think.backup.teardown import teardown_backup
 from solstone.think.utils import init_cli_runtime
 
-app = typer.Typer(help="Manage sol private backup.", no_args_is_help=True)
+app = typer.Typer(help="Manage solstone backup.", no_args_is_help=True)
 destination_app = typer.Typer(help="Manage backup destination.", no_args_is_help=True)
 recovery_key_app = typer.Typer(help="Manage backup recovery key.", no_args_is_help=True)
 app.add_typer(destination_app, name="destination")
@@ -133,7 +133,7 @@ def _configure(
     ),
     debug: bool = typer.Option(False, "-d", "--debug", help="Enable debug logging"),
 ) -> None:
-    """Manage sol private backup."""
+    """Manage solstone backup."""
     init_cli_runtime(verbose, debug)
 
 
@@ -165,7 +165,7 @@ def destination_set() -> None:
 
 @app.command("enable")
 def enable() -> None:
-    """Enable private backup."""
+    """Enable solstone backup."""
     destination = get_destination()
     if destination is None:
         _die("Set a destination first: journal backup destination set")
@@ -317,7 +317,7 @@ def off(
         help="Confirm teardown of backup snapshots.",
     ),
 ) -> None:
-    """Turn off private backup and forget snapshots."""
+    """Turn off solstone backup and forget snapshots."""
     if not yes:
         _die("Refusing to tear down backup without --yes. This forgets all snapshots.")
 
