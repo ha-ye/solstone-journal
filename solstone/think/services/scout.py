@@ -9,6 +9,7 @@ import fcntl
 import hashlib
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,14 +20,21 @@ from solstone.think.journal_config import (
     read_journal_config,
     write_journal_config,
 )
+from solstone.think.services import portal_client
 from solstone.think.utils import get_journal
 
 log = logging.getLogger(__name__)
 
+STATUS_CHECK_STALENESS_SECONDS = 300
 _HANDOFF_FIELDS = ("google_api_key", "dispatch_token", "account_id", "created_at")
 _SECRET_HANDOFF_FIELDS = frozenset({"google_api_key", "dispatch_token"})
 _REDACTED = "***redacted***"
 KEY_FINGERPRINT_FIELD = "key_fingerprint_sha256"
+_SERVER_STATUS_TO_SOURCE_STATE = {
+    "pending": "pending",
+    "approved": "invited",
+    "revoked": "ended",
+}
 
 
 def _redact_handoff(payload: dict[str, Any]) -> dict[str, Any]:
@@ -44,6 +52,14 @@ class JournalNotInitializedError(RuntimeError):
 class DisableOutcome:
     was_enabled: bool
     env_key_preserved: bool
+
+
+@dataclass(frozen=True)
+class ScoutCheckResult:
+    source_state: str
+    checked: bool
+    checked_at: str | None
+    check_error: str | None
 
 
 def _lock_path() -> Path:
@@ -80,6 +96,53 @@ def _is_approved_provision(block: Any) -> bool:
     return isinstance(block, dict) and block.get("state") != "pending"
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_checked_at(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _check_is_fresh(value: Any) -> bool:
+    checked_at = _parse_checked_at(value)
+    if checked_at is None:
+        return False
+    age = datetime.now(timezone.utc) - checked_at
+    return 0 <= age.total_seconds() <= STATUS_CHECK_STALENESS_SECONDS
+
+
+def _update_scout_block(
+    mutate: Callable[[dict[str, Any]], dict[str, Any]],
+) -> dict[str, Any]:
+    _require_journal_config()
+
+    lock_path = _lock_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w", encoding="utf-8") as lock_file:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            _require_journal_config()
+            config = read_journal_config()
+            current_raw = config.get("services", {}).get("scout")
+            current = dict(current_raw) if isinstance(current_raw, dict) else {}
+            block = mutate(current)
+            config.setdefault("services", {})["scout"] = block
+            write_journal_config(config)
+            return block
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
 def provision_scout_handoff(payload: dict[str, Any]) -> None:
     """Persist a portal-provisioned scout handoff into journal config."""
 
@@ -112,33 +175,31 @@ def provision_scout_handoff(payload: dict[str, Any]) -> None:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
-def record_scout_pending(account_id: str, since: Any) -> None:
-    """Store a pending scout-approval marker (no key or dispatch token written)."""
+def record_scout_pending(
+    account_id: str,
+    since: Any,
+    dispatch_token: Any = None,
+) -> None:
+    """Store a pending scout-approval marker without writing a Gemini key."""
 
     if not isinstance(account_id, str) or not account_id:
         raise ValueError(
             "malformed handoff payload: field 'account_id' must be a non-empty string"
         )
-    _require_journal_config()
 
-    lock_path = _lock_path()
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "w", encoding="utf-8") as lock_file:
-        os.chmod(lock_path, 0o600)
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        try:
-            _require_journal_config()
-            config = read_journal_config()
-            config.setdefault("services", {})["scout"] = {
-                "state": "pending",
-                "account_id": account_id,
-                "since": since,
-                "checked_at": datetime.now(timezone.utc).isoformat(),
-            }
-            write_journal_config(config)
-            log.debug("recorded pending scout marker for account_id=%s", account_id)
-        finally:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
+    def build_pending(_current: dict[str, Any]) -> dict[str, Any]:
+        block: dict[str, Any] = {
+            "state": "pending",
+            "account_id": account_id,
+            "since": since,
+            "checked_at": _now_iso(),
+        }
+        if isinstance(dispatch_token, str) and dispatch_token:
+            block["dispatch_token"] = dispatch_token
+        return block
+
+    _update_scout_block(build_pending)
+    log.debug("recorded pending scout marker for account_id=%s", account_id)
 
 
 def disable_scout() -> DisableOutcome:
@@ -218,7 +279,7 @@ def apply_scout_state(payload: dict[str, Any]) -> ScoutStateResult:
         account_id = payload.get("account_id")
         since = payload.get("since")
         try:
-            record_scout_pending(account_id, since)
+            record_scout_pending(account_id, since, payload.get("dispatch_token"))
         except ValueError as exc:
             raise ScoutPayloadError("scout_server_bad_payload", str(exc)) from exc
         return ScoutStateResult(kind="pending", account_id=account_id, since=since)
@@ -266,3 +327,81 @@ def scout_provenance() -> dict[str, Any] | None:
 
     provenance = read_journal_config().get("services", {}).get("scout")
     return provenance if isinstance(provenance, dict) else None
+
+
+def get_scout_dispatch_token() -> str | None:
+    block = scout_provenance()
+    if not isinstance(block, dict):
+        return None
+    dispatch_token = block.get("dispatch_token")
+    return (
+        dispatch_token if isinstance(dispatch_token, str) and dispatch_token else None
+    )
+
+
+def approved_dispatch_token() -> str | None:
+    block = scout_provenance()
+    if not _is_approved_provision(block):
+        return None
+    dispatch_token = block.get("dispatch_token")
+    return (
+        dispatch_token if isinstance(dispatch_token, str) and dispatch_token else None
+    )
+
+
+def _stored_checked_at(block: dict[str, Any] | None) -> str | None:
+    if not isinstance(block, dict):
+        return None
+    checked_at = block.get("checked_at")
+    return checked_at if isinstance(checked_at, str) and checked_at else None
+
+
+def _stamp_scout_check(server_status: str, checked_at: str) -> None:
+    def stamp(current: dict[str, Any]) -> dict[str, Any]:
+        block = dict(current)
+        block["server_status"] = server_status
+        block["checked_at"] = checked_at
+        return block
+
+    _update_scout_block(stamp)
+
+
+def _fallback_source_state(local_state: str) -> str:
+    return local_state if local_state in {"pending", "disabled"} else "disabled"
+
+
+def update_scout_check(*, force: bool = False) -> ScoutCheckResult:
+    from solstone.think.services import status as service_status
+
+    local = service_status.scout_status()
+    local_state = str(local["state"])
+    if local_state == "enabled":
+        return ScoutCheckResult("enabled", True, None, None)
+    if local_state == "manual_key":
+        return ScoutCheckResult("manual_key", True, None, None)
+
+    block = scout_provenance()
+    stored_checked_at = _stored_checked_at(block)
+    fallback = _fallback_source_state(local_state)
+    dispatch_token = get_scout_dispatch_token()
+    if dispatch_token is None:
+        return ScoutCheckResult(fallback, False, stored_checked_at, "no_credential")
+
+    server_status = block.get("server_status") if isinstance(block, dict) else None
+    cached_source = _SERVER_STATUS_TO_SOURCE_STATE.get(server_status)
+    if not force and cached_source and _check_is_fresh(stored_checked_at):
+        return ScoutCheckResult(cached_source, True, stored_checked_at, None)
+
+    outcome = portal_client.check_scout_status(dispatch_token)
+    if outcome.kind == "ok" and outcome.server_status:
+        source_state = _SERVER_STATUS_TO_SOURCE_STATE[outcome.server_status]
+        checked_at = _now_iso()
+        _stamp_scout_check(outcome.server_status, checked_at)
+        return ScoutCheckResult(source_state, True, checked_at, None)
+
+    return ScoutCheckResult(
+        fallback,
+        False,
+        stored_checked_at,
+        outcome.reason or "malformed",
+    )

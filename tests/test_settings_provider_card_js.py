@@ -55,6 +55,7 @@ def test_thinking_static_has_scout_orchestration_structures():
         "renderScout",
         "pollScoutUntilTerminal",
         "enableScout",
+        "checkScout",
         "refreshScoutOp",
         "disableScout",
     ):
@@ -62,8 +63,10 @@ def test_thinking_static_has_scout_orchestration_structures():
     assert "switchLane('scout')" in text
     assert "phase === 'repair_needed'" in text
     assert "api('api/scout/enable'" in text
+    assert "api('api/scout/check'" in text
     assert "api('api/scout/refresh'" in text
     assert "api('api/scout/disable'" in text
+    assert "$('scoutCheck')?.addEventListener" in text
 
 
 def test_thinking_surface_avoids_forbidden_owner_terms():

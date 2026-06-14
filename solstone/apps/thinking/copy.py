@@ -60,6 +60,7 @@ ACTION_LABELS = {
     "validate": "Validate",
     "install": "Install",
     "refresh": "Refresh",
+    "check": "Check",
 }
 SCOUT_STATE_OFF = "off"
 SCOUT_STATE_REQUESTED = "requested"
@@ -82,7 +83,9 @@ SCOUT_STATE_LABELS = {
 SCOUT_RESTING_GUIDANCE = {
     SCOUT_STATE_OFF: "Scout is off.",
     SCOUT_STATE_REQUESTED: "Scout is waiting for approval.",
+    SCOUT_STATE_INVITED: "Scout is ready.",
     SCOUT_STATE_ON: "Scout is on; sol pbc keeps a Gemini key on this machine for you.",
+    SCOUT_STATE_ENDED: "Scout has ended.",
     SCOUT_STATE_MANUAL_KEY_PRESENT: "A Gemini key you manage is already set.",
 }
 SCOUT_MANUAL_KEY_BLOCK_COPY = (

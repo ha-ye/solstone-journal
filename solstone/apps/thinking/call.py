@@ -223,6 +223,16 @@ def scout_status() -> None:
     _echo_scout_guidance(response.get("state"))
 
 
+@scout_app.command("check")
+@convey_cli
+def scout_check() -> None:
+    """Check Scout hosted Gemini status."""
+
+    response = _post_scout_action("/app/thinking/api/scout/check")
+    _echo_json(response)
+    _echo_scout_guidance(response.get("state"))
+
+
 @scout_app.command("enable")
 @convey_cli
 def scout_enable(

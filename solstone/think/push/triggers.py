@@ -43,7 +43,7 @@ from solstone.think.push.portal_dispatch import (
     dispatch_dedup_via_portal,
     dispatch_via_portal,
 )
-from solstone.think.services.scout import scout_provenance
+from solstone.think.services.scout import approved_dispatch_token
 from solstone.think.utils import get_journal
 
 logger = logging.getLogger("solstone.push.triggers")
@@ -315,8 +315,7 @@ def handle_sol_chat_request(message: dict[str, Any]) -> None:
     summary = str(message.get("summary") or "")
     category = str(message.get("category") or "")
 
-    scout = scout_provenance()
-    if scout and scout.get("dispatch_token"):
+    if approved_dispatch_token():
         portal_result = dispatch_via_portal(
             request_id=request_id,
             summary=summary,
@@ -388,8 +387,7 @@ def handle_chat_lifecycle(message: dict[str, Any]) -> None:
     if not request_id:
         return
 
-    scout = scout_provenance()
-    if scout and scout.get("dispatch_token"):
+    if approved_dispatch_token():
         portal_result = dispatch_dedup_via_portal(request_id=request_id, action=event)
         if portal_result is not None:
             _append_nudge_log(

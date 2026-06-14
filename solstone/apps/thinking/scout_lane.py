@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from solstone.apps.thinking import copy as thinking_copy
-from solstone.think.services import operations
+from solstone.think.services import operations, scout
 from solstone.think.services import status as service_status
 
 RESTING_FROM_STATUS = {
@@ -16,6 +16,8 @@ RESTING_FROM_STATUS = {
     "pending": thinking_copy.SCOUT_STATE_REQUESTED,
     "manual_key": thinking_copy.SCOUT_STATE_MANUAL_KEY_PRESENT,
     "disabled": thinking_copy.SCOUT_STATE_OFF,
+    "invited": thinking_copy.SCOUT_STATE_INVITED,
+    "ended": thinking_copy.SCOUT_STATE_ENDED,
 }
 PHASE_TO_PRODUCT = {
     "starting": thinking_copy.SCOUT_OP_STARTING,
@@ -28,8 +30,8 @@ PHASE_TO_PRODUCT = {
 
 
 def resting_state() -> str:
-    status = service_status.scout_status()
-    return RESTING_FROM_STATUS[str(status["state"])]
+    result = scout.update_scout_check()
+    return RESTING_FROM_STATUS[result.source_state]
 
 
 def resting_guidance(state: str) -> str | None:
@@ -38,11 +40,19 @@ def resting_guidance(state: str) -> str | None:
 
 def actions_for_state(state: str) -> dict[str, bool]:
     return {
-        "enable": state == thinking_copy.SCOUT_STATE_OFF,
+        "enable": state
+        in {thinking_copy.SCOUT_STATE_OFF, thinking_copy.SCOUT_STATE_INVITED},
         "refresh": state
         in {thinking_copy.SCOUT_STATE_REQUESTED, thinking_copy.SCOUT_STATE_ON},
         "disable": state
         in {thinking_copy.SCOUT_STATE_REQUESTED, thinking_copy.SCOUT_STATE_ON},
+        "check": state
+        in {
+            thinking_copy.SCOUT_STATE_OFF,
+            thinking_copy.SCOUT_STATE_REQUESTED,
+            thinking_copy.SCOUT_STATE_INVITED,
+            thinking_copy.SCOUT_STATE_ENDED,
+        },
     }
 
 
@@ -59,8 +69,9 @@ def remap_operation(raw: dict[str, Any] | None) -> dict[str, Any] | None:
     return payload
 
 
-def status_payload() -> dict[str, Any]:
-    state = resting_state()
+def status_payload(*, force: bool = False) -> dict[str, Any]:
+    result = scout.update_scout_check(force=force)
+    state = RESTING_FROM_STATUS[result.source_state]
     return {
         "service": "scout",
         "state": state,
@@ -68,4 +79,7 @@ def status_payload() -> dict[str, Any]:
         "provenance": provenance_payload(),
         "actions": actions_for_state(state),
         "operation": remap_operation(operations.operation_for_service("scout")),
+        "checked": result.checked,
+        "checked_at": result.checked_at,
+        "check_error": result.check_error,
     }

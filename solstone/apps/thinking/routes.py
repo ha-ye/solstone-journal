@@ -421,6 +421,15 @@ def scout_status() -> Any:
         return _thinking_operation_failed()
 
 
+@thinking_bp.route("/api/scout/check", methods=["POST"])
+def scout_check() -> Any:
+    try:
+        return jsonify({"success": True, **scout_lane.status_payload(force=True)})
+    except Exception:
+        logger.exception("error checking scout status")
+        return _thinking_operation_failed()
+
+
 @thinking_bp.route("/api/scout/enable", methods=["POST"])
 def scout_enable() -> Any:
     try:

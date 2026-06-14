@@ -134,6 +134,7 @@
       setButtonState('scoutEnable', false, true);
       setButtonState('scoutRefresh', false, true);
       setButtonState('scoutDisable', false, true);
+      setButtonState('scoutCheck', false, true);
       const switchButton = document.querySelector('#lane-scout [data-switch-lane="scout"]');
       if (switchButton) {
         switchButton.hidden = true;
@@ -153,6 +154,7 @@
     setButtonState('scoutEnable', !!actions.enable, operationActive || !actions.enable);
     setButtonState('scoutRefresh', !!actions.refresh, operationActive || !actions.refresh);
     setButtonState('scoutDisable', !!actions.disable, operationActive || !actions.disable);
+    setButtonState('scoutCheck', !!actions.check, operationActive || !actions.check);
 
     const switchButton = document.querySelector('#lane-scout [data-switch-lane="scout"]');
     if (switchButton) {
@@ -345,6 +347,11 @@
     renderScout();
   }
 
+  async function checkScout() {
+    state.scout = await api('api/scout/check', {method: 'POST'});
+    renderScout();
+  }
+
   async function disableScout() {
     const result = await api('api/scout/disable', {method: 'POST'});
     state.scout = result.status || state.scout;
@@ -464,6 +471,7 @@
     $('scoutEnable')?.addEventListener('click', () => enableScout().catch((err) => setMessage('scoutLaneOperation', err.message, 'error')));
     $('scoutRefresh')?.addEventListener('click', () => refreshScoutOp().catch((err) => setMessage('scoutLaneOperation', err.message, 'error')));
     $('scoutDisable')?.addEventListener('click', () => disableScout().catch((err) => setMessage('scoutLaneOperation', err.message, 'error')));
+    $('scoutCheck')?.addEventListener('click', () => checkScout().catch((err) => setMessage('scoutLaneOperation', err.message, 'error')));
     $('localRefresh')?.addEventListener('click', () => refreshProviders().catch((err) => setMessage('localLaneStatus', err.message, 'error')));
     $('localBootstrap')?.addEventListener('click', () => startLocalBootstrap().catch((err) => setMessage('localLaneStatus', err.message, 'error')));
     $('localModelSelect')?.addEventListener('change', () => Promise.all([

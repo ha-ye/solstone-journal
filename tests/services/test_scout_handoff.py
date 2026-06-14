@@ -67,6 +67,7 @@ def test_run_scout_handoff_maps_pending(journal_copy: Path) -> None:
                 "state": "pending",
                 "account_id": "acct-pending",
                 "since": 1770000000000,
+                "dispatch_token": "dispatch-pending",
             },
         ),
     )
@@ -75,6 +76,7 @@ def test_run_scout_handoff_maps_pending(journal_copy: Path) -> None:
     assert result.retryable is False
     saved = _config(journal_copy)
     assert saved["services"]["scout"]["state"] == "pending"
+    assert saved["services"]["scout"]["dispatch_token"] == "dispatch-pending"
     assert "GOOGLE_API_KEY" not in saved.get("env", {})
 
 

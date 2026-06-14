@@ -75,11 +75,20 @@ def test_get_scout_status_fresh_journal_is_secret_free(thinking_client) -> None:
     assert response.status_code == 200
     data = response.get_json()
     assert data["state"] == thinking_copy.SCOUT_STATE_OFF
-    assert data["actions"] == {"enable": True, "refresh": False, "disable": False}
+    assert data["actions"] == {
+        "enable": True,
+        "refresh": False,
+        "disable": False,
+        "check": True,
+    }
+    assert data["checked"] is False
+    assert data["checked_at"] is None
+    assert data["check_error"] == "no_credential"
     assert data["operation"] is None
     assert data["provenance"] == {}
     serialized = json.dumps(data).lower()
     assert "dispatch_token" not in serialized
+    assert "server_status" not in serialized
     assert "account_id" not in serialized
 
 
@@ -91,9 +100,13 @@ def test_get_scout_status_after_provision_is_secret_free(thinking_client) -> Non
     assert response.status_code == 200
     data = response.get_json()
     assert data["state"] == thinking_copy.SCOUT_STATE_ON
+    assert data["checked"] is True
+    assert data["checked_at"] is None
+    assert data["check_error"] is None
     assert data["provenance"]["key_created_at"] == "2026-05-24T00:00:00Z"
     serialized = json.dumps(data).lower()
     assert "dispatch_token" not in serialized
+    assert "server_status" not in serialized
     assert "account_id" not in serialized
     assert "dispatch-secret" not in serialized
     assert "acct-secret" not in serialized
@@ -219,6 +232,53 @@ def test_disable_preserves_different_manual_key(
     assert _read_config(journal_copy)["env"]["GOOGLE_API_KEY"] == "manual-key"
 
 
+def test_check_route_forces_status_payload_without_operation_registry(
+    thinking_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[bool] = []
+
+    def fake_status_payload(*, force: bool = False) -> dict:
+        calls.append(force)
+        return {
+            "service": "scout",
+            "state": thinking_copy.SCOUT_STATE_OFF,
+            "guidance": "Scout is off.",
+            "provenance": {},
+            "actions": {
+                "enable": True,
+                "refresh": False,
+                "disable": False,
+                "check": True,
+            },
+            "operation": None,
+            "checked": False,
+            "checked_at": None,
+            "check_error": "no_credential",
+        }
+
+    monkeypatch.setattr(scout_lane, "status_payload", fake_status_payload)
+    monkeypatch.setattr(
+        operations,
+        "start_operation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("operation registry should not run")
+        ),
+    )
+
+    response = thinking_client.post("/app/thinking/api/scout/check")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert calls == [True]
+    assert data["success"] is True
+    assert data["checked"] is False
+    assert data["check_error"] == "no_credential"
+    serialized = json.dumps(data).lower()
+    assert "dispatch_token" not in serialized
+    assert "server_status" not in serialized
+
+
 @pytest.mark.parametrize(
     ("raw_phase", "expected_phase"),
     [
@@ -265,6 +325,9 @@ def test_status_payload_key_set(thinking_client) -> None:
         "provenance",
         "actions",
         "operation",
+        "checked",
+        "checked_at",
+        "check_error",
     }
     assert set(scout_lane.status_payload()) == {
         "service",
@@ -273,4 +336,7 @@ def test_status_payload_key_set(thinking_client) -> None:
         "provenance",
         "actions",
         "operation",
+        "checked",
+        "checked_at",
+        "check_error",
     }

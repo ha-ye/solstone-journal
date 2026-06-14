@@ -12,7 +12,7 @@ from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 
 from solstone.think.services.portal_client import portal_base_url, request_headers
-from solstone.think.services.scout import scout_provenance
+from solstone.think.services.scout import approved_dispatch_token
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +20,7 @@ _TIMEOUT_SECONDS = 10
 
 
 def dispatch_via_portal(*, request_id: str, summary: str, category: str) -> dict | None:
-    scout = scout_provenance()
-    if not scout:
-        return None
-    dispatch_token = scout.get("dispatch_token")
+    dispatch_token = approved_dispatch_token()
     if not dispatch_token:
         return None
 
@@ -90,10 +87,7 @@ def dispatch_via_portal(*, request_id: str, summary: str, category: str) -> dict
 
 
 def dispatch_dedup_via_portal(*, request_id: str, action: str) -> dict | None:
-    scout = scout_provenance()
-    if not scout:
-        return None
-    dispatch_token = scout.get("dispatch_token")
+    dispatch_token = approved_dispatch_token()
     if not dispatch_token:
         return None
 

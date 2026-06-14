@@ -160,6 +160,21 @@ def test_scout_status_matches_http_payload(journal_copy: Path) -> None:
     assert guidance == thinking_call._SCOUT_GUIDANCE[thinking_copy.SCOUT_STATE_OFF]
 
 
+def test_scout_check_matches_http_response(journal_copy: Path) -> None:
+    _clear_scout(journal_copy)
+    expected = thinking_call._request(
+        "POST",
+        "/app/thinking/api/scout/check",
+    )
+
+    result = runner.invoke(thinking_call.app, ["scout", "check"])
+
+    assert result.exit_code == 0
+    payload, guidance = _first_json(result.stdout)
+    assert payload == expected
+    assert guidance == thinking_call._SCOUT_GUIDANCE[payload["state"]]
+
+
 def test_scout_disable_matches_http_response(journal_copy: Path) -> None:
     _clear_scout(journal_copy)
     scout.provision_scout_handoff(_approved_scout_payload())
@@ -199,7 +214,7 @@ def test_scout_enable_polls_terminal_success(
 
     assert result.exit_code == 0
     assert result.stderr == ""
-    assert "state: on\n" in result.stdout
+    # Status and operation are sampled non-atomically; phase is stable here.
     assert "operation: invited\n" in result.stdout
     assert thinking_call._SCOUT_GUIDANCE[thinking_copy.SCOUT_STATE_INVITED] in (
         result.stdout

@@ -13,11 +13,14 @@ import pytest
 
 from solstone.think.journal_config import write_journal_config
 from solstone.think.services import scout as scout_module
+from solstone.think.services import status as service_status
 from solstone.think.services.scout import (
     KEY_FINGERPRINT_FIELD,
     DisableOutcome,
     JournalNotInitializedError,
+    approved_dispatch_token,
     disable_scout,
+    get_scout_dispatch_token,
     is_manual_key_present,
     is_scout_enabled,
     provision_scout_handoff,
@@ -186,6 +189,80 @@ def test_record_scout_pending_writes_no_google_api_key(journal_copy) -> None:
     scout = saved["services"]["scout"]
     assert "google_api_key" not in scout
     assert "dispatch_token" not in scout
+
+
+def test_record_scout_pending_stores_non_empty_dispatch_token(journal_copy) -> None:
+    config = _read_config(journal_copy)
+    config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
+    config.pop("services", None)
+    write_journal_config(config)
+
+    record_scout_pending("acct-p", 1_700_000_000_000, "dispatch-p")
+
+    saved = _read_config(journal_copy)
+    scout = saved["services"]["scout"]
+    assert scout["dispatch_token"] == "dispatch-p"
+    assert "google_api_key" not in scout
+    view = service_status.scout_provenance_view()
+    serialized = json.dumps(view).lower()
+    assert "dispatch_token" not in view
+    assert "dispatch-p" not in serialized
+    assert "acct-p" not in serialized
+
+
+@pytest.mark.parametrize("dispatch_token", [None, "", 123])
+def test_record_scout_pending_ignores_invalid_dispatch_token(
+    journal_copy,
+    dispatch_token,
+) -> None:
+    config = _read_config(journal_copy)
+    config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
+    config.pop("services", None)
+    write_journal_config(config)
+
+    record_scout_pending("acct-p", 1_700_000_000_000, dispatch_token)
+
+    assert "dispatch_token" not in _read_config(journal_copy)["services"]["scout"]
+
+
+def test_get_scout_dispatch_token_reads_pending_and_approved_blocks(
+    journal_copy,
+) -> None:
+    config = _read_config(journal_copy)
+    config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
+    config.pop("services", None)
+    write_journal_config(config)
+    assert get_scout_dispatch_token() is None
+
+    record_scout_pending("acct-p", 1_700_000_000_000)
+    assert get_scout_dispatch_token() is None
+
+    record_scout_pending("acct-p", 1_700_000_000_000, "dispatch-p")
+    assert get_scout_dispatch_token() == "dispatch-p"
+
+    provision_scout_handoff(_payload("approved"))
+    assert get_scout_dispatch_token() == "dispatch-approved"
+
+
+def test_approved_dispatch_token_is_approved_only_and_keeps_stale_push_behavior(
+    journal_copy,
+) -> None:
+    config = _read_config(journal_copy)
+    config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
+    config.pop("services", None)
+    write_journal_config(config)
+    assert approved_dispatch_token() is None
+
+    record_scout_pending("acct-p", 1_700_000_000_000, "dispatch-p")
+    assert approved_dispatch_token() is None
+
+    provision_scout_handoff(_payload("approved"))
+    assert approved_dispatch_token() == "dispatch-approved"
+
+    config = _read_config(journal_copy)
+    config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
+    write_journal_config(config)
+    assert approved_dispatch_token() == "dispatch-approved"
 
 
 @pytest.mark.parametrize("field", list(_payload().keys()))

@@ -33,6 +33,7 @@ def test_workspace_renders_each_lane(settings_env):
     assert 'id="lane-byo"' in html
     assert 'id="lane-local"' in html
     assert 'id="scoutEnable"' in html
+    assert 'id="scoutCheck"' in html
     assert 'id="scoutRefresh"' in html
     assert 'id="scoutDisable"' in html
     assert 'id="scoutLaneOperation"' in html

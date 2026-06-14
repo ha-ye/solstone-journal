@@ -106,31 +106,31 @@ def test_operation_phase_maps_to_product_phase(
     [
         (
             thinking_copy.SCOUT_STATE_OFF,
-            {"enable": True, "refresh": False, "disable": False},
+            {"enable": True, "refresh": False, "disable": False, "check": True},
         ),
         (
             thinking_copy.SCOUT_STATE_REQUESTED,
-            {"enable": False, "refresh": True, "disable": True},
+            {"enable": False, "refresh": True, "disable": True, "check": True},
         ),
         (
             thinking_copy.SCOUT_STATE_INVITED,
-            {"enable": False, "refresh": False, "disable": False},
+            {"enable": True, "refresh": False, "disable": False, "check": True},
         ),
         (
             thinking_copy.SCOUT_STATE_ON,
-            {"enable": False, "refresh": True, "disable": True},
+            {"enable": False, "refresh": True, "disable": True, "check": False},
         ),
         (
             thinking_copy.SCOUT_STATE_ENDED,
-            {"enable": False, "refresh": False, "disable": False},
+            {"enable": False, "refresh": False, "disable": False, "check": True},
         ),
         (
             thinking_copy.SCOUT_STATE_MANUAL_KEY_PRESENT,
-            {"enable": False, "refresh": False, "disable": False},
+            {"enable": False, "refresh": False, "disable": False, "check": False},
         ),
         (
             thinking_copy.SCOUT_STATE_REPAIR_NEEDED,
-            {"enable": False, "refresh": False, "disable": False},
+            {"enable": False, "refresh": False, "disable": False, "check": False},
         ),
     ],
 )
@@ -171,14 +171,81 @@ def test_manual_key_takes_precedence_over_pending_block(journal_copy: Path) -> N
     assert scout_lane.resting_state() == thinking_copy.SCOUT_STATE_MANUAL_KEY_PRESENT
 
 
+@pytest.mark.parametrize(
+    ("source_state", "product_state"),
+    [
+        ("invited", thinking_copy.SCOUT_STATE_INVITED),
+        ("ended", thinking_copy.SCOUT_STATE_ENDED),
+    ],
+)
+def test_resting_state_maps_live_check_states(
+    monkeypatch: pytest.MonkeyPatch,
+    source_state: str,
+    product_state: str,
+) -> None:
+    monkeypatch.setattr(
+        scout_lane.scout,
+        "update_scout_check",
+        lambda **_kwargs: scout.ScoutCheckResult(source_state, True, "checked", None),
+    )
+
+    assert scout_lane.resting_state() == product_state
+
+
+def test_status_payload_uses_single_check_result_and_is_secret_free(
+    journal_copy: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_scout(journal_copy)
+    config = _read_config(journal_copy)
+    config.setdefault("services", {})["scout"] = {
+        "state": "pending",
+        "account_id": "acct-secret",
+        "since": 1770000000000,
+        "dispatch_token": "dispatch-secret",
+        "server_status": "approved",
+        "checked_at": "2026-06-12T00:00:00+00:00",
+    }
+    _write_config(config)
+    calls: list[bool] = []
+
+    def fake_update(*, force: bool = False) -> scout.ScoutCheckResult:
+        calls.append(force)
+        return scout.ScoutCheckResult("invited", True, "checked", None)
+
+    monkeypatch.setattr(scout_lane.scout, "update_scout_check", fake_update)
+
+    payload = scout_lane.status_payload(force=True)
+
+    assert calls == [True]
+    assert payload["state"] == thinking_copy.SCOUT_STATE_INVITED
+    assert payload["checked"] is True
+    assert payload["checked_at"] == "checked"
+    assert payload["check_error"] is None
+    serialized = json.dumps(payload).lower()
+    assert "dispatch_token" not in serialized
+    assert "dispatch-secret" not in serialized
+    assert "server_status" not in serialized
+    assert "acct-secret" not in serialized
+
+
 def test_stale_approved_block_without_key_is_off_with_provenance(
     journal_copy: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _clear_scout(journal_copy)
     scout.provision_scout_handoff(_approved_payload())
     config = _read_config(journal_copy)
     config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
     _write_config(config)
+    monkeypatch.setattr(
+        scout_lane.scout.portal_client,
+        "check_scout_status",
+        lambda _token: scout.portal_client.ScoutStatusOutcome(
+            kind="failed",
+            reason="unreachable",
+        ),
+    )
 
     assert scout_lane.resting_state() == thinking_copy.SCOUT_STATE_OFF
     assert scout_lane.provenance_payload()["key_created_at"] == "2026-05-24T00:00:00Z"

@@ -36,6 +36,17 @@ class PollOutcome:
     detail: str | None = None
 
 
+@dataclass(frozen=True)
+class ScoutStatusOutcome:
+    kind: str
+    server_status: str | None = None
+    reason: str | None = None
+    detail: str | None = None
+
+
+_SCOUT_STATUS_VALUES = frozenset({"pending", "approved", "revoked"})
+
+
 def mint_nonce() -> str:
     return "".join(secrets.choice(NONCE_ALPHABET) for _ in range(NONCE_LENGTH_CHARS))
 
@@ -96,6 +107,70 @@ def read_handoff_payload(raw_body: bytes) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("handoff payload must be a JSON object")
     return payload
+
+
+def _failed_status(reason: str, detail: str | None = None) -> ScoutStatusOutcome:
+    return ScoutStatusOutcome(kind="failed", reason=reason, detail=detail)
+
+
+def _read_scout_status(raw_body: bytes) -> str:
+    if not raw_body:
+        raise ValueError("scout status response was empty")
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(str(exc)) from exc
+    if not isinstance(payload, dict):
+        raise ValueError("scout status payload must be a JSON object")
+    server_status = payload.get("status")
+    if server_status not in _SCOUT_STATUS_VALUES:
+        raise ValueError("scout status payload has unknown status")
+    return str(server_status)
+
+
+def check_scout_status(
+    dispatch_token: str,
+    *,
+    timeout: float = 10.0,
+    component: str = "status",
+) -> ScoutStatusOutcome:
+    headers = request_headers(component)
+    headers["Authorization"] = f"Bearer {dispatch_token}"
+    request = urllib.request.Request(
+        f"{portal_base_url()}/account/scout/status",
+        headers=headers,
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = int(getattr(response, "status", response.getcode()))
+            raw_body = response.read()
+    except urllib.error.HTTPError as exc:
+        status = int(exc.code)
+        if status == 401:
+            return _failed_status("unauthorized", str(exc))
+        if status == 404:
+            return _failed_status("not_found", str(exc))
+        return _failed_status("unreachable", str(exc))
+    except ssl.SSLError as exc:
+        return _failed_status("tls_failed", str(exc))
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, ssl.SSLError):
+            return _failed_status("tls_failed", str(exc.reason))
+        return _failed_status("unreachable", str(exc))
+    except (socket.timeout, TimeoutError) as exc:
+        return _failed_status("unreachable", str(exc))
+
+    if status == 204:
+        return _failed_status("malformed", "scout status response was empty")
+    if status != 200:
+        return _failed_status("unreachable", f"unexpected HTTP status {status}")
+
+    try:
+        server_status = _read_scout_status(raw_body)
+    except ValueError as exc:
+        return _failed_status("malformed", str(exc))
+    return ScoutStatusOutcome(kind="ok", server_status=server_status)
 
 
 def poll_handoff_once(
