@@ -20,7 +20,10 @@ Both layouts contain `private.pem`, `cert.pem`, `chain.pem`,
 `home_attestation.jwt`, and `peer.json`. `peer.json` fields are deterministic:
 `label`, `paired_at`, `instance_id`, `home_label`, `fingerprint`,
 `local_endpoints`, and `role`; role is `peer` or `""` for role-less linked
-systems.
+systems. `peer` is provenance, not a behavioral authorization role: pairing a
+peer provisions a journal-content source, records the sender `instance_id`, and
+leaves durable in-data provenance through per-segment `sender_instance_id` /
+`sender_fingerprint` and identity-derived source directories.
 """
 
 from __future__ import annotations

@@ -53,7 +53,6 @@ def test_named_non_pair_endpoints_are_refused(
         "app:observer.ingest_upload": "POST",
         "app:observer.ingest_event": "POST",
         "app:observer.ingest_segments": "GET",
-        "app:observer.ingest_transfer": "POST",
         "app:observer.ingest_manifest": "GET",
         "app:observer.ingest_manifest_day": "GET",
         "app:import.journal_source_manifest": "GET",

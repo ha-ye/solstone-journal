@@ -6,10 +6,8 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
-import requests
 from cryptography.hazmat.primitives import serialization
 
 import solstone.think.utils as think_utils
@@ -93,75 +91,19 @@ def test_transfer_send_pl_posts_journal_segment_day_path(
     assert b"audio" in post[3]
 
 
-def test_transfer_send_dl_regression_url_headers_and_body(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from solstone.observe.transfer import send_segments
-
-    journal = tmp_path / "journal"
-    _set_journal(monkeypatch, journal)
-    _write_segment(journal)
-
-    mock_session = MagicMock(spec=requests.Session)
-    mock_session.headers = {}
-    get_response = MagicMock()
-    get_response.status_code = 200
-    get_response.json.return_value = {}
-    mock_session.get.return_value = get_response
-    post_response = MagicMock()
-    post_response.status_code = 200
-    post_response.json.return_value = {"bytes": 15}
-    mock_session.post.return_value = post_response
-
-    with patch("solstone.observe.transfer.requests.Session", return_value=mock_session):
-        send_segments("https://receiver.test", "test-key", ["20260520"], False)
-
-    assert mock_session.headers["Authorization"] == "Bearer test-key"
-    assert mock_session.get.call_args.args[0] == (
-        "https://receiver.test/app/observer/ingest/segments/20260520"
-    )
-    assert mock_session.post.call_args.args[0] == (
-        "https://receiver.test/app/observer/ingest"
-    )
-    post_kwargs = mock_session.post.call_args.kwargs
-    assert post_kwargs["data"] == {
-        "day": "20260520",
-        "segment": "143022_300",
-        "meta": json.dumps({"stream": "laptop"}),
-    }
-    assert [entry[1][0] for entry in post_kwargs["files"]] == [
-        "audio.flac",
-        "transcript.jsonl",
-    ]
-
-
-@pytest.mark.parametrize(
-    ("argv", "message"),
-    [
-        (
-            ["sol", "send", "--to", "host-a", "--key", "x"],
-            "'--key' is only valid with '--to <URL>'",
-        ),
-        (
-            ["sol", "send", "--to", "https://receiver.test"],
-            "'--to <URL>' requires '--key <KEY>'",
-        ),
-    ],
-)
 def test_transfer_send_destination_validation(
-    argv: list[str],
-    message: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     from solstone.observe import transfer
 
-    _set_journal(monkeypatch, tmp_path / "journal")
-    monkeypatch.setattr(sys, "argv", argv)
+    journal = tmp_path / "journal"
+    (journal / "peers").mkdir(parents=True)
+    _set_journal(monkeypatch, journal)
+    monkeypatch.setattr(sys, "argv", ["sol", "send", "--to", "https://receiver.test"])
 
     with pytest.raises(SystemExit):
         transfer.main()
 
-    assert message in capsys.readouterr().err
+    assert 'no peer with label "https://receiver.test"' in capsys.readouterr().err

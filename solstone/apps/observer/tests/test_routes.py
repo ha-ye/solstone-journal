@@ -9,8 +9,6 @@ import io
 import json
 from unittest.mock import MagicMock
 
-import requests
-
 import solstone.apps.observer.routes as routes_module
 import solstone.convey.bridge as convey_bridge
 from solstone.apps.observer.routes import (
@@ -259,7 +257,8 @@ def test_api_create_observer(observer_env):
 
     assert "key" in data
     assert len(data["key"]) > 32  # 256 bits = 43 base64 chars
-    assert data["key_prefix"] == data["key"][:8]
+    assert data["prefix"] == data["key"][:8]
+    assert "key_prefix" not in data
     assert data["name"] == "test-laptop"
     assert data["ingest_url"] == "/app/observer/ingest"
     assert data["key"] not in data["ingest_url"]
@@ -299,7 +298,7 @@ def test_api_list_shows_created_observer(observer_env):
         content_type="application/json",
     )
     assert resp.status_code == 200
-    key_prefix = resp.get_json()["key_prefix"]
+    key_prefix = resp.get_json()["prefix"]
 
     # List should show it
     payload = _api_list_payload(env)
@@ -307,7 +306,8 @@ def test_api_list_shows_created_observer(observer_env):
 
     assert len(observers) == 1
     assert payload["thresholds"] == {"active_ms": 30000, "stale_ms": 120000}
-    assert observers[0]["key_prefix"] == key_prefix
+    assert observers[0]["prefix"] == key_prefix
+    assert "key_prefix" not in observers[0]
     assert observers[0]["name"] == "my-observer"
     assert observers[0]["enabled"] is True
     assert observers[0]["stats"]["segments_received"] == 0
@@ -327,7 +327,7 @@ def test_api_list_includes_last_chat_request_at(observer_env):
         content_type="application/json",
     )
     assert resp.status_code == 200
-    key_prefix = resp.get_json()["key_prefix"]
+    key_prefix = resp.get_json()["prefix"]
     handle = convey_bridge.register_sse_subscriber(key_prefix)
     try:
         convey_bridge._broadcast_to_sse_clients(
@@ -339,7 +339,7 @@ def test_api_list_includes_last_chat_request_at(observer_env):
         with convey_bridge._SSE_LOCK:
             convey_bridge._SSE_LAST_CHAT_REQUEST_AT_BY_KEY.pop(key_prefix, None)
 
-    assert observers[0]["key_prefix"] == key_prefix
+    assert observers[0]["prefix"] == key_prefix
     assert observers[0]["last_chat_request_at"] == 9876
 
 
@@ -353,7 +353,7 @@ def test_api_delete_observer(observer_env):
         json={"name": "to-revoke"},
         content_type="application/json",
     )
-    key_prefix = resp.get_json()["key_prefix"]
+    key_prefix = resp.get_json()["prefix"]
 
     # Revoke it
     resp = env.client.delete(f"/app/observer/api/{key_prefix}")
@@ -363,7 +363,7 @@ def test_api_delete_observer(observer_env):
     # List should still show it, but marked as revoked
     observers = _api_list_observers(env)
     assert len(observers) == 1
-    assert observers[0]["key_prefix"] == key_prefix
+    assert observers[0]["prefix"] == key_prefix
     assert observers[0]["revoked"] is True
     assert observers[0]["revoked_at"] is not None
     assert observers[0]["state"] == "revoked"
@@ -409,7 +409,7 @@ def test_api_delete_dl_observer_does_not_touch_authorized_clients(observer_env):
         json={"name": "dl-delete"},
         content_type="application/json",
     )
-    key_prefix = resp.get_json()["key_prefix"]
+    key_prefix = resp.get_json()["prefix"]
     fingerprint = "sha256:" + ("e" * 64)
     AuthorizedClients(authorized_clients_path()).add(
         fingerprint,
@@ -495,8 +495,8 @@ def test_api_list_sorts_by_group_and_last_seen(observer_env, monkeypatch):
     ]
 
 
-def test_api_list_tie_breaks_by_key_prefix(observer_env, monkeypatch):
-    """Observers with the same last_seen sort by key_prefix ascending."""
+def test_api_list_tie_breaks_by_prefix(observer_env, monkeypatch):
+    """Observers with the same last_seen sort by prefix ascending."""
     env = observer_env()
     fixed_now = 3_000_000
     monkeypatch.setattr(routes_module, "now_ms", lambda: fixed_now)
@@ -515,10 +515,11 @@ def test_api_list_tie_breaks_by_key_prefix(observer_env, monkeypatch):
     )
 
     observers = _api_list_observers(env)
-    assert [observer["key_prefix"] for observer in observers] == [
+    assert [observer["prefix"] for observer in observers] == [
         "aaaa0000",
         "bbbb0000",
     ]
+    assert all("key_prefix" not in observer for observer in observers)
     assert all(observer["state"] == "connected" for observer in observers)
     assert all(observer["group"] == "active" for observer in observers)
     assert all(
@@ -636,13 +637,14 @@ def test_delete_source_hard_pin_rejects_other_stream(observer_env):
         content_type="application/json",
     )
     key = create_resp.get_json()["key"]
+    headers = {"Authorization": f"Bearer {key}"}
 
     other_seg = _plant_source_segment(
         env,
         stream="import.audio",
         segment="130000_300",
     )
-    resp = env.client.delete(f"/app/observer/source/import.audio/{key}")
+    resp = env.client.delete("/app/observer/source/import.audio", headers=headers)
     assert resp.status_code == 400
     assert resp.get_json()["detail"] == "Only known source streams can be deleted"
     assert other_seg.exists()
@@ -653,7 +655,8 @@ def test_delete_source_hard_pin_rejects_other_stream(observer_env):
         segment="140000_300",
     )
     resp = env.client.delete(
-        f"/app/observer/source/import.share/{key}",
+        "/app/observer/source/import.share",
+        headers=headers,
         data={"stream": "import.audio"},
     )
     assert resp.status_code == 400
@@ -661,7 +664,8 @@ def test_delete_source_hard_pin_rejects_other_stream(observer_env):
     assert share_seg.exists()
 
     resp = env.client.delete(
-        f"/app/observer/source/import.share/{key}",
+        "/app/observer/source/import.share",
+        headers=headers,
         data={"meta": json.dumps({"stream": "import.audio"})},
     )
     assert resp.status_code == 400
@@ -680,7 +684,10 @@ def test_delete_source_happy_path(observer_env):
     key = create_resp.get_json()["key"]
     seg_dir = _plant_source_segment(env)
 
-    resp = env.client.delete(f"/app/observer/source/import.share/{key}")
+    resp = env.client.delete(
+        "/app/observer/source/import.share",
+        headers={"Authorization": f"Bearer {key}"},
+    )
 
     assert resp.status_code == 200
     receipt = resp.get_json()
@@ -718,7 +725,10 @@ def test_delete_source_location_happy_path(observer_env):
     key = create_resp.get_json()["key"]
     seg_dir = _plant_location_segment(env)
 
-    resp = env.client.delete(f"/app/observer/source/location/{key}")
+    resp = env.client.delete(
+        "/app/observer/source/location",
+        headers={"Authorization": f"Bearer {key}"},
+    )
 
     assert resp.status_code == 200
     receipt = resp.get_json()
@@ -737,6 +747,7 @@ def test_delete_source_path_wins_over_candidate(observer_env):
         content_type="application/json",
     )
     key = create_resp.get_json()["key"]
+    headers = {"Authorization": f"Bearer {key}"}
     form_location_seg = _plant_location_segment(
         env,
         day="20250105",
@@ -749,7 +760,8 @@ def test_delete_source_path_wins_over_candidate(observer_env):
     )
 
     form_resp = env.client.delete(
-        f"/app/observer/source/location/{key}",
+        "/app/observer/source/location",
+        headers=headers,
         data={"stream": "import.share"},
     )
 
@@ -769,7 +781,8 @@ def test_delete_source_path_wins_over_candidate(observer_env):
     )
 
     meta_resp = env.client.delete(
-        f"/app/observer/source/location/{key}",
+        "/app/observer/source/location",
+        headers=headers,
         data={"meta": json.dumps({"stream": "import.share"})},
     )
 
@@ -1011,44 +1024,6 @@ def test_ingest_event_relay(observer_env):
     assert resp.get_json()["status"] == "ok"
 
 
-def test_ingest_event_pl_ignores_url_key(observer_env, monkeypatch):
-    env = observer_env()
-    other_key = _save_test_observer(
-        "deadbeef",
-        "other-dl",
-        created_at=100,
-        last_seen=None,
-    )
-    mint_pl_observer_record(
-        fingerprint=PL_FINGERPRINT,
-        device_label="pl-event",
-        paired_at="2026-05-20T00:00:00Z",
-    )
-    emitted: list[tuple[str, str, dict]] = []
-    monkeypatch.setattr(
-        routes_module,
-        "emit",
-        lambda tract, event, **kwargs: emitted.append((tract, event, kwargs)),
-    )
-
-    resp = env.client.post(
-        f"/app/observer/ingest/{other_key[:8]}/event",
-        environ_overrides={"pl.identity": _pl_identity()},
-        json={"tract": "observe", "event": "status", "mode": "screencast"},
-        content_type="application/json",
-    )
-
-    assert resp.status_code == 200
-    assert resp.get_json()["status"] == "ok"
-    assert emitted == [
-        (
-            "observe",
-            "status",
-            {"mode": "screencast", "observer": "pl-event"},
-        )
-    ]
-
-
 def test_dl_and_pl_observers_coexist_and_ingest(observer_env):
     env = observer_env()
     dl_resp = env.client.post(
@@ -1164,7 +1139,7 @@ def test_ingest_revoked_key(observer_env):
     )
     data = resp.get_json()
     key = data["key"]
-    key_prefix = data["key_prefix"]
+    key_prefix = data["prefix"]
 
     resp = env.client.delete(f"/app/observer/api/{key_prefix}")
     assert resp.status_code == 200
@@ -1195,7 +1170,7 @@ def test_keyless_ingest_bearer_rejects_revoked_and_disabled_keys(observer_env):
     revoked_data = resp.get_json()
     revoked_key = revoked_data["key"]
 
-    resp = env.client.delete(f"/app/observer/api/{revoked_data['key_prefix']}")
+    resp = env.client.delete(f"/app/observer/api/{revoked_data['prefix']}")
     assert resp.status_code == 200
 
     resp = env.client.post(
@@ -1263,7 +1238,7 @@ def test_ingest_event_revoked_key(observer_env):
     )
     data = resp.get_json()
     key = data["key"]
-    key_prefix = data["key_prefix"]
+    key_prefix = data["prefix"]
 
     resp = env.client.delete(f"/app/observer/api/{key_prefix}")
     assert resp.status_code == 200
@@ -1291,7 +1266,7 @@ def test_api_get_key(observer_env):
     )
     create_data = resp.get_json()
     key = create_data["key"]
-    key_prefix = create_data["key_prefix"]
+    key_prefix = create_data["prefix"]
 
     # Get the key
     resp = env.client.get(f"/app/observer/api/{key_prefix}/key")
@@ -1321,7 +1296,7 @@ def test_mint_responses_protocol_version_single_source_and_keyless_unconditional
     assert create_data["protocol_version"] == 99
     assert create_data["ingest_url"] == "/app/observer/ingest"
 
-    resp = env.client.get(f"/app/observer/api/{create_data['key_prefix']}/key")
+    resp = env.client.get(f"/app/observer/api/{create_data['prefix']}/key")
     assert resp.status_code == 200
     key_data = resp.get_json()
     assert key_data["protocol_version"] == 99
@@ -1347,7 +1322,7 @@ def test_api_get_key_revoked(observer_env):
         content_type="application/json",
     )
     create_data = resp.get_json()
-    key_prefix = create_data["key_prefix"]
+    key_prefix = create_data["prefix"]
 
     env.client.delete(f"/app/observer/api/{key_prefix}")
 
@@ -1369,7 +1344,7 @@ def test_api_get_key_audit_log(observer_env):
         content_type="application/json",
     )
     create_data = resp.get_json()
-    key_prefix = create_data["key_prefix"]
+    key_prefix = create_data["prefix"]
 
     with patch("solstone.apps.observer.routes.log_app_action") as mock_log:
         resp = env.client.get(f"/app/observer/api/{key_prefix}/key")
@@ -1607,7 +1582,7 @@ def test_ingest_creates_sync_history(observer_env):
     )
     data = resp.get_json()
     key = data["key"]
-    key_prefix = data["key_prefix"]
+    key_prefix = data["prefix"]
 
     # Upload a file
     test_data = b"test audio content for history"
@@ -1663,7 +1638,7 @@ def test_ingest_history_with_collision(observer_env):
     )
     data = resp.get_json()
     key = data["key"]
-    key_prefix = data["key_prefix"]
+    key_prefix = data["prefix"]
 
     # Create conflicting segment directory under the stream
     day_dir = _day_dir(env)
@@ -1812,41 +1787,6 @@ def test_segments_endpoint_lists_uploads(observer_env):
     )  # Original name preserved
 
 
-def test_legacy_url_key_ingest_and_segments_still_sync(observer_env):
-    env = observer_env()
-
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "legacy-url-key-test"},
-        content_type="application/json",
-    )
-    key = resp.get_json()["key"]
-
-    test_data = b"legacy url key content"
-    resp = env.client.post(
-        f"/app/observer/ingest/{key}",
-        data={
-            "day": "20250103",
-            "segment": "120000_300",
-            "files": (io.BytesIO(test_data), "120000_300_audio.flac"),
-        },
-    )
-    assert resp.status_code == 200
-
-    resp = env.client.get(f"/app/observer/ingest/{key}/segments/20250103")
-    assert resp.status_code == 200
-    data = resp.get_json()
-
-    assert isinstance(data, list)
-    assert len(data) == 1
-    segment = data[0]
-    assert segment["key"] == "120000_300"
-    assert len(segment["files"]) == 1
-
-    file_info = segment["files"][0]
-    assert file_info["status"] == "present"
-
-
 def test_segments_endpoint_v2_empty(observer_env):
     """Test v2 segments endpoint returns collection envelope for no uploads."""
     env = observer_env()
@@ -1948,20 +1888,6 @@ def test_protocol_version_single_source(observer_env, monkeypatch):
     )
     assert resp.status_code == 200
     assert isinstance(resp.get_json(), list)
-
-    from solstone.observe import transfer
-
-    session = MagicMock(spec=requests.Session)
-    response = MagicMock()
-    response.status_code = 200
-    response.json.return_value = []
-    session.get.return_value = response
-
-    transfer._query_remote_segments(session, "http://x", "20250103")
-
-    assert (
-        session.get.call_args.kwargs["headers"]["X-Solstone-Protocol-Version"] == "99"
-    )
 
 
 def test_segments_endpoint_shows_collision(observer_env):
@@ -2145,7 +2071,7 @@ def test_segments_endpoint_revoked_key(observer_env):
     )
     data = resp.get_json()
     key = data["key"]
-    key_prefix = data["key_prefix"]
+    key_prefix = data["prefix"]
 
     env.client.delete(f"/app/observer/api/{key_prefix}")
 
@@ -2228,7 +2154,7 @@ def test_segments_endpoint_shows_observed_status(observer_env):
     )
     data = resp.get_json()
     key = data["key"]
-    key_prefix = data["key_prefix"]
+    key_prefix = data["prefix"]
 
     # Upload a file
     test_data = b"test audio content"
@@ -2280,7 +2206,7 @@ def test_api_list_includes_segments_observed_stat(observer_env):
         content_type="application/json",
     )
     data = resp.get_json()
-    key_prefix = data["key_prefix"]
+    key_prefix = data["prefix"]
 
     # Initially no segments_observed
     data = _api_list_observers(env)
@@ -2523,7 +2449,7 @@ def test_ingest_partial_match_logged_in_history(observer_env):
     )
     data = resp.get_json()
     key = data["key"]
-    key_prefix = data["key_prefix"]
+    key_prefix = data["prefix"]
 
     audio_data = b"test audio for partial log"
 
@@ -2716,286 +2642,6 @@ def test_ingest_stream_qualifier_preserved(observer_env):
     assert not (_day_dir(env) / "fedora" / "120000_300" / "tmux.jsonl").exists()
 
 
-def test_transfer_success(observer_env):
-    """Test successful transfer upload."""
-    env = observer_env()
-
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "transfer-test"},
-        content_type="application/json",
-    )
-    key = resp.get_json()["key"]
-
-    test_data = b"transferred audio content"
-    resp = env.client.post(
-        f"/app/observer/ingest/{key}/transfer",
-        data={
-            "day": "20250103",
-            "segment": "120000_300",
-            "stream": "remote.host",
-            "files": (io.BytesIO(test_data), "audio.flac"),
-        },
-    )
-    assert resp.status_code == 200
-    data = resp.get_json()
-    assert data["status"] == "ok"
-    assert data["segment"] == "120000_300"
-    assert data["files"] == ["audio.flac"]
-    assert data["bytes"] == len(test_data)
-
-    expected_file = _day_dir(env) / "remote.host" / "120000_300" / "audio.flac"
-    assert expected_file.exists()
-    assert expected_file.read_bytes() == test_data
-
-
-def test_transfer_requires_stream(observer_env):
-    """Test that transfer requires stream."""
-    env = observer_env()
-
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "transfer-stream-test"},
-        content_type="application/json",
-    )
-    key = resp.get_json()["key"]
-
-    resp = env.client.post(
-        f"/app/observer/ingest/{key}/transfer",
-        data={
-            "day": "20250103",
-            "segment": "120000_300",
-            "files": (io.BytesIO(b"content"), "audio.flac"),
-        },
-    )
-    assert resp.status_code == 400
-    assert resp.get_json()["detail"] == "Missing stream"
-
-
-def test_transfer_invalid_stream(observer_env):
-    """Test that transfer validates stream format."""
-    env = observer_env()
-
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "transfer-invalid-stream"},
-        content_type="application/json",
-    )
-    key = resp.get_json()["key"]
-
-    resp = env.client.post(
-        f"/app/observer/ingest/{key}/transfer",
-        data={
-            "day": "20250103",
-            "segment": "120000_300",
-            "stream": "INVALID!",
-            "files": (io.BytesIO(b"content"), "audio.flac"),
-        },
-    )
-    assert resp.status_code == 400
-    assert resp.get_json()["detail"] == "Invalid stream format"
-
-
-def test_transfer_duplicate_detection(observer_env):
-    """Test transfer duplicate detection."""
-    env = observer_env()
-
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "transfer-duplicate-test"},
-        content_type="application/json",
-    )
-    key = resp.get_json()["key"]
-
-    test_data = b"duplicate transfer content"
-    resp = env.client.post(
-        f"/app/observer/ingest/{key}/transfer",
-        data={
-            "day": "20250103",
-            "segment": "120000_300",
-            "stream": "remote.host",
-            "files": (io.BytesIO(test_data), "audio.flac"),
-        },
-    )
-    assert resp.status_code == 200
-    assert resp.get_json()["status"] == "ok"
-
-    resp = env.client.post(
-        f"/app/observer/ingest/{key}/transfer",
-        data={
-            "day": "20250103",
-            "segment": "120000_300",
-            "stream": "remote.host",
-            "files": (io.BytesIO(test_data), "audio.flac"),
-        },
-    )
-    assert resp.status_code == 200
-    data = resp.get_json()
-    assert data["status"] == "duplicate"
-    assert data["existing_segment"] == "120000_300"
-
-
-def test_transfer_deconfliction(observer_env):
-    """Test transfer deconflicts existing segment directories."""
-    env = observer_env()
-
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "transfer-collision-test"},
-        content_type="application/json",
-    )
-    key = resp.get_json()["key"]
-
-    stream_dir = _day_dir(env) / "remote.host"
-    stream_dir.mkdir(parents=True)
-    (stream_dir / "120000_300").mkdir()
-
-    resp = env.client.post(
-        f"/app/observer/ingest/{key}/transfer",
-        data={
-            "day": "20250103",
-            "segment": "120000_300",
-            "stream": "remote.host",
-            "files": (io.BytesIO(b"collision content"), "audio.flac"),
-        },
-    )
-    assert resp.status_code == 200
-    data = resp.get_json()
-    assert data["status"] == "collision"
-    assert data["segment"] != "120000_300"
-    assert (stream_dir / data["segment"] / "audio.flac").exists()
-
-
-def test_transfer_emits_transferred_event(observer_env, monkeypatch):
-    """Test transfer emits observe.transferred."""
-    env = observer_env()
-
-    import solstone.apps.observer.routes as routes_module
-
-    calls = []
-
-    def mock_emit(*args, **kwargs):
-        calls.append((args, kwargs))
-
-    monkeypatch.setattr(routes_module, "emit", mock_emit)
-
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "transfer-event-test"},
-        content_type="application/json",
-    )
-    key = resp.get_json()["key"]
-
-    resp = env.client.post(
-        f"/app/observer/ingest/{key}/transfer",
-        data={
-            "day": "20250103",
-            "segment": "120000_300",
-            "stream": "remote.host",
-            "files": (io.BytesIO(b"event content"), "audio.flac"),
-        },
-    )
-    assert resp.status_code == 200
-    assert len(calls) == 1
-    assert calls[0][0] == ("observe", "transferred")
-
-
-def test_transfer_does_not_emit_observing(observer_env, monkeypatch):
-    """Test transfer does not emit observe.observing."""
-    env = observer_env()
-
-    import solstone.apps.observer.routes as routes_module
-
-    calls = []
-
-    def mock_emit(*args, **kwargs):
-        calls.append((args, kwargs))
-
-    monkeypatch.setattr(routes_module, "emit", mock_emit)
-
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "transfer-no-observing-test"},
-        content_type="application/json",
-    )
-    key = resp.get_json()["key"]
-
-    resp = env.client.post(
-        f"/app/observer/ingest/{key}/transfer",
-        data={
-            "day": "20250103",
-            "segment": "120000_300",
-            "stream": "remote.host",
-            "files": (io.BytesIO(b"event content"), "audio.flac"),
-        },
-    )
-    assert resp.status_code == 200
-    assert all(args[1] != "observing" for args, _kwargs in calls)
-
-
-def test_transfer_history_record(observer_env):
-    """Test transfer upload history records source='transfer'."""
-    from solstone.apps.observer.utils import load_history
-
-    env = observer_env()
-
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "transfer-history-test"},
-        content_type="application/json",
-    )
-    data = resp.get_json()
-    key = data["key"]
-    key_prefix = data["key_prefix"]
-
-    resp = env.client.post(
-        f"/app/observer/ingest/{key}/transfer",
-        data={
-            "day": "20250103",
-            "segment": "120000_300",
-            "stream": "remote.host",
-            "files": (io.BytesIO(b"history content"), "audio.flac"),
-        },
-    )
-    assert resp.status_code == 200
-
-    records = load_history(key_prefix, "20250103")
-    upload_record = next(record for record in records if not record.get("type"))
-    assert upload_record["source"] == "transfer"
-
-
-def test_transfer_auth_required(observer_env):
-    """Test transfer rejects invalid path key without auth header."""
-    env = observer_env()
-
-    resp = env.client.post(
-        "/app/observer/ingest/badkey/transfer",
-        data={
-            "day": "20250103",
-            "segment": "120000_300",
-            "stream": "remote.host",
-            "files": (io.BytesIO(b"content"), "audio.flac"),
-        },
-    )
-    assert resp.status_code == 401
-
-
-def test_transfer_invalid_key(observer_env):
-    """Test transfer rejects invalid key."""
-    env = observer_env()
-
-    resp = env.client.post(
-        "/app/observer/ingest/not-a-real-key/transfer",
-        data={
-            "day": "20250103",
-            "segment": "120000_300",
-            "stream": "remote.host",
-            "files": (io.BytesIO(b"content"), "audio.flac"),
-        },
-    )
-    assert resp.status_code == 401
-
-
 def test_manifest_day_listing(observer_env):
     """Test manifest day listing from observer history."""
     env = observer_env()
@@ -3018,7 +2664,10 @@ def test_manifest_day_listing(observer_env):
     )
     assert resp.status_code == 200
 
-    resp = env.client.get(f"/app/observer/ingest/{key}/manifest")
+    resp = env.client.get(
+        "/app/observer/ingest/manifest",
+        headers={"Authorization": f"Bearer {key}"},
+    )
     assert resp.status_code == 200
     assert resp.get_json() == {"days": {"20250103": {"segments": 1}}}
 
@@ -3035,11 +2684,12 @@ def test_manifest_per_day(observer_env):
     key = resp.get_json()["key"]
 
     resp = env.client.post(
-        f"/app/observer/ingest/{key}/transfer",
+        "/app/observer/ingest",
+        headers={"Authorization": f"Bearer {key}"},
         data={
             "day": "20250103",
             "segment": "120000_300",
-            "stream": "remote.host",
+            "meta": json.dumps({"stream": "remote.host"}),
             "files": [
                 (io.BytesIO(b"audio bytes"), "audio.flac"),
                 (io.BytesIO(b"screen bytes"), "screen.webm"),
@@ -3048,7 +2698,10 @@ def test_manifest_per_day(observer_env):
     )
     assert resp.status_code == 200
 
-    resp = env.client.get(f"/app/observer/ingest/{key}/manifest/20250103")
+    resp = env.client.get(
+        "/app/observer/ingest/manifest/20250103",
+        headers={"Authorization": f"Bearer {key}"},
+    )
     assert resp.status_code == 200
     data = resp.get_json()
 
@@ -3059,7 +2712,8 @@ def test_manifest_per_day(observer_env):
     assert "remote.host/120000_300" in data["segments"]
 
     files = data["segments"]["remote.host/120000_300"]["files"]
-    assert len(files) == 2
+    names = {file_info["name"] for file_info in files}
+    assert {"audio.flac", "screen.webm"}.issubset(names)
     for file_info in files:
         assert set(file_info) == {"name", "sha256", "size"}
         assert len(file_info["sha256"]) == 64
@@ -3069,5 +2723,5 @@ def test_manifest_auth_required(observer_env):
     """Test manifest endpoint rejects invalid key."""
     env = observer_env()
 
-    resp = env.client.get("/app/observer/ingest/badkey/manifest")
+    resp = env.client.get("/app/observer/ingest/manifest")
     assert resp.status_code == 401

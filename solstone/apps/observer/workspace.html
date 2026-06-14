@@ -707,7 +707,7 @@ function observerCardHTML(observer, labels = {}) {
   const ariaLabel = [observer.name, label, liveLabel].filter(Boolean).join(', ');
 
   return `
-    <div class="observer-card ${cardClass}" data-key="${observer.key_prefix}" role="listitem" aria-label="${escapeHtml(ariaLabel)}">
+    <div class="observer-card ${cardClass}" data-key="${observer.prefix}" role="listitem" aria-label="${escapeHtml(ariaLabel)}">
       <div class="observer-header">
         <span class="observer-name">${escapeHtml(observer.name)}</span>
         <span class="observer-status ${statusClass}">${safeLabel}</span>
@@ -715,9 +715,9 @@ function observerCardHTML(observer, labels = {}) {
       </div>
       <div class="observer-stats">${statsHTML(observer, statusClass)}</div>
       <div class="observer-actions">
-        ${statusClass === 'stale' && !observer.revoked ? `<button onclick="restartObserver('${observer.key_prefix}', this)">${window.CONVEY_COPY?.ACTION_RECONNECT || 'Reconnect'}</button><span class="observer-reconnect-result" data-reconnect-result="${observer.key_prefix}"></span>` : ''}
-        ${observer.revoked ? '' : `<button onclick="viewObserverKey('${observer.key_prefix}', '${escapeHtml(observer.name)}')">view key</button>`}
-        ${observer.revoked ? '' : `<button class="danger" onclick="revokeObserver('${observer.key_prefix}', '${escapeHtml(observer.name)}')">revoke</button>`}
+        ${statusClass === 'stale' && !observer.revoked ? `<button onclick="restartObserver('${observer.prefix}', this)">${window.CONVEY_COPY?.ACTION_RECONNECT || 'Reconnect'}</button><span class="observer-reconnect-result" data-reconnect-result="${observer.prefix}"></span>` : ''}
+        ${observer.revoked ? '' : `<button onclick="viewObserverKey('${observer.prefix}', '${escapeHtml(observer.name)}')">view key</button>`}
+        ${observer.revoked ? '' : `<button class="danger" onclick="revokeObserver('${observer.prefix}', '${escapeHtml(observer.name)}')">revoke</button>`}
       </div>
     </div>
   `;

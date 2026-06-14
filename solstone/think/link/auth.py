@@ -20,10 +20,15 @@ renameable label for the paired client. Solstone also stores local-only
             }
 
 Role-less linked systems are stored with `role: ""`; peers are stored with
-`role: "peer"`. Readers reload the file on mtime change so an unpair action
-takes effect within ~500 ms of the file write. Convey's pair and unpair routes
-own the pairing writer surface; the secure listener updates `last_seen_at` and
-uses this ledger for TLS verification and per-request authorization.
+`role: "peer"`. The peer role is provenance, not a behavioral authorization
+role: it denotes a linked system whose pairing provisioned a journal-content
+source, minted a journal-source record, and records the sender `instance_id`.
+That provenance is durable in data via per-segment `sender_instance_id` /
+`sender_fingerprint` and identity-derived source directories. Readers reload
+the file on mtime change so an unpair action takes effect within ~500 ms of the
+file write. Convey's pair and unpair routes own the pairing writer surface; the
+secure listener updates `last_seen_at` and uses this ledger for TLS verification
+and per-request authorization.
 
 `last_seen_at`, `network`, and `client_label` are local-only — never transmitted
 externally.

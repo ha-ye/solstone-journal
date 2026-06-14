@@ -361,7 +361,7 @@ def find_observer_by_name(name: str) -> dict | None:
     return ObserverRegistry.singleton().by_name(name)
 
 
-def _get_auth_key(url_key: str | None = None) -> str | None:
+def _get_auth_key() -> str | None:
     from flask import request
 
     auth = request.headers.get("Authorization", "")
@@ -369,7 +369,7 @@ def _get_auth_key(url_key: str | None = None) -> str | None:
         bearer = auth[7:].strip()
         if bearer:
             return bearer
-    return url_key or None
+    return None
 
 
 def _identity_fingerprint() -> str | None:
@@ -394,8 +394,8 @@ def _check_observer_enabled(observer: dict):
     return None
 
 
-# Observer still resolves through ObserverRegistry; minted pairings use header-Bearer auth, with legacy key-in-URL fallback deferring require_ingest_identity until URL-key auth is retired.
-def resolve_observer_identity(url_key: str | None = None):
+def resolve_observer_identity():
+    """Resolve an observer from PL identity first, then Authorization Bearer."""
     fingerprint = _identity_fingerprint()
     if fingerprint is not None:
         observer = load_observer_by_fingerprint(fingerprint)
@@ -406,7 +406,7 @@ def resolve_observer_identity(url_key: str | None = None):
             return None, None, error
         return observer, observer["filename_prefix"], None
 
-    auth_key = _get_auth_key(url_key)
+    auth_key = _get_auth_key()
     if not auth_key:
         return None, None, _auth_failure()
     observer = load_observer(auth_key)

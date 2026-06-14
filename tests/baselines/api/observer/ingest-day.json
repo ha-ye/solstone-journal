@@ -1,5 +1,5 @@
 {
-  "detail": "Invalid key",
-  "error": "I couldn't verify that key.",
-  "reason_code": "auth_key_invalid"
+  "detail": "Authorization required",
+  "error": "I couldn't verify this request.",
+  "reason_code": "auth_required"
 }

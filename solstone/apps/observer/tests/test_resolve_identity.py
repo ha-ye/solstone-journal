@@ -57,16 +57,14 @@ def test_resolve_dl_success_from_bearer(app_env):
     assert prefix == DL_KEY[:8]
 
 
-def test_resolve_dl_bearer_key_wins_over_url_key(app_env):
+def test_resolve_dl_uses_bearer_key(app_env):
     header_key = "headerkey123456789"
-    url_key = "urlkey123456789"
     save_observer({"key": header_key, "name": "header", "enabled": True, "stats": {}})
-    save_observer({"key": url_key, "name": "url", "enabled": True, "stats": {}})
 
     with app_env.test_request_context(
         headers={"Authorization": f"Bearer {header_key}"}
     ):
-        observer, prefix, error = resolve_observer_identity(url_key=url_key)
+        observer, prefix, error = resolve_observer_identity()
 
     assert error is None
     assert observer["name"] == "header"
@@ -125,7 +123,7 @@ def test_resolve_pl_success(app_env):
 
     with app_env.test_request_context():
         g.identity = _pl_identity(FINGERPRINT)
-        observer, prefix, error = resolve_observer_identity("ignored-route-key")
+        observer, prefix, error = resolve_observer_identity()
 
     assert error is None
     assert observer["name"] == "observer"
@@ -182,12 +180,12 @@ def test_resolve_pl_disabled(app_env):
     assert payload["reason_code"] == "feature_unavailable"
 
 
-def test_resolve_pl_does_not_require_url_key(app_env):
+def test_resolve_pl_does_not_require_bearer(app_env):
     mint_pl_observer_record(FINGERPRINT, "observer", "2026-04-20T00:00:00Z")
 
     with app_env.test_request_context("/app/observer/ingest/not-the-fingerprint/event"):
         g.identity = _pl_identity(FINGERPRINT)
-        observer, prefix, error = resolve_observer_identity("not-the-fingerprint")
+        observer, prefix, error = resolve_observer_identity()
 
     assert error is None
     assert prefix == "c" * 16

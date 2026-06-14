@@ -56,7 +56,7 @@ def _create_observer(env, name: str = "sse-test") -> tuple[str, str]:
     )
     assert resp.status_code == 200
     data = resp.get_json()
-    return data["key"], data["key_prefix"]
+    return data["key"], data["prefix"]
 
 
 def _route_for(key: str) -> str:
@@ -103,11 +103,16 @@ def test_callosum_sse_missing_key_returns_401(observer_env):
     )
 
 
-def test_callosum_sse_unknown_key_returns_401(observer_env):
+def test_callosum_sse_path_key_without_bearer_returns_401(observer_env):
     env = observer_env()
-    resp = env.client.get(_route_for("unknown-key"), buffered=False)
+    key, _ = _create_observer(env)
+    resp = env.client.get(_route_for(key), buffered=False)
     assert resp.status_code == 401
-    _assert_reason(resp, reason_code="auth_key_invalid", detail="Invalid key")
+    _assert_reason(
+        resp,
+        reason_code="auth_required",
+        detail="Authorization required",
+    )
 
 
 def test_callosum_sse_revoked_key_returns_403(observer_env):
@@ -116,7 +121,11 @@ def test_callosum_sse_revoked_key_returns_403(observer_env):
     revoke = env.client.delete(f"/app/observer/api/{key_prefix}")
     assert revoke.status_code == 200
 
-    resp = env.client.get(_route_for(key), buffered=False)
+    resp = env.client.get(
+        _route_for("vestigial-path-key"),
+        headers={"Authorization": f"Bearer {key}"},
+        buffered=False,
+    )
     assert resp.status_code == 403
     _assert_reason(
         resp,
@@ -133,7 +142,11 @@ def test_callosum_sse_disabled_key_returns_403(observer_env):
     observer["enabled"] = False
     assert save_observer(observer)
 
-    resp = env.client.get(_route_for(key), buffered=False)
+    resp = env.client.get(
+        _route_for("vestigial-path-key"),
+        headers={"Authorization": f"Bearer {key}"},
+        buffered=False,
+    )
     assert resp.status_code == 403
     _assert_reason(
         resp,
@@ -142,7 +155,7 @@ def test_callosum_sse_disabled_key_returns_403(observer_env):
     )
 
 
-def test_callosum_sse_bearer_header_overrides_path_key(observer_env):
+def test_callosum_sse_bearer_header_authenticates(observer_env):
     env = observer_env()
     valid_key, _ = _create_observer(env, "valid-sse")
     bogus_key = "bogus-key"
@@ -171,7 +184,11 @@ def test_callosum_sse_success_content_type(observer_env):
     env = observer_env()
     key, _ = _create_observer(env)
 
-    resp = env.client.get(_route_for(key), buffered=False)
+    resp = env.client.get(
+        _route_for("vestigial-path-key"),
+        headers={"Authorization": f"Bearer {key}"},
+        buffered=False,
+    )
     try:
         assert resp.status_code == 200
         assert resp.content_type.startswith("text/event-stream")
@@ -182,7 +199,11 @@ def test_callosum_sse_success_content_type(observer_env):
 def test_callosum_sse_round_trip_payload(observer_env):
     env = observer_env()
     key, key_prefix = _create_observer(env)
-    resp = env.client.get(_route_for(key), buffered=False)
+    resp = env.client.get(
+        _route_for("vestigial-path-key"),
+        headers={"Authorization": f"Bearer {key}"},
+        buffered=False,
+    )
     try:
         assert resp.status_code == 200
         assert convey_bridge.subscription_count(key_prefix) == 1
@@ -268,7 +289,11 @@ def test_callosum_sse_heartbeat(observer_env, monkeypatch):
     key, _ = _create_observer(env)
     monkeypatch.setattr(routes_module, "_SSE_HEARTBEAT_SECONDS", 0.01)
 
-    resp = env.client.get(_route_for(key), buffered=False)
+    resp = env.client.get(
+        _route_for("vestigial-path-key"),
+        headers={"Authorization": f"Bearer {key}"},
+        buffered=False,
+    )
     try:
         assert resp.status_code == 200
         assert _next_chunk(resp) == ": heartbeat\n\n"

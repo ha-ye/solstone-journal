@@ -187,7 +187,7 @@ ENDPOINTS = [
     {
         "app": "observer",
         "name": "ingest-day",
-        "path": "/app/observer/ingest/example-key/segments/20260304",
+        "path": "/app/observer/ingest/segments/20260304",
         "params": {},
         "status": 401,
     },

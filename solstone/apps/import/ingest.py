@@ -103,6 +103,9 @@ from .facet_ingest import process_facet
 
 
 def register_ingest_routes(bp) -> None:
+    # Import ingest is the bulk producer stream for peer/export segments plus
+    # entities, facets, imports, and config; it is deliberately separate from
+    # live observer ingest.
     @bp.route("/journal/<key_prefix>/ingest/segments", methods=["POST"])
     @require_journal_source
     def ingest_segments(key_prefix: str):

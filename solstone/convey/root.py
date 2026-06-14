@@ -110,7 +110,6 @@ def require_login() -> Any:
         "app:observer.ingest_upload",
         "app:observer.ingest_event",
         "app:observer.ingest_segments",
-        "app:observer.ingest_transfer",
         "app:observer.ingest_manifest",
         "app:observer.ingest_manifest_day",
         "app:observer.register",

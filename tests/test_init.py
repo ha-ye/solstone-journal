@@ -472,7 +472,7 @@ class TestInitObservers:
         observers = data["observers"]
         assert len(observers) == 1
         assert observers[0]["name"] == "my-phone"
-        assert observers[0]["key_prefix"] == "abcd1234"
+        assert observers[0]["prefix"] == "abcd1234"
         assert observers[0]["state"] == "disconnected"
         assert observers[0]["group"] == "inactive"
         assert observers[0]["label"] == "Disconnected"
@@ -509,12 +509,12 @@ class TestInitObservers:
         assert init_resp.status_code == 200
 
         api_by_key = {
-            observer["key_prefix"]: observer
+            observer["prefix"]: observer
             for observer in api_resp.get_json()["observers"]
             if not observer["revoked"]
         }
         init_by_key = {
-            observer["key_prefix"]: observer
+            observer["prefix"]: observer
             for observer in init_resp.get_json()["observers"]
         }
 
