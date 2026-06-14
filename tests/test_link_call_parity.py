@@ -412,7 +412,7 @@ def test_status_provisioned_and_not_provisioned(journal, runner):
     assert provisioned.stdout == (
         f"Instance ID:   {state.instance_id}\n"
         f"Home label:    {state.home_label}\n"
-        "Relay URL:     https://spl-relay-staging.jer-3f2.workers.dev\n"
+        "Relay URL:     https://link.solstone.app\n"
         "Enrolled:      no\n"
         "Reach posture: direct\n"
         "Private link:  not enabled\n"
@@ -433,7 +433,7 @@ def test_status_unprovisioned_does_not_write_state(journal, runner, monkeypatch)
     assert result.stdout == (
         "Instance ID:   (not provisioned — pair a device to provision)\n"
         "Home label:    (not provisioned)\n"
-        "Relay URL:     https://spl-relay-staging.jer-3f2.workers.dev\n"
+        "Relay URL:     https://link.solstone.app\n"
         "Enrolled:      no\n"
         "Reach posture: direct\n"
         "Private link:  not enabled\n"

@@ -34,10 +34,9 @@ from pathlib import Path
 from solstone.think.journal_io import write_json
 from solstone.think.utils import get_journal
 
-# Production spl-relay endpoint. Single source of truth — self-hosters
-# override via SOL_LINK_RELAY_URL env var. When CTO wires
-# spl.solpbc.org as DNS front, update this constant.
-DEFAULT_RELAY_URL = "https://spl-relay-staging.jer-3f2.workers.dev"
+# Production spl-relay endpoint. Single source of truth; self-hosters
+# override via SOL_LINK_RELAY_URL env var.
+DEFAULT_RELAY_URL = "https://link.solstone.app"
 
 
 def link_root() -> Path:
