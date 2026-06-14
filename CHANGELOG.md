@@ -4,6 +4,20 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.5.6] - 2026-06-14
+
+### Added
+- the backup page now lets you choose where your encrypted backup lives. keep using your own bucket as before, or pick solstone hosted, which is on the way and shown as coming later with a clear path back to your own bucket in the meantime.
+
+### Changed
+- the backup page got a clearer pass over its layout and wording, the routine actions sit apart from the one that erases a backup, and the page now carries the same naming as the rest of solstone, including the `journal backup` terminal command's help text.
+- the link page now matches the rest of solstone's look. the pairing button and links on that surface read in the warm palette instead of an off-tone blue, so the page reads as one piece.
+
+### Fixed
+- pairing a new device over your solstone private link now completes instead of stalling. before, the join would reach your journal but hang for about half a minute and then give up; it now connects cleanly, with a plain one-line message if anything goes wrong. what travels and where your journal lives are unchanged; this is the connection itself finishing the way it should.
+- the recovery-key Copy button on the backup page now copies your key, where before it could copy a stray bit of internal text. some loose setup labels that were never meant to show are gone too.
+- when sol's background thinking is cut short at a budget or step limit, that run now closes honestly and its cost shows up on your spending view like any other. before, a cut-short run could sit in limbo and its spend never appeared, so your spending view was lower than what was actually used. a cut-short run now reads plainly as cut short rather than as a clean finish, and keeps whatever partial work it had.
+
 ## [0.5.5] - 2026-06-14
 
 ### Added
