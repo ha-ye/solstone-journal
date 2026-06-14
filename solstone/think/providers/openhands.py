@@ -580,10 +580,10 @@ class _OpenHandsTranslator:
         remaining = limit - used
         finish_tool = self._finish_tool_name()
 
-        # Stage 2: exactly one turn remains; threshold warnings collapse here.
-        if used == limit - 1:
+        # Stage 2: one or fewer turns remains; threshold warnings collapse here.
+        if used >= limit - 1:
             self.conversation.send_message(
-                f"Turn budget reached: this is your final turn. Stop gathering more "
+                f"Turn budget reached: this is your last turn. Stop gathering more "
                 f"context or using tools, and call {finish_tool} now with the best "
                 f"result available."
             )
@@ -595,10 +595,26 @@ class _OpenHandsTranslator:
             if frac not in self._turn_warnings_fired and used >= math.ceil(
                 frac * limit
             ):
+                percent = int(frac * 100)
+                if percent == 50:
+                    instruction = (
+                        "Start converging on the final result and call "
+                        f"{finish_tool} as soon as useful work is complete."
+                    )
+                elif percent == 75:
+                    instruction = (
+                        "Stop broad gathering; use the remaining turns only for "
+                        f"synthesis and final checks, then call {finish_tool}."
+                    )
+                else:
+                    instruction = (
+                        "Finish now unless one more tool call is essential; call "
+                        f"{finish_tool} with the best complete result available."
+                    )
                 self.conversation.send_message(
-                    f"Turn budget warning: you have used {used} of {limit} turns "
-                    f"({remaining} remaining). Wrap up useful work now and call "
-                    f"{finish_tool} with the best complete result you can produce."
+                    f"Turn budget warning: you've used {percent}% of your turn "
+                    f"budget so far: {used} of {limit} turns, {remaining} turns "
+                    f"left. {instruction}"
                 )
                 self._turn_warnings_fired.add(frac)
 

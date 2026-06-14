@@ -134,18 +134,38 @@ def _parallel_sol_actions(fake_openhands, response_id: str, *call_ids: str):
     ]
 
 
-def _turn_warning_message(used: int, limit: int, *, finish_tool: str = "finish") -> str:
+def _turn_warning_message(
+    used: int,
+    limit: int,
+    *,
+    percent: int,
+    finish_tool: str = "finish",
+) -> str:
     remaining = limit - used
+    if percent == 50:
+        instruction = (
+            "Start converging on the final result and call "
+            f"{finish_tool} as soon as useful work is complete."
+        )
+    elif percent == 75:
+        instruction = (
+            "Stop broad gathering; use the remaining turns only for synthesis and "
+            f"final checks, then call {finish_tool}."
+        )
+    else:
+        instruction = (
+            "Finish now unless one more tool call is essential; call "
+            f"{finish_tool} with the best complete result available."
+        )
     return (
-        f"Turn budget warning: you have used {used} of {limit} turns "
-        f"({remaining} remaining). Wrap up useful work now and call {finish_tool} "
-        f"with the best complete result you can produce."
+        f"Turn budget warning: you've used {percent}% of your turn budget so far: "
+        f"{used} of {limit} turns, {remaining} turns left. {instruction}"
     )
 
 
 def _turn_final_message(*, finish_tool: str = "finish") -> str:
     return (
-        f"Turn budget reached: this is your final turn. Stop gathering more context "
+        f"Turn budget reached: this is your last turn. Stop gathering more context "
         f"or using tools, and call {finish_tool} now with the best result available."
     )
 
@@ -849,7 +869,7 @@ def test_turn_budget_warning_injects_via_send_message_not_system_prompt(
         for message in conversation.messages
         if message.startswith("Turn budget warning")
     ]
-    assert warnings == [_turn_warning_message(2, 4)]
+    assert warnings == [_turn_warning_message(2, 4, percent=50)]
     assert warnings[0] not in conversation.agent.system_prompt
 
 
@@ -869,9 +889,9 @@ def test_turn_budget_warnings_fire_at_thresholds_once(fake_openhands, fixed_time
         if message.startswith("Turn budget warning")
     ]
     assert warnings == [
-        _turn_warning_message(10, 20),
-        _turn_warning_message(15, 20),
-        _turn_warning_message(18, 20),
+        _turn_warning_message(10, 20, percent=50),
+        _turn_warning_message(15, 20, percent=75),
+        _turn_warning_message(18, 20, percent=90),
     ]
 
 
@@ -934,7 +954,7 @@ def test_turn_budget_thresholds_use_ceiling(fake_openhands, fixed_time):
         for message in translator.conversation.messages
         if message.startswith("Turn budget warning")
     ]
-    assert warnings == [_turn_warning_message(5, 10)]
+    assert warnings == [_turn_warning_message(5, 10, percent=50)]
 
     translator.on_event(_sol_action(fake_openhands, "c8", llm_response_id="r8"))
 
@@ -944,8 +964,8 @@ def test_turn_budget_thresholds_use_ceiling(fake_openhands, fixed_time):
         if message.startswith("Turn budget warning")
     ]
     assert warnings == [
-        _turn_warning_message(5, 10),
-        _turn_warning_message(8, 10),
+        _turn_warning_message(5, 10, percent=50),
+        _turn_warning_message(8, 10, percent=75),
     ]
 
 
@@ -963,6 +983,25 @@ def test_turn_budget_final_ultimatum_arms_at_one_remaining(
     assert translator.conversation.messages == [_turn_final_message()]
     assert translator._turn_final_armed is True
     assert translator.conversation.paused is False
+
+
+def test_turn_budget_final_ultimatum_handles_single_turn_limit(
+    fake_openhands,
+    fixed_time,
+):
+    events: list[dict] = []
+    translator = _translator(fake_openhands, events, max_turns=1)
+    translator.conversation = _fake_conversation(fake_openhands)
+
+    translator.on_event(_sol_action(fake_openhands, "c1", llm_response_id="r1"))
+    translator.on_event(_sol_action(fake_openhands, "c2", llm_response_id="r2"))
+
+    assert translator.conversation.messages == [_turn_final_message()]
+    assert translator.conversation.paused is True
+    assert translator.max_turns_exhausted is True
+    assert [event for event in events if event["event"] == "max_turns_exhausted"] == [
+        {"event": "max_turns_exhausted", "max_turns": 1, "ts": 123456}
+    ]
 
 
 def test_run_cogitate_turn_force_stop_uses_solstone_max_turns_path(
@@ -1023,7 +1062,7 @@ def test_turn_budget_emit_final_without_response_id_preempts_force_stop(
     translator.on_event(_emit_final_action(fake_openhands, "# Done"))
 
     assert translator.conversation.messages == [
-        _turn_warning_message(2, 4, finish_tool="emit_final")
+        _turn_warning_message(2, 4, percent=50, finish_tool="emit_final")
     ]
     assert translator.conversation.paused is False
     assert translator._turn_force_stopped is False
