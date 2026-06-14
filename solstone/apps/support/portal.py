@@ -17,6 +17,7 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import time
 import uuid
 from pathlib import Path
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 # ``support.portal_url`` in journal config keep working until they pick this
 # default up on upgrade.
 DEFAULT_PORTAL_URL = "https://support.solstone.app"
+SUPPORT_PORTAL_URL_ENV = "SOLSTONE_SUPPORT_URL"
 
 # ---------------------------------------------------------------------------
 # Base64url helpers
@@ -108,7 +110,8 @@ class PortalClient:
     Parameters
     ----------
     portal_url:
-        Base URL of the portal (no trailing slash).
+        Base URL of the portal (no trailing slash). Defaults to the configured
+        support portal URL, with ``SOLSTONE_SUPPORT_URL`` taking precedence.
     storage_dir:
         Directory for keypair, token cache, and TOS cache.
     handle:
@@ -119,11 +122,13 @@ class PortalClient:
 
     def __init__(
         self,
-        portal_url: str = DEFAULT_PORTAL_URL,
+        portal_url: str | None = None,
         storage_dir: Path | None = None,
         handle: str | None = None,
         anonymous: bool = False,
     ) -> None:
+        if portal_url is None:
+            portal_url = _get_portal_url_from_settings()
         self.portal_url = portal_url.rstrip("/")
         self.anonymous = anonymous
         self._handle = handle
@@ -647,9 +652,10 @@ def get_client(
     portal_url: str | None = None,
     anonymous: bool = False,
 ) -> PortalClient:
-    """Get a portal client using journal settings for configuration.
+    """Get a portal client using environment/journal settings for configuration.
 
-    Reads ``support.portal_url`` from journal config if *portal_url* is None.
+    Reads ``SOLSTONE_SUPPORT_URL`` first, then ``support.portal_url`` from
+    journal config, if *portal_url* is None.
     """
     if portal_url is None:
         portal_url = _get_portal_url_from_settings()
@@ -657,7 +663,11 @@ def get_client(
 
 
 def _get_portal_url_from_settings() -> str:
-    """Read portal URL from journal config, falling back to default."""
+    """Resolve portal URL from env, then journal config, then the default host."""
+    env_url = os.environ.get(SUPPORT_PORTAL_URL_ENV)
+    if env_url:
+        return env_url.rstrip("/")
+
     try:
         from solstone.think.utils import get_journal
 
@@ -667,7 +677,7 @@ def _get_portal_url_from_settings() -> str:
             support = config.get("support", {})
             url = support.get("portal_url")
             if url:
-                return url
+                return url.rstrip("/")
     except Exception:
         pass
     return DEFAULT_PORTAL_URL

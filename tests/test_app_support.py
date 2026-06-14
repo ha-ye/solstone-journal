@@ -123,6 +123,33 @@ def test_config_route_reports_enabled_and_portal_url(support_client, monkeypatch
     _assert_no_credential_leak(resp.get_data(as_text=True))
 
 
+def test_portal_url_defaults_to_support_host(journal, monkeypatch):
+    from solstone.apps.support import portal
+
+    monkeypatch.delenv(portal.SUPPORT_PORTAL_URL_ENV, raising=False)
+
+    assert portal._get_portal_url_from_settings() == portal.DEFAULT_PORTAL_URL
+    assert portal.get_client(anonymous=True).portal_url == portal.DEFAULT_PORTAL_URL
+
+
+def test_portal_url_env_overrides_configured_host(journal, monkeypatch):
+    from solstone.apps.support import portal
+
+    config_dir = journal / "config"
+    config_dir.mkdir()
+    (config_dir / "config.json").write_text(
+        json.dumps({"support": {"portal_url": "https://support.solstone.app"}})
+    )
+    monkeypatch.setenv(
+        portal.SUPPORT_PORTAL_URL_ENV, "https://support-sink.example.test/"
+    )
+
+    assert portal._get_portal_url_from_settings() == "https://support-sink.example.test"
+    assert portal.get_client(anonymous=True).portal_url == (
+        "https://support-sink.example.test"
+    )
+
+
 def test_config_route_ungated_when_disabled(support_client, monkeypatch):
     monkeypatch.setattr("solstone.apps.support.portal.is_enabled", lambda: False)
     monkeypatch.setattr(
