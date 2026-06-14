@@ -4,6 +4,16 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.0] - 2026-06-14
+
+### Added
+- you can now run sol from one machine against a journal that lives on another. once you've paired the two over your solstone private link, `sol chat` and `sol call` reach the remote journal the same way they reach a local one, with live progress and answers streaming back as sol works. a machine set up this way runs its own observers and its own `sol`, while its journal stays on the machine that holds it.
+- managing your paired devices now has its own home in `journal link`: list what's paired, check a device's status, and unpair one when you're done with it. `sol link` stays the device-side command for joining and serving a link.
+
+### Changed
+- installing solstone now gives you the lightweight `sol` client by default. `pip install solstone` (or `uv tool install solstone`, or `uvx solstone`) installs a small client that talks to a journal running elsewhere, without the full set of components a journal host needs. to run a journal on this machine, install `solstone[journal]` for the full stack, or `solstone[journal-cuda]` for the version that uses your graphics card for transcription. the macOS app is unaffected; it still includes everything to run a journal.
+- your journal's local web and api address is now reachable only from the same machine. the older option that opened it to your network behind a password is gone. to use a journal from another device, you now pair that device over your solstone private link, the same pairing flow as before, rather than opening a port. this is a tightening of how a journal can be reached; what your observers take in, where your journal lives, and what leaves the machine are all unchanged.
+
 ## [0.5.6] - 2026-06-14
 
 ### Added
