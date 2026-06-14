@@ -4,7 +4,8 @@
   "title": "Partner Profile",
   "description": "Weekly observation of the journal owner's behavioral patterns — work style, communication, priorities, decision-making, expertise",
   "schedule": "weekly",
-  "priority": 95
+  "priority": 95,
+  "max_turns": 100
 }
 
 $facets

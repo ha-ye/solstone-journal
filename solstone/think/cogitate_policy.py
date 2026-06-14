@@ -21,6 +21,13 @@ DEFAULT_RUN_COST_CAP_USD = 1.00
 COST_WARN_FRAC = 0.70
 CONTEXT_WARN_FRAC = 0.80
 CONTEXT_FINAL_FRAC = 0.88
+TURN_WARN_FRACS = (0.50, 0.75, 0.90)
+# Normal tool-turn progression arms at observed turn N-1 and force-stops at
+# observed turn N. The SDK iteration counter can also advance on
+# message/reasoning-only steps the turn monitor does not count, so this remains
+# a true SDK backstop; its MaxIterationsReached path already maps to
+# max_turns_exhausted.
+MAX_TURNS_HEADROOM = 2
 # Conservative fresh-token fallback when the SDK's accumulated_cost is still 0.0
 # (no response completed yet, or litellm cost calc failed). Uses Gemini Flash's
 # output rate ($2.50 / 1M tokens) for ALL fresh non-cache tokens so the estimate

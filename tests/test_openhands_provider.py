@@ -15,6 +15,7 @@ from solstone.think.cogitate_policy import (
     COST_WARN_FRAC,
     DEFAULT_RUN_COST_CAP_USD,
     MAX_TURNS,
+    MAX_TURNS_HEADROOM,
     MaxTurnsExhausted,
 )
 from solstone.think.providers import openhands
@@ -39,6 +40,7 @@ def _translator(
     *,
     llm=None,
     expects_emit_final: bool = False,
+    max_turns: int = MAX_TURNS,
 ) -> openhands._OpenHandsTranslator:
     if llm is None:
         llm = fake_openhands.LLM(model="openai/gpt-5")
@@ -48,6 +50,7 @@ def _translator(
         provider="openai",
         model="openai/gpt-5",
         cost_cap=DEFAULT_RUN_COST_CAP_USD,
+        max_turns=max_turns,
         expects_emit_final=expects_emit_final,
     )
 
@@ -85,7 +88,12 @@ def _run_and_capture_tool_state(fake_openhands, config: dict, events: list[dict]
     return result, conversation, agent_tool_names, registered_tool_names
 
 
-def _emit_final_action(fake_openhands, content: str):
+def _emit_final_action(
+    fake_openhands, content: str, *, llm_response_id: str | None = None
+):
+    kwargs = {}
+    if llm_response_id is not None:
+        kwargs["llm_response_id"] = llm_response_id
     return fake_openhands.ActionEvent(
         reasoning_content=None,
         thinking_blocks=[],
@@ -94,10 +102,19 @@ def _emit_final_action(fake_openhands, content: str):
         tool_call=SimpleNamespace(arguments=f'{{"content":"{content}"}}'),
         tool_call_id="emit-1",
         action=SimpleNamespace(content=content),
+        **kwargs,
     )
 
 
-def _sol_action(fake_openhands, call_id: str = "c1"):
+def _sol_action(
+    fake_openhands,
+    call_id: str = "c1",
+    *,
+    llm_response_id: str | None = None,
+):
+    kwargs = {}
+    if llm_response_id is not None:
+        kwargs["llm_response_id"] = llm_response_id
     return fake_openhands.ActionEvent(
         reasoning_content=None,
         thinking_blocks=[],
@@ -106,6 +123,30 @@ def _sol_action(fake_openhands, call_id: str = "c1"):
         tool_call=SimpleNamespace(arguments='{"command":"sol call journal search x"}'),
         tool_call_id=call_id,
         action=None,
+        **kwargs,
+    )
+
+
+def _parallel_sol_actions(fake_openhands, response_id: str, *call_ids: str):
+    return [
+        _sol_action(fake_openhands, call_id, llm_response_id=response_id)
+        for call_id in call_ids
+    ]
+
+
+def _turn_warning_message(used: int, limit: int, *, finish_tool: str = "finish") -> str:
+    remaining = limit - used
+    return (
+        f"Turn budget warning: you have used {used} of {limit} turns "
+        f"({remaining} remaining). Wrap up useful work now and call {finish_tool} "
+        f"with the best complete result you can produce."
+    )
+
+
+def _turn_final_message(*, finish_tool: str = "finish") -> str:
+    return (
+        f"Turn budget reached: this is your final turn. Stop gathering more context "
+        f"or using tools, and call {finish_tool} now with the best result available."
     )
 
 
@@ -778,6 +819,217 @@ def test_resource_monitor_injects_via_send_message_not_system_prompt(
     assert warnings[0] not in conversation.agent.system_prompt
 
 
+def test_turn_budget_warning_injects_via_send_message_not_system_prompt(
+    fake_openhands,
+    monkeypatch,
+    tmp_path,
+):
+    async def hit_turn_warn(conversation):
+        original_system_prompt = conversation.agent.system_prompt
+        for turn in range(1, 3):
+            for callback in conversation.callbacks:
+                callback(
+                    _sol_action(
+                        fake_openhands,
+                        f"c{turn}",
+                        llm_response_id=f"r{turn}",
+                    )
+                )
+        assert conversation.agent.system_prompt == original_system_prompt
+
+    fake_openhands.Conversation.arun_impl = hit_turn_warn
+    config = _run_config(monkeypatch, tmp_path, max_turns=4)
+    events: list[dict] = []
+
+    asyncio.run(openhands.run_cogitate(config, events.append))
+
+    conversation = fake_openhands.Conversation.instances[0]
+    warnings = [
+        message
+        for message in conversation.messages
+        if message.startswith("Turn budget warning")
+    ]
+    assert warnings == [_turn_warning_message(2, 4)]
+    assert warnings[0] not in conversation.agent.system_prompt
+
+
+def test_turn_budget_warnings_fire_at_thresholds_once(fake_openhands, fixed_time):
+    events: list[dict] = []
+    translator = _translator(fake_openhands, events, max_turns=20)
+    translator.conversation = _fake_conversation(fake_openhands)
+
+    for turn in range(1, 21):
+        translator.on_event(
+            _sol_action(fake_openhands, f"c{turn}", llm_response_id=f"r{turn}")
+        )
+
+    warnings = [
+        message
+        for message in translator.conversation.messages
+        if message.startswith("Turn budget warning")
+    ]
+    assert warnings == [
+        _turn_warning_message(10, 20),
+        _turn_warning_message(15, 20),
+        _turn_warning_message(18, 20),
+    ]
+
+
+def test_turn_budget_parallel_actions_share_one_observed_turn(
+    fake_openhands,
+    fixed_time,
+):
+    events: list[dict] = []
+    translator = _translator(fake_openhands, events)
+    translator.conversation = _fake_conversation(fake_openhands)
+
+    for action in _parallel_sol_actions(fake_openhands, "r1", "c1", "c2", "c3"):
+        translator.on_event(action)
+
+    assert translator._observed_turns == 1
+
+
+def test_turn_budget_seen_response_id_does_not_advance_or_refire(
+    fake_openhands,
+    fixed_time,
+):
+    events: list[dict] = []
+    translator = _translator(fake_openhands, events)
+    translator.conversation = _fake_conversation(fake_openhands)
+
+    translator.on_event(_sol_action(fake_openhands, "c1", llm_response_id="r1"))
+    messages_after_first = list(translator.conversation.messages)
+    translator.on_event(_sol_action(fake_openhands, "c2", llm_response_id="r1"))
+
+    assert translator._observed_turns == 1
+    assert translator.conversation.messages == messages_after_first
+
+
+def test_turn_budget_missing_response_id_counts_each_action(
+    fake_openhands,
+    fixed_time,
+):
+    events: list[dict] = []
+    translator = _translator(fake_openhands, events)
+    translator.conversation = _fake_conversation(fake_openhands)
+
+    for turn in range(1, 4):
+        translator.on_event(_sol_action(fake_openhands, f"c{turn}"))
+
+    assert translator._observed_turns == 3
+
+
+def test_turn_budget_thresholds_use_ceiling(fake_openhands, fixed_time):
+    events: list[dict] = []
+    translator = _translator(fake_openhands, events, max_turns=10)
+    translator.conversation = _fake_conversation(fake_openhands)
+
+    for turn in range(1, 8):
+        translator.on_event(
+            _sol_action(fake_openhands, f"c{turn}", llm_response_id=f"r{turn}")
+        )
+
+    warnings = [
+        message
+        for message in translator.conversation.messages
+        if message.startswith("Turn budget warning")
+    ]
+    assert warnings == [_turn_warning_message(5, 10)]
+
+    translator.on_event(_sol_action(fake_openhands, "c8", llm_response_id="r8"))
+
+    warnings = [
+        message
+        for message in translator.conversation.messages
+        if message.startswith("Turn budget warning")
+    ]
+    assert warnings == [
+        _turn_warning_message(5, 10),
+        _turn_warning_message(8, 10),
+    ]
+
+
+def test_turn_budget_final_ultimatum_arms_at_one_remaining(
+    fake_openhands,
+    fixed_time,
+):
+    events: list[dict] = []
+    translator = _translator(fake_openhands, events, max_turns=3)
+    translator.conversation = _fake_conversation(fake_openhands)
+
+    translator.on_event(_sol_action(fake_openhands, "c1", llm_response_id="r1"))
+    translator.on_event(_sol_action(fake_openhands, "c2", llm_response_id="r2"))
+
+    assert translator.conversation.messages == [_turn_final_message()]
+    assert translator._turn_final_armed is True
+    assert translator.conversation.paused is False
+
+
+def test_run_cogitate_turn_force_stop_uses_solstone_max_turns_path(
+    fake_openhands,
+    fixed_time,
+    monkeypatch,
+    tmp_path,
+):
+    fed_conversation_error_codes: list[str] = []
+
+    def feed(conversation, event):
+        if isinstance(event, fake_openhands.ConversationErrorEvent):
+            fed_conversation_error_codes.append(str(getattr(event, "code", "")))
+        for callback in conversation.callbacks:
+            callback(event)
+
+    async def exhaust_turn_budget(conversation):
+        for turn in range(1, 4):
+            feed(
+                conversation,
+                _sol_action(
+                    fake_openhands,
+                    f"c{turn}",
+                    llm_response_id=f"r{turn}",
+                ),
+            )
+
+    fake_openhands.Conversation.arun_impl = exhaust_turn_budget
+    config = _run_config(monkeypatch, tmp_path, max_turns=3)
+    events: list[dict] = []
+
+    with pytest.raises(MaxTurnsExhausted, match="3 turns"):
+        asyncio.run(openhands.run_cogitate(config, events.append))
+
+    conversation = fake_openhands.Conversation.instances[0]
+    assert conversation.paused is True
+    assert [event for event in events if event["event"] == "max_turns_exhausted"] == [
+        {"event": "max_turns_exhausted", "max_turns": 3, "ts": 123456}
+    ]
+    assert fed_conversation_error_codes == []
+
+
+def test_turn_budget_emit_final_without_response_id_preempts_force_stop(
+    fake_openhands,
+    fixed_time,
+):
+    events: list[dict] = []
+    translator = _translator(
+        fake_openhands,
+        events,
+        expects_emit_final=True,
+        max_turns=4,
+    )
+    translator.conversation = _fake_conversation(fake_openhands)
+
+    translator.on_event(_sol_action(fake_openhands, "c1", llm_response_id="r1"))
+    translator.on_event(_sol_action(fake_openhands, "c2", llm_response_id="r2"))
+    translator.on_event(_emit_final_action(fake_openhands, "# Done"))
+
+    assert translator.conversation.messages == [
+        _turn_warning_message(2, 4, finish_tool="emit_final")
+    ]
+    assert translator.conversation.paused is False
+    assert translator._turn_force_stopped is False
+    assert translator.result() == "# Done"
+
+
 def test_run_cogitate_skips_read_tool_registration_when_tier_caps_disable_reads(
     fake_openhands,
     monkeypatch,
@@ -923,6 +1175,27 @@ def test_weekly_reflection_declares_run_cost_override():
     assert config["max_run_cost_usd"] == 5.00
 
 
+def test_partner_declares_same_max_turns_as_weekly_reflection():
+    partner = get_talent("partner")
+    weekly_reflection = get_talent("weekly_reflection")
+
+    assert partner["max_turns"] == weekly_reflection["max_turns"]
+
+
+def test_run_cogitate_uses_default_max_turn_headroom(
+    fake_openhands,
+    monkeypatch,
+    tmp_path,
+):
+    config = _run_config(monkeypatch, tmp_path)
+    events: list[dict] = []
+
+    asyncio.run(openhands.run_cogitate(config, events.append))
+
+    conversation = fake_openhands.Conversation.instances[0]
+    assert conversation.max_iteration_per_run == MAX_TURNS + MAX_TURNS_HEADROOM
+
+
 def test_run_cogitate_threads_configured_max_turns(
     fake_openhands,
     fixed_time,
@@ -946,7 +1219,7 @@ def test_run_cogitate_threads_configured_max_turns(
         asyncio.run(openhands.run_cogitate(config, events.append))
 
     conversation = fake_openhands.Conversation.instances[0]
-    assert conversation.max_iteration_per_run == 100
+    assert conversation.max_iteration_per_run == 102
     assert events == [
         {
             "event": "max_turns_exhausted",

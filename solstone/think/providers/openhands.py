@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import shutil
 import sys
@@ -37,6 +38,8 @@ from solstone.think.cogitate_policy import (
     DEFAULT_READ_CALL_BUDGET,
     DEFAULT_RUN_COST_CAP_USD,
     MAX_TURNS,
+    MAX_TURNS_HEADROOM,
+    TURN_WARN_FRACS,
     CogitatePolicy,
     MaxTurnsExhausted,
     resolve_read_scope,
@@ -418,6 +421,11 @@ class _OpenHandsTranslator:
         self._wrapup_nudged = False
         self._final_turn_armed = False
         self._cost_force_stopped = False
+        self._observed_turns: int = 0
+        self._seen_response_ids: set[str] = set()
+        self._turn_warnings_fired: set[float] = set()
+        self._turn_final_armed: bool = False
+        self._turn_force_stopped: bool = False
 
     def on_event(self, event: Any) -> None:
         if isinstance(event, self.ActionEvent):
@@ -466,6 +474,8 @@ class _OpenHandsTranslator:
             return
 
         self._check_resource_ceiling()
+        response_id = str(getattr(event, "llm_response_id", "") or "")
+        self._check_turn_budget(response_id)
         self.tool_calls[call_id] = {"tool": tool_name, "args": args}
         self.callback.emit(
             {
@@ -542,6 +552,55 @@ class _OpenHandsTranslator:
                 f"with the best complete result you can produce."
             )
             self._wrapup_nudged = True
+
+    def _check_turn_budget(self, response_id: str) -> None:
+        if self.conversation is None or self._turn_force_stopped:
+            return
+
+        # A parallel/duplicate action from an already-counted response is the
+        # same turn; dedupe before the armed check so an arming turn cannot
+        # immediately force-stop itself.
+        if response_id and response_id in self._seen_response_ids:
+            return
+
+        # Stage 3: a new non-final turn after the ultimatum -> hard backstop.
+        if self._turn_final_armed:
+            self.conversation.pause()
+            self._turn_force_stopped = True
+            self.max_turns_exhausted = True
+            self.emit_max_turns_exhausted()
+            return
+
+        if response_id:
+            self._seen_response_ids.add(response_id)
+        self._observed_turns += 1
+
+        used = self._observed_turns
+        limit = self.max_turns
+        remaining = limit - used
+        finish_tool = self._finish_tool_name()
+
+        # Stage 2: exactly one turn remains; threshold warnings collapse here.
+        if used == limit - 1:
+            self.conversation.send_message(
+                f"Turn budget reached: this is your final turn. Stop gathering more "
+                f"context or using tools, and call {finish_tool} now with the best "
+                f"result available."
+            )
+            self._turn_final_armed = True
+            return
+
+        # Stage 1: threshold warnings, each latched once.
+        for frac in TURN_WARN_FRACS:
+            if frac not in self._turn_warnings_fired and used >= math.ceil(
+                frac * limit
+            ):
+                self.conversation.send_message(
+                    f"Turn budget warning: you have used {used} of {limit} turns "
+                    f"({remaining} remaining). Wrap up useful work now and call "
+                    f"{finish_tool} with the best complete result you can produce."
+                )
+                self._turn_warnings_fired.add(frac)
 
     def _emit_reasoning(self, event: Any, raw: list[dict[str, Any]]) -> None:
         reasoning_content = getattr(event, "reasoning_content", None)
@@ -970,7 +1029,7 @@ async def run_cogitate(
             conversation_id=conversation_id,
             callbacks=[translator.on_event],
             token_callbacks=[translator.on_token],
-            max_iteration_per_run=max_turns,
+            max_iteration_per_run=max_turns + MAX_TURNS_HEADROOM,
             stuck_detection=True,
             visualizer=None,
         )
