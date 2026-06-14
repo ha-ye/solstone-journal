@@ -948,6 +948,85 @@ def test_monitor_stdout_finish_generate_skips_token_logging(
     mock_log_token_usage.assert_not_called()
 
 
+def test_monitor_stdout_terminal_error_logs_cogitate_usage_only(
+    cortex_service, mock_journal
+):
+    """Test terminal error usage is logged only for cogitate requests."""
+    from solstone.think.cortex import TalentProcess
+
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "total_tokens": 15,
+        "model_version": "claude-haiku-4-5-20251001",
+    }
+
+    def run_terminal_event(use_id: str, request_type: str, event: dict):
+        active_path = mock_journal / "talents" / f"{use_id}_active.jsonl"
+        cortex_service.use_requests = {
+            use_id: {
+                "event": "request",
+                "prompt": "test",
+                "name": "test_agent",
+                "model": "claude-haiku-4-5",
+                "type": request_type,
+            }
+        }
+
+        mock_process = MagicMock()
+        mock_process.stdout = MockPipe(
+            [
+                '{"event": "start", "ts": 1000}\n',
+                json.dumps(event) + "\n",
+            ]
+        )
+        mock_process.wait.return_value = 0
+
+        agent = TalentProcess(use_id, mock_process, active_path)
+
+        with patch("solstone.think.models.log_token_usage") as mock_log_token_usage:
+            with patch.object(cortex_service, "_complete_use_file"):
+                cortex_service._monitor_stdout(agent)
+        return mock_log_token_usage
+
+    logged = run_terminal_event(
+        "terminal_error_usage",
+        "cogitate",
+        {
+            "event": "error",
+            "terminal": True,
+            "reason_code": "token_budget_exceeded",
+            "usage": usage,
+        },
+    )
+    logged.assert_called_once()
+    assert logged.call_args.kwargs["usage"] == usage
+    assert logged.call_args.kwargs["model"] == "claude-haiku-4-5-20251001"
+
+    no_usage = run_terminal_event(
+        "terminal_error_no_usage",
+        "cogitate",
+        {
+            "event": "error",
+            "terminal": True,
+            "reason_code": "token_budget_exceeded",
+        },
+    )
+    no_usage.assert_not_called()
+
+    generate = run_terminal_event(
+        "terminal_error_generate",
+        "generate",
+        {
+            "event": "error",
+            "terminal": True,
+            "reason_code": "token_budget_exceeded",
+            "usage": usage,
+        },
+    )
+    generate.assert_not_called()
+
+
 def test_recover_orphaned_uses(cortex_service, mock_journal):
     """Test recovery of orphaned active agent files."""
     # Create orphaned active files

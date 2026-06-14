@@ -41,7 +41,6 @@ from solstone.think.cogitate_policy import (
     MAX_TURNS_HEADROOM,
     TURN_WARN_FRACS,
     CogitatePolicy,
-    MaxTurnsExhausted,
     resolve_read_scope,
 )
 from solstone.think.providers.cli import QuotaExhaustedError, assemble_prompt
@@ -417,7 +416,6 @@ class _OpenHandsTranslator:
         self.finish_message: str | None = None
         self.final_message: str | None = None
         self.max_turns_exhausted = False
-        self._max_turns_event_emitted = False
         self._wrapup_nudged = False
         self._final_turn_armed = False
         self._cost_force_stopped = False
@@ -568,7 +566,6 @@ class _OpenHandsTranslator:
             self.conversation.pause()
             self._turn_force_stopped = True
             self.max_turns_exhausted = True
-            self.emit_max_turns_exhausted()
             return
 
         if response_id:
@@ -710,19 +707,6 @@ class _OpenHandsTranslator:
         if getattr(event, "code", None) != "MaxIterationsReached":
             return
         self.max_turns_exhausted = True
-        self.emit_max_turns_exhausted()
-
-    def emit_max_turns_exhausted(self) -> None:
-        if self._max_turns_event_emitted:
-            return
-        self.callback.emit(
-            {
-                "event": "max_turns_exhausted",
-                "max_turns": self.max_turns,
-                "ts": now_ms(),
-            }
-        )
-        self._max_turns_event_emitted = True
 
     def result(self) -> str | None:
         if self.expects_emit_final:
@@ -1054,27 +1038,48 @@ async def run_cogitate(
         with _suppress_litellm_cost_warnings():
             await conversation.arun()
 
-        if translator.max_turns_exhausted:
-            raise MaxTurnsExhausted(
-                f"max_turns_exhausted: OpenHands cogitate exceeded {max_turns} turns"
-            )
-
         result = translator.result()
-        if translator._cost_force_stopped and not (result and result.strip()):
+        usage = _usage_delta(usage_start, llm)
+        if translator._cost_force_stopped or translator.max_turns_exhausted:
+            reason_code = (
+                "token_budget_exceeded"
+                if translator._cost_force_stopped
+                else "max_turns_exhausted"
+            )
+            has_partial = bool(result and result.strip())
+            if reason_code == "token_budget_exceeded":
+                error_text = (
+                    "token_budget_exceeded: cogitate run reached its per-run "
+                    "resource budget and was force-finished with a partial result "
+                    "preserved"
+                    if has_partial
+                    else "token_budget_exceeded: cogitate run reached its per-run "
+                    "resource budget and was force-finished before emitting a final "
+                    "result"
+                )
+            else:
+                error_text = (
+                    "max_turns_exhausted: cogitate run reached its turn budget and "
+                    "was force-finished with a partial result preserved"
+                    if has_partial
+                    else "max_turns_exhausted: cogitate run reached its turn budget "
+                    "and was force-finished before emitting a final result"
+                )
+            conversation.close()
             callback.emit(
                 {
                     "event": "error",
-                    "error": (
-                        "token_budget_exceeded: cogitate run reached its per-run "
-                        "resource budget before emitting a final result"
-                    ),
-                    "reason_code": "token_budget_exceeded",
+                    "error": error_text,
+                    "reason_code": reason_code,
                     "provider": provider,
+                    "result": result,
+                    "usage": usage,
                     "terminal": True,
+                    "cli_session_id": str(conversation_id),
                     "ts": now_ms(),
                 }
             )
-            return None
+            return result
         if wants_emit_final and not (result and result.strip()):
             callback.emit(
                 {
@@ -1094,15 +1099,13 @@ async def run_cogitate(
             {
                 "event": "finish",
                 "result": result,
-                "usage": _usage_delta(usage_start, llm),
+                "usage": usage,
                 "cli_session_id": str(conversation_id),
                 "ts": now_ms(),
             }
         )
         return result
     except QuotaExhaustedError:
-        raise
-    except MaxTurnsExhausted:
         raise
     except Exception as exc:
         provider_exc = _unwrap_provider_exception(exc)

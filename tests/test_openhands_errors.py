@@ -10,7 +10,6 @@ import httpx
 import openai
 import pytest
 
-from solstone.think.cogitate_policy import MaxTurnsExhausted
 from solstone.think.models import LOCAL_MODEL
 from solstone.think.providers import openhands
 from solstone.think.providers.cli import QuotaExhaustedError
@@ -160,25 +159,6 @@ def test_run_cogitate_local_byo_error_event_uses_fixed_copy_and_redacts(
     assert events[0]["error"] == LOCAL_ENDPOINT_CONTRACT_COPY
     assert events[0]["reason_code"] == "local_endpoint_contract_failed"
     assert token not in events[0]["trace"]
-
-
-def test_run_cogitate_propagates_max_turns_unwrapped(
-    fake_openhands,
-    run_env,
-):
-    exhausted = MaxTurnsExhausted("max turns")
-
-    async def fail(_conversation):
-        raise exhausted
-
-    fake_openhands.Conversation.arun_impl = fail
-    events: list[dict] = []
-
-    with pytest.raises(MaxTurnsExhausted) as raised:
-        asyncio.run(openhands.run_cogitate(run_env, events.append))
-
-    assert raised.value is exhausted
-    assert events == []
 
 
 def test_run_cogitate_propagates_quota_unwrapped(fake_openhands, run_env):

@@ -16,7 +16,6 @@ from solstone.think.cogitate_policy import (
     DEFAULT_RUN_COST_CAP_USD,
     MAX_TURNS,
     MAX_TURNS_HEADROOM,
-    MaxTurnsExhausted,
 )
 from solstone.think.providers import openhands
 from solstone.think.providers.shared import USAGE_KEYS, JSONEventCallback
@@ -132,6 +131,20 @@ def _parallel_sol_actions(fake_openhands, response_id: str, *call_ids: str):
         _sol_action(fake_openhands, call_id, llm_response_id=response_id)
         for call_id in call_ids
     ]
+
+
+def _agent_message(fake_openhands, content: str):
+    return fake_openhands.MessageEvent(
+        source="agent",
+        llm_message=SimpleNamespace(content=[SimpleNamespace(text=content)]),
+    )
+
+
+def _seed_usage(conversation, *, prompt_tokens: int = 12, completion_tokens: int = 4):
+    usage = conversation.agent.llm.metrics.accumulated_token_usage
+    usage.prompt_tokens = prompt_tokens
+    usage.completion_tokens = completion_tokens
+    conversation.agent.llm.metrics.token_usages = [object()]
 
 
 def _turn_warning_message(
@@ -475,7 +488,7 @@ def test_translator_result_prefers_finish_message(fake_openhands, fixed_time):
     assert translator.result() == "finish result"
 
 
-def test_translator_maps_max_turns_once(fake_openhands, fixed_time):
+def test_translator_maps_max_turns_flag(fake_openhands, fixed_time):
     events: list[dict] = []
     translator = _translator(fake_openhands, events)
 
@@ -496,13 +509,7 @@ def test_translator_maps_max_turns_once(fake_openhands, fixed_time):
     )
 
     assert translator.max_turns_exhausted is True
-    assert events == [
-        {
-            "event": "max_turns_exhausted",
-            "max_turns": MAX_TURNS,
-            "ts": 123456,
-        }
-    ]
+    assert [event for event in events if event["event"] == "max_turns_exhausted"] == []
 
 
 def test_resource_monitor_wrapup_nudge_on_cost_axis(fake_openhands, fixed_time):
@@ -763,6 +770,7 @@ def test_run_cogitate_force_stop_emits_token_budget_exceeded(
     tmp_path,
 ):
     async def hit_cost_cap(conversation):
+        _seed_usage(conversation)
         conversation.agent.llm.metrics.accumulated_cost = DEFAULT_RUN_COST_CAP_USD
         for callback in conversation.callbacks:
             callback(_sol_action(fake_openhands, "c1"))
@@ -780,8 +788,46 @@ def test_run_cogitate_force_stop_emits_token_budget_exceeded(
     assert len(error_events) == 1
     assert error_events[0]["reason_code"] == "token_budget_exceeded"
     assert error_events[0]["terminal"] is True
+    assert error_events[0]["result"] is None
+    assert error_events[0]["usage"]["total_tokens"] > 0
+    assert fake_openhands.Conversation.instances[0].closed is True
     assert [event for event in events if event.get("reason_code") == "no_output"] == []
     assert [event for event in events if event["event"] == "finish"] == []
+
+
+def test_run_cogitate_cost_force_stop_with_partial_logs_once(
+    fake_openhands,
+    fixed_time,
+    monkeypatch,
+    tmp_path,
+):
+    partial = "partial result"
+
+    async def hit_cost_cap_with_partial(conversation):
+        _seed_usage(conversation)
+        conversation.agent.llm.metrics.accumulated_cost = DEFAULT_RUN_COST_CAP_USD
+        for callback in conversation.callbacks:
+            callback(_agent_message(fake_openhands, partial))
+        for callback in conversation.callbacks:
+            callback(_sol_action(fake_openhands, "c1"))
+        for callback in conversation.callbacks:
+            callback(_sol_action(fake_openhands, "c2"))
+
+    fake_openhands.Conversation.arun_impl = hit_cost_cap_with_partial
+    config = _run_config(monkeypatch, tmp_path)
+    events: list[dict] = []
+
+    result = asyncio.run(openhands.run_cogitate(config, events.append))
+
+    assert result == partial
+    error_events = [event for event in events if event["event"] == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["reason_code"] == "token_budget_exceeded"
+    assert error_events[0]["terminal"] is True
+    assert error_events[0]["result"] == partial
+    assert error_events[0]["usage"]["total_tokens"] > 0
+    assert [event for event in events if event["event"] == "finish"] == []
+    assert fake_openhands.Conversation.instances[0].closed is True
 
 
 def test_run_cogitate_threads_max_run_cost_usd_override(
@@ -999,9 +1045,7 @@ def test_turn_budget_final_ultimatum_handles_single_turn_limit(
     assert translator.conversation.messages == [_turn_final_message()]
     assert translator.conversation.paused is True
     assert translator.max_turns_exhausted is True
-    assert [event for event in events if event["event"] == "max_turns_exhausted"] == [
-        {"event": "max_turns_exhausted", "max_turns": 1, "ts": 123456}
-    ]
+    assert [event for event in events if event["event"] == "max_turns_exhausted"] == []
 
 
 def test_run_cogitate_turn_force_stop_uses_solstone_max_turns_path(
@@ -1019,6 +1063,8 @@ def test_run_cogitate_turn_force_stop_uses_solstone_max_turns_path(
             callback(event)
 
     async def exhaust_turn_budget(conversation):
+        _seed_usage(conversation)
+        feed(conversation, _agent_message(fake_openhands, "partial result"))
         for turn in range(1, 4):
             feed(
                 conversation,
@@ -1033,14 +1079,19 @@ def test_run_cogitate_turn_force_stop_uses_solstone_max_turns_path(
     config = _run_config(monkeypatch, tmp_path, max_turns=3)
     events: list[dict] = []
 
-    with pytest.raises(MaxTurnsExhausted, match="3 turns"):
-        asyncio.run(openhands.run_cogitate(config, events.append))
+    result = asyncio.run(openhands.run_cogitate(config, events.append))
 
     conversation = fake_openhands.Conversation.instances[0]
-    assert conversation.paused is True
-    assert [event for event in events if event["event"] == "max_turns_exhausted"] == [
-        {"event": "max_turns_exhausted", "max_turns": 3, "ts": 123456}
-    ]
+    assert result == "partial result"
+    error_events = [event for event in events if event["event"] == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["reason_code"] == "max_turns_exhausted"
+    assert error_events[0]["terminal"] is True
+    assert error_events[0]["result"] == "partial result"
+    assert error_events[0]["usage"]["total_tokens"] > 0
+    assert conversation.closed is True
+    assert [event for event in events if event["event"] == "finish"] == []
+    assert [event for event in events if event["event"] == "max_turns_exhausted"] == []
     assert fed_conversation_error_codes == []
 
 
@@ -1242,6 +1293,7 @@ def test_run_cogitate_threads_configured_max_turns(
     tmp_path,
 ):
     async def exhaust(conversation):
+        _seed_usage(conversation)
         for callback in conversation.callbacks:
             callback(
                 fake_openhands.ConversationErrorEvent(
@@ -1254,18 +1306,18 @@ def test_run_cogitate_threads_configured_max_turns(
     config = _run_config(monkeypatch, tmp_path, max_turns=100)
     events: list[dict] = []
 
-    with pytest.raises(MaxTurnsExhausted, match="100 turns"):
-        asyncio.run(openhands.run_cogitate(config, events.append))
+    result = asyncio.run(openhands.run_cogitate(config, events.append))
 
     conversation = fake_openhands.Conversation.instances[0]
+    assert result is None
     assert conversation.max_iteration_per_run == 102
-    assert events == [
-        {
-            "event": "max_turns_exhausted",
-            "max_turns": 100,
-            "ts": 123456,
-        }
-    ]
+    error_events = [event for event in events if event["event"] == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["reason_code"] == "max_turns_exhausted"
+    assert error_events[0]["terminal"] is True
+    assert error_events[0]["usage"]["total_tokens"] > 0
+    assert conversation.closed is True
+    assert [event for event in events if event["event"] == "max_turns_exhausted"] == []
 
 
 def test_usage_delta_is_normalized_delta():

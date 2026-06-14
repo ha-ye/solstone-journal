@@ -477,51 +477,46 @@ class CortexService:
                             "terminal", True
                         )
                         if event.get("event") == "finish" or terminal_error:
-                            if event.get("event") == "finish":
-                                # Get original request (thread-safe access)
-                                with self.lock:
-                                    original_request = self.use_requests.get(
-                                        agent.use_id
+                            # Get original request (thread-safe access)
+                            with self.lock:
+                                original_request = self.use_requests.get(agent.use_id)
+
+                            # Log token usage if available
+                            usage_data = event.get("usage")
+                            if (
+                                usage_data
+                                and original_request
+                                and original_request.get("type") == "cogitate"
+                            ):
+                                try:
+                                    from solstone.think.models import log_token_usage
+                                    from solstone.think.talent import key_to_context
+
+                                    model = usage_data.get(
+                                        "model_version"
+                                    ) or original_request.get("model", "unknown")
+                                    name = original_request.get("name", "unknown")
+                                    context = key_to_context(name)
+
+                                    # Extract segment from env if set (flat merge puts env at top level)
+                                    env_config = original_request.get("env", {})
+                                    segment = (
+                                        env_config.get("SOL_SEGMENT")
+                                        if env_config
+                                        else None
                                     )
 
-                                # Log token usage if available
-                                usage_data = event.get("usage")
-                                if (
-                                    usage_data
-                                    and original_request
-                                    and original_request.get("type") == "cogitate"
-                                ):
-                                    try:
-                                        from solstone.think.models import (
-                                            log_token_usage,
-                                        )
-                                        from solstone.think.talent import key_to_context
-
-                                        model = usage_data.get(
-                                            "model_version"
-                                        ) or original_request.get("model", "unknown")
-                                        name = original_request.get("name", "unknown")
-                                        context = key_to_context(name)
-
-                                        # Extract segment from env if set (flat merge puts env at top level)
-                                        env_config = original_request.get("env", {})
-                                        segment = (
-                                            env_config.get("SOL_SEGMENT")
-                                            if env_config
-                                            else None
-                                        )
-
-                                        log_token_usage(
-                                            model=model,
-                                            usage=usage_data,
-                                            context=context,
-                                            segment=segment,
-                                            type="cogitate",
-                                        )
-                                    except Exception as e:
-                                        self.logger.warning(
-                                            f"Failed to log token usage for talent {agent.use_id}: {e}"
-                                        )
+                                    log_token_usage(
+                                        model=model,
+                                        usage=usage_data,
+                                        context=context,
+                                        segment=segment,
+                                        type="cogitate",
+                                    )
+                                except Exception as e:
+                                    self.logger.warning(
+                                        f"Failed to log token usage for talent {agent.use_id}: {e}"
+                                    )
 
                             # Break to trigger cleanup
                             break

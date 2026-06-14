@@ -463,6 +463,48 @@ def test_get_agent_end_state_no_output_maps_to_error(tmp_path, monkeypatch):
     assert get_use_end_state(use_id) == "error"
 
 
+@pytest.mark.parametrize(
+    "reason_code",
+    ["token_budget_exceeded", "max_turns_exhausted"],
+)
+def test_force_finish_error_surfaces_budget_reason_code(
+    tmp_path,
+    monkeypatch,
+    reason_code,
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    talents_dir = tmp_path / "talents"
+    talents_dir.mkdir()
+    unified_dir = talents_dir / "chat"
+    unified_dir.mkdir()
+
+    use_id = "1234567890123"
+    (unified_dir / f"{use_id}.jsonl").write_text(
+        json.dumps({"event": "request", "prompt": "hello"})
+        + "\n"
+        + json.dumps(
+            {
+                "event": "start",
+                "provider": "openai",
+                "model": GPT_5,
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "event": "error",
+                "error": f"{reason_code}: force-finished",
+                "reason_code": reason_code,
+                "terminal": True,
+            }
+        )
+        + "\n"
+    )
+
+    assert get_use_end_state(use_id) == "error"
+    assert read_use_provider_model_reason(use_id) == ("openai", GPT_5, reason_code)
+
+
 def test_get_agent_end_state_running(tmp_path, monkeypatch):
     """Test get_use_end_state returns 'running' for active agents."""
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
