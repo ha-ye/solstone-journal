@@ -389,6 +389,28 @@ def list_devices() -> None:
         printed_section = True
 
 
+@app.command("authorized-clients")
+@convey_cli
+def authorized_clients() -> None:
+    """List every authorized client cert: fingerprint, label, last-seen (flat view)."""
+    devices = get_client().request("GET", "/app/link/api/devices")["devices"]
+    if not devices:
+        typer.echo("No authorized clients.")
+        return
+    for device in devices:
+        label = device.get("display_label") or device["device_label"]
+        typer.echo(
+            f"{device['fingerprint']}  {label}"
+            f"  last seen {_relative_time(device['last_seen_at'])}"
+        )
+
+
+@app.command("observer-pause")
+def observer_pause() -> None:
+    """Pause linked observers (not yet available)."""
+    typer.echo("observer-pause is not yet available.")
+
+
 @app.command()
 @convey_cli
 def unpair(

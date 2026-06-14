@@ -361,6 +361,31 @@ def test_list_uses_display_label_when_assigned_label_is_empty(runner, monkeypatc
     )
 
 
+def test_list_uses_server_composed_display_labels(runner, monkeypatch):
+    monkeypatch.setattr(link_call, "_now_utc", lambda: _parse_iso(FROZEN_NOW))
+    _add_device(
+        "sha256:" + ("a" * 64),
+        "laptop",
+        paired_at=PAIRED_AT,
+        client_label="host-1",
+    )
+    _add_device(
+        "sha256:" + ("b" * 64),
+        "phone",
+        paired_at=PAIRED_AT,
+        client_label="phone",
+    )
+
+    result = runner.invoke(link_call.app, ["list"])
+
+    assert result.exit_code == 0
+    lines = [line for line in result.stdout.splitlines() if line.startswith("- ")]
+    assert len(lines) == 2
+    assert lines[0] != lines[1]
+    assert any("laptop (host-1)" in line for line in lines)
+    assert any(line.startswith("- phone —") for line in lines)
+
+
 def test_list_legacy_observer_role_uses_linked_systems_heading(runner):
     _add_device("sha256:bbbbbbbbbbbbbbbb0000", "observer", role="observer")
 
@@ -369,6 +394,52 @@ def test_list_legacy_observer_role_uses_linked_systems_heading(runner):
     assert result.exit_code == 0
     assert "Linked systems:\n" in result.stdout
     assert "Peers:" not in result.stdout
+
+
+def test_authorized_clients_flat_view(runner, monkeypatch):
+    monkeypatch.setattr(link_call, "_now_utc", lambda: _parse_iso(FROZEN_NOW))
+    first_fingerprint = "sha256:" + ("a" * 64)
+    second_fingerprint = "sha256:" + ("b" * 64)
+    _add_device(
+        first_fingerprint,
+        "laptop",
+        paired_at=PAIRED_AT,
+        last_seen_at=LAST_SEEN_AT,
+        client_label="host-1",
+    )
+    _add_device(
+        second_fingerprint,
+        "phone",
+        paired_at=PAIRED_AT,
+        client_label="phone",
+    )
+
+    result = runner.invoke(link_call.app, ["authorized-clients"])
+
+    assert result.exit_code == 0
+    assert result.stdout == (
+        f"{first_fingerprint}  laptop (host-1)  last seen 30 minutes ago\n"
+        f"{second_fingerprint}  phone  last seen never\n"
+    )
+
+
+def test_authorized_clients_empty_store(runner):
+    result = runner.invoke(link_call.app, ["authorized-clients"])
+
+    assert result.exit_code == 0
+    assert result.stdout == "No authorized clients.\n"
+
+
+def test_observer_pause_stub_does_not_require_service(runner, monkeypatch):
+    def fail_get_client():
+        raise AssertionError("observer-pause must not make an HTTP request")
+
+    monkeypatch.setattr(link_call, "get_client", fail_get_client)
+
+    result = runner.invoke(link_call.app, ["observer-pause"])
+
+    assert result.exit_code == 0
+    assert result.stdout == "observer-pause is not yet available.\n"
 
 
 def test_unpair_success_and_not_found_outputs(runner):

@@ -289,6 +289,6 @@ def test_dispatch_surfaces_for_journal_spl_and_sol_link(
     assert (module_path, preset_args, surface) == (
         "solstone.think.link",
         [],
-        "access",
+        "universal",
     )
     assert link_module.main is link_cli.main

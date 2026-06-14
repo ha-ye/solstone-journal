@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from solstone.think.link import cli
@@ -37,46 +39,57 @@ def test_link_join_dispatches_to_join_cli(monkeypatch: pytest.MonkeyPatch) -> No
     assert calls == [("http://receiver", "ABCD-EFGH", "observer", "laptop")]
 
 
-def test_link_list_dispatches_to_list_cli(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = []
-
-    def fake_list(args) -> int:
-        calls.append((args.command, args.observers, args.json))
-        return 0
-
-    monkeypatch.setattr("solstone.think.link.list_cli.main", fake_list)
-
-    assert cli.main(["list"]) == 0
-
-    assert calls == [("list", False, False)]
-
-
-def test_link_list_dispatches_flags_to_list_cli(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls = []
-
-    def fake_list(args) -> int:
-        calls.append((args.command, args.observers, args.json))
-        return 0
-
-    monkeypatch.setattr("solstone.think.link.list_cli.main", fake_list)
-
-    assert cli.main(["list", "--observers", "--json"]) == 0
-
-    assert calls == [("list", True, True)]
-
-
 def test_link_no_subcommand_help_lists_commands(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     assert cli.main([]) == 0
 
     out = capsys.readouterr().out
-    assert "{join,list,serve}" in out
+    assert "{join,serve}" in out
     assert "join" in out
-    assert "list" in out
     assert "serve" in out
+    assert "list" not in out
+
+
+def test_journal_link_routes_to_management_app_help(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from typer.main import get_command
+
+    from solstone.apps.link import call as link_call
+
+    monkeypatch.setattr(sys, "argv", ["journal link", "--help"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--help"])
+
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    management_commands = set(get_command(link_call.app).commands)
+    assert "Usage: journal link" in out
+    assert "unpair" in out
+    assert "authorized-clients" in out
+    assert "join" not in management_commands
+    assert "serve" not in management_commands
+    assert "join a solstone with a short code or pair link" not in out
+    assert "serve a loopback proxy over a link tunnel" not in out
+
+
+def test_sol_link_list_is_unknown_client_subcommand(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["sol link", "list"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["list"])
+
+    assert exc.value.code == 2
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "invalid choice: 'list'" in captured.err
+    assert "Traceback" not in output
 
 
 def test_link_serve_dispatches_to_serve_cli(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -10,7 +10,7 @@ The `spl` repo's `home/` continues as the open-source reference implementation o
 
 | File | Purpose |
 |------|---------|
-| `cli.py` | Entry point for caller-side `sol link join`, `sol link list`, and `sol link serve`. |
+| `cli.py` | Entry point for caller-side `sol link join` and `sol link serve`. |
 | `serve_cli.py` | Loopback proxy over the PL tunnel for paired caller access. |
 | `observer_paths.py` | Shared observer SPL bundle path helpers. |
 | `ca.py` | Local CA lifecycle + CSR signing + home-attestation minting. |
