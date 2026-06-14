@@ -170,16 +170,10 @@ def test_cmd_create_reuse_existing_json_shape(
 
 def test_cmd_create_reuse_existing_human_header(
     observer_cli_env,
-    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     existing = _observer()
     assert save_observer(existing)
-    monkeypatch.setattr(
-        observer_cli,
-        "get_config",
-        lambda: {"convey": {"allow_network_access": True}},
-    )
     args = argparse.Namespace(
         name="archon",
         json_output=False,
@@ -205,11 +199,6 @@ def test_cmd_create_reuse_existing_creates_normally_when_absent(
     monkeypatch.setattr(observer_cli, "_generate_key", lambda: "fresh-key-abcdef")
     monkeypatch.setattr(
         observer_cli, "log_app_action", lambda **kwargs: logs.append(kwargs)
-    )
-    monkeypatch.setattr(
-        observer_cli,
-        "get_config",
-        lambda: {"convey": {"allow_network_access": True}},
     )
     args = argparse.Namespace(
         name="archon",

@@ -76,13 +76,12 @@ SETTINGS_SECURITY_REACH_HINT = (
     "how your devices reach home — managing your connection, paired devices, "
     "and reach-from-anywhere now lives in link →"
 )
-SETTINGS_PASSWORD_HINT = "used when network access is on, or when localhost trust is off. not used otherwise."
+SETTINGS_PASSWORD_HINT = "used when localhost trust is off. not used otherwise."
 OBSERVER_CALLOSUM_LIVE_LABEL = "live"
 
 
 def format_convey_status(
     *,
-    network_access: str,
     bind: str,
     password: str,
     trust_localhost: str,
@@ -92,7 +91,6 @@ def format_convey_status(
 
     return (
         "convey\n"
-        f"  network access:    {network_access}\n"
         f"  bind:              {bind}\n"
         f"  password:          {password}\n"
         f"  trust localhost:   {trust_localhost}\n"

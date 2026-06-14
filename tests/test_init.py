@@ -553,7 +553,7 @@ class TestInitFinalize:
         from werkzeug.security import check_password_hash
 
         assert check_password_hash(config["convey"]["password_hash"], "securepass123")
-        assert config["convey"]["allow_network_access"] is False
+        assert "allow_network_access" not in config["convey"]
         assert config["convey"]["trust_localhost"] is True
         # Identity
         assert config["identity"]["name"] == "Jane Doe"
@@ -576,7 +576,7 @@ class TestInitFinalize:
         assert data["redirect"] == "/app/thinking/"
         config = _read_config(journal_copy)
         assert "completed_at" in config["setup"]
-        assert config["convey"]["allow_network_access"] is False
+        assert "allow_network_access" not in config["convey"]
         assert config["convey"]["trust_localhost"] is True
         assert "password_hash" not in config["convey"]
 

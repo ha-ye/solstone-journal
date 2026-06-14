@@ -64,18 +64,12 @@ from solstone.apps.link.relay_link import (
 from solstone.apps.utils import log_app_action
 from solstone.convey import emit
 from solstone.convey.bridge import get_cached_state
-from solstone.convey.network_access import (
-    NetworkAccessPasswordRequired,
-    NetworkAccessPasswordTooShort,
-    set_network_access,
-)
 from solstone.convey.reasons import (
     CONVEY_OPERATION_FAILED,
     INVALID_CONFIG_VALUE,
     INVALID_OPERATION_FOR_STATE,
     INVALID_REQUEST_VALUE,
     MISSING_REQUIRED_FIELD,
-    NETWORK_SECURITY_REQUIRES_PASSWORD,
     OPERATION_NO_LONGER_AVAILABLE,
     PAIRED_DEVICE_NOT_FOUND,
     PAIRING_KEY_INVALID,
@@ -285,9 +279,9 @@ def _jsonify_preserving_order(payload: dict[str, Any]) -> Response:
 
 
 def _is_lan_accessible() -> bool:
-    """Check whether convey is bound to a non-loopback interface.
+    """Check whether the journal's home address is reachable on the LAN.
 
-    Used to drive the "enable LAN access" nudge on /link. Best-effort: the
+    Feeds the home-address reachability status on /link. Best-effort: the
     signal is the Host header the dashboard loaded under.
     """
     hostname, _, _ = request.host.partition(":")
@@ -458,28 +452,6 @@ def private_link_disable() -> tuple[Response, int]:
         ),
         200,
     )
-
-
-@link_bp.route("/network-access", methods=["POST"])
-def network_access() -> Any:
-    payload = request.get_json(silent=True) or {}
-    if not isinstance(payload, dict):
-        payload = {}
-    raw_password = payload.get("password")
-    password = raw_password if isinstance(raw_password, str) and raw_password else None
-    try:
-        result = set_network_access(enable=True, password=password)
-    except NetworkAccessPasswordRequired:
-        return error_response(NETWORK_SECURITY_REQUIRES_PASSWORD)
-    except NetworkAccessPasswordTooShort:
-        return error_response(
-            INVALID_CONFIG_VALUE,
-            detail="Password must be at least 8 characters",
-        )
-    except Exception:
-        logger.exception("link network access enable failed")
-        return error_response(CONVEY_OPERATION_FAILED)
-    return jsonify(result)
 
 
 @link_bp.route("/host-address", methods=["POST"])

@@ -315,11 +315,10 @@ def test_convey_status_host_url_and_trust_localhost(
     assert status.exit_code == 0
     assert status.stdout == (
         "convey\n"
-        "  network access:    localhost only\n"
         "  bind:              127.0.0.1:5015\n"
         "  password:          set\n"
         "  trust localhost:   yes\n"
-        "  host url:          http://localhost:5015 (localhost — network access off)\n"
+        "  host url:          http://localhost:5015\n"
     )
 
     calls = []
@@ -346,9 +345,7 @@ def test_convey_status_host_url_and_trust_localhost(
 
     manual_status = runner.invoke(settings_call.app, ["convey", "status"])
     assert manual_status.exit_code == 0
-    assert "host url:          http://192.168.1.44:5015 (manual override)" in (
-        manual_status.stdout
-    )
+    assert "host url:          http://192.168.1.44:5015" in manual_status.stdout
 
     auto = runner.invoke(settings_call.app, ["convey", "host-url", "--auto"])
     assert auto.exit_code == 0
@@ -366,27 +363,6 @@ def test_convey_status_host_url_and_trust_localhost(
     assert bad_host.stderr == (
         "this needs an ip address — to reach home by name from anywhere, "
         "set up solstone private link\n"
-    )
-
-    config = _read_config(journal_copy)
-    config["convey"]["allow_network_access"] = True
-    _write_config(journal_copy, config)
-    health_dir = journal_copy / "health"
-    health_dir.mkdir(parents=True, exist_ok=True)
-    (health_dir / "convey.port").write_text("6123", encoding="utf-8")
-    monkeypatch.setattr(
-        "solstone.think.pairing.config._detect_lan_ipv4",
-        lambda: "192.168.1.44",
-    )
-    auto_status = runner.invoke(settings_call.app, ["convey", "status"])
-    assert auto_status.exit_code == 0
-    assert auto_status.stdout == (
-        "convey\n"
-        "  network access:    on\n"
-        "  bind:              0.0.0.0:6123\n"
-        "  password:          set\n"
-        "  trust localhost:   yes\n"
-        "  host url:          http://192.168.1.44:6123 (auto-detected)\n"
     )
 
     trust_enable = runner.invoke(

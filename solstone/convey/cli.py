@@ -33,17 +33,8 @@ def _resolve_config_password_hash() -> str:
 
 
 def _resolve_bind_host() -> str:
-    """Return the configured bind host for Convey."""
-    from solstone.think.utils import get_config
-
-    try:
-        allow_network_access = (
-            get_config().get("convey", {}).get("allow_network_access", False)
-        )
-    except Exception:
-        # Intended fail-closed-on-unreadable-config: bind localhost only.
-        allow_network_access = False
-    return "0.0.0.0" if allow_network_access else "127.0.0.1"
+    """Return Convey's bind host — always loopback; :5015 is never network-exposed."""
+    return "127.0.0.1"
 
 
 def run_service(
@@ -104,7 +95,7 @@ def main() -> None:
         logger.info("Password authentication enabled")
     else:
         logger.warning(
-            "no password configured. only required for non-localhost access."
+            "no password configured; required only when localhost trust is disabled."
         )
 
     # Write port to health directory for discovery by other tools

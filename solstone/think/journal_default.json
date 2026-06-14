@@ -73,7 +73,6 @@
     "debug_show_throttled": false
   },
   "convey": {
-    "allow_network_access": false,
     "trust_localhost": true
   },
   "pairing": {

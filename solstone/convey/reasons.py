@@ -159,13 +159,8 @@ BACKUP_UNAVAILABLE = Reason(
 )
 NETWORK_SECURITY_REQUIRES_PASSWORD = Reason(
     "network_security_requires_password",
-    "I couldn't change network access until a password is set.",
+    "I couldn't change localhost trust until a password is set.",
     400,
-)
-LOCAL_REQUEST_REQUIRED = Reason(
-    "local_request_required",
-    "I couldn't change network access from this request.",
-    403,
 )
 LOCAL_REQUEST_ONLY = Reason(
     "local_request_only",

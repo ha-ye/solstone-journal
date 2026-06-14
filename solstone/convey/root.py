@@ -327,13 +327,14 @@ def init_finalize() -> Any:
     from solstone.think.utils import now_ms
 
     config = get_config()
+    convey_config = config.setdefault("convey", {})
+    convey_config.pop("allow_network_access", None)
     convey_update = {
-        "allow_network_access": False,
         "trust_localhost": True,
     }
     if password:
         convey_update["password_hash"] = generate_password_hash(password)
-    config.setdefault("convey", {}).update(convey_update)
+    convey_config.update(convey_update)
     config.setdefault("identity", {}).update(
         {
             k: v

@@ -38,15 +38,7 @@ from solstone.apps.observer.utils import (
     save_observer,
 )
 from solstone.apps.utils import log_app_action
-from solstone.observe.copy import (
-    OBSERVER_LOCALHOST_BANNER_LINE_1,
-    OBSERVER_LOCALHOST_BANNER_LINE_2,
-    OBSERVER_LOCALHOST_BANNER_LINE_3,
-    OBSERVER_LOCALHOST_BANNER_LINE_4,
-    OBSERVER_LOCALHOST_REMINDER,
-)
 from solstone.think.utils import (
-    get_config,
     get_journal,
     now_ms,
     require_solstone,
@@ -163,24 +155,11 @@ def cmd_create(args: argparse.Namespace) -> int:
         print(json.dumps({"name": name, "key": key, "prefix": key[:8]}))
         return 0
 
-    allow_network_access = bool(
-        get_config().get("convey", {}).get("allow_network_access", False)
-    )
-    if not allow_network_access:
-        print()
-        print(OBSERVER_LOCALHOST_BANNER_LINE_1)
-        print(OBSERVER_LOCALHOST_BANNER_LINE_2)
-        print(OBSERVER_LOCALHOST_BANNER_LINE_3)
-        print(OBSERVER_LOCALHOST_BANNER_LINE_4)
-        print()
     print("Reusing existing observer:" if reused else "Observer created:")
     print(f"  Name:       {name}")
     print(f"  Prefix:     {key[:8]}")
     print("  server url:  (set during server configuration)")
     print(f"  api key:     {key}")
-    if not allow_network_access:
-        print()
-        print(OBSERVER_LOCALHOST_REMINDER)
     return 0
 
 

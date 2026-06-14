@@ -33,12 +33,6 @@ _SERVICE_KEY_VALIDATION_NAME = {
     "REVAI_ACCESS_TOKEN": "revai",
     "PLAUD_ACCESS_TOKEN": "plaud",
 }
-CONVEY_MOVED_NETWORK_ENABLE = (
-    "moved to `journal settings convey network-access enable` — run that instead."
-)
-CONVEY_MOVED_NETWORK_DISABLE = (
-    "moved to `journal settings convey network-access disable` — run that instead."
-)
 
 app = typer.Typer(
     help="Journal settings — keys, providers, transcription, identity, and observer."
@@ -60,8 +54,6 @@ observer_app = typer.Typer(help="Observer capture settings.")
 app.add_typer(observer_app, name="observer")
 convey_app = typer.Typer(help="Convey access configuration.")
 app.add_typer(convey_app, name="convey")
-network_access_app = typer.Typer(help="Convey network exposure.")
-convey_app.add_typer(network_access_app, name="network-access")
 trust_localhost_app = typer.Typer(help="Localhost password-bypass behavior.")
 convey_app.add_typer(trust_localhost_app, name="trust-localhost")
 
@@ -120,22 +112,6 @@ def _validate_env_var_or_exit(env_var: str) -> None:
 
 def _moved_stub(command: str) -> None:
     typer.echo(f"Moved to `sol call thinking {command}` — run that instead.", err=True)
-    raise typer.Exit(2)
-
-
-@network_access_app.command("enable")
-def convey_network_access_enable() -> None:
-    """Moved to ``journal settings convey network-access enable``."""
-
-    typer.echo(CONVEY_MOVED_NETWORK_ENABLE, err=True)
-    raise typer.Exit(2)
-
-
-@network_access_app.command("disable")
-def convey_network_access_disable() -> None:
-    """Moved to ``journal settings convey network-access disable``."""
-
-    typer.echo(CONVEY_MOVED_NETWORK_DISABLE, err=True)
     raise typer.Exit(2)
 
 

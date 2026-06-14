@@ -24,16 +24,11 @@ from solstone.apps.chat.config import (
 from solstone.apps.settings import copy as settings_copy
 from solstone.apps.settings import install_copy, transcribe_resource
 from solstone.apps.settings.copy import (
-    CONVEY_REFUSE_NO_PASSWORD_NETWORK,
     CONVEY_REFUSE_NO_PASSWORD_TRUST,
 )
 from solstone.apps.utils import log_app_action
 from solstone.convey import chat_stream, state
 from solstone.convey import copy as convey_copy
-from solstone.convey.network_access import (
-    NetworkAccessPasswordRequired,
-    set_network_access,
-)
 from solstone.convey.reasons import (
     ACTIVITY_INVALID,
     ACTIVITY_NOT_FOUND,
@@ -43,7 +38,6 @@ from solstone.convey.reasons import (
     FILE_READ_FAILED,
     INVALID_CONFIG_VALUE,
     INVALID_REQUEST_VALUE,
-    LOCAL_REQUEST_REQUIRED,
     MISSING_REQUEST_BODY,
     MISSING_REQUIRED_FIELD,
     NETWORK_SECURITY_REQUIRES_PASSWORD,
@@ -94,15 +88,6 @@ settings_bp = Blueprint(
 GENERIC_SETTINGS_ERROR = (
     "something went wrong — try again, and if it persists, check the health dashboard"
 )
-FORWARDED_AUTHORITY_HEADERS = (
-    "Forwarded",
-    "X-Forwarded-For",
-    "X-Real-IP",
-    "X-Forwarded-Host",
-    "CF-Connecting-IP",
-    "True-Client-IP",
-    "Fly-Client-IP",
-)
 
 
 def _settings_operation_failed(detail: str = GENERIC_SETTINGS_ERROR) -> Any:
@@ -150,12 +135,6 @@ def _compute_runtime_label() -> str:
 def _convey_password_is_set(config: dict[str, Any]) -> bool:
     password_hash = config.get("convey", {}).get("password_hash", "")
     return bool(str(password_hash or "").strip())
-
-
-def _request_has_local_authority() -> bool:
-    if request.remote_addr not in {"127.0.0.1", "::1"}:
-        return False
-    return not any(header in request.headers for header in FORWARDED_AUTHORITY_HEADERS)
 
 
 def _service_key_validation(config: dict[str, Any]) -> dict[str, Any]:
@@ -328,12 +307,6 @@ def update_config() -> Any:
         changed_fields = {}
         old_section = old_config.get(section, {})
 
-        if section == "convey" and "allow_network_access" in data:
-            return error_response(
-                INVALID_CONFIG_VALUE,
-                detail=settings_copy.CONVEY_NETWORK_ACCESS_CONFIG_REJECTED,
-            )
-
         if section == "convey" and "password" in data:
             raw_password = data.pop("password") or ""
             if raw_password:
@@ -456,23 +429,14 @@ def update_config() -> Any:
         return _settings_operation_failed()
 
 
-def _network_access_enabled(config: dict[str, Any]) -> bool:
-    return bool(config.get("convey", {}).get("allow_network_access", False))
-
-
 def _trust_localhost_enabled(config: dict[str, Any]) -> bool:
     return bool(config.get("convey", {}).get("trust_localhost", True))
 
 
-def _host_url_status_value(config: dict[str, Any]) -> str:
+def _host_url_status_value() -> str:
     from solstone.think.pairing.config import get_host_url
 
-    pairing_host_url = config.get("pairing", {}).get("host_url")
-    if isinstance(pairing_host_url, str) and pairing_host_url.strip():
-        return f"{get_host_url()} (manual override)"
-    if _network_access_enabled(config):
-        return f"{get_host_url()} (auto-detected)"
-    return f"{get_host_url()} (localhost — network access off)"
+    return get_host_url()
 
 
 @settings_bp.route("/api/convey/host-url", methods=["GET", "POST"])
@@ -524,58 +488,9 @@ def convey_host_url() -> Any:
         return _settings_operation_failed()
 
 
-@settings_bp.route("/api/convey/network-access", methods=["POST"])
-def convey_network_access() -> Any:
-    """Update Convey network access from a local Settings session."""
-
-    request_data = request.get_json(silent=True)
-    if not isinstance(request_data, dict):
-        return error_response(MISSING_REQUEST_BODY, detail="No data provided")
-    if "enable" not in request_data:
-        return error_response(MISSING_REQUIRED_FIELD, detail="enable")
-    enable = request_data.get("enable")
-    if not isinstance(enable, bool):
-        return error_response(INVALID_REQUEST_VALUE, detail="enable must be a boolean")
-    if not _request_has_local_authority():
-        return error_response(LOCAL_REQUEST_REQUIRED)
-
-    try:
-        result = set_network_access(enable=enable, password=None)
-        return jsonify(result)
-    except NetworkAccessPasswordRequired:
-        return error_response(
-            NETWORK_SECURITY_REQUIRES_PASSWORD,
-            detail=CONVEY_REFUSE_NO_PASSWORD_NETWORK,
-        )
-    except Exception:
-        logger.exception("error updating convey network access")
-        return _settings_operation_failed()
-
-
-@settings_bp.route("/api/convey/network-access/capability")
-def convey_network_access_capability() -> Any:
-    """Return whether this request can change Convey network access."""
-
-    try:
-        writable = _request_has_local_authority()
-        config = get_journal_config()
-        return jsonify(
-            {
-                "can_change_network_access": writable,
-                "reason": None
-                if writable
-                else settings_copy.CONVEY_NETWORK_LOCAL_ONLY_REASON,
-                "network_access_enabled": _network_access_enabled(config),
-            }
-        )
-    except Exception:
-        logger.exception("error loading convey network access capability")
-        return _settings_operation_failed()
-
-
 @settings_bp.route("/api/convey/status")
 def convey_status() -> Any:
-    """Return formatted Convey network and host URL status."""
+    """Return formatted Convey bind and host URL status."""
 
     try:
         from solstone.convey.cli import _resolve_bind_host
@@ -587,10 +502,7 @@ def convey_status() -> Any:
         port = read_service_port("convey") or DEFAULT_SERVICE_PORT
         status_text = convey_copy.format_convey_status(
             bind=f"{bind_host}:{port}",
-            host_url=_host_url_status_value(config),
-            network_access="on"
-            if _network_access_enabled(config)
-            else "localhost only",
+            host_url=_host_url_status_value(),
             password="set" if _convey_password_is_set(config) else "not set",
             trust_localhost="yes" if _trust_localhost_enabled(config) else "no",
         )
