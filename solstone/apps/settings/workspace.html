@@ -142,6 +142,66 @@
   line-height: 1.4;
 }
 
+/* Guide signpost rows — state-free routers (no toggle, pill, or status) */
+.sapp {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 4px;
+  text-decoration: none;
+  color: inherit;
+  border-bottom: 1px solid var(--facet-border, #e5e0db);
+  cursor: pointer;
+}
+.sapp:last-child {
+  border-bottom: none;
+}
+.sapp:hover .sapp-title {
+  color: var(--facet-color, #E8923A);
+}
+.sapp-ic {
+  width: 26px;
+  text-align: center;
+  font-size: 17px;
+  color: #999;
+  flex: none;
+}
+.sapp-b {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.sapp-title {
+  display: block;
+  font-weight: 600;
+  font-size: 1rem;
+  color: #333;
+}
+.sapp-desc {
+  display: block;
+  font-size: 0.84rem;
+  color: #777;
+  margin-top: 2px;
+}
+.sapp-open {
+  font-size: 0.82rem;
+  color: var(--facet-color, #E8923A);
+  font-weight: 600;
+  flex: none;
+}
+/* Parked app (notifications) — non-interactive, never a dead link */
+.sapp-muted {
+  cursor: default;
+}
+.sapp-muted:hover .sapp-title {
+  color: #333;
+}
+.sapp-soon {
+  font-size: 0.82rem;
+  color: #999;
+  font-weight: 600;
+  flex: none;
+}
+
 /* Form fields */
 .settings-field {
   margin-bottom: 1.5em;
@@ -2079,26 +2139,42 @@ button:focus:not(:focus-visible) {
     <!-- Guide Section -->
     <section class="settings-section active" id="section-guide" role="tabpanel" aria-labelledby="tab-guide">
       <h2>guide</h2>
-      <p class="settings-section-desc">Optional app capabilities you can turn on when they help.</p>
+      <p class="settings-section-desc">apps that have their own settings. open one to set it up or change how it works.</p>
 
-      <div class="settings-field">
-        <h3 class="settings-subsection-title"><a href="/app/thinking">thinking</a></h3>
-        <p class="settings-subsection-desc">Choose how sol thinks: Scout, your own cloud key, or a local model.</p>
-      </div>
+      <a class="sapp" href="/app/thinking">
+        <span class="sapp-ic">◧</span>
+        <span class="sapp-b">
+          <span class="sapp-title">thinking</span>
+          <span class="sapp-desc">manage what AI models your journal uses</span>
+        </span>
+        <span class="sapp-open">open ›</span>
+      </a>
 
-      <div class="settings-field">
-        <h3 class="settings-subsection-title"><a href="/app/link">link</a></h3>
-        <p class="settings-subsection-desc">Pair devices and choose how they reach home, including solstone private link for away access.</p>
-      </div>
+      <a class="sapp" href="/app/link">
+        <span class="sapp-ic">⇄</span>
+        <span class="sapp-b">
+          <span class="sapp-title">link</span>
+          <span class="sapp-desc">reach your journal from your other devices</span>
+        </span>
+        <span class="sapp-open">open ›</span>
+      </a>
 
-      <div class="settings-field">
-        <h3 class="settings-subsection-title"><a href="/app/backup">backup</a></h3>
-        <p class="settings-subsection-desc">Prepare encrypted journal backups you can restore from when needed.</p>
-      </div>
+      <a class="sapp" href="/app/backup">
+        <span class="sapp-ic">⛁</span>
+        <span class="sapp-b">
+          <span class="sapp-title">backup</span>
+          <span class="sapp-desc">make an encrypted copy only you can read</span>
+        </span>
+        <span class="sapp-open">open ›</span>
+      </a>
 
-      <div class="settings-field">
-        <h3 class="settings-subsection-title">notifications</h3>
-        <p class="settings-subsection-desc">coming later. Sol will be able to nudge you across paired devices when something needs attention.</p>
+      <div class="sapp sapp-muted">
+        <span class="sapp-ic">◔</span>
+        <span class="sapp-b">
+          <span class="sapp-title">notifications</span>
+          <span class="sapp-desc">how and when sol reaches you on any device</span>
+        </span>
+        <span class="sapp-soon">coming later</span>
       </div>
     </section>
 

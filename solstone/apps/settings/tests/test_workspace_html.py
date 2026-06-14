@@ -165,11 +165,23 @@ def test_workspace_guide_copy_stays_in_bounds():
     guide = _section_block(text, "guide")
     lowered = guide.lower()
 
-    assert "Optional app capabilities you can turn on when they help." in guide
-    assert '<a href="/app/thinking">thinking</a>' in guide
-    assert '<a href="/app/link">link</a>' in guide
-    assert '<a href="/app/backup">backup</a>' in guide
+    assert (
+        "apps that have their own settings. "
+        "open one to set it up or change how it works." in guide
+    )
+    # three live signposts route to their own app pages
+    assert '<a class="sapp" href="/app/thinking">' in guide
+    assert '<a class="sapp" href="/app/link">' in guide
+    assert '<a class="sapp" href="/app/backup">' in guide
+    # verbatim founder copy
+    assert "manage what AI models your journal uses" in guide
+    assert "reach your journal from your other devices" in guide
+    assert "make an encrypted copy only you can read" in guide
+    assert "how and when sol reaches you on any device" in guide
+    # notifications is parked: present, but never a clickable dead link
     assert "notifications" in guide
+    assert '<a class="sapp" href="/app/notifications"' not in guide
+    assert 'href="#"' not in guide
 
     banned_terms = (
         "your services",
