@@ -10,10 +10,21 @@ import re
 from solstone.apps.link import copy
 
 U2_COPY_VALUES = [
-    copy.POSTURE_MODAL_FOOTER,
-    copy.REACH_CARD_TITLE,
-    copy.REACH_DIRECT_LABEL,
-    copy.REACH_DIRECT_DETAIL,
+    copy.BRANDLOCK_LINE,
+    copy.REACH_SELECTOR_TITLE,
+    copy.REACH_SELECTOR_HINT,
+    copy.MODE_BYO_NAME,
+    copy.MODE_BYO_DESC,
+    copy.MODE_BYO_DISCLOSURE,
+    copy.MODE_HOSTED_NAME,
+    copy.MODE_HOSTED_DESC,
+    copy.MODE_HOSTED_DISCLOSURE,
+    copy.MODE_BYO_BODY_NOTE,
+    copy.MODE_HOSTED_SETUP_NOTE,
+    copy.MODE_HOSTED_SETUP_CTA,
+    copy.APP_ONOFF_LABEL,
+    copy.APP_ONOFF_SUB_BYO,
+    copy.APP_ONOFF_SUB_HOSTED,
     copy.REACH_HOME_ADDRESS_LABEL,
     copy.REACH_HOST_ADDRESS_DISCLOSURE,
     copy.REACH_HOST_ADDRESS_PLACEHOLDER,
@@ -21,21 +32,11 @@ U2_COPY_VALUES = [
     copy.REACH_HOST_ADDRESS_CLEAR_LABEL,
     copy.REACH_VPN_CANDIDATE_LABEL,
     copy.REACH_VPN_USE_THIS,
-    copy.REACH_CHANGE_LABEL,
-    copy.REACH_UPGRADE_TITLE,
-    copy.REACH_UPGRADE_BODY,
-    copy.REACH_UPGRADE_LINK_LABEL,
     copy.REACH_SPL_ACTIVE_BODY,
     copy.REACH_SPL_TRUST_LINE,
     copy.REACH_SPL_MANAGE_LABEL,
     copy.REACH_SPL_CONNECTING_NOTE,
     copy.CHECK_AGAIN_LABEL,
-    copy.POSTURE_MODAL_TITLE,
-    copy.POSTURE_DIRECT_DESC,
-    copy.POSTURE_SPL_TITLE,
-    copy.POSTURE_SPL_DESC,
-    copy.POSTURE_SPL_SETUP_LABEL,
-    copy.POSTURE_SPL_MANAGE_LABEL,
     copy.PRIVATE_LINK_DISABLE_CTA,
     copy.PRIVATE_LINK_SETTING_UP,
     copy.PRIVATE_LINK_BROWSER_FALLBACK,
@@ -67,9 +68,6 @@ U5_COPY_VALUES = [
 
 
 def test_reach_shell_spec_fixed_copy_is_locked() -> None:
-    assert copy.POSTURE_MODAL_FOOTER == (
-        "switching is gentle — devices you've paired keep working either way, no re-pairing."
-    )
     assert copy.STATUS_SENTENCES == {
         "direct_online": "your solstone is reachable on your network.",
         "direct_online_vpn": "your solstone is reachable on your network and over your VPN.",
@@ -87,12 +85,35 @@ def test_reach_shell_spec_fixed_copy_is_locked() -> None:
 
 
 def test_reach_shell_corrected_copy_is_locked() -> None:
-    assert copy.REACH_CARD_TITLE == "how your devices reach home"
-    assert copy.POSTURE_MODAL_TITLE == "how should your devices reach home?"
-    assert copy.REACH_DIRECT_LABEL == "on your network or your own VPN (free)"
-    assert copy.REACH_DIRECT_DETAIL == (
-        "your devices connect to this solstone directly, with no one in the middle."
+    assert copy.BRANDLOCK_LINE == "your journal is always private, only yours."
+    assert copy.REACH_SELECTOR_TITLE == "how your devices reach your journal"
+    assert copy.REACH_SELECTOR_HINT == (
+        "your choice — switch anytime. either way, what syncs is end-to-end "
+        "encrypted and only your devices can read it."
     )
+    assert copy.MODE_BYO_NAME == "your own"
+    assert copy.MODE_BYO_DESC == (
+        "your devices reach your journal over your own network — same wifi, or "
+        "your own VPN. the default."
+    )
+    assert copy.MODE_BYO_DISCLOSURE == "sol pbc is never in the path"
+    assert copy.MODE_HOSTED_NAME == "solstone hosted"
+    assert copy.MODE_HOSTED_DESC == (
+        "reach your journal from anywhere, through a relay sol pbc runs for you."
+    )
+    assert copy.MODE_HOSTED_DISCLOSURE == "operated by sol pbc"
+    assert copy.MODE_BYO_BODY_NOTE == (
+        "your journal stays on this machine. your other devices connect straight "
+        "to it — nothing routes through sol pbc."
+    )
+    assert copy.MODE_HOSTED_SETUP_NOTE == (
+        "your journal stays on this machine; the relay only passes along "
+        "encrypted traffic it can't read."
+    )
+    assert copy.MODE_HOSTED_SETUP_CTA == "set up the relay →"
+    assert copy.APP_ONOFF_LABEL == "link"
+    assert copy.APP_ONOFF_SUB_BYO == "on — reachable over your own network"
+    assert copy.APP_ONOFF_SUB_HOSTED == "on — reachable from anywhere"
     assert copy.REACH_HOST_ADDRESS_DISCLOSURE == "▸ use a different address"
     assert copy.REACH_HOST_ADDRESS_PLACEHOLDER == "192.168.1.44:5015"
     assert copy.REACH_HOST_ADDRESS_APPLY_LABEL == "apply"
@@ -114,8 +135,6 @@ def test_reach_shell_corrected_copy_is_locked() -> None:
         == "your home is connecting. this is usually quick."
     )
     assert copy.CHECK_AGAIN_LABEL == "check again"
-    assert copy.REACH_UPGRADE_LINK_LABEL == "set up solstone private link"
-    assert copy.POSTURE_SPL_SETUP_LABEL == "set up solstone private link"
     assert copy.PRIVATE_LINK_DISABLE_CTA == "turn off solstone private link"
     assert copy.PRIVATE_LINK_SETTING_UP == "setting up solstone private link…"
     assert (
@@ -214,9 +233,6 @@ def test_reach_shell_copy_stays_in_bounds() -> None:
         assert not acronym_re.search(lowered), value
 
     spl_values = [
-        copy.POSTURE_SPL_TITLE,
-        copy.POSTURE_SPL_SETUP_LABEL,
-        copy.REACH_UPGRADE_LINK_LABEL,
         copy.REACH_SPL_MANAGE_LABEL,
         copy.PRIVATE_LINK_DISABLE_CTA,
     ]

@@ -92,10 +92,6 @@ LAN_BANNER_DIY_BODY = (
 )
 
 # --- U2 reach-shell copy ---
-# No unconditional header trust line: relay-trust messaging is posture-specific
-# (direct card = "no one in the middle"; solstone private link card = POSTURE_SPL_DESC). An always-on
-# "sol pbc carries the connection" claim is false in direct posture (spec § problem).
-POSTURE_MODAL_FOOTER = "switching is gentle — devices you've paired keep working either way, no re-pairing."
 STATUS_SENTENCES = {
     "direct_online": "your solstone is reachable on your network.",
     "direct_online_vpn": "your solstone is reachable on your network and over your VPN.",
@@ -110,11 +106,35 @@ STATUS_SENTENCES = {
     ),
     "checking": "checking your solstone...",
 }
-REACH_CARD_TITLE = "how your devices reach home"
-REACH_DIRECT_LABEL = "on your network or your own VPN (free)"
-REACH_DIRECT_DETAIL = (
-    "your devices connect to this solstone directly, with no one in the middle."
+BRANDLOCK_LINE = "your journal is always private, only yours."
+REACH_SELECTOR_TITLE = "how your devices reach your journal"
+REACH_SELECTOR_HINT = (
+    "your choice — switch anytime. either way, what syncs is end-to-end encrypted "
+    "and only your devices can read it."
 )
+MODE_BYO_NAME = "your own"
+MODE_BYO_DESC = (
+    "your devices reach your journal over your own network — same wifi, or your own "
+    "VPN. the default."
+)
+MODE_BYO_DISCLOSURE = "sol pbc is never in the path"
+MODE_HOSTED_NAME = "solstone hosted"
+MODE_HOSTED_DESC = (
+    "reach your journal from anywhere, through a relay sol pbc runs for you."
+)
+MODE_HOSTED_DISCLOSURE = "operated by sol pbc"
+MODE_BYO_BODY_NOTE = (
+    "your journal stays on this machine. your other devices connect straight to it — "
+    "nothing routes through sol pbc."
+)
+MODE_HOSTED_SETUP_NOTE = (
+    "your journal stays on this machine; the relay only passes along encrypted traffic "
+    "it can't read."
+)
+MODE_HOSTED_SETUP_CTA = "set up the relay →"
+APP_ONOFF_LABEL = "link"
+APP_ONOFF_SUB_BYO = "on — reachable over your own network"
+APP_ONOFF_SUB_HOSTED = "on — reachable from anywhere"
 REACH_HOME_ADDRESS_LABEL = "home address"
 REACH_HOST_ADDRESS_DISCLOSURE = "▸ use a different address"
 REACH_HOST_ADDRESS_PLACEHOLDER = "192.168.1.44:5015"
@@ -122,10 +142,6 @@ REACH_HOST_ADDRESS_APPLY_LABEL = "apply"
 REACH_HOST_ADDRESS_CLEAR_LABEL = "clear"
 REACH_VPN_CANDIDATE_LABEL = "VPN address"
 REACH_VPN_USE_THIS = "use this"
-REACH_CHANGE_LABEL = "change"
-REACH_UPGRADE_TITLE = "reach from anywhere"
-REACH_UPGRADE_BODY = "when you're away, solstone private link can carry the connection for paired devices."
-REACH_UPGRADE_LINK_LABEL = "set up solstone private link"
 REACH_SPL_ACTIVE_BODY = "your devices reach home over the internet, wherever you are."
 REACH_SPL_TRUST_LINE = (
     "the connection is end-to-end encrypted — sol pbc and cloudflare can see "
@@ -134,12 +150,6 @@ REACH_SPL_TRUST_LINE = (
 REACH_SPL_MANAGE_LABEL = "manage solstone private link at services.solstone.app →"
 REACH_SPL_CONNECTING_NOTE = "your home is connecting. this is usually quick."
 CHECK_AGAIN_LABEL = "check again"
-POSTURE_MODAL_TITLE = "how should your devices reach home?"
-POSTURE_DIRECT_DESC = "devices connect locally or through your own VPN."
-POSTURE_SPL_TITLE = "from anywhere · solstone private link"
-POSTURE_SPL_DESC = "sol pbc carries the connection and cannot see inside it."
-POSTURE_SPL_SETUP_LABEL = "set up solstone private link"
-POSTURE_SPL_MANAGE_LABEL = "manage at services.solstone.app →"
 PRIVATE_LINK_DISABLE_CTA = "turn off solstone private link"
 PRIVATE_LINK_SETTING_UP = "setting up solstone private link…"
 PRIVATE_LINK_BROWSER_FALLBACK = "couldn't open your browser. open this link to finish:"
