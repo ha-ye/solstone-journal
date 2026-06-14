@@ -4,6 +4,22 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.5.5] - 2026-06-14
+
+### Added
+- before sol reaches solstone support on your behalf, it now asks first. reaching support is the one moment something may leave your machine, so sol offers it in the chat bar and waits for your yes; decline and the conversation stays entirely local. when you do say yes, the chat bar shows the reach-out plainly as it happens, and the offer survives a reload so you never lose your place.
+- there's a new Thinking app in your journal that owns how sol thinks. provider, key, and on-device setup all live there now, with three clear lanes: become a solstone scout, bring your own key for Claude, Gemini, or GPT, or run local thinking models on your own device. first-run setup now routes you straight into Thinking to pick your lane instead of asking for a single key up front.
+- you can now point the local (on-device) option at your own OpenAI-compatible server instead of the bundled engine. when you configure an endpoint, sol's generation and background thinking run there, including screen content for vision; transcription always stays on your machine, and there is no silent fallback to the cloud. it's your server, by your choice, and the local card spells out plainly what goes where.
+- linux machines with an arm64 GPU (like the NVIDIA DGX Spark / GB10) can now run the local on-device option, and on-device transcription defaults to whisper on those boxes. previously these setups had no on-device path for sol's thinking.
+
+### Changed
+- pairing a new device over your home network is smoother and clearer. a brand-new device on your local network now reaches the pairing step to earn its credentials, the same step it always had to pass; it still has to present your one-shot pairing code, can only talk to the pairing endpoint, and your journal stays local-only until you pair. the pairing command now hands you a ready-to-use link to paste on the other device, and a refused or mistyped attempt now tells you exactly what went wrong instead of a generic error. a paired device also keeps both the name you give it and its own hostname, so they no longer overwrite each other in the list.
+- setting up how sol reaches the world is reorganized around the apps that own each piece. Thinking owns scout and your provider setup, Link owns your solstone private link, and the old "your services" switchboard is gone; Settings now opens to a simple guide that points you to each app. the Thinking app also reads scout's real status directly (requested, invited, on), with a "check now" option, instead of guessing from local state.
+
+### Fixed
+- the web app's search summary now counts results correctly, reading "1 result" or "2 results" as it should.
+- internal stability improvements.
+
 ## [0.5.4] - 2026-06-12
 
 ### Added
