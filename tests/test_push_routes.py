@@ -57,6 +57,17 @@ def _post_register(
     )
 
 
+def _device_row() -> dict[str, object]:
+    return {
+        "fingerprint": "fp-1",
+        "token": "a" * 64,
+        "bundle_id": "org.solpbc.solstone-swift",
+        "environment": "development",
+        "platform": "ios",
+        "registered_at": 1,
+    }
+
+
 def test_register_push_device_happy_path(monkeypatch, tmp_path):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     client = _register_app().test_client()
@@ -157,7 +168,7 @@ def test_status_shape(monkeypatch):
             }
         ],
     )
-    monkeypatch.setattr("solstone.convey.push.approved_dispatch_token", lambda: "tok")
+    monkeypatch.setattr("solstone.convey.push.push_relay_token", lambda: "tok")
 
     response = client.get("/api/push/status")
 
@@ -180,7 +191,7 @@ def test_status_shape(monkeypatch):
 def test_status_relay_unavailable(monkeypatch):
     client = _register_app().test_client()
     monkeypatch.setattr("solstone.convey.push.load_devices", lambda: [])
-    monkeypatch.setattr("solstone.convey.push.approved_dispatch_token", lambda: "")
+    monkeypatch.setattr("solstone.convey.push.push_relay_token", lambda: "")
 
     response = client.get("/api/push/status")
 
@@ -195,7 +206,8 @@ def test_status_relay_unavailable(monkeypatch):
 def test_push_test_relays(monkeypatch):
     client = _register_app().test_client()
     calls: list[dict[str, str]] = []
-    monkeypatch.setattr("solstone.convey.push.approved_dispatch_token", lambda: "tok")
+    monkeypatch.setattr("solstone.convey.push.push_relay_token", lambda: "tok")
+    monkeypatch.setattr("solstone.convey.push.load_devices", lambda: [_device_row()])
     monkeypatch.setattr(
         "solstone.convey.push.dispatch_via_portal",
         lambda **kwargs: calls.append(kwargs) or {"ok": True},
@@ -218,7 +230,7 @@ def test_push_test_relays(monkeypatch):
 
 def test_push_test_returns_503_when_relay_unavailable(monkeypatch):
     client = _register_app().test_client()
-    monkeypatch.setattr("solstone.convey.push.approved_dispatch_token", lambda: "")
+    monkeypatch.setattr("solstone.convey.push.push_relay_token", lambda: "")
 
     response = client.post("/api/push/test")
 
@@ -226,9 +238,23 @@ def test_push_test_returns_503_when_relay_unavailable(monkeypatch):
     assert response.get_json()["reason_code"] == "feature_unavailable"
 
 
+def test_push_test_returns_503_when_no_devices(monkeypatch):
+    client = _register_app().test_client()
+    monkeypatch.setattr("solstone.convey.push.push_relay_token", lambda: "tok")
+    monkeypatch.setattr("solstone.convey.push.load_devices", lambda: [])
+
+    response = client.post("/api/push/test")
+
+    assert response.status_code == 503
+    data = response.get_json()
+    assert data["reason_code"] == "feature_unavailable"
+    assert data["detail"] == "no devices to reach"
+
+
 def test_push_test_returns_503_when_relay_dispatch_fails(monkeypatch):
     client = _register_app().test_client()
-    monkeypatch.setattr("solstone.convey.push.approved_dispatch_token", lambda: "tok")
+    monkeypatch.setattr("solstone.convey.push.push_relay_token", lambda: "tok")
+    monkeypatch.setattr("solstone.convey.push.load_devices", lambda: [_device_row()])
     monkeypatch.setattr("solstone.convey.push.dispatch_via_portal", lambda **_: None)
 
     response = client.post("/api/push/test")

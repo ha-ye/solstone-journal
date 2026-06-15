@@ -122,6 +122,38 @@ def test_remove_device_by_fingerprint(monkeypatch, tmp_path):
     assert [device["fingerprint"] for device in devices.load_devices()] == ["fp-2"]
 
 
+def test_remove_devices_by_tokens_removes_matching_subset(monkeypatch, tmp_path):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _register("fp-1", "a" * 64)
+    _register("fp-2", "b" * 64)
+    _register("fp-3", "c" * 64)
+
+    removed = devices.remove_devices_by_tokens({"a" * 64, "c" * 64})
+
+    assert removed == 2
+    assert [device["fingerprint"] for device in devices.load_devices()] == ["fp-2"]
+
+
+def test_remove_devices_by_tokens_unknown_token_noops(monkeypatch, tmp_path):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _register("fp-1", "a" * 64)
+    before = devices.load_devices()
+
+    removed = devices.remove_devices_by_tokens({"z" * 64})
+
+    assert removed == 0
+    assert devices.load_devices() == before
+
+
+def test_remove_devices_by_tokens_empty_set_noops(monkeypatch, tmp_path):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    removed = devices.remove_devices_by_tokens(set())
+
+    assert removed == 0
+    assert not _devices_path(tmp_path).exists()
+
+
 def test_load_devices_returns_empty_for_legacy_token_keyed_store(
     monkeypatch, tmp_path, caplog
 ):

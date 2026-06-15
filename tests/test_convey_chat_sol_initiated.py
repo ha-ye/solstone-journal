@@ -172,7 +172,21 @@ def test_sol_request_open_endpoint_broadcast_suppresses_push(
     assert (tract, kind) == ("chat", KIND_OWNER_CHAT_OPEN)
     assert kwargs["request_id"] == "req-1"
 
-    monkeypatch.setattr(triggers, "approved_dispatch_token", lambda: "tok")
+    monkeypatch.setattr(triggers, "push_relay_token", lambda: "tok")
+    monkeypatch.setattr(
+        triggers,
+        "load_devices",
+        lambda: [
+            {
+                "fingerprint": "fp-1",
+                "token": "a" * 64,
+                "bundle_id": "org.solpbc.solstone-swift",
+                "environment": "development",
+                "platform": "ios",
+                "registered_at": 1,
+            }
+        ],
+    )
     relay_calls = []
     monkeypatch.setattr(
         triggers,

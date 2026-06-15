@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Portal HTTP dispatch for chat-request pushes and dedup silent pushes via scout-enabled worker."""
+"""Portal HTTP dispatch for chat-request pushes and dedup silent pushes via relay worker."""
 
 from __future__ import annotations
 
@@ -11,21 +11,56 @@ import socket
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 
+from solstone.think.push.devices import load_devices, remove_devices_by_tokens
+from solstone.think.push.relay_auth import push_relay_token
 from solstone.think.services.portal_client import portal_base_url, request_headers
-from solstone.think.services.scout import approved_dispatch_token
 
 logger = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 10
 
 
+def _normalize_environment(environment: str) -> str:
+    return "production" if environment == "production" else "sandbox"
+
+
+def _outbound_devices() -> list[dict[str, str]]:
+    return [
+        {
+            "token": d["token"],
+            "bundle_id": d["bundle_id"],
+            "environment": _normalize_environment(d["environment"]),
+        }
+        for d in load_devices()
+    ]
+
+
+def _prune_revoked(payload: dict) -> None:
+    revoked = payload.get("revoked_tokens")
+    if not isinstance(revoked, list):
+        return
+    tokens = {t for t in revoked if isinstance(t, str) and t}
+    removed = remove_devices_by_tokens(tokens)
+    if removed:
+        logger.debug("pruned %s revoked push device(s)", removed)
+
+
 def dispatch_via_portal(*, request_id: str, summary: str, category: str) -> dict | None:
-    dispatch_token = approved_dispatch_token()
+    dispatch_token = push_relay_token()
     if not dispatch_token:
         return None
 
+    devices = _outbound_devices()
+    if not devices:
+        return None
+
     body = json.dumps(
-        {"summary": summary, "category": category, "request_id": request_id}
+        {
+            "request_id": request_id,
+            "summary": summary,
+            "category": category,
+            "devices": devices,
+        }
     ).encode("utf-8")
     headers = request_headers("push")
     headers.update(
@@ -83,15 +118,24 @@ def dispatch_via_portal(*, request_id: str, summary: str, category: str) -> dict
         payload = json.loads(raw_body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         return {"ok": True}
-    return payload if isinstance(payload, dict) else {"ok": True}
+    if not isinstance(payload, dict):
+        return {"ok": True}
+    _prune_revoked(payload)
+    return payload
 
 
 def dispatch_dedup_via_portal(*, request_id: str, action: str) -> dict | None:
-    dispatch_token = approved_dispatch_token()
+    dispatch_token = push_relay_token()
     if not dispatch_token:
         return None
 
-    body = json.dumps({"request_id": request_id, "action": action}).encode("utf-8")
+    devices = _outbound_devices()
+    if not devices:
+        return None
+
+    body = json.dumps(
+        {"request_id": request_id, "action": action, "devices": devices}
+    ).encode("utf-8")
     headers = request_headers("push")
     headers.update(
         {
@@ -148,4 +192,7 @@ def dispatch_dedup_via_portal(*, request_id: str, action: str) -> dict | None:
         payload = json.loads(raw_body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         return {"ok": True}
-    return payload if isinstance(payload, dict) else {"ok": True}
+    if not isinstance(payload, dict):
+        return {"ok": True}
+    _prune_revoked(payload)
+    return payload

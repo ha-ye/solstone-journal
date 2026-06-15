@@ -16,7 +16,21 @@ def _read_log(journal: Path) -> list[dict[str, object]]:
 
 
 def test_push_runtime_relay_dispatch_and_log(journal_copy, monkeypatch):
-    monkeypatch.setattr(triggers, "approved_dispatch_token", lambda: "tok")
+    monkeypatch.setattr(triggers, "push_relay_token", lambda: "tok")
+    monkeypatch.setattr(
+        triggers,
+        "load_devices",
+        lambda: [
+            {
+                "fingerprint": "fp-1",
+                "token": "a" * 64,
+                "bundle_id": "org.solpbc.solstone-swift",
+                "environment": "development",
+                "platform": "ios",
+                "registered_at": 1,
+            }
+        ],
+    )
     calls: list[dict[str, str]] = []
     monkeypatch.setattr(
         triggers,

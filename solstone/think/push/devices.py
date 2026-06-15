@@ -118,6 +118,17 @@ def remove_device(fingerprint: str) -> bool:
     return True
 
 
+def remove_devices_by_tokens(tokens: set[str]) -> int:
+    if not tokens:
+        return 0
+    devices = load_devices()
+    remaining = [device for device in devices if device["token"] not in tokens]
+    removed = len(devices) - len(remaining)
+    if removed:
+        _write_store(remaining)
+    return removed
+
+
 def mask_token(token: str) -> str:
     return "..." + str(token or "")[-4:]
 
@@ -143,5 +154,6 @@ __all__ = [
     "mask_token",
     "register_device",
     "remove_device",
+    "remove_devices_by_tokens",
     "status_view",
 ]

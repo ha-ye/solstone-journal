@@ -16,11 +16,12 @@ from solstone.convey.sol_initiated.copy import (
     KIND_OWNER_CHAT_OPEN,
     KIND_SOL_CHAT_REQUEST,
 )
+from solstone.think.push.devices import load_devices
 from solstone.think.push.portal_dispatch import (
     dispatch_dedup_via_portal,
     dispatch_via_portal,
 )
-from solstone.think.services.scout import approved_dispatch_token
+from solstone.think.push.relay_auth import push_relay_token
 from solstone.think.utils import get_journal
 
 logger = logging.getLogger("solstone.push.triggers")
@@ -47,7 +48,7 @@ def handle_sol_chat_request(message: dict[str, Any]) -> None:
     category = str(message.get("category") or "")
     kind = f"{KIND_SOL_CHAT_REQUEST}_push"
 
-    if not approved_dispatch_token():
+    if not push_relay_token():
         _append_nudge_log(
             {
                 "ts": int(time.time()),
@@ -55,7 +56,20 @@ def handle_sol_chat_request(message: dict[str, Any]) -> None:
                 "dedupe_key": request_id,
                 "category": category,
                 "outcome": "skipped",
-                "reason": "no_dispatch_token",
+                "reason": "no_relay_token",
+            }
+        )
+        return
+
+    if not load_devices():
+        _append_nudge_log(
+            {
+                "ts": int(time.time()),
+                "kind": kind,
+                "dedupe_key": request_id,
+                "category": category,
+                "outcome": "skipped",
+                "reason": "no_devices",
             }
         )
         return
@@ -106,7 +120,7 @@ def handle_chat_lifecycle(message: dict[str, Any]) -> None:
         return
     kind = "sol_chat_lifecycle_push"
 
-    if not approved_dispatch_token():
+    if not push_relay_token():
         _append_nudge_log(
             {
                 "ts": int(time.time()),
@@ -114,7 +128,20 @@ def handle_chat_lifecycle(message: dict[str, Any]) -> None:
                 "dedupe_key": request_id,
                 "category": event,
                 "outcome": "skipped",
-                "reason": "no_dispatch_token",
+                "reason": "no_relay_token",
+            }
+        )
+        return
+
+    if not load_devices():
+        _append_nudge_log(
+            {
+                "ts": int(time.time()),
+                "kind": kind,
+                "dedupe_key": request_id,
+                "category": event,
+                "outcome": "skipped",
+                "reason": "no_devices",
             }
         )
         return
