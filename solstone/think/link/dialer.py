@@ -21,6 +21,8 @@ from solstone.think.link.client import (
 )
 from solstone.think.link.tls import TlsError
 
+_ESTABLISH_TIMEOUT_SECONDS = 30
+
 
 class TunnelResponseHead(NamedTuple):
     status: int
@@ -124,9 +126,16 @@ async def open_tunnel(
 
 
 class TunnelClient:
-    def __init__(self, identity: ClientIdentity, relay_url: str | None) -> None:
+    def __init__(
+        self,
+        identity: ClientIdentity,
+        relay_url: str | None,
+        *,
+        establish_timeout: float = _ESTABLISH_TIMEOUT_SECONDS,
+    ) -> None:
         self._identity = identity
         self._relay_url = relay_url.rstrip("/") if relay_url else None
+        self._establish_timeout = establish_timeout
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._session: TunnelSession | None = None
@@ -168,8 +177,12 @@ class TunnelClient:
         if self._session_lock is None:
             self._session_lock = asyncio.Lock()
         async with self._session_lock:
-            if self._session is not None:
-                return self._session
+            cached = self._session
+            if cached is not None and cached.is_alive:
+                return cached
+            self._session = None
+            if cached is not None:
+                await cached.close()
             self._session = await open_tunnel(self._identity, self._relay_url)
             return self._session
 
@@ -197,9 +210,8 @@ class TunnelClient:
         body: bytes = b"",
     ) -> tuple[int, dict[str, str], bytes]:
         try:
-            session = self._get_session()
             return self._run(
-                session.request(
+                self._request_async(
                     method,
                     path,
                     headers=headers or {},
@@ -209,6 +221,18 @@ class TunnelClient:
         except (ConnectionError, OSError, StreamResetError, TlsError) as exc:
             self._close_session()
             raise TunnelRequestError(type(exc).__name__, str(exc)) from exc
+
+    async def _request_async(
+        self,
+        method: str,
+        path: str,
+        *,
+        headers: dict[str, str],
+        body: bytes,
+    ) -> tuple[int, dict[str, str], bytes]:
+        session = await self._get_session_async()
+        async with asyncio.timeout(self._establish_timeout):
+            return await session.request(method, path, headers=headers, body=body)
 
     def proxy_stream_request(
         self,
@@ -276,7 +300,10 @@ class TunnelClient:
         body: bytes,
     ) -> tuple[int, dict[str, str], bytes, Any]:
         session = await self._get_session_async()
-        return await session.stream_request(method, path, headers=headers, body=body)
+        async with asyncio.timeout(self._establish_timeout):
+            return await session.stream_request(
+                method, path, headers=headers, body=body
+            )
 
     async def _proxy_to_queue(
         self,

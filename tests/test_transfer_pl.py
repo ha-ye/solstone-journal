@@ -66,6 +66,10 @@ def test_transfer_send_pl_posts_journal_segment_day_path(
     calls: list[tuple[str, str, dict[str, str], bytes]] = []
 
     class FakeTunnelSession:
+        @property
+        def is_alive(self) -> bool:
+            return True
+
         async def request(self, method, path, *, headers=None, body=b""):
             calls.append((method, path, headers or {}, body))
             if method == "GET":

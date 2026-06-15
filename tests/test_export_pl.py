@@ -73,6 +73,10 @@ def _patch_tunnel(
     requests_seen: list[tuple[str, str, dict[str, str], bytes]],
 ) -> None:
     class FakeTunnelSession:
+        @property
+        def is_alive(self) -> bool:
+            return True
+
         async def request(self, method, path, *, headers=None, body=b""):
             requests_seen.append((method, path, headers or {}, body))
             return (200, {}, b'{"ok": true}')

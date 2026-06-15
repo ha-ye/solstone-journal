@@ -15,6 +15,7 @@ import contextlib
 import dataclasses
 import hashlib
 import logging
+import secrets
 import urllib.parse
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Protocol
@@ -30,9 +31,12 @@ from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
 from solstone.convey.secure_listener.framing import (
+    CONTROL_NONCE_LEN,
     FLAG_CLOSE,
     FLAG_DATA,
     FLAG_OPEN,
+    FLAG_PING,
+    FLAG_PONG,
     FLAG_RESET,
     FLAG_WINDOW,
     INITIAL_WINDOW,
@@ -48,8 +52,11 @@ from solstone.convey.secure_listener.framing import (
     build_close,
     build_data,
     build_open,
+    build_ping,
+    build_pong,
     build_reset,
     build_window,
+    parse_control_nonce,
     parse_reset_reason,
     parse_window_credit,
 )
@@ -59,6 +66,8 @@ from solstone.think.link.tls import TlsError as _TlsError
 LOG = logging.getLogger(__name__)
 _CONNECT_TIMEOUT_SECONDS = 15
 _HTTP_TIMEOUT_SECONDS = 30
+_KEEPALIVE_INTERVAL_SECONDS = 20
+_KEEPALIVE_TIMEOUT_SECONDS = 45
 
 
 class StreamResetError(ConnectionError):
@@ -204,9 +213,14 @@ class _DialerStream:
 
 
 class _DialerMultiplexer:
-    def __init__(self, send_frame: Callable[[bytes], Awaitable[None]]) -> None:
+    def __init__(
+        self,
+        send_frame: Callable[[bytes], Awaitable[None]],
+        on_inbound: Callable[[], None] | None = None,
+    ) -> None:
         self._decoder = FrameDecoder()
         self._send_frame = send_frame
+        self._on_inbound = on_inbound
         self._streams: dict[int, _StreamState] = {}
         self._next_local_id = 1
         self._closed = False
@@ -230,6 +244,8 @@ class _DialerMultiplexer:
     async def feed(self, plaintext: bytes) -> None:
         if self._closed or not plaintext:
             return
+        if self._on_inbound is not None:
+            self._on_inbound()
         self._decoder.feed(plaintext)
         while True:
             try:
@@ -251,6 +267,13 @@ class _DialerMultiplexer:
             self._close_stream(state, forget=True)
 
     async def _dispatch(self, frame: Frame) -> None:
+        if frame.stream_id == 0:
+            await self._dispatch_control(frame)
+            return
+        if frame.flags & (FLAG_PING | FLAG_PONG):
+            self.close()
+            return
+
         if frame.flags & FLAG_OPEN:
             await self._emit(build_reset(frame.stream_id, RESET_PROTOCOL_ERROR))
             return
@@ -307,6 +330,23 @@ class _DialerMultiplexer:
             except ProtocolError:
                 state.reset_reason = RESET_PROTOCOL_ERROR
             self._close_stream(state, forget=True)
+
+    async def _dispatch_control(self, frame: Frame) -> None:
+        is_ping = bool(frame.flags & FLAG_PING)
+        is_pong = bool(frame.flags & FLAG_PONG)
+        if is_ping == is_pong:
+            self.close()
+            return
+        if frame.flags & ~(FLAG_PING | FLAG_PONG):
+            self.close()
+            return
+        try:
+            nonce = parse_control_nonce(frame)
+        except ProtocolError:
+            self.close()
+            return
+        if is_ping:
+            await self._emit(build_pong(nonce))
 
     async def _emit(self, frame: Frame) -> None:
         if self._closed:
@@ -383,13 +423,22 @@ class TunnelSession:
         transport: EncryptedTransport,
         tls: _TlsClientState,
         identity: ClientIdentity | None = None,
+        keepalive_interval: float = _KEEPALIVE_INTERVAL_SECONDS,
+        keepalive_timeout: float = _KEEPALIVE_TIMEOUT_SECONDS,
     ) -> None:
         self._transport = transport
         self._tls = tls
         self._identity = identity
+        self._keepalive_interval = keepalive_interval
+        self._keepalive_timeout = keepalive_timeout
         self._tls_lock = asyncio.Lock()
-        self._mux = _DialerMultiplexer(self._send_plaintext)
+        self._mux = _DialerMultiplexer(
+            self._send_plaintext,
+            on_inbound=self._record_activity,
+        )
         self._closed = asyncio.Event()
+        self._last_activity = asyncio.get_running_loop().time()
+        self._dead = False
         task_name = (
             f"link-client-{identity.home_instance_id}"
             if identity is not None
@@ -398,6 +447,10 @@ class TunnelSession:
         self._reader_task = asyncio.create_task(
             self._read_transport(),
             name=task_name,
+        )
+        self._keepalive_task: asyncio.Task[None] | None = asyncio.create_task(
+            self._keepalive_loop(),
+            name=f"{task_name}-keepalive",
         )
 
     async def __aenter__(self) -> TunnelSession:
@@ -444,10 +497,15 @@ class TunnelSession:
     async def close(self) -> None:
         if self._closed.is_set():
             return
+        await self._cancel_keepalive()
         self._mux.close()
         await self._transport.close()
         await self._reader_task
         self._closed.set()
+
+    @property
+    def is_alive(self) -> bool:
+        return not (self._closed.is_set() or self._mux._closed or self._dead)
 
     async def _read_transport(self) -> None:
         try:
@@ -462,6 +520,7 @@ class TunnelSession:
                 if plaintext:
                     await self._mux.feed(plaintext)
         finally:
+            await self._cancel_keepalive()
             self._mux.close()
             self._closed.set()
 
@@ -470,6 +529,35 @@ class TunnelSession:
             outbound, _ = _drive_tls_client(self._tls, plaintext_out=plaintext)
         if outbound:
             await self._transport.send(outbound)
+
+    def _record_activity(self) -> None:
+        self._last_activity = asyncio.get_running_loop().time()
+
+    async def _keepalive_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(self._keepalive_interval)
+                if self._closed.is_set():
+                    return
+                idle = asyncio.get_running_loop().time() - self._last_activity
+                if idle > self._keepalive_timeout:
+                    self._dead = True
+                    await self._transport.close()
+                    return
+                nonce = secrets.token_bytes(CONTROL_NONCE_LEN)
+                await self._send_plaintext(build_ping(nonce).encode())
+        except asyncio.CancelledError:
+            raise
+        except (OSError, _TlsError):
+            self._dead = True
+
+    async def _cancel_keepalive(self) -> None:
+        task = self._keepalive_task
+        if task is None or task.done():
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 class Client:
