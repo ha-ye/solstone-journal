@@ -133,7 +133,15 @@ def drive_tls(
         state.conn.bio_write(inbound)
     if plaintext_out:
         try:
-            state.conn.send(plaintext_out)
+            # sendall, not send: pyOpenSSL's Connection.send() writes at most one
+            # TLS record (16 KiB) per call and returns the partial count. Calling
+            # send() once and ignoring the return value silently truncated any
+            # frame larger than one record on the wire, so the peer's frame
+            # decoder blocked forever waiting for the dropped tail (manifested as
+            # ~30s link-tunnel timeouts on observer-segment uploads >16 KiB).
+            # sendall() loops SSL_write internally until the whole buffer is
+            # encrypted into the write BIO.
+            state.conn.sendall(plaintext_out)
         except SSL.WantReadError:
             pass
 

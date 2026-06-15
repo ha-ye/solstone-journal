@@ -522,6 +522,14 @@ class TunnelSession:
         finally:
             await self._cancel_keepalive()
             self._mux.close()
+            # Close the transport here too: on a peer-initiated close (e.g. the
+            # home journal restarting), recv() returns None and the reader exits
+            # with `_closed` unset. A later close() then early-returns on the set
+            # flag and never reaches `_transport.close()`, leaving the socket in
+            # CLOSE-WAIT and leaking a fd per reconnect. Closing here (idempotent
+            # with close()) retires the dead socket on every reader exit.
+            with contextlib.suppress(Exception):
+                await self._transport.close()
             self._closed.set()
 
     async def _send_plaintext(self, plaintext: bytes) -> None:
@@ -806,7 +814,15 @@ def _drive_tls_client(
         state.conn.bio_write(inbound)
     if plaintext_out:
         try:
-            state.conn.send(plaintext_out)
+            # sendall, not send: pyOpenSSL's Connection.send() writes at most one
+            # TLS record (16 KiB) per call and returns the partial count. Calling
+            # send() once and ignoring the return value silently truncated any
+            # frame larger than one record on the wire, so the peer's frame
+            # decoder blocked forever waiting for the dropped tail (manifested as
+            # ~30s link-tunnel timeouts on observer-segment uploads >16 KiB).
+            # sendall() loops SSL_write internally until the whole buffer is
+            # encrypted into the write BIO.
+            state.conn.sendall(plaintext_out)
         except SSL.WantReadError:
             pass
         except SSL.Error as exc:

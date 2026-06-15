@@ -80,6 +80,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help=f"Loopback port to serve on (default: {DEFAULT_PORT})",
     )
     parser.add_argument("--relay-url", help="Override the spl relay URL")
+    parser.add_argument(
+        "--direct",
+        action="store_true",
+        help="PL-direct only: dial the journal over the LAN secure listener, "
+        "never the spl relay. Use when the home is reachable directly "
+        "(same LAN/VPN) to avoid any relay dependency.",
+    )
 
 
 def main(args: argparse.Namespace) -> int:
@@ -93,7 +100,8 @@ def main(args: argparse.Namespace) -> int:
     except ValueError as exc:
         return _fail(str(exc), code=1)
 
-    tunnel = TunnelClient(identity, _resolve_relay_url(args.relay_url))
+    relay = None if getattr(args, "direct", False) else _resolve_relay_url(args.relay_url)
+    tunnel = TunnelClient(identity, relay)
     try:
         server = _build_server(args.port, tunnel)
     except OSError as exc:
