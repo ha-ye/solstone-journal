@@ -18,6 +18,9 @@ from solstone.apps.observer.utils import (
     save_observer,
 )
 from solstone.convey import create_app
+from solstone.convey.secure_listener import ConveyIdentity
+from solstone.think.link.auth import AuthorizedClients
+from solstone.think.link.paths import authorized_clients_path
 from tests._baseline_harness import copytree_tracked
 
 VALID_REGISTER_PAYLOAD = {
@@ -26,6 +29,8 @@ VALID_REGISTER_PAYLOAD = {
     "stream_type": "tmux",
     "version": "1",
 }
+PL_FINGERPRINT = "sha256:" + ("c" * 64)
+PL_FINGERPRINT_2 = "sha256:" + ("d" * 64)
 
 
 def _day_dir(env, day: str = "20250103"):
@@ -47,6 +52,24 @@ def _observer_records(journal):
 def _register(client, **overrides):
     payload = {**VALID_REGISTER_PAYLOAD, **overrides}
     return client.post("/app/observer/register", json=payload)
+
+
+def _pl_identity(fingerprint: str = PL_FINGERPRINT) -> ConveyIdentity:
+    return ConveyIdentity(
+        mode="pl-via-spl",
+        fingerprint=fingerprint,
+        device_label="fedora-sat",
+        paired_at="2026-06-15T00:00:00Z",
+        session_id="session-1",
+    )
+
+
+def _authorize_pl(fingerprint: str = PL_FINGERPRINT) -> None:
+    AuthorizedClients(authorized_clients_path()).add(
+        fingerprint,
+        "fedora-sat",
+        "instance-1",
+    )
 
 
 def _assert_no_observer_records(journal) -> None:
@@ -177,6 +200,41 @@ def test_register_loopback_proxy_header_mints_nothing(observer_env):
         "/app/observer/register",
         json=VALID_REGISTER_PAYLOAD,
         headers={"X-Forwarded-For": "1.2.3.4"},
+    )
+
+    assert resp.status_code == 403
+    assert resp.get_json()["reason_code"] == "local_request_only"
+    _assert_no_observer_records(env.journal)
+
+
+def test_register_authorized_pl_identity_from_non_loopback(observer_env):
+    env = observer_env()
+    _authorize_pl()
+
+    resp = env.client.post(
+        "/app/observer/register",
+        json=VALID_REGISTER_PAYLOAD,
+        environ_base={"REMOTE_ADDR": "192.168.1.5"},
+        environ_overrides={"pl.identity": _pl_identity()},
+    )
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["name"] == "fedora.tmux"
+    records = _observer_records(env.journal)
+    assert len(records) == 1
+    assert records[0]["stream"] == "fedora.tmux"
+
+
+def test_register_unknown_pl_identity_from_non_loopback_mints_nothing(observer_env):
+    env = observer_env()
+    _authorize_pl()
+
+    resp = env.client.post(
+        "/app/observer/register",
+        json=VALID_REGISTER_PAYLOAD,
+        environ_base={"REMOTE_ADDR": "192.168.1.5"},
+        environ_overrides={"pl.identity": _pl_identity(PL_FINGERPRINT_2)},
     )
 
     assert resp.status_code == 403

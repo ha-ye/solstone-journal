@@ -23,7 +23,7 @@ import secrets
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, Response, jsonify, request, stream_with_context
+from flask import Blueprint, Response, g, jsonify, request, stream_with_context
 from werkzeug.utils import secure_filename
 
 import solstone.convey.bridge as convey_bridge
@@ -54,6 +54,8 @@ from solstone.observe.utils import (
     compute_file_sha256,
     find_available_segment,
 )
+from solstone.think.link.auth import AuthorizedClients
+from solstone.think.link.paths import authorized_clients_path
 from solstone.think.streams import stream_name, update_stream, write_segment_stream
 from solstone.think.utils import day_path, iter_segments, now_ms, segment_path
 
@@ -391,19 +393,35 @@ def _is_trusted_localhost() -> bool:
     return is_localhost and not proxy_headers
 
 
+def _is_authorized_pl_identity() -> bool:
+    """Return True when the request arrived through a currently authorized PL."""
+    identity = getattr(g, "identity", None)
+    if getattr(identity, "mode", None) not in {"pl-direct", "pl-via-spl"}:
+        return False
+    fingerprint = getattr(identity, "fingerprint", None)
+    if not isinstance(fingerprint, str) or not fingerprint:
+        return False
+    return AuthorizedClients(authorized_clients_path()).is_authorized(fingerprint)
+
+
+def _is_trusted_register_caller() -> bool:
+    return _is_trusted_localhost() or _is_authorized_pl_identity()
+
+
 @observer_bp.route("/register", methods=["POST"])
 def register() -> Any:
-    """Self-register a local observer and lock its stream identity.
+    """Self-register a local or through-link observer and lock stream identity.
 
-    Loopback-only (the in-handler guard is the sole gate) and require_login-exempt
-    so a local observer can register before setup completes. Mints the DL handle,
+    The in-handler guard is the sole gate: direct loopback, or a request that
+    arrived through an authorized PL identity. The route is require_login-exempt
+    so an observer can register before setup completes. Mints the DL handle,
     locks a stream onto the record, and returns the pinned descriptor response.
     """
-    # Localhost guard FIRST — non-local / proxy-headed callers mint nothing.
-    if not _is_trusted_localhost():
+    # Register guard FIRST — untrusted callers mint nothing.
+    if not _is_trusted_register_caller():
         return error_response(
             LOCAL_REQUEST_ONLY,
-            detail="Observer registration requires a direct localhost request.",
+            detail="Observer registration requires a direct localhost or paired-link request.",
         )
 
     parsed = request.get_json(force=True, silent=True)
