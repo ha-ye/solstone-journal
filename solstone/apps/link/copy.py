@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from solstone.think.link.nonces import NONCE_TTL_SECONDS
 
-PAIR_LINK_HOST = "link.solpbc.org"
+PAIR_LINK_HOST = "go.solstone.app"
 PAIR_LINK_PATH = "/p"
 MANUAL_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"  # Crockford base32.
 MANUAL_CODE_LEN = 8

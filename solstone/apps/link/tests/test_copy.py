@@ -10,7 +10,7 @@ from solstone.think.link.nonces import NONCE_TTL_SECONDS
 
 
 def test_copy_constants_are_locked() -> None:
-    assert copy.PAIR_LINK_HOST == "link.solpbc.org"
+    assert copy.PAIR_LINK_HOST == "go.solstone.app"
     assert copy.PAIR_LINK_PATH == "/p"
     assert copy.MANUAL_CODE_ALPHABET == "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
     assert len(copy.MANUAL_CODE_ALPHABET) == 32

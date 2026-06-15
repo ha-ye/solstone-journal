@@ -41,7 +41,7 @@ def test_pair_start_shape_and_locked_order(link_env) -> None:
     payload = response.get_json()
     assert list(payload.keys()) == PAIR_START_KEYS
     assert re.fullmatch(
-        r"^https://link\.solpbc\.org/p#[0-9A-HJKMNP-TV-Z]{64}$",
+        r"^https://go\.solstone\.app/p#[0-9A-HJKMNP-TV-Z]{64}$",
         payload["pair_link"],
     )
     assert re.fullmatch(
@@ -238,7 +238,7 @@ def test_pair_start_spl_allows_non_ipv4_host(link_env, monkeypatch) -> None:
     assert response.status_code == 200
     payload = response.get_json()
     assert re.fullmatch(
-        r"^https://link\.solpbc\.org/p#[0-9A-HJKMNP-TV-Z]+$",
+        r"^https://go\.solstone\.app/p#[0-9A-HJKMNP-TV-Z]+$",
         payload["pair_link"],
     )
     assert _decode_pair_link(payload["pair_link"])[0] == 0x03

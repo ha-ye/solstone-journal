@@ -134,7 +134,7 @@ def test_pair_mints_nonce_prints_payload_and_times_out(runner, monkeypatch):
     assert result.exit_code == 2
     assert result.stderr == ""
     pair_link_match = re.search(
-        r"pair-link: (https://link\.solpbc\.org/p#[0-9A-HJKMNP-TV-Z]{64})",
+        r"pair-link: (https://go\.solstone\.app/p#[0-9A-HJKMNP-TV-Z]{64})",
         result.stdout,
     )
     assert pair_link_match
