@@ -22,9 +22,11 @@ VK_TYPE_CPU = 4
 
 _SOFTWARE_NAME_SUBSTRINGS = ("llvmpipe", "lavapipe", "swiftshader")
 _PROBE_TIMEOUT_S = 10.0
+_VK_STRUCTURE_TYPE_APPLICATION_INFO = 0
 _VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO = 1
 _VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2 = 1000059006
 _VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT = 1000237000
+_VK_API_VERSION_1_1 = 4198400  # (1 << 22) | (1 << 12)
 _VK_PHYSICAL_DEVICE_MEMORY_PROPERTY_DEVICE_LOCAL_BIT = 0x00000001
 _VK_PHYSICAL_DEVICE_NAME_SIZE = 256
 _VK_MAX_MEMORY_TYPES = 32
@@ -51,6 +53,18 @@ class _VkInstanceCreateInfo(ctypes.Structure):
         ("ppEnabledLayerNames", ctypes.c_void_p),
         ("enabledExtensionCount", ctypes.c_uint32),
         ("ppEnabledExtensionNames", ctypes.c_void_p),
+    ]
+
+
+class _VkApplicationInfo(ctypes.Structure):
+    _fields_ = [
+        ("sType", ctypes.c_uint32),
+        ("pNext", ctypes.c_void_p),
+        ("pApplicationName", ctypes.c_void_p),
+        ("applicationVersion", ctypes.c_uint32),
+        ("pEngineName", ctypes.c_void_p),
+        ("engineVersion", ctypes.c_uint32),
+        ("apiVersion", ctypes.c_uint32),
     ]
 
 
@@ -221,6 +235,38 @@ def _enumerate_in_process() -> list[VulkanDevice]:
     return devices
 
 
+def _make_instance_create_info() -> tuple[
+    "_VkInstanceCreateInfo", "_VkApplicationInfo"
+]:
+    """Build an instance create-info that requests Vulkan API 1.1.
+
+    Returns BOTH the create-info and the application-info. The caller MUST
+    retain the application-info for the lifetime of the vkCreateInstance call:
+    ``pApplicationInfo`` stores only the app-info's address, so if the app-info
+    is garbage-collected first the pointer dangles.
+    """
+    app_info = _VkApplicationInfo(
+        sType=_VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        pNext=None,
+        pApplicationName=None,
+        applicationVersion=0,
+        pEngineName=None,
+        engineVersion=0,
+        apiVersion=_VK_API_VERSION_1_1,
+    )
+    create_info = _VkInstanceCreateInfo(
+        sType=_VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        pNext=None,
+        flags=0,
+        pApplicationInfo=ctypes.addressof(app_info),
+        enabledLayerCount=0,
+        ppEnabledLayerNames=None,
+        enabledExtensionCount=0,
+        ppEnabledExtensionNames=None,
+    )
+    return create_info, app_info
+
+
 def _device_local_used_in_process(index: int) -> int | None:
     """Return best-effort cross-process device-local VRAM use for one GPU."""
     if isinstance(index, bool) or index < 0:
@@ -268,16 +314,9 @@ def _device_local_used_in_process(index: int) -> int | None:
         ]
         memory_props2_fn.restype = None
 
-        create_info = _VkInstanceCreateInfo(
-            sType=_VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-            pNext=None,
-            flags=0,
-            pApplicationInfo=None,
-            enabledLayerCount=0,
-            ppEnabledLayerNames=None,
-            enabledExtensionCount=0,
-            ppEnabledExtensionNames=None,
-        )
+        # Retain app_info: pApplicationInfo holds only its address, so it must
+        # outlive the vkCreateInstance call below.
+        create_info, app_info = _make_instance_create_info()
         if (
             vulkan.vkCreateInstance(
                 ctypes.byref(create_info), None, ctypes.byref(instance)
