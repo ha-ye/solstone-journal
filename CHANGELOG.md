@@ -6,11 +6,11 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 
 ## [0.6.4] - 2026-06-15
 
-### Fixed
-- an observer on a machine you've linked to your journal can now send its full recordings over your private link. before, anything larger than a small message stalled partway and never arrived, so those observers couldn't upload their segments and uploads timed out; now recordings of any size stream through reliably. a separate cleanup issue that could leave a stale connection behind after a reconnect was also fixed.
-
 ### Added
 - `sol link serve --direct` keeps a linked machine's traffic on your private link's direct path and never falls back to the relay — useful when the journal's machine is reachable on the same network, so there's no dependency on the relay.
+
+### Fixed
+- an observer on a machine you've linked to your journal can now send everything it takes in over your private link, no matter the size. before, anything larger than a small message stalled partway and never arrived, so those observers couldn't finish uploading and uploads timed out; now they go through reliably. a separate cleanup issue that could leave a stale connection behind after a reconnect is also resolved.
 
 ## [0.6.3] - 2026-06-15
 
