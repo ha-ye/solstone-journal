@@ -104,7 +104,11 @@ def test_run_cogitate_generic_error_emits_event_and_marks_evented(
 ):
     generic_exc = RuntimeError("boom")
 
-    async def fail(_conversation):
+    async def fail(conversation):
+        usage = conversation.agent.llm.metrics.accumulated_token_usage
+        usage.prompt_tokens = 12
+        usage.completion_tokens = 4
+        conversation.agent.llm.metrics.token_usages = [object()]
         raise generic_exc
 
     fake_openhands.Conversation.arun_impl = fail
@@ -121,6 +125,35 @@ def test_run_cogitate_generic_error_emits_event_and_marks_evented(
     assert events[0]["reason_code"] == "unknown"
     assert events[0]["provider"] == "openai"
     assert "RuntimeError: boom" in events[0]["trace"]
+    assert events[0]["usage"]["total_tokens"] > 0
+    assert events[0]["ts"] == 123456
+
+
+def test_run_cogitate_error_before_usage_baseline_omits_usage(
+    fake_openhands,
+    run_env,
+    monkeypatch,
+):
+    build_exc = RuntimeError("llm exploded")
+
+    def fail_build(_provider, _model):
+        raise build_exc
+
+    monkeypatch.setattr(openhands, "_build_llm", fail_build)
+    events: list[dict] = []
+
+    with pytest.raises(RuntimeError) as raised:
+        asyncio.run(openhands.run_cogitate(run_env, events.append))
+
+    assert raised.value is build_exc
+    assert getattr(build_exc, "_evented") is True
+    assert len(events) == 1
+    assert events[0]["event"] == "error"
+    assert events[0]["error"] == "llm exploded"
+    assert events[0]["reason_code"] == "unknown"
+    assert events[0]["provider"] == "openai"
+    assert "RuntimeError: llm exploded" in events[0]["trace"]
+    assert "usage" not in events[0]
     assert events[0]["ts"] == 123456
 
 

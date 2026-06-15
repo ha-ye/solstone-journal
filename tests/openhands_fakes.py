@@ -142,6 +142,7 @@ class Conversation(FakeModel):
         self.messages: list[str] = []
         self.paused = False
         self.closed = False
+        self.state = SimpleNamespace(execution_status=None)
         type(self).instances.append(self)
 
     def send_message(self, message: str) -> None:

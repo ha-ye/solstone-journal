@@ -39,6 +39,7 @@ DEFAULT_READ_CALL_BUDGET = 200
 # unit that hit one of these will crash identically.
 DETERMINISTIC_FAILURE_REASON_CODES = frozenset(
     {
+        "agent_stuck",
         "context_window_exceeded",
         "max_turns_exhausted",
         "no_output",

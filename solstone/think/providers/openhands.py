@@ -699,6 +699,7 @@ class _OpenHandsTranslator:
                 "provider": self.provider,
                 "trace": "",
                 "raw": _raw_event(event),
+                "terminal": False,
                 "ts": now_ms(),
             }
         )
@@ -931,6 +932,26 @@ def _suppress_litellm_cost_warnings() -> Any:
             logger.removeFilter(warning_filter)
 
 
+def _conversation_execution_status(conversation: Any) -> str | None:
+    try:
+        state = conversation.state
+    except AttributeError:
+        return None
+    if state is None:
+        return None
+    try:
+        status = state.execution_status
+    except AttributeError:
+        return None
+    if status is None:
+        return None
+    try:
+        value = status.value
+    except AttributeError:
+        value = status
+    return value if isinstance(value, str) else None
+
+
 async def run_cogitate(
     config: dict[str, Any],
     on_event: Callable[[dict], None] | None = None,
@@ -940,6 +961,8 @@ async def run_cogitate(
     provider = str(config["provider"])
     model = str(config["model"])
 
+    llm: Any | None = None
+    usage_start: dict[str, int] | None = None
     try:
         from openhands.sdk import Agent, Conversation
         from openhands.sdk.tool.registry import register_tool
@@ -1080,6 +1103,31 @@ async def run_cogitate(
                 }
             )
             return result
+        execution_status = _conversation_execution_status(conversation)
+        if execution_status in {"stuck", "paused"}:
+            has_partial = bool(result and result.strip())
+            error_text = (
+                "agent_stuck: cogitate run was interrupted/stuck with a partial "
+                "result preserved"
+                if has_partial
+                else "agent_stuck: cogitate run was interrupted/stuck before "
+                "emitting a final result"
+            )
+            conversation.close()
+            callback.emit(
+                {
+                    "event": "error",
+                    "error": error_text,
+                    "reason_code": "agent_stuck",
+                    "provider": provider,
+                    "result": result,
+                    "usage": usage,
+                    "terminal": True,
+                    "cli_session_id": str(conversation_id),
+                    "ts": now_ms(),
+                }
+            )
+            return result
         if wants_emit_final and not (result and result.strip()):
             callback.emit(
                 {
@@ -1143,16 +1191,17 @@ async def run_cogitate(
             raise QuotaExhaustedError(
                 str(provider_exc), _retry_delay_ms(provider_exc)
             ) from exc
-        callback.emit(
-            {
-                "event": "error",
-                "error": error_text,
-                "reason_code": reason_code,
-                "provider": provider,
-                "trace": trace_text,
-                "ts": now_ms(),
-            }
-        )
+        error_event = {
+            "event": "error",
+            "error": error_text,
+            "reason_code": reason_code,
+            "provider": provider,
+            "trace": trace_text,
+        }
+        if usage_start is not None and llm is not None:
+            error_event["usage"] = _usage_delta(usage_start, llm)
+        error_event["ts"] = now_ms()
+        callback.emit(error_event)
         setattr(exc, "_evented", True)
         raise
 

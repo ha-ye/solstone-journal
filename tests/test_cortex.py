@@ -1027,6 +1027,127 @@ def test_monitor_stdout_terminal_error_logs_cogitate_usage_only(
     generate.assert_not_called()
 
 
+def test_monitor_stdout_nonterminal_error_logs_terminal_stuck_usage(
+    cortex_service, mock_journal
+):
+    from solstone.think.cortex import TalentProcess
+
+    use_id = "nonterminal_error_then_stuck"
+    active_path = mock_journal / "talents" / f"{use_id}_active.jsonl"
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "total_tokens": 15,
+        "model_version": "claude-haiku-4-5-20251001",
+    }
+    cortex_service.use_requests = {
+        use_id: {
+            "event": "request",
+            "prompt": "test",
+            "name": "test_agent",
+            "model": "claude-haiku-4-5",
+            "type": "cogitate",
+        }
+    }
+
+    mock_process = MagicMock()
+    mock_process.stdout = MockPipe(
+        [
+            '{"event": "start", "ts": 1000}\n',
+            json.dumps(
+                {
+                    "event": "error",
+                    "terminal": False,
+                    "error": "agent reported a recoverable error",
+                }
+            )
+            + "\n",
+            json.dumps(
+                {
+                    "event": "error",
+                    "terminal": True,
+                    "reason_code": "agent_stuck",
+                    "usage": usage,
+                }
+            )
+            + "\n",
+        ]
+    )
+    mock_process.wait.return_value = 0
+
+    agent = TalentProcess(use_id, mock_process, active_path)
+
+    with patch("solstone.think.models.log_token_usage") as mock_log_token_usage:
+        with patch.object(cortex_service, "_complete_use_file"):
+            cortex_service._monitor_stdout(agent)
+
+    assert mock_log_token_usage.call_count == 1
+    assert mock_log_token_usage.call_args.kwargs["usage"] == usage
+    assert mock_log_token_usage.call_args.kwargs["model"] == (
+        "claude-haiku-4-5-20251001"
+    )
+
+
+def test_monitor_stdout_nonterminal_error_logs_finish_usage_once(
+    cortex_service, mock_journal
+):
+    from solstone.think.cortex import TalentProcess
+
+    use_id = "nonterminal_error_then_finish"
+    active_path = mock_journal / "talents" / f"{use_id}_active.jsonl"
+    usage = {
+        "input_tokens": 20,
+        "output_tokens": 7,
+        "total_tokens": 27,
+        "model_version": "claude-haiku-4-5-20251001",
+    }
+    cortex_service.use_requests = {
+        use_id: {
+            "event": "request",
+            "prompt": "test",
+            "name": "test_agent",
+            "model": "claude-haiku-4-5",
+            "type": "cogitate",
+        }
+    }
+
+    mock_process = MagicMock()
+    mock_process.stdout = MockPipe(
+        [
+            '{"event": "start", "ts": 1000}\n',
+            json.dumps(
+                {
+                    "event": "error",
+                    "terminal": False,
+                    "error": "agent reported a recoverable error",
+                }
+            )
+            + "\n",
+            json.dumps(
+                {
+                    "event": "finish",
+                    "result": "done",
+                    "usage": usage,
+                }
+            )
+            + "\n",
+        ]
+    )
+    mock_process.wait.return_value = 0
+
+    agent = TalentProcess(use_id, mock_process, active_path)
+
+    with patch("solstone.think.models.log_token_usage") as mock_log_token_usage:
+        with patch.object(cortex_service, "_complete_use_file"):
+            cortex_service._monitor_stdout(agent)
+
+    assert mock_log_token_usage.call_count == 1
+    assert mock_log_token_usage.call_args.kwargs["usage"] == usage
+    assert mock_log_token_usage.call_args.kwargs["model"] == (
+        "claude-haiku-4-5-20251001"
+    )
+
+
 def test_recover_orphaned_uses(cortex_service, mock_journal):
     """Test recovery of orphaned active agent files."""
     # Create orphaned active files
