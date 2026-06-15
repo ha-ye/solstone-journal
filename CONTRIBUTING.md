@@ -14,7 +14,7 @@ Required everywhere:
 - ripgrep (`rg`)
 - ffmpeg for audio processing
 
-Linux is the primary development platform. macOS is supported. Source-checkout installs on Apple Silicon need Xcode command line tools to build the CoreML parakeet helper; packaged installs (`uv tool install solstone`) on macOS 14 or newer ship the helper as a pre-built binary.
+Linux is the primary development platform. macOS is supported. Source-checkout installs on Apple Silicon need Xcode command line tools to build the CoreML parakeet helper; packaged installs (`uv tool install 'solstone[journal]'`) on macOS 14 or newer ship the helper as a pre-built binary.
 
 Fedora/RHEL:
 
@@ -168,7 +168,7 @@ That target first runs `sol skills build` to regenerate the checked-in reference
 
 ## Migrating from a source install to a packaged install
 
-The packaged install (`uv tool install solstone`) installs `sol` to `~/.local/bin/sol` directly. It does not use the source-checkout managed wrapper, and it does not use `.venv/bin/sol`.
+The packaged install (`uv tool install 'solstone[journal]'`) installs `sol` and `journal` to `~/.local/bin/` directly. It does not use the source-checkout managed wrapper, and it does not use `.venv/bin/sol`.
 
 `make uninstall` is disabled by design. To migrate cleanly from a source checkout to a packaged install, remove user-runtime artifacts explicitly:
 
@@ -176,7 +176,7 @@ The packaged install (`uv tool install solstone`) installs `sol` to `~/.local/bi
 journal service uninstall
 sol skills uninstall
 python -m solstone.think.install_guard uninstall
-uv tool install solstone
+uv tool install 'solstone[journal]'
 journal setup
 ```
 
