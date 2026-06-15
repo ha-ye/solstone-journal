@@ -4,6 +4,12 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.1] - 2026-06-15
+
+### Changed
+- desktop observers now use the journal's current callosum connection path,
+  with the observer key kept in the authorization header.
+
 ## [0.6.0] - 2026-06-14
 
 ### Added

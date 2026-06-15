@@ -82,7 +82,7 @@ observer_bp = Blueprint(
     __name__,
     url_prefix="/app/observer",
 )
-OBSERVER_CALLOSUM_SSE_ROUTE = "/app/observer/<key>/callosum"
+OBSERVER_CALLOSUM_SSE_ROUTE = "/app/observer/callosum"
 _OBSERVER_CALLOSUM_SSE_RULE = OBSERVER_CALLOSUM_SSE_ROUTE.removeprefix(
     observer_bp.url_prefix or ""
 )
@@ -254,12 +254,8 @@ def api_list() -> Any:
 # The feed does NOT filter events.
 # The feed does NOT redact fields (v1 trust call; same trust boundary as the existing
 # Convey SSE bridge — observers are inside it).
-# Keyless `/app/observer/callosum` is deferred until solstone-linux and
-# solstone-macos ship clients that no longer hardcode this keyed URL. Shipped
-# 0.3.0 / 1.3.x clients use `/app/observer/<key>/callosum`; the `<key>` segment
-# is retained transitionally and is no longer used for auth.
 @observer_bp.route(_OBSERVER_CALLOSUM_SSE_RULE, methods=["GET"])
-def callosum_sse(key: str) -> Any:
+def callosum_sse() -> Any:
     """Stream Callosum events to an authenticated observer process."""
     observer, key_prefix, error = resolve_observer_identity()
     if error is not None:
