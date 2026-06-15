@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, g, jsonify, request
 from werkzeug.exceptions import BadRequest
 
 from solstone.convey.reasons import (
@@ -16,36 +16,26 @@ from solstone.convey.reasons import (
     INVALID_JSON_REQUEST,
     PUSH_REQUEST_INVALID,
 )
+from solstone.convey.sol_initiated.copy import APNS_CATEGORY_SOL_CHAT_REQUEST
 from solstone.convey.utils import error_response
-from solstone.think.push import triggers
-from solstone.think.push.config import is_configured
 from solstone.think.push.devices import (
     load_devices,
     register_device,
     remove_device,
     status_view,
 )
-from solstone.think.push.dispatch import CATEGORIES, CATEGORY_AGENT_ALERT
+from solstone.think.push.portal_dispatch import dispatch_via_portal
+from solstone.think.services.scout import approved_dispatch_token
 
 push_bp = Blueprint("push", __name__, url_prefix="/api/push")
 
 
-def _optional_json_object() -> tuple[dict[str, Any], Any | None]:
-    if not request.get_data(cache=True):
-        return {}, None
-    try:
-        data = request.get_json(silent=False)
-    except BadRequest:
-        return {}, error_response(
-            INVALID_JSON_REQUEST,
-            detail="request body must be valid JSON",
-        )
-    if not isinstance(data, dict):
-        return {}, error_response(
-            INVALID_JSON_REQUEST,
-            detail="request body must be a JSON object",
-        )
-    return data, None
+def _connection_fingerprint() -> str | None:
+    identity = getattr(g, "identity", None)
+    fingerprint = getattr(identity, "fingerprint", None)
+    if isinstance(fingerprint, str) and fingerprint.strip():
+        return fingerprint
+    return None
 
 
 def _required_json_object() -> tuple[dict[str, Any], Any | None]:
@@ -64,8 +54,27 @@ def _required_json_object() -> tuple[dict[str, Any], Any | None]:
     return data, None
 
 
+def _optional_json_object() -> tuple[dict[str, Any], Any | None]:
+    if not request.get_data(cache=True):
+        return {}, None
+    return _required_json_object()
+
+
+def _require_fingerprint() -> tuple[str | None, Any | None]:
+    fingerprint = _connection_fingerprint()
+    if fingerprint is None:
+        return None, error_response(
+            PUSH_REQUEST_INVALID,
+            detail="push registration requires a paired device",
+        )
+    return fingerprint, None
+
+
 @push_bp.post("/register")
 def register_push_device():
+    fingerprint, error = _require_fingerprint()
+    if error is not None:
+        return error
     body, error = _required_json_object()
     if error is not None:
         return error
@@ -85,6 +94,7 @@ def register_push_device():
     if platform != "ios":
         return error_response(PUSH_REQUEST_INVALID, detail="platform must be ios")
     count = register_device(
+        fingerprint=fingerprint,
         token="".join(token.split()).lower(),
         bundle_id=bundle_id,
         environment=environment,
@@ -95,13 +105,10 @@ def register_push_device():
 
 @push_bp.delete("/register")
 def unregister_push_device():
-    body, error = _required_json_object()
+    fingerprint, error = _require_fingerprint()
     if error is not None:
         return error
-    token = str(body.get("device_token") or "").strip()
-    if not token:
-        return error_response(PUSH_REQUEST_INVALID, detail="device_token is required")
-    removed = remove_device("".join(token.split()).lower())
+    removed = remove_device(fingerprint)
     return jsonify({"removed": removed, "device_count": len(load_devices())})
 
 
@@ -114,8 +121,8 @@ def push_status():
     )
     return jsonify(
         {
-            "configured": is_configured(),
             "device_count": len(devices),
+            "relay_available": bool(approved_dispatch_token()),
             "devices": [status_view(device) for device in devices],
         }
     )
@@ -126,27 +133,26 @@ def send_push_test():
     body, error = _optional_json_object()
     if error is not None:
         return error
-    if not is_configured():
+    if not approved_dispatch_token():
         return error_response(
             FEATURE_UNAVAILABLE,
             status=503,
-            detail="push not configured",
+            detail="push relay unavailable",
         )
-    category = body.get("category", CATEGORY_AGENT_ALERT)
-    if category not in CATEGORIES:
-        return error_response(
-            PUSH_REQUEST_INVALID,
-            detail="category must be a known push category",
-        )
-    title = str(body.get("title") or "Push test")
-    message = str(body.get("body") or "This is a test notification.")
-    sent, failed = triggers.send_agent_alert(
-        title=title,
-        body=message,
-        context_id=f"push-test-{uuid.uuid4().hex[:12]}",
-        route="/app/home",
+    request_id = f"push-test-{uuid.uuid4().hex[:12]}"
+    summary = str(body.get("body") or "This is a test notification.")
+    result = dispatch_via_portal(
+        request_id=request_id,
+        summary=summary,
+        category=APNS_CATEGORY_SOL_CHAT_REQUEST,
     )
-    return jsonify({"sent": sent, "failed": failed})
+    if result is None:
+        return error_response(
+            FEATURE_UNAVAILABLE,
+            status=503,
+            detail="push relay dispatch failed",
+        )
+    return jsonify({"dispatched": True, "request_id": request_id})
 
 
 __all__ = ["push_bp"]

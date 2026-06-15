@@ -13,61 +13,62 @@ def _devices_path(tmp_path: Path) -> Path:
     return tmp_path / "config" / "push_devices.json"
 
 
+def _register(
+    fingerprint: str,
+    token: str,
+    *,
+    bundle_id: str = "org.solpbc.solstone-swift",
+    environment: str = "development",
+    platform: str = "ios",
+) -> int:
+    return devices.register_device(
+        fingerprint=fingerprint,
+        token=token,
+        bundle_id=bundle_id,
+        environment=environment,
+        platform=platform,
+    )
+
+
 def test_load_devices_returns_empty_for_missing_store(monkeypatch, tmp_path):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
     assert devices.load_devices() == []
 
 
-def test_register_load_remove_round_trip(monkeypatch, tmp_path):
+def test_register_one_device_stores_fingerprint_row(monkeypatch, tmp_path):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(devices.time, "time", lambda: 1000)
 
-    count = devices.register_device(
-        token="a" * 64,
-        bundle_id="org.solpbc.solstone-swift",
-        environment="development",
-        platform="ios",
-    )
+    count = _register("fp-1", "a" * 64)
 
     assert count == 1
-    stored = devices.load_devices()
-    assert stored == [
+    assert devices.load_devices() == [
         {
+            "fingerprint": "fp-1",
             "token": "a" * 64,
             "bundle_id": "org.solpbc.solstone-swift",
             "environment": "development",
             "platform": "ios",
-            "registered_at": stored[0]["registered_at"],
+            "registered_at": 1000,
         }
     ]
-
-    removed = devices.remove_device("a" * 64)
-    assert removed is True
-    assert devices.load_devices() == []
+    assert "device_pubkey" not in devices.load_devices()[0]
 
 
-def test_register_device_updates_existing_token(monkeypatch, tmp_path):
+def test_register_same_fingerprint_replaces_row(monkeypatch, tmp_path):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     times = iter([1000, 2000])
     monkeypatch.setattr(devices.time, "time", lambda: next(times))
 
-    first = devices.register_device(
-        token="b" * 64,
-        bundle_id="org.solpbc.solstone-swift",
-        environment="development",
-        platform="ios",
-    )
-    second = devices.register_device(
-        token="b" * 64,
-        bundle_id="org.solpbc.solstone-swift",
-        environment="production",
-        platform="ios",
-    )
+    first = _register("fp-1", "a" * 64)
+    second = _register("fp-1", "b" * 64, environment="production")
 
     assert first == 1
     assert second == 1
     assert devices.load_devices() == [
         {
+            "fingerprint": "fp-1",
             "token": "b" * 64,
             "bundle_id": "org.solpbc.solstone-swift",
             "environment": "production",
@@ -77,32 +78,53 @@ def test_register_device_updates_existing_token(monkeypatch, tmp_path):
     ]
 
 
-def test_remove_device_returns_false_for_unknown_token(monkeypatch, tmp_path):
+def test_two_fingerprints_coexist(monkeypatch, tmp_path):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    devices.register_device(
-        token="c" * 64,
-        bundle_id="org.solpbc.solstone-swift",
-        environment="development",
-        platform="ios",
-    )
 
-    assert devices.remove_device("d" * 64) is False
-    assert len(devices.load_devices()) == 1
+    assert _register("fp-1", "a" * 64) == 1
+    assert _register("fp-2", "b" * 64) == 2
+
+    assert {device["fingerprint"] for device in devices.load_devices()} == {
+        "fp-1",
+        "fp-2",
+    }
 
 
-def test_load_devices_returns_empty_for_malformed_store(monkeypatch, tmp_path, caplog):
+def test_one_token_maps_to_one_device(monkeypatch, tmp_path):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    path = _devices_path(tmp_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text('{"devices": "bad"}', encoding="utf-8")
+    token = "c" * 64
 
-    loaded = devices.load_devices()
+    assert _register("fp-1", token) == 1
+    assert _register("fp-2", token) == 1
 
-    assert loaded == []
-    assert "push device store unreadable" in caplog.text
+    stored = devices.load_devices()
+    assert stored == [
+        {
+            "fingerprint": "fp-2",
+            "token": token,
+            "bundle_id": "org.solpbc.solstone-swift",
+            "environment": "development",
+            "platform": "ios",
+            "registered_at": stored[0]["registered_at"],
+        }
+    ]
 
 
-def test_status_view_masks_token(monkeypatch, tmp_path):
+def test_remove_device_by_fingerprint(monkeypatch, tmp_path):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _register("fp-1", "a" * 64)
+    _register("fp-2", "b" * 64)
+
+    assert devices.remove_device("fp-1") is True
+    assert [device["fingerprint"] for device in devices.load_devices()] == ["fp-2"]
+
+    assert devices.remove_device("missing") is False
+    assert [device["fingerprint"] for device in devices.load_devices()] == ["fp-2"]
+
+
+def test_load_devices_returns_empty_for_legacy_token_keyed_store(
+    monkeypatch, tmp_path, caplog
+):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     path = _devices_path(tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -111,11 +133,11 @@ def test_status_view_masks_token(monkeypatch, tmp_path):
             {
                 "devices": [
                     {
-                        "token": "0123456789abcdef",
+                        "token": "a" * 64,
                         "bundle_id": "org.solpbc.solstone-swift",
                         "environment": "development",
                         "platform": "ios",
-                        "registered_at": 1713528000,
+                        "registered_at": 1,
                     }
                 ]
             }
@@ -123,12 +145,32 @@ def test_status_view_masks_token(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    device = devices.load_devices()[0]
-    view = devices.status_view(device)
+    assert devices.load_devices() == []
+    assert "push device store unreadable" in caplog.text
 
-    assert devices.mask_token("0123456789abcdef") == "...cdef"
-    assert view == {
-        "token_suffix": "...cdef",
+
+def test_load_devices_returns_empty_for_malformed_store(monkeypatch, tmp_path, caplog):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    path = _devices_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"devices": "bad"}), encoding="utf-8")
+
+    assert devices.load_devices() == []
+    assert "push device store unreadable" in caplog.text
+
+
+def test_status_view_masks_token_and_formats_timestamp():
+    assert devices.status_view(
+        {
+            "fingerprint": "fp-1",
+            "token": "a" * 60 + "bcde",
+            "bundle_id": "org.solpbc.solstone-swift",
+            "environment": "development",
+            "platform": "ios",
+            "registered_at": 1713528000,
+        }
+    ) == {
+        "token_suffix": "...bcde",
         "bundle_id": "org.solpbc.solstone-swift",
         "environment": "development",
         "platform": "ios",

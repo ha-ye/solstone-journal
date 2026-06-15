@@ -140,7 +140,6 @@ journal-host = [
     "huggingface-hub>=0.24",
     "httpx",
     "h2",
-    "pyjwt>=2.8",
     "jsonschema>=4.26,<5",
     "genai-prices",
     "icalendar",

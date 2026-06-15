@@ -10,7 +10,6 @@ import atexit
 import logging
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any
 
 from solstone.think.callosum import CallosumConnection
@@ -26,7 +25,6 @@ class RuntimeState:
     started_event: threading.Event = field(default_factory=threading.Event)
     apps: list[Any] = field(default_factory=list)
     callosum: CallosumConnection | None = None
-    periodic_task: asyncio.Task[Any] | None = None
 
 
 _RUNTIME_LOCK = threading.Lock()
@@ -40,21 +38,10 @@ def get_runtime_state() -> RuntimeState | None:
 
 def _on_callosum_message(message: dict[str, Any]) -> None:
     try:
-        triggers.handle_briefing_finish(message)
-        triggers.handle_weekly_reflection_finish(message)
         triggers.handle_sol_chat_request(message)
         triggers.handle_chat_lifecycle(message)
     except Exception:
         logger.exception("push callosum handler failed")
-
-
-async def _periodic_loop() -> None:
-    while True:
-        await asyncio.sleep(60)
-        try:
-            triggers.check_pre_meeting_prep(datetime.now())
-        except Exception:
-            logger.exception("push periodic check failed")
 
 
 def _thread_main(runtime: RuntimeState) -> None:
@@ -63,7 +50,6 @@ def _thread_main(runtime: RuntimeState) -> None:
     runtime.loop = loop
     runtime.callosum = CallosumConnection()
     runtime.callosum.start(callback=_on_callosum_message)
-    runtime.periodic_task = loop.create_task(_periodic_loop())
     runtime.started_event.set()
     try:
         loop.run_forever()
@@ -131,8 +117,6 @@ def stop_all_push_runtime() -> None:
     if runtime.callosum is not None:
         runtime.callosum.stop()
     if runtime.loop is not None:
-        if runtime.periodic_task is not None:
-            runtime.loop.call_soon_threadsafe(runtime.periodic_task.cancel)
         runtime.loop.call_soon_threadsafe(runtime.loop.stop)
     if runtime.thread is not None:
         runtime.thread.join(timeout=1.0)

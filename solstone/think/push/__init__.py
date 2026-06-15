@@ -9,11 +9,9 @@ from solstone.think.push.runtime import (
     stop_all_push_runtime,
     stop_push_runtime,
 )
-from solstone.think.push.triggers import send_agent_alert
 
 __all__ = [
     "get_runtime_state",
-    "send_agent_alert",
     "start_push_runtime",
     "stop_all_push_runtime",
     "stop_push_runtime",

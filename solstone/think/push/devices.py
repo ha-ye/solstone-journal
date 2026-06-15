@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Push device storage."""
+"""Push device storage keyed by link fingerprint."""
 
 from __future__ import annotations
 
@@ -22,10 +22,6 @@ def _devices_path() -> Path:
     return Path(get_journal()) / "config" / "push_devices.json"
 
 
-def _empty_store() -> dict[str, list[dict[str, Any]]]:
-    return {"devices": []}
-
-
 def _validate_store(payload: Any) -> list[dict[str, Any]]:
     if not isinstance(payload, dict):
         raise ValueError("push device store must be a JSON object")
@@ -36,13 +32,15 @@ def _validate_store(payload: Any) -> list[dict[str, Any]]:
     for device in devices:
         if not isinstance(device, dict):
             raise ValueError("push device rows must be JSON objects")
+        fingerprint = str(device.get("fingerprint") or "").strip()
         token = str(device.get("token") or "").strip()
         bundle_id = str(device.get("bundle_id") or "").strip()
         environment = str(device.get("environment") or "").strip()
         platform = str(device.get("platform") or "").strip()
         registered_at = device.get("registered_at")
         if (
-            not token
+            not fingerprint
+            or not token
             or not bundle_id
             or not environment
             or not platform
@@ -51,6 +49,7 @@ def _validate_store(payload: Any) -> list[dict[str, Any]]:
             raise ValueError("push device row missing required fields")
         normalized.append(
             {
+                "fingerprint": fingerprint,
                 "token": token,
                 "bundle_id": bundle_id,
                 "environment": environment,
@@ -83,41 +82,36 @@ def load_devices() -> list[dict[str, Any]]:
 
 
 def register_device(
-    *, token: str, bundle_id: str, environment: str, platform: str
+    *, fingerprint: str, token: str, bundle_id: str, environment: str, platform: str
 ) -> int:
-    devices = load_devices()
-    registered_at = int(time.time())
-    updated = False
-    for device in devices:
-        if device["token"] != token:
-            continue
-        device.update(
-            {
-                "bundle_id": bundle_id,
-                "environment": environment,
-                "platform": platform,
-                "registered_at": registered_at,
-            }
-        )
-        updated = True
-        break
-    if not updated:
-        devices.append(
-            {
-                "token": token,
-                "bundle_id": bundle_id,
-                "environment": environment,
-                "platform": platform,
-                "registered_at": registered_at,
-            }
-        )
+    """Upsert one device by link fingerprint.
+
+    The row for ``fingerprint`` is replaced (most-recent token/bundle/env/platform
+    wins). Any other row currently holding ``token`` is dropped so a token maps to
+    exactly one device (one token -> one device).
+    """
+    devices = [
+        device
+        for device in load_devices()
+        if device["fingerprint"] != fingerprint and device["token"] != token
+    ]
+    devices.append(
+        {
+            "fingerprint": fingerprint,
+            "token": token,
+            "bundle_id": bundle_id,
+            "environment": environment,
+            "platform": platform,
+            "registered_at": int(time.time()),
+        }
+    )
     _write_store(devices)
     return len(devices)
 
 
-def remove_device(token: str) -> bool:
+def remove_device(fingerprint: str) -> bool:
     devices = load_devices()
-    remaining = [device for device in devices if device["token"] != token]
+    remaining = [device for device in devices if device["fingerprint"] != fingerprint]
     if len(remaining) == len(devices):
         return False
     _write_store(remaining)

@@ -6,6 +6,7 @@ from __future__ import annotations
 import pytest
 from flask import Flask
 
+from solstone.convey.sol_initiated.copy import KIND_SOL_CHAT_REQUEST
 from solstone.think.push import runtime
 from solstone.think.push.runtime import (
     get_runtime_state,
@@ -107,18 +108,19 @@ def test_stop_all_push_runtime_clears_runtime(monkeypatch):
 
 def test_on_callosum_message_calls_both_handlers(monkeypatch):
     calls: list[tuple[str, dict[str, str]]] = []
+    request_handler = "handle_sol_chat_" + "request"
     monkeypatch.setattr(
         runtime.triggers,
-        "handle_briefing_finish",
-        lambda message: calls.append(("briefing", message)),
+        request_handler,
+        lambda message: calls.append(("request_handler", message)),
     )
     monkeypatch.setattr(
         runtime.triggers,
-        "handle_weekly_reflection_finish",
-        lambda message: calls.append(("weekly_reflection", message)),
+        "handle_chat_lifecycle",
+        lambda message: calls.append(("chat_lifecycle", message)),
     )
-    message = {"tract": "cortex", "event": "finish", "name": "weekly_reflection"}
+    message = {"tract": "chat", "event": KIND_SOL_CHAT_REQUEST, "request_id": "req-1"}
 
     runtime._on_callosum_message(message)
 
-    assert calls == [("briefing", message), ("weekly_reflection", message)]
+    assert calls == [("request_handler", message), ("chat_lifecycle", message)]
