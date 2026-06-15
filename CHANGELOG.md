@@ -4,6 +4,11 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.2] - 2026-06-15
+
+### Changed
+- an observer running on another machine you've linked now streams to your journal over your private link. each observer is identified by its own handle, kept fully separate from the machine's link identity, so the two can change independently and one never stands in for the other. observers running on the same machine as your journal are unaffected. what your observers take in, and where your journal lives, are unchanged.
+
 ## [0.6.1] - 2026-06-15
 
 ### Changed
