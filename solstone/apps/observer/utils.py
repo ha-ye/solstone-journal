@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -25,13 +24,11 @@ from solstone.convey.reasons import (
     PL_REVOKED,
 )
 from solstone.convey.utils import error_response
+from solstone.observe.protocol import OBSERVER_HANDLE_HEADER
 from solstone.think.journal_io import atomic_replace
-from solstone.think.link.auth import AuthorizedClients
-from solstone.think.link.paths import authorized_clients_path
 from solstone.think.utils import now_ms
 
 logger = logging.getLogger(__name__)
-FINGERPRINT_RE = re.compile(r"^sha256:([a-f0-9]{64})$")
 
 
 def get_observers_dir() -> Path:
@@ -54,25 +51,11 @@ def get_hist_dir(key_prefix: str, ensure_exists: bool = True) -> Path:
     )
 
 
-def _fingerprint_hex(fingerprint: str) -> str:
-    match = FINGERPRINT_RE.fullmatch(fingerprint)
-    if match is None:
-        raise ValueError("observer fingerprint must be sha256:<64 hex chars>")
-    return match.group(1)
-
-
 def observer_filename_prefix(record: dict[str, Any]) -> str:
-    fingerprint = record.get("fingerprint")
     key = record.get("key")
-    if isinstance(fingerprint, str) and fingerprint:
-        return _fingerprint_hex(fingerprint)[:16]
     if isinstance(key, str) and key:
         return key[:8]
-    raise ValueError("observer record must include key or fingerprint")
-
-
-def observer_mode(record: dict[str, Any]) -> str:
-    return "pl" if record.get("fingerprint") else "dl"
+    raise ValueError("observer record must include key")
 
 
 def _observer_filename(record: dict[str, Any]) -> str:
@@ -87,18 +70,20 @@ def _persistable_record(record: dict[str, Any]) -> dict[str, Any]:
 
 def _augment_record(record: dict[str, Any], filename_prefix: str | None = None) -> dict:
     augmented = dict(record)
-    augmented["mode"] = observer_mode(record)
     augmented["filename_prefix"] = filename_prefix or observer_filename_prefix(record)
     return augmented
 
 
 def _validate_observer_record(record: dict[str, Any], path: Path) -> dict | None:
     key = record.get("key")
-    fingerprint = record.get("fingerprint")
-    has_key = isinstance(key, str) and bool(key)
-    has_fingerprint = isinstance(fingerprint, str) and bool(fingerprint)
-    if has_key == has_fingerprint:
+    if not isinstance(key, str) or not key:
         logger.warning("Skipping invalid observer record %s", path)
+        return None
+    fingerprint = record.get("fingerprint")
+    if isinstance(fingerprint, str) and fingerprint:
+        # Attribution is handle-only; a stray legacy fingerprint-keyed PL record
+        # is simply not loaded. Production has none, so no migration is needed.
+        logger.warning("Skipping fingerprint-keyed observer record %s", path)
         return None
     try:
         prefix = observer_filename_prefix(record)
@@ -117,7 +102,6 @@ class ObserverRegistry:
         self._lock = threading.Lock()
         self._mtime_ns = -1
         self._by_key: dict[str, dict] = {}
-        self._by_fingerprint: dict[str, dict] = {}
         self._by_prefix: dict[str, dict] = {}
         self._records: list[dict] = []
 
@@ -158,12 +142,6 @@ class ObserverRegistry:
             record = self._by_key.get(key)
             return dict(record) if record is not None else None
 
-    def by_fingerprint(self, fingerprint: str) -> dict | None:
-        self.reload_if_stale()
-        with self._lock:
-            record = self._by_fingerprint.get(fingerprint)
-            return dict(record) if record is not None else None
-
     def by_prefix(self, prefix: str) -> dict | None:
         self.reload_if_stale()
         with self._lock:
@@ -185,7 +163,6 @@ class ObserverRegistry:
 
     def _reload_locked(self, current_mtime: int) -> None:
         by_key: dict[str, dict] = {}
-        by_fingerprint: dict[str, dict] = {}
         by_prefix: dict[str, dict] = {}
         records: list[dict] = []
         for observer_path in self._observers_dir.glob("*.json"):
@@ -213,27 +190,18 @@ class ObserverRegistry:
             key = record.get("key")
             if isinstance(key, str) and key:
                 by_key[key] = record
-            fingerprint = record.get("fingerprint")
-            if isinstance(fingerprint, str) and fingerprint:
-                by_fingerprint[fingerprint] = record
             by_prefix[prefix] = record
             records.append(record)
         records.sort(key=lambda item: item.get("created_at", 0), reverse=True)
         self._by_key = by_key
-        self._by_fingerprint = by_fingerprint
         self._by_prefix = by_prefix
         self._records = records
         self._mtime_ns = current_mtime
 
 
 def load_observer(key: str) -> dict | None:
-    """Load observer metadata by DL bearer key."""
+    """Load observer metadata by handle."""
     return ObserverRegistry.singleton().by_key(key)
-
-
-def load_observer_by_fingerprint(fingerprint: str) -> dict | None:
-    """Load observer metadata by PL client certificate fingerprint."""
-    return ObserverRegistry.singleton().by_fingerprint(fingerprint)
 
 
 def save_observer(data: dict) -> bool:
@@ -257,34 +225,6 @@ def save_observer(data: dict) -> bool:
         return False
 
 
-def mint_pl_observer_record(
-    fingerprint: str, device_label: str, paired_at: str
-) -> Path:
-    prefix = _fingerprint_hex(fingerprint)[:16]
-    observers_dir = get_observers_dir()
-    observer_path = observers_dir / f"{prefix}.json"
-    if observer_path.exists():
-        raise FileExistsError(observer_path)
-    record = {
-        "fingerprint": fingerprint,
-        "mode": "pl",
-        "name": device_label,
-        "paired_at": paired_at,
-        "created_at": now_ms(),
-        "last_seen": None,
-        "last_segment": None,
-        "enabled": True,
-        "stats": {
-            "segments_received": 0,
-            "bytes_received": 0,
-        },
-    }
-    atomic_replace(observer_path, json.dumps(record, indent=2))
-    os.chmod(observer_path, 0o600)
-    ObserverRegistry.singleton().invalidate()
-    return observer_path
-
-
 def _find_observer(identifier: str) -> dict | None:
     """Find an observer by name or filename prefix."""
     observer = find_observer_by_name(identifier)
@@ -296,9 +236,12 @@ def _find_observer(identifier: str) -> dict | None:
     if observer_path.exists():
         try:
             with open(observer_path, encoding="utf-8") as f:
-                return json.load(f)
+                raw = json.load(f)
         except (json.JSONDecodeError, OSError):
             pass
+        else:
+            if isinstance(raw, dict):
+                return _validate_observer_record(raw, observer_path)
 
     return None
 
@@ -319,17 +262,6 @@ def revoke_observer_record(identifier: str) -> dict:
 
     if not save_observer(observer):
         raise RuntimeError("failed to save observer")
-
-    if observer_mode(observer) == "pl":
-        fingerprint = observer.get("fingerprint")
-        removed = AuthorizedClients(authorized_clients_path()).remove(str(fingerprint))
-        if not removed:
-            logger.warning(
-                "PL observer revoked but fingerprint was not authorized name=%s "
-                "fingerprint=%s",
-                name,
-                fingerprint,
-            )
 
     log_app_action(
         app="observer",
@@ -364,22 +296,15 @@ def find_observer_by_name(name: str) -> dict | None:
 def _get_auth_key() -> str | None:
     from flask import request
 
+    handle = request.headers.get(OBSERVER_HANDLE_HEADER, "").strip()
+    if handle:
+        return handle
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         bearer = auth[7:].strip()
         if bearer:
             return bearer
     return None
-
-
-def _identity_fingerprint() -> str | None:
-    from flask import g
-
-    identity = getattr(g, "identity", None)
-    if identity is None or identity.mode not in {"pl-direct", "pl-via-spl"}:
-        return None
-    fingerprint = getattr(identity, "fingerprint", None)
-    return fingerprint if isinstance(fingerprint, str) and fingerprint else None
 
 
 def _auth_failure():
@@ -395,21 +320,11 @@ def _check_observer_enabled(observer: dict):
 
 
 def resolve_observer_identity():
-    """Resolve an observer from PL identity first, then Authorization Bearer."""
-    fingerprint = _identity_fingerprint()
-    if fingerprint is not None:
-        observer = load_observer_by_fingerprint(fingerprint)
-        if observer is None:
-            return None, None, _auth_failure()
-        error = _check_observer_enabled(observer)
-        if error is not None:
-            return None, None, error
-        return observer, observer["filename_prefix"], None
-
-    auth_key = _get_auth_key()
-    if not auth_key:
+    """Resolve an observer by its handle (X-Solstone-Observer, else Bearer)."""
+    handle = _get_auth_key()
+    if not handle:
         return None, None, _auth_failure()
-    observer = load_observer(auth_key)
+    observer = load_observer(handle)
     if observer is None:
         return None, None, error_response(AUTH_KEY_INVALID, detail="Invalid key")
     error = _check_observer_enabled(observer)

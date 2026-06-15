@@ -18,7 +18,7 @@ from solstone.apps.observer.routes import (
     STALE_THRESHOLD_MS,
     _classify_observer_freshness,
 )
-from solstone.apps.observer.utils import mint_pl_observer_record, save_observer
+from solstone.apps.observer.utils import save_observer
 from solstone.convey.copy import OBSERVER_CALLOSUM_LIVE_LABEL
 from solstone.convey.secure_listener import ConveyIdentity
 from solstone.convey.sol_initiated.copy import KIND_SOL_CHAT_REQUEST
@@ -371,35 +371,6 @@ def test_api_delete_observer(observer_env):
     assert observers[0]["label"] == OBSERVER_STATE_LABELS["revoked"]
     assert observers[0]["elapsed_ms"] is None
     assert observers[0]["clock_skew"] is False
-
-
-def test_api_delete_pl_observer_removes_fingerprint(observer_env):
-    env = observer_env()
-    prefix = PL_FINGERPRINT.removeprefix("sha256:")[:16]
-    mint_pl_observer_record(
-        fingerprint=PL_FINGERPRINT,
-        device_label="pl-delete",
-        paired_at="2026-05-20T00:00:00Z",
-    )
-    AuthorizedClients(authorized_clients_path()).add(
-        PL_FINGERPRINT,
-        "pl-delete",
-        "inst-1",
-        role="observer",
-        paired_at="2026-05-20T00:00:00Z",
-    )
-
-    resp = env.client.delete(f"/app/observer/api/{prefix}")
-
-    assert resp.status_code == 200
-    assert resp.get_json()["status"] == "ok"
-    assert (
-        AuthorizedClients(authorized_clients_path()).is_authorized(PL_FINGERPRINT)
-        is False
-    )
-    observers = _api_list_observers(env)
-    assert observers[0]["name"] == "pl-delete"
-    assert observers[0]["revoked"] is True
 
 
 def test_api_delete_dl_observer_does_not_touch_authorized_clients(observer_env):
@@ -970,37 +941,6 @@ def test_ingest_updates_stats(observer_env):
     assert observers[0]["last_seen"] is not None
 
 
-def test_ingest_pl_uses_fingerprint_identity(observer_env):
-    env = observer_env()
-    prefix = PL_FINGERPRINT.removeprefix("sha256:")[:16]
-    mint_pl_observer_record(
-        fingerprint=PL_FINGERPRINT,
-        device_label="pl-observer",
-        paired_at="2026-05-20T00:00:00Z",
-    )
-
-    resp = env.client.post(
-        "/app/observer/ingest",
-        environ_overrides={"pl.identity": _pl_identity()},
-        data={
-            "day": "20250103",
-            "segment": "120000_300",
-            "files": (io.BytesIO(b"pl content"), "audio.flac"),
-        },
-    )
-
-    assert resp.status_code == 200
-    assert (
-        env.journal
-        / "apps"
-        / "observer"
-        / "observers"
-        / prefix
-        / "hist"
-        / "20250103.jsonl"
-    ).exists()
-
-
 def test_ingest_event_relay(observer_env):
     """Test event relay endpoint."""
     env = observer_env()
@@ -1024,71 +964,7 @@ def test_ingest_event_relay(observer_env):
     assert resp.get_json()["status"] == "ok"
 
 
-def test_dl_and_pl_observers_coexist_and_ingest(observer_env):
-    env = observer_env()
-    dl_resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "dl-coexist"},
-        content_type="application/json",
-    )
-    assert dl_resp.status_code == 200
-    dl_key = dl_resp.get_json()["key"]
-    dl_prefix = dl_key[:8]
-    pl_prefix = PL_FINGERPRINT.removeprefix("sha256:")[:16]
-    mint_pl_observer_record(
-        fingerprint=PL_FINGERPRINT,
-        device_label="pl-coexist",
-        paired_at="2026-05-20T00:00:00Z",
-    )
-
-    dl_upload = env.client.post(
-        "/app/observer/ingest",
-        headers={"Authorization": f"Bearer {dl_key}"},
-        data={
-            "day": "20250103",
-            "segment": "120000_300",
-            "files": (io.BytesIO(b"dl content"), "dl.txt"),
-        },
-    )
-    pl_upload = env.client.post(
-        "/app/observer/ingest",
-        environ_overrides={"pl.identity": _pl_identity()},
-        data={
-            "day": "20250103",
-            "segment": "120500_300",
-            "files": (io.BytesIO(b"pl content"), "pl.txt"),
-        },
-    )
-
-    assert dl_upload.status_code == 200
-    assert pl_upload.status_code == 200
-    observer_files = {
-        path.name
-        for path in (env.journal / "apps" / "observer" / "observers").glob("*.json")
-    }
-    assert f"{dl_prefix}.json" in observer_files
-    assert f"{pl_prefix}.json" in observer_files
-    assert (
-        env.journal
-        / "apps"
-        / "observer"
-        / "observers"
-        / dl_prefix
-        / "hist"
-        / "20250103.jsonl"
-    ).exists()
-    assert (
-        env.journal
-        / "apps"
-        / "observer"
-        / "observers"
-        / pl_prefix
-        / "hist"
-        / "20250103.jsonl"
-    ).exists()
-
-
-def test_ingest_event_pl_phone_identity_without_observer_record_returns_401(
+def test_ingest_event_pl_phone_identity_without_handle_returns_401(
     observer_env,
 ):
     env = observer_env()

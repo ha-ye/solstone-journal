@@ -322,6 +322,7 @@ def mint_pl_journal_source_record(
     paired_at: str,
     peer_instance_id: str | None = None,
 ) -> Path:
+    """A peer journal-source is identified by its link fingerprint by design — it is a machine-scoped content source with no producer identity independent of its link. This is intentionally distinct from observer attribution, where the observer handle is decoupled from any machine fingerprint."""
     prefix = _fingerprint_hex(fingerprint)[:16]
     sources_dir = get_journal_sources_dir()
     source_path = sources_dir / f"{prefix}.json"

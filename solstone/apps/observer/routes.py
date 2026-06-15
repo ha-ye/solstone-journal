@@ -68,7 +68,6 @@ from .utils import (
     get_observers_dir,
     list_observers,
     load_history,
-    load_observer,
     observer_filename_prefix,
     resolve_observer_identity,
     revoke_observer_record,
@@ -257,20 +256,14 @@ def api_list() -> Any:
 @observer_bp.route(_OBSERVER_CALLOSUM_SSE_RULE, methods=["GET"])
 def callosum_sse() -> Any:
     """Stream Callosum events to an authenticated observer process."""
-    observer, key_prefix, error = resolve_observer_identity()
+    _observer, key_prefix, error = resolve_observer_identity()
     if error is not None:
         return error
-    auth_key = observer.get("key")
-    fingerprint = observer.get("fingerprint")
 
     handle = convey_bridge.register_sse_subscriber(key_prefix)
 
     def current_observer() -> dict | None:
-        if isinstance(fingerprint, str) and fingerprint:
-            return ObserverRegistry.singleton().by_fingerprint(fingerprint)
-        if isinstance(auth_key, str) and auth_key:
-            return load_observer(auth_key)
-        return None
+        return ObserverRegistry.singleton().by_prefix(key_prefix)
 
     def generate():
         try:

@@ -16,7 +16,6 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 from solstone.apps.link import routes as link_routes
-from solstone.apps.observer.utils import load_observer_by_fingerprint
 from solstone.convey.secure_listener import ConveyIdentity
 from solstone.think.link.nonces import Nonce
 
@@ -108,7 +107,6 @@ def test_role_less_pairing_does_not_mint_observer_record(pair_env) -> None:
 
     response = _pair(env, label="Linked System")
 
-    assert load_observer_by_fingerprint(response["fingerprint"]) is None
     assert _observer_record_paths(env) == []
     entries = link_routes._authorized().snapshot()
     assert len(entries) == 1

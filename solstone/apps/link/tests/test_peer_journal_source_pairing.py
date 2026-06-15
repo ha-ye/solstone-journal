@@ -13,7 +13,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 from solstone.apps.link import routes as link_routes
-from solstone.apps.observer.utils import load_observer_by_fingerprint
+from solstone.apps.observer.utils import list_observers
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.nonces import Nonce
 
@@ -244,7 +244,7 @@ def test_observer_role_pairing_does_not_mint_observer_or_journal_source(
 
     response = _pair(env, role="observer", label="Observer Laptop")
 
-    assert load_observer_by_fingerprint(response["fingerprint"]) is None
+    assert list_observers() == []
     assert (
         journal_sources.load_journal_source_by_fingerprint(response["fingerprint"])
         is None
@@ -267,7 +267,7 @@ def test_observer_role_pairing_validates_but_ignores_sender_instance_id(
         sender_instance_id="abc-123",
     )
 
-    assert load_observer_by_fingerprint(response["fingerprint"]) is None
+    assert list_observers() == []
     assert (
         journal_sources.load_journal_source_by_fingerprint(response["fingerprint"])
         is None

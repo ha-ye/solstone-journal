@@ -14,3 +14,9 @@ OBSERVER_PROTOCOL_VERSION = 2
 # Request header a peer uses to advertise the observer ingest protocol version
 # it speaks. Absent/unparsable => treated as v1 (legacy/unversioned).
 OBSERVER_PROTOCOL_VERSION_HEADER = "X-Solstone-Protocol-Version"
+
+# Request header a satellite observer uses to advertise its attribution handle.
+# Resolved before Authorization: Bearer. Survives the `sol link serve` proxy
+# (which forwards X-* and strips Authorization), which is why attribution rides
+# a new X- header rather than Bearer.
+OBSERVER_HANDLE_HEADER = "X-Solstone-Observer"

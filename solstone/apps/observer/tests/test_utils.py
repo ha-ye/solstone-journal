@@ -12,6 +12,8 @@ import pytest
 
 from solstone.apps.observer.utils import (
     ObserverRegistry,
+    _find_observer,
+    _validate_observer_record,
     append_history_record,
     find_observer_by_name,
     find_segment_by_sha256,
@@ -21,14 +23,11 @@ from solstone.apps.observer.utils import (
     list_observers,
     load_history,
     load_observer,
-    load_observer_by_fingerprint,
-    mint_pl_observer_record,
     observer_filename_prefix,
     save_observer,
 )
 
 FINGERPRINT = "sha256:" + ("a" * 64)
-FINGERPRINT_2 = "sha256:" + ("b" * 64)
 
 
 @pytest.fixture
@@ -75,50 +74,18 @@ class TestObserverStorage:
         loaded = load_observer("testkey123456789")
         assert loaded is not None
         assert loaded["name"] == "test-observer"
-        assert loaded["mode"] == "dl"
         assert loaded["filename_prefix"] == "testkey1"
 
-    def test_observer_filename_prefix_for_dl_and_pl(self, storage_env):
+    def test_observer_filename_prefix_requires_handle(self, storage_env):
         assert observer_filename_prefix({"key": "abcdef123456"}) == "abcdef12"
-        assert observer_filename_prefix({"fingerprint": FINGERPRINT}) == "a" * 16
-
-    def test_save_and_load_pl_observer(self, storage_env):
-        observer = {
-            "fingerprint": FINGERPRINT,
-            "name": "pl-observer",
-            "stats": {"segments_received": 0},
-        }
-
-        assert save_observer(observer) is True
-
-        loaded = load_observer_by_fingerprint(FINGERPRINT)
-        assert loaded is not None
-        assert loaded["name"] == "pl-observer"
-        assert loaded["mode"] == "pl"
-        assert loaded["filename_prefix"] == "a" * 16
-        assert (storage_env.observers_dir / f"{'a' * 16}.json").exists()
-
-    def test_mint_pl_observer_record(self, storage_env):
-        path = mint_pl_observer_record(FINGERPRINT, "laptop", "2026-04-20T00:00:00Z")
-
-        assert path == storage_env.observers_dir / f"{'a' * 16}.json"
-        loaded = load_observer_by_fingerprint(FINGERPRINT)
-        assert loaded is not None
-        assert loaded["name"] == "laptop"
-        assert loaded["paired_at"] == "2026-04-20T00:00:00Z"
-        assert loaded["enabled"] is True
-
-    def test_mint_pl_observer_record_refuses_existing(self, storage_env):
-        mint_pl_observer_record(FINGERPRINT, "laptop", "2026-04-20T00:00:00Z")
-
-        with pytest.raises(FileExistsError):
-            mint_pl_observer_record(FINGERPRINT, "laptop", "2026-04-20T00:00:01Z")
+        with pytest.raises(ValueError, match="observer record must include key"):
+            observer_filename_prefix({"fingerprint": FINGERPRINT})
 
     def test_observer_registry_skips_invalid_records(self, storage_env, caplog):
         caplog.set_level(logging.WARNING)
         invalid_path = storage_env.observers_dir / "bad.json"
         invalid_path.write_text(
-            json.dumps({"key": "badkey123", "fingerprint": FINGERPRINT}) + "\n",
+            json.dumps({"name": "missing-key"}) + "\n",
             encoding="utf-8",
         )
         ObserverRegistry.singleton().invalidate()
@@ -128,11 +95,47 @@ class TestObserverStorage:
 
     def test_observer_registry_by_prefix(self, storage_env):
         save_observer({"key": "dlkey123456789", "name": "dl", "stats": {}})
-        save_observer({"fingerprint": FINGERPRINT_2, "name": "pl", "stats": {}})
+        save_observer({"key": "otherkey123456789", "name": "other", "stats": {}})
 
         registry = ObserverRegistry.singleton()
         assert registry.by_prefix("dlkey123")["name"] == "dl"
-        assert registry.by_prefix("b" * 16)["name"] == "pl"
+        assert registry.by_prefix("otherkey")["name"] == "other"
+
+    def test_validate_observer_record_skips_fingerprint_records(
+        self,
+        storage_env,
+        caplog,
+    ):
+        caplog.set_level(logging.WARNING)
+
+        assert (
+            _validate_observer_record(
+                {"key": "legacykey123", "fingerprint": FINGERPRINT},
+                storage_env.observers_dir / "legacy.json",
+            )
+            is None
+        )
+        assert "Skipping fingerprint-keyed observer record" in caplog.text
+
+    def test_find_observer_skips_fingerprint_records_by_path(
+        self,
+        storage_env,
+    ):
+        legacy_path = storage_env.observers_dir / "legacyke.json"
+        legacy_path.write_text(
+            json.dumps(
+                {
+                    "key": "legacykey123",
+                    "fingerprint": FINGERPRINT,
+                    "name": "legacy",
+                    "stats": {},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        assert _find_observer("legacyke") is None
 
     def test_load_observer_wrong_key(self, storage_env):
         """load_observer returns None for wrong key."""

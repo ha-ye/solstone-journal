@@ -13,28 +13,13 @@ import pytest
 
 import solstone.apps.observer.routes as routes_module
 import solstone.convey.bridge as convey_bridge
-import solstone.convey.root as root_module
 from solstone.apps.observer.routes import OBSERVER_CALLOSUM_SSE_ROUTE
 from solstone.apps.observer.utils import (
     load_observer,
-    load_observer_by_fingerprint,
-    mint_pl_observer_record,
     save_observer,
 )
-from solstone.convey.secure_listener import ConveyIdentity
 from solstone.convey.sol_initiated.copy import KIND_SOL_CHAT_REQUEST
-
-PL_FINGERPRINT = "sha256:" + ("e" * 64)
-
-
-def _pl_identity(fingerprint: str = PL_FINGERPRINT) -> ConveyIdentity:
-    return ConveyIdentity(
-        mode="pl-direct",
-        fingerprint=fingerprint,
-        device_label="pl-sse",
-        paired_at="2026-05-20T00:00:00Z",
-        session_id="session-1",
-    )
+from solstone.observe.protocol import OBSERVER_HANDLE_HEADER
 
 
 @pytest.fixture(autouse=True)
@@ -226,61 +211,23 @@ def test_callosum_sse_round_trip_payload(observer_env):
         resp.close()
 
 
-def test_callosum_sse_pl_registers_under_fingerprint_prefix(observer_env, monkeypatch):
-    env = observer_env()
-    prefix = PL_FINGERPRINT.removeprefix("sha256:")[:16]
-    mint_pl_observer_record(
-        fingerprint=PL_FINGERPRINT,
-        device_label="pl-sse",
-        paired_at="2026-05-20T00:00:00Z",
-    )
-
-    class Authorized:
-        def is_authorized(self, fingerprint: str) -> bool:
-            return fingerprint == PL_FINGERPRINT
-
-    monkeypatch.setattr(root_module, "get_authorized_clients", lambda: Authorized())
-
-    resp = env.client.get(
-        _route(),
-        environ_overrides={"pl.identity": _pl_identity()},
-        buffered=False,
-    )
-    try:
-        assert resp.status_code == 200
-        assert convey_bridge.subscription_count(prefix) == 1
-    finally:
-        resp.close()
-    assert convey_bridge.subscription_count(prefix) == 0
-
-
-def test_callosum_sse_pl_revocation_midstream_emits_error(
+def test_callosum_sse_handle_revocation_midstream_emits_error(
     observer_env,
     monkeypatch,
 ):
     env = observer_env()
-    mint_pl_observer_record(
-        fingerprint=PL_FINGERPRINT,
-        device_label="pl-sse",
-        paired_at="2026-05-20T00:00:00Z",
-    )
-
-    class Authorized:
-        def is_authorized(self, fingerprint: str) -> bool:
-            return fingerprint == PL_FINGERPRINT
-
-    monkeypatch.setattr(root_module, "get_authorized_clients", lambda: Authorized())
+    key, _key_prefix = _create_observer(env, "handle-sse")
     monkeypatch.setattr(routes_module, "_SSE_HEARTBEAT_SECONDS", 0.01)
 
     resp = env.client.get(
         _route(),
-        environ_overrides={"pl.identity": _pl_identity()},
+        headers={OBSERVER_HANDLE_HEADER: key},
         buffered=False,
     )
     try:
         assert resp.status_code == 200
         assert _next_chunk(resp) == ": heartbeat\n\n"
-        observer = load_observer_by_fingerprint(PL_FINGERPRINT)
+        observer = load_observer(key)
         assert observer is not None
         observer["revoked"] = True
         assert save_observer(observer)
