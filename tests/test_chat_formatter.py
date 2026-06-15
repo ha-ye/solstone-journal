@@ -97,6 +97,13 @@ def test_format_chat_fallback_labels_when_identity_missing(monkeypatch):
     ]
 
 
+def test_format_chat_skips_queue_depth_event():
+    chunks, meta = format_chat([{"ts": 1, "kind": "chat_queue_depth", "depth": 2}])
+
+    assert chunks == []
+    assert meta == {"indexer": {"agent": "chat"}}
+
+
 def test_get_formatter_chat_jsonl_wins_over_talents_fallback():
     formatter = get_formatter("20260420/chat/120000_300/chat.jsonl")
 

@@ -318,9 +318,10 @@ OpenAI-compatible ``/v1`` surface. Key differences from cloud providers:
   vision-capable unified VLM ``local/qwen3.5-4b`` from
   ``unsloth/Qwen3.5-4B-GGUF``: ``Qwen3.5-4B-Q4_K_M.gguf`` (2740937888 bytes,
   8 GiB minimum RAM) with ``mmproj-F16.gguf``. v1 ships macOS arm64 Metal and
-  Linux x86_64 Vulkan slices. The Linux slice requires a Vulkan-capable hardware
-  GPU; CPU/software Vulkan devices such as llvmpipe, lavapipe, and SwiftShader
-  are rejected, with no CPU fallback.
+  Linux x86_64 Vulkan slices. The Linux slice is vendor-neutral: AMD, NVIDIA,
+  and Intel hardware GPUs can work when they expose a real Vulkan device. CPU
+  or software Vulkan devices such as llvmpipe, lavapipe, and SwiftShader are
+  rejected, with no CPU fallback.
 - **Linux GPU override:** operators can set
   ``providers.bundled.local.vulkan_device_index`` to a raw Vulkan physical-device
   index when auto-selection chooses the wrong GPU. The override is still gated:

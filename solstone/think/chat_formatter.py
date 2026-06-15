@@ -76,6 +76,7 @@ def _format_entry(
     if kind == KIND_SOL_CHAT_REQUEST:
         return _format_sol_request(entry)
     if kind in {
+        "chat_queue_depth",
         KIND_SOL_CHAT_REQUEST_SUPERSEDED,
         KIND_OWNER_CHAT_OPEN,
         KIND_OWNER_CHAT_DISMISSED,

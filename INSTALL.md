@@ -69,6 +69,8 @@ a `solstone[journal]` install bundles everything a journal host needs — PDF re
 
 NVIDIA GPU owners who want GPU-accelerated transcription install `solstone[journal-cuda]` **instead of** `solstone[journal]` (pick one — the CPU and GPU ONNX runtimes share the same files and must not both be installed). `sol doctor` reports whether the transcription runtime and model are ready.
 
+This CUDA extra is only for transcription. The Linux local model provider uses Vulkan for screen analysis, so a hardware Vulkan GPU from AMD, NVIDIA, or Intel can work; CPU/software Vulkan devices are rejected instead of falling back silently. On AMD, the local model path runs through Mesa/RADV Vulkan, while transcription stays on the bundled CPU runtime.
+
 if the service fails to start, check `journal service logs`.
 
 ## choosing how to power sol

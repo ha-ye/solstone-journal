@@ -58,6 +58,20 @@ def test_workspace_has_diagnostic_reports_toggle():
     assert "diagnostic reports" in text
 
 
+def test_workspace_vision_max_extractions_reads_server_value():
+    text = _workspace_text()
+
+    match = re.search(r'<input[^>]*\bid="field-max-extractions"[^>]*>', text)
+    assert match, "max extractions input not found"
+    tag = match.group(0)
+    assert 'value="20"' not in tag
+    assert 'placeholder="20"' in tag
+    assert "function setMaxExtractionsInput(value)" in text
+    assert "setMaxExtractionsInput(data.max_extractions)" in text
+    assert "setMaxExtractionsInput(result.max_extractions)" in text
+    assert "input.value = visionData?.max_extractions || 20" not in text
+
+
 def test_workspace_network_access_toggle_removed():
     text = _workspace_text()
 

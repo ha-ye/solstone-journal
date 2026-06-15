@@ -2505,7 +2505,7 @@ button:focus:not(:focus-visible) {
 
       <div class="settings-field">
         <label for="field-max-extractions">max extractions (of 300 possible frames)</label>
-        <input type="number" id="field-max-extractions" min="5" max="100" value="20" style="max-width: 100px;">
+        <input type="number" id="field-max-extractions" min="5" max="100" placeholder="20" style="max-width: 100px;">
         <small>Maximum frames to extract detailed content from per 5 minute screen segment (big impact on token usage)</small>
       </div>
 
@@ -5137,13 +5137,18 @@ async function loadVision() {
 
 function populateVision(data) {
   // Set max extractions
-  document.getElementById('field-max-extractions').value = data.max_extractions;
+  setMaxExtractionsInput(data.max_extractions);
 
   // Render redaction rules
   renderRedactRules(data);
 
   // Render categories
   renderVisionCategories(data);
+}
+
+function setMaxExtractionsInput(value) {
+  const input = document.getElementById('field-max-extractions');
+  input.value = Number.isInteger(value) ? String(value) : '';
 }
 
 const IMPORTANCE_LEVELS = ['high', 'normal', 'low', 'ignore'];
@@ -5386,10 +5391,10 @@ async function saveVisionCategory(category, importance, extraction, remove = fal
 
 async function saveMaxExtractions() {
   const input = document.getElementById('field-max-extractions');
-  const value = parseInt(input.value);
+  const value = Number(input.value);
 
-  if (isNaN(value) || value < 5 || value > 100) {
-    input.value = visionData?.max_extractions || 20;
+  if (!Number.isInteger(value) || value < 5 || value > 100) {
+    setMaxExtractionsInput(visionData?.max_extractions);
     return;
   }
 
@@ -5404,6 +5409,7 @@ async function saveMaxExtractions() {
     if (result.error) throw new Error(result.error);
 
     visionData = result;
+    setMaxExtractionsInput(result.max_extractions);
     showFieldStatus(input, 'saved');
   } catch (err) {
     console.error('Error saving max extractions:', err);
