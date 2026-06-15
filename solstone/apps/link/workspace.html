@@ -271,6 +271,9 @@
       PRIVATE_LINK_BROWSER_FALLBACK: {{ link_copy.PRIVATE_LINK_BROWSER_FALLBACK|tojson }},
       PRIVATE_LINK_SETUP_SUCCESS: {{ link_copy.PRIVATE_LINK_SETUP_SUCCESS|tojson }},
       PRIVATE_LINK_SETUP_FAILED: {{ link_copy.PRIVATE_LINK_SETUP_FAILED|tojson }},
+      PRIVATE_LINK_NEEDS_SUBSCRIPTION_HEADLINE: {{ link_copy.PRIVATE_LINK_NEEDS_SUBSCRIPTION_HEADLINE|tojson }},
+      PRIVATE_LINK_NEEDS_SUBSCRIPTION_DETAIL: {{ link_copy.PRIVATE_LINK_NEEDS_SUBSCRIPTION_DETAIL|tojson }},
+      PRIVATE_LINK_NEEDS_SUBSCRIPTION_CTA: {{ link_copy.PRIVATE_LINK_NEEDS_SUBSCRIPTION_CTA|tojson }},
       PRIVATE_LINK_DISABLE_SUCCESS: {{ link_copy.PRIVATE_LINK_DISABLE_SUCCESS|tojson }},
       PRIVATE_LINK_DISABLE_FAILED: {{ link_copy.PRIVATE_LINK_DISABLE_FAILED|tojson }},
       PRIVATE_LINK_NEEDS_REPAIR: {{ link_copy.PRIVATE_LINK_NEEDS_REPAIR|tojson }},
@@ -575,7 +578,7 @@
   let viewedMode = null;
   let lastPosture = null;
   let reachRevealed = false;
-  const PRIVATE_LINK_TERMINAL_PHASES = new Set(['enabled', 'revoked', 'error']);
+  const PRIVATE_LINK_TERMINAL_PHASES = new Set(['enabled', 'revoked', 'error', 'needs_subscription']);
   const PRIVATE_LINK_POLL_TIMEOUT_MS = 900000;
   let privateLinkRetryAction = null;
 
@@ -879,10 +882,14 @@
     privateLinkOperationDetail.textContent = detail || '';
     privateLinkOperationDetail.hidden = !detail;
     if (privateLinkOperationLink) {
-      const portalUrl = typeof options.portalUrl === 'string' ? options.portalUrl : '';
-      privateLinkOperationLink.hidden = !portalUrl;
-      privateLinkOperationLink.href = portalUrl;
-      privateLinkOperationLink.textContent = portalUrl;
+      const subscribeUrl = typeof options.subscribeUrl === 'string' ? options.subscribeUrl : '';
+      const portalUrl = !subscribeUrl && typeof options.portalUrl === 'string' ? options.portalUrl : '';
+      const linkUrl = subscribeUrl || portalUrl;
+      privateLinkOperationLink.hidden = !linkUrl;
+      privateLinkOperationLink.href = linkUrl;
+      privateLinkOperationLink.textContent = subscribeUrl
+        ? window.LinkCopy.PRIVATE_LINK_NEEDS_SUBSCRIPTION_CTA || 'set up a subscription'
+        : portalUrl;
     }
     if (privateLinkOperationRetry) {
       privateLinkOperationRetry.hidden = !privateLinkRetryAction;
@@ -910,15 +917,20 @@
     let headline = window.LinkCopy.PRIVATE_LINK_SETTING_UP || 'setting up solstone private link...';
     let detail = typeof operation.guidance === 'string' ? operation.guidance : '';
     let retryAction = null;
+    let subscribeUrl = '';
 
     if (phase === 'enabled') {
       headline = window.LinkCopy.PRIVATE_LINK_SETUP_SUCCESS || 'solstone private link is on.';
+    } else if (phase === 'needs_subscription') {
+      headline = window.LinkCopy.PRIVATE_LINK_NEEDS_SUBSCRIPTION_HEADLINE || 'private link needs a subscription';
+      detail = window.LinkCopy.PRIVATE_LINK_NEEDS_SUBSCRIPTION_DETAIL || detail;
+      subscribeUrl = typeof operation.subscribe_url === 'string' ? operation.subscribe_url : '';
     } else if (phase === 'revoked' || phase === 'error') {
       headline = window.LinkCopy.PRIVATE_LINK_SETUP_FAILED || "couldn't finish setting up solstone private link.";
       retryAction = startPrivateLinkSetup;
     }
 
-    const portalUrl = operation.browser_open_succeeded === false && operation.portal_url
+    const portalUrl = !subscribeUrl && operation.browser_open_succeeded === false && operation.portal_url
       ? operation.portal_url
       : '';
     if (portalUrl) {
@@ -926,7 +938,7 @@
       detail = detail ? `${detail} ${fallback}` : fallback;
     }
 
-    setPrivateLinkOperation(headline, detail, { portalUrl, retryAction });
+    setPrivateLinkOperation(headline, detail, { portalUrl, subscribeUrl, retryAction });
   }
 
   async function fetchPrivateLinkStatus() {

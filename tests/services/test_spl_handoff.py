@@ -6,17 +6,28 @@ from __future__ import annotations
 import io
 import json
 import ssl
+import time
 import urllib.error
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from solstone.think.journal_config import write_journal_config
-from solstone.think.link.paths import load_service_token, load_totp_secret
+from solstone.think.link.paths import LinkState, load_service_token, load_totp_secret
 from solstone.think.link.window import read_posture
-from solstone.think.services import outcomes, portal_client, spl_handoff, status
+from solstone.think.services import (
+    operations,
+    outcomes,
+    portal_client,
+    spl_handoff,
+    status,
+)
 from solstone.think.spl import relay_client
+
+TEST_INSTANCE_ID = "00000000-0000-4000-8000-000000000000"
+TEST_SUBSCRIBE_URL = "https://services.test/account/subscription"
 
 
 class FakeResponse:
@@ -96,12 +107,26 @@ def _set_posture(journal_copy: Path, posture: str) -> None:
     write_journal_config(config)
 
 
-def _run(**kwargs) -> outcomes.HandoffOutcome:
+def _run(
+    *,
+    instance_id: str | None = TEST_INSTANCE_ID,
+    **kwargs,
+) -> outcomes.HandoffOutcome:
     return spl_handoff.enable_spl_via_consent(
         base_url="https://services.test",
+        instance_id=instance_id,
         open_browser=lambda _url: True,
         **kwargs,
     )
+
+
+def _wait_until(predicate, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("timed out waiting for condition")
 
 
 def test_approved_handoff_enables_spl(journal_copy: Path, monkeypatch) -> None:
@@ -148,6 +173,70 @@ def test_malformed_approved_payload_does_not_enable(
     assert outcome.code == outcomes.MALFORMED
     assert read_posture() == "direct"
     assert load_service_token() is None
+
+
+def test_needs_subscription_payload_is_classified() -> None:
+    assert (
+        spl_handoff._classify_spl_payload(
+            {
+                "service": "spl",
+                "state": outcomes.NEEDS_SUBSCRIPTION,
+                "subscribe_url": TEST_SUBSCRIBE_URL,
+            }
+        )
+        == outcomes.NEEDS_SUBSCRIPTION
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"service": "spl", "state": outcomes.NEEDS_SUBSCRIPTION},
+        {
+            "service": "spl",
+            "state": outcomes.NEEDS_SUBSCRIPTION,
+            "subscribe_url": 42,
+        },
+        {
+            "service": "spl",
+            "state": outcomes.NEEDS_SUBSCRIPTION,
+            "subscribe_url": "http://services.test/account/subscription",
+        },
+        {
+            "service": "spl",
+            "state": outcomes.NEEDS_SUBSCRIPTION,
+            "subscribe_url": TEST_SUBSCRIBE_URL,
+            "extra": "x",
+        },
+    ],
+)
+def test_needs_subscription_payload_rejects_malformed(
+    payload: dict[str, Any],
+) -> None:
+    with pytest.raises(spl_handoff.MalformedConsent):
+        spl_handoff._classify_spl_payload(payload)
+
+
+def test_needs_subscription_flow_returns_subscribe_url(monkeypatch) -> None:
+    monkeypatch.setattr(
+        spl_handoff.spl,
+        "enable_spl",
+        lambda: pytest.fail("enable_spl should not be called"),
+    )
+
+    outcome = _run(
+        poll_once=lambda *_args, **_kwargs: portal_client.PollOutcome(
+            kind="success",
+            payload={
+                "service": "spl",
+                "state": outcomes.NEEDS_SUBSCRIPTION,
+                "subscribe_url": TEST_SUBSCRIBE_URL,
+            },
+        )
+    )
+
+    assert outcome.code == outcomes.NEEDS_SUBSCRIPTION
+    assert outcome.detail == TEST_SUBSCRIBE_URL
 
 
 def test_revoked_handoff_returns_revoked_without_enable(
@@ -219,6 +308,26 @@ def test_poll_failures_map_to_taxonomy(monkeypatch, item: Any, code: str) -> Non
     outcome = _run()
 
     assert outcome.code == code
+
+
+def test_instance_resolution_failure_returns_local_error(monkeypatch) -> None:
+    def fail_load_or_create(*, default_label: str = "solstone") -> LinkState:
+        _ = default_label
+        raise OSError("locked")
+
+    monkeypatch.setattr(
+        spl_handoff.LinkState,
+        "load_or_create",
+        staticmethod(fail_load_or_create),
+    )
+
+    outcome = spl_handoff.enable_spl_via_consent(
+        base_url="https://services.test",
+        open_browser=lambda _url: pytest.fail("browser should not open"),
+        poll_once=lambda *_args, **_kwargs: pytest.fail("poll should not run"),
+    )
+
+    assert outcome.code == outcomes.LOCAL_ERROR
 
 
 def test_relay_unreachable_after_approval_is_network_error(
@@ -314,6 +423,44 @@ def test_browser_open_false_still_polls_and_can_succeed(
     assert read_posture() == "spl"
 
 
+def test_first_enable_uses_same_persisted_instance_for_portal_and_relay(
+    journal_copy: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_file = journal_copy / "link" / "state.json"
+    assert not state_file.exists()
+
+    opened_urls: list[str] = []
+    enroll_instance_ids: list[str] = []
+    monkeypatch.setenv("SOL_LINK_RELAY_URL", "https://relay.test")
+
+    def enroll_home(_relay_url: str, **kwargs: Any) -> str:
+        enroll_instance_ids.append(kwargs["instance_id"])
+        return "tok.spl"
+
+    def open_browser(url: str) -> bool:
+        opened_urls.append(url)
+        return True
+
+    monkeypatch.setattr(spl_handoff.spl, "enroll_home", enroll_home)
+
+    outcome = spl_handoff.enable_spl_via_consent(
+        base_url="https://services.test",
+        open_browser=open_browser,
+        poll_once=lambda *_args, **_kwargs: portal_client.PollOutcome(
+            kind="success",
+            payload=_approved_payload(),
+        ),
+    )
+
+    assert outcome.code == outcomes.APPROVED
+    persisted = LinkState.load()
+    assert persisted is not None
+    parsed = urllib.parse.urlparse(opened_urls[0])
+    opened_instance_id = urllib.parse.parse_qs(parsed.query)["instance"][0]
+    assert opened_instance_id == persisted.instance_id == enroll_instance_ids[0]
+
+
 def test_run_spl_handoff_sets_posture_and_service_token(
     journal_copy: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -359,6 +506,40 @@ def test_run_spl_handoff_local_error_retryable_without_enabled_state(
     assert result.retryable is True
     assert read_posture() == "direct"
     assert load_service_token() is None
+
+
+def test_run_spl_handoff_maps_needs_subscription_to_operation(
+    journal_copy: Path,
+) -> None:
+    result = spl_handoff.run_spl_handoff(
+        open_browser=lambda _url: True,
+        poll_once=lambda *_args, **_kwargs: portal_client.PollOutcome(
+            kind="success",
+            payload={
+                "service": "spl",
+                "state": outcomes.NEEDS_SUBSCRIPTION,
+                "subscribe_url": TEST_SUBSCRIBE_URL,
+            },
+        ),
+    )
+
+    assert result.phase == "needs_subscription"
+    assert result.retryable is False
+    assert result.subscribe_url == TEST_SUBSCRIBE_URL
+
+    operations.clear_registry()
+    try:
+        operations.start_operation("spl", "spl_enable", lambda _open: result)
+        _wait_until(
+            lambda: (
+                operations.operation_for_service("spl")["phase"] == "needs_subscription"
+            )
+        )
+        operation = operations.operation_for_service("spl")
+        assert operation is not None
+        assert operation["subscribe_url"] == TEST_SUBSCRIBE_URL
+    finally:
+        operations.clear_registry()
 
 
 def test_run_spl_handoff_maps_terminal_outcomes(journal_copy: Path) -> None:

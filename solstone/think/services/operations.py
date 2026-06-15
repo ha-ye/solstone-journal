@@ -34,6 +34,7 @@ class HandoffResult:
     retryable: bool
     browser_open_succeeded: bool | None
     portal_url: str | None
+    subscribe_url: str | None = None
 
 
 @dataclass
@@ -47,6 +48,7 @@ class OperationEntry:
     portal_url: str | None
     started_monotonic: float
     ended_monotonic: float | None = None
+    subscribe_url: str | None = None
 
 
 _REGISTRY_LOCK = threading.Lock()
@@ -85,6 +87,7 @@ def _outcome_result(
     guidance: str | None,
     browser_open_succeeded: bool | None,
     portal_url: str | None,
+    subscribe_url: str | None = None,
 ) -> HandoffResult:
     if code == outcomes.APPROVED:
         return HandoffResult("enabled", None, False, browser_open_succeeded, portal_url)
@@ -95,6 +98,15 @@ def _outcome_result(
     if code == outcomes.REVOKED:
         return HandoffResult(
             "revoked", guidance, False, browser_open_succeeded, portal_url
+        )
+    if code == outcomes.NEEDS_SUBSCRIPTION:
+        return HandoffResult(
+            "needs_subscription",
+            guidance,
+            False,
+            browser_open_succeeded,
+            portal_url,
+            subscribe_url=subscribe_url,
         )
     return HandoffResult(
         "error",
@@ -134,6 +146,7 @@ def _operation_payload(
         "retryable": entry.retryable,
         "browser_open_succeeded": entry.browser_open_succeeded,
         "portal_url": entry.portal_url,
+        "subscribe_url": entry.subscribe_url,
         "elapsed_ms": int(max(0.0, ts - entry.started_monotonic) * 1000),
     }
 
@@ -151,6 +164,7 @@ def _update_entry_from_result(
         entry.retryable = result.retryable
         entry.browser_open_succeeded = result.browser_open_succeeded
         entry.portal_url = result.portal_url
+        entry.subscribe_url = result.subscribe_url
         entry.ended_monotonic = time.monotonic()
 
 

@@ -30,6 +30,43 @@ def test_spl_handoff_urls_are_supported() -> None:
     )
 
 
+def test_spl_browser_url_includes_instance_when_provided() -> None:
+    instance = "00000000-0000-4000-8000-000000000000"
+
+    assert (
+        portal_client.browser_url(
+            "https://services.test",
+            "NONCE",
+            service="spl",
+            instance=instance,
+        )
+        == f"https://services.test/enable/spl?nonce=NONCE&instance={instance}"
+    )
+
+
+def test_browser_url_omits_instance_when_not_provided() -> None:
+    assert "instance=" not in portal_client.browser_url(
+        "https://services.test", "NONCE", service="spl"
+    )
+    assert "instance=" not in portal_client.browser_url(
+        "https://services.test",
+        "NONCE",
+        service="scout",
+    )
+
+
+def test_scout_browser_url_ignores_instance() -> None:
+    assert (
+        portal_client.browser_url(
+            "https://services.test",
+            "NONCE",
+            service="scout",
+            instance="00000000-0000-4000-8000-000000000000",
+        )
+        == "https://services.test/enable/scout?nonce=NONCE"
+    )
+
+
 @pytest.mark.parametrize("builder", [portal_client.browser_url, portal_client.poll_url])
 def test_unknown_service_url_builder_raises(builder) -> None:
     with pytest.raises(ValueError, match="unsupported handoff service"):

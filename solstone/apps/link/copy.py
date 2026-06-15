@@ -127,6 +127,12 @@ PRIVATE_LINK_SETUP_SUCCESS = (
     "solstone private link is on. your devices can reach home from anywhere."
 )
 PRIVATE_LINK_SETUP_FAILED = "couldn't finish setting up solstone private link."
+PRIVATE_LINK_NEEDS_SUBSCRIPTION_HEADLINE = "private link needs a subscription"
+PRIVATE_LINK_NEEDS_SUBSCRIPTION_DETAIL = (
+    "your consent is saved. private link needs an active subscription before it can "
+    "turn on; set one up, then enable it again."
+)
+PRIVATE_LINK_NEEDS_SUBSCRIPTION_CTA = "set up a subscription"
 PRIVATE_LINK_DISABLE_SUCCESS = (
     "solstone private link is off. devices connect directly again."
 )

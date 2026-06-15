@@ -126,6 +126,33 @@ def test_private_link_setup_error_exits_nonzero(
     assert "try again" in output
 
 
+def test_private_link_setup_needs_subscription_exits_zero(
+    link_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = link_env()
+    _configure_cli(env, monkeypatch)
+    subscribe_url = "https://services.test/account/subscription"
+    monkeypatch.setattr(
+        link_routes.spl_handoff,
+        "run_spl_handoff",
+        lambda **_kwargs: operations.HandoffResult(
+            "needs_subscription",
+            "private link needs an active subscription before it can turn on.",
+            False,
+            True,
+            None,
+            subscribe_url,
+        ),
+    )
+
+    result = _invoke("setup", "--wait-seconds", "1", "--poll-interval", "0.01")
+
+    assert result.exit_code == 0
+    assert "private link needs an active subscription" in result.stdout
+    assert subscribe_url in result.stdout
+
+
 def test_private_link_disable_success(
     link_env,
     monkeypatch: pytest.MonkeyPatch,

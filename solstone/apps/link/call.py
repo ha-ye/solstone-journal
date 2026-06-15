@@ -34,13 +34,17 @@ PAIR_TIMEOUT_SECONDS = 300
 VALID_ROLES = {"", "phone", "observer", "peer"}
 LINKED_SYSTEMS_HEADING = "Linked systems:"
 PEERS_HEADING = "Peers:"
-PRIVATE_LINK_TERMINAL_PHASES = {"enabled", "revoked", "error"}
+PRIVATE_LINK_TERMINAL_PHASES = {"enabled", "revoked", "error", "needs_subscription"}
 PRIVATE_LINK_SETTING_UP = "setting up solstone private link..."
 PRIVATE_LINK_SETUP_SUCCESS = (
     "solstone private link is on. your devices can reach home from anywhere."
 )
 PRIVATE_LINK_SETUP_FAILED = "couldn't finish setting up solstone private link."
 PRIVATE_LINK_BROWSER_FALLBACK = "couldn't open your browser. open this link to finish:"
+PRIVATE_LINK_NEEDS_SUBSCRIPTION = (
+    "private link needs an active subscription before it can turn on. "
+    "your consent is saved; set one up, then enable private link again:"
+)
 PRIVATE_LINK_DISABLE_SUCCESS = (
     "solstone private link is off. devices connect directly again."
 )
@@ -201,6 +205,15 @@ def _echo_private_link_terminal(
 ) -> None:
     if phase == "enabled":
         typer.echo(PRIVATE_LINK_SETUP_SUCCESS)
+        return
+    if phase == "needs_subscription":
+        operation = status.get("operation")
+        subscribe_url = (
+            operation.get("subscribe_url") if isinstance(operation, dict) else None
+        )
+        typer.echo(PRIVATE_LINK_NEEDS_SUBSCRIPTION)
+        if subscribe_url:
+            typer.echo(str(subscribe_url))
         return
     if phase == "revoked":
         typer.echo(PRIVATE_LINK_SETUP_FAILED, err=True)

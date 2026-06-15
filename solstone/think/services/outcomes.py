@@ -17,6 +17,7 @@ EXPIRED = "expired"
 MALFORMED = "malformed"
 NETWORK_ERROR = "network_error"
 LOCAL_ERROR = "local_error"
+NEEDS_SUBSCRIPTION = "needs_subscription"
 
 CODES = frozenset(
     {
@@ -27,6 +28,7 @@ CODES = frozenset(
         MALFORMED,
         NETWORK_ERROR,
         LOCAL_ERROR,
+        NEEDS_SUBSCRIPTION,
     }
 )
 
@@ -44,6 +46,10 @@ GUIDANCE: dict[str, str | None] = {
     LOCAL_ERROR: (
         "Local service state could not be written. "
         "Check journal permissions and try again."
+    ),
+    NEEDS_SUBSCRIPTION: (
+        "private link needs an active subscription before it can turn on. "
+        "your consent is saved; set one up, then enable private link again."
     ),
 }
 

@@ -11,7 +11,7 @@ from solstone.think.services import outcomes
 
 
 def test_outcome_codes_are_machine_distinct() -> None:
-    assert len(outcomes.CODES) == 7
+    assert len(outcomes.CODES) == 8
     assert outcomes.CODES == {
         outcomes.APPROVED,
         outcomes.PENDING,
@@ -20,6 +20,7 @@ def test_outcome_codes_are_machine_distinct() -> None:
         outcomes.MALFORMED,
         outcomes.NETWORK_ERROR,
         outcomes.LOCAL_ERROR,
+        outcomes.NEEDS_SUBSCRIPTION,
     }
 
 

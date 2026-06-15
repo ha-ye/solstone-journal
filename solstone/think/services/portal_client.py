@@ -10,6 +10,7 @@ import secrets
 import socket
 import ssl
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
@@ -20,6 +21,7 @@ from solstone.think.services.constants import (
     NONCE_ALPHABET,
     NONCE_LENGTH_CHARS,
     SERVICE_SCOUT,
+    SERVICE_SPL,
     SUPPORTED_SERVICES,
 )
 
@@ -77,10 +79,19 @@ def poll_url(base_url: str, nonce: str, *, service: str = SERVICE_SCOUT) -> str:
     return f"{base_url}/handoff/{service}?nonce={nonce}"
 
 
-def browser_url(base_url: str, nonce: str, *, service: str = SERVICE_SCOUT) -> str:
+def browser_url(
+    base_url: str,
+    nonce: str,
+    *,
+    service: str = SERVICE_SCOUT,
+    instance: str | None = None,
+) -> str:
     if service not in SUPPORTED_SERVICES:
         raise ValueError(f"unsupported handoff service: {service!r}")
-    return f"{base_url}/enable/{service}?nonce={nonce}"
+    url = f"{base_url}/enable/{service}?nonce={nonce}"
+    if service == SERVICE_SPL and instance:
+        url = f"{url}&instance={urllib.parse.quote(instance, safe='')}"
+    return url
 
 
 def is_timeout_error(exc: BaseException) -> bool:
