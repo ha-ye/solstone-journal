@@ -4,6 +4,11 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.3] - 2026-06-15
+
+### Fixed
+- a machine that reaches your journal over your private link now stays connected. before, that connection would go quiet after a minute or two and not recover on its own, so observers on that machine stopped reaching your journal; it now sends a steady heartbeat to stay alive and reconnects automatically if it ever drops, so they keep streaming without interruption.
+
 ## [0.6.2] - 2026-06-15
 
 ### Changed
