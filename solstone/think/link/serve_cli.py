@@ -100,7 +100,9 @@ def main(args: argparse.Namespace) -> int:
     except ValueError as exc:
         return _fail(str(exc), code=1)
 
-    relay = None if getattr(args, "direct", False) else _resolve_relay_url(args.relay_url)
+    relay = (
+        None if getattr(args, "direct", False) else _resolve_relay_url(args.relay_url)
+    )
     tunnel = TunnelClient(identity, relay)
     try:
         server = _build_server(args.port, tunnel)
