@@ -60,10 +60,10 @@ PRIVATE_LINK_STATE_LABELS = {
 CLI_PAIR_LINK_LABEL = "pair-link"
 CLI_PAIR_JOIN_HINT = "link this device with:"
 CLI_PAIR_CA_FINGERPRINT_LABEL = "CA fingerprint"
-CLI_PAIR_RELAY_CODE_LABEL = "relay short-code (no copy-paste; use with --home)"
 CLI_PAIR_NO_LAN_ADDRESS = (
     "can't start pairing — your solstone isn't reachable on a network address "
-    "yet. use the relay short-code from the link page instead."
+    "yet. turn on solstone private link to pair from anywhere, or connect this "
+    "device to your home network."
 )
 
 
@@ -317,7 +317,6 @@ def pair(
         raise
     nonce = resp["nonce"]
     pair_link = resp["pair_link"]
-    manual_code = resp["manual_code"]
     ca_fp = resp["ca_fingerprint"]
 
     typer.echo(f"{CLI_PAIR_LINK_LABEL}: {pair_link}")
@@ -327,7 +326,6 @@ def pair(
         join_cmd += ["--label", device_label]
     typer.echo("  " + shlex.join(join_cmd))
     typer.echo(f"{CLI_PAIR_CA_FINGERPRINT_LABEL}: sha256:{ca_fp}")
-    typer.echo(f"{CLI_PAIR_RELAY_CODE_LABEL}: {manual_code}")
     if device_label:
         typer.echo(f"Device: {device_label}{' (peer)' if as_role == 'peer' else ''}")
     typer.echo("")

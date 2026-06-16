@@ -21,8 +21,7 @@ Pair-link QR joins target the secure listener advertised by LINK_DIRECT_PORT
 (:7657) and speak its TLS + framed mux protocol before dispatching POST
 /app/link/pair into this Flask route. The open nonce admits a cert-less
 pairing stream; the QR's CA fingerprint pins the home CA before the signed
-client certificate is issued. Manual short-code joins remain over the normal
-Convey HTTP listener via /by-code + --home.
+client certificate is issued.
 """
 
 from __future__ import annotations
@@ -45,17 +44,10 @@ from flask import Blueprint, Response, abort, g, jsonify, request
 
 from solstone.apps.link import copy as link_copy
 from solstone.apps.link.copy import (
-    MANUAL_CODE_LEN,
     PAIR_LINK_HOST,
     PAIR_LINK_PATH,
 )
 from solstone.apps.link.crockford32 import encode as crockford_encode
-from solstone.apps.link.manual_code import (
-    generate as generate_manual_code,
-)
-from solstone.apps.link.manual_code import (
-    normalize as normalize_manual_code,
-)
 from solstone.apps.link.relay_link import (
     TOTP_STEP_SECONDS,
     compute_current_totp,
@@ -118,7 +110,6 @@ from solstone.think.services import status as service_status
 from solstone.think.utils import get_journal, now_ms
 
 logger = logging.getLogger(__name__)
-MANUAL_CODE_RE = re.compile(rf"^[0-9A-HJKMNP-TV-Z]{{{MANUAL_CODE_LEN}}}$")
 _SENDER_INSTANCE_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,256}$")
 VALID_ROLES = {"", "phone", "observer", "peer"}
 # The watcher emits only lan/ula today; vpn stays empty until a scope is wired.
@@ -297,7 +288,6 @@ def _build_pair_link_v05(
 class PairStartResponse:
     nonce: str
     pair_link: str
-    manual_code: str
     expires_in: int
     device_label: str
     ca_fingerprint: str
@@ -580,7 +570,6 @@ def pair_start() -> Any:
             pair_link = _build_pair_link_v05(candidates, port, nonce, ca_fp)
         expires_in = 300
 
-    manual_code_hyphenated = generate_manual_code()
     add_kwargs: dict[str, Any] = {}
     if nonce_ttl is not None:
         add_kwargs["ttl"] = nonce_ttl
@@ -588,13 +577,11 @@ def pair_start() -> Any:
         nonce,
         device_label,
         role=role,
-        manual_code=normalize_manual_code(manual_code_hyphenated),
         **add_kwargs,
     )
     response = PairStartResponse(
         nonce=nonce,
         pair_link=pair_link,
-        manual_code=manual_code_hyphenated,
         expires_in=expires_in,
         device_label=device_label,
         ca_fingerprint=ca_fp,
@@ -745,66 +732,6 @@ def pair() -> Any:
         )
     except ValueError as exc:
         logger.info("pair: bad csr: %s", exc)
-        return error_response(PAIRING_KEY_INVALID, detail=f"bad csr: {exc}")
-    _emit_pair_complete(
-        _display_label(assigned_label, client_label),
-        fingerprint,
-        paired_at,
-        network=network,
-    )
-    return jsonify(response)
-
-
-@link_bp.route("/by-code", methods=["POST"])
-def by_code() -> Any:
-    """Mobile pair endpoint — accepts CSR + manual code."""
-    body = request.get_json(silent=True) or {}
-    code = body.get("code")
-    csr_pem = body.get("csr")
-    device_label = str(body.get("device_label") or "").strip()
-
-    if not isinstance(code, str) or not isinstance(csr_pem, str):
-        return error_response(
-            MISSING_REQUIRED_FIELD,
-            detail="missing fields (code + csr required)",
-        )
-    raw_sender_instance_id = body.get("sender_instance_id")
-    sender_instance_id: str | None = None
-    if raw_sender_instance_id is not None:
-        if not isinstance(
-            raw_sender_instance_id, str
-        ) or not _SENDER_INSTANCE_ID_RE.fullmatch(raw_sender_instance_id):
-            return error_response(
-                PAIRING_REQUEST_INVALID,
-                detail=f"bad sender_instance_id: {raw_sender_instance_id}",
-            )
-        sender_instance_id = raw_sender_instance_id
-
-    canonical_code = normalize_manual_code(code)
-    if not MANUAL_CODE_RE.fullmatch(canonical_code):
-        return error_response(PAIRING_REQUEST_INVALID, detail="bad code")
-
-    consumed = _nonces().consume_by_code(canonical_code)
-    if consumed is None:
-        return error_response(
-            OPERATION_NO_LONGER_AVAILABLE,
-            detail="nonce expired or used",
-        )
-
-    assigned_label = consumed.device_label
-    client_label = device_label
-    network = _rough_network(g.identity.mode)
-    try:
-        response, fingerprint, paired_at = _complete_pairing(
-            consumed,
-            csr_pem,
-            assigned_label,
-            client_label,
-            network=network,
-            sender_instance_id=sender_instance_id,
-        )
-    except ValueError as exc:
-        logger.info("by-code: bad csr: %s", exc)
         return error_response(PAIRING_KEY_INVALID, detail=f"bad csr: {exc}")
     _emit_pair_complete(
         _display_label(assigned_label, client_label),

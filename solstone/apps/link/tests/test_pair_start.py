@@ -21,7 +21,6 @@ from solstone.think.link.paths import LinkState, ca_dir
 PAIR_START_KEYS = [
     "nonce",
     "pair_link",
-    "manual_code",
     "expires_in",
     "device_label",
     "ca_fingerprint",
@@ -42,10 +41,6 @@ def test_pair_start_shape_and_locked_order(link_env) -> None:
     assert re.fullmatch(
         r"^https://go\.solstone\.app/p#[0-9A-HJKMNP-TV-Z]{64}$",
         payload["pair_link"],
-    )
-    assert re.fullmatch(
-        r"^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$",
-        payload["manual_code"],
     )
     snap = link_routes._nonces().snapshot()
     assert payload["expires_in"] == NONCE_TTL_SECONDS
@@ -102,7 +97,7 @@ def test_pair_start_allows_lenient_assigned_label(link_env) -> None:
     assert snap[0].device_label == label
 
 
-def test_pair_start_mints_distinct_nonce_and_manual_code(link_env) -> None:
+def test_pair_start_mints_distinct_nonce(link_env) -> None:
     env = link_env()
 
     first = env.client.post(
@@ -115,7 +110,6 @@ def test_pair_start_mints_distinct_nonce_and_manual_code(link_env) -> None:
     ).get_json()
 
     assert first["nonce"] != second["nonce"]
-    assert first["manual_code"] != second["manual_code"]
 
 
 def test_pair_start_uses_host_address_override_for_direct_qr(link_env) -> None:

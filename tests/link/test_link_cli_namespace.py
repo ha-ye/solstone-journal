@@ -9,6 +9,8 @@ import pytest
 
 from solstone.think.link import cli
 
+PAIR_LINK = "https://go.solstone.app/p#PAIRLINK"
+
 
 def test_link_join_dispatches_to_join_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = []
@@ -26,7 +28,7 @@ def test_link_join_dispatches_to_join_cli(monkeypatch: pytest.MonkeyPatch) -> No
                 "--home",
                 "http://receiver",
                 "--code",
-                "ABCD-EFGH",
+                PAIR_LINK,
                 "--as",
                 "observer",
                 "--label",
@@ -36,7 +38,7 @@ def test_link_join_dispatches_to_join_cli(monkeypatch: pytest.MonkeyPatch) -> No
         == 0
     )
 
-    assert calls == [("http://receiver", "ABCD-EFGH", "observer", "laptop")]
+    assert calls == [("http://receiver", PAIR_LINK, "observer", "laptop")]
 
 
 def test_link_no_subcommand_help_lists_commands(

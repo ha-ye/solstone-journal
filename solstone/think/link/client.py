@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
-import hashlib
 import logging
 import secrets
 import urllib.parse
@@ -23,9 +22,6 @@ from typing import Protocol
 import requests
 import websockets
 from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.x509.oid import NameOID
 from OpenSSL import SSL, crypto
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
@@ -60,7 +56,6 @@ from solstone.convey.secure_listener.framing import (
     parse_reset_reason,
     parse_window_credit,
 )
-from solstone.think.link.ca import ca_pin_matches, cert_fingerprint
 from solstone.think.link.tls import TlsError as _TlsError
 
 LOG = logging.getLogger(__name__)
@@ -582,70 +577,6 @@ class TunnelSession:
 
 class Client:
     @staticmethod
-    def pair(
-        lan_url: str,
-        device_label: str,
-        *,
-        ca_fingerprint_pin: str | None = None,
-    ) -> ClientIdentity:
-        base_url = lan_url.rstrip("/")
-        LOG.info("client %s: pair start", device_label)
-        pair_start = _post_json(
-            f"{base_url}/app/link/pair-start",
-            {"device_label": device_label},
-        )
-        nonce = pair_start.get("nonce")
-        if not isinstance(nonce, str) or not nonce:
-            raise RuntimeError("pair-start returned no nonce")
-
-        private_key_pem, csr_pem = _build_csr(device_label)
-        paired = _post_json(
-            f"{base_url}/app/link/pair",
-            {
-                "nonce": nonce,
-                "csr": csr_pem,
-                "device_label": device_label,
-            },
-        )
-
-        client_cert_pem = _required_str(paired, "client_cert")
-        ca_chain = paired.get("ca_chain")
-        if not isinstance(ca_chain, list) or not ca_chain:
-            raise RuntimeError("pair returned no ca_chain")
-        if not all(isinstance(item, str) and item for item in ca_chain):
-            raise RuntimeError("pair returned invalid ca_chain")
-        ca_chain_pem = "".join(ca_chain)
-        ca_fingerprint = _cert_sha256_hex(_first_cert_pem(ca_chain_pem))
-        if ca_fingerprint_pin is not None and not ca_pin_matches(
-            ca_fingerprint, ca_fingerprint_pin
-        ):
-            raise RuntimeError(
-                f"CA fingerprint mismatch: got {ca_fingerprint}, "
-                f"expected prefix {ca_fingerprint_pin}"
-            )
-
-        fingerprint = _required_str(paired, "fingerprint")
-        if cert_fingerprint(client_cert_pem) != fingerprint:
-            raise RuntimeError("pair returned certificate fingerprint mismatch")
-
-        identity = ClientIdentity(
-            private_key_pem=private_key_pem,
-            client_cert_pem=client_cert_pem,
-            ca_chain_pem=ca_chain_pem,
-            fingerprint=fingerprint,
-            home_instance_id=_required_str(paired, "instance_id"),
-            home_label=_required_str(paired, "home_label"),
-            home_attestation=_required_str(paired, "home_attestation"),
-            local_endpoints=_optional_endpoint_dicts(paired.get("local_endpoints")),
-        )
-        LOG.info(
-            "client %s: paired to %s",
-            device_label,
-            identity.home_instance_id,
-        )
-        return identity
-
-    @staticmethod
     def enroll_device(relay_url: str, identity: ClientIdentity) -> EnrolledDevice:
         endpoint = f"{relay_url.rstrip('/')}/enroll/device"
         LOG.info("client %s: enrolling device token", identity.fingerprint)
@@ -744,24 +675,6 @@ async def _drive_client_handshake(
         await transport.close()
         raise
     return pending_plaintext
-
-
-def _build_csr(device_label: str) -> tuple[str, str]:
-    private_key = ec.generate_private_key(ec.SECP256R1())
-    csr = (
-        x509.CertificateSigningRequestBuilder()
-        .subject_name(
-            x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, device_label)])
-        )
-        .sign(private_key, hashes.SHA256())
-    )
-    private_key_pem = private_key.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.PKCS8,
-        serialization.NoEncryption(),
-    ).decode("ascii")
-    csr_pem = csr.public_bytes(serialization.Encoding.PEM).decode("ascii")
-    return private_key_pem, csr_pem
 
 
 def _build_tls_client_ctx(identity: ClientIdentity) -> SSL.Context:
@@ -967,12 +880,6 @@ def _required_str(payload: dict[str, object], key: str) -> str:
     return value
 
 
-def _optional_endpoint_dicts(value: object) -> tuple[dict[str, object], ...]:
-    if not isinstance(value, list):
-        return ()
-    return tuple(item for item in value if isinstance(item, dict))
-
-
 def _split_pem_chain(pem_bundle: str) -> list[bytes]:
     marker = "-----END CERTIFICATE-----"
     certs: list[bytes] = []
@@ -982,18 +889,6 @@ def _split_pem_chain(pem_bundle: str) -> list[bytes]:
             continue
         certs.append(f"{chunk}\n{marker}\n".encode("ascii"))
     return certs
-
-
-def _first_cert_pem(pem_bundle: str) -> str:
-    certs = _split_pem_chain(pem_bundle)
-    if not certs:
-        raise RuntimeError("empty certificate chain")
-    return certs[0].decode("ascii")
-
-
-def _cert_sha256_hex(cert_pem: str) -> str:
-    cert = x509.load_pem_x509_certificate(cert_pem.encode("ascii"))
-    return hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest()
 
 
 def _to_ws(url: str) -> str:

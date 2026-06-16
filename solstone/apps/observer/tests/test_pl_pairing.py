@@ -165,7 +165,6 @@ def test_attestation_failure_does_not_write_observer_or_authorized(
         issued_at=now,
         expires_at=now + 300,
         used=True,
-        manual_code=None,
         role="",
     )
 
@@ -199,7 +198,6 @@ def test_peer_journal_source_rolls_back_when_authorized_add_fails(
         issued_at=now,
         expires_at=now + 300,
         used=True,
-        manual_code=None,
         role="peer",
     )
 

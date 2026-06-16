@@ -69,7 +69,6 @@ def _consumed_nonce(role: str, label: str = "Peer Laptop") -> Nonce:
         issued_at=now,
         expires_at=now + 300,
         used=True,
-        manual_code=None,
         role=role,
     )
 
@@ -157,27 +156,6 @@ def test_peer_role_pairing_records_sender_instance_id(link_env) -> None:
     assert source["peer_instance_id"] == "abc-123"
 
 
-def test_peer_role_by_code_pairing_records_sender_instance_id(link_env) -> None:
-    env = link_env()
-    started = _start_pair(env, role="peer", label="Peer Laptop")
-
-    response = env.client.post(
-        "/app/link/by-code",
-        json={
-            "code": started["manual_code"],
-            "csr": _make_csr("by-code-peer"),
-            "sender_instance_id": "abc-123",
-        },
-    )
-
-    assert response.status_code == 200
-    source = journal_sources.load_journal_source_by_fingerprint(
-        response.get_json()["fingerprint"]
-    )
-    assert source is not None
-    assert source["peer_instance_id"] == "abc-123"
-
-
 @pytest.mark.parametrize("sender_instance_id", ["", "x" * 257, 123])
 def test_peer_role_pairing_rejects_invalid_sender_instance_id(
     link_env,
@@ -199,26 +177,6 @@ def test_peer_role_pairing_rejects_invalid_sender_instance_id(
     payload = response.get_json()
     assert payload["reason_code"] == "pairing_request_invalid"
     assert payload["detail"] == f"bad sender_instance_id: {sender_instance_id}"
-    assert _journal_source_paths(env) == []
-
-
-def test_by_code_pairing_rejects_invalid_sender_instance_id(link_env) -> None:
-    env = link_env()
-    started = _start_pair(env, role="peer", label="Peer Laptop")
-
-    response = env.client.post(
-        "/app/link/by-code",
-        json={
-            "code": started["manual_code"],
-            "csr": _make_csr("bad-sender-instance"),
-            "sender_instance_id": "abc/123",
-        },
-    )
-
-    assert response.status_code == 400
-    payload = response.get_json()
-    assert payload["reason_code"] == "pairing_request_invalid"
-    assert payload["detail"] == "bad sender_instance_id: abc/123"
     assert _journal_source_paths(env) == []
 
 

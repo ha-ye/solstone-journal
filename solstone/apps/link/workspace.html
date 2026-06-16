@@ -204,11 +204,6 @@
           <span class="link-pair-rotate-note">{{ link_copy.PAIR_ROTATE_NOTE }}</span>
         </div>
         {% else %}
-        <p class="link-pair-manual">
-          {{ link_copy.MANUAL_CODE_LABEL }}
-          <code id="link-pair-manual-code"></code>
-        </p>
-
         <p class="link-pair-network">{{ link_copy.PAIR_NETWORK_LINE }}</p>
         {% endif %}
 
@@ -473,8 +468,7 @@
   .link-qr-expired[hidden] { display: none; }
   .link-pair-expired-btn { border: none; border-radius: 5px; background: #E8923A; color: #1A1A1A; cursor: pointer; font-weight: 500; padding: 0.6em 1em; }
   .link-pair-steps { margin: 0; padding-left: 1.4em; line-height: 1.55; color: #333; }
-  .link-pair-manual, .link-pair-network { grid-column: 1 / -1; margin: 0; }
-  .link-pair-manual code { display: inline-block; margin-left: 0.35em; font-family: ui-monospace, monospace; font-size: 1.2em; letter-spacing: 0.05em; }
+  .link-pair-network { grid-column: 1 / -1; margin: 0; }
   .link-pair-network { color: #555; }
   .link-pair-rotation { grid-column: 1 / -1; display: flex; align-items: center; gap: 0.65em; margin: 0; color: #555; }
   .link-pair-rotation-ring { width: 28px; height: 28px; flex: 0 0 28px; color: #B06A1A; }
@@ -584,7 +578,6 @@
   const qrExpired = document.getElementById('link-qr-expired');
   const pairRegenerate = document.getElementById('link-pair-regenerate');
   const rotationRing = document.getElementById('link-pair-rotation-ring');
-  const manualCodeEl = document.getElementById('link-pair-manual-code');
   const caFpEl = document.getElementById('link-pair-ca-fp');
   const pairError = document.getElementById('link-pair-error');
   const pairErrorCancel = document.getElementById('link-pair-error-cancel');
@@ -1596,7 +1589,6 @@
 
     const data = await r.json();
     renderQr(data.pair_link);
-    if (manualCodeEl) manualCodeEl.textContent = data.manual_code;
     caFpEl.textContent = data.ca_fingerprint;
     deviceLabelInput.value = data.device_label;
 

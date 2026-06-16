@@ -5,20 +5,12 @@
 
 from __future__ import annotations
 
-from solstone.think.link.nonces import NONCE_TTL_SECONDS
-
 PAIR_LINK_HOST = "go.solstone.app"
 PAIR_LINK_PATH = "/p"
-MANUAL_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"  # Crockford base32.
-MANUAL_CODE_LEN = 8
-MANUAL_CODE_GROUP = 4
-PAIR_CODE_TTL_SECONDS = NONCE_TTL_SECONDS
-CLI_MANUAL_CODE_LABEL = "manual code"
 MODAL_TITLE = "pair a device"
 STEP_1 = "open the camera on the device you're adding"
 STEP_2 = "point it at this code"
 STEP_3 = "tap the link to open solstone"
-MANUAL_CODE_LABEL = "can't scan? type this on the device:"
 PAIR_NETWORK_LINE = (
     "this device needs to be on your network (or your VPN) to pair. expires in 5:00."
 )

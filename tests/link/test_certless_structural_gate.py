@@ -48,7 +48,6 @@ def test_named_non_pair_endpoints_are_refused(
     app, _journal = make_convey_app(tmp_path, monkeypatch, link={"posture": "spl"})
     endpoints = {
         "app:link.pair_start": "POST",
-        "app:link.by_code": "POST",
         "app:link.api_status": "GET",
         "app:observer.ingest_upload": "POST",
         "app:observer.ingest_event": "POST",

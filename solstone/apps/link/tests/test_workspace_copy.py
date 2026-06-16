@@ -15,7 +15,6 @@ MODAL_COPY_VALUES = [
     copy.STEP_1,
     copy.STEP_2,
     copy.STEP_3,
-    copy.MANUAL_CODE_LABEL,
     copy.PAIR_NETWORK_LINE,
     copy.DEVICE_LABEL_FIELD_LABEL,
     copy.DETAILS_DISCLOSURE,

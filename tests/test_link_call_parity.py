@@ -158,11 +158,7 @@ def test_pair_mints_nonce_prints_payload_and_times_out(runner, monkeypatch):
     assert pair_link in result.stdout
     assert "--label" in result.stdout
     assert "CA fingerprint: sha256:" in result.stdout
-    assert re.search(
-        r"relay short-code \(no copy-paste; use with --home\): "
-        r"[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}",
-        result.stdout,
-    )
+    assert "relay short-code" not in result.stdout
     assert "Pair URL: http" not in result.stdout
     assert "Pair code:" not in result.stdout
     assert "Device: Test Phone\n\nWaiting for linked system…\n" in result.stdout

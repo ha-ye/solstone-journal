@@ -441,17 +441,7 @@ def test_parse_pair_link_extracts_embedded_ca_pin() -> None:
 
     request = join_cli._parse_pair_link(link, None)
 
-    assert request.secure is True
     assert request.ca_fingerprint_pin == "ab" * 16
-
-
-def test_manual_code_pair_request_carries_no_ca_pin() -> None:
-    # The manual --code path is trust-on-first-use by design: an 8-char code
-    # cannot carry a CA fingerprint, so the pin stays None (documented posture).
-    request = join_cli._parse_pair_request("ABCDEFGH", "https://127.0.0.1:7657")
-
-    assert request.secure is False
-    assert request.ca_fingerprint_pin is None
 
 
 def test_lan_pair_link_hard_fails_on_ca_pin_mismatch(

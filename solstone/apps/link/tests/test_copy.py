@@ -6,25 +6,15 @@
 from __future__ import annotations
 
 from solstone.apps.link import copy
-from solstone.think.link.nonces import NONCE_TTL_SECONDS
 
 
 def test_copy_constants_are_locked() -> None:
     assert copy.PAIR_LINK_HOST == "go.solstone.app"
     assert copy.PAIR_LINK_PATH == "/p"
-    assert copy.MANUAL_CODE_ALPHABET == "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-    assert len(copy.MANUAL_CODE_ALPHABET) == 32
-    assert not {"I", "L", "O", "U"} & set(copy.MANUAL_CODE_ALPHABET)
-    assert copy.MANUAL_CODE_LEN == 8
-    assert copy.MANUAL_CODE_GROUP == 4
-    assert copy.PAIR_CODE_TTL_SECONDS == NONCE_TTL_SECONDS
-    assert copy.PAIR_CODE_TTL_SECONDS == 300
-    assert copy.CLI_MANUAL_CODE_LABEL == "manual code"
     assert copy.MODAL_TITLE == "pair a device"
     assert copy.STEP_1 == "open the camera on the device you're adding"
     assert copy.STEP_2 == "point it at this code"
     assert copy.STEP_3 == "tap the link to open solstone"
-    assert copy.MANUAL_CODE_LABEL == "can't scan? type this on the device:"
     assert copy.PAIR_NETWORK_LINE == (
         "this device needs to be on your network (or your VPN) to pair. "
         "expires in 5:00."

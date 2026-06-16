@@ -3,8 +3,8 @@
 
 """Caller-side `sol link join` implementation.
 
-Manual short-code form posts to `/app/link/by-code`; v3 pair-link URL form
-decodes the embedded nonce and posts to `/app/link/pair?token=<nonce>`.
+The pair-link URL form decodes the embedded nonce and posts to
+`/app/link/pair?token=<nonce>` over the framed mTLS listener.
 
 Role-less linked-system credentials are written under
 `$XDG_CONFIG_HOME/solstone-observer/spl/<label>/` when XDG_CONFIG_HOME is set,
@@ -37,11 +37,8 @@ import json
 import os
 import re
 import socket
-import ssl
 import sys
-import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -67,7 +64,6 @@ from solstone.think.link.tls import TlsError
 from solstone.think.utils import get_journal
 
 VALID_ROLES = {"", "phone", "observer", "peer"}
-MANUAL_CODE_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{8}$")
 LABEL_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 DEFAULT_CLIENT_LABEL = "linked-system"
 BUNDLE_FILES = {
@@ -84,7 +80,6 @@ _INSTANCE_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,256}$")
 class PairRequest:
     url: str
     body_base: dict[str, str]
-    secure: bool
     ca_fingerprint_pin: str | None = None
 
 
@@ -100,7 +95,7 @@ class PairResponse:
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--home", help="Receiver base URL")
-    parser.add_argument("--code", required=True, help="Manual code or pair-link URL")
+    parser.add_argument("--code", required=True, help="pair-link URL")
     parser.add_argument("--as", dest="as_role", help="Optional tag to join as")
     parser.add_argument(
         "--label",
@@ -200,24 +195,12 @@ def main(args: argparse.Namespace) -> int:
 
 def _parse_pair_request(code: str, home: str | None) -> PairRequest:
     from solstone.apps.link.copy import PAIR_LINK_HOST, PAIR_LINK_PATH
-    from solstone.apps.link.manual_code import normalize as normalize_manual_code
 
     if code.startswith(f"https://{PAIR_LINK_HOST}{PAIR_LINK_PATH}#"):
         return _parse_pair_link(code, home)
-    canonical_code = normalize_manual_code(code)
-    if not MANUAL_CODE_RE.fullmatch(canonical_code):
-        raise ValueError(
-            f"Pair code did not match an accepted form. Use a pair-link like "
-            f"https://{PAIR_LINK_HOST}{PAIR_LINK_PATH}#... or an 8-character manual "
-            f"code with --home."
-        )
-    if not home:
-        raise ValueError("--home is required for manual pair codes")
-    base_url = home.rstrip("/")
-    return PairRequest(
-        url=f"{base_url}/app/link/by-code",
-        body_base={"code": canonical_code},
-        secure=False,
+    raise ValueError(
+        f"Pair code did not match an accepted form. Use a pair-link like "
+        f"https://{PAIR_LINK_HOST}{PAIR_LINK_PATH}#... from 'sol call link pair'."
     )
 
 
@@ -251,7 +234,6 @@ def _parse_pair_link(pair_link: str, home: str | None) -> PairRequest:
     return PairRequest(
         url=f"{base_url}/app/link/pair?token={nonce_hex}",
         body_base={},
-        secure=True,
         ca_fingerprint_pin=ca_fingerprint_pin,
     )
 
@@ -335,54 +317,11 @@ def _build_csr(label: str) -> tuple[bytes, str]:
 
 
 def _post_pair(pair_request: PairRequest, body: dict[str, str]) -> PairResponse:
-    if pair_request.secure:
-        return _post_pair_framed(
-            pair_request.url,
-            body,
-            ca_fingerprint_pin=pair_request.ca_fingerprint_pin,
-        )
-    return _post_pair_plain(pair_request.url, body)
-
-
-def _post_pair_plain(url: str, body: dict[str, str]) -> PairResponse:
-    data = json.dumps(body).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=data,
-        headers={"content-type": "application/json"},
-        method="POST",
+    return _post_pair_framed(
+        pair_request.url,
+        body,
+        ca_fingerprint_pin=pair_request.ca_fingerprint_pin,
     )
-    # This is the trust-on-first-use join ceremony. The returned CA chain is
-    # persisted for future verification by the caller-side runtime.
-    context = ssl.create_default_context()
-    context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
-    try:
-        with urllib.request.urlopen(request, timeout=30, context=context) as response:
-            status = int(getattr(response, "status", response.getcode()))
-            landing_url = response.geturl()
-            content_type = response.headers.get_content_type()
-            raw_body = response.read()
-    except urllib.error.HTTPError as exc:
-        excerpt = exc.read().decode("utf-8", errors="replace")[:500]
-        raise ValueError(
-            f"Pair request failed with HTTP {exc.code}: {excerpt}"
-        ) from exc
-    except urllib.error.URLError as exc:
-        raise ValueError(f"Pair request failed: {exc.reason}") from exc
-    if status != 200:
-        excerpt = raw_body.decode("utf-8", errors="replace")[:500]
-        raise ValueError(f"Pair request failed with HTTP {status}: {excerpt}")
-    if content_type != "application/json":
-        raise ValueError(
-            f"Pair request reached an auth bounce or non-pairing endpoint: "
-            f"attempted {url}; landed at {landing_url}; content-type {content_type}."
-        )
-    try:
-        payload = json.loads(raw_body.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ValueError("Pair response was not valid JSON") from exc
-    return _parse_pair_response(payload)
 
 
 def _post_pair_framed(
