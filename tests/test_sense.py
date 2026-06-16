@@ -750,6 +750,47 @@ def test_handler_watchdog_timeout_terminates_and_surfaces(
     assert "Unhandled exception in handler worker" not in caplog.text
 
 
+def test_emit_status_soft_warns_once_before_handler_cap(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    sensor = FileSensor(tmp_path)
+    sensor.callosum = MagicMock()
+    slow_file = make_segment_file(tmp_path, "slow.webm")
+    fast_file = make_segment_file(
+        tmp_path,
+        "fast.flac",
+        segment="143023_300",
+    )
+    slow_proc = HandlerProcess(slow_file, FakeManaged(ref="slow-ref"), "describe")
+    fast_proc = HandlerProcess(fast_file, FakeManaged(ref="fast-ref"), "transcribe")
+    slow_proc.started_at = 925.0
+    fast_proc.started_at = 951.0
+    sensor.running_handlers["describe"].append(slow_proc)
+    sensor.running_handlers["transcribe"].append(fast_proc)
+    monkeypatch.setattr(sensor, "_resolve_max_runtime", lambda _handler: 100)
+    monkeypatch.setattr("solstone.observe.sense.time.time", lambda: 1000.0)
+
+    sensor._emit_status()
+    sensor._emit_status()
+    sensor._emit_status()
+
+    notification_calls = [
+        call
+        for call in sensor.callosum.emit.call_args_list
+        if call.args[:2] == ("notification", "show")
+    ]
+
+    assert len(notification_calls) == 1
+    notification = notification_calls[0].kwargs
+    assert notification["title"] == "Describe Slow"
+    assert notification["title"] != "Describe Timeout"
+    assert WATCHDOG_TIMEOUT not in notification["message"]
+    assert "taking longer than usual" in notification["message"]
+    assert "Transcribe Slow" not in [
+        call.kwargs["title"] for call in notification_calls
+    ]
+
+
 def test_healthy_job_under_cap_not_killed(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 

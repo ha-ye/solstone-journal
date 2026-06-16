@@ -36,6 +36,7 @@ from solstone.think.runner import ManagedProcess as RunnerManagedProcess
 from solstone.think.utils import (
     CHRONICLE_DIR,
     DATE_RE,
+    SOFT_RUNTIME_FRACTION,
     STREAM_RE,
     day_path,
     get_config,
@@ -71,6 +72,14 @@ _DEFAULT_MAX_RUNTIME = {
 }
 
 
+def _handler_icon(handler_name: str) -> str:
+    if handler_name == "transcribe":
+        return "🎙️"
+    if handler_name == "describe":
+        return "👁️"
+    return "🤖"
+
+
 class QueuedItem:
     """Item in a handler queue with context for deferred processing."""
 
@@ -103,6 +112,7 @@ class HandlerProcess:
         self.process = managed.process
         self.handler_name = handler_name
         self.started_at = time.time()
+        self.soft_warned = False
 
     def cleanup(self):
         self.managed.cleanup()
@@ -344,11 +354,7 @@ class FileSensor:
         self._terminate_handler_process(handler_proc)
 
         if self.callosum:
-            icon = "🤖"
-            if handler_name == "transcribe":
-                icon = "🎙️"
-            elif handler_name == "describe":
-                icon = "👁️"
+            icon = _handler_icon(handler_name)
             self.callosum.emit(
                 "notification",
                 "show",
@@ -777,6 +783,7 @@ class FileSensor:
             # Current running processes
             if running_snapshot[handler_name]:
                 running_list = []
+                cap = self._resolve_max_runtime(handler_name)
                 for handler_proc in running_snapshot[handler_name]:
                     try:
                         rel_file = journal_relative_path(
@@ -785,13 +792,31 @@ class FileSensor:
                     except ValueError:
                         rel_file = str(handler_proc.file_path)
 
+                    duration = int(now - handler_proc.started_at)
                     running_list.append(
                         {
                             "file": rel_file,
                             "ref": handler_proc.managed.ref,
-                            "duration_seconds": int(now - handler_proc.started_at),
+                            "duration_seconds": duration,
                         }
                     )
+                    if (
+                        not handler_proc.soft_warned
+                        and duration >= SOFT_RUNTIME_FRACTION * cap
+                    ):
+                        self.callosum.emit(
+                            "notification",
+                            "show",
+                            message=(
+                                f"{handler_name.capitalize()} is taking longer "
+                                f"than usual for {handler_proc.file_path.name}"
+                            ),
+                            title=f"{handler_name.capitalize()} Slow",
+                            icon=_handler_icon(handler_name),
+                            app="sense",
+                            action="/app/health",
+                        )
+                        handler_proc.soft_warned = True
                 handler_status["running"] = running_list
 
             # Queued items with age
