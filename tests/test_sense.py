@@ -3,7 +3,9 @@
 
 """Tests for observe.sense module."""
 
+import json
 import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -13,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED
+from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED, WATCHDOG_TIMEOUT
 from solstone.observe.sense import FileSensor, HandlerProcess, QueuedItem
 from solstone.think.runner import DailyLogWriter as ProcessLogWriter
 from solstone.think.runner import _format_log_line
@@ -44,6 +46,17 @@ class FakeProcess:
     def kill(self):
         self.killed = True
         self.returncode = -signal.SIGKILL
+
+
+class TimeoutProcess(FakeProcess):
+    """wait(timeout=...) raises TimeoutExpired until terminate/kill sets returncode."""
+
+    def wait(self, timeout=None):
+        if self.returncode is not None:
+            return self.returncode
+        if timeout is None:
+            raise AssertionError("watchdog must never call unbounded wait()")
+        raise subprocess.TimeoutExpired(cmd="fake", timeout=timeout)
 
 
 class FakeManaged:
@@ -137,6 +150,34 @@ def test_resolve_concurrency_applies_to_handler_pools(tmp_path, monkeypatch, cap
     assert invalid_sensor.handler_pools["transcribe"]._max_workers == 1
     assert "Invalid describe.max_concurrent" in caplog.text
     assert "Invalid transcribe.max_concurrent" in caplog.text
+
+
+def test_resolve_max_runtime(tmp_path, monkeypatch, caplog):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    sensor = FileSensor(tmp_path)
+    assert sensor._resolve_max_runtime("describe") == 1800
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_path = config_dir / "journal.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "describe": {"max_runtime": "30m"},
+                "transcribe": {"max_runtime": 60},
+            }
+        )
+    )
+
+    assert sensor._resolve_max_runtime("describe") == 1800
+    assert sensor._resolve_max_runtime("transcribe") == 60
+
+    caplog.set_level("WARNING")
+    config_path.write_text(json.dumps({"describe": {"max_runtime": "banana"}}))
+
+    assert sensor._resolve_max_runtime("describe") == 1800
+    assert "Invalid describe.max_runtime" in caplog.text
 
 
 # --- Existing Tests ---
@@ -656,6 +697,98 @@ def test_file_sensor_provider_blocked_suppresses_describe_error(tmp_path, monkey
     assert sensor.running_handlers["describe"] == []
 
 
+def test_handler_watchdog_timeout_terminates_and_surfaces(
+    tmp_path, monkeypatch, caplog
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
+    sensor.callosum = MagicMock()
+    test_file = make_segment_file(tmp_path, "screen.webm")
+    process = TimeoutProcess()
+    log_path = tmp_path / "chronicle" / "20250101" / "health" / "describe.log"
+
+    monkeypatch.setattr(sensor, "_resolve_max_runtime", lambda _handler: 1)
+    monkeypatch.setattr(
+        sensor,
+        "_spawn_managed_process",
+        lambda *_args: FakeManaged(process, log_path=log_path),
+    )
+
+    original_check = sensor._check_segment_observed
+    checks = []
+
+    def record_check(file_path, error=None):
+        checks.append((file_path, error))
+        return original_check(file_path, error=error)
+
+    monkeypatch.setattr(sensor, "_check_segment_observed", record_check)
+    caplog.set_level("ERROR")
+
+    sensor._handle_file(test_file)
+    sensor.handler_pools["describe"].shutdown(wait=True)
+
+    notification_calls = [
+        call
+        for call in sensor.callosum.emit.call_args_list
+        if call.args[:2] == ("notification", "show")
+    ]
+    observed_calls = [
+        call
+        for call in sensor.callosum.emit.call_args_list
+        if call.args[:2] == ("observe", "observed")
+    ]
+
+    assert process.terminated is True
+    assert checks == [(test_file, f"describe {WATCHDOG_TIMEOUT} after 1s")]
+    assert notification_calls
+    assert notification_calls[0].kwargs["title"] == "Describe Timeout"
+    assert WATCHDOG_TIMEOUT in notification_calls[0].kwargs["message"]
+    assert observed_calls
+    assert observed_calls[0].kwargs["error"] is True
+    assert "Unhandled exception in handler worker" not in caplog.text
+
+
+def test_healthy_job_under_cap_not_killed(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
+    sensor.callosum = MagicMock()
+    test_file = make_segment_file(tmp_path, "screen.webm")
+    process = FakeProcess(0)
+
+    monkeypatch.setattr(
+        sensor,
+        "_spawn_managed_process",
+        lambda *_args: FakeManaged(process),
+    )
+
+    original_check = sensor._check_segment_observed
+    checks = []
+
+    def record_check(file_path, error=None):
+        checks.append((file_path, error))
+        return original_check(file_path, error=error)
+
+    monkeypatch.setattr(sensor, "_check_segment_observed", record_check)
+
+    sensor._handle_file(test_file)
+    sensor.handler_pools["describe"].shutdown(wait=True)
+
+    observed_calls = [
+        call
+        for call in sensor.callosum.emit.call_args_list
+        if call.args[:2] == ("observe", "observed")
+    ]
+
+    assert checks == [(test_file, None)]
+    assert process.terminated is False
+    assert observed_calls
+    assert "error" not in observed_calls[0].kwargs
+
+
 def test_file_sensor_handle_file(tmp_path):
     """Test file handling dispatches to correct handler."""
     with patch.object(FileSensor, "_run_handler") as mock_run:
@@ -1044,6 +1177,87 @@ def test_file_sensor_queued_describes_complete_on_long_lived_worker(
     assert second.with_suffix(".jsonl").exists()
 
 
+def test_handler_watchdog_timeout_drains_queue(tmp_path, monkeypatch, mock_callosum):
+    """A timed-out head job frees the serialized worker for queued tail jobs."""
+    import solstone.observe.sense as sense_module
+    from solstone.think.callosum import CallosumConnection
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(
+        sense_module,
+        "get_config",
+        lambda: {
+            "describe": {"max_concurrent": 1},
+            "transcribe": {"max_concurrent": 1},
+        },
+    )
+
+    segment_dir = tmp_path / "chronicle" / "20250101" / "default" / "143022_300"
+    segment_dir.mkdir(parents=True)
+    files = [
+        segment_dir / "first.webm",
+        segment_dir / "second.webm",
+        segment_dir / "third.webm",
+    ]
+    for file_path in files:
+        file_path.write_text("video")
+
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
+    emitted_events = []
+    sensor.callosum = CallosumConnection()
+    sensor.callosum.start(callback=lambda msg: emitted_events.append(msg))
+
+    timeout_process = TimeoutProcess()
+
+    def fake_spawn(cmd, file_path, ref, segment, observer, meta, day):
+        if file_path == files[0]:
+            process = timeout_process
+        else:
+            process = FakeProcess(0, delay=0.01)
+            file_path.with_suffix(".jsonl").write_text("{}\n")
+        return FakeManaged(process, ref=ref, log_path=tmp_path / "describe.log")
+
+    original_check = sensor._check_segment_observed
+    checks = []
+
+    def record_check(file_path, error=None):
+        checks.append((file_path, error))
+        return original_check(file_path, error=error)
+
+    monkeypatch.setattr(sensor, "_resolve_max_runtime", lambda _handler: 1)
+    monkeypatch.setattr(sensor, "_spawn_managed_process", fake_spawn)
+    monkeypatch.setattr(sensor, "_check_segment_observed", record_check)
+
+    sensor._handle_callosum_message(
+        {
+            "tract": "observe",
+            "event": "observing",
+            "day": "20250101",
+            "stream": "default",
+            "segment": "143022_300",
+            "files": [file_path.name for file_path in files],
+        }
+    )
+    sensor.handler_pools["describe"].shutdown(wait=True)
+
+    observed_events = [
+        event
+        for event in emitted_events
+        if event.get("tract") == "observe" and event.get("event") == "observed"
+    ]
+
+    assert timeout_process.terminated is True
+    assert checks == [
+        (files[0], f"describe {WATCHDOG_TIMEOUT} after 1s"),
+        (files[1], None),
+        (files[2], None),
+    ]
+    assert len(observed_events) == 1
+    assert observed_events[0].get("error") is True
+    assert files[2].with_suffix(".jsonl").exists()
+
+
 def test_run_handler_uses_handler_thread_name_prefix(tmp_path, monkeypatch):
     """Handler spawn happens in the long-lived handler worker thread."""
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
@@ -1276,6 +1490,52 @@ def test_transcribe_cpu_fallback_stays_in_same_worker_thread(tmp_path, monkeypat
     assert "--cpu" not in cmds[0]
     assert "--cpu" in cmds[1]
     assert checks == [(test_file, None)]
+
+
+def test_watchdog_deadline_not_reset_across_cpu_fallback(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.flac", "transcribe", ["journal", "transcribe", "{file}"])
+    sensor.callosum = MagicMock()
+    test_file = make_segment_file(tmp_path, "audio.flac")
+    wait_timeouts = []
+    cmds = []
+
+    class RecordingDelayProcess(FakeProcess):
+        def wait(self, timeout=None):
+            if self.returncode is None:
+                wait_timeouts.append(timeout)
+            return super().wait(timeout=timeout)
+
+    class RecordingTimeoutProcess(TimeoutProcess):
+        def wait(self, timeout=None):
+            if self.returncode is None:
+                wait_timeouts.append(timeout)
+            return super().wait(timeout=timeout)
+
+    timeout_process = RecordingTimeoutProcess()
+    processes = [
+        RecordingDelayProcess(134, delay=0.2),
+        timeout_process,
+    ]
+
+    def fake_spawn(cmd, *_args):
+        cmds.append(cmd)
+        return FakeManaged(processes.pop(0))
+
+    monkeypatch.setattr(sensor, "_resolve_max_runtime", lambda _handler: 5)
+    monkeypatch.setattr(sensor, "_spawn_managed_process", fake_spawn)
+
+    sensor._handle_file(test_file)
+    sensor.handler_pools["transcribe"].shutdown(wait=True)
+
+    first_timeout, second_timeout = wait_timeouts[:2]
+    assert "--cpu" not in cmds[0]
+    assert "--cpu" in cmds[1]
+    assert timeout_process.terminated is True
+    assert second_timeout < 5
+    assert second_timeout < first_timeout - 0.1
 
 
 def test_delete_outputs_screen(tmp_path):

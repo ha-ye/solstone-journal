@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED
+from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED, WATCHDOG_TIMEOUT
 from solstone.observe.utils import (
     AUDIO_EXTENSIONS,
     IMAGE_EXTENSIONS,
@@ -31,6 +31,7 @@ from solstone.observe.utils import (
     VIDEO_EXTENSIONS,
 )
 from solstone.think.callosum import CallosumConnection
+from solstone.think.runner import KILL_REAP_GRACE_S
 from solstone.think.runner import ManagedProcess as RunnerManagedProcess
 from solstone.think.utils import (
     CHRONICLE_DIR,
@@ -43,6 +44,7 @@ from solstone.think.utils import (
     iter_segments,
     journal_relative_path,
     now_ms,
+    parse_duration_seconds,
     require_solstone,
     resolve_journal_path,
     setup_cli,
@@ -52,6 +54,21 @@ logger = logging.getLogger(__name__)
 
 # Handlers with serialized worker pools. Add a new entry here when registering one in main().
 HANDLER_NAMES = ("describe", "transcribe", "extract", "depict")
+
+# Per-job wall-clock caps (seconds) for handler subprocesses. A handler whose
+# single job (including any CPU-fallback retry) exceeds its cap is killed by
+# the watchdog and skip-and-surfaced. Defaults are code constants — an
+# operator may override per handler via the `{handler}.max_runtime` journal
+# config key (accepts an int seconds or a "30m"/"45m"/"2h" string).
+# describe/transcribe are calibrated from live measurement (gracious, ~1.5x
+# the heaviest observed legit job). extract/depict are UNMEASURED estimates
+# (those handlers never fired on the measured box) — revisit with real data.
+_DEFAULT_MAX_RUNTIME = {
+    "describe": 1800,
+    "transcribe": 2700,
+    "extract": 900,
+    "depict": 600,
+}
 
 
 class QueuedItem:
@@ -153,6 +170,22 @@ class FileSensor:
             )
             return 1
         return raw
+
+    def _resolve_max_runtime(self, handler_name: str) -> int:
+        cfg = get_config()
+        raw = cfg.get(handler_name, {}).get(
+            "max_runtime", _DEFAULT_MAX_RUNTIME[handler_name]
+        )
+        try:
+            return parse_duration_seconds(raw)
+        except ValueError:
+            logger.warning(
+                "Invalid %s.max_runtime in journal config: %r — defaulting to %ds",
+                handler_name,
+                raw,
+                _DEFAULT_MAX_RUNTIME[handler_name],
+            )
+            return _DEFAULT_MAX_RUNTIME[handler_name]
 
     def register(self, pattern: str, handler_name: str, command: List[str]):
         """
@@ -278,9 +311,61 @@ class FileSensor:
                 f"Force killing {handler_proc.handler_name} for {handler_proc.file_path.name}"
             )
             handler_proc.process.kill()
-            handler_proc.process.wait()
+            try:
+                handler_proc.process.wait(timeout=KILL_REAP_GRACE_S)
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "%s for %s remained unreaped %.1fs after SIGKILL "
+                    "(likely D-state; abandoning — SIGKILL guarantees eventual death)",
+                    handler_proc.handler_name,
+                    handler_proc.file_path.name,
+                    KILL_REAP_GRACE_S,
+                )
 
         handler_proc.cleanup()
+
+    def _on_handler_timeout(
+        self,
+        handler_proc: HandlerProcess,
+        file_path: Path,
+        handler_name: str,
+        cap: int,
+    ) -> None:
+        logger.error(
+            f"{handler_name} timed out after {cap}s (watchdog) for "
+            f"{file_path.name} — terminating"
+        )
+
+        try:
+            log_rel = handler_proc.managed.log_writer.path.relative_to(self.journal_dir)
+        except ValueError:
+            log_rel = handler_proc.managed.log_writer.path
+
+        self._terminate_handler_process(handler_proc)
+
+        if self.callosum:
+            icon = "🤖"
+            if handler_name == "transcribe":
+                icon = "🎙️"
+            elif handler_name == "describe":
+                icon = "👁️"
+            self.callosum.emit(
+                "notification",
+                "show",
+                message=(
+                    f"{handler_name.capitalize()} {WATCHDOG_TIMEOUT} for "
+                    f"{file_path.name}"
+                ),
+                title=f"{handler_name.capitalize()} Timeout",
+                icon=icon,
+                app="sense",
+                action=f"/app/health?log={log_rel}",
+            )
+
+        self._check_segment_observed(
+            file_path, error=f"{handler_name} {WATCHDOG_TIMEOUT} after {cap}s"
+        )
+        self._remove_running_handler(handler_name, handler_proc)
 
     def _run_handler(
         self,
@@ -303,6 +388,8 @@ class FileSensor:
 
             file_path = queued_item.file_path
             cpu_fallback = False
+            cap = self._resolve_max_runtime(handler_name)
+            job_deadline = time.monotonic() + cap
 
             while True:
                 ref = str(now_ms())
@@ -345,7 +432,12 @@ class FileSensor:
                     return
 
                 try:
-                    exit_code = managed.process.wait()
+                    exit_code = managed.process.wait(
+                        timeout=max(0.0, job_deadline - time.monotonic())
+                    )
+                except subprocess.TimeoutExpired:
+                    self._on_handler_timeout(handler_proc, file_path, handler_name, cap)
+                    return
                 except Exception:
                     handler_proc.cleanup()
                     self._remove_running_handler(handler_name, handler_proc)
