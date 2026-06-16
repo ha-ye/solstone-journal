@@ -71,16 +71,19 @@ def test_callosum_sse_success_headers(convey_env):
         resp.close()
 
 
-def test_callosum_sse_unauthenticated_redirects_to_login(convey_env):
+def test_callosum_sse_setup_complete_serves_with_proxy_header(convey_env):
     env = convey_env()
 
     resp = env.client.get(
         "/sse/events",
         headers={"X-Forwarded-For": "1.2.3.4"},
+        buffered=False,
     )
-
-    assert resp.status_code == 302
-    assert "/login" in resp.headers["Location"]
+    try:
+        assert resp.status_code == 200
+        assert resp.content_type.startswith("text/event-stream")
+    finally:
+        resp.close()
 
 
 def test_callosum_sse_round_trip_payload(convey_env):

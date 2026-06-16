@@ -41,7 +41,6 @@ def _settings_client(settings_env):
     config_path = journal_path / "config" / "journal.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
     config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
-    config.setdefault("convey", {})["trust_localhost"] = True
     config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     app = create_app(str(journal_path))
     app.config["TESTING"] = True

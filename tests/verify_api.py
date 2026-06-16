@@ -22,7 +22,7 @@ try:
         FROZEN_DATE,
         FROZEN_TZ_OFFSET,
         isolated_app_env,
-        make_logged_in_test_client,
+        make_test_client,
         prepare_isolated_journal,
     )
 except ModuleNotFoundError:
@@ -30,7 +30,7 @@ except ModuleNotFoundError:
         FROZEN_DATE,
         FROZEN_TZ_OFFSET,
         isolated_app_env,
-        make_logged_in_test_client,
+        make_test_client,
         prepare_isolated_journal,
     )
 
@@ -699,7 +699,7 @@ def client_context(
         journal_path = prepare_isolated_journal(Path(tmpdir) / "journal")
         with freeze_time(FROZEN_DATE, tz_offset=FROZEN_TZ_OFFSET):
             with isolated_app_env(journal_path):
-                yield make_logged_in_test_client(journal_path), str(journal_path)
+                yield make_test_client(journal_path), str(journal_path)
 
 
 def main(argv: list[str] | None = None) -> int:

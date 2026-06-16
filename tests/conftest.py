@@ -158,11 +158,16 @@ def set_test_journal_path(monkeypatch, _isolate_os_environ):
     This ensures all tests have a valid SOLSTONE_JOURNAL without needing
     to explicitly set it in each test.
     """
+    import solstone.think.utils as think_utils
+
     monkeypatch.setenv(
         "SOLSTONE_JOURNAL",
         str(Path("tests/fixtures/journal").resolve()),
     )
     monkeypatch.setenv("SOL_SKIP_SUPERVISOR_CHECK", "1")
+    think_utils._journal_path_cache = None
+    yield
+    think_utils._journal_path_cache = None
 
 
 @pytest.fixture(autouse=True)
@@ -216,6 +221,9 @@ def journal_copy(tmp_path, monkeypatch):
     dst = tmp_path / "journal"
     copytree_tracked(src, dst)
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(dst.resolve()))
+    import solstone.think.utils as think_utils
+
+    think_utils._journal_path_cache = None
     return dst
 
 

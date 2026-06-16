@@ -49,10 +49,11 @@ def journal(tmp_path, monkeypatch):
 @pytest.fixture
 def cli(journal, monkeypatch):
     from solstone.think.convey_client import ConveyClient
-    from tests._baseline_harness import make_logged_in_test_client
+    from tests._baseline_harness import make_test_client, mark_setup_complete
 
+    mark_setup_complete(journal)
     client = ConveyClient(
-        session=make_logged_in_test_client(journal),
+        session=make_test_client(journal),
         base_url="",
         require_service=False,
     )

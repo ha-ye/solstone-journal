@@ -23,9 +23,6 @@ from solstone.apps.chat.config import (
 )
 from solstone.apps.settings import copy as settings_copy
 from solstone.apps.settings import install_copy, transcribe_resource
-from solstone.apps.settings.copy import (
-    CONVEY_REFUSE_NO_PASSWORD_TRUST,
-)
 from solstone.apps.utils import log_app_action
 from solstone.convey import chat_stream, state
 from solstone.convey import copy as convey_copy
@@ -40,7 +37,6 @@ from solstone.convey.reasons import (
     INVALID_REQUEST_VALUE,
     MISSING_REQUEST_BODY,
     MISSING_REQUIRED_FIELD,
-    NETWORK_SECURITY_REQUIRES_PASSWORD,
     SETTINGS_OPERATION_FAILED,
 )
 from solstone.convey.sol_initiated import copy as sol_voice_copy
@@ -132,11 +128,6 @@ def _compute_runtime_label() -> str:
         return "unsupported"
 
 
-def _convey_password_is_set(config: dict[str, Any]) -> bool:
-    password_hash = config.get("convey", {}).get("password_hash", "")
-    return bool(str(password_hash or "").strip())
-
-
 def _service_key_validation(config: dict[str, Any]) -> dict[str, Any]:
     providers_config = config.get("providers", {})
     key_validation = (
@@ -163,9 +154,8 @@ def _project_public_config(config: dict[str, Any]) -> dict[str, Any]:
     projected.pop("providers", None)
     convey_config = projected.setdefault("convey", {})
     convey_config.pop("secret", None)
-    has_pw = bool(convey_config.pop("password_hash", None))
+    convey_config.pop("password_hash", None)
     convey_config.pop("password", None)
-    convey_config["has_password"] = has_pw
     projected["runtime_env"] = {k: bool(os.getenv(k)) for k in API_KEY_ENV_VARS}
     return projected
 
@@ -236,8 +226,7 @@ def update_config() -> Any:
     """Update the journal configuration.
 
     Accepts JSON with a 'section' key and per-section config fields to update.
-    Supported writes include identity and transcribe settings, convey security
-    settings (password, trust_localhost), and API-key env vars.
+    Supported writes include identity and transcribe settings, and API-key env vars.
     """
     try:
         request_data = request.get_json()
@@ -274,7 +263,6 @@ def update_config() -> Any:
                 "timezone",
             ],
             "transcribe": ["backend", "enrich", "preserve_all", "noise_upgrade"],
-            "convey": ["password", "trust_localhost"],
             "support": ["enabled", "proactive", "anonymous_feedback", "portal_url"],
             "agent": ["name", "name_status", "named_date"],
             "env": API_KEY_ENV_VARS,
@@ -306,35 +294,6 @@ def update_config() -> Any:
         # Track changes for logging
         changed_fields = {}
         old_section = old_config.get(section, {})
-
-        if section == "convey" and "password" in data:
-            raw_password = data.pop("password") or ""
-            if raw_password:
-                if len(raw_password) < 8:
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail="Password must be at least 8 characters",
-                    )
-                from werkzeug.security import generate_password_hash
-
-                config["convey"]["password_hash"] = generate_password_hash(raw_password)
-                changed_fields["password"] = {
-                    "old": old_section.get("password_hash"),
-                    "new": config["convey"]["password_hash"],
-                }
-
-        has_password = _convey_password_is_set(config)
-
-        if (
-            section == "convey"
-            and "trust_localhost" in data
-            and not bool(data["trust_localhost"])
-            and not has_password
-        ):
-            return error_response(
-                NETWORK_SECURITY_REQUIRES_PASSWORD,
-                detail=CONVEY_REFUSE_NO_PASSWORD_TRUST,
-            )
 
         # Update only allowed fields
         for key in allowed_sections[section]:
@@ -401,10 +360,7 @@ def update_config() -> Any:
         # Log if something changed (don't log sensitive values)
         if changed_fields:
             log_fields = changed_fields
-            if section == "convey" and "password" in log_fields:
-                # Don't log actual password values
-                log_fields = {"password": {"old": "***", "new": "***"}}
-            elif section == "env":
+            if section == "env":
                 # Don't log actual API key values
                 log_fields = {k: {"old": "***", "new": "***"} for k in changed_fields}
 
@@ -427,10 +383,6 @@ def update_config() -> Any:
     except Exception:
         logger.exception("error updating config")
         return _settings_operation_failed()
-
-
-def _trust_localhost_enabled(config: dict[str, Any]) -> bool:
-    return bool(config.get("convey", {}).get("trust_localhost", True))
 
 
 def _host_url_status_value() -> str:
@@ -497,14 +449,11 @@ def convey_status() -> Any:
         from solstone.think.service import DEFAULT_SERVICE_PORT
         from solstone.think.utils import read_service_port
 
-        config = get_journal_config()
         bind_host = _resolve_bind_host()
         port = read_service_port("convey") or DEFAULT_SERVICE_PORT
         status_text = convey_copy.format_convey_status(
             bind=f"{bind_host}:{port}",
             host_url=_host_url_status_value(),
-            password="set" if _convey_password_is_set(config) else "not set",
-            trust_localhost="yes" if _trust_localhost_enabled(config) else "no",
         )
         return jsonify({"status_text": status_text})
     except Exception:

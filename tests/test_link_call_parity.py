@@ -18,7 +18,7 @@ from solstone.think.link.paths import (
     authorized_clients_path,
     nonces_path,
 )
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client
 
 PAIRED_AT = "2026-04-19T00:00:00Z"
 LAST_SEEN_AT = "2026-04-19T00:30:00Z"
@@ -33,7 +33,6 @@ def journal(tmp_path, monkeypatch):
     (config_dir / "journal.json").write_text(
         json.dumps(
             {
-                "convey": {"trust_localhost": True},
                 "setup": {"completed_at": 1700000000000},
             },
             indent=2,
@@ -45,7 +44,7 @@ def journal(tmp_path, monkeypatch):
 
 @pytest.fixture
 def runner(journal, monkeypatch):
-    client = ConveyClient(session=make_logged_in_test_client(journal), base_url="")
+    client = ConveyClient(session=make_test_client(journal), base_url="")
     monkeypatch.setattr("solstone.apps.link.call.get_client", lambda: client)
     return CliRunner()
 

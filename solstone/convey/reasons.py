@@ -157,11 +157,6 @@ BACKUP_UNAVAILABLE = Reason(
     "I couldn't start a backup because solstone's background service isn't running. Start it, then try again.",
     503,
 )
-NETWORK_SECURITY_REQUIRES_PASSWORD = Reason(
-    "network_security_requires_password",
-    "I couldn't change localhost trust until a password is set.",
-    400,
-)
 LOCAL_REQUEST_ONLY = Reason(
     "local_request_only",
     "I couldn't register that observer because this endpoint serves local requests only.",

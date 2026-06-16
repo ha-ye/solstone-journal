@@ -50,7 +50,6 @@ def _client(journal_path):
 def _ready_journal(settings_env):
     journal_path, config = settings_env()
     config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
-    config.setdefault("convey", {})["trust_localhost"] = True
     (journal_path / "config" / "journal.json").write_text(
         json.dumps(config, indent=2) + "\n",
         encoding="utf-8",

@@ -17,7 +17,7 @@ from solstone.apps.entities.call import app as entities_app
 from solstone.think.convey_client import ConveyClient
 from solstone.think.entities import merge as merge_mod
 from solstone.think.entities.journal import load_journal_entity
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client
 
 runner = CliRunner()
 STREAM = "test"
@@ -28,7 +28,7 @@ def _entities_client(monkeypatch: pytest.MonkeyPatch) -> None:
     def client() -> ConveyClient:
         journal = Path(os.environ["SOLSTONE_JOURNAL"])
         return ConveyClient(
-            session=make_logged_in_test_client(journal),
+            session=make_test_client(journal),
             base_url="",
         )
 

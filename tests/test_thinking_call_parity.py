@@ -16,7 +16,7 @@ import solstone.apps.thinking.routes as thinking_routes
 from solstone.apps.thinking import copy as thinking_copy
 from solstone.think.convey_client import ConveyClient
 from solstone.think.services import operations, scout, scout_handoff
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client
 
 runner = CliRunner()
 
@@ -41,7 +41,7 @@ def _thinking_client(journal_copy: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     for key in API_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
     client = ConveyClient(
-        session=make_logged_in_test_client(journal_copy),
+        session=make_test_client(journal_copy),
         base_url="",
     )
     monkeypatch.setattr(thinking_call, "get_client", lambda: client)

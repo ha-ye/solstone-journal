@@ -51,6 +51,12 @@ def speakers_env(tmp_path, monkeypatch):
             self.journal = journal_path
             monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_path))
             monkeypatch.setenv("SOL_SKIP_SUPERVISOR_CHECK", "1")
+            config_path = journal_path / "config" / "journal.json"
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(
+                json.dumps({"setup": {"completed_at": 1700000000000}}) + "\n",
+                encoding="utf-8",
+            )
             import solstone.think.utils as think_utils
 
             think_utils._journal_path_cache = None

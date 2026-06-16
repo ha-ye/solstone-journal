@@ -32,6 +32,7 @@ def _read_config(journal: Path) -> dict:
 
 
 def _write_config(payload: dict) -> None:
+    payload.setdefault("setup", {"completed_at": 1700000000000})
     write_journal_config(payload)
 
 
@@ -48,9 +49,6 @@ def thinking_client(journal_copy: Path):
     app = create_app(journal=str(journal_copy.resolve()))
     app.config["TESTING"] = True
     client = app.test_client()
-    with client.session_transaction() as session:
-        session["logged_in"] = True
-        session.permanent = True
     return client
 
 

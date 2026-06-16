@@ -6,7 +6,6 @@
   },
   "convey": {
     "allow_network_access": false,
-    "has_password": true,
     "trust_localhost": true
   },
   "describe": {

@@ -31,61 +31,6 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def _get_or_create_secret() -> str:
-    """Load convey.secret from journal.json, generating one if absent."""
-    from solstone.think.utils import ensure_journal_config
-
-    config = ensure_journal_config()
-    return config["convey"]["secret"]
-
-
-def _migrate_password_hash() -> None:
-    """Migrate plaintext convey.password to hashed password_hash."""
-    from werkzeug.security import generate_password_hash
-
-    from solstone.think.journal_config import write_journal_config
-    from solstone.think.utils import get_config
-
-    config = get_config()
-    convey = config.get("convey", {})
-
-    if "password_hash" in convey or "password" not in convey:
-        return
-
-    plaintext = convey.pop("password")
-    if plaintext:
-        convey["password_hash"] = generate_password_hash(plaintext)
-
-    config["convey"] = convey
-    write_journal_config(config)
-
-
-def _migrate_setup_completed() -> None:
-    """Infer setup.completed_at and set trust_localhost for existing installs.
-
-    Legacy migration: handles journals where password_hash was set via
-    'journal password set' CLI before web onboarding existed. Web onboarding
-    now writes all config atomically in init_finalize(), so this path is
-    only reached for pre-existing journals.
-    """
-    from solstone.think.journal_config import write_journal_config
-    from solstone.think.utils import get_config
-
-    config = get_config()
-
-    if not config.get("convey", {}).get("password_hash"):
-        return
-    if config.get("setup", {}).get("completed_at"):
-        return
-
-    from solstone.think.utils import now_ms
-
-    config.setdefault("setup", {})["completed_at"] = now_ms()
-    config.setdefault("convey", {})["trust_localhost"] = True
-
-    write_journal_config(config)
-
-
 def install_identity_stamper(app: Flask) -> None:
     from flask import g, request
 
@@ -155,16 +100,12 @@ def create_app(journal: str = "") -> Flask:
         ]
     )
 
-    app.secret_key = _get_or_create_secret()
-    _migrate_password_hash()
-    _migrate_setup_completed()
-    app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = timedelta(seconds=300)
     app.config.setdefault("SECURE_LISTENER_ENABLED", False)
     install_identity_stamper(app)
     install_request_id_stamper(app)
 
-    # Register root blueprint (login, logout, /, favicon)
+    # Register root blueprint (/, favicon)
     app.register_blueprint(root_bp)
 
     # Register config API blueprint

@@ -372,7 +372,7 @@ _REGISTER_REQUIRED_FIELDS = ("platform", "hostname", "stream_type", "version")
 
 
 def _is_trusted_localhost() -> bool:
-    """Direct-loopback check mirroring the convey trust_localhost gate."""
+    """Direct-loopback check for observer-local endpoints."""
     is_localhost = request.remote_addr in ("127.0.0.1", "::1", "localhost")
     proxy_headers = (
         request.headers.get("X-Forwarded-For")
@@ -402,7 +402,7 @@ def register() -> Any:
     """Self-register a local or through-link observer and lock stream identity.
 
     The in-handler guard is the sole gate: direct loopback, or a request that
-    arrived through an authorized PL identity. The route is require_login-exempt
+    arrived through an authorized PL identity. The route is require_access-exempt
     so an observer can register before setup completes. Mints the DL handle,
     locks a stream onto the record, and returns the pinned descriptor response.
     """

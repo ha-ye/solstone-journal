@@ -13,7 +13,7 @@ from solstone.apps.awareness.call import app
 from solstone.convey.reasons import AWARENESS_BUSY
 from solstone.think.convey_client import ConveyClient
 from solstone.think.journal_io import LockTimeout
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client, mark_setup_complete
 
 FROZEN_MS = 1700000000000
 FROZEN_ISO = "20260415T12:00:00"
@@ -25,12 +25,13 @@ def journal(tmp_path, monkeypatch):
     # Env must point at the tmp journal so BOTH the seed helpers (append_log/
     # update_state) and the in-process route handlers resolve get_journal() to it.
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    mark_setup_complete(tmp_path)
     return tmp_path
 
 
 @pytest.fixture
 def runner(journal, monkeypatch):
-    client = ConveyClient(session=make_logged_in_test_client(journal), base_url="")
+    client = ConveyClient(session=make_test_client(journal), base_url="")
     monkeypatch.setattr("solstone.apps.awareness.call.get_client", lambda: client)
     return CliRunner()
 

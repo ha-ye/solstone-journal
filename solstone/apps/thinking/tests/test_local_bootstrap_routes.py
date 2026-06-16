@@ -37,7 +37,6 @@ def _client(journal_path):
 def _settings_config() -> dict:
     return {
         "setup": {"completed_at": "2026-05-09T00:00:00Z"},
-        "convey": {"trust_localhost": True},
         "providers": {
             "generate": {"provider": "google", "tier": 2, "backup": "anthropic"},
             "cogitate": {"provider": "openai", "tier": 2, "backup": "anthropic"},

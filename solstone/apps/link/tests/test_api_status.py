@@ -21,7 +21,6 @@ TOTP_SECRET = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
 
 def _write_config(env: Any, *, link: Any = None, include_link: bool = True) -> None:
     config: dict[str, Any] = {
-        "convey": {"trust_localhost": True},
         "setup": {"completed_at": 1700000000000},
     }
     if include_link:
@@ -324,7 +323,6 @@ def test_back_compat_field_set(link_env, monkeypatch) -> None:
         "enrolled",
         "relay_url",
         "ca_fingerprint",
-        "has_password",
         "lan_accessible",
         "posture",
         "reachability",
@@ -337,7 +335,6 @@ def test_back_compat_field_set(link_env, monkeypatch) -> None:
     assert isinstance(data["enrolled"], bool)
     assert isinstance(data["relay_url"], str)
     assert isinstance(data["ca_fingerprint"], str) or data["ca_fingerprint"] is None
-    assert isinstance(data["has_password"], bool)
     assert isinstance(data["lan_accessible"], bool)
 
 
@@ -359,7 +356,6 @@ def test_api_status_unprovisioned(link_env, monkeypatch) -> None:
         "enrolled",
         "relay_url",
         "ca_fingerprint",
-        "has_password",
         "lan_accessible",
         "posture",
         "reachability",
@@ -396,7 +392,6 @@ def test_cli_status_unprovisioned_does_not_write_state(tmp_path, monkeypatch) ->
     (config_dir / "journal.json").write_text(
         json.dumps(
             {
-                "convey": {"trust_localhost": True},
                 "setup": {"completed_at": 1700000000000},
             },
             indent=2,
@@ -407,9 +402,6 @@ def test_cli_status_unprovisioned_does_not_write_state(tmp_path, monkeypatch) ->
     app = create_app(journal=str(journal))
     app.config["TESTING"] = True
     test_client = app.test_client()
-    with test_client.session_transaction() as session:
-        session["logged_in"] = True
-        session.permanent = True
     client = ConveyClient(session=test_client, base_url="")
     monkeypatch.setattr(link_call, "get_client", lambda: client)
 
@@ -426,19 +418,3 @@ def test_cli_status_unprovisioned_does_not_write_state(tmp_path, monkeypatch) ->
     )
     assert "Home label:    (not provisioned)" in result.stdout
     assert not (journal / "link" / "state.json").exists()
-
-
-def test_status_reports_convey_password_state(link_env, monkeypatch) -> None:
-    env = link_env()
-    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
-
-    data = _get_status(env)
-    assert data["has_password"] is False
-
-    config_path = env.journal / "config" / "journal.json"
-    config = json.loads(config_path.read_text("utf-8"))
-    config.setdefault("convey", {})["password_hash"] = "hashed"
-    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
-
-    data = _get_status(env)
-    assert data["has_password"] is True

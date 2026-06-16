@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import json
+
 from solstone.apps import AppRegistry
 from solstone.think.awareness import append_log
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client
 
 PREFIX = "/app/awareness"
 
@@ -28,7 +30,7 @@ def test_awareness_api_only_discovery_registers_blueprint_outside_menu():
 
 
 def test_awareness_index_404(journal_copy):
-    client = make_logged_in_test_client(journal_copy)
+    client = make_test_client(journal_copy)
 
     response = client.get(f"{PREFIX}/")
 
@@ -37,7 +39,13 @@ def test_awareness_index_404(journal_copy):
 
 def test_awareness_state_empty_journal_returns_empty_dict(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    client = make_logged_in_test_client(tmp_path)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "journal.json").write_text(
+        json.dumps({"setup": {"completed_at": 1}}),
+        encoding="utf-8",
+    )
+    client = make_test_client(tmp_path)
 
     response = client.get(f"{PREFIX}/api/state")
 
@@ -46,7 +54,7 @@ def test_awareness_state_empty_journal_returns_empty_dict(tmp_path, monkeypatch)
 
 
 def test_awareness_state_full_state_includes_journal(journal_copy):
-    client = make_logged_in_test_client(journal_copy)
+    client = make_test_client(journal_copy)
 
     response = client.get(f"{PREFIX}/api/state")
 
@@ -55,7 +63,7 @@ def test_awareness_state_full_state_includes_journal(journal_copy):
 
 
 def test_awareness_state_known_section(journal_copy):
-    client = make_logged_in_test_client(journal_copy)
+    client = make_test_client(journal_copy)
 
     response = client.get(f"{PREFIX}/api/state?section=journal")
 
@@ -64,7 +72,7 @@ def test_awareness_state_known_section(journal_copy):
 
 
 def test_awareness_state_unknown_section(journal_copy):
-    client = make_logged_in_test_client(journal_copy)
+    client = make_test_client(journal_copy)
 
     response = client.get(f"{PREFIX}/api/state?section=nope")
 
@@ -73,7 +81,7 @@ def test_awareness_state_unknown_section(journal_copy):
 
 
 def test_awareness_imports_get_defaults(journal_copy):
-    client = make_logged_in_test_client(journal_copy)
+    client = make_test_client(journal_copy)
 
     response = client.get(f"{PREFIX}/api/imports")
 
@@ -82,7 +90,7 @@ def test_awareness_imports_get_defaults(journal_copy):
 
 
 def test_awareness_imports_post_record(journal_copy):
-    client = make_logged_in_test_client(journal_copy)
+    client = make_test_client(journal_copy)
 
     response = client.post(f"{PREFIX}/api/imports", json={"record": "chatgpt"})
 
@@ -93,7 +101,7 @@ def test_awareness_imports_post_record(journal_copy):
 
 
 def test_awareness_imports_post_declined(journal_copy):
-    client = make_logged_in_test_client(journal_copy)
+    client = make_test_client(journal_copy)
 
     response = client.post(f"{PREFIX}/api/imports", json={"declined": True})
 
@@ -102,7 +110,7 @@ def test_awareness_imports_post_declined(journal_copy):
 
 
 def test_awareness_imports_post_nudge(journal_copy):
-    client = make_logged_in_test_client(journal_copy)
+    client = make_test_client(journal_copy)
 
     response = client.post(f"{PREFIX}/api/imports", json={"nudge": True})
 
@@ -111,7 +119,7 @@ def test_awareness_imports_post_nudge(journal_copy):
 
 
 def test_awareness_imports_post_multi_action_400(journal_copy):
-    client = make_logged_in_test_client(journal_copy)
+    client = make_test_client(journal_copy)
 
     response = client.post(
         f"{PREFIX}/api/imports",
@@ -122,7 +130,7 @@ def test_awareness_imports_post_multi_action_400(journal_copy):
 
 
 def test_awareness_imports_post_zero_action_400(journal_copy):
-    client = make_logged_in_test_client(journal_copy)
+    client = make_test_client(journal_copy)
 
     response = client.post(f"{PREFIX}/api/imports", json={})
 
@@ -133,7 +141,7 @@ def test_awareness_log_collection_limit_and_kind_filter(journal_copy):
     append_log("observation", message="a")
     append_log("observation", message="b")
     append_log("nudge", message="c")
-    client = make_logged_in_test_client(journal_copy)
+    client = make_test_client(journal_copy)
 
     response = client.get(f"{PREFIX}/api/log?limit=2")
 
@@ -152,7 +160,7 @@ def test_awareness_log_collection_limit_and_kind_filter(journal_copy):
 
 def test_awareness_log_day_param_uses_requested_day(journal_copy):
     append_log("observation", message="old", day="20260101")
-    client = make_logged_in_test_client(journal_copy)
+    client = make_test_client(journal_copy)
 
     response = client.get(f"{PREFIX}/api/log?day=20260101")
 
@@ -168,7 +176,7 @@ def test_awareness_log_day_param_uses_requested_day(journal_copy):
 
 
 def test_awareness_log_post_creates_201(journal_copy):
-    client = make_logged_in_test_client(journal_copy)
+    client = make_test_client(journal_copy)
 
     response = client.post(
         f"{PREFIX}/api/log",
@@ -182,7 +190,7 @@ def test_awareness_log_post_creates_201(journal_copy):
 
 
 def test_awareness_log_post_missing_kind_400(journal_copy):
-    client = make_logged_in_test_client(journal_copy)
+    client = make_test_client(journal_copy)
 
     response = client.post(f"{PREFIX}/api/log", json={})
 
@@ -190,7 +198,7 @@ def test_awareness_log_post_missing_kind_400(journal_copy):
 
 
 def test_awareness_log_post_empty_kind_400(journal_copy):
-    client = make_logged_in_test_client(journal_copy)
+    client = make_test_client(journal_copy)
 
     response = client.post(f"{PREFIX}/api/log", json={"kind": ""})
 
@@ -198,7 +206,7 @@ def test_awareness_log_post_empty_kind_400(journal_copy):
 
 
 def test_awareness_post_endpoints_no_body_400(journal_copy):
-    client = make_logged_in_test_client(journal_copy)
+    client = make_test_client(journal_copy)
 
     imports_response = client.post(f"{PREFIX}/api/imports")
     log_response = client.post(f"{PREFIX}/api/log")
@@ -210,7 +218,7 @@ def test_awareness_post_endpoints_no_body_400(journal_copy):
 
 
 def test_awareness_post_endpoints_non_json_400(journal_copy):
-    client = make_logged_in_test_client(journal_copy)
+    client = make_test_client(journal_copy)
 
     imports_response = client.post(
         f"{PREFIX}/api/imports",

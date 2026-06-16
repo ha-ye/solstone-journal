@@ -14,6 +14,7 @@ oracle.
 from __future__ import annotations
 
 import atexit
+import json
 import os
 import shutil
 import subprocess
@@ -136,14 +137,24 @@ def isolated_app_env(journal: Path) -> Iterator[Path]:
             os.environ["SOLSTONE_JOURNAL"] = prev_override
 
 
-def make_logged_in_test_client(journal: Path):
-    """Create a Flask test client with an authenticated session."""
+def make_test_client(journal: Path):
+    """Create a Flask test client for an isolated journal."""
     from solstone.convey import create_app
 
     app = create_app(journal=str(Path(journal).resolve()))
     app.config["TESTING"] = True
     client = app.test_client()
-    with client.session_transaction() as session:
-        session["logged_in"] = True
-        session.permanent = True
     return client
+
+
+def mark_setup_complete(journal: Path, completed_at: int = 1700000000000) -> None:
+    """Mark a minimal test journal as past first-run setup."""
+
+    config_path = Path(journal) / "config" / "journal.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    if config_path.exists():
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    else:
+        config = {}
+    config["setup"] = {"completed_at": completed_at}
+    config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")

@@ -65,9 +65,6 @@
     },
     "debug_show_throttled": false
   },
-  "convey": {
-    "trust_localhost": true
-  },
   "pairing": {
     "host_url": null
   },

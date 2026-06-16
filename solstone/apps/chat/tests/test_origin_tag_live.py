@@ -25,7 +25,6 @@ def chat_client(tmp_path, monkeypatch):
         json.dumps(
             {
                 "setup": {"completed_at": "2026-05-09T00:00:00Z"},
-                "convey": {"trust_localhost": True},
             }
         )
         + "\n",
@@ -35,9 +34,6 @@ def chat_client(tmp_path, monkeypatch):
     app = create_app(str(journal))
     app.config["TESTING"] = True
     client = app.test_client()
-    with client.session_transaction() as session:
-        session["logged_in"] = True
-        session.permanent = True
     return client
 
 

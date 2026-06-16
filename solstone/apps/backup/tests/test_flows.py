@@ -21,6 +21,7 @@ def _config_path(env) -> Path:
 
 
 def _write_config(env, payload: dict) -> None:
+    payload.setdefault("setup", {"completed_at": 1700000000000})
     _config_path(env).write_text(json.dumps(payload), encoding="utf-8")
 
 

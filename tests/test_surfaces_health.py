@@ -17,7 +17,7 @@ from solstone.convey.readiness_snapshot import unavailable_snapshot
 from solstone.think.convey_client import ConveyClient
 from solstone.think.pipeline_health import SegmentBacklog, SegmentCompletion
 from solstone.think.surfaces import health as health_surface
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client
 
 _RUNNER = CliRunner()
 _SPEC_POINTER = "cpo/specs/in-flight/consumer-surface-health.md"
@@ -26,6 +26,12 @@ _SPEC_POINTER = "cpo/specs/in-flight/consumer-surface-health.md"
 def _configure_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     monkeypatch.setenv("SOL_SKIP_SUPERVISOR_CHECK", "1")
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "journal.json").write_text(
+        json.dumps({"setup": {"completed_at": 1}}),
+        encoding="utf-8",
+    )
 
 
 def _set_now(monkeypatch: pytest.MonkeyPatch, value: datetime) -> None:
@@ -278,7 +284,7 @@ def _neutral_readiness_snapshot() -> dict[str, object]:
 
 
 def _patch_health_cli_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    client = ConveyClient(session=make_logged_in_test_client(tmp_path), base_url="")
+    client = ConveyClient(session=make_test_client(tmp_path), base_url="")
     monkeypatch.setattr("solstone.think.tools.health.get_client", lambda: client)
 
 

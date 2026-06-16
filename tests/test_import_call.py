@@ -20,7 +20,7 @@ from solstone.think.entities.journal import (
     save_journal_entity,
 )
 from solstone.think.entities.relationships import load_facet_relationship
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client, mark_setup_complete
 
 import_call = import_module("solstone.apps.import.call")
 import_resolve = import_module("solstone.apps.import.resolve")
@@ -70,6 +70,7 @@ def import_env(tmp_path, monkeypatch):
         parents=True, exist_ok=True
     )
     (tmp_path / "config").mkdir(parents=True, exist_ok=True)
+    mark_setup_complete(tmp_path)
 
     key = generate_key()
     source = _source(key=key)
@@ -81,7 +82,7 @@ def import_env(tmp_path, monkeypatch):
     def _client() -> ConveyClient:
         journal = Path(os.environ["SOLSTONE_JOURNAL"])
         return ConveyClient(
-            session=make_logged_in_test_client(journal),
+            session=make_test_client(journal),
             base_url="",
         )
 
@@ -483,7 +484,10 @@ def test_resolve_config_apply(import_env):
     )
     _write_json(
         import_env["root"] / "config" / "journal.json",
-        {"identity": {"name": "Local User"}},
+        {
+            "identity": {"name": "Local User"},
+            "setup": {"completed_at": 1700000000000},
+        },
     )
 
     result = runner.invoke(
@@ -527,7 +531,11 @@ def test_resolve_config_keep(import_env):
         {"retention": {"days": 30}},
     )
     _write_json(
-        import_env["root"] / "config" / "journal.json", {"retention": {"days": 90}}
+        import_env["root"] / "config" / "journal.json",
+        {
+            "retention": {"days": 90},
+            "setup": {"completed_at": 1700000000000},
+        },
     )
 
     result = runner.invoke(
@@ -573,7 +581,11 @@ def test_resolve_config_all_transferable(import_env):
     )
     _write_json(
         import_env["root"] / "config" / "journal.json",
-        {"identity": {"name": "Local User"}, "retention": {"days": 90}},
+        {
+            "identity": {"name": "Local User"},
+            "retention": {"days": 90},
+            "setup": {"completed_at": 1700000000000},
+        },
     )
 
     result = runner.invoke(

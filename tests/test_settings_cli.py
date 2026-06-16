@@ -29,7 +29,6 @@ def test_status_json_does_not_require_running_stack(
     payload = json.loads(captured.out)
     assert payload == {
         "effective_host_url": "http://localhost:5015",
-        "password_configured": True,
     }
     assert captured.err == ""
 

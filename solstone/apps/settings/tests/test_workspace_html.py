@@ -115,9 +115,12 @@ def test_workspace_cogitate_auth_control_removed():
     assert "document.getElementById('field-cogitate-auth')" not in text
 
 
-def test_workspace_security_network_mode_ui_removed_and_link_hint_present():
+def test_workspace_security_section_removed():
     text = _workspace_text()
     for removed in (
+        '<option value="security">',
+        'id="tab-security"',
+        'id="section-security"',
         'id="conveyNetworkButton"',
         'id="conveyNetworkMode"',
         'id="conveyNetworkDesc"',
@@ -133,16 +136,10 @@ def test_workspace_security_network_mode_ui_removed_and_link_hint_present():
         "toggleConveyNetworkAccess",
         "showConveyPasswordDisclosure",
         "submitConveyPasswordDisclosure",
+        "function renderConveyHostFields(",
+        'id="field-trust-localhost"',
     ):
         assert removed not in text, removed
-
-    assert 'id="conveyLanUrlDisplay"' not in text
-    assert 'id="field-host-url"' not in text
-    assert "function renderConveyHostFields(" in text
-    assert 'id="field-password"' in text
-    assert 'id="field-trust-localhost"' in text
-    assert 'href="/app/link"' in text
-    assert "{{ convey_copy.SETTINGS_SECURITY_REACH_HINT }}" in text
 
 
 def test_workspace_guide_is_default_static_section():

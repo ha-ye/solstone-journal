@@ -20,7 +20,7 @@ import solstone.convey.sol_initiated.start as sol_start
 from solstone.apps.chat.call import app
 from solstone.convey.chat_stream import read_chat_events
 from solstone.think.convey_client import ConveyClient
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client
 
 FROZEN_MS = 1_700_000_000_000
 FROZEN_DAY = datetime.fromtimestamp(FROZEN_MS / 1000).strftime("%Y%m%d")
@@ -33,7 +33,13 @@ def journal(tmp_path, monkeypatch):
     config_path = tmp_path / "config" / "journal.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
-        json.dumps({"sol_voice": {"rate_floor_minutes": 0}}) + "\n",
+        json.dumps(
+            {
+                "setup": {"completed_at": 1700000000000},
+                "sol_voice": {"rate_floor_minutes": 0},
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
     return tmp_path
@@ -42,7 +48,7 @@ def journal(tmp_path, monkeypatch):
 @pytest.fixture
 def runner(journal, monkeypatch):
     monkeypatch.setattr(sol_start, "now_ms", lambda: FROZEN_MS)
-    client = ConveyClient(session=make_logged_in_test_client(journal), base_url="")
+    client = ConveyClient(session=make_test_client(journal), base_url="")
     monkeypatch.setattr("solstone.apps.chat.call.get_client", lambda: client)
     return CliRunner()
 

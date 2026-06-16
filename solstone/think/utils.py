@@ -17,7 +17,6 @@ import logging
 import os
 import pwd
 import re
-import secrets
 import socket
 import sys
 import time
@@ -730,9 +729,8 @@ def _resolve_os_timezone() -> str:
 def ensure_journal_config() -> dict[str, Any]:
     """Materialize <journal>/config/journal.json and return its contents.
 
-    Idempotent after first creation, with one transitional exception: if the
-    file exists but lacks ``convey.secret``, the secret is backfilled. Identity
-    fields on an existing file are never modified.
+    Idempotent after first creation. Identity fields on an existing file are
+    never modified.
     """
     from solstone.think.journal_config import write_journal_config
 
@@ -744,9 +742,6 @@ def ensure_journal_config() -> dict[str, Any]:
     if config_path.exists():
         with config_path.open(encoding="utf-8") as fh:
             config = json.load(fh)
-        if not config.get("convey", {}).get("secret"):
-            config.setdefault("convey", {})["secret"] = secrets.token_hex(32)
-            write_journal_config(config)
         return config
 
     if _default_config is None:
@@ -771,7 +766,6 @@ def ensure_journal_config() -> dict[str, Any]:
     config["identity"]["name"] = full_name
     config["identity"]["preferred"] = login_name
     config["identity"]["timezone"] = timezone
-    config.setdefault("convey", {})["secret"] = secrets.token_hex(32)
     write_journal_config(config)
     return config
 

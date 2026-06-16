@@ -37,7 +37,6 @@ def _write_config(journal_path: Path, config: dict[str, Any]) -> None:
 def _ready_settings_env(settings_env) -> tuple[Path, dict[str, Any]]:
     journal_path, config = settings_env()
     config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
-    config.setdefault("convey", {})["trust_localhost"] = True
     _write_config(journal_path, config)
     return journal_path, config
 

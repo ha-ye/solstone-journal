@@ -49,9 +49,6 @@ def _make_env(journal, monkeypatch) -> ChatTestEnv:
     app = create_app(str(journal))
     app.config["TESTING"] = True
     client = app.test_client()
-    with client.session_transaction() as session:
-        session["logged_in"] = True
-        session.permanent = True
     return ChatTestEnv(client=client, journal=journal)
 
 

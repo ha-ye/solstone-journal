@@ -12,9 +12,6 @@ def _make_client(journal_path: str):
     app = create_app(journal_path)
     app.config["TESTING"] = True
     client = app.test_client()
-    with client.session_transaction() as session:
-        session["logged_in"] = True
-        session.permanent = True
     return client
 
 

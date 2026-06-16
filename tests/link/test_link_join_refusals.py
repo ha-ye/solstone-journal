@@ -59,7 +59,7 @@ def _args() -> argparse.Namespace:
     )
 
 
-def test_pair_request_refuses_auth_bounce_html(
+def test_pair_request_refuses_html_bounce(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -68,8 +68,8 @@ def test_pair_request_refuses_auth_bounce_html(
 
     def fake_urlopen(request, **_kwargs):
         return _FakeResponse(
-            b"<html>login</html>",
-            url="http://receiver/login",
+            b"<html>unexpected</html>",
+            url="http://receiver/unexpected",
             content_type="text/html",
         )
 
@@ -80,7 +80,7 @@ def test_pair_request_refuses_auth_bounce_html(
     assert result == 1
     err = capsys.readouterr().err
     assert "http://receiver/app/link/by-code" in err
-    assert "http://receiver/login" in err
+    assert "http://receiver/unexpected" in err
     assert "text/html" in err
 
 

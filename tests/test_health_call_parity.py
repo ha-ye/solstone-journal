@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 from solstone.think.convey_client import ConveyClient
 from solstone.think.surfaces import health as health_surface
 from solstone.think.tools.health import app
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client, mark_setup_complete
 from tests.test_surfaces_health import (
     _clear_readiness_snapshot,
     _minimal_facet_tree,
@@ -25,12 +25,13 @@ from tests.test_surfaces_health import (
 @pytest.fixture
 def journal(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    mark_setup_complete(tmp_path)
     return tmp_path
 
 
 @pytest.fixture
 def runner(journal, monkeypatch):
-    client = ConveyClient(session=make_logged_in_test_client(journal), base_url="")
+    client = ConveyClient(session=make_test_client(journal), base_url="")
     monkeypatch.setattr("solstone.think.tools.health.get_client", lambda: client)
     return CliRunner()
 

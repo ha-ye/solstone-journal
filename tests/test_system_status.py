@@ -30,7 +30,6 @@ def client(tmp_path, monkeypatch):
     journal = tmp_path
     (journal / "config").mkdir(parents=True, exist_ok=True)
     config = {
-        "convey": {"password_hash": "", "trust_localhost": True},
         "setup": {"completed_at": 1},
     }
     (journal / "config" / "journal.json").write_text(json.dumps(config))

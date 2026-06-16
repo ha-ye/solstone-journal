@@ -4,6 +4,11 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.5] - 2026-06-16
+
+### Changed
+- the local web interface no longer has its own password, login page, session cookie, or localhost-trust switch. once setup is complete, the local interface serves directly on the journal machine; linked devices continue to use their paired-device identity through link.
+
 ## [0.6.4] - 2026-06-15
 
 ### Added

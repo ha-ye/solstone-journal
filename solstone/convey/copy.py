@@ -70,32 +70,17 @@ CONVEY_REPORT_MAILTO_BODY_PREFIX = (
 )
 CONVEY_REPORT_MAILTO_TRUNCATION_SUFFIX = "\n\n[full report is in your clipboard]\n"
 CONVEY_REPORT_BUTTON_LABEL = "Report this"
-LOGIN_NO_PASSWORD_CONFIGURED = "no password is configured. set one in settings → security, or run 'journal password set' from a terminal on this machine."
-SETTINGS_SECURITY_DESC = "password protection for the convey web interface."
-SETTINGS_SECURITY_REACH_HINT = (
-    "how your devices reach home — managing your connection, paired devices, "
-    "and reach-from-anywhere now lives in link →"
-)
-SETTINGS_PASSWORD_HINT = "used when localhost trust is off. not used otherwise."
 OBSERVER_CALLOSUM_LIVE_LABEL = "live"
 
 
 def format_convey_status(
     *,
     bind: str,
-    password: str,
-    trust_localhost: str,
     host_url: str,
 ) -> str:
-    """Return the locked five-line convey status block."""
+    """Return the locked convey status block."""
 
-    return (
-        "convey\n"
-        f"  bind:              {bind}\n"
-        f"  password:          {password}\n"
-        f"  trust localhost:   {trust_localhost}\n"
-        f"  host url:          {host_url}"
-    )
+    return f"convey\n  bind:              {bind}\n  host url:          {host_url}"
 
 
 __all__ = [
@@ -160,10 +145,6 @@ __all__ = [
     "CONVEY_REPORT_SUCCESS_BODY",
     "CONVEY_REPORT_SUCCESS_BODY_NO_ID",
     "CONVEY_REPORT_TITLE",
-    "LOGIN_NO_PASSWORD_CONFIGURED",
     "OBSERVER_CALLOSUM_LIVE_LABEL",
-    "SETTINGS_PASSWORD_HINT",
-    "SETTINGS_SECURITY_DESC",
-    "SETTINGS_SECURITY_REACH_HINT",
     "format_convey_status",
 ]

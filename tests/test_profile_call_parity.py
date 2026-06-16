@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 from solstone.think.convey_client import ConveyClient
 from solstone.think.surfaces import profile as profile_surface
 from solstone.think.tools.profile import app
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client, mark_setup_complete
 from tests.test_surfaces_profile import (
     _activity_record,
     _append_activity,
@@ -29,12 +29,13 @@ from tests.test_surfaces_profile import (
 @pytest.fixture
 def journal(tmp_path, monkeypatch):
     _configure_env(tmp_path, monkeypatch)
+    mark_setup_complete(tmp_path)
     return tmp_path
 
 
 @pytest.fixture
 def runner(journal, monkeypatch):
-    client = ConveyClient(session=make_logged_in_test_client(journal), base_url="")
+    client = ConveyClient(session=make_test_client(journal), base_url="")
     monkeypatch.setattr("solstone.think.tools.profile.get_client", lambda: client)
     return CliRunner()
 

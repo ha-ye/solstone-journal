@@ -115,7 +115,7 @@ from solstone.think.pairing.config import (
 )
 from solstone.think.services import operations, spl, spl_handoff
 from solstone.think.services import status as service_status
-from solstone.think.utils import get_config, get_journal, now_ms
+from solstone.think.utils import get_journal, now_ms
 
 logger = logging.getLogger(__name__)
 MANUAL_CODE_RE = re.compile(rf"^[0-9A-HJKMNP-TV-Z]{{{MANUAL_CODE_LEN}}}$")
@@ -171,11 +171,6 @@ def _rough_network(mode: str) -> str:
 
 def _is_loopback_request() -> bool:
     return request.remote_addr in {"127.0.0.1", "::1"}
-
-
-def _convey_password_is_set() -> bool:
-    password_hash = get_config().get("convey", {}).get("password_hash", "")
-    return bool(str(password_hash or "").strip())
 
 
 def _read_link_connection_event() -> str | None:
@@ -404,7 +399,6 @@ def api_status() -> Any:
             "enrolled": token_present,
             "relay_url": relay_url(),
             "ca_fingerprint": ca_fp,
-            "has_password": _convey_password_is_set(),
             "lan_accessible": lan_accessible,
             "posture": posture,
             "reachability": reachability,

@@ -14,7 +14,7 @@ from typer.testing import CliRunner
 import solstone.apps.settings.call as settings_call
 import solstone.apps.settings.routes as settings_routes
 from solstone.think.convey_client import ConveyClient
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client
 
 runner = CliRunner()
 
@@ -39,7 +39,7 @@ def _settings_client(journal_copy: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     for key in API_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
     client = ConveyClient(
-        session=make_logged_in_test_client(journal_copy),
+        session=make_test_client(journal_copy),
         base_url="",
     )
     monkeypatch.setattr(settings_call, "get_client", lambda: client)
@@ -307,7 +307,7 @@ def test_identity_and_observer_setters(journal_copy: Path) -> None:
     }
 
 
-def test_convey_status_host_url_and_trust_localhost(
+def test_convey_status_host_url(
     journal_copy: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -316,8 +316,6 @@ def test_convey_status_host_url_and_trust_localhost(
     assert status.stdout == (
         "convey\n"
         "  bind:              127.0.0.1:5015\n"
-        "  password:          set\n"
-        "  trust localhost:   yes\n"
         "  host url:          http://localhost:5015\n"
     )
 
@@ -363,34 +361,4 @@ def test_convey_status_host_url_and_trust_localhost(
     assert bad_host.stderr == (
         "this needs an ip address — to reach home by name from anywhere, "
         "set up solstone private link\n"
-    )
-
-    trust_enable = runner.invoke(
-        settings_call.app, ["convey", "trust-localhost", "enable"]
-    )
-    assert trust_enable.exit_code == 0
-    assert (
-        trust_enable.stdout
-        == "localhost trust enabled. localhost requests skip the password.\n"
-    )
-
-    trust_disable = runner.invoke(
-        settings_call.app, ["convey", "trust-localhost", "disable"]
-    )
-    assert trust_disable.exit_code == 0
-    assert trust_disable.stdout == (
-        "localhost trust disabled. localhost requests now require the password.\n"
-    )
-
-    config = _read_config(journal_copy)
-    config["convey"].pop("password_hash", None)
-    config["convey"].pop("password", None)
-    _write_config(journal_copy, config)
-    trust_refuse = runner.invoke(
-        settings_call.app, ["convey", "trust-localhost", "disable"]
-    )
-    assert trust_refuse.exit_code == 1
-    assert trust_refuse.stderr == (
-        "error: disabling localhost trust requires a password (otherwise no "
-        "client could authenticate). set one first with: journal password set\n"
     )

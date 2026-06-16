@@ -13,7 +13,6 @@ import typer
 
 from solstone.convey.reasons import (
     INVALID_CONFIG_VALUE,
-    NETWORK_SECURITY_REQUIRES_PASSWORD,
 )
 from solstone.think.convey_client import ConveyClientError, convey_cli, get_client
 
@@ -54,8 +53,6 @@ observer_app = typer.Typer(help="Observer capture settings.")
 app.add_typer(observer_app, name="observer")
 convey_app = typer.Typer(help="Convey access configuration.")
 app.add_typer(convey_app, name="convey")
-trust_localhost_app = typer.Typer(help="Localhost password-bypass behavior.")
-convey_app.add_typer(trust_localhost_app, name="trust-localhost")
 
 
 def _request(
@@ -113,29 +110,6 @@ def _validate_env_var_or_exit(env_var: str) -> None:
 def _moved_stub(command: str) -> None:
     typer.echo(f"Moved to `sol call thinking {command}` — run that instead.", err=True)
     raise typer.Exit(2)
-
-
-@trust_localhost_app.command("enable")
-@convey_cli
-def convey_trust_localhost_enable() -> None:
-    """Enable localhost password bypass."""
-
-    _post_config("convey", {"trust_localhost": True})
-    typer.echo("localhost trust enabled. localhost requests skip the password.")
-
-
-@trust_localhost_app.command("disable")
-@convey_cli
-def convey_trust_localhost_disable() -> None:
-    """Disable localhost password bypass."""
-
-    try:
-        _post_config("convey", {"trust_localhost": False})
-    except ConveyClientError as err:
-        if err.reason_code == NETWORK_SECURITY_REQUIRES_PASSWORD.code:
-            _exit_with(err.detail or err.error)
-        raise
-    typer.echo("localhost trust disabled. localhost requests now require the password.")
 
 
 @convey_app.command("host-url")

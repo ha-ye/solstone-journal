@@ -13,24 +13,25 @@ from typer.testing import CliRunner
 from solstone.apps.sol.call import app
 from solstone.think.convey_client import ConveyClient
 from solstone.think.journal_config import read_journal_config, write_journal_config
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client, mark_setup_complete
 
 
 @pytest.fixture
 def journal(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    mark_setup_complete(tmp_path)
     return tmp_path
 
 
 @pytest.fixture
 def runner(journal, monkeypatch):
-    client = ConveyClient(session=make_logged_in_test_client(journal), base_url="")
+    client = ConveyClient(session=make_test_client(journal), base_url="")
     monkeypatch.setattr("solstone.apps.sol.call.get_client", lambda: client)
     return CliRunner()
 
 
 def test_set_name_updates_config(runner) -> None:
-    write_journal_config({})
+    write_journal_config({"setup": {"completed_at": 1700000000000}})
 
     result = runner.invoke(app, ["set-name", "aria", "--status", "chosen"])
 
@@ -45,11 +46,12 @@ def test_set_name_updates_config(runner) -> None:
 def test_reset_updates_agent(runner) -> None:
     write_journal_config(
         {
+            "setup": {"completed_at": 1700000000000},
             "agent": {
                 "name": "aria",
                 "name_status": "chosen",
                 "named_date": "2026-04-19",
-            }
+            },
         }
     )
 
@@ -65,7 +67,7 @@ def test_reset_updates_agent(runner) -> None:
 
 
 def test_set_owner_name_only_and_bio(runner) -> None:
-    write_journal_config({})
+    write_journal_config({"setup": {"completed_at": 1700000000000}})
 
     name_only = runner.invoke(app, ["set-owner", "Jer"])
     with_bio = runner.invoke(app, ["set-owner", "Jer", "--bio", "Building solstone"])

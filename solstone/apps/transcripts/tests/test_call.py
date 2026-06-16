@@ -9,18 +9,19 @@ from typer.testing import CliRunner
 
 from solstone.apps.transcripts.call import app
 from solstone.think.convey_client import ConveyClient
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client, mark_setup_complete
 
 
 @pytest.fixture
 def journal(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    mark_setup_complete(tmp_path)
     return tmp_path
 
 
 @pytest.fixture
 def runner(journal, monkeypatch):
-    client = ConveyClient(session=make_logged_in_test_client(journal), base_url="")
+    client = ConveyClient(session=make_test_client(journal), base_url="")
     monkeypatch.setattr("solstone.apps.transcripts.call.get_client", lambda: client)
     return CliRunner()
 
@@ -52,7 +53,7 @@ def _write_segment(
 
 
 def _route_markdown(journal, day: str, params: dict[str, str]) -> str:
-    client = ConveyClient(session=make_logged_in_test_client(journal), base_url="")
+    client = ConveyClient(session=make_test_client(journal), base_url="")
     return client.request("GET", f"/app/transcripts/api/read/{day}", params=params)[
         "markdown"
     ]

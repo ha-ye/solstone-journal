@@ -27,7 +27,6 @@ def link_env(tmp_path, monkeypatch):
         config_dir.mkdir(parents=True, exist_ok=True)
         config_file = config_dir / "journal.json"
         config = {
-            "convey": {"trust_localhost": True},
             "setup": {"completed_at": 1700000000000},
         }
         if posture is not None:
