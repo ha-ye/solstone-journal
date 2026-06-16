@@ -203,7 +203,7 @@ def test_scout_enable_polls_terminal_success(
 
     def runner_result(**_kwargs):
         scout.provision_scout_handoff(_approved_scout_payload())
-        return operations.HandoffResult("enabled", None, False, True, None)
+        return operations.HandoffResult("enabled", None, False)
 
     monkeypatch.setattr(scout_handoff, "run_scout_handoff", runner_result)
 
@@ -233,8 +233,6 @@ def test_scout_enable_exits_nonzero_on_repair_needed(
             "error",
             "Try again.",
             True,
-            False,
-            "http://portal.test/enable/scout",
         ),
     )
 
@@ -273,6 +271,7 @@ def test_scout_cli_copy_mirror_matches_thinking_copy() -> None:
         thinking_copy.SCOUT_STATE_ENDED,
         thinking_copy.SCOUT_STATE_REPAIR_NEEDED,
     }
+    assert thinking_call._SCOUT_CONSENT_CTA == thinking_copy.SCOUT_CONSENT_CTA
 
 
 def test_keys_set_clear_validate_and_invalid_env(

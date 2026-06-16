@@ -38,6 +38,7 @@ def test_workspace_renders_each_lane(settings_env):
     assert 'id="scoutRefresh"' in html
     assert 'id="scoutDisable"' in html
     assert 'id="scoutLaneOperation"' in html
+    assert 'id="scoutLaneOperationLink"' in html
     for view in ("main", "scout-setup", "byo-setup", "local-setup", "lane-switch"):
         assert f'data-view="{view}"' in html
     assert 'data-open-view="scout-setup"' in html
@@ -65,6 +66,15 @@ def test_workspace_renders_each_lane(settings_env):
     assert "window.THINKING =" in html
     assert "window.THINKING_COPY =" in html
     assert "thinking/static/thinking.js" in html
+
+
+def test_scout_consent_static_behavior_is_wired() -> None:
+    js = STATIC.read_text(encoding="utf-8")
+
+    assert "window.open(url, '_blank', 'noopener')" in js
+    assert "scoutLaneOperationLink" in js
+    assert "operation.portal_url || ''" in js
+    assert "!!actions.enable && !operationActive" in js
 
 
 def test_copy_payload_round_trips_apostrophes() -> None:

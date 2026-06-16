@@ -27,6 +27,8 @@ from solstone.think.services import (
 from solstone.think.spl import relay_client
 
 TEST_INSTANCE_ID = "00000000-0000-4000-8000-000000000000"
+TEST_NONCE = "TESTNONCE"
+TEST_BASE_URL = "https://services.test"
 TEST_SUBSCRIBE_URL = "https://services.test/account/subscription"
 
 
@@ -109,13 +111,13 @@ def _set_posture(journal_copy: Path, posture: str) -> None:
 
 def _run(
     *,
-    instance_id: str | None = TEST_INSTANCE_ID,
+    base_url: str = TEST_BASE_URL,
+    nonce: str = TEST_NONCE,
     **kwargs,
 ) -> outcomes.HandoffOutcome:
     return spl_handoff.enable_spl_via_consent(
-        base_url="https://services.test",
-        instance_id=instance_id,
-        open_browser=lambda _url: True,
+        base_url=base_url,
+        nonce=nonce,
         **kwargs,
     )
 
@@ -310,7 +312,7 @@ def test_poll_failures_map_to_taxonomy(monkeypatch, item: Any, code: str) -> Non
     assert outcome.code == code
 
 
-def test_instance_resolution_failure_returns_local_error(monkeypatch) -> None:
+def test_build_spl_handoff_url_raises_when_link_state_unreadable(monkeypatch) -> None:
     def fail_load_or_create(*, default_label: str = "solstone") -> LinkState:
         _ = default_label
         raise OSError("locked")
@@ -321,13 +323,8 @@ def test_instance_resolution_failure_returns_local_error(monkeypatch) -> None:
         staticmethod(fail_load_or_create),
     )
 
-    outcome = spl_handoff.enable_spl_via_consent(
-        base_url="https://services.test",
-        open_browser=lambda _url: pytest.fail("browser should not open"),
-        poll_once=lambda *_args, **_kwargs: pytest.fail("poll should not run"),
-    )
-
-    assert outcome.code == outcomes.LOCAL_ERROR
+    with pytest.raises(OSError):
+        spl_handoff.build_spl_handoff_url()
 
 
 def test_relay_unreachable_after_approval_is_network_error(
@@ -404,15 +401,15 @@ def test_journal_not_initialized_after_approval_is_local_error(
     assert outcome.detail is None
 
 
-def test_browser_open_false_still_polls_and_can_succeed(
+def test_poll_success_enables_spl(
     journal_copy: Path,
     monkeypatch,
 ) -> None:
     _install_spl_relay(monkeypatch)
 
     outcome = spl_handoff.enable_spl_via_consent(
-        base_url="https://services.test",
-        open_browser=lambda _url: False,
+        base_url=TEST_BASE_URL,
+        nonce=TEST_NONCE,
         poll_once=lambda *_args, **_kwargs: portal_client.PollOutcome(
             kind="success",
             payload=_approved_payload(),
@@ -423,6 +420,34 @@ def test_browser_open_false_still_polls_and_can_succeed(
     assert read_posture() == "spl"
 
 
+def test_spl_handoff_never_invokes_global_browser_open(
+    journal_copy: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    browser_module = __import__("webbrowser")
+    monkeypatch.setattr(
+        browser_module,
+        "open",
+        lambda *_args, **_kwargs: pytest.fail("browser open should not be called"),
+    )
+    _install_spl_relay(monkeypatch)
+    monkeypatch.setenv("SERVICES_PORTAL_URL", TEST_BASE_URL)
+
+    consent_url, nonce, base_url = spl_handoff.build_spl_handoff_url()
+    result = spl_handoff.run_spl_handoff(
+        nonce=nonce,
+        base_url=base_url,
+        poll_once=lambda *_args, **_kwargs: portal_client.PollOutcome(
+            kind="success",
+            payload=_approved_payload(),
+        ),
+    )
+
+    assert result.phase == "enabled"
+    assert consent_url.startswith(f"{TEST_BASE_URL}/enable/spl?nonce=")
+    assert read_posture() == "spl"
+
+
 def test_first_enable_uses_same_persisted_instance_for_portal_and_relay(
     journal_copy: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -430,23 +455,20 @@ def test_first_enable_uses_same_persisted_instance_for_portal_and_relay(
     state_file = journal_copy / "link" / "state.json"
     assert not state_file.exists()
 
-    opened_urls: list[str] = []
     enroll_instance_ids: list[str] = []
     monkeypatch.setenv("SOL_LINK_RELAY_URL", "https://relay.test")
+    monkeypatch.setenv("SERVICES_PORTAL_URL", TEST_BASE_URL)
 
     def enroll_home(_relay_url: str, **kwargs: Any) -> str:
         enroll_instance_ids.append(kwargs["instance_id"])
         return "tok.spl"
 
-    def open_browser(url: str) -> bool:
-        opened_urls.append(url)
-        return True
-
     monkeypatch.setattr(spl_handoff.spl, "enroll_home", enroll_home)
 
+    consent_url, nonce, base_url = spl_handoff.build_spl_handoff_url()
     outcome = spl_handoff.enable_spl_via_consent(
-        base_url="https://services.test",
-        open_browser=open_browser,
+        base_url=base_url,
+        nonce=nonce,
         poll_once=lambda *_args, **_kwargs: portal_client.PollOutcome(
             kind="success",
             payload=_approved_payload(),
@@ -456,9 +478,9 @@ def test_first_enable_uses_same_persisted_instance_for_portal_and_relay(
     assert outcome.code == outcomes.APPROVED
     persisted = LinkState.load()
     assert persisted is not None
-    parsed = urllib.parse.urlparse(opened_urls[0])
-    opened_instance_id = urllib.parse.parse_qs(parsed.query)["instance"][0]
-    assert opened_instance_id == persisted.instance_id == enroll_instance_ids[0]
+    parsed = urllib.parse.urlparse(consent_url)
+    consent_instance_id = urllib.parse.parse_qs(parsed.query)["instance"][0]
+    assert consent_instance_id == persisted.instance_id == enroll_instance_ids[0]
 
 
 def test_run_spl_handoff_sets_posture_and_service_token(
@@ -472,7 +494,8 @@ def test_run_spl_handoff_sets_posture_and_service_token(
     )
 
     result = spl_handoff.run_spl_handoff(
-        open_browser=lambda _url: True,
+        nonce=TEST_NONCE,
+        base_url=TEST_BASE_URL,
         poll_once=lambda *_args, **_kwargs: portal_client.PollOutcome(
             kind="success",
             payload={"service": "spl", "state": outcomes.APPROVED, "approved_at": 1},
@@ -495,7 +518,8 @@ def test_run_spl_handoff_local_error_retryable_without_enabled_state(
     monkeypatch.setattr(spl_handoff.spl, "enroll_home", fail_enroll)
 
     result = spl_handoff.run_spl_handoff(
-        open_browser=lambda _url: True,
+        nonce=TEST_NONCE,
+        base_url=TEST_BASE_URL,
         poll_once=lambda *_args, **_kwargs: portal_client.PollOutcome(
             kind="success",
             payload={"service": "spl", "state": outcomes.APPROVED, "approved_at": 1},
@@ -512,7 +536,8 @@ def test_run_spl_handoff_maps_needs_subscription_to_operation(
     journal_copy: Path,
 ) -> None:
     result = spl_handoff.run_spl_handoff(
-        open_browser=lambda _url: True,
+        nonce=TEST_NONCE,
+        base_url=TEST_BASE_URL,
         poll_once=lambda *_args, **_kwargs: portal_client.PollOutcome(
             kind="success",
             payload={
@@ -529,7 +554,12 @@ def test_run_spl_handoff_maps_needs_subscription_to_operation(
 
     operations.clear_registry()
     try:
-        operations.start_operation("spl", "spl_enable", lambda _open: result)
+        operations.start_operation(
+            "spl",
+            "spl_enable",
+            "https://services.test/enable/spl?nonce=TESTNONCE",
+            lambda: result,
+        )
         _wait_until(
             lambda: (
                 operations.operation_for_service("spl")["phase"] == "needs_subscription"
@@ -544,21 +574,24 @@ def test_run_spl_handoff_maps_needs_subscription_to_operation(
 
 def test_run_spl_handoff_maps_terminal_outcomes(journal_copy: Path) -> None:
     revoked = spl_handoff.run_spl_handoff(
-        open_browser=lambda _url: True,
+        nonce=TEST_NONCE,
+        base_url=TEST_BASE_URL,
         poll_once=lambda *_args, **_kwargs: portal_client.PollOutcome(
             kind="success",
             payload={"service": "spl", "state": outcomes.REVOKED},
         ),
     )
     expired = spl_handoff.run_spl_handoff(
-        open_browser=lambda _url: True,
+        nonce=TEST_NONCE,
+        base_url=TEST_BASE_URL,
         poll_once=lambda *_args, **_kwargs: portal_client.PollOutcome(
             kind="failed",
             reason="consent_link_expired",
         ),
     )
     malformed = spl_handoff.run_spl_handoff(
-        open_browser=lambda _url: True,
+        nonce=TEST_NONCE,
+        base_url=TEST_BASE_URL,
         poll_once=lambda *_args, **_kwargs: portal_client.PollOutcome(
             kind="success",
             payload={"service": "spl", "state": "bad"},

@@ -88,6 +88,7 @@ SCOUT_RESTING_GUIDANCE = {
     SCOUT_STATE_MANUAL_KEY_PRESENT: "A Gemini key you manage is already set.",
 }
 SCOUT_MANUAL_KEY_BLOCK_COPY = "a Gemini key you manage is already set — clear it in your own key first, then turn on scout."
+SCOUT_CONSENT_CTA = "continue to approve →"
 
 
 def thinking_copy_payload() -> dict[str, Any]:
@@ -105,6 +106,7 @@ def thinking_copy_payload() -> dict[str, Any]:
             "state_labels": dict(SCOUT_STATE_LABELS),
             "resting_guidance": dict(SCOUT_RESTING_GUIDANCE),
             "manual_key_block": SCOUT_MANUAL_KEY_BLOCK_COPY,
+            "consent_cta": SCOUT_CONSENT_CTA,
         },
     }
 

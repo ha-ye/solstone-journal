@@ -112,7 +112,7 @@ REACH_SPL_CONNECTING_NOTE = "your home is connecting. this is usually quick."
 CHECK_AGAIN_LABEL = "check again"
 PRIVATE_LINK_DISABLE_CTA = "turn off solstone private link"
 PRIVATE_LINK_SETTING_UP = "setting up solstone private link…"
-PRIVATE_LINK_BROWSER_FALLBACK = "couldn't open your browser. open this link to finish:"
+PRIVATE_LINK_PORTAL_CTA = "continue to approve →"
 PRIVATE_LINK_SETUP_SUCCESS = (
     "solstone private link is on. your devices can reach home from anywhere."
 )

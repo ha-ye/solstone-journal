@@ -41,7 +41,8 @@ def _config(journal: Path) -> dict:
 def test_run_scout_handoff_maps_approved_to_enabled(journal_copy: Path) -> None:
     result = scout_handoff.run_scout_handoff(
         refresh=False,
-        open_browser=lambda _url: True,
+        nonce="NONCE",
+        base_url="http://portal.test",
         poll_once=lambda *_args, **_kwargs: PollOutcome(
             kind="success",
             payload=_approved_payload(),
@@ -50,8 +51,6 @@ def test_run_scout_handoff_maps_approved_to_enabled(journal_copy: Path) -> None:
 
     assert result.phase == "enabled"
     assert result.retryable is False
-    assert result.browser_open_succeeded is True
-    assert result.portal_url is None
     saved = _config(journal_copy)
     assert saved["env"]["GOOGLE_API_KEY"] == "google-one"
     assert saved["services"]["scout"]["account_id"] == "acct-one"
@@ -60,7 +59,8 @@ def test_run_scout_handoff_maps_approved_to_enabled(journal_copy: Path) -> None:
 def test_run_scout_handoff_maps_pending(journal_copy: Path) -> None:
     result = scout_handoff.run_scout_handoff(
         refresh=True,
-        open_browser=lambda _url: True,
+        nonce="NONCE",
+        base_url="http://portal.test",
         poll_once=lambda *_args, **_kwargs: PollOutcome(
             kind="success",
             payload={
@@ -83,7 +83,8 @@ def test_run_scout_handoff_maps_pending(journal_copy: Path) -> None:
 def test_run_scout_handoff_maps_revoked(journal_copy: Path) -> None:
     result = scout_handoff.run_scout_handoff(
         refresh=True,
-        open_browser=lambda _url: True,
+        nonce="NONCE",
+        base_url="http://portal.test",
         poll_once=lambda *_args, **_kwargs: PollOutcome(
             kind="success",
             payload={"state": "revoked"},
@@ -111,7 +112,8 @@ def test_run_scout_handoff_error_outcomes_do_not_write_journal(
 
     result = scout_handoff.run_scout_handoff(
         refresh=True,
-        open_browser=lambda _url: True,
+        nonce="NONCE",
+        base_url="http://portal.test",
         poll_once=lambda *_args, **_kwargs: PollOutcome(kind="failed", reason=reason),
     )
 
@@ -127,7 +129,8 @@ def test_run_scout_handoff_malformed_apply_does_not_write_journal(
 
     result = scout_handoff.run_scout_handoff(
         refresh=True,
-        open_browser=lambda _url: True,
+        nonce="NONCE",
+        base_url="http://portal.test",
         poll_once=lambda *_args, **_kwargs: PollOutcome(
             kind="success",
             payload={

@@ -374,10 +374,11 @@ def _private_link_status() -> dict[str, Any]:
 def _start_operation_response(
     service: str,
     kind: str,
-    flow: Callable[[Callable[[str], bool]], operations.HandoffResult],
+    portal_url: str | None,
+    flow: Callable[[], operations.HandoffResult],
 ) -> tuple[Response, int]:
     try:
-        operation = operations.start_operation(service, kind, flow)
+        operation = operations.start_operation(service, kind, portal_url, flow)
     except operations.OperationBusyError:
         return error_response(SERVICE_BUSY, detail="operation already running")
     return jsonify({"success": True, "service": service, "operation": operation}), 202
@@ -445,10 +446,18 @@ def private_link_enable() -> tuple[Response, int]:
             INVALID_OPERATION_FOR_STATE,
             detail="solstone private link is already on",
         )
+    try:
+        consent_url, nonce, base_url = spl_handoff.build_spl_handoff_url()
+    except OSError:
+        return error_response(
+            SERVICE_OPERATION_FAILED,
+            detail="couldn't prepare the consent link",
+        )
     return _start_operation_response(
         "spl",
         "spl_enable",
-        lambda opener: spl_handoff.run_spl_handoff(open_browser=opener),
+        consent_url,
+        lambda: spl_handoff.run_spl_handoff(nonce=nonce, base_url=base_url),
     )
 
 

@@ -8,7 +8,6 @@ from __future__ import annotations
 import logging
 import threading
 import time
-import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -32,8 +31,6 @@ class HandoffResult:
     phase: str
     guidance: str | None
     retryable: bool
-    browser_open_succeeded: bool | None
-    portal_url: str | None
     subscribe_url: str | None = None
 
 
@@ -44,7 +41,6 @@ class OperationEntry:
     phase: str
     guidance: str | None
     retryable: bool
-    browser_open_succeeded: bool | None
     portal_url: str | None
     started_monotonic: float
     ended_monotonic: float | None = None
@@ -62,58 +58,28 @@ def clear_registry() -> None:
         _REGISTRY.clear()
 
 
-def _open_browser(url: str) -> bool:
-    try:
-        return bool(webbrowser.open(url, new=2))
-    except Exception as exc:
-        logger.warning("service browser open failed: %s", exc)
-        return False
-
-
-def open_for_handoff(
-    browser_url: str,
-    open_browser: Callable[[str], bool],
-) -> tuple[bool, str | None]:
-    try:
-        browser_open_succeeded = bool(open_browser(browser_url))
-    except Exception as exc:
-        logger.warning("service browser open failed: %s", exc)
-        browser_open_succeeded = False
-    return browser_open_succeeded, browser_url if not browser_open_succeeded else None
-
-
 def _outcome_result(
     code: str,
     guidance: str | None,
-    browser_open_succeeded: bool | None,
-    portal_url: str | None,
     subscribe_url: str | None = None,
 ) -> HandoffResult:
     if code == outcomes.APPROVED:
-        return HandoffResult("enabled", None, False, browser_open_succeeded, portal_url)
+        return HandoffResult("enabled", None, False)
     if code == outcomes.PENDING:
-        return HandoffResult(
-            "pending", guidance, False, browser_open_succeeded, portal_url
-        )
+        return HandoffResult("pending", guidance, False)
     if code == outcomes.REVOKED:
-        return HandoffResult(
-            "revoked", guidance, False, browser_open_succeeded, portal_url
-        )
+        return HandoffResult("revoked", guidance, False)
     if code == outcomes.NEEDS_SUBSCRIPTION:
         return HandoffResult(
             "needs_subscription",
             guidance,
             False,
-            browser_open_succeeded,
-            portal_url,
             subscribe_url=subscribe_url,
         )
     return HandoffResult(
         "error",
         guidance,
         code in RETRYABLE_CODES,
-        browser_open_succeeded,
-        portal_url,
     )
 
 
@@ -144,7 +110,6 @@ def _operation_payload(
         "phase": entry.phase,
         "guidance": entry.guidance,
         "retryable": entry.retryable,
-        "browser_open_succeeded": entry.browser_open_succeeded,
         "portal_url": entry.portal_url,
         "subscribe_url": entry.subscribe_url,
         "elapsed_ms": int(max(0.0, ts - entry.started_monotonic) * 1000),
@@ -162,43 +127,26 @@ def _update_entry_from_result(
         entry.phase = result.phase
         entry.guidance = result.guidance
         entry.retryable = result.retryable
-        entry.browser_open_succeeded = result.browser_open_succeeded
-        entry.portal_url = result.portal_url
         entry.subscribe_url = result.subscribe_url
         entry.ended_monotonic = time.monotonic()
 
 
-def _tracked_opener(entry: OperationEntry) -> Callable[[str], bool]:
-    def opener(url: str) -> bool:
-        browser_open_succeeded, manual_url = open_for_handoff(url, _open_browser)
-        with _REGISTRY_LOCK:
-            current = _REGISTRY.get(entry.service)
-            if current is entry:
-                entry.browser_open_succeeded = browser_open_succeeded
-                entry.portal_url = manual_url
-        return browser_open_succeeded
-
-    return opener
-
-
 def _run_operation(
     entry: OperationEntry,
-    flow: Callable[[Callable[[str], bool]], HandoffResult],
+    flow: Callable[[], HandoffResult],
 ) -> None:
     with _REGISTRY_LOCK:
         current = _REGISTRY.get(entry.service)
         if current is entry:
             entry.phase = "waiting"
     try:
-        result = flow(_tracked_opener(entry))
+        result = flow()
     except Exception:
         logger.exception("service operation failed")
         result = HandoffResult(
             phase="error",
             guidance=None,
             retryable=True,
-            browser_open_succeeded=entry.browser_open_succeeded,
-            portal_url=entry.portal_url,
         )
     _update_entry_from_result(entry, result)
 
@@ -206,7 +154,8 @@ def _run_operation(
 def start_operation(
     service: str,
     kind: str,
-    flow: Callable[[Callable[[str], bool]], HandoffResult],
+    portal_url: str | None,
+    flow: Callable[[], HandoffResult],
 ) -> dict[str, Any]:
     with _REGISTRY_LOCK:
         now = time.monotonic()
@@ -219,8 +168,7 @@ def start_operation(
             phase="starting",
             guidance=None,
             retryable=False,
-            browser_open_succeeded=None,
-            portal_url=None,
+            portal_url=portal_url,
             started_monotonic=now,
         )
         _REGISTRY[service] = entry

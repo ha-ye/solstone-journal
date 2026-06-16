@@ -40,7 +40,7 @@ PRIVATE_LINK_SETUP_SUCCESS = (
     "solstone private link is on. your devices can reach home from anywhere."
 )
 PRIVATE_LINK_SETUP_FAILED = "couldn't finish setting up solstone private link."
-PRIVATE_LINK_BROWSER_FALLBACK = "couldn't open your browser. open this link to finish:"
+PRIVATE_LINK_PORTAL_CTA = "continue to approve →"
 PRIVATE_LINK_NEEDS_SUBSCRIPTION = (
     "private link needs an active subscription before it can turn on. "
     "your consent is saved; set one up, then enable private link again:"
@@ -134,20 +134,13 @@ def _post_private_link(path: str) -> dict[str, Any]:
         raise
 
 
-def _maybe_echo_private_link_portal(
-    operation: dict[str, Any],
-    *,
-    already_echoed: bool,
-) -> bool:
-    if already_echoed:
-        return True
-    if operation.get("browser_open_succeeded") is not False:
-        return False
+def _maybe_echo_private_link_portal(operation: Any) -> None:
+    if not isinstance(operation, dict):
+        return
     portal_url = operation.get("portal_url")
     if not portal_url:
-        return False
-    typer.echo(f"{PRIVATE_LINK_BROWSER_FALLBACK} {portal_url}")
-    return True
+        return
+    typer.echo(f"{PRIVATE_LINK_PORTAL_CTA} {portal_url}")
 
 
 def _poll_private_link_until_terminal(
@@ -157,7 +150,6 @@ def _poll_private_link_until_terminal(
 ) -> tuple[dict[str, Any], str | None, str | None]:
     deadline = time.monotonic() + max(0.0, wait_seconds)
     interval = max(0.0, poll_interval)
-    portal_echoed = False
 
     while True:
         status = _get_private_link_status()
@@ -165,10 +157,6 @@ def _poll_private_link_until_terminal(
         if not isinstance(operation, dict):
             return status, None, None
 
-        portal_echoed = _maybe_echo_private_link_portal(
-            operation,
-            already_echoed=portal_echoed,
-        )
         phase = str(operation.get("phase") or "")
         if phase in PRIVATE_LINK_TERMINAL_PHASES:
             guidance = operation.get("guidance")
@@ -249,7 +237,10 @@ def private_link_setup(
     """Set up solstone private link."""
 
     typer.echo(PRIVATE_LINK_SETTING_UP)
-    _post_private_link("/app/link/private-link/enable")
+    response = _post_private_link("/app/link/private-link/enable")
+    _maybe_echo_private_link_portal(
+        response.get("operation") if isinstance(response, dict) else None
+    )
     status, phase, operation_guidance = _poll_private_link_until_terminal(
         wait_seconds=wait_seconds,
         poll_interval=poll_interval,

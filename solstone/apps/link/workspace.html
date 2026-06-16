@@ -258,7 +258,7 @@
       SUCCESS_VERIFY_NOTE_ANYWHERE: {{ link_copy.SUCCESS_VERIFY_NOTE_ANYWHERE|tojson }},
       STATUS_SENTENCES: {{ link_copy.STATUS_SENTENCES|tojson }},
       PRIVATE_LINK_SETTING_UP: {{ link_copy.PRIVATE_LINK_SETTING_UP|tojson }},
-      PRIVATE_LINK_BROWSER_FALLBACK: {{ link_copy.PRIVATE_LINK_BROWSER_FALLBACK|tojson }},
+      PRIVATE_LINK_PORTAL_CTA: {{ link_copy.PRIVATE_LINK_PORTAL_CTA|tojson }},
       PRIVATE_LINK_SETUP_SUCCESS: {{ link_copy.PRIVATE_LINK_SETUP_SUCCESS|tojson }},
       PRIVATE_LINK_SETUP_FAILED: {{ link_copy.PRIVATE_LINK_SETUP_FAILED|tojson }},
       PRIVATE_LINK_NEEDS_SUBSCRIPTION_HEADLINE: {{ link_copy.PRIVATE_LINK_NEEDS_SUBSCRIPTION_HEADLINE|tojson }},
@@ -874,7 +874,7 @@
       privateLinkOperationLink.href = linkUrl;
       privateLinkOperationLink.textContent = subscribeUrl
         ? window.LinkCopy.PRIVATE_LINK_NEEDS_SUBSCRIPTION_CTA || 'set up a subscription'
-        : portalUrl;
+        : window.LinkCopy.PRIVATE_LINK_PORTAL_CTA || 'continue to approve →';
     }
     if (privateLinkOperationRetry) {
       privateLinkOperationRetry.hidden = !privateLinkRetryAction;
@@ -885,6 +885,9 @@
   function renderPrivateLinkStatus(data) {
     latestPrivateLink = data || {};
     const operation = latestPrivateLink.operation;
+    if (privateLinkSetup) {
+      privateLinkSetup.hidden = !!operation && !PRIVATE_LINK_TERMINAL_PHASES.has(operation.phase);
+    }
     if (!operation) {
       if (latestPrivateLink.state === 'inconsistent') {
         setPrivateLinkOperation(
@@ -915,13 +918,9 @@
       retryAction = startPrivateLinkSetup;
     }
 
-    const portalUrl = !subscribeUrl && operation.browser_open_succeeded === false && operation.portal_url
+    const portalUrl = !subscribeUrl && typeof operation.portal_url === 'string'
       ? operation.portal_url
       : '';
-    if (portalUrl) {
-      const fallback = window.LinkCopy.PRIVATE_LINK_BROWSER_FALLBACK || "couldn't open your browser. open this link to finish:";
-      detail = detail ? `${detail} ${fallback}` : fallback;
-    }
 
     setPrivateLinkOperation(headline, detail, { portalUrl, subscribeUrl, retryAction });
   }
@@ -963,6 +962,8 @@
     setPrivateLinkOperation(window.LinkCopy.PRIVATE_LINK_SETTING_UP || 'setting up solstone private link...');
     try {
       const start = await window.apiJson('/app/link/private-link/enable', { method: 'POST' });
+      const consentUrl = start?.operation?.portal_url;
+      if (consentUrl) window.open(consentUrl, '_blank', 'noopener');
       renderPrivateLinkStatus({ operation: start?.operation || null });
       await pollPrivateLinkUntilTerminal();
       await refreshStatus();

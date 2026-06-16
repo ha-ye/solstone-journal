@@ -69,6 +69,7 @@ _SCOUT_GUIDANCE = {
     _SCOUT_STATE_MANUAL_KEY_PRESENT: "Clear the BYO Gemini key before enabling Scout.",
     _SCOUT_STATE_REPAIR_NEEDED: "Scout needs repair; try again from Thinking.",
 }
+_SCOUT_CONSENT_CTA = "continue to approve →"
 
 app = typer.Typer(help="Thinking providers, keys, and local model setup.")
 
@@ -169,6 +170,14 @@ def _echo_scout_guidance(key: Any) -> None:
         typer.echo(guidance)
 
 
+def _maybe_echo_scout_portal(operation: Any) -> None:
+    if not isinstance(operation, dict):
+        return
+    portal_url = operation.get("portal_url")
+    if portal_url:
+        typer.echo(f"{_SCOUT_CONSENT_CTA} {portal_url}")
+
+
 def _poll_scout_until_terminal(
     *,
     wait_seconds: float,
@@ -245,7 +254,10 @@ def scout_enable(
 ) -> None:
     """Enable Scout hosted Gemini."""
 
-    _post_scout_action("/app/thinking/api/scout/enable")
+    response = _post_scout_action("/app/thinking/api/scout/enable")
+    _maybe_echo_scout_portal(
+        response.get("operation") if isinstance(response, dict) else None
+    )
     status, phase, operation_guidance = _poll_scout_until_terminal(
         wait_seconds=wait_seconds,
         poll_interval=poll_interval,
@@ -267,7 +279,10 @@ def scout_refresh(
 ) -> None:
     """Refresh Scout hosted Gemini status."""
 
-    _post_scout_action("/app/thinking/api/scout/refresh")
+    response = _post_scout_action("/app/thinking/api/scout/refresh")
+    _maybe_echo_scout_portal(
+        response.get("operation") if isinstance(response, dict) else None
+    )
     status, phase, operation_guidance = _poll_scout_until_terminal(
         wait_seconds=wait_seconds,
         poll_interval=poll_interval,

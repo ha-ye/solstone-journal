@@ -39,7 +39,7 @@ U2_COPY_VALUES = [
     copy.CHECK_AGAIN_LABEL,
     copy.PRIVATE_LINK_DISABLE_CTA,
     copy.PRIVATE_LINK_SETTING_UP,
-    copy.PRIVATE_LINK_BROWSER_FALLBACK,
+    copy.PRIVATE_LINK_PORTAL_CTA,
     copy.PRIVATE_LINK_SETUP_SUCCESS,
     copy.PRIVATE_LINK_SETUP_FAILED,
     copy.PRIVATE_LINK_DISABLE_SUCCESS,
@@ -120,10 +120,7 @@ def test_reach_shell_corrected_copy_is_locked() -> None:
     assert copy.CHECK_AGAIN_LABEL == "check again"
     assert copy.PRIVATE_LINK_DISABLE_CTA == "turn off solstone private link"
     assert copy.PRIVATE_LINK_SETTING_UP == "setting up solstone private link…"
-    assert (
-        copy.PRIVATE_LINK_BROWSER_FALLBACK
-        == "couldn't open your browser. open this link to finish:"
-    )
+    assert copy.PRIVATE_LINK_PORTAL_CTA == "continue to approve →"
     assert (
         copy.PRIVATE_LINK_SETUP_SUCCESS
         == "solstone private link is on. your devices can reach home from anywhere."
