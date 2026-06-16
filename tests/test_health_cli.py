@@ -143,6 +143,50 @@ def test_health_check_renders_stuck_marker(capsys):
     assert "  providers        313656s  STUCK (cap 300s)" in output
 
 
+def test_health_check_renders_slow_marker(capsys):
+    status = {
+        "services": [],
+        "tasks": [
+            {
+                "name": "providers",
+                "duration_seconds": 240,
+                "max_runtime_seconds": 300,
+                "slow": True,
+                "stuck": False,
+            }
+        ],
+        "queues": {},
+    }
+
+    print_status(status)
+
+    output = capsys.readouterr().out
+    assert "  providers        240s  SLOW (cap 300s)" in output
+    assert "STUCK" not in output
+
+
+def test_health_check_renders_stuck_only_when_slow_and_stuck(capsys):
+    status = {
+        "services": [],
+        "tasks": [
+            {
+                "name": "providers",
+                "duration_seconds": 313656,
+                "max_runtime_seconds": 300,
+                "slow": True,
+                "stuck": True,
+            }
+        ],
+        "queues": {},
+    }
+
+    print_status(status)
+
+    output = capsys.readouterr().out
+    assert "  providers        313656s  STUCK (cap 300s)" in output
+    assert "SLOW" not in output
+
+
 def test_healthy_task_rendering_unchanged(capsys):
     status = {
         "services": [],

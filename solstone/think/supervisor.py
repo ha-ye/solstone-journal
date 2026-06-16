@@ -48,6 +48,7 @@ from solstone.think.sync_check import (
 from solstone.think.utils import (
     EXIT_EMPTY,
     EXIT_TEMPFAIL,
+    SOFT_RUNTIME_FRACTION,
     day_path,
     find_available_port,
     get_journal,
@@ -932,6 +933,7 @@ class TaskQueue:
                         "name": cmd_name,
                         "duration_seconds": duration,
                         "max_runtime_seconds": cap,
+                        "slow": duration >= cap * SOFT_RUNTIME_FRACTION,
                         "stuck": duration > cap,
                     }
                 )

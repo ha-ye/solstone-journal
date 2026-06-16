@@ -1726,6 +1726,7 @@ def test_collect_task_status_reports_default_cap(monkeypatch):
             "name": "providers",
             "duration_seconds": 12,
             "max_runtime_seconds": mod.DEFAULT_TASK_MAX_RUNTIME,
+            "slow": False,
             "stuck": False,
         }
     ]
@@ -1742,6 +1743,22 @@ def test_collect_task_status_under_cap(monkeypatch):
     status = queue.collect_task_status()
 
     assert status[0]["max_runtime_seconds"] == 300
+    assert status[0]["slow"] is False
+    assert status[0]["stuck"] is False
+
+
+def test_collect_task_status_slow_under_cap(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    queue = mod.TaskQueue(on_queue_change=None)
+    managed = _TaskManagedStub(cmd=["journal", "providers"], start_time=100.0)
+    queue._active["ref-1"] = managed
+    queue.set_cap("providers", 15)
+    monkeypatch.setattr(mod.time, "time", lambda: 112.0)
+
+    status = queue.collect_task_status()
+
+    assert status[0]["max_runtime_seconds"] == 15
+    assert status[0]["slow"] is True
     assert status[0]["stuck"] is False
 
 
@@ -1756,6 +1773,7 @@ def test_collect_task_status_over_cap(monkeypatch):
     status = queue.collect_task_status()
 
     assert status[0]["max_runtime_seconds"] == 5
+    assert status[0]["slow"] is True
     assert status[0]["stuck"] is True
 
 

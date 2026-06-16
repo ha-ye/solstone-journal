@@ -36,6 +36,7 @@ CHRONICLE_DIR = "chronicle"
 DEFAULT_STREAM = "_default"
 EXIT_TEMPFAIL = 75
 EXIT_EMPTY = 66  # EX_NOINPUT: a rollup ran over zero inputs (nothing to roll up)
+SOFT_RUNTIME_FRACTION = 0.75
 
 
 class SolstoneNotConfigured(RuntimeError):

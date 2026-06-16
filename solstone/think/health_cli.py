@@ -75,6 +75,8 @@ def print_status(status: dict[str, Any]) -> None:
             line = f"  {name:16} {duration}s"
             if task.get("stuck"):
                 line += f"  STUCK (cap {task['max_runtime_seconds']}s)"
+            elif task.get("slow"):
+                line += f"  SLOW (cap {task['max_runtime_seconds']}s)"
             print(line)
         for name, count in non_zero_queues:
             print(f"  queued {name:9} {count}")
