@@ -33,6 +33,7 @@ from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_THRESHOLD
 from solstone.think.cortex_client import (
     CortexSpawnUnavailable,
     cortex_request,
+    read_use_finish_fields,
     read_use_provider_model_reason,
     wait_for_uses,
 )
@@ -54,6 +55,12 @@ from solstone.think.pipeline_health import (
 from solstone.think.runner import run_task
 from solstone.think.sense_splitter import write_idle_stubs, write_sense_outputs
 from solstone.think.talent import get_output_path, get_talent_configs
+from solstone.think.talent_provenance import (
+    compute_activity_input_hash,
+    prune_orphan_provenance,
+    read_activity_provenance,
+    write_activity_provenance,
+)
 from solstone.think.utils import (
     day_input_summary,
     day_log,
@@ -150,6 +157,160 @@ def _provider_model_fields(use_id: str) -> dict[str, str | None]:
     if reason_code:
         fields["reason_code"] = reason_code
     return fields
+
+
+def _cache_fields(use_id: str) -> dict[str, bool | int | None]:
+    fields = read_use_finish_fields(use_id)
+    return {
+        "output_changed": fields["output_changed"],
+        "cache_hit": fields["cache_hit"],
+        "completed_at_ms": fields["completed_at_ms"],
+    }
+
+
+def _cache_terminal_fields(
+    fields: dict[str, bool | int | None],
+) -> dict[str, bool | int | None]:
+    return {
+        "cache_hit": fields["cache_hit"],
+        "completed_at_ms": fields["completed_at_ms"],
+    }
+
+
+def _maybe_rescan_output(
+    output_path: Path, output_changed: bool | int | None, day: str
+) -> None:
+    if output_changed is True and output_path.exists():
+        logging.debug("Indexing %s", output_path)
+        run_queued_command(
+            ["journal", "indexer", "--rescan-file", str(output_path)],
+            day,
+            timeout=60,
+        )
+
+
+def _activity_input_changed(
+    routing_day: str,
+    facet: str,
+    activity_id: str,
+    record: dict,
+) -> tuple[bool, str | None]:
+    try:
+        input_hash = compute_activity_input_hash(routing_day, record)
+    except Exception:
+        logging.warning(
+            "Failed to compute activity input hash for %s/%s",
+            facet,
+            activity_id,
+            exc_info=True,
+        )
+        return True, None
+    stored_hash = read_activity_provenance(routing_day, facet, activity_id)
+    return stored_hash != input_hash, input_hash
+
+
+def _persist_and_maybe_run_activity_prompts(
+    *,
+    routing_day: str,
+    log_day: str,
+    segment: str,
+    target_schedule: str,
+    ended_triples: list[tuple[object, object, object]],
+    completed_lookup: dict[object, dict],
+    refresh: bool,
+    verbose: bool,
+    max_concurrency: int,
+    skip_activity_prompts: bool,
+) -> None:
+    written_by: dict[tuple[str, str], bool] = {}
+    record_by: dict[tuple[str, str], dict] = {}
+
+    for activity_id, facet, change in ended_triples:
+        activity_id_str = str(activity_id)
+        facet_str = str(facet)
+        key = (facet_str, activity_id_str)
+        _jsonl_log(
+            "activity.detected",
+            mode=target_schedule,
+            day=log_day,
+            segment=segment,
+            activity=activity_id_str,
+            facet=facet_str,
+            state="ended",
+            change=change,
+        )
+        rec = completed_lookup.get(activity_id)
+        if rec:
+            record_by[key] = rec
+            written_by[key] = append_activity_record(facet_str, routing_day, rec)
+            _jsonl_log(
+                "activity.persisted",
+                mode=target_schedule,
+                day=log_day,
+                segment=segment,
+                activity=activity_id_str,
+                facet=facet_str,
+                change=change,
+            )
+
+    for activity_id, facet, _change in ended_triples:
+        activity_id_str = str(activity_id)
+        facet_str = str(facet)
+        key = (facet_str, activity_id_str)
+        if skip_activity_prompts:
+            _jsonl_log(
+                "activity.prompts_skipped",
+                day=log_day,
+                segment=segment,
+                activity=activity_id_str,
+                facet=facet_str,
+                mode=target_schedule,
+                reason="--no-activity-prompts",
+            )
+            continue
+
+        rec = record_by.get(key)
+        changed = True
+        input_hash: str | None = None
+        if rec:
+            changed, input_hash = _activity_input_changed(
+                routing_day,
+                facet_str,
+                activity_id_str,
+                rec,
+            )
+
+        if not (written_by.get(key, False) or refresh or changed):
+            _jsonl_log(
+                "activity.unchanged",
+                day=log_day,
+                segment=segment,
+                activity=activity_id_str,
+                facet=facet_str,
+                mode=target_schedule,
+            )
+            continue
+
+        logging.info(
+            "Activity completed: %s facet=%s, running activity agents",
+            activity_id_str,
+            facet_str,
+        )
+        ok = run_activity_prompts(
+            day=routing_day,
+            activity_id=activity_id_str,
+            facet=facet_str,
+            refresh=refresh,
+            verbose=verbose,
+            max_concurrency=max_concurrency,
+        )
+        if ok and input_hash:
+            write_activity_provenance(
+                routing_day,
+                facet_str,
+                activity_id_str,
+                input_hash,
+            )
 
 
 def _log_skip(name: str, reason: str, detail: str, **extra) -> None:
@@ -381,6 +542,7 @@ def _drain_priority_batch(
 
         end_state = completed.get(use_id, "unknown")
         if end_state == "finish":
+            finish_fields = _cache_fields(use_id)
             logging.info(f"{prompt_name} completed successfully")
             success += 1
             emit(
@@ -403,6 +565,7 @@ def _drain_priority_batch(
                 state="finish",
                 **({"stream": stream} if stream else {}),
                 **({"facet": agent_facet} if agent_facet else {}),
+                **_cache_terminal_fields(finish_fields),
             )
 
             # Incremental indexing for generators (skip JSON —
@@ -417,14 +580,11 @@ def _drain_priority_batch(
                     output_format=output_format,
                     stream=stream,
                 )
-
-                if output_path.exists():
-                    logging.debug(f"Indexing {output_path}")
-                    run_queued_command(
-                        ["journal", "indexer", "--rescan-file", str(output_path)],
-                        day,
-                        timeout=60,
-                    )
+                _maybe_rescan_output(
+                    output_path,
+                    finish_fields["output_changed"],
+                    day,
+                )
         else:
             label = f"{prompt_name}/{agent_facet}" if agent_facet else prompt_name
             logging.error(f"{label} ended with state: {end_state}")
@@ -620,6 +780,7 @@ def run_segment_sense(
 
     day_dir = day_path(day)
     seg_dir = _segment_dir(day, segment, stream)
+    prune_orphan_provenance(day, stream, segment)
     start_time = time.time()
     total_success = 0
     total_failed = 0
@@ -773,55 +934,18 @@ def run_segment_sense(
             completed_lookup = {}
             for rec in state_machine.get_completed_activities():
                 completed_lookup.setdefault(rec["id"], rec)
-            for activity_id, facet, change in ended_triples:
-                _jsonl_log(
-                    "activity.detected",
-                    mode=target_schedule,
-                    day=day,
-                    segment=segment,
-                    activity=str(activity_id),
-                    facet=str(facet),
-                    state="ended",
-                    change=change,
-                )
-                rec = completed_lookup.get(activity_id)
-                if rec:
-                    append_activity_record(facet, routing_day, rec)
-                    _jsonl_log(
-                        "activity.persisted",
-                        mode=target_schedule,
-                        day=day,
-                        segment=segment,
-                        activity=str(activity_id),
-                        facet=str(facet),
-                        change=change,
-                    )
-            # Run activity agents for completed activities
-            for activity_id, facet, _change in ended_triples:
-                logging.info(
-                    "Activity completed (idle): %s facet=%s, running activity agents",
-                    activity_id,
-                    facet,
-                )
-                if skip_activity_prompts:
-                    _jsonl_log(
-                        "activity.prompts_skipped",
-                        day=day,
-                        segment=segment,
-                        activity=str(activity_id),
-                        facet=str(facet),
-                        mode=target_schedule,
-                        reason="--no-activity-prompts",
-                    )
-                    continue
-                run_activity_prompts(
-                    day=routing_day,
-                    activity_id=str(activity_id),
-                    facet=str(facet),
-                    refresh=refresh,
-                    verbose=verbose,
-                    max_concurrency=max_concurrency,
-                )
+            _persist_and_maybe_run_activity_prompts(
+                routing_day=routing_day,
+                log_day=day,
+                segment=segment,
+                target_schedule=target_schedule,
+                ended_triples=ended_triples,
+                completed_lookup=completed_lookup,
+                refresh=refresh,
+                verbose=verbose,
+                max_concurrency=max_concurrency,
+                skip_activity_prompts=skip_activity_prompts,
+            )
             if state_machine.journal_root is not None:
                 try:
                     snapshot = {
@@ -1038,29 +1162,6 @@ def run_segment_sense(
         completed_lookup = {}
         for rec in state_machine.get_completed_activities():
             completed_lookup.setdefault(rec["id"], rec)
-        for activity_id, facet, change in ended_triples:
-            _jsonl_log(
-                "activity.detected",
-                mode=target_schedule,
-                day=day,
-                segment=segment,
-                activity=str(activity_id),
-                facet=str(facet),
-                state="ended",
-                change=change,
-            )
-            rec = completed_lookup.get(activity_id)
-            if rec:
-                append_activity_record(facet, routing_day, rec)
-                _jsonl_log(
-                    "activity.persisted",
-                    mode=target_schedule,
-                    day=day,
-                    segment=segment,
-                    activity=str(activity_id),
-                    facet=str(facet),
-                    change=change,
-                )
         if state_machine.journal_root is not None:
             try:
                 snapshot = {
@@ -1077,37 +1178,18 @@ def run_segment_sense(
                 )
             except Exception:
                 logging.debug("Failed to write activity state snapshot", exc_info=True)
-        for change in changes:
-            if change.get("state") != "ended":
-                continue
-            facet = change.get("facet")
-            activity_id = change.get("id")
-            if not facet or not activity_id:
-                continue
-            logging.info(
-                "Activity completed: %s facet=%s, running activity agents",
-                activity_id,
-                facet,
-            )
-            if skip_activity_prompts:
-                _jsonl_log(
-                    "activity.prompts_skipped",
-                    day=day,
-                    segment=segment,
-                    activity=str(activity_id),
-                    facet=str(facet),
-                    mode=target_schedule,
-                    reason="--no-activity-prompts",
-                )
-                continue
-            run_activity_prompts(
-                day=routing_day,
-                activity_id=str(activity_id),
-                facet=str(facet),
-                refresh=refresh,
-                verbose=verbose,
-                max_concurrency=max_concurrency,
-            )
+        _persist_and_maybe_run_activity_prompts(
+            routing_day=routing_day,
+            log_day=day,
+            segment=segment,
+            target_schedule=target_schedule,
+            ended_triples=ended_triples,
+            completed_lookup=completed_lookup,
+            refresh=refresh,
+            verbose=verbose,
+            max_concurrency=max_concurrency,
+            skip_activity_prompts=skip_activity_prompts,
+        )
 
     duration_ms = int((time.time() - start_time) * 1000)
     emit(
@@ -2287,6 +2369,7 @@ def run_activity_prompts(
 
                 end_state = completed.get(use_id, "unknown")
                 if end_state == "finish":
+                    finish_fields = _cache_fields(use_id)
                     logging.info(f"{prompt_name} completed successfully")
                     group_success += 1
 
@@ -2301,19 +2384,13 @@ def run_activity_prompts(
                             prompt_name,
                             output_format=output_format,
                         )
-                        if output_path.exists():
-                            logging.debug(f"Indexing {output_path}")
-                            run_queued_command(
-                                [
-                                    "journal",
-                                    "indexer",
-                                    "--rescan-file",
-                                    str(output_path),
-                                ],
-                                day,
-                                timeout=60,
-                            )
+                        _maybe_rescan_output(
+                            output_path,
+                            finish_fields["output_changed"],
+                            day,
+                        )
                 else:
+                    finish_fields = {}
                     logging.error(f"{prompt_name} ended with state: {end_state}")
                     group_failed += 1
 
@@ -2336,7 +2413,11 @@ def run_activity_prompts(
                     name=prompt_name,
                     use_id=use_id,
                     state=end_state,
-                    **(_provider_model_fields(use_id) if end_state != "finish" else {}),
+                    **(
+                        _provider_model_fields(use_id)
+                        if end_state != "finish"
+                        else _cache_terminal_fields(finish_fields)
+                    ),
                 )
 
             spawned = []

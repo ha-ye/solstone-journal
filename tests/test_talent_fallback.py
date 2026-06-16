@@ -845,7 +845,9 @@ def test_run_talent_refresh_bypasses_output_exists_guard(tmp_path, monkeypatch):
     assert finish_events[-1]["result"] == "FRESH"
 
 
-def test_run_talent_loads_existing_output_without_refresh(tmp_path, monkeypatch):
+def test_run_talent_regenerates_existing_output_without_provenance(
+    tmp_path, monkeypatch
+):
     from solstone.think import talents
 
     out = tmp_path / "out"
@@ -872,8 +874,8 @@ def test_run_talent_loads_existing_output_without_refresh(tmp_path, monkeypatch)
     asyncio.run(talents._run_talent(config, events.append, dry_run=False))
 
     finish_events = [event for event in events if event.get("event") == "finish"]
-    assert called["execute"] is False
-    assert finish_events[-1]["result"] == "STALE"
+    assert called["execute"] is True
+    assert finish_events[-1]["result"] == "FRESH"
 
 
 def test_recheck_requested_on_stale(monkeypatch):

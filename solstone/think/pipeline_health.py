@@ -103,6 +103,7 @@ class TerminalState:
 
     latest_event: str
     latest_ts: int
+    last_real_complete_ts: int | None
     trailing_fail_count: int
     deterministic_fail_count: int
     last_fail_ts: int | None
@@ -358,7 +359,7 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
     """Return latest terminal talent state per unit for one day."""
     records: dict[
         TerminalUnit,
-        list[tuple[int, int, str, str | None, str | None, str | None]],
+        list[tuple[int, int, str, str | None, str | None, str | None, bool]],
     ] = {}
     sequence = 0
 
@@ -431,6 +432,7 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
                             _str_or_none(rec.get("reason_code")),
                             _str_or_none(rec.get("provider")),
                             _str_or_none(rec.get("model")),
+                            rec.get("cache_hit") is True,
                         )
                     )
     except Exception:
@@ -444,14 +446,38 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
     states: dict[TerminalUnit, TerminalState] = {}
     for unit, unit_records in records.items():
         ordered = sorted(unit_records, key=lambda item: (item[0], item[1]))
-        latest_ts, _seq, latest_event, _reason_code, _provider, _model = ordered[-1]
+        latest_ts, _seq, latest_event, _reason_code, _provider, _model, _cache_hit = (
+            ordered[-1]
+        )
+        real_complete_ts = [
+            ts
+            for ts, _seq, event, _reason_code, _provider, _model, cache_hit in ordered
+            if event == TERMINAL_COMPLETE and not cache_hit
+        ]
+        last_real_complete_ts = max(real_complete_ts) if real_complete_ts else None
         trailing_fail_count = 0
-        for _ts, _seq, event, _reason_code, _provider, _model in reversed(ordered):
+        for (
+            _ts,
+            _seq,
+            event,
+            _reason_code,
+            _provider,
+            _model,
+            _cache_hit,
+        ) in reversed(ordered):
             if event != TERMINAL_FAIL:
                 break
             trailing_fail_count += 1
         deterministic_fail_count = 0
-        for _ts, _seq, event, reason_code, _provider, _model in reversed(ordered):
+        for (
+            _ts,
+            _seq,
+            event,
+            reason_code,
+            _provider,
+            _model,
+            _cache_hit,
+        ) in reversed(ordered):
             if event == TERMINAL_COMPLETE:
                 break
             if (
@@ -466,6 +492,7 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
         states[unit] = TerminalState(
             latest_event=latest_event,
             latest_ts=latest_ts,
+            last_real_complete_ts=last_real_complete_ts,
             trailing_fail_count=trailing_fail_count,
             deterministic_fail_count=deterministic_fail_count,
             last_fail_ts=last_fail[0] if last_fail else None,
@@ -510,15 +537,20 @@ def read_completed_since(day: str, since_ms: int) -> CompletionsSince:
 
     for scan_day in (day, prev):
         for unit, state in read_terminal_states(scan_day).items():
-            if state.latest_event != TERMINAL_COMPLETE or state.latest_ts <= since_ms:
+            real_complete_ts = state.last_real_complete_ts
+            if (
+                state.latest_event != TERMINAL_COMPLETE
+                or real_complete_ts is None
+                or real_complete_ts <= since_ms
+            ):
                 continue
 
             if unit.segment:
                 seg_key = (unit.stream, unit.segment)
-                seg_max[seg_key] = max(seg_max.get(seg_key, 0), state.latest_ts)
+                seg_max[seg_key] = max(seg_max.get(seg_key, 0), real_complete_ts)
             elif unit.activity:
                 act_key = (unit.facet, unit.activity)
-                act_max[act_key] = max(act_max.get(act_key, 0), state.latest_ts)
+                act_max[act_key] = max(act_max.get(act_key, 0), real_complete_ts)
 
     segments = tuple(
         sorted(

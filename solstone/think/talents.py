@@ -27,18 +27,32 @@ from pathlib import Path
 from string import Template
 from typing import Any, Callable, Optional
 
+from jsonschema import Draft202012Validator
+
 from solstone.think.cluster import cluster, cluster_period, cluster_span
+from solstone.think.pipeline_health import (
+    TERMINAL_COMPLETE,
+    TerminalUnit,
+    read_terminal_states,
+)
 from solstone.think.providers.cli import QuotaExhaustedError
 from solstone.think.providers.shared import Event, classify_provider_error
 from solstone.think.talent import (
     get_output_path,
     get_talent_configs,
     get_talent_filter,
+    hydrate_runtime_enums,
     load_post_hook,
     load_pre_hook,
     load_prompt,
     source_is_enabled,
     source_is_required,
+)
+from solstone.think.talent_provenance import (
+    compute_identity_hash,
+    output_digest,
+    read_provenance,
+    write_provenance,
 )
 from solstone.think.utils import (
     day_log,
@@ -767,12 +781,260 @@ def _run_post_hooks(result: str, config: dict) -> str:
 # =============================================================================
 
 
-def _write_output(output_path: Path, result: str) -> None:
-    """Write result to output file."""
+def _write_output(output_path: Path, result: str) -> bool:
+    """Write result to output file and return whether bytes changed."""
+    payload = result.encode("utf-8")
+    if output_path.exists() and output_path.read_bytes() == payload:
+        LOG.info("Output unchanged at %s", output_path)
+        return False
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(result)
+    with open(output_path, "wb") as f:
+        f.write(payload)
     LOG.info("Wrote output to %s", output_path)
+    return True
+
+
+def _build_generation_contents(config: dict) -> list[Any]:
+    messages = config.get("messages")
+    if messages and isinstance(messages, list):
+        return messages
+
+    contents: list[Any] = []
+    transcript = config.get("transcript", "")
+    user_instruction = config.get("user_instruction", "")
+    prompt = config.get("prompt", "")
+    if transcript:
+        contents.append(transcript)
+    if user_instruction:
+        contents.append(user_instruction)
+    if prompt:
+        contents.append(prompt)
+    return contents or ["No input provided."]
+
+
+def _generation_params(config: dict) -> dict[str, Any]:
+    return {
+        "temperature": config.get("temperature", 0.3),
+        "max_output_tokens": config.get("max_output_tokens") or 8192 * 6,
+        "thinking_budget": config.get("thinking_budget") or 8192 * 2,
+    }
+
+
+def _normalized_sources(config: dict) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    for key, value in (config.get("sources") or {}).items():
+        if key == "talents":
+            normalized[key] = get_talent_filter(value)
+        else:
+            normalized[key] = value
+    return normalized
+
+
+def _runtime_identity(config: dict, runtime_json_schema: Any) -> dict[str, Any]:
+    activity = config.get("activity")
+    activity_id = activity.get("id") if isinstance(activity, dict) else activity
+    activity_type = activity.get("activity") if isinstance(activity, dict) else None
+    stream = config.get("stream") or os.environ.get("SOL_STREAM")
+    span = config.get("span")
+    ordered_span = [str(item) for item in span] if isinstance(span, list) else []
+    if not ordered_span and config.get("segment"):
+        ordered_span = [str(config["segment"])]
+
+    return {
+        "contents": _build_generation_contents(config),
+        "system_instruction": config.get("system_instruction") or None,
+        "json_schema": runtime_json_schema,
+        "talent": {
+            "name": config.get("name"),
+            "type": config.get("type"),
+            "schedule": config.get("schedule"),
+            "output": config.get("output"),
+            "activities": config.get("activities"),
+            "hook": config.get("hook"),
+            "path": str(config.get("path") or ""),
+            "priority": config.get("priority"),
+            "degradation_check": config.get("degradation_check"),
+        },
+        "sources": _normalized_sources(config),
+        "provider": config.get("provider"),
+        "model": config.get("model"),
+        "fallback_from": config.get("fallback_from"),
+        "generation_params": _generation_params(config),
+        "runtime": {
+            "day": config.get("day"),
+            "schedule": config.get("schedule"),
+            "stream": stream,
+            "segment": config.get("segment"),
+            "span": ordered_span,
+            "facet": config.get("facet"),
+            "activity": str(activity_id) if activity_id is not None else None,
+            "activity_type": activity_type,
+        },
+    }
+
+
+def _identity_fields(config: dict) -> dict[str, Any]:
+    activity = config.get("activity")
+    activity_id = activity.get("id") if isinstance(activity, dict) else activity
+    return {
+        "name": config.get("name"),
+        "type": config.get("type"),
+        "day": config.get("day"),
+        "schedule": config.get("schedule"),
+        "stream": config.get("stream") or os.environ.get("SOL_STREAM"),
+        "segment": config.get("segment"),
+        "facet": config.get("facet"),
+        "activity": str(activity_id) if activity_id is not None else None,
+    }
+
+
+def _identity_hash(config: dict, runtime_json_schema: Any) -> str:
+    return compute_identity_hash(_runtime_identity(config, runtime_json_schema))
+
+
+def _output_valid_for_schema(
+    result: str,
+    output_format: str | None,
+    runtime_json_schema: Any,
+) -> bool:
+    if output_format != "json":
+        return True
+    try:
+        parsed = json.loads(result)
+        if runtime_json_schema is not None:
+            Draft202012Validator(runtime_json_schema).validate(parsed)
+    except Exception:
+        LOG.warning(
+            "cached JSON output failed current schema validation", exc_info=True
+        )
+        return False
+    return True
+
+
+def _schema_validation_clean(gen_result: dict, result: str, config: dict) -> bool:
+    validation = gen_result.get("schema_validation")
+    if isinstance(validation, dict) and validation.get("valid") is False:
+        return False
+    runtime_json_schema = hydrate_runtime_enums(config.get("json_schema"))
+    return _output_valid_for_schema(result, config.get("output"), runtime_json_schema)
+
+
+def _terminal_unit(config: dict) -> TerminalUnit | None:
+    day = config.get("day")
+    mode = config.get("schedule")
+    name = config.get("name")
+    if not day or not isinstance(mode, str) or not isinstance(name, str):
+        return None
+    activity = config.get("activity")
+    activity_id = activity.get("id") if isinstance(activity, dict) else activity
+    return TerminalUnit(
+        mode=mode,
+        name=name,
+        facet=config.get("facet") if isinstance(config.get("facet"), str) else None,
+        stream=(
+            config.get("stream")
+            if isinstance(config.get("stream"), str)
+            else os.environ.get("SOL_STREAM")
+        ),
+        segment=(
+            config.get("segment") if isinstance(config.get("segment"), str) else None
+        ),
+        activity=str(activity_id) if activity_id is not None else None,
+    )
+
+
+def _latest_terminal_complete(config: dict) -> bool:
+    unit = _terminal_unit(config)
+    day = config.get("day")
+    if unit is None or not isinstance(day, str):
+        return False
+    try:
+        state = read_terminal_states(day).get(unit)
+    except Exception:
+        LOG.warning("failed to read terminal state for cache reuse", exc_info=True)
+        return False
+    return state is not None and state.latest_event == TERMINAL_COMPLETE
+
+
+def _try_reuse_output(config: dict, emit_event: Callable[[dict], None]) -> bool:
+    output_path = Path(config["output_path"]) if config.get("output_path") else None
+    if output_path is None:
+        return False
+    try:
+        runtime_json_schema = hydrate_runtime_enums(config.get("json_schema"))
+        today_hash = _identity_hash(config, runtime_json_schema)
+        provenance = read_provenance(output_path)
+    except Exception:
+        LOG.warning("failed to evaluate talent provenance", exc_info=True)
+        return False
+
+    if not provenance or provenance.get("identity_hash") != today_hash:
+        return False
+    if not output_path.exists() or output_path.stat().st_size == 0:
+        return False
+
+    try:
+        output_sha256, output_size = output_digest(output_path)
+        if (
+            provenance.get("output_sha256") != output_sha256
+            or provenance.get("output_size") != output_size
+        ):
+            return False
+        result = output_path.read_text(encoding="utf-8")
+        if not _output_valid_for_schema(
+            result,
+            config.get("output"),
+            runtime_json_schema,
+        ):
+            return False
+    except Exception:
+        LOG.warning("failed to validate cached talent output", exc_info=True)
+        return False
+
+    if not _latest_terminal_complete(config):
+        return False
+
+    completed_at_ms = provenance.get("completed_at_ms")
+    if not isinstance(completed_at_ms, int):
+        return False
+
+    LOG.info("Reusing cached talent output: %s", output_path)
+    emit_event(
+        {
+            "event": "finish",
+            "ts": now_ms(),
+            "result": result,
+            "cache_hit": True,
+            "output_changed": False,
+            "completed_at_ms": completed_at_ms,
+        }
+    )
+    return True
+
+
+def _write_clean_provenance(
+    config: dict,
+    output_path: Path | None,
+    result: str,
+    runtime_json_schema: Any,
+    completed_at_ms: int,
+) -> None:
+    if not output_path or not result:
+        return
+    output_sha256, output_size = output_digest(output_path)
+    write_provenance(
+        output_path,
+        identity_hash=_identity_hash(config, runtime_json_schema),
+        output_sha256=output_sha256,
+        output_size=output_size,
+        provider=config.get("provider"),
+        model=config.get("model"),
+        fallback_from=config.get("fallback_from"),
+        generation_params=_generation_params(config),
+        completed_at_ms=completed_at_ms,
+        use_id=config.get("use_id"),
+        identity_fields=_identity_fields(config),
+    )
 
 
 def _build_dry_run_event(config: dict, before_values: dict) -> dict:
@@ -900,11 +1162,31 @@ async def _execute_with_tools(
             if degraded:
                 updates["degraded"] = degraded
 
-            if updates:
-                data = {**data, **updates}
-
+            output_changed = True if output_path is None else False
             if output_path and result:
-                _write_output(output_path, result)
+                output_changed = _write_output(output_path, result)
+
+            completed_at_ms = now_ms()
+            runtime_json_schema = hydrate_runtime_enums(config.get("json_schema"))
+            schema_clean = _output_valid_for_schema(
+                result,
+                config.get("output"),
+                runtime_json_schema,
+            )
+            if output_path and result and not degraded and schema_clean:
+                _write_clean_provenance(
+                    config,
+                    output_path,
+                    result,
+                    runtime_json_schema,
+                    completed_at_ms,
+                )
+
+            updates["cache_hit"] = False
+            updates["output_changed"] = output_changed
+            updates["completed_at_ms"] = completed_at_ms
+
+            data = {**data, **updates}
 
         # Filter out start events from providers (we already emitted ours)
         if data.get("event") == "start":
@@ -1013,20 +1295,18 @@ async def _execute_generate(
         emit_event: Event emission callback
     """
     from solstone.think.models import generate_with_result
-    from solstone.think.talent import hydrate_runtime_enums, key_to_context
+    from solstone.think.talent import key_to_context
 
     name = config["name"]
-    messages = config.get("messages")
-    transcript = config.get("transcript", "")
-    user_instruction = config.get("user_instruction", "")
-    prompt = config.get("prompt", "")
     system_instruction = config.get("system_instruction") or None
     output_path = Path(config["output_path"]) if config.get("output_path") else None
     output_format = config.get("output")
 
     # Get generation parameters from config (set in frontmatter)
-    thinking_budget = config.get("thinking_budget") or 8192 * 2
-    max_output_tokens = config.get("max_output_tokens") or 8192 * 6
+    generation_params = _generation_params(config)
+    thinking_budget = generation_params["thinking_budget"]
+    max_output_tokens = generation_params["max_output_tokens"]
+    temperature = generation_params["temperature"]
     is_json_output = output_format == "json"
 
     # Derive LLM request timeout from token budget: scale with output size,
@@ -1035,29 +1315,14 @@ async def _execute_generate(
         480, max(120, (max_output_tokens + thinking_budget) // 100)
     )
 
-    if messages and isinstance(messages, list):
-        contents = messages
-    else:
-        # Build contents: transcript + instruction + prompt
-        contents = []
-        if transcript:
-            contents.append(transcript)
-        if user_instruction:
-            contents.append(user_instruction)
-        if prompt:
-            contents.append(prompt)
-
-        # Fallback if no contents
-        if not contents:
-            contents = ["No input provided."]
-
+    contents = _build_generation_contents(config)
     context = key_to_context(name)
     runtime_json_schema = hydrate_runtime_enums(config.get("json_schema"))
     try:
         gen_result = generate_with_result(
             contents=contents,
             context=context,
-            temperature=0.3,
+            temperature=temperature,
             max_output_tokens=max_output_tokens,
             thinking_budget=thinking_budget,
             system_instruction=system_instruction,
@@ -1107,7 +1372,7 @@ async def _execute_generate(
             gen_result = generate_with_result(
                 contents=contents,
                 context=context,
-                temperature=0.3,
+                temperature=temperature,
                 max_output_tokens=max_output_tokens,
                 thinking_budget=thinking_budget,
                 system_instruction=system_instruction,
@@ -1133,20 +1398,39 @@ async def _execute_generate(
     result = _run_post_hooks(result, config)
 
     # Write output
+    output_changed = False
     if output_path and result:
-        _write_output(output_path, result)
+        output_changed = _write_output(output_path, result)
 
     # Emit finish event
+    completed_at_ms = now_ms()
+    degraded = _classify_degraded(usage_data, config)
+    if (
+        output_path
+        and result
+        and not degraded
+        and _schema_validation_clean(gen_result, result, config)
+    ):
+        _write_clean_provenance(
+            config,
+            output_path,
+            result,
+            runtime_json_schema,
+            completed_at_ms,
+        )
+
     finish_event: dict[str, Any] = {
         "event": "finish",
-        "ts": now_ms(),
+        "ts": completed_at_ms,
         "result": result,
+        "cache_hit": False,
+        "output_changed": output_changed,
+        "completed_at_ms": completed_at_ms,
     }
     if usage_data:
         finish_event["usage"] = usage_data
     if "schema_validation" in gen_result:
         finish_event["schema_validation"] = gen_result["schema_validation"]
-    degraded = _classify_degraded(usage_data, config)
     if degraded:
         finish_event["degraded"] = degraded
     emit_event(finish_event)
@@ -1225,21 +1509,6 @@ async def _run_talent(
             day_log(config["day"], f"talent {name} skipped ({skip_reason})")
         return
 
-    # Check if output already exists (applies to both tool talents and generators)
-    if output_path and not refresh and not dry_run:
-        if output_path.exists() and output_path.stat().st_size > 0:
-            LOG.info("Output exists, loading: %s", output_path)
-            with open(output_path, "r") as f:
-                result = f.read()
-            emit_event(
-                {
-                    "event": "finish",
-                    "ts": now_ms(),
-                    "result": result,
-                }
-            )
-            return
-
     # Capture state before pre-hooks
     before_values = {
         "prompt": config.get("prompt", ""),
@@ -1277,6 +1546,9 @@ async def _run_talent(
     # Dry-run mode
     if dry_run:
         emit_event(_build_dry_run_event(config, before_values))
+        return
+
+    if output_path and not refresh and _try_reuse_output(config, emit_event):
         return
 
     # Execute based on talent type

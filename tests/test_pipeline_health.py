@@ -24,6 +24,7 @@ from solstone.think.pipeline_health import (
     read_completed_units,
     read_daily_deterministic_failures,
     read_day_stuck,
+    read_segment_progress,
     read_terminal_states,
     summarize_pipeline_day,
 )
@@ -608,6 +609,39 @@ def test_read_completed_since_excludes_ts_at_or_before_since(pipeline_journal):
     )
 
     assert read_completed_since(day, 100) == CompletionsSince((), ())
+
+
+def test_cache_hit_latest_terminal_preserves_last_real_completion_for_cadence(
+    pipeline_journal,
+):
+    day = "20990212"
+    base = pipeline_journal / "chronicle" / day / "health"
+    _write_jsonl(
+        base / "001_segment.jsonl",
+        [
+            _complete("090000_300", "entities", 200, stream="default"),
+            _complete(
+                "090000_300",
+                "entities",
+                300,
+                stream="default",
+                cache_hit=True,
+                completed_at_ms=200,
+            ),
+        ],
+    )
+
+    unit = TerminalUnit("segment", "entities", None, "default", "090000_300", None)
+    state = read_terminal_states(day)[unit]
+
+    assert state.latest_event == "complete"
+    assert state.latest_ts == 300
+    assert state.last_real_complete_ts == 200
+    assert read_completed_since(day, 150).segments == (
+        {"stream": "default", "segment": "090000_300", "ts": 200},
+    )
+    assert read_completed_since(day, 250) == CompletionsSince((), ())
+    assert "entities" in read_segment_progress(day)[("default", "090000_300")].completed
 
 
 def test_read_completed_since_projects_activity_units(pipeline_journal):
