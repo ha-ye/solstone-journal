@@ -152,7 +152,7 @@ sandbox: .installed
 	# Boot supervisor in background \
 	SOLSTONE_JOURNAL="$$SANDBOX_JOURNAL" PATH=$(CURDIR)/$(VENV_BIN):$$PATH \
 		$(VENV_BIN)/journal supervisor 0 --no-daily \
-		> "$$SANDBOX_JOURNAL/health/supervisor.log" 2>&1 & \
+		> "$$SANDBOX_JOURNAL/health/service.log" 2>&1 & \
 	echo $$! > .sandbox.pid; \
 	echo "Supervisor PID: $$(cat .sandbox.pid)"; \
 	# Poll for readiness \

@@ -21,6 +21,7 @@ import threading
 import time
 from collections import OrderedDict, deque
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Callable, Iterable, NoReturn
 
@@ -97,7 +98,69 @@ LOCAL_WEDGE_PROVIDER_MAP_CAP = 512
 LOCAL_SERVER_READY_TIMEOUT_S = 300.0
 LOCAL_SERVER_HEALTH_POLL_INTERVAL_S = 1.0
 LOCAL_MODEL_WARMING_UP_COPY = "Local model is warming up..."
+# supervisor.log is size-rotated with a bounded on-disk footprint.
+# Hard ceiling = SUPERVISOR_LOG_MAX_BYTES * (SUPERVISOR_LOG_BACKUP_COUNT + 1)
+#   = 16 MiB * 6 = 96 MiB. Older lines drop; the most-recent tail is kept.
+SUPERVISOR_LOG_MAX_BYTES = 16 * 1024 * 1024
+SUPERVISOR_LOG_BACKUP_COUNT = 5
 logger = logging.getLogger(__name__)
+
+
+def _compact_log_if_oversized(log_path: Path, max_bytes: int) -> None:
+    try:
+        size = log_path.stat().st_size
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        logger.warning("Could not stat supervisor log before compaction: %s", error)
+        return
+
+    if size <= max_bytes:
+        return
+
+    compact_path = log_path.with_name(log_path.name + ".compact")
+    try:
+        with log_path.open("rb") as handle:
+            handle.seek(-max_bytes, os.SEEK_END)
+            tail = handle.read(max_bytes)
+
+        first_newline = tail.find(b"\n")
+        kept = tail[first_newline + 1 :] if first_newline != -1 else b""
+
+        with compact_path.open("wb") as handle:
+            handle.write(kept)
+        compact_path.rename(log_path)
+    except OSError as error:
+        logger.warning("Could not compact oversized supervisor log: %s", error)
+        try:
+            compact_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _configure_supervisor_logging(
+    log_path: Path,
+    level: int,
+    max_bytes: int = SUPERVISOR_LOG_MAX_BYTES,
+    backup_count: int = SUPERVISOR_LOG_BACKUP_COUNT,
+) -> None:
+    logging.getLogger().handlers = []
+    _compact_log_if_oversized(log_path, max_bytes)
+    logging.basicConfig(
+        level=level,
+        handlers=[
+            RotatingFileHandler(
+                log_path,
+                maxBytes=max_bytes,
+                backupCount=backup_count,
+                encoding="utf-8",
+            )
+        ],
+        format="%(asctime)s [supervisor:log] %(levelname)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    )
+
+
 _SERVICE_LIFECYCLE_VERBS = {
     "start",
     "stop",
@@ -2656,13 +2719,7 @@ def main() -> None:
     log_level = logging.DEBUG if args.debug else logging.INFO
     log_path = journal_path / "health" / "supervisor.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    logging.getLogger().handlers = []
-    logging.basicConfig(
-        level=log_level,
-        handlers=[logging.FileHandler(log_path, encoding="utf-8")],
-        format="%(asctime)s [supervisor:log] %(levelname)s %(message)s",
-        datefmt="%Y-%m-%dT%H:%M:%S",
-    )
+    _configure_supervisor_logging(log_path, log_level)
 
     if args.verbose or args.debug:
         console_handler = logging.StreamHandler()
