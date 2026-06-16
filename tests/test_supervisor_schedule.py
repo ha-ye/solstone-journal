@@ -148,21 +148,7 @@ def test_excludes_today(mock_callosum, monkeypatch, submit_mock, set_today):
     assert updated_days.call_args.kwargs["exclude"] == {"20250102"}
 
 
-def test_run_catchup_drain_excludes_stuck_days(mock_callosum, monkeypatch, submit_mock):
-    monkeypatch.setattr(
-        mod,
-        "updated_days",
-        lambda **kwargs: ["20250101", "20250102", "20250103"],
-    )
-    monkeypatch.setattr(mod, "read_day_stuck", lambda day: day == "20250102")
-
-    submitted = mod.run_catchup_drain()
-
-    assert submitted == ["20250101", "20250103"]
-    assert submit_mock.call_args_list == _daily_think_calls(submitted)
-
-
-def test_run_catchup_drain_force_day_bypasses_stuck_filter(
+def test_run_catchup_drain_excludes_ineligible_days(
     mock_callosum, monkeypatch, submit_mock
 ):
     monkeypatch.setattr(
@@ -170,7 +156,39 @@ def test_run_catchup_drain_force_day_bypasses_stuck_filter(
         "updated_days",
         lambda **kwargs: ["20250101", "20250102", "20250103"],
     )
-    monkeypatch.setattr(mod, "read_day_stuck", lambda day: day == "20250102")
+    monkeypatch.setattr(
+        mod, "day_eligible_to_drain", lambda day, kind: day != "20250102"
+    )
+
+    submitted = mod.run_catchup_drain()
+
+    assert submitted == ["20250101", "20250103"]
+    assert submit_mock.call_args_list == _daily_think_calls(submitted)
+
+
+def test_force_day_blocked_when_not_eligible(mock_callosum, monkeypatch, submit_mock):
+    monkeypatch.setattr(
+        mod,
+        "updated_days",
+        lambda **kwargs: ["20250101", "20250102", "20250103"],
+    )
+    monkeypatch.setattr(
+        mod, "day_eligible_to_drain", lambda day, kind: day != "20250102"
+    )
+
+    submitted = mod.run_catchup_drain(force_days={"20250102"})
+
+    assert submitted == ["20250101", "20250103"]
+    assert submit_mock.call_args_list == _daily_think_calls(submitted)
+
+
+def test_force_day_drains_when_eligible(mock_callosum, monkeypatch, submit_mock):
+    monkeypatch.setattr(
+        mod,
+        "updated_days",
+        lambda **kwargs: ["20250101", "20250102", "20250103"],
+    )
+    monkeypatch.setattr(mod, "day_eligible_to_drain", lambda day, kind: True)
 
     submitted = mod.run_catchup_drain(force_days={"20250102"})
 
@@ -192,7 +210,7 @@ def test_run_catchup_drain_limits_to_freshest_without_skip_warning(
         "20250107",
     ]
     monkeypatch.setattr(mod, "updated_days", lambda **kwargs: pending)
-    monkeypatch.setattr(mod, "read_day_stuck", lambda day: False)
+    monkeypatch.setattr(mod, "day_eligible_to_drain", lambda day, kind: True)
 
     submitted = mod.run_catchup_drain()
 
@@ -221,7 +239,7 @@ def test_run_catchup_drain_submits_next_freshest_on_reinvocation(
     ]
 
     monkeypatch.setattr(mod, "updated_days", lambda **kwargs: list(pending))
-    monkeypatch.setattr(mod, "read_day_stuck", lambda day: False)
+    monkeypatch.setattr(mod, "day_eligible_to_drain", lambda day, kind: True)
 
     first = mod.run_catchup_drain()
     for day in first:
@@ -248,7 +266,7 @@ def test_run_catchup_drain_force_day_union_once(
         "20250107",
     ]
     monkeypatch.setattr(mod, "updated_days", lambda **kwargs: pending)
-    monkeypatch.setattr(mod, "read_day_stuck", lambda day: False)
+    monkeypatch.setattr(mod, "day_eligible_to_drain", lambda day, kind: True)
 
     submitted = mod.run_catchup_drain(force_days={"20250106"})
 
@@ -277,10 +295,16 @@ def test_run_catchup_drain_degrades_to_unfiltered_on_predicate_error(
     ]
     monkeypatch.setattr(mod, "updated_days", lambda **kwargs: pending)
 
-    def raise_stuck(day):
-        raise RuntimeError(f"boom {day}")
+    failed_once = False
 
-    monkeypatch.setattr(mod, "read_day_stuck", raise_stuck)
+    def raise_eligibility(day, kind):
+        nonlocal failed_once
+        if not failed_once:
+            failed_once = True
+            raise RuntimeError(f"boom {day}")
+        return True
+
+    monkeypatch.setattr(mod, "day_eligible_to_drain", raise_eligibility)
 
     submitted = mod.run_catchup_drain()
 
@@ -289,8 +313,7 @@ def test_run_catchup_drain_degrades_to_unfiltered_on_predicate_error(
     warnings = [
         record
         for record in caplog.records
-        if record.getMessage()
-        == "Stuck-day filter unavailable; draining unfiltered catchup set"
+        if "Catchup eligibility check failed" in record.getMessage()
     ]
     assert len(warnings) == 1
 
@@ -301,7 +324,7 @@ def test_run_catchup_drain_emits_no_followon_drain(
     callosum = Mock()
     monkeypatch.setattr(mod, "_supervisor_callosum", callosum)
     monkeypatch.setattr(mod, "updated_days", lambda **kwargs: ["20250101"])
-    monkeypatch.setattr(mod, "read_day_stuck", lambda day: False)
+    monkeypatch.setattr(mod, "day_eligible_to_drain", lambda day, kind: True)
 
     mod.run_catchup_drain()
 
@@ -320,7 +343,9 @@ def test_handle_callosum_drain_runs_drain(mock_callosum, monkeypatch, submit_moc
         "20250107",
     ]
     monkeypatch.setattr(mod, "updated_days", lambda **kwargs: pending)
-    monkeypatch.setattr(mod, "read_day_stuck", lambda day: day == "20250105")
+    monkeypatch.setattr(
+        mod, "day_eligible_to_drain", lambda day, kind: day != "20250105"
+    )
 
     mod._handle_callosum_message({"tract": "supervisor", "event": "drain"})
 
@@ -341,7 +366,7 @@ def test_handle_callosum_drain_with_day_forces_day(
         "20250107",
     ]
     monkeypatch.setattr(mod, "updated_days", lambda **kwargs: pending)
-    monkeypatch.setattr(mod, "read_day_stuck", lambda day: day == "20250102")
+    monkeypatch.setattr(mod, "day_eligible_to_drain", lambda day, kind: True)
 
     mod._handle_callosum_message(
         {"tract": "supervisor", "event": "drain", "day": "20250102"}

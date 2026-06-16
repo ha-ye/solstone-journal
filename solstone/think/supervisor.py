@@ -30,9 +30,16 @@ from solstone.think import maintenance, scheduler
 from solstone.think.app_supervised import FLAG, is_app_supervised, resolve_parent_fd
 from solstone.think.backup.engine import BACKUP_MAX_RUNTIME, BACKUP_RUN_CMD
 from solstone.think.callosum import CallosumConnection, CallosumServer
+from solstone.think.catchup_state import (
+    KIND_DAILY_CATCHUP,
+    STUCK_THRESHOLD,
+    day_eligible_to_drain,
+    reconcile_interrupted_attempts,
+    record_attempt,
+    record_outcome,
+)
 from solstone.think.maint import run_pending_tasks
 from solstone.think.models import LOCAL_MODEL, is_local_provider_needed
-from solstone.think.pipeline_health import read_day_stuck
 from solstone.think.providers.mlx_server import MLX_SERVER_PROCESS_NAME
 from solstone.think.readiness import START_TIME_TOLERANCE_S, clear_ready, signal_ready
 from solstone.think.runner import ManagedProcess as RunnerManagedProcess
@@ -731,6 +738,7 @@ class TaskQueue:
         primary_ref = refs[0]
         service = cmd_name
         exit_status = "error"
+        attempt_recorded = False
 
         try:
             callosum.start()
@@ -741,6 +749,9 @@ class TaskQueue:
             )
             with self._lock:
                 self._active[primary_ref] = managed
+            started_at = time.time()
+            record_attempt(cmd, day, primary_ref, started_at=started_at)
+            attempt_recorded = True
 
             callosum.emit(
                 "supervisor",
@@ -819,6 +830,25 @@ class TaskQueue:
                     )
                 except Exception as exc:
                     logger.warning("scheduler completion writeback failed: %s", exc)
+            if attempt_recorded:
+                try:
+                    outcome_result = record_outcome(
+                        cmd,
+                        day,
+                        primary_ref,
+                        exit_status=exit_status,
+                        ended_at=ended_at,
+                    )
+                    if outcome_result.entered_backoff:
+                        _emit_catchup_backoff(
+                            callosum,
+                            day=outcome_result.day,
+                            attempts=outcome_result.attempts,
+                            consecutive=outcome_result.consecutive_non_completion,
+                            last_outcome=outcome_result.last_outcome,
+                        )
+                except Exception:
+                    logging.warning("catchup outcome writeback failed", exc_info=True)
             try:
                 callosum.stop()
             except Exception:
@@ -1241,6 +1271,41 @@ def _record_scheduler_completion(
         except BaseException:
             tmp_file.unlink(missing_ok=True)
             raise
+
+
+def _emit_catchup_backoff(
+    callosum,
+    *,
+    day: str | None,
+    attempts: int,
+    consecutive: int,
+    last_outcome: str,
+) -> None:
+    if callosum is None:
+        return
+    message = f"day {day} stuck after {attempts} attempts, last outcome {last_outcome}"
+    try:
+        callosum.emit(
+            "storage",
+            "warning",
+            level="warning",
+            type="catchup_backoff",
+            message=message,
+            current=consecutive,
+            threshold=STUCK_THRESHOLD,
+        )
+        callosum.emit(
+            "notification",
+            "show",
+            title="Catchup stuck",
+            message=message,
+            icon="⚠️",
+            action="/app/health",
+        )
+    except Exception:
+        logging.warning(
+            "Failed to emit catchup backoff notification for %s", day, exc_info=True
+        )
 
 
 def _emit_queue_event(cmd_name: str, running_ref: str, queue: list) -> None:
@@ -2021,18 +2086,27 @@ def run_catchup_drain(
     *,
     exclude: set[str] | None = None,
 ) -> list[str]:
-    """Submit catchup daily think tasks for pending, non-stuck days."""
+    """Submit catchup daily think tasks for pending, eligible days."""
     all_updated = updated_days(exclude=exclude)
-    try:
-        survivors = [day for day in all_updated if not read_day_stuck(day)]
-    except Exception:
-        logging.warning("Stuck-day filter unavailable; draining unfiltered catchup set")
-        survivors = all_updated
 
-    freshest = survivors[-MAX_UPDATED_CATCHUP:]
-    merged = set(freshest) | set(force_days or [])
+    def _eligible(day: str) -> bool:
+        try:
+            return day_eligible_to_drain(day, KIND_DAILY_CATCHUP)
+        except Exception:
+            logging.warning(
+                "Catchup eligibility check failed for %s; treating as eligible",
+                day,
+            )
+            return True
+
+    eligible_natural = [day for day in all_updated if _eligible(day)]
+    # AC3: force uses the same backoff gate. AC8: cap natural days after
+    # eligibility; forced eligible days keep importer single-day intent.
+    freshest = eligible_natural[-MAX_UPDATED_CATCHUP:]
+    forced_eligible = [day for day in (force_days or []) if _eligible(day)]
+    merged = set(freshest) | set(forced_eligible)
     if not merged:
-        logging.info("no updated days to process")
+        logging.info("no eligible days to process")
         return []
 
     if _task_queue is None:
@@ -2045,6 +2119,22 @@ def run_catchup_drain(
         cmd = ["journal", "think", "-v", "--day", day_str]
         _task_queue.submit(cmd, day=day_str)
     return days
+
+
+def _startup_catchup_drain() -> None:
+    try:
+        transitions = reconcile_interrupted_attempts()
+        for transition in transitions:
+            _emit_catchup_backoff(
+                _supervisor_callosum,
+                day=transition.day,
+                attempts=transition.attempts,
+                consecutive=transition.consecutive_non_completion,
+                last_outcome=transition.last_outcome,
+            )
+    except Exception:
+        logging.warning("Catchup reconciliation failed", exc_info=True)
+    run_catchup_drain()
 
 
 def handle_daily_tasks() -> None:
@@ -2792,7 +2882,7 @@ def main() -> None:
 
     # Startup catchup: submit thinks for days with pending stream data
     if daily_enabled:
-        run_catchup_drain()
+        _startup_catchup_drain()
 
     # Startup catch-up: submit overdue schedule entries missed while down
     if schedule_enabled and _supervisor_callosum:
