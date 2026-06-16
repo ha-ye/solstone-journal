@@ -14,7 +14,10 @@ from pathlib import Path
 
 import pytest
 
+from solstone.think import catchup_state
 from solstone.think.pipeline_health import (
+    BACKLOG_STATE_STUCK,
+    REASON_CATCHUP_BACKOFF,
     STUCK_FAIL_THRESHOLD,
     CompletionsSince,
     TerminalUnit,
@@ -171,6 +174,50 @@ def test_read_completed_units_missing_health_dir(pipeline_journal):
     (pipeline_journal / "chronicle" / "20990201").mkdir(parents=True)
 
     assert read_completed_units("20990201") == set()
+
+
+def test_read_backlog_view_marks_backoff_stuck_day(pipeline_journal):
+    day = "20990301"
+    _touch_marker(pipeline_journal, day, "daily.updated", mtime_ms=100_000)
+    _touch_marker(pipeline_journal, day, "stream.updated", mtime_ms=200_000)
+    state_path = pipeline_journal / "health" / "catchup-state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": catchup_state.STATE_VERSION,
+                "entries": {
+                    f"{day}:{catchup_state.KIND_DAILY_CATCHUP}": {
+                        "day": day,
+                        "command_kind": catchup_state.KIND_DAILY_CATCHUP,
+                        "attempts": 3,
+                        "consecutive_non_completion": 3,
+                        "last_attempt_at": 1000.0,
+                        "last_outcome": "timeout",
+                        "next_retry_at": 1600.0,
+                        "entered_backoff_at": 1200.0,
+                        "notified_at": 1200.0,
+                        "fingerprint": "fingerprint",
+                        "active": None,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    view = read_backlog_view()
+
+    backlog_day = next(item for item in view.days if item.day == day)
+    assert backlog_day.state == BACKLOG_STATE_STUCK
+    assert view.stuck_days >= 1
+    assert backlog_day.reason == REASON_CATCHUP_BACKOFF
+    assert backlog_day.reason_code == "catchup_backoff"
+    assert backlog_day.backoff_stuck is True
+    assert backlog_day.backoff_attempts == 3
+    assert backlog_day.backoff_consecutive_non_completion == 3
+    assert backlog_day.backoff_last_outcome == "timeout"
+    assert backlog_day.backoff_next_retry_at == 1600.0
 
 
 def test_read_completed_units_terminal_presence(pipeline_journal):

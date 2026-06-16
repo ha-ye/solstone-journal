@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import builtins
+import json
+import os
 
 import pytest
 
-from solstone.think import pipeline_health
+from solstone.think import catchup_state, pipeline_health
 from solstone.think.pipeline_health import (
     BACKLOG_STATE_UNKNOWN,
     BacklogDay,
@@ -130,6 +132,51 @@ def test_journal_caught_up_pending_and_stuck_warn_with_distinct_counts(
     assert "1 day(s) stuck" in result.detail
     assert "oldest outstanding 20200229" in result.detail
     assert str(2 + 1) not in result.detail
+
+
+def test_journal_caught_up_reports_backoff_stuck_day(doctor, tmp_path, monkeypatch):
+    journal = tmp_path / "journal"
+    day = "20990401"
+    health_dir = journal / "chronicle" / day / "health"
+    health_dir.mkdir(parents=True, exist_ok=True)
+    daily = health_dir / "daily.updated"
+    stream = health_dir / "stream.updated"
+    daily.touch()
+    stream.touch()
+    os.utime(daily, (100.0, 100.0))
+    os.utime(stream, (200.0, 200.0))
+    state_path = journal / "health" / "catchup-state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": catchup_state.STATE_VERSION,
+                "entries": {
+                    f"{day}:{catchup_state.KIND_DAILY_CATCHUP}": {
+                        "day": day,
+                        "command_kind": catchup_state.KIND_DAILY_CATCHUP,
+                        "attempts": 3,
+                        "consecutive_non_completion": 3,
+                        "last_attempt_at": 1000.0,
+                        "last_outcome": "interrupted",
+                        "next_retry_at": 1600.0,
+                        "entered_backoff_at": 1200.0,
+                        "notified_at": 1200.0,
+                        "fingerprint": "fingerprint",
+                        "active": None,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+
+    result = doctor.journal_caught_up_check(args(doctor))
+
+    assert result.status == "warn"
+    assert "0 day(s) pending" in result.detail
+    assert "1 day(s) stuck" in result.detail
 
 
 def test_journal_caught_up_invokes_backlog_reader_and_derives_result(

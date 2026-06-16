@@ -68,6 +68,53 @@ def _seed_screen_segment(journal, day, segment="123456_300"):
     return segment_dir
 
 
+def test_serialize_backlog_day_includes_backoff_fields_only_when_stuck():
+    stats_mod = importlib.import_module("solstone.think.journal_stats")
+    health_mod = importlib.import_module("solstone.think.pipeline_health")
+
+    normal = health_mod.BacklogDay(
+        day="20240101",
+        state=health_mod.BACKLOG_STATE_PENDING,
+        segments=0,
+        units=0,
+        not_sensed=0,
+        why=(),
+        reason=None,
+        reason_code=None,
+        provider=None,
+        model=None,
+        error=None,
+    )
+    stuck = health_mod.BacklogDay(
+        day="20240102",
+        state=health_mod.BACKLOG_STATE_STUCK,
+        segments=0,
+        units=0,
+        not_sensed=0,
+        why=(),
+        reason=health_mod.REASON_CATCHUP_BACKOFF,
+        reason_code="catchup_backoff",
+        provider=None,
+        model=None,
+        error=None,
+        backoff_stuck=True,
+        backoff_attempts=3,
+        backoff_consecutive_non_completion=3,
+        backoff_last_outcome="timeout",
+        backoff_next_retry_at=1600.0,
+    )
+
+    normal_data = stats_mod._serialize_backlog_day(normal)
+    stuck_data = stats_mod._serialize_backlog_day(stuck)
+
+    assert not any(key.startswith("backoff_") for key in normal_data)
+    assert stuck_data["backoff_stuck"] is True
+    assert stuck_data["backoff_attempts"] == 3
+    assert stuck_data["backoff_consecutive_non_completion"] == 3
+    assert stuck_data["backoff_last_outcome"] == "timeout"
+    assert stuck_data["backoff_next_retry_at"] == 1600.0
+
+
 def test_scan_day(tmp_path, monkeypatch):
     stats_mod = importlib.import_module("solstone.think.journal_stats")
     journal = tmp_path
