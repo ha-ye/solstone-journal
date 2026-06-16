@@ -8,7 +8,7 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -28,6 +28,17 @@ def _managed(tmp_path: Path):
 
 def _old_binary(tmp_path: Path, binary: str) -> str:
     return str(tmp_path / "old" / binary)
+
+
+def _install_fake_launchd_clock(monkeypatch):
+    fake = [0.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: fake[0])
+    monkeypatch.setattr(
+        service.time,
+        "sleep",
+        lambda seconds: fake.__setitem__(0, fake[0] + seconds),
+    )
+    return fake
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="systemd reconcile shape")
@@ -90,7 +101,14 @@ def test_reconcile_rewrites_stale_launchd_plist_to_journal_start(
             }
         )
     )
-    run = MagicMock(return_value=subprocess.CompletedProcess([], 0, "", ""))
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append((command, kwargs))
+        if command[:2] == ["launchctl", "print"]:
+            return subprocess.CompletedProcess(command, 1, "", "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(service, "_plist_path", lambda: plist_path)
     monkeypatch.setattr(service, "_managed_wrapper", _managed(tmp_path))
@@ -108,17 +126,73 @@ def test_reconcile_rewrites_stale_launchd_plist_to_journal_start(
         "start",
         *tail,
     ]
-    assert run.call_args_list == [
-        call(
-            ["launchctl", "bootout", "gui/501", str(plist_path)],
-            capture_output=True,
-        ),
-        call(
-            ["launchctl", "bootstrap", "gui/501", str(plist_path)],
-            capture_output=True,
-            text=True,
-        ),
+    assert commands[0] == (
+        ["launchctl", "bootout", f"gui/501/{service.SERVICE_LABEL}"],
+        {"capture_output": True, "check": False},
+    )
+    verbs = [command[0][:2] for command in commands]
+    bootstrap_index = verbs.index(["launchctl", "bootstrap"])
+    assert ["launchctl", "print"] in verbs[1:bootstrap_index]
+    assert (
+        ["launchctl", "bootstrap", "gui/501", str(plist_path)],
+        {"capture_output": True, "text": True},
+    ) in commands
+
+
+def test_reconcile_launchd_bootstrap_eio_retried_and_succeeds(monkeypatch, tmp_path):
+    plist_path = tmp_path / "org.solpbc.solstone.plist"
+    plist_path.write_bytes(
+        plistlib.dumps(
+            {
+                "Label": service.SERVICE_LABEL,
+                "ProgramArguments": [_old_binary(tmp_path, "journal"), "supervisor"],
+            }
+        )
+    )
+    monkeypatch.setattr(service, "_plist_path", lambda: plist_path)
+    monkeypatch.setattr(service, "_managed_wrapper", _managed(tmp_path))
+    monkeypatch.setattr(service.os, "getuid", lambda: 501)
+    _install_fake_launchd_clock(monkeypatch)
+    sequence = []
+    bootstrap_count = 0
+
+    def run(command, **kwargs):
+        nonlocal bootstrap_count
+        sequence.append(command[:2])
+        if command[:2] == ["launchctl", "print"]:
+            return subprocess.CompletedProcess(command, 1, "", "")
+        if command[:2] == ["launchctl", "bootstrap"]:
+            bootstrap_count += 1
+            if bootstrap_count == 1:
+                return subprocess.CompletedProcess(
+                    command,
+                    1,
+                    "",
+                    "Bootstrap failed: 5: Input/output error",
+                )
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(service.subprocess, "run", run)
+
+    result = service._reconcile_launchd_plist()
+
+    assert result.was_stale is True
+    assert bootstrap_count == 2
+    bootstrap_indexes = [
+        index
+        for index, command in enumerate(sequence)
+        if command == ["launchctl", "bootstrap"]
     ]
+    print_indexes = [
+        index
+        for index, command in enumerate(sequence)
+        if command == ["launchctl", "print"]
+    ]
+    assert len(bootstrap_indexes) == 2
+    assert any(
+        bootstrap_indexes[0] < index < bootstrap_indexes[1] for index in print_indexes
+    )
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="systemd reconcile shape")
