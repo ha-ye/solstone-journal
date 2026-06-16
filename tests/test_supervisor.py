@@ -332,7 +332,14 @@ def _run_supervisor_main_for_shutdown_knobs(tmp_path, monkeypatch, *, argv):
 
     class FakeTaskQueue:
         def __init__(self, *args, **kwargs):
-            pass
+            self.caps = {}
+
+        @staticmethod
+        def get_command_name(cmd):
+            return mod._command_partition(cmd)
+
+        def set_cap(self, cmd_name, seconds):
+            self.caps[cmd_name] = seconds
 
         def set_ready(self):
             pass
@@ -856,6 +863,49 @@ def test_scheduler_weekly_cap_registers_under_weekly(monkeypatch):
         queue.set_cap(mod.TaskQueue.get_command_name(cmd), seconds)
 
     assert queue._caps == {"weekly": 60.0}
+
+
+def test_reactive_task_caps_values():
+    mod = importlib.import_module("solstone.think.supervisor")
+
+    assert mod.REACTIVE_TASK_CAPS == {
+        "daily": 21600,
+        "segment": 4500,
+        "indexer": 7200,
+        "importer": 3600,
+    }
+
+
+def test_register_baseline_caps_sets_explicit_caps():
+    mod = importlib.import_module("solstone.think.supervisor")
+    queue = mod.TaskQueue(on_queue_change=None)
+
+    mod.register_baseline_caps(queue)
+
+    backup_partition = mod.TaskQueue.get_command_name(
+        ["journal", "maintenance", "run", "backup:run"]
+    )
+    expected = {
+        "daily": 21600,
+        "segment": 4500,
+        "indexer": 7200,
+        "importer": 3600,
+        backup_partition: 25200,
+    }
+    for name, seconds in expected.items():
+        assert queue._effective_cap(name) == seconds
+        assert queue._effective_cap(name) != mod.DEFAULT_TASK_MAX_RUNTIME
+
+
+def test_from_scratch_reprocess_resolves_to_daily():
+    mod = importlib.import_module("solstone.think.supervisor")
+
+    assert (
+        mod.TaskQueue.get_command_name(
+            ["journal", "think", "-v", "--day", "20260527", "--from-scratch"]
+        )
+        == "daily"
+    )
 
 
 def test_queue_event_carries_mode_partition_name(monkeypatch):
@@ -1663,7 +1713,7 @@ def test_enforce_deadlines_terminates_when_elapsed_exceeds_cap(caplog, monkeypat
     ) in caplog.text
 
 
-def test_collect_task_status_no_cap(monkeypatch):
+def test_collect_task_status_reports_default_cap(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     queue = mod.TaskQueue(on_queue_change=None)
     managed = _TaskManagedStub(cmd=["journal", "providers"], start_time=100.0)
@@ -1675,7 +1725,7 @@ def test_collect_task_status_no_cap(monkeypatch):
             "ref": "ref-1",
             "name": "providers",
             "duration_seconds": 12,
-            "max_runtime_seconds": None,
+            "max_runtime_seconds": mod.DEFAULT_TASK_MAX_RUNTIME,
             "stuck": False,
         }
     ]
@@ -1706,6 +1756,21 @@ def test_collect_task_status_over_cap(monkeypatch):
     status = queue.collect_task_status()
 
     assert status[0]["max_runtime_seconds"] == 5
+    assert status[0]["stuck"] is True
+
+
+def test_collect_task_status_default_cap_stuck(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    queue = mod.TaskQueue(on_queue_change=None)
+    managed = _TaskManagedStub(cmd=["journal", "providers"], start_time=100.0)
+    queue._active["ref-1"] = managed
+    monkeypatch.setattr(
+        mod.time, "time", lambda: 100.0 + mod.DEFAULT_TASK_MAX_RUNTIME + 5
+    )
+
+    status = queue.collect_task_status()
+
+    assert status[0]["max_runtime_seconds"] == mod.DEFAULT_TASK_MAX_RUNTIME
     assert status[0]["stuck"] is True
 
 
@@ -1766,15 +1831,23 @@ def test_terminate_managed_logs_timeout(caplog):
     assert "task did not terminate within 3.0s for test" in caplog.text
 
 
-def test_enforce_deadlines_noop_when_no_cap():
+def test_enforce_deadlines_terminates_uncapped_at_default(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     queue = mod.TaskQueue(on_queue_change=None)
     managed = _TaskManagedStub(cmd=["sol", "import"], start_time=100.0)
     queue._active["ref-1"] = managed
 
-    queue.enforce_deadlines(10_000.0)
+    def terminate_now(key, managed_arg, timeout, reason):
+        assert key == "ref-1"
+        assert managed_arg is managed
+        assert timeout == 2.0
+        assert reason == "cap"
+        managed_arg.terminate(timeout=timeout)
 
-    managed.terminate.assert_not_called()
+    monkeypatch.setattr(mod, "_start_termination_thread", terminate_now)
+    queue.enforce_deadlines(100.0 + mod.DEFAULT_TASK_MAX_RUNTIME + 1)
+
+    managed.terminate.assert_called_once_with(timeout=2.0)
 
 
 def test_restart_service_uses_single_termination_path(monkeypatch):

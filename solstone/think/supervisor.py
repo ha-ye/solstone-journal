@@ -28,6 +28,7 @@ import psutil
 
 from solstone.think import maintenance, scheduler
 from solstone.think.app_supervised import FLAG, is_app_supervised, resolve_parent_fd
+from solstone.think.backup.engine import BACKUP_MAX_RUNTIME, BACKUP_RUN_CMD
 from solstone.think.callosum import CallosumConnection, CallosumServer
 from solstone.think.maint import run_pending_tasks
 from solstone.think.models import LOCAL_MODEL, is_local_provider_needed
@@ -54,12 +55,22 @@ from solstone.think.utils import (
     get_rev,
     is_solstone_up,
     now_ms,
+    parse_duration_seconds,
     read_service_port,
     setup_cli,
     updated_days,
     write_service_port,
 )
 
+DEFAULT_TASK_MAX_RUNTIME = (
+    1800  # 30m wall-clock default for any uncapped TaskQueue partition
+)
+REACTIVE_TASK_CAPS = {
+    "daily": 21600,  # 6h daily/from-scratch reprocess
+    "segment": 4500,  # 75m per-segment think
+    "indexer": 7200,  # 2h indexer, above the code's own 1h rescan allotment
+    "importer": 3600,  # 1h importer
+}
 DEFAULT_THRESHOLD = 60
 CHECK_INTERVAL = 30
 MAX_UPDATED_CATCHUP = 4
@@ -459,6 +470,7 @@ class TaskQueue:
         self._cap_terminated: set[str] = set()
         self._stopped_ticks: dict[str, int] = {}
         self._caps: dict[str, int] = {}
+        self._default_cap = DEFAULT_TASK_MAX_RUNTIME
         self._pending: list[dict] = []
         self._ready = ready
         self._lock = threading.Lock()
@@ -600,6 +612,15 @@ class TaskQueue:
         with self._lock:
             self._caps[cmd_name] = seconds
 
+    def _effective_cap(self, cmd_name: str) -> int:
+        """Resolve the wall-clock cap for a partition: explicit override or default.
+
+        Lock-free: reads only `self._caps` (atomic dict get) and the immutable
+        `self._default_cap`, so it is safe whether or not the caller holds
+        `self._lock`.
+        """
+        return self._caps.get(cmd_name) or self._default_cap
+
     def get_active_by_cmd_name(self, name: str) -> str | None:
         """Return the first active ref matching a command name."""
         with self._lock:
@@ -613,9 +634,7 @@ class TaskQueue:
         with self._lock:
             for ref, managed in list(self._active.items()):
                 cmd_name = self.get_command_name(managed.cmd)
-                cap = self._caps.get(cmd_name)
-                if not cap:
-                    continue
+                cap = self._effective_cap(cmd_name)
 
                 elapsed = now - managed.start_time
                 if elapsed <= cap:
@@ -906,14 +925,14 @@ class TaskQueue:
             if managed.is_running():
                 duration = int(now - managed.start_time)
                 cmd_name = TaskQueue.get_command_name(managed.cmd)
-                cap = self._caps.get(cmd_name)
+                cap = self._effective_cap(cmd_name)
                 tasks.append(
                     {
                         "ref": ref,
                         "name": cmd_name,
                         "duration_seconds": duration,
                         "max_runtime_seconds": cap,
-                        "stuck": cap is not None and duration > cap,
+                        "stuck": duration > cap,
                     }
                 )
         return tasks
@@ -1259,9 +1278,9 @@ def _handle_task_request(message: dict) -> None:
         if active_ref:
             with _task_queue._lock:
                 managed = _task_queue._active.get(active_ref)
-                cap = _task_queue._caps.get(cmd_name, 0)
+                cap = _task_queue._effective_cap(cmd_name)
             runtime = time.time() - managed.start_time if managed else 0
-            reason = "wedged" if cap and runtime > 2 * cap else "still_running"
+            reason = "wedged" if runtime > 2 * cap else "still_running"
             if _supervisor_callosum:
                 _supervisor_callosum.emit(
                     "supervisor",
@@ -2514,6 +2533,21 @@ def _ensure_venv_bin_on_path() -> None:
     os.environ["PATH"] = os.pathsep.join(parts)
 
 
+def register_baseline_caps(queue: TaskQueue) -> None:
+    """Register caps that must hold regardless of the schedule_enabled gate.
+
+    Reactive partitions (daily/segment/indexer/importer) and on-demand backup
+    can reach _active even under --no-schedule, so their caps cannot live behind
+    the schedule-only registration block.
+    """
+    for name, seconds in REACTIVE_TASK_CAPS.items():
+        queue.set_cap(name, seconds)
+    queue.set_cap(
+        TaskQueue.get_command_name(BACKUP_RUN_CMD),
+        parse_duration_seconds(BACKUP_MAX_RUNTIME),
+    )
+
+
 def main() -> None:
     parser = parse_args()
 
@@ -2682,6 +2716,7 @@ def main() -> None:
 
     # Initialize task queue with callosum event callback
     _task_queue = TaskQueue(on_queue_change=_emit_queue_event, ready=False)
+    register_baseline_caps(_task_queue)
 
     # Now start other services (their startup events will be captured)
     if _is_remote_mode:
