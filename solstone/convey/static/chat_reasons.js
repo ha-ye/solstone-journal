@@ -122,6 +122,10 @@
       "template": "this run reached its resource budget before finishing",
       "action": null
     },
+    "wall_clock_exceeded": {
+      "template": "this run took too long to finish",
+      "action": null
+    },
     "unknown": {
       "template": "chat had trouble",
       "action": null

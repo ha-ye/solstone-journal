@@ -39,6 +39,7 @@ EXPECTED_CODES = {
     "max_turns_exhausted",
     "no_output",
     "token_budget_exceeded",
+    "wall_clock_exceeded",
     "unknown",
 }
 

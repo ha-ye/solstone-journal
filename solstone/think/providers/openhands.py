@@ -10,6 +10,7 @@ functions that use them.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -51,6 +52,8 @@ from solstone.think.providers.shared import (
     safe_raw,
 )
 from solstone.think.utils import get_journal, get_project_root, now_ms
+
+LOG = logging.getLogger("solstone.think.providers.openhands")
 
 _GENERATE_MODULES = {
     "anthropic": "solstone.think.providers.anthropic",
@@ -133,6 +136,8 @@ def _build_llm(provider: str, model: str) -> Any:
                 base_url=f"{endpoint.base_url}/v1",
                 api_key=endpoint.credential or "EMPTY",
                 native_tool_calling=False,
+                timeout=LLM_TIMEOUT_S,
+                num_retries=LLM_NUM_RETRIES,
                 input_cost_per_token=0,
                 output_cost_per_token=0,
                 litellm_extra_body={"chat_template_kwargs": {"enable_thinking": False}},
@@ -146,6 +151,8 @@ def _build_llm(provider: str, model: str) -> Any:
             base_url=f"http://127.0.0.1:{server.port}/v1",
             api_key="EMPTY",
             native_tool_calling=False,
+            timeout=LLM_TIMEOUT_S,
+            num_retries=LLM_NUM_RETRIES,
             input_cost_per_token=0,
             output_cost_per_token=0,
             litellm_extra_body={"chat_template_kwargs": {"enable_thinking": False}},
@@ -158,6 +165,8 @@ def _build_llm(provider: str, model: str) -> Any:
         "model": _prefixed_model(provider, model),
         "api_key": os.getenv(_API_KEY_ENV[provider]),
         "native_tool_calling": True,
+        "timeout": LLM_TIMEOUT_S,
+        "num_retries": LLM_NUM_RETRIES,
     }
     if provider == "openai":
         llm_kwargs["reasoning_summary"] = "auto"
@@ -952,6 +961,36 @@ def _conversation_execution_status(conversation: Any) -> str | None:
     return value if isinstance(value, str) else None
 
 
+# Bound per-call LLM time and retries explicitly. The SDK defaults
+# (num_retries=5, timeout=300s) can stack to ~25-30 min of retry churn on a
+# single bad call. NOTE: LLM.timeout is forwarded to
+# litellm_completion(timeout=...) but does NOT reliably bound a mid-stream idle
+# gap on streaming cogitate calls — the asyncio wall-clock wrap in
+# run_cogitate() remains the real backstop for that class of stall.
+LLM_TIMEOUT_S = 300
+LLM_NUM_RETRIES = 2
+
+# Seconds subtracted from a talent's timeout_seconds to derive the in-process
+# wall-clock deadline, so the in-process force-finish completes well before
+# Cortex's process-kill Timer (cortex.py:355-365), which fires at
+# timeout_seconds then SIGTERMs and waits 10s.
+WALL_CLOCK_GRACE_S = 30.0
+
+
+def _wall_clock_deadline_s(timeout_seconds: float) -> float:
+    """In-process wall-clock deadline, strictly inside ``timeout_seconds``.
+
+    The deadline is ``timeout_seconds - WALL_CLOCK_GRACE_S``. When that is
+    non-positive (a talent configured a ``timeout_seconds`` at or below the
+    grace), fall back to half the talent budget so the deadline is always
+    positive and strictly less than ``timeout_seconds``.
+    """
+    deadline = timeout_seconds - WALL_CLOCK_GRACE_S
+    if deadline <= 0:
+        deadline = timeout_seconds / 2
+    return deadline
+
+
 async def run_cogitate(
     config: dict[str, Any],
     on_event: Callable[[dict], None] | None = None,
@@ -1058,11 +1097,57 @@ async def run_cogitate(
         )
         translator.conversation = conversation
         conversation.send_message(prompt_body)
+        timeout_seconds = float(config.get("timeout_seconds", 600) or 600)
+        wall_clock_s = _wall_clock_deadline_s(timeout_seconds)
+        wall_clock_exceeded = False
         with _suppress_litellm_cost_warnings():
-            await conversation.arun()
+            run_task = asyncio.ensure_future(conversation.arun())
+            _done, pending = await asyncio.wait({run_task}, timeout=wall_clock_s)
+            if run_task in pending:
+                wall_clock_exceeded = True
+                run_task.cancel()
+                try:
+                    await run_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    LOG.exception(
+                        "cogitate arun raised while force-finishing on the "
+                        "wall-clock deadline"
+                    )
+            else:
+                # arun completed (or raised) within the deadline. asyncio.wait
+                # captures any exception on the task rather than propagating it,
+                # so re-raise here to keep the existing QuotaExhaustedError /
+                # generic except-Exception classification path unchanged.
+                run_task.result()
 
         result = translator.result()
         usage = _usage_delta(usage_start, llm)
+        if wall_clock_exceeded:
+            has_partial = bool(result and result.strip())
+            error_text = (
+                "wall_clock_exceeded: cogitate run exceeded its wall-clock "
+                "deadline and was force-finished with a partial result preserved"
+                if has_partial
+                else "wall_clock_exceeded: cogitate run exceeded its wall-clock "
+                "deadline and was force-finished before emitting a final result"
+            )
+            conversation.close()
+            callback.emit(
+                {
+                    "event": "error",
+                    "error": error_text,
+                    "reason_code": "wall_clock_exceeded",
+                    "provider": provider,
+                    "result": result,
+                    "usage": usage,
+                    "terminal": True,
+                    "cli_session_id": str(conversation_id),
+                    "ts": now_ms(),
+                }
+            )
+            return result
         if translator._cost_force_stopped or translator.max_turns_exhausted:
             reason_code = (
                 "token_budget_exceeded"

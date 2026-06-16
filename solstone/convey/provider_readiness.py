@@ -261,6 +261,12 @@ _ENTRIES: dict[str, _Entry] = {
         detail="Try a shorter or more focused request.",
         recovery_action=None,
     ),
+    "wall_clock_exceeded": _Entry(
+        klass="generic",
+        summary="this run took too long to finish",
+        detail="Try a shorter or more focused request.",
+        recovery_action=None,
+    ),
     "unknown": _Entry(
         klass="generic",
         summary="chat had trouble",

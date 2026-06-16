@@ -830,6 +830,84 @@ def test_run_cogitate_cost_force_stop_with_partial_logs_once(
     assert fake_openhands.Conversation.instances[0].closed is True
 
 
+def test_run_cogitate_wall_clock_exceeded_emits_terminal_error(
+    fake_openhands,
+    fixed_time,
+    monkeypatch,
+    tmp_path,
+):
+    async def never_finishes(conversation):
+        _seed_usage(conversation)
+        await asyncio.sleep(30)
+
+    fake_openhands.Conversation.arun_impl = never_finishes
+    monkeypatch.setattr(openhands, "WALL_CLOCK_GRACE_S", 0.0)
+    config = _run_config(monkeypatch, tmp_path)
+    config["timeout_seconds"] = 0.1
+    events: list[dict] = []
+
+    result = asyncio.run(openhands.run_cogitate(config, events.append))
+
+    assert result is None
+    error_events = [event for event in events if event["event"] == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["reason_code"] == "wall_clock_exceeded"
+    assert error_events[0]["terminal"] is True
+    assert error_events[0]["result"] is None
+    assert error_events[0]["usage"]["total_tokens"] > 0
+    assert [event for event in events if event["event"] == "finish"] == []
+    assert fake_openhands.Conversation.instances[0].closed is True
+
+
+def test_run_cogitate_wall_clock_exceeded_preserves_partial(
+    fake_openhands,
+    fixed_time,
+    monkeypatch,
+    tmp_path,
+):
+    partial = "partial result"
+
+    async def emit_then_hang(conversation):
+        _seed_usage(conversation)
+        for callback in conversation.callbacks:
+            callback(_agent_message(fake_openhands, partial))
+        await asyncio.sleep(30)
+
+    fake_openhands.Conversation.arun_impl = emit_then_hang
+    monkeypatch.setattr(openhands, "WALL_CLOCK_GRACE_S", 0.0)
+    config = _run_config(monkeypatch, tmp_path)
+    config["timeout_seconds"] = 0.1
+    events: list[dict] = []
+
+    result = asyncio.run(openhands.run_cogitate(config, events.append))
+
+    assert result == partial
+    error_events = [event for event in events if event["event"] == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["reason_code"] == "wall_clock_exceeded"
+    assert error_events[0]["terminal"] is True
+    assert error_events[0]["result"] == partial
+    assert error_events[0]["usage"]["total_tokens"] > 0
+    assert [event for event in events if event["event"] == "finish"] == []
+    assert fake_openhands.Conversation.instances[0].closed is True
+
+
+def test_wall_clock_deadline_derivation():
+    grace = openhands.WALL_CLOCK_GRACE_S
+    assert openhands._wall_clock_deadline_s(600) == 600 - grace
+    assert openhands._wall_clock_deadline_s(600) < 600
+    # timeout at/below the grace falls back to half the budget, still positive
+    # and strictly less than timeout_seconds.
+    assert 0 < openhands._wall_clock_deadline_s(grace) < grace
+
+
+def test_build_llm_bounds_timeout_and_retries(fake_openhands, monkeypatch):
+    monkeypatch.setenv(openhands._API_KEY_ENV["anthropic"], "test-key")
+    llm = openhands._build_llm("anthropic", "claude-test")
+    assert llm.timeout == openhands.LLM_TIMEOUT_S
+    assert llm.num_retries == openhands.LLM_NUM_RETRIES
+
+
 def test_run_cogitate_stuck_emits_agent_stuck_error(
     fake_openhands,
     fixed_time,
