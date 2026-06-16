@@ -351,7 +351,7 @@ def test_convey_status_host_url(
 
     bad_url = runner.invoke(settings_call.app, ["convey", "host-url", "/bad"])
     assert bad_url.exit_code == 1
-    assert bad_url.stderr == "enter an ipv4 address and port, like 192.168.1.44:5015\n"
+    assert bad_url.stderr == "enter an ipv4 address and port, like 192.168.1.44:7657\n"
 
     bad_host = runner.invoke(
         settings_call.app,

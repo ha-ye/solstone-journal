@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from solstone.apps.link import call as link_call
 from solstone.apps.link import routes as link_routes
+from solstone.apps.link.tests.conftest import _StubWatcher
 from solstone.convey import create_app
 from solstone.think.convey_client import ConveyClient
 from solstone.think.link.local_endpoints import LocalEndpoint
@@ -51,14 +52,6 @@ def _get_status(env: Any) -> dict[str, Any]:
     return payload
 
 
-class _StubWatcher:
-    def __init__(self, endpoints: list[LocalEndpoint]) -> None:
-        self._endpoints = endpoints
-
-    def snapshot(self) -> list[LocalEndpoint]:
-        return list(self._endpoints)
-
-
 def test_posture_defaults_and_spl(link_env) -> None:
     env = link_env()
 
@@ -84,7 +77,7 @@ def test_direct_healthy_reports_online(link_env, monkeypatch) -> None:
     data = _get_status(env)
 
     assert data["lan_accessible"] is True
-    assert data["home_address"] == "192.168.1.50:7657"
+    assert data["home_address"] is None
     assert data["posture"] == "direct"
     assert data["reachability"] == "online"
     assert data["relay_state"] == "not-enrolled"

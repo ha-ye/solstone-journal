@@ -224,10 +224,6 @@
             <code id="link-pair-ca-fp"></code>
             <span class="link-pair-fp-note">— {{ link_copy.CA_FP_NOTE }}</span>
           </p>
-          <p class="link-pair-home">
-            <span class="link-pair-home-label">{{ link_copy.REACH_HOME_ADDRESS_LABEL }}</span>
-            <code id="link-pair-lan-url"></code>
-          </p>
         </details>
 
         <div class="link-modal-actions">
@@ -496,8 +492,6 @@
   .link-pair-details-body { margin-bottom: 0.35em; }
   .link-pair-fp-label { color: #777; margin-right: 0.4em; }
   .link-pair-fp-note { color: #888; }
-  .link-pair-home { margin: 0.35em 0 0; }
-  .link-pair-home-label { color: #777; margin-right: 0.4em; }
   .link-pair-label-edit { grid-column: 1 / -1; }
   .link-pair-error { padding: 1.5em 0.5em; text-align: center; }
   .link-pair-error[hidden] { display: none; }
@@ -591,7 +585,6 @@
   const pairRegenerate = document.getElementById('link-pair-regenerate');
   const rotationRing = document.getElementById('link-pair-rotation-ring');
   const manualCodeEl = document.getElementById('link-pair-manual-code');
-  const lanUrlEl = document.getElementById('link-pair-lan-url');
   const caFpEl = document.getElementById('link-pair-ca-fp');
   const pairError = document.getElementById('link-pair-error');
   const pairErrorCancel = document.getElementById('link-pair-error-cancel');
@@ -1604,7 +1597,6 @@
     const data = await r.json();
     renderQr(data.pair_link);
     if (manualCodeEl) manualCodeEl.textContent = data.manual_code;
-    lanUrlEl.textContent = data.lan_url;
     caFpEl.textContent = data.ca_fingerprint;
     deviceLabelInput.value = data.device_label;
 

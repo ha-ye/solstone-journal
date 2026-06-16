@@ -183,6 +183,28 @@ def _current_local_endpoints() -> list[LocalEndpoint]:
     return watcher.snapshot() if watcher else []
 
 
+def _list_pair_link_candidates() -> list[str]:
+    """Return up to 4 watcher IPv4 candidates, detect-ip hinted, deduped then capped."""
+    candidates: list[str] = []
+    for endpoint in _current_local_endpoints():
+        address = ipaddress.ip_address(endpoint.ip)
+        if isinstance(address, ipaddress.IPv4Address):
+            candidates.append(str(address))
+
+    route_ip = _detect_lan_ip()
+    if route_ip in candidates:
+        candidates.remove(route_ip)
+        candidates.insert(0, route_ip)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate not in seen:
+            deduped.append(candidate)
+            seen.add(candidate)
+    return deduped[:4]
+
+
 def _secure_listener_port() -> int:
     """Port the journal advertises in its secure-listener local endpoints.
 
@@ -193,26 +215,11 @@ def _secure_listener_port() -> int:
     return interface_watcher.LINK_DIRECT_PORT
 
 
-def _resolve_host_port() -> str:
-    """Best-effort LAN host:port for the convey host."""
-    host = request.host
-    try:
-        hostname, _, port = host.partition(":")
-        if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
-            lan_ip = _detect_lan_ip()
-            if lan_ip:
-                host = f"{lan_ip}:{port}" if port else lan_ip
-    except Exception:
-        logger.debug("lan ip detection failed", exc_info=True)
-    return host
-
-
 def _effective_home_address() -> tuple[bool, str | None]:
     override_addr = override_host_port()
     if override_addr is not None:
         return True, override_addr
-    lan_accessible = _is_lan_accessible()
-    return lan_accessible, _resolve_host_port() if lan_accessible else None
+    return _is_lan_accessible(), None
 
 
 def _detect_lan_ip() -> str | None:
@@ -243,7 +250,7 @@ def _build_pair_link(
     nonce: str,
     ca_fp: str,
 ) -> str:
-    """Build the v3 pair-link URL.
+    """Build the v04 pair-link URL.
 
     Layout:
     version(1) | addr_type(1) | ipv4(4) | port_be(2) | nonce(16) | ca_fp[:16].
@@ -258,6 +265,34 @@ def _build_pair_link(
     return f"https://{PAIR_LINK_HOST}{PAIR_LINK_PATH}#{crockford_encode(blob)}"
 
 
+def _build_pair_link_v05(
+    candidates: list[str],
+    port: int,
+    nonce: str,
+    ca_fp: str,
+) -> str:
+    """Build the v05 multi-address pair-link URL.
+
+    Layout:
+    version(1) | addr_type(1) | count(1) | port_be(2) | ipv4(4)*count |
+    nonce(16) | ca_fp[:16].
+
+    v05 places the shared port before the address list, unlike v04's single
+    address-before-port layout. Count is capped at 4; length is 37 + 4*count.
+    """
+    count = len(candidates)
+    blob = (
+        b"\x05\x01"
+        + bytes([count])
+        + port.to_bytes(2, "big")
+        + b"".join(ipaddress.IPv4Address(c).packed for c in candidates)
+        + bytes.fromhex(nonce)
+        + bytes.fromhex(ca_fp)[:16]
+    )
+    assert len(blob) == 37 + 4 * count
+    return f"https://{PAIR_LINK_HOST}{PAIR_LINK_PATH}#{crockford_encode(blob)}"
+
+
 @dataclass(frozen=True)
 class PairStartResponse:
     nonce: str
@@ -265,7 +300,6 @@ class PairStartResponse:
     manual_code: str
     expires_in: int
     device_label: str
-    lan_url: str
     ca_fingerprint: str
 
 
@@ -500,9 +534,6 @@ def pair_start() -> Any:
     if not isinstance(role, str) or role not in VALID_ROLES:
         return error_response(PAIRING_REQUEST_INVALID, detail="invalid role")
 
-    lan_url = override_host_port() or _resolve_host_port()
-    hostname, _, _ = lan_url.partition(":")
-
     nonce_ttl: int | None = None
     if read_posture() == "spl":
         secret = load_totp_secret()
@@ -530,16 +561,23 @@ def pair_start() -> Any:
         expires_in = TOTP_STEP_SECONDS
         nonce_ttl = TOTP_STEP_SECONDS
     else:
-        try:
-            ipaddress.IPv4Address(hostname)
-        except ValueError:
+        ca_fp = _ca_fingerprint()
+        port = _secure_listener_port()
+        override = override_host_port()
+        if override is not None:
+            candidates = [override.partition(":")[0]]
+        else:
+            candidates = _list_pair_link_candidates()
+        if not candidates:
             return error_response(
                 PAIRING_REQUEST_INVALID,
-                detail=f"pair-link requires an IPv4 LAN address; got {hostname!r}",
+                detail="pair-link requires an IPv4 LAN address; none found",
             )
-        ca_fp = _ca_fingerprint()
         nonce = generate_nonce()
-        pair_link = _build_pair_link(hostname, _secure_listener_port(), nonce, ca_fp)
+        if len(candidates) == 1:
+            pair_link = _build_pair_link(candidates[0], port, nonce, ca_fp)
+        else:
+            pair_link = _build_pair_link_v05(candidates, port, nonce, ca_fp)
         expires_in = 300
 
     manual_code_hyphenated = generate_manual_code()
@@ -559,7 +597,6 @@ def pair_start() -> Any:
         manual_code=manual_code_hyphenated,
         expires_in=expires_in,
         device_label=device_label,
-        lan_url=lan_url,
         ca_fingerprint=ca_fp,
     )
     return _jsonify_preserving_order(asdict(response))

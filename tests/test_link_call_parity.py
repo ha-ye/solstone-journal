@@ -10,8 +10,10 @@ from typer.testing import CliRunner
 
 from solstone.apps.link import call as link_call
 from solstone.apps.link import routes as link_routes
+from solstone.apps.link.tests.conftest import _StubWatcher
 from solstone.think.convey_client import ConveyClient
 from solstone.think.link.auth import AuthorizedClients
+from solstone.think.link.local_endpoints import LocalEndpoint
 from solstone.think.link.nonces import NonceStore
 from solstone.think.link.paths import (
     LinkState,
@@ -55,6 +57,19 @@ def _authorized() -> AuthorizedClients:
 
 def _nonces() -> NonceStore:
     return NonceStore(nonces_path())
+
+
+def _install_pair_watcher(
+    monkeypatch: pytest.MonkeyPatch,
+    endpoints: list[LocalEndpoint] | None = None,
+) -> None:
+    if endpoints is None:
+        endpoints = [LocalEndpoint(ip="192.168.1.50", port=7657, scope="lan")]
+    monkeypatch.setattr(
+        link_routes,
+        "get_interface_watcher",
+        lambda: _StubWatcher(endpoints),
+    )
 
 
 def _add_device(
@@ -122,7 +137,7 @@ def test_pair_rejects_invalid_roles_without_minting(runner):
 
 
 def test_pair_mints_nonce_prints_payload_and_times_out(runner, monkeypatch):
-    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+    _install_pair_watcher(monkeypatch)
     monkeypatch.setattr(link_call, "time", _TimeoutTime())
 
     result = runner.invoke(
@@ -168,7 +183,7 @@ def test_pair_mints_nonce_prints_payload_and_times_out(runner, monkeypatch):
 def test_pair_mints_default_and_peer_roles(
     runner, monkeypatch, extra_args, expected_role
 ):
-    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+    _install_pair_watcher(monkeypatch)
     monkeypatch.setattr(link_call, "time", _TimeoutTime())
 
     result = runner.invoke(
@@ -193,7 +208,7 @@ def test_pair_without_device_label_mints_empty_label(
     runner,
     monkeypatch,
 ):
-    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+    _install_pair_watcher(monkeypatch)
     monkeypatch.setattr(link_call, "time", _TimeoutTime())
 
     result = runner.invoke(
@@ -213,7 +228,7 @@ def test_pair_reports_newly_paired_device(runner, monkeypatch):
         if not _authorized().snapshot():
             _add_device("sha256:" + ("1" * 64), "Phone")
 
-    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+    _install_pair_watcher(monkeypatch)
     monkeypatch.setattr(link_call, "time", _PairingTime(on_sleep=add_device))
 
     result = runner.invoke(
@@ -238,7 +253,7 @@ def test_pair_reports_display_label_for_newly_paired_device(runner, monkeypatch)
                 client_label="client-host",
             )
 
-    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+    _install_pair_watcher(monkeypatch)
     monkeypatch.setattr(link_call, "time", _PairingTime(on_sleep=add_device))
 
     result = runner.invoke(link_call.app, ["pair", "--timeout", "5"])
@@ -257,7 +272,7 @@ def test_pair_reports_nonce_consumed_fallback(runner, monkeypatch):
         if nonces and not nonces[0].used:
             _nonces().consume(nonces[0].value)
 
-    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+    _install_pair_watcher(monkeypatch)
     monkeypatch.setattr(link_call, "time", _PairingTime(on_sleep=consume_nonce))
 
     result = runner.invoke(
@@ -273,7 +288,7 @@ def test_pair_reports_nonce_consumed_fallback(runner, monkeypatch):
 
 
 def test_pair_reports_no_lan_address_without_nonce(runner, monkeypatch):
-    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: None)
+    _install_pair_watcher(monkeypatch, [])
 
     result = runner.invoke(
         link_call.app,

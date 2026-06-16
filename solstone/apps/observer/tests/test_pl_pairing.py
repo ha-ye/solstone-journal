@@ -16,7 +16,9 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 from solstone.apps.link import routes as link_routes
+from solstone.apps.link.tests.conftest import _StubWatcher
 from solstone.convey.secure_listener import ConveyIdentity
+from solstone.think.link.local_endpoints import LocalEndpoint
 from solstone.think.link.nonces import Nonce
 
 
@@ -42,6 +44,13 @@ def pair_env(tmp_path, monkeypatch):
 
         app = create_app(journal=str(journal))
         client = app.test_client()
+        monkeypatch.setattr(
+            link_routes,
+            "get_interface_watcher",
+            lambda: _StubWatcher(
+                [LocalEndpoint(ip="192.168.1.50", port=7657, scope="lan")]
+            ),
+        )
 
         class Env:
             def __init__(self) -> None:

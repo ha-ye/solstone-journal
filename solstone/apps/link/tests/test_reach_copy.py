@@ -98,7 +98,7 @@ def test_reach_shell_corrected_copy_is_locked() -> None:
     assert copy.APP_ONOFF_SUB_BYO == "on — reachable over your own network"
     assert copy.APP_ONOFF_SUB_HOSTED == "on — reachable from anywhere"
     assert copy.REACH_HOST_ADDRESS_DISCLOSURE == "▸ use a different address"
-    assert copy.REACH_HOST_ADDRESS_PLACEHOLDER == "192.168.1.44:5015"
+    assert copy.REACH_HOST_ADDRESS_PLACEHOLDER == "192.168.1.44:7657"
     assert copy.REACH_HOST_ADDRESS_APPLY_LABEL == "apply"
     assert copy.REACH_HOST_ADDRESS_CLEAR_LABEL == "clear"
     assert (
