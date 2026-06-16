@@ -13,8 +13,11 @@ from typing import Any
 import pytest
 from cryptography.hazmat.primitives import serialization
 
+from solstone.apps.link.routes import _build_pair_link
+from solstone.convey.secure_listener.tls import issue_server_cert
 from solstone.think.link import client as link_client
 from solstone.think.link import join_cli
+from solstone.think.link.ca import ca_pin_matches, load_or_generate_ca
 from solstone.think.link.client import StreamResetError
 from solstone.think.link.paths import LinkState
 from solstone.think.link.tls import TlsError
@@ -428,3 +431,93 @@ def test_framed_connect_timeout_is_single_line_error(
     message = str(exc_info.value)
     assert message == "Timed out connecting to 127.0.0.1:1."
     _single_line(message)
+
+
+def test_parse_pair_link_extracts_embedded_ca_pin() -> None:
+    # The pair-link's last 16 bytes (the CA-fp prefix) must be parsed onto the
+    # PairRequest, not discarded. This is the wiring the CSO review flagged.
+    ca_fp = "ab" * 32  # 64 hex chars; only the first 16 bytes are embedded
+    link = _build_pair_link("127.0.0.1", 7657, "f" * 32, ca_fp)
+
+    request = join_cli._parse_pair_link(link, None)
+
+    assert request.secure is True
+    assert request.ca_fingerprint_pin == "ab" * 16
+
+
+def test_manual_code_pair_request_carries_no_ca_pin() -> None:
+    # The manual --code path is trust-on-first-use by design: an 8-char code
+    # cannot carry a CA fingerprint, so the pin stays None (documented posture).
+    request = join_cli._parse_pair_request("ABCDEFGH", "https://127.0.0.1:7657")
+
+    assert request.secure is False
+    assert request.ca_fingerprint_pin is None
+
+
+def test_lan_pair_link_hard_fails_on_ca_pin_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # An attacker-substituted home (wrong CA) must fail the join, not warn.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    nonce = "1000000000000000000000000000000b"
+    wrong_ca_fp = "00" * 32
+    with pairing_harness(tmp_path, monkeypatch) as harness:
+        harness.seed_nonce(nonce, "laptop")
+        result = join_cli.main(_args(code=harness.pair_link(nonce, ca_fp=wrong_ca_fp)))
+
+    err = capsys.readouterr().err.strip()
+    assert result == 1
+    assert "CA fingerprint mismatch" in err
+    _single_line(err)
+    # The credential bundle must not be written on a failed pin check.
+    assert not (tmp_path / "config" / "solstone-observer" / "spl" / "laptop").exists()
+
+
+def test_lan_pair_link_succeeds_with_matching_embedded_ca_pin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The happy path now exercises a real embedded pin (harness default = real
+    # CA fp) plus the defense-in-depth live-peer binding against that CA.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    nonce = "1000000000000000000000000000000c"
+    with pairing_harness(tmp_path, monkeypatch) as harness:
+        harness.seed_nonce(nonce, "laptop")
+        result = join_cli.main(_args(code=harness.pair_link(nonce)))
+
+    assert result == 0
+    assert (tmp_path / "config" / "solstone-observer" / "spl" / "laptop").is_dir()
+
+
+def test_verify_leaf_signed_by_pinned_ca(tmp_path: Path) -> None:
+    # Defense in depth: the live peer leaf must verify against the pinned CA.
+    ca_a = load_or_generate_ca(tmp_path / "ca_a")
+    ca_b = load_or_generate_ca(tmp_path / "ca_b")
+    leaf_a, _key = issue_server_cert(ca_a)
+
+    # Signed by the matching CA: no raise.
+    join_cli._verify_leaf_signed_by_pinned_ca(leaf_a, ca_a.cert)
+
+    # Signed by a different CA than the one pinned: fail closed.
+    with pytest.raises(ValueError) as exc_info:
+        join_cli._verify_leaf_signed_by_pinned_ca(leaf_a, ca_b.cert)
+    assert "not signed by the pinned CA" in str(exc_info.value)
+
+
+def test_ca_pin_matches_prefix_and_full_and_failclosed() -> None:
+    full = "sha256:" + ("ab" * 32)
+    # Full-length pin compares the whole digest (back-compat with the old API).
+    assert ca_pin_matches(full, "ab" * 32)
+    assert ca_pin_matches(full, "sha256:" + ("ab" * 32))
+    # 16-byte (32-hex) prefix pin — the LAN pair-link form.
+    assert ca_pin_matches(full, "ab" * 16)
+    # Case-insensitive, prefix on either side.
+    assert ca_pin_matches("AB" * 32, "sha256:" + ("ab" * 16))
+    # Mismatch.
+    assert not ca_pin_matches(full, "cd" * 16)
+    # Fail closed: empty, odd-length, and over-long pins.
+    assert not ca_pin_matches(full, "")
+    assert not ca_pin_matches(full, "abc")
+    assert not ca_pin_matches("ab", "abcd")

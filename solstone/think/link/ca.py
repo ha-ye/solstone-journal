@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import hashlib
+import hmac
 import json
 import secrets
 import time
@@ -218,6 +219,29 @@ def cert_fingerprint(cert_pem: str | bytes) -> str:
     pem_bytes = cert_pem.encode("utf-8") if isinstance(cert_pem, str) else cert_pem
     cert = x509.load_pem_x509_certificate(pem_bytes)
     return f"sha256:{_hex_sha256(cert.public_bytes(serialization.Encoding.DER))}"
+
+
+def _strip_fp_prefix(value: str) -> str:
+    stripped = value.strip().lower()
+    if stripped.startswith("sha256:"):
+        stripped = stripped[len("sha256:") :]
+    return stripped
+
+
+def ca_pin_matches(computed_fingerprint: str, pin: str) -> bool:
+    """Constant-time prefix match of a CA fingerprint against a pin.
+
+    Both sides may carry an optional ``sha256:`` prefix and differ in case.
+    ``pin`` may be a *prefix* of the full digest: the LAN pair-link embeds only
+    the first 16 bytes (32 hex chars) of the CA-cert-DER SHA-256, so a 32-char
+    pin compares the leading 16 bytes; a full 64-char pin compares the whole
+    digest. Fails closed — an empty, odd-length, or over-long pin returns False.
+    """
+    computed_hex = _strip_fp_prefix(computed_fingerprint)
+    pin_hex = _strip_fp_prefix(pin)
+    if not pin_hex or len(pin_hex) % 2 != 0 or len(pin_hex) > len(computed_hex):
+        return False
+    return hmac.compare_digest(computed_hex[: len(pin_hex)], pin_hex)
 
 
 DIRECT_NONCE_BYTES = 16

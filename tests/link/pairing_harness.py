@@ -74,11 +74,13 @@ class PairingHarness:
         NonceStore(nonces_path()).add(nonce, label, role=role)
 
     def pair_link(self, nonce: str, *, ca_fp: str | None = None) -> str:
+        # Default to the harness's real CA fingerprint so the joiner's pin check
+        # passes; tests exercising a mismatch pass an explicit (wrong) ca_fp.
         return _build_pair_link(
             self.host,
             self.port,
             nonce,
-            ca_fp or ("0" * 32),
+            ca_fp or self.ca.fingerprint_sha256(),
         )
 
     def pair_url(self, nonce: str) -> str:

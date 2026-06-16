@@ -60,7 +60,7 @@ from solstone.convey.secure_listener.framing import (
     parse_reset_reason,
     parse_window_credit,
 )
-from solstone.think.link.ca import cert_fingerprint
+from solstone.think.link.ca import ca_pin_matches, cert_fingerprint
 from solstone.think.link.tls import TlsError as _TlsError
 
 LOG = logging.getLogger(__name__)
@@ -459,6 +459,18 @@ class TunnelSession:
     async def __aexit__(self, *_exc: object) -> None:
         await self.close()
 
+    def peer_certificate(self) -> x509.Certificate | None:
+        """The leaf certificate the TLS peer presented, post-handshake.
+
+        Used during pairing to bind the live TLS endpoint to the pinned CA so a
+        relay that merely echoes the real CA chain in the response body cannot
+        masquerade as the home. Returns None if no peer certificate is set.
+        """
+        cert = self._tls.conn.get_peer_certificate()
+        if cert is None:
+            return None
+        return cert.to_cryptography()
+
     async def request(
         self,
         method: str,
@@ -604,9 +616,12 @@ class Client:
             raise RuntimeError("pair returned invalid ca_chain")
         ca_chain_pem = "".join(ca_chain)
         ca_fingerprint = _cert_sha256_hex(_first_cert_pem(ca_chain_pem))
-        if ca_fingerprint_pin is not None and ca_fingerprint != ca_fingerprint_pin:
+        if ca_fingerprint_pin is not None and not ca_pin_matches(
+            ca_fingerprint, ca_fingerprint_pin
+        ):
             raise RuntimeError(
-                f"CA fingerprint mismatch: got {ca_fingerprint}, expected {ca_fingerprint_pin}"
+                f"CA fingerprint mismatch: got {ca_fingerprint}, "
+                f"expected prefix {ca_fingerprint_pin}"
             )
 
         fingerprint = _required_str(paired, "fingerprint")
