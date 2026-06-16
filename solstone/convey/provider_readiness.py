@@ -68,11 +68,11 @@ PROVIDER_LEVEL_CODES = frozenset(
 
 _SETTINGS_ACTION = RecoveryAction(
     label="Open Settings",
-    target="/app/thinking/#providers",
+    target="/app/thinking/#main",
 )
 _LOCAL_SETUP_ACTION = RecoveryAction(
     label="Open Local Model Setup",
-    target="/app/thinking/#providers",
+    target="/app/thinking/#local-setup",
 )
 
 _LOCAL_SETUP_DETAIL = "Finish local model setup, then try the request again."

@@ -124,7 +124,7 @@ def test_render_known_codes():
         if code == "provider_key_invalid":
             assert rendered["action"] == {
                 "label": "Open Settings",
-                "href": "/app/thinking/#providers",
+                "href": "/app/thinking/#main",
             }
         else:
             assert rendered["action"] == reason["action"]

@@ -534,7 +534,7 @@ def test_get_providers_ai_readiness_missing_key_blocks(settings_client, monkeypa
     assert group["reason_code"] == "provider_key_missing"
     assert group["recovery_action"] == {
         "label": "Open Settings",
-        "href": "/app/thinking/#providers",
+        "href": "/app/thinking/#main",
     }
 
 
