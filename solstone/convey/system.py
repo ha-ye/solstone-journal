@@ -37,7 +37,7 @@ def _check_latest_version() -> dict[str, Any] | None:
     import json as _json
     import urllib.request
 
-    url = "https://api.github.com/repos/solpbc/solstone/releases/latest"
+    url = "https://api.github.com/repos/solpbc/solstone-journal/releases/latest"
     req = urllib.request.Request(
         url,
         headers={"Accept": "application/vnd.github.v3+json"},
