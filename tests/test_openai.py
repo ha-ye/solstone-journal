@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from PIL import Image
 
+from solstone.think.models import DEFAULT_PROVIDER_TIMEOUT_S
+
 
 def _openai_provider():
     return importlib.reload(importlib.import_module("solstone.think.providers.openai"))
@@ -593,6 +595,20 @@ class TestRunGenerate:
 
         called_kwargs = mock_client.responses.create.call_args.kwargs
         assert called_kwargs["timeout"] == 30.0
+
+    def test_with_default_provider_timeout(self):
+        provider = _openai_provider()
+        mock_client = MagicMock()
+        mock_client.responses.create = MagicMock(return_value=_make_openai_response())
+
+        with patch(
+            "solstone.think.providers.openai._get_openai_client",
+            return_value=mock_client,
+        ):
+            provider.run_generate("hello", timeout_s=DEFAULT_PROVIDER_TIMEOUT_S)
+
+        called_kwargs = mock_client.responses.create.call_args.kwargs
+        assert called_kwargs["timeout"] == DEFAULT_PROVIDER_TIMEOUT_S
 
 
 class TestRunAgenerate:

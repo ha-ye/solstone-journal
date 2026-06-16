@@ -36,7 +36,11 @@ import os
 import re
 from typing import Any
 
-from solstone.think.models import GPT_5, OPENAI_EFFORT_SUFFIXES
+from solstone.think.models import (
+    DEFAULT_PROVIDER_TIMEOUT_S,
+    GPT_5,
+    OPENAI_EFFORT_SUFFIXES,
+)
 from solstone.think.providers._image import encode_image_part, is_image_part
 
 from .shared import GenerateResult, classify_provider_error
@@ -76,7 +80,10 @@ def _get_openai_client():
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OPENAI_API_KEY not found in environment")
-        _openai_client = openai.OpenAI(api_key=api_key)
+        _openai_client = openai.OpenAI(
+            api_key=api_key,
+            timeout=DEFAULT_PROVIDER_TIMEOUT_S,
+        )
     return _openai_client
 
 
@@ -89,7 +96,10 @@ def _get_async_openai_client():
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OPENAI_API_KEY not found in environment")
-        _async_openai_client = openai.AsyncOpenAI(api_key=api_key)
+        _async_openai_client = openai.AsyncOpenAI(
+            api_key=api_key,
+            timeout=DEFAULT_PROVIDER_TIMEOUT_S,
+        )
     return _async_openai_client
 
 

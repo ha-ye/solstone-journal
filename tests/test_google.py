@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from google.genai import types as genai_types
 
-from solstone.think.models import GEMINI_FLASH
+from solstone.think.models import DEFAULT_PROVIDER_TIMEOUT_S, GEMINI_FLASH
 from solstone.think.providers import google as google_provider
 from solstone.think.providers.google import (
     _extract_finish_reason,
@@ -57,6 +57,44 @@ def _fake_generate_content_response(model_version):
             total_token_count=3,
         ),
     )
+
+
+def test_build_generate_config_sets_default_provider_timeout_ms():
+    config = google_provider._build_generate_config(
+        temperature=0.3,
+        max_output_tokens=8192,
+        system_instruction=None,
+        json_output=False,
+        thinking_budget=None,
+        timeout_s=DEFAULT_PROVIDER_TIMEOUT_S,
+    )
+
+    assert config.http_options.timeout == DEFAULT_PROVIDER_TIMEOUT_S * 1000
+
+
+def test_get_or_create_client_sets_timeout_and_bounded_retries(monkeypatch):
+    provider = importlib.reload(
+        importlib.import_module("solstone.think.providers.google")
+    )
+    captured: dict[str, object] = {}
+
+    class CapturingClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.models = SimpleNamespace(list=lambda **_kwargs: [])
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "solstone.think.utils.get_config",
+        lambda: {"providers": {"google_backend": "aistudio"}},
+    )
+    monkeypatch.setattr(provider.genai, "Client", CapturingClient)
+
+    provider.get_or_create_client()
+
+    http_options = captured["http_options"]
+    assert http_options.retry_options.attempts == 3
+    assert http_options.timeout == DEFAULT_PROVIDER_TIMEOUT_S * 1000
 
 
 def test_run_generate_records_resolved_model_version():

@@ -15,6 +15,7 @@ from solstone.think.models import (
     CLAUDE_HAIKU_4,
     CLAUDE_OPUS_4,
     CLAUDE_SONNET_4,
+    DEFAULT_PROVIDER_TIMEOUT_S,
     GEMINI_FLASH,
     GEMINI_LITE,
     GEMINI_PRO,
@@ -1317,6 +1318,71 @@ class TestGenerateJsonSchemaPlumbing:
                 )
 
         mock_validate_schema.assert_not_called()
+
+
+class TestDefaultProviderTimeout:
+    def test_default_timeout_forwards_to_all_generate_entrypoints(self):
+        provider_module = SimpleNamespace(
+            run_generate=MagicMock(
+                return_value={"text": "ok", "finish_reason": "stop"}
+            ),
+            run_agenerate=AsyncMock(
+                return_value={"text": "ok", "finish_reason": "stop"}
+            ),
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider", return_value=("fake", "model")
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+        ):
+            generate("hello", "test.context")
+            generate_with_result("hello", "test.context")
+            asyncio.run(agenerate("hello", "test.context"))
+
+        assert (
+            provider_module.run_generate.call_args_list[0].kwargs["timeout_s"]
+            == DEFAULT_PROVIDER_TIMEOUT_S
+        )
+        assert (
+            provider_module.run_generate.call_args_list[1].kwargs["timeout_s"]
+            == DEFAULT_PROVIDER_TIMEOUT_S
+        )
+        assert (
+            provider_module.run_agenerate.call_args.kwargs["timeout_s"]
+            == DEFAULT_PROVIDER_TIMEOUT_S
+        )
+
+    def test_explicit_timeout_wins_for_all_generate_entrypoints(self):
+        provider_module = SimpleNamespace(
+            run_generate=MagicMock(
+                return_value={"text": "ok", "finish_reason": "stop"}
+            ),
+            run_agenerate=AsyncMock(
+                return_value={"text": "ok", "finish_reason": "stop"}
+            ),
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider", return_value=("fake", "model")
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+        ):
+            generate("hello", "test.context", timeout_s=5)
+            generate_with_result("hello", "test.context", timeout_s=5)
+            asyncio.run(agenerate("hello", "test.context", timeout_s=5))
+
+        assert provider_module.run_generate.call_args_list[0].kwargs["timeout_s"] == 5
+        assert provider_module.run_generate.call_args_list[1].kwargs["timeout_s"] == 5
+        assert provider_module.run_agenerate.call_args.kwargs["timeout_s"] == 5
 
 
 def test_request_health_recheck_emits_callosum_request():

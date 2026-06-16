@@ -303,6 +303,7 @@ def add_module_stubs(monkeypatch):
     class MockHttpOptions:
         def __init__(self, **k):
             self.timeout = k.get("timeout")
+            self.retry_options = k.get("retry_options")
 
     class MockThinkingConfig:
         def __init__(self, **k):
@@ -315,7 +316,7 @@ def add_module_stubs(monkeypatch):
 
     class MockHttpRetryOptions:
         def __init__(self, **k):
-            pass
+            self.attempts = k.get("attempts")
 
     genai_mod.types = types.SimpleNamespace(
         GenerateContentConfig=MockGenerateContentConfig,

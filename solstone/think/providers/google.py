@@ -38,7 +38,7 @@ from typing import Any
 from google import genai
 from google.genai import types
 
-from solstone.think.models import GEMINI_FLASH
+from solstone.think.models import DEFAULT_PROVIDER_TIMEOUT_S, GEMINI_FLASH
 
 from .shared import GenerateResult, classify_provider_error
 
@@ -189,7 +189,15 @@ def get_or_create_client(client: genai.Client | None = None) -> genai.Client:
     config = get_config()
     providers_config = config.get("providers", {})
 
-    http_options = types.HttpOptions(retry_options=types.HttpRetryOptions(attempts=8))
+    # attempts=3 (was 8) bounds the retry storm; per-call timeout arrives via
+    # _build_generate_config (models.py default 120s) and the SDK merges client
+    # retry_options + per-request timeout field-by-field. Worst-case wall is
+    # about 3 * DEFAULT_PROVIDER_TIMEOUT_S + SDK backoff, versus the unbounded
+    # hang attempts=8-with-no-timeout produced (the 77h describe wedge).
+    http_options = types.HttpOptions(
+        timeout=int(DEFAULT_PROVIDER_TIMEOUT_S * 1000),
+        retry_options=types.HttpRetryOptions(attempts=3),
+    )
 
     api_key = os.getenv("GOOGLE_API_KEY")
 

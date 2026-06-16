@@ -44,7 +44,11 @@ from anthropic.types import (
     ThinkingBlock,
 )
 
-from solstone.think.models import CLAUDE_SONNET_4, model_supports
+from solstone.think.models import (
+    CLAUDE_SONNET_4,
+    DEFAULT_PROVIDER_TIMEOUT_S,
+    model_supports,
+)
 from solstone.think.providers._image import encode_image_part, is_image_part
 
 from .shared import GenerateResult, classify_provider_error
@@ -191,6 +195,8 @@ def _requires_streaming(model: str, max_tokens: int) -> bool:
 def _send_message(client: Any, request_kwargs: dict[str, Any]) -> Message:
     """Dispatch sync message requests via create or stream based on Anthropic limits."""
     if _requires_streaming(request_kwargs["model"], request_kwargs["max_tokens"]):
+        # Plain-float timeout maps to httpx Timeout(read=120s): silent streams
+        # are cut per-read; trickling streams can exceed wall-clock until L2/L4.
         with client.messages.stream(**request_kwargs) as stream:
             return stream.get_final_message()
     return client.messages.create(**request_kwargs)
@@ -199,6 +205,8 @@ def _send_message(client: Any, request_kwargs: dict[str, Any]) -> Message:
 async def _asend_message(client: Any, request_kwargs: dict[str, Any]) -> Message:
     """Dispatch async message requests via create or stream based on Anthropic limits."""
     if _requires_streaming(request_kwargs["model"], request_kwargs["max_tokens"]):
+        # Plain-float timeout maps to httpx Timeout(read=120s): silent streams
+        # are cut per-read; trickling streams can exceed wall-clock until L2/L4.
         async with client.messages.stream(**request_kwargs) as stream:
             return await stream.get_final_message()
     return await client.messages.create(**request_kwargs)
@@ -218,7 +226,10 @@ def _get_anthropic_client():
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY not found in environment")
-        _anthropic_client = Anthropic(api_key=api_key)
+        _anthropic_client = Anthropic(
+            api_key=api_key,
+            timeout=DEFAULT_PROVIDER_TIMEOUT_S,
+        )
     return _anthropic_client
 
 
@@ -229,7 +240,10 @@ def _get_async_anthropic_client():
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY not found in environment")
-        _async_anthropic_client = AsyncAnthropic(api_key=api_key)
+        _async_anthropic_client = AsyncAnthropic(
+            api_key=api_key,
+            timeout=DEFAULT_PROVIDER_TIMEOUT_S,
+        )
     return _async_anthropic_client
 
 

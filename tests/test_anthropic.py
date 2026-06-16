@@ -17,6 +17,7 @@ from PIL import Image
 from solstone.think.models import (
     CLAUDE_OPUS_4,
     CLAUDE_SONNET_4,
+    DEFAULT_PROVIDER_TIMEOUT_S,
     IncompleteJSONError,
     _validate_json_response,
 )
@@ -836,6 +837,24 @@ class TestStreamingDispatch:
         assert mock_client.messages.create.call_count == 1
         assert mock_client.messages.stream.call_count == 0
 
+    def test_create_carries_default_provider_timeout(self, monkeypatch):
+        provider = importlib.reload(
+            importlib.import_module("solstone.think.providers.anthropic")
+        )
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = _make_response()
+        monkeypatch.setattr(provider, "_get_anthropic_client", lambda: mock_client)
+
+        provider.run_generate(
+            "hello",
+            model="claude-sonnet-4-5",
+            max_output_tokens=8192,
+            timeout_s=DEFAULT_PROVIDER_TIMEOUT_S,
+        )
+
+        call_kwargs = mock_client.messages.create.call_args.kwargs
+        assert call_kwargs["timeout"] == DEFAULT_PROVIDER_TIMEOUT_S
+
     def test_streams_when_per_model_cap_exceeded(self, monkeypatch):
         provider = importlib.reload(
             importlib.import_module("solstone.think.providers.anthropic")
@@ -852,6 +871,25 @@ class TestStreamingDispatch:
 
         assert mock_client.messages.stream.call_count == 1
         assert mock_client.messages.create.call_count == 0
+
+    def test_stream_carries_default_provider_timeout(self, monkeypatch):
+        provider = importlib.reload(
+            importlib.import_module("solstone.think.providers.anthropic")
+        )
+        mock_client = MagicMock()
+        mock_client.messages.stream.return_value = _make_stream_cm(_make_response())
+        monkeypatch.setattr(provider, "_get_anthropic_client", lambda: mock_client)
+
+        provider.run_generate(
+            "hello",
+            model="claude-sonnet-4-5",
+            max_output_tokens=22000,
+            timeout_s=DEFAULT_PROVIDER_TIMEOUT_S,
+        )
+
+        # Streaming receives the same plain-float timeout; httpx maps it to read=120s.
+        call_kwargs = mock_client.messages.stream.call_args.kwargs
+        assert call_kwargs["timeout"] == DEFAULT_PROVIDER_TIMEOUT_S
 
     def test_async_streams_when_max_tokens_exceeds_time_formula(self, monkeypatch):
         provider = importlib.reload(

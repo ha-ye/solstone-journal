@@ -31,7 +31,11 @@ import numpy as np
 from google.genai import types
 
 from solstone.observe.utils import audio_to_flac_bytes
-from solstone.think.models import IncompleteJSONError, generate
+from solstone.think.models import (
+    DEFAULT_PROVIDER_TIMEOUT_S,
+    IncompleteJSONError,
+    generate,
+)
 from solstone.think.prompts import load_prompt
 
 logger = logging.getLogger(__name__)
@@ -293,6 +297,8 @@ def _transcribe_once(
     sample_rate: int,
     config: dict,
     speech_segments: list[tuple[float, float]] | None = None,
+    *,
+    timeout_s: float = DEFAULT_PROVIDER_TIMEOUT_S,
 ) -> list[dict]:
     """Run one Gemini transcription request."""
 
@@ -336,6 +342,7 @@ def _transcribe_once(
         json_output=True,
         thinking_budget=0,
         json_schema=_SCHEMA,
+        timeout_s=timeout_s,
     )
 
     transcribe_time = time.perf_counter() - t0
@@ -375,6 +382,8 @@ def transcribe(
     sample_rate: int,
     config: dict,
     speech_segments: list[tuple[float, float]] | None = None,
+    *,
+    timeout_s: float = DEFAULT_PROVIDER_TIMEOUT_S,
 ) -> list[dict]:
     """Transcribe audio using Gemini API.
 
@@ -389,12 +398,19 @@ def transcribe(
         speech_segments: Optional list of (start, end) tuples from VAD.
             When provided, enables clip-based transcription for better
             timestamp accuracy.
+        timeout_s: Request timeout in seconds.
 
     Returns:
         List of statements with id, start, end, text, speaker.
     """
     try:
-        return _transcribe_once(audio, sample_rate, config, speech_segments)
+        return _transcribe_once(
+            audio,
+            sample_rate,
+            config,
+            speech_segments,
+            timeout_s=timeout_s,
+        )
     except IncompleteJSONError as original_error:
         if speech_segments is None or len(speech_segments) < 2:
             raise
@@ -410,9 +426,19 @@ def transcribe(
         )
 
         try:
-            first_statements = _transcribe_once(audio, sample_rate, config, first_half)
+            first_statements = _transcribe_once(
+                audio,
+                sample_rate,
+                config,
+                first_half,
+                timeout_s=timeout_s,
+            )
             second_statements = _transcribe_once(
-                audio, sample_rate, config, second_half
+                audio,
+                sample_rate,
+                config,
+                second_half,
+                timeout_s=timeout_s,
             )
         except Exception:
             logger.info("Gemini transcribe split-retry also truncated; raising")

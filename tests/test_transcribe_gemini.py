@@ -3,6 +3,7 @@
 
 """Tests for the Gemini STT backend."""
 
+import json
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -21,7 +22,7 @@ from solstone.observe.transcribe.gemini import (
 )
 from solstone.observe.utils import SAMPLE_RATE
 from solstone.observe.vad import VadResult
-from solstone.think.models import IncompleteJSONError
+from solstone.think.models import DEFAULT_PROVIDER_TIMEOUT_S, IncompleteJSONError
 
 
 class TestFormatTimestamp:
@@ -367,6 +368,45 @@ class TestSplitRetry:
         transcribe(audio, 16000, {}, speech_segments)
 
         assert mock_once.call_count == 3
+
+    def test_split_retry_generate_calls_keep_default_timeout(self, monkeypatch):
+        audio = np.zeros(16000, dtype=np.float32)
+        speech_segments = [(0.0, 1.0), (1.0, 2.0)]
+        timeouts: list[float | None] = []
+        response = json.dumps(
+            {
+                "segments": [
+                    {
+                        "start": "00:00",
+                        "speaker": "Speaker 1",
+                        "text": "ok",
+                    }
+                ]
+            }
+        )
+
+        def fake_generate(**kwargs):
+            timeouts.append(kwargs.get("timeout_s"))
+            if len(timeouts) == 1:
+                raise IncompleteJSONError("MAX_TOKENS", "partial")
+            return response
+
+        monkeypatch.setattr(
+            "solstone.observe.transcribe.gemini._build_chunk_contents",
+            lambda *_args: ["contents"],
+        )
+        monkeypatch.setattr(
+            "solstone.observe.transcribe.gemini.generate",
+            fake_generate,
+        )
+
+        transcribe(audio, 16000, {}, speech_segments)
+
+        assert timeouts == [
+            DEFAULT_PROVIDER_TIMEOUT_S,
+            DEFAULT_PROVIDER_TIMEOUT_S,
+            DEFAULT_PROVIDER_TIMEOUT_S,
+        ]
 
     def test_split_retry_half_b_failure_raises_original(self, monkeypatch):
         audio = np.zeros(16000, dtype=np.float32)
