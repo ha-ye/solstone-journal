@@ -12,6 +12,7 @@ from datetime import date, datetime
 from enum import Enum
 
 from solstone.think.callosum import callosum_send
+from solstone.think.segment import _touch_health_marker
 from solstone.think.utils import (
     DATE_RE,
     day_is_complete,
@@ -23,6 +24,7 @@ from solstone.think.utils import (
 UNREACHABLE_MESSAGE = "supervisor not reachable - start it (journal start), then retry"
 FLAVOR_PROCESS_NOW = "process-now"
 FLAVOR_FROM_SCRATCH = "from-scratch"
+FLAVOR_MARK_UPDATED = "mark-updated"
 
 
 class ReprocessCode(Enum):
@@ -30,6 +32,7 @@ class ReprocessCode(Enum):
     PAST_ONLY = "past_only"
     NO_DATA = "no_data"
     FROM_SCRATCH_SUBMITTED = "from_scratch_submitted"
+    MARK_UPDATED_SUBMITTED = "mark_updated_submitted"
     ALREADY_COMPLETE = "already_complete"
     PROCESS_NOW_SUBMITTED = "process_now_submitted"
     UNREACHABLE = "unreachable"
@@ -44,6 +47,9 @@ _CLI_STDOUT = {
     ReprocessCode.PROCESS_NOW_SUBMITTED: "reprocess (process-now) submitted for {day}",
     ReprocessCode.FROM_SCRATCH_SUBMITTED: (
         "reprocess (from-scratch) submitted for {day}"
+    ),
+    ReprocessCode.MARK_UPDATED_SUBMITTED: (
+        "reprocess (mark-updated) submitted for {day}"
     ),
     ReprocessCode.ALREADY_COMPLETE: (
         "day {day} already complete; use --from-scratch to force a full re-run"
@@ -86,6 +92,15 @@ def reprocess_day(day: str, flavor: str) -> ReprocessOutcome:
             ReprocessCode.FROM_SCRATCH_SUBMITTED if ok else ReprocessCode.UNREACHABLE
         )
 
+    if flavor == FLAVOR_MARK_UPDATED:
+        # Durable effect first: advance stream.updated so updated_days() re-queues
+        # the day even if it already completed. Then nudge a drain.
+        _touch_health_marker(day)
+        ok = callosum_send("supervisor", "drain", day=day)
+        return ReprocessOutcome(
+            ReprocessCode.MARK_UPDATED_SUBMITTED if ok else ReprocessCode.UNREACHABLE
+        )
+
     if day_is_complete(day):
         return ReprocessOutcome(ReprocessCode.ALREADY_COMPLETE)
 
@@ -100,14 +115,25 @@ def main() -> None:
         description="Submit a past journal day for reprocessing"
     )
     parser.add_argument("day", help="Past day in YYYYMMDD format")
-    parser.add_argument(
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
         "--from-scratch",
         action="store_true",
-        help="Re-run both segment and daily units that already completed",
+        help="Force a full daily re-run, preserving markers (does not flag the day as updated)",
+    )
+    group.add_argument(
+        "--mark-updated",
+        action="store_true",
+        help="Flag the day as having new raw data so daily processing re-queues it, then nudge a drain",
     )
 
     args = setup_cli(parser)
-    flavor = FLAVOR_FROM_SCRATCH if args.from_scratch else FLAVOR_PROCESS_NOW
+    if args.mark_updated:
+        flavor = FLAVOR_MARK_UPDATED
+    elif args.from_scratch:
+        flavor = FLAVOR_FROM_SCRATCH
+    else:
+        flavor = FLAVOR_PROCESS_NOW
     outcome = reprocess_day(args.day, flavor)
     code = outcome.code
     if code in _CLI_STDOUT:

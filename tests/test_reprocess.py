@@ -118,6 +118,135 @@ def test_from_scratch_sends_request_and_preserves_marker(tmp_path, monkeypatch, 
     assert stream.stat().st_mtime_ns == before
 
 
+def test_mark_updated_pending_day_touches_marker_and_sends_drain(
+    tmp_path, monkeypatch, capsys
+):
+    journal = tmp_path / "journal"
+    _seed_segment(journal)
+    stream = _touch_marker(journal, DAY, "stream.updated", 1_000_000_000)
+    before = stream.stat().st_mtime_ns
+    send = Mock(return_value=True)
+    monkeypatch.setattr(reprocess, "callosum_send", send)
+
+    code, out, err = _invoke_reprocess(
+        monkeypatch, capsys, journal, DAY, "--mark-updated"
+    )
+
+    assert code == 0
+    assert out == f"reprocess (mark-updated) submitted for {DAY}\n"
+    assert err == ""
+    send.assert_called_once_with("supervisor", "drain", day=DAY)
+    assert stream.stat().st_mtime_ns > before
+
+
+def test_mark_updated_complete_day_still_touches_marker_and_sends_drain(
+    tmp_path, monkeypatch, capsys
+):
+    journal = tmp_path / "journal"
+    _seed_segment(journal)
+    stream = _touch_marker(journal, DAY, "stream.updated", 1_000_000_000)
+    daily = _touch_marker(journal, DAY, "daily.updated", 2_000_000_000)
+    before = stream.stat().st_mtime_ns
+    send = Mock(return_value=True)
+    monkeypatch.setattr(reprocess, "callosum_send", send)
+
+    code, out, err = _invoke_reprocess(
+        monkeypatch, capsys, journal, DAY, "--mark-updated"
+    )
+
+    assert code == 0
+    assert out == f"reprocess (mark-updated) submitted for {DAY}\n"
+    assert err == ""
+    send.assert_called_once_with("supervisor", "drain", day=DAY)
+    assert stream.stat().st_mtime_ns > before
+    assert daily.exists()
+
+
+def test_mark_updated_and_from_scratch_are_mutually_exclusive(
+    tmp_path, monkeypatch, capsys
+):
+    journal = tmp_path / "journal"
+    _seed_segment(journal)
+    send = Mock(return_value=True)
+    monkeypatch.setattr(reprocess, "callosum_send", send)
+
+    code, out, err = _invoke_reprocess(
+        monkeypatch,
+        capsys,
+        journal,
+        DAY,
+        "--mark-updated",
+        "--from-scratch",
+    )
+
+    assert code == 2
+    assert out == ""
+    assert "not allowed with" in err
+    send.assert_not_called()
+
+
+def test_mark_updated_today_exits_without_send_or_marker_touch(
+    tmp_path, monkeypatch, capsys
+):
+    day = date.today().strftime("%Y%m%d")
+    journal = tmp_path / "journal"
+    _seed_segment(journal, day)
+    stream = _touch_marker(journal, day, "stream.updated", 1_000_000_000)
+    before = stream.stat().st_mtime_ns
+    send = Mock(return_value=True)
+    monkeypatch.setattr(reprocess, "callosum_send", send)
+
+    code, out, err = _invoke_reprocess(
+        monkeypatch, capsys, journal, day, "--mark-updated"
+    )
+
+    assert code == 1
+    assert out == ""
+    assert err == "reprocess is past-only (cannot reprocess today or a future day)\n"
+    send.assert_not_called()
+    assert stream.stat().st_mtime_ns == before
+
+
+def test_mark_updated_missing_day_exits_without_send_or_marker_touch(
+    tmp_path, monkeypatch, capsys
+):
+    journal = tmp_path / "journal"
+    marker = journal / "chronicle" / DAY / "health" / "stream.updated"
+    send = Mock(return_value=True)
+    monkeypatch.setattr(reprocess, "callosum_send", send)
+
+    code, out, err = _invoke_reprocess(
+        monkeypatch, capsys, journal, DAY, "--mark-updated"
+    )
+
+    assert code == 1
+    assert out == ""
+    assert err == f"no data for day {DAY}\n"
+    send.assert_not_called()
+    assert not marker.exists()
+
+
+def test_mark_updated_unreachable_touches_marker_and_exits_nonzero(
+    tmp_path, monkeypatch, capsys
+):
+    journal = tmp_path / "journal"
+    _seed_segment(journal)
+    stream = _touch_marker(journal, DAY, "stream.updated", 1_000_000_000)
+    before = stream.stat().st_mtime_ns
+    send = Mock(return_value=False)
+    monkeypatch.setattr(reprocess, "callosum_send", send)
+
+    code, out, err = _invoke_reprocess(
+        monkeypatch, capsys, journal, DAY, "--mark-updated"
+    )
+
+    assert code == 1
+    assert out == ""
+    assert err == UNREACHABLE
+    send.assert_called_once_with("supervisor", "drain", day=DAY)
+    assert stream.stat().st_mtime_ns > before
+
+
 @pytest.mark.parametrize("day", ["2025011", "20250230"])
 def test_malformed_day_exits_without_send(tmp_path, monkeypatch, capsys, day):
     journal = tmp_path / "journal"
@@ -294,6 +423,22 @@ def test_reprocess_day_from_scratch_submitted_before_complete_check(
     )
 
 
+def test_reprocess_day_mark_updated_submitted(tmp_path, monkeypatch):
+    journal = tmp_path / "journal"
+    _seed_segment(journal)
+    stream = _touch_marker(journal, DAY, "stream.updated", 1_000_000_000)
+    before = stream.stat().st_mtime_ns
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    send = Mock(return_value=True)
+    monkeypatch.setattr(reprocess, "callosum_send", send)
+
+    outcome = reprocess.reprocess_day(DAY, reprocess.FLAVOR_MARK_UPDATED)
+
+    assert outcome.code is reprocess.ReprocessCode.MARK_UPDATED_SUBMITTED
+    send.assert_called_once_with("supervisor", "drain", day=DAY)
+    assert stream.stat().st_mtime_ns > before
+
+
 def test_reprocess_day_already_complete_returns_noop(tmp_path, monkeypatch):
     journal = tmp_path / "journal"
     _seed_segment(journal)
@@ -321,6 +466,22 @@ def test_reprocess_day_process_now_unreachable(tmp_path, monkeypatch):
 
     assert outcome.code is reprocess.ReprocessCode.UNREACHABLE
     send.assert_called_once_with("supervisor", "drain", day=DAY)
+
+
+def test_reprocess_day_mark_updated_unreachable(tmp_path, monkeypatch):
+    journal = tmp_path / "journal"
+    _seed_segment(journal)
+    stream = _touch_marker(journal, DAY, "stream.updated", 1_000_000_000)
+    before = stream.stat().st_mtime_ns
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    send = Mock(return_value=False)
+    monkeypatch.setattr(reprocess, "callosum_send", send)
+
+    outcome = reprocess.reprocess_day(DAY, reprocess.FLAVOR_MARK_UPDATED)
+
+    assert outcome.code is reprocess.ReprocessCode.UNREACHABLE
+    send.assert_called_once_with("supervisor", "drain", day=DAY)
+    assert stream.stat().st_mtime_ns > before
 
 
 def test_reprocess_day_from_scratch_unreachable(tmp_path, monkeypatch):
