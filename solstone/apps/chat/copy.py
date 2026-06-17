@@ -29,6 +29,9 @@ CHAT_CLOSER_LOOP_EXHAUSTED_PREFIX = "Here's what I have so far:"
 CHAT_CLOSER_DIFFERENT_ANGLE_SUFFIX = "Want me to try a different angle?"
 CHAT_CLOSER_TALENT_ERRORED_FORMAT = "I couldn't finish that lookup — {reason}. Want to try a different angle, or rephrase the question?"
 CHAT_CLOSER_TALENT_ERRORED_GENERIC = "I couldn't finish that lookup. Want to try a different angle, or rephrase the question?"
+# Deterministic support-send-failure closer (backend-selected on an outbound
+# talent_errored carrying a runtime-failure reason_code). Brand: "solstone support".
+CHAT_CLOSER_SUPPORT_SEND_FAILED = "I couldn't finish reaching solstone support, so nothing was sent. Want me to try again?"
 
 # T2.4 — thinking summary surfaces (CPO LOCKED)
 CHAT_THINKING_EXPANDER_LABEL = "Show thinking"

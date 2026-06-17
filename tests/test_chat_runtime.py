@@ -10,6 +10,7 @@ from datetime import datetime
 import pytest
 from flask import Flask
 
+from solstone.apps.chat.copy import CHAT_CLOSER_SUPPORT_SEND_FAILED
 from solstone.convey.chat_stream import append_chat_event, read_chat_events
 
 
@@ -311,6 +312,73 @@ def test_post_talent_errored_request_is_forced_terminal(tmp_path, monkeypatch):
         assert chat._current_chat_use_id is None
 
 
+def test_post_support_talent_errored_request_uses_send_failed_closer(
+    tmp_path, monkeypatch
+):
+    import solstone.convey.chat as chat
+
+    _setup_journal(tmp_path, monkeypatch)
+    _reset_chat_state(chat)
+
+    actions: list[dict | None] = []
+    finishes: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "solstone.convey.chat._run_next_action", lambda action: actions.append(action)
+    )
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_finish",
+        lambda use_id, message: finishes.append((use_id, message)),
+    )
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_error",
+        lambda *args, **kwargs: None,
+    )
+
+    with chat._state_lock:
+        chat._current_chat_use_id = "1713622150000"
+        chat._current_chat_state = {
+            "raw_use_id": "1713622150001",
+            "raw_use_ids_seen": {"1713622150001"},
+            "trigger": {
+                "type": "talent_errored",
+                "name": "support",
+                "reason": "Traceback (most recent call last)",
+                "reason_code": "wall_clock_exceeded",
+            },
+            "location": {"app": "sol", "path": "/app/sol", "facet": "work"},
+            "retry_count": 0,
+        }
+
+    chat._on_cortex_finish(
+        {
+            "use_id": "1713622150001",
+            "result": json.dumps(
+                {
+                    "message": "I drafted a ticket and will file it via live chat.",
+                    "notes": "blocked redispatch",
+                    "talent_request": {
+                        "target": "exec",
+                        "task": "one more pass",
+                        "context": json.dumps({}),
+                    },
+                }
+            ),
+        }
+    )
+
+    assert actions == [None]
+    events = read_chat_events(chat._today_day())
+    sol_messages = [event for event in events if event["kind"] == "sol_message"]
+    assert len(sol_messages) == 1
+    assert sol_messages[-1]["text"] == CHAT_CLOSER_SUPPORT_SEND_FAILED
+    assert sol_messages[-1]["requested_target"] is None
+    assert sol_messages[-1]["requested_task"] is None
+    assert finishes == [("1713622150000", CHAT_CLOSER_SUPPORT_SEND_FAILED)]
+    with chat._state_lock:
+        assert chat._current_chat_state is None
+        assert chat._current_chat_use_id is None
+
+
 def test_owner_message_direct_reply_keeps_raw_model_text(tmp_path, monkeypatch):
     import solstone.convey.chat as chat
 
@@ -536,13 +604,38 @@ def test_cortex_finish_and_error_append_exec_terminal_events_by_use_id(
             "location": {"app": "sol", "path": "/app/sol", "facet": "work"},
         }
 
-    chat._on_cortex_error({"use_id": "1713624000001", "error": "boom"})
+    chat._on_cortex_error(
+        {
+            "use_id": "1713624000001",
+            "error": "boom",
+            "reason_code": "wall_clock_exceeded",
+        }
+    )
     errored_events = [
         e for e in read_chat_events(chat._today_day()) if e["kind"] == "talent_errored"
     ]
     assert errored_events[-1]["use_id"] == "1713624000001"
     assert actions[-1]["trigger"]["type"] == "talent_errored"
     assert actions[-1]["trigger"]["reason"] == "boom"
+    assert actions[-1]["trigger"]["reason_code"] == "wall_clock_exceeded"
+
+
+def test_talent_errored_trigger_recovers_reason_code():
+    import solstone.convey.chat as chat
+
+    trigger = chat._trigger_from_stream_event(
+        {
+            "kind": "talent_errored",
+            "use_id": "1713624500001",
+            "name": "support",
+            "reason": "Traceback (most recent call last)",
+            "reason_code": "wall_clock_exceeded",
+        }
+    )
+
+    assert trigger["type"] == "talent_errored"
+    assert trigger["name"] == "support"
+    assert trigger["reason_code"] == "wall_clock_exceeded"
 
 
 @pytest.mark.parametrize(

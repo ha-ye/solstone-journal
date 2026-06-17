@@ -162,6 +162,7 @@ def test_closer_constants_byte_parity():
         "CHAT_CLOSER_DIFFERENT_ANGLE_SUFFIX": "Want me to try a different angle?",
         "CHAT_CLOSER_TALENT_ERRORED_FORMAT": "I couldn't finish that lookup — {reason}. Want to try a different angle, or rephrase the question?",
         "CHAT_CLOSER_TALENT_ERRORED_GENERIC": "I couldn't finish that lookup. Want to try a different angle, or rephrase the question?",
+        "CHAT_CLOSER_SUPPORT_SEND_FAILED": "I couldn't finish reaching solstone support, so nothing was sent. Want me to try again?",
     }
 
     for name, literal in expected.items():
@@ -169,6 +170,11 @@ def test_closer_constants_byte_parity():
         assert literal in text
 
     assert "\u2014" in chat_copy.CHAT_CLOSER_TALENT_ERRORED_FORMAT
+    assert "solstone support" in chat_copy.CHAT_CLOSER_SUPPORT_SEND_FAILED
+    assert "sol pbc" not in chat_copy.CHAT_CLOSER_SUPPORT_SEND_FAILED
+    assert "live chat" not in chat_copy.CHAT_CLOSER_SUPPORT_SEND_FAILED
+    assert "lookup" not in chat_copy.CHAT_CLOSER_SUPPORT_SEND_FAILED
+    assert "try again" in chat_copy.CHAT_CLOSER_SUPPORT_SEND_FAILED.lower()
 
 
 def test_chat_placeholder_css_present():

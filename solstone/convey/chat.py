@@ -25,6 +25,7 @@ from flask import Blueprint, jsonify, request
 from solstone.apps.chat.copy import (
     CHAT_CLOSER_DIFFERENT_ANGLE_SUFFIX,
     CHAT_CLOSER_LOOP_EXHAUSTED_PREFIX,
+    CHAT_CLOSER_SUPPORT_SEND_FAILED,
     CHAT_CLOSER_TALENT_ERRORED_FORMAT,
     CHAT_CLOSER_TALENT_ERRORED_GENERIC,
     CHAT_OFFER_SUPPORT_DECLINE,
@@ -51,6 +52,7 @@ from solstone.convey.sol_initiated import (
 from solstone.convey.sol_initiated.copy import KIND_SOL_CHAT_REQUEST, SURFACE_CONVEY
 from solstone.convey.utils import error_response
 from solstone.think.callosum import CallosumConnection, callosum_send
+from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_REASON_CODES
 from solstone.think.cortex_client import CortexSpawnUnavailable
 from solstone.think.utils import get_journal, now_ms
 
@@ -470,7 +472,9 @@ def _on_cortex_finish(message: dict[str, Any]) -> None:
                     message_text = _compose_terminal_closer(
                         exit_mode,
                         message_text,
+                        talent_name=trigger.get("name"),
                         talent_errored_reason=trigger.get("reason"),
+                        talent_errored_reason_code=trigger.get("reason_code"),
                         talent_finished_summary=trigger.get("summary"),
                     )
                     requested_target = None
@@ -630,12 +634,14 @@ def _on_cortex_error(message: dict[str, Any]) -> None:
             next_info = _clear_current_locked()
         elif use_id in _active_talents:
             reason = str(message.get("error") or "unknown")
+            reason_code = message.get("reason_code") or None
             _evict_thinking_locked(use_id)
             next_info = _handle_talent_terminal_locked(
                 use_id,
                 "talent_errored",
                 "reason",
                 reason,
+                reason_code=reason_code,
             )
         elif _is_superseded_raw_use_id_locked(use_id):
             logger.debug(
@@ -669,6 +675,7 @@ def _handle_talent_terminal_locked(
     result_field_name: str,
     result_value: str,
     *,
+    reason_code: str | None = None,
     terminal_message: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     _cancel_watchdog_locked(use_id)
@@ -681,12 +688,15 @@ def _handle_talent_terminal_locked(
         talent_name,
         result_field_name,
         result_value,
+        reason_code=reason_code,
     )
     event_fields: dict[str, Any] = {
         "use_id": use_id,
         "name": talent_name,
         result_field_name: result_value,
     }
+    if reason_code:
+        event_fields["reason_code"] = reason_code
     if kind == "talent_finished" and terminal_message is not None:
         thinking = _drain_thinking_locked(use_id, terminal_message)
         if thinking is not None:
@@ -1373,7 +1383,9 @@ def _compose_terminal_closer(
     exit_mode: str,
     raw_message: str | None,
     *,
+    talent_name: str | None = None,
     talent_errored_reason: str | None = None,
+    talent_errored_reason_code: str | None = None,
     talent_finished_summary: str | None = None,
 ) -> str:
     if exit_mode == "loop_exhausted":
@@ -1391,6 +1403,11 @@ def _compose_terminal_closer(
         )
 
     if exit_mode == "talent_errored":
+        if (
+            talent_name in OUTBOUND_TALENTS
+            and talent_errored_reason_code in DETERMINISTIC_FAILURE_REASON_CODES
+        ):
+            return CHAT_CLOSER_SUPPORT_SEND_FAILED
         reason = _clean_talent_errored_reason(talent_errored_reason)
         if reason:
             return CHAT_CLOSER_TALENT_ERRORED_FORMAT.format(reason=reason)
@@ -1601,6 +1618,7 @@ def _trigger_from_stream_event(event: dict[str, Any]) -> dict[str, Any]:
             event.get("name", "exec"),
             "reason",
             event.get("reason", ""),
+            reason_code=event.get("reason_code"),
         )
     raise ValueError(f"unsupported trigger event: {kind}")
 
@@ -1611,13 +1629,18 @@ def _talent_terminal_trigger(
     name: Any,
     result_field_name: str,
     result_value: Any,
+    *,
+    reason_code: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    trigger = {
         "type": kind,
         "use_id": use_id,
         "name": name,
         result_field_name: result_value,
     }
+    if reason_code:
+        trigger["reason_code"] = reason_code
+    return trigger
 
 
 def _read_talent_log(use_id: str) -> dict[str, Any] | None:
