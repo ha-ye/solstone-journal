@@ -27,8 +27,9 @@ _CHAT_STREAM = "chat"
 _SEGMENT_WINDOW_MS = 300_000
 _APPENDED_CHAT_PATHS: dict[int, Path] = {}
 # owner_message may carry optional `source`; extras flow through unchanged.
-# sol_message may carry optional `thinking`, `offer`, and `draft`; talent_finished may
-# carry optional `thinking`; extras flow through unchanged and are not part of
+# sol_message may carry optional `thinking`, `offer`, and `draft`; result may
+# carry optional `ticket_id`, `error`, `ambiguous`, and `cancelled`; talent_finished
+# may carry optional `thinking`. Extras flow through unchanged and are not part of
 # the required-field tuples below.
 _VALID_KINDS = {
     "owner_message": ("text", "app", "path", "facet"),
@@ -67,6 +68,8 @@ _VALID_KINDS = {
         "payload",
         "diagnostics_snapshot",
     ),
+    "result": ("draft_id", "ok"),
+    "support_submit_claim": ("draft_id",),
 }
 _TRIGGER_KINDS = {
     "owner_message",

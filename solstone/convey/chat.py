@@ -15,13 +15,15 @@ import re
 import threading
 from collections import deque
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import httpx
 from flask import Blueprint, jsonify, request
 
+import solstone.convey.chat_stream as chat_stream
 from solstone.apps.chat.copy import (
     CHAT_CLOSER_DIFFERENT_ANGLE_SUFFIX,
     CHAT_CLOSER_LOOP_EXHAUSTED_PREFIX,
@@ -30,8 +32,14 @@ from solstone.apps.chat.copy import (
     CHAT_CLOSER_TALENT_ERRORED_GENERIC,
     CHAT_OFFER_SUPPORT_DECLINE,
     CHAT_OFFER_SUPPORT_PROMPT,
+    CHAT_SUPPORT_ATTACH_UNSUPPORTED,
+    CHAT_SUPPORT_DRAFT_CANCELLED,
     CHAT_SUPPORT_DRAFT_READY,
+    CHAT_SUPPORT_SUBMIT_AMBIGUOUS,
+    CHAT_SUPPORT_SUBMIT_FAILED,
+    CHAT_SUPPORT_SUBMIT_FILED_FORMAT,
 )
+from solstone.apps.support.tools import support_create, support_reply
 from solstone.convey.chat_stream import (
     append_chat_event,
     find_unresponded_trigger,
@@ -110,6 +118,15 @@ class ChatSpawnResult:
     ok: bool
     reason: str = ""
     detail: str = ""
+
+
+@dataclass(frozen=True)
+class SupportDraftSubmitResult:
+    ok: bool
+    outcome: str
+    text: str
+    result_fields: dict[str, Any]
+    ticket_id: Any = None
 
 
 @chat_bp.route("", methods=["POST"])
@@ -260,6 +277,131 @@ def decline_offer() -> Any:
         requested_task=None,
     )
     return jsonify(ok=True)
+
+
+@chat_bp.route("/support/draft/confirm", methods=["POST"])
+def confirm_support_draft() -> Any:
+    """Owner confirmed a captured support draft; submit it through support tools."""
+    payload = request.get_json(force=True, silent=True) or {}
+    draft_id = str(payload.get("draft_id") or "").strip()
+    if not draft_id:
+        return error_response(MISSING_REQUIRED_FIELD, detail="draft_id required")
+
+    resolved = _resolve_support_draft(draft_id)
+    if resolved is None:
+        return jsonify(ok=False, outcome="not_found")
+    draft_event, captured_day = resolved
+
+    with chat_stream._CHAT_LOCK:
+        # Lock order: hold only _CHAT_LOCK here; accepted v1 crash-window leaves a claim without TTL.
+        events = chat_stream.read_chat_events(captured_day)
+        if _draft_is_terminal(events, draft_id):
+            return jsonify(ok=False, outcome="already_submitted")
+        latest_draft = _latest_support_draft(captured_day)
+        latest_draft_id = str((latest_draft or {}).get("draft_id") or "")
+        if latest_draft_id != draft_id:
+            return jsonify(ok=False, outcome="superseded")
+        stored_claim = chat_stream.append_chat_events_locked(
+            [
+                (
+                    "support_submit_claim",
+                    {
+                        "ts": _next_chat_ts_for_day(captured_day, events),
+                        "draft_id": draft_id,
+                    },
+                )
+            ],
+            _lock_already_held=True,
+        )
+    chat_stream._finalize_chat_event_appends(stored_claim)
+
+    submit_result = _submit_support_draft(draft_event, draft_id)
+    append_chat_event(
+        "result",
+        ts=_next_chat_ts_for_day(
+            captured_day,
+            chat_stream.read_chat_events(captured_day),
+        ),
+        **submit_result.result_fields,
+    )
+    # Lock order: reserve under _state_lock after _CHAT_LOCK is fully released.
+    with _state_lock:
+        use_id = _reserve_use_id_locked()
+    append_chat_event(
+        "sol_message",
+        ts=_next_chat_ts_for_day(
+            captured_day,
+            chat_stream.read_chat_events(captured_day),
+        ),
+        use_id=use_id,
+        text=submit_result.text,
+        notes=f"support draft {submit_result.outcome}",
+        requested_target=None,
+        requested_task=None,
+    )
+
+    response: dict[str, Any] = {
+        "ok": submit_result.ok,
+        "outcome": submit_result.outcome,
+    }
+    if submit_result.outcome == "submitted":
+        response["ticket_id"] = submit_result.ticket_id
+    return jsonify(response)
+
+
+@chat_bp.route("/support/draft/cancel", methods=["POST"])
+def cancel_support_draft() -> Any:
+    """Owner cancelled a captured support draft without contacting support."""
+    payload = request.get_json(force=True, silent=True) or {}
+    draft_id = str(payload.get("draft_id") or "").strip()
+    if not draft_id:
+        return error_response(MISSING_REQUIRED_FIELD, detail="draft_id required")
+
+    resolved = _resolve_support_draft(draft_id)
+    if resolved is None:
+        return jsonify(ok=False, outcome="not_found")
+    _draft_event, captured_day = resolved
+
+    # Lock order: reserve under _state_lock before _CHAT_LOCK is acquired.
+    with _state_lock:
+        use_id = _reserve_use_id_locked()
+    with chat_stream._CHAT_LOCK:
+        # Lock order: hold only _CHAT_LOCK here; accepted v1 crash-window leaves a claim without TTL.
+        events = chat_stream.read_chat_events(captured_day)
+        if _draft_is_terminal(events, draft_id):
+            return jsonify(ok=False, outcome="already_submitted")
+        latest_draft = _latest_support_draft(captured_day)
+        latest_draft_id = str((latest_draft or {}).get("draft_id") or "")
+        if latest_draft_id != draft_id:
+            return jsonify(ok=False, outcome="superseded")
+        terminal_ts = _next_chat_ts_for_day(captured_day, events)
+        stored = chat_stream.append_chat_events_locked(
+            [
+                (
+                    "result",
+                    {
+                        "ts": terminal_ts,
+                        "draft_id": draft_id,
+                        "ok": False,
+                        "cancelled": True,
+                    },
+                ),
+                (
+                    "sol_message",
+                    {
+                        "ts": terminal_ts,
+                        "use_id": use_id,
+                        "text": CHAT_SUPPORT_DRAFT_CANCELLED,
+                        "notes": "support draft cancelled",
+                        "requested_target": None,
+                        "requested_task": None,
+                    },
+                ),
+            ],
+            _lock_already_held=True,
+        )
+    chat_stream._finalize_chat_event_appends(stored)
+    return jsonify(ok=True, outcome="cancelled")
 
 
 @chat_bp.route("/talent-log/<use_id>", methods=["GET"])
@@ -1767,6 +1909,134 @@ def _reserve_use_id_locked() -> str:
 
 def _today_day() -> str:
     return datetime.now().strftime("%Y%m%d")
+
+
+def _resolve_support_draft(draft_id: str) -> tuple[dict[str, Any], str] | None:
+    today = _today_day()
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+    for day in (today, yesterday):
+        for event in read_chat_events(day):
+            if (
+                event.get("kind") == "support_draft"
+                and str(event.get("draft_id") or "") == draft_id
+            ):
+                return event, str(event["captured_day"])
+    return None
+
+
+def _draft_is_terminal(events: list[dict[str, Any]], draft_id: str) -> bool:
+    for event in events:
+        if event.get("kind") not in {"result", "support_submit_claim"}:
+            continue
+        if str(event.get("draft_id") or "") == draft_id:
+            return True
+    return False
+
+
+def _next_chat_ts_for_day(day: str, events: list[dict[str, Any]]) -> int:
+    day_start = datetime.strptime(day, "%Y%m%d")
+    start_ms = int(day_start.timestamp() * 1000)
+    end_ms = int((day_start + timedelta(days=1)).timestamp() * 1000) - 1
+    max_ts = max(
+        (
+            event["ts"]
+            for event in events
+            if isinstance(event.get("ts"), int)
+            and chat_stream.day_for_ts(int(event["ts"])) == day
+        ),
+        default=start_ms,
+    )
+    return min(max_ts + 1, end_ms)
+
+
+def _submit_support_draft(
+    draft_event: dict[str, Any],
+    draft_id: str,
+) -> SupportDraftSubmitResult:
+    verb = str(draft_event["verb"])
+    payload = draft_event["payload"]
+    diagnostics_snapshot = draft_event["diagnostics_snapshot"]
+    if verb not in {"create", "feedback", "reply"}:
+        return SupportDraftSubmitResult(
+            ok=False,
+            outcome="unsupported",
+            text=CHAT_SUPPORT_ATTACH_UNSUPPORTED,
+            result_fields={
+                "draft_id": draft_id,
+                "ok": False,
+                "error": "attach_unsupported",
+            },
+        )
+
+    try:
+        if verb == "create":
+            result_obj = support_create(**payload)
+            ticket_id = result_obj.get("id")
+        elif verb == "feedback":
+            result_obj = support_create(
+                subject="User feedback",
+                description=payload["body"],
+                product=payload["product"],
+                severity="low",
+                category="feedback",
+                anonymous=payload["anonymous"],
+                auto_context=False,
+                user_context=diagnostics_snapshot,
+            )
+            ticket_id = result_obj.get("id")
+        else:
+            support_reply(payload["ticket_id"], payload["content"])
+            ticket_id = payload["ticket_id"]
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+        return _support_submit_exception_result(draft_id, exc, ambiguous=False)
+    except httpx.HTTPStatusError as exc:
+        return _support_submit_exception_result(
+            draft_id,
+            exc,
+            ambiguous=exc.response.status_code >= 500,
+        )
+    except RuntimeError as exc:
+        return _support_submit_exception_result(draft_id, exc, ambiguous=False)
+    except (httpx.ReadTimeout, httpx.WriteTimeout) as exc:
+        return _support_submit_exception_result(draft_id, exc, ambiguous=True)
+    except httpx.HTTPError as exc:
+        return _support_submit_exception_result(draft_id, exc, ambiguous=True)
+
+    return SupportDraftSubmitResult(
+        ok=True,
+        outcome="submitted",
+        text=CHAT_SUPPORT_SUBMIT_FILED_FORMAT.format(ticket_id=ticket_id),
+        ticket_id=ticket_id,
+        result_fields={"draft_id": draft_id, "ok": True, "ticket_id": ticket_id},
+    )
+
+
+def _support_submit_exception_result(
+    draft_id: str,
+    exc: BaseException,
+    *,
+    ambiguous: bool,
+) -> SupportDraftSubmitResult:
+    outcome = "ambiguous" if ambiguous else "failed"
+    logger.warning(
+        "Support draft submit %s with %s",
+        outcome,
+        exc.__class__.__name__,
+        exc_info=True,
+    )
+    fields: dict[str, Any] = {
+        "draft_id": draft_id,
+        "ok": False,
+        "error": exc.__class__.__name__,
+    }
+    if ambiguous:
+        fields["ambiguous"] = True
+    return SupportDraftSubmitResult(
+        ok=False,
+        outcome=outcome,
+        text=CHAT_SUPPORT_SUBMIT_AMBIGUOUS if ambiguous else CHAT_SUPPORT_SUBMIT_FAILED,
+        result_fields=fields,
+    )
 
 
 def _support_consent_state(day: str) -> str:
