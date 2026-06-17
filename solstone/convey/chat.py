@@ -18,7 +18,6 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 import httpx
 from flask import Blueprint, jsonify, request
@@ -162,7 +161,6 @@ def post_chat() -> Any:
         "type": "owner_message",
         "message": message,
     }
-    outbound_approval = uuid4().hex
 
     with _state_lock:
         if _current_chat_use_id is not None and len(_queued_triggers) >= 10:
@@ -178,7 +176,6 @@ def post_chat() -> Any:
                 logical_use_id,
                 trigger,
                 location,
-                outbound_approval=outbound_approval,
             )
             queued = False
             response_use_id = logical_use_id
@@ -186,7 +183,6 @@ def post_chat() -> Any:
             response_use_id = _enqueue_trigger_locked(
                 trigger,
                 location,
-                outbound_approval=outbound_approval,
             )
             queued = True
 
@@ -703,9 +699,6 @@ def _on_cortex_finish(message: dict[str, Any]) -> None:
                             "task": requested_task,
                             "context": parsed["talent_request"].get("context") or {},
                             "location": dict(_current_chat_state["location"]),
-                            "outbound_approval": _current_chat_state.get(
-                                "outbound_approval"
-                            ),
                         }
                 else:
                     if not message_text:
@@ -964,7 +957,6 @@ def _spawn_talent(action: dict[str, Any]) -> bool:
         "path": action["location"]["path"],
         "facet": action["location"]["facet"],
         "chat_parent_use_id": action["logical_use_id"],
-        "outbound_approval": action.get("outbound_approval"),
     }
     spawn_name = DISPATCH_SPAWN_NAMES.get(action["target"], action["target"])
     try:
@@ -1115,7 +1107,6 @@ def _recover_chat_if_needed() -> None:
         location = _location_for_trigger(day, unresolved)
         logical_use_id = _reserve_use_id_locked()
         trigger = _trigger_from_stream_event(unresolved)
-        # Recovered triggers are disk-derived and intentionally carry no approval.
         start_info = _activate_current_locked(logical_use_id, trigger, location)
 
     if start_info is not None:
@@ -1132,7 +1123,6 @@ def _activate_current_locked(
     logical_use_id: str,
     trigger: dict[str, Any],
     location: dict[str, str],
-    outbound_approval: str | None = None,
 ) -> dict[str, Any]:
     global _current_chat_use_id, _current_chat_state
 
@@ -1144,7 +1134,6 @@ def _activate_current_locked(
         "trigger": dict(trigger),
         "location": dict(location),
         "retry_count": 0,
-        "outbound_approval": outbound_approval,
     }
     _set_current_raw_use_locked(logical_use_id, raw_use_id)
     return _build_spawn_info_locked(logical_use_id)
@@ -1164,13 +1153,11 @@ def _build_spawn_info_locked(logical_use_id: str) -> dict[str, Any]:
 def _enqueue_trigger_locked(
     trigger: dict[str, Any],
     location: dict[str, str],
-    outbound_approval: str | None = None,
 ) -> str:
     queued = {
         "use_id": _reserve_use_id_locked(),
         "trigger": dict(trigger),
         "location": dict(location),
-        "outbound_approval": outbound_approval,
     }
     _queued_triggers.append(queued)
     append_chat_event("chat_queue_depth", depth=len(_queued_triggers))
@@ -1197,7 +1184,6 @@ def _clear_current_locked() -> dict[str, Any] | None:
         str(queued["use_id"]),
         dict(queued["trigger"]),
         dict(queued["location"]),
-        outbound_approval=queued.get("outbound_approval"),
     )
 
 

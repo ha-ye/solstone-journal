@@ -1588,7 +1588,7 @@ def test_post_chat_appends_owner_message_and_returns_reserved_use_id(
     assert payload["queued"] is False
     assert payload["use_id"].isdigit()
     assert starts and starts[-1]["logical_use_id"] == payload["use_id"]
-    assert approvals and approvals[-1]
+    assert approvals == [None]
 
 
 def test_post_chat_dispatches_queued_messages_fifo(chat_client, monkeypatch):
@@ -1652,8 +1652,7 @@ def test_post_chat_dispatches_queued_messages_fifo(chat_client, monkeypatch):
         "msg 4",
     ]
     assert len(approvals) == 5
-    assert all(approvals)
-    assert len(set(approvals)) == 5
+    assert approvals == [None] * 5
     events = read_chat_events(date.today().strftime("%Y%m%d"))
     replies = [event["text"] for event in events if event["kind"] == "sol_message"]
     assert replies == [

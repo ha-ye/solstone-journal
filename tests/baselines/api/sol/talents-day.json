@@ -305,7 +305,7 @@
     "support:support": {
       "app": "support",
       "color": "#0288d1",
-      "description": "Files and monitors support requests with sol pbc — consent-gated, never sends data without explicit owner approval",
+      "description": "Drafts support requests and feedback to sol pbc for owner review, searches help articles, and runs local diagnostics.",
       "multi_facet": false,
       "output_format": null,
       "schedule": null,

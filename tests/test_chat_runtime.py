@@ -1289,7 +1289,6 @@ def test_exec_dispatch_appends_sol_message_and_spawns_talent_real_path(
             "1713625500000",
             {"type": "owner_message", "message": "help"},
             {"app": "sol", "path": "/app/sol", "facet": "work"},
-            outbound_approval="approval-token",
         )
 
     raw_use_id = start_info["raw_use_id"]
@@ -1328,7 +1327,6 @@ def test_exec_dispatch_appends_sol_message_and_spawns_talent_real_path(
         "path": "/app/sol",
         "facet": "work",
         "chat_parent_use_id": "1713625500000",
-        "outbound_approval": "approval-token",
     }
     assert "research it" in str(spawn_call["prompt"])
     assert "Context hints:\n{'k': 'v'}" in str(spawn_call["prompt"])
@@ -1380,7 +1378,6 @@ def test_support_dispatch_after_offer_spawns_app_talent_but_keeps_bare_event_nam
             "1713625600000",
             {"type": "owner_message", "message": "help"},
             {"app": "sol", "path": "/app/sol", "facet": "work"},
-            outbound_approval="approval-token",
         )
 
     raw_use_id = start_info["raw_use_id"]
@@ -1417,7 +1414,6 @@ def test_support_dispatch_after_offer_spawns_app_talent_but_keeps_bare_event_nam
         "path": "/app/sol",
         "facet": "work",
         "chat_parent_use_id": "1713625600000",
-        "outbound_approval": "approval-token",
     }
     assert "File a bug report" in str(spawn_call["prompt"])
     assert "Target: support" in str(spawn_call["prompt"])
