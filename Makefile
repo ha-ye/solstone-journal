@@ -24,7 +24,15 @@ VENV := .venv
 VENV_BIN := $(VENV)/bin
 VENV_PY := $(VENV_BIN)/python
 PYTHON := $(VENV_PY)
-PARAKEET_ONNX_VARIANT ?= $(shell if nvidia-smi -L >/dev/null 2>&1; then echo cuda; else echo cpu; fi)
+# Pick the GPU (CUDA) transcription runtime only on x86_64 NVIDIA hosts. The
+# CUDA bundle resolves onnxruntime-gpu, which ships NO aarch64 wheel on PyPI, so
+# an aarch64 NVIDIA host (e.g. DGX Spark / GB10) that auto-selected `cuda` would
+# die in the `.installed` `uv sync` below — before the per-arch `install` guard
+# (which correctly skips non-x86_64 Linux) ever runs. Gating on x86_64 also
+# keeps this coherent with the STT arch decision (aarch64-linux transcribes on
+# whisper/CPU). Everything non-x86_64 falls to the CPU `journal` bundle, whose
+# onnxruntime has aarch64 wheels. Guarded by tests/test_makefile_journal_extra.py.
+PARAKEET_ONNX_VARIANT ?= $(shell if [ "$$(uname -m)" = "x86_64" ] && nvidia-smi -L >/dev/null 2>&1; then echo cuda; else echo cpu; fi)
 
 # Dev install extras: install exactly ONE journal-host bundle for this host.
 # [journal] (CPU) and [journal-cuda] (GPU) are the SAME stack and differ only in
