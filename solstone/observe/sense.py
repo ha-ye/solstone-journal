@@ -568,8 +568,9 @@ class FileSensor:
                 f"Segment fully observed{note_str}: {day}/{segment} ({duration}s)"
             )
 
-        # Touch stream.updated marker for downstream consumers
-        if day:
+        # Touch stream.updated marker for downstream consumers -- live ingest
+        # only; batch (re-process / importer) segments must not advance it.
+        if day and not batch:
             try:
                 health_dir = day_path(day) / "health"
                 health_dir.mkdir(parents=True, exist_ok=True)

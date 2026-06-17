@@ -1086,6 +1086,24 @@ def test_file_sensor_observing_without_batch_emits_live_observed(
     assert "batch" not in observed
 
 
+def test_file_sensor_live_observed_touches_stream_updated(
+    tmp_path, monkeypatch, mock_callosum
+):
+    _observed_event_from_observing(tmp_path, monkeypatch, mock_callosum, batch=False)
+
+    marker = tmp_path / "chronicle" / "20250101" / "health" / "stream.updated"
+    assert marker.exists()
+
+
+def test_file_sensor_batch_observed_does_not_touch_stream_updated(
+    tmp_path, monkeypatch, mock_callosum
+):
+    _observed_event_from_observing(tmp_path, monkeypatch, mock_callosum, batch=True)
+
+    marker = tmp_path / "chronicle" / "20250101" / "health" / "stream.updated"
+    assert not marker.exists()
+
+
 def test_file_sensor_segment_observed_no_handlers(tmp_path, monkeypatch, mock_callosum):
     """Test that observe.observed is emitted immediately for segments with no matching handlers.
 

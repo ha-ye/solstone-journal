@@ -1136,6 +1136,7 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
                         f"transcribed successfully ({total_elapsed}s)"
                     )
 
+            _touch_health_marker(day)
             _callosum.emit("supervisor", "drain", day=day)
 
         # Complete processing metadata

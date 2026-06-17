@@ -3437,13 +3437,6 @@ def main() -> None:
                         skip_talents=skip_talents,
                         live=False,
                     )
-                    # Touch stream.updated marker after each segment
-                    try:
-                        health_dir = day_path(day) / "health"
-                        health_dir.mkdir(parents=True, exist_ok=True)
-                        (health_dir / "stream.updated").touch()
-                    except Exception:
-                        pass
                     batch_success += success
                     batch_failed += failed
                     _update_status(segments_completed=i, segments_total=total)
@@ -3613,15 +3606,6 @@ def main() -> None:
             )
         _run_result["success"] = success_count
         _run_result["failed"] = fail_count
-
-        # Touch stream.updated marker after segment processing
-        if args.segment:
-            try:
-                health_dir = day_path(day) / "health"
-                health_dir.mkdir(parents=True, exist_ok=True)
-                (health_dir / "stream.updated").touch()
-            except Exception:
-                pass
 
         # POST-PHASE: Final indexing and stats (daily only)
         if not args.segment:

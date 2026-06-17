@@ -1462,6 +1462,15 @@ def test_import_one_skips_wait_when_disabled(tmp_path, monkeypatch):
     assert result.get("segments")
     assert "failed_segments" not in result
 
+    marker = tmp_path / "chronicle" / "20260303" / "health" / "stream.updated"
+    assert marker.exists()
+    drain_days = [
+        call.kwargs["day"]
+        for call in callosum.emit.call_args_list
+        if call.args[:2] == ("supervisor", "drain")
+    ]
+    assert drain_days == ["20260303"]
+
 
 def test_import_one_audio_reimport_is_deduped(tmp_path, monkeypatch):
     mod = importlib.import_module("solstone.think.importers.cli")
