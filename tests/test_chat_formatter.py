@@ -104,6 +104,22 @@ def test_format_chat_skips_queue_depth_event():
     assert meta == {"indexer": {"agent": "chat"}}
 
 
+def test_format_chat_skips_backend_only_support_send_events():
+    # Backend-only events from the support deterministic-send pipeline are not
+    # chat content; the formatter skips them silently rather than raising.
+    entries = [
+        {"ts": 1, "kind": "support_draft", "draft_id": "abc", "verb": "create"},
+        {"ts": 2, "kind": "support_submit_claim", "draft_id": "abc"},
+        {"ts": 3, "kind": "result", "draft_id": "abc", "ok": True},
+        {"ts": 4, "kind": "owner_message", "text": "still here"},
+    ]
+
+    chunks, meta = format_chat(entries, {"owner_name": "Alice", "agent_name": "Sol"})
+
+    assert [chunk["markdown"] for chunk in chunks] == ["**Alice** still here"]
+    assert meta == {"indexer": {"agent": "chat"}}
+
+
 def test_get_formatter_chat_jsonl_wins_over_talents_fallback():
     formatter = get_formatter("20260420/chat/120000_300/chat.jsonl")
 
