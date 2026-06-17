@@ -84,6 +84,8 @@ DEFAULT_THRESHOLD = 60
 CHECK_INTERVAL = 30
 MAX_UPDATED_CATCHUP = 4
 TEMPFAIL_DELAY = 15  # seconds to wait before retrying a tempfail exit
+CONVEY_READY_WINDOW_SECONDS = 60.0
+REALISTIC_COLD_BIND_SECONDS = 40.0
 HANDLE_SHUTDOWN_REAP_S = 3.0
 APP_SUPERVISED_SHUTDOWN_CEILING_S = 10.0
 APP_SUPERVISED_TASK_DRAIN_S = 2.0
@@ -1931,7 +1933,7 @@ def start_callosum_in_process() -> CallosumServer:
 
 
 def wait_for_convey_ready(
-    convey_mp, *, timeout: float = 30.0, interval: float = 0.1
+    convey_mp, *, timeout: float = CONVEY_READY_WINDOW_SECONDS, interval: float = 0.1
 ) -> bool:
     """Poll until Convey accepts TCP connections, or fail fast on death/timeout."""
     start = time.monotonic()
@@ -2801,6 +2803,7 @@ def main() -> None:
     global _task_queue
     procs: list[RunnerManagedProcess] = []
     convey_port = None
+    convey_proc = None
 
     # Remote mode: run sync instead of local processing
     _is_remote_mode = bool(args.remote)
@@ -2876,11 +2879,11 @@ def main() -> None:
         os.environ["SOL_SUPERVISOR_SPAWNED"] = "1"
         if not args.no_convey:
             print(f"  Starting convey on port {args.port}...", flush=True)
-            proc, convey_port = start_convey_server(
+            convey_proc, convey_port = start_convey_server(
                 verbose=args.verbose, debug=args.debug, port=args.port
             )
-            procs.append(proc)
-            wait_for_convey_ready(proc)
+            procs.append(convey_proc)
+            wait_for_convey_ready(convey_proc)
             print("  Convey ready", flush=True)
         from solstone.think.providers.local_endpoint import resolve_local_endpoint
 
@@ -2946,9 +2949,17 @@ def main() -> None:
         scheduler.catch_up()
 
     try:
-        print("  Supervisor ready", flush=True)
-        _sd_notify("READY=1")
-        signal_ready()
+        convey_accepting = convey_proc is None or is_solstone_up(timeout=1.0)
+        if convey_accepting:
+            print("  Supervisor ready", flush=True)
+            _sd_notify("READY=1")
+            signal_ready()
+        else:
+            logging.error(
+                "Convey is not accepting on :%s; withholding readiness marker, "
+                "continuing into supervise loop",
+                read_service_port("convey"),
+            )
         if app_supervised:
             start_parent_death_watcher()
         asyncio.run(

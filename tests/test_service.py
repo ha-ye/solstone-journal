@@ -104,6 +104,7 @@ class TestSystemdUnit:
         assert any(line == "[Install]" for line in lines)
 
         assert "Type=notify" in unit
+        assert "TimeoutStartSec=120" in unit
         assert "Restart=on-failure" in unit
         assert "StartLimitIntervalSec=120" in unit
         assert "StartLimitBurst=10" in unit
@@ -138,6 +139,30 @@ class TestSystemdUnit:
     def test_invalid_journal_path_rejected(self):
         with pytest.raises(ValueError, match="shell-active character"):
             service._generate_systemd_unit({}, journal_path="/tmp/bad$path")
+
+    def test_ready_timeout_ordering_invariant(self, tmp_path):
+        from solstone.think import supervisor
+
+        assert (
+            service.READY_TIMEOUT_SECONDS
+            >= supervisor.CONVEY_READY_WINDOW_SECONDS
+            >= supervisor.REALISTIC_COLD_BIND_SECONDS
+        )
+
+        unit = service._generate_systemd_unit(
+            {
+                "HOME": "/home/test",
+                "PATH": "/usr/bin",
+            },
+            journal_path=str(tmp_path / "journal"),
+        )
+        timeout_line = next(
+            line for line in unit.splitlines() if line.startswith("TimeoutStartSec=")
+        )
+        timeout = int(timeout_line.split("=", 1)[1])
+
+        assert timeout >= supervisor.CONVEY_READY_WINDOW_SECONDS
+        assert timeout == service.SERVICE_START_TIMEOUT_SECONDS
 
 
 class TestLogs:

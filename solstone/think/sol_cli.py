@@ -104,6 +104,7 @@ COMMANDS: dict[str, Command] = {
     "segment": Command("solstone.think.segment", "service"),
     "journal-stats": Command("solstone.think.journal_stats", "service"),
     "reprocess": Command("solstone.think.reprocess", "service"),
+    "warm": Command("solstone.think.warm", "service"),
     # observe package - multimodal capture
     "transcribe": Command("solstone.observe.transcribe", "service"),
     "describe": Command("solstone.observe.describe", "service"),

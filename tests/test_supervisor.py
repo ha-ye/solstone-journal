@@ -293,6 +293,80 @@ def test_graceful_shutdown_calls_stop_process_for_each_managed_proc(
     assert stop_order == ["spl", "cortex", "sense", "convey"]
 
 
+@pytest.mark.parametrize(
+    ("convey_accepting", "expected_ready"),
+    [(True, True), (False, False)],
+)
+def test_supervisor_readiness_marker_requires_started_convey_accepting(
+    tmp_path, monkeypatch, convey_accepting, expected_ready
+):
+    """A started Convey process must still accept before supervisor marks ready."""
+    mod = importlib.reload(importlib.import_module("solstone.think.supervisor"))
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.delenv("SOL_SUPERVISOR_SPAWNED", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["supervisor", "0", "--no-daily", "--no-schedule"],
+    )
+    monkeypatch.setattr(mod, "run_pending_tasks", lambda *a, **k: (0, 0))
+    monkeypatch.setattr(mod, "_sweep_orphaned_sol_processes", lambda *_a, **_k: 0)
+    monkeypatch.setattr(mod.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(mod, "start_callosum_in_process", lambda: None)
+    monkeypatch.setattr(mod, "stop_callosum_in_process", lambda **_kwargs: None)
+    monkeypatch.setattr(mod, "wait_for_convey_ready", lambda _proc: True)
+    monkeypatch.setattr(mod, "is_solstone_up", lambda timeout=1.0: convey_accepting)
+    monkeypatch.setattr(mod, "is_local_provider_needed", lambda: False)
+    monkeypatch.setattr(mod, "read_service_port", lambda _name: 5015)
+
+    class FakeCallosumConnection:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self, *args, **kwargs):
+            pass
+
+        def emit(self, *args, **kwargs):
+            pass
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(mod, "CallosumConnection", FakeCallosumConnection)
+
+    procs = []
+    for name in ["convey", "sense", "cortex", "spl"]:
+        managed = _TaskManagedStub(cmd=["journal", name])
+        managed.name = name
+        procs.append(managed)
+
+    monkeypatch.setattr(
+        mod,
+        "start_convey_server",
+        lambda verbose, debug=False, port=0: (procs[0], 5015),
+    )
+    monkeypatch.setattr(mod, "start_sense", lambda: procs[1])
+    monkeypatch.setattr(mod, "start_cortex_server", lambda: procs[2])
+    monkeypatch.setattr(mod, "start_spl_service", lambda: procs[3])
+    monkeypatch.setattr(mod, "_stop_process", lambda managed, **_kwargs: None)
+
+    events: list[str] = []
+    monkeypatch.setattr(mod, "signal_ready", lambda: events.append("ready"))
+
+    def interrupt_supervise(coro):
+        coro.close()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(mod.asyncio, "run", interrupt_supervise)
+
+    try:
+        mod.main()
+    finally:
+        os.environ.pop("SOL_SUPERVISOR_SPAWNED", None)
+
+    assert ("ready" in events) is expected_ready
+
+
 def _run_supervisor_main_for_shutdown_knobs(tmp_path, monkeypatch, *, argv):
     mod = importlib.reload(importlib.import_module("solstone.think.supervisor"))
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
