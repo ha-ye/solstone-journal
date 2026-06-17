@@ -169,6 +169,12 @@ _CLI_AUTH_PATTERNS = (
     "forbidden",
     "invalid api key",
 )
+_CONTEXT_WINDOW_PATTERNS = (
+    "exceeds the available context size",
+    "exceeds the context window",
+    "maximum context length",
+    "context length exceeded",
+)
 
 
 def _status_code(exc: BaseException) -> int | None:
@@ -235,6 +241,8 @@ def classify_provider_error(exc: BaseException, provider: str) -> str:
         if exc_name == "QuotaExhaustedError":
             return "provider_quota_exceeded"
         if exc_name == "ContextWindowExceededError":
+            return "context_window_exceeded"
+        if _contains_any(message_lower, _CONTEXT_WINDOW_PATTERNS):
             return "context_window_exceeded"
         # MaxIterationsReached is OpenHands' event-code spelling of the same limit;
         # our MaxTurnsExhausted (cogitate_policy) is what actually reaches here.

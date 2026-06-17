@@ -153,6 +153,7 @@ def _build_llm(provider: str, model: str) -> Any:
             native_tool_calling=False,
             timeout=LLM_TIMEOUT_S,
             num_retries=LLM_NUM_RETRIES,
+            max_input_tokens=local_server.LOCAL_SERVER_CONTEXT_TOKENS,
             input_cost_per_token=0,
             output_cost_per_token=0,
             litellm_extra_body={"chat_template_kwargs": {"enable_thinking": False}},

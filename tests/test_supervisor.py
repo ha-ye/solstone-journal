@@ -2305,7 +2305,7 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
             "--n-gpu-layers",
             "999",
             "-c",
-            "16384",
+            str(local_server.LOCAL_SERVER_CONTEXT_TOKENS),
             "--device",
             "Vulkan0",
             "--mmproj",

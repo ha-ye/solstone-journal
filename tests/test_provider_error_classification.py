@@ -31,6 +31,36 @@ def test_classifies_litellm_context_window_exceeded():
     assert classify_provider_error(exc, "openhands") == "context_window_exceeded"
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "request (16942 tokens) exceeds the available context size (16384 tokens)",
+        "prompt exceeds the context window for this model",
+        "This model's maximum context length is 16384 tokens",
+        "context length exceeded while evaluating prompt",
+    ],
+)
+def test_classifies_litellm_bad_request_context_window_messages(message):
+    from litellm.exceptions import BadRequestError
+
+    exc = BadRequestError(message, model="local-model", llm_provider="local")
+
+    assert classify_provider_error(exc, "local") == "context_window_exceeded"
+
+
+def test_classifies_litellm_bad_request_unrelated_unknown():
+    from litellm.exceptions import BadRequestError
+
+    exc = BadRequestError(
+        "Invalid value for parameter 'temperature'",
+        model="local-model",
+        llm_provider="local",
+    )
+
+    assert classify_provider_error(exc, "local") == "unknown"
+    assert classify_provider_error(exc, "local") != "context_window_exceeded"
+
+
 def test_classifies_max_turns_exhausted():
     from solstone.think.cogitate_policy import MaxTurnsExhausted
 

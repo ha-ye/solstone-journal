@@ -22,6 +22,13 @@ STATE_STOPPED = "stopped"
 _HOST = "127.0.0.1"
 _SERVICE_NAME = "local"
 
+# Single source of truth for the bundled local server's context window.
+# Feeds BOTH the llama-server `-c` launch arg (supervisor.start_local_server)
+# and the bundled-local LLM `max_input_tokens` (openhands._build_llm), so the
+# two cannot drift. 16384 == OpenHands MIN_CONTEXT_WINDOW_TOKENS (the floor),
+# a safe conservative value for the MLX-backed bundled path too.
+LOCAL_SERVER_CONTEXT_TOKENS = 16384
+
 # COPY REVIEW: placeholder owner-facing copy; founder-gated before ship.
 LOCAL_MODEL_NOT_READY_COPY = "Local model is not ready yet."
 
@@ -111,6 +118,7 @@ def connect() -> LocalServerInfo:
 
 
 __all__ = [
+    "LOCAL_SERVER_CONTEXT_TOKENS",
     "LOCAL_MODEL_NOT_READY_COPY",
     "LocalServerInfo",
     "STATE_IDLE",
