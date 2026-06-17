@@ -60,6 +60,7 @@ class SegmentProgress:
 
     sensed: bool
     density: str | None
+    change_class: str | None
     dispatched: frozenset[str]
     completed: frozenset[str]
     unconfigured: frozenset[str]
@@ -634,6 +635,7 @@ def read_segment_progress(day: str) -> dict[tuple[str | None, str], SegmentProgr
     This function does not create, modify, or delete journal state.
     """
     latest_sense: dict[tuple[str | None, str], tuple[int, str | None]] = {}
+    latest_change: dict[tuple[str | None, str], tuple[int, str | None]] = {}
     dispatched: dict[tuple[str | None, str], set[str]] = {}
     terminals: dict[tuple[str | None, str], dict[str, tuple[int, bool]]] = {}
     unconfigured: dict[tuple[str | None, str], set[str]] = {}
@@ -685,6 +687,20 @@ def read_segment_progress(day: str) -> dict[tuple[str | None, str], SegmentProgr
                             density = None
                         if key not in latest_sense or ts >= latest_sense[key][0]:
                             latest_sense[key] = (ts, density)
+                    elif event == "sense.change_detect":
+                        try:
+                            ts = int(rec["ts"])
+                        except (KeyError, TypeError, ValueError):
+                            logger.debug(
+                                "pipeline_health: skipping sense.change_detect with invalid ts in %s",
+                                path,
+                            )
+                            continue
+                        change_class = rec.get("change_class")
+                        if not isinstance(change_class, str):
+                            change_class = None
+                        if key not in latest_change or ts >= latest_change[key][0]:
+                            latest_change[key] = (ts, change_class)
                     elif event == "talent.dispatch":
                         name = rec.get("name")
                         if isinstance(name, str):
@@ -729,13 +745,20 @@ def read_segment_progress(day: str) -> dict[tuple[str | None, str], SegmentProgr
         )
         return {}
 
-    segments = set(latest_sense) | set(dispatched) | set(terminals) | set(unconfigured)
+    segments = (
+        set(latest_sense)
+        | set(latest_change)
+        | set(dispatched)
+        | set(terminals)
+        | set(unconfigured)
+    )
     progress: dict[tuple[str | None, str], SegmentProgress] = {}
     for key in sorted(segments, key=lambda k: (k[1], k[0] is not None, k[0] or "")):
         segment_terminals = terminals.get(key, {})
         progress[key] = SegmentProgress(
             sensed=key in latest_sense,
             density=latest_sense.get(key, (0, None))[1],
+            change_class=latest_change.get(key, (0, None))[1],
             dispatched=frozenset(dispatched.get(key, set())),
             completed=frozenset(
                 name
@@ -763,6 +786,8 @@ def segment_fully_thought(progress: SegmentProgress | None) -> tuple[bool, str |
     if progress is None or not progress.sensed:
         return False, "no_sense_complete"
     if progress.density == "idle":
+        return True, None
+    if progress.change_class == "redundant":
         return True, None
     for name in SEGMENT_FLOOR_TALENTS:
         if name not in progress.completed and name not in progress.unconfigured:

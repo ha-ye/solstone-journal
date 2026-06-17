@@ -318,6 +318,68 @@ def _persist_and_maybe_run_activity_prompts(
             )
 
 
+def _run_activity_state_tail(
+    state_machine: ActivityStateMachine | None,
+    sense_json: dict,
+    segment: str,
+    day: str,
+    target_schedule: str,
+    *,
+    refresh: bool,
+    verbose: bool,
+    max_concurrency: int,
+    skip_activity_prompts: bool,
+) -> None:
+    """Advance the activity state machine for a processed segment and persist.
+
+    Shared by the active dispatch path and the redundant short-circuit so both
+    produce a byte-identical activity change-set and state snapshot for the same
+    ``sense_json`` (the state machine reads only ``sense_json``, never the
+    per-segment write-up talents' outputs).
+    """
+    if state_machine is None:
+        return
+    routing_day = state_machine.last_segment_day or day
+    changes = state_machine.update(sense_json, segment, day)
+    # Persist completed activity records before running activity agents
+    ended_triples = [
+        (c["id"], c["facet"], c.get("_change"))
+        for c in changes
+        if c.get("state") == "ended"
+    ]
+    completed_lookup = {}
+    for rec in state_machine.get_completed_activities():
+        completed_lookup.setdefault(rec["id"], rec)
+    if state_machine.journal_root is not None:
+        try:
+            snapshot = {
+                "last_segment_key": state_machine.last_segment_key,
+                "last_segment_day": state_machine.last_segment_day,
+                "active": {
+                    facet: {k: v for k, v in entry.items() if k != "_change"}
+                    for facet, entry in state_machine.state.items()
+                },
+            }
+            atomic_replace(
+                state_machine.journal_root / "awareness" / "activity_state.json",
+                json.dumps(snapshot),
+            )
+        except Exception:
+            logging.debug("Failed to write activity state snapshot", exc_info=True)
+    _persist_and_maybe_run_activity_prompts(
+        routing_day=routing_day,
+        log_day=day,
+        segment=segment,
+        target_schedule=target_schedule,
+        ended_triples=ended_triples,
+        completed_lookup=completed_lookup,
+        refresh=refresh,
+        verbose=verbose,
+        max_concurrency=max_concurrency,
+        skip_activity_prompts=skip_activity_prompts,
+    )
+
+
 def _log_skip(name: str, reason: str, detail: str, **extra) -> None:
     """Emit an talent.skip JSONL event."""
     _jsonl_log("talent.skip", name=name, reason=reason, detail=detail, **extra)
@@ -1005,6 +1067,51 @@ def run_segment_sense(
         )
         return (total_success, total_failed, all_failed_names)
 
+    if change_result["change_class"] == "redundant" and not refresh:
+        from solstone.apps.timeline.talent.segment_summary import (
+            write_continuation_summary,
+        )
+
+        predecessor_segment = change_result["predecessor"]["segment"]
+        write_continuation_summary(seg_dir, predecessor_segment)
+        logging.info(
+            "Segment %s is redundant (continues %s), skipping write-up talents",
+            segment,
+            predecessor_segment,
+        )
+        _log_skip(
+            "*",
+            "change_redundant",
+            f"Segment {segment} unchanged vs {predecessor_segment}, "
+            "skipping write-up talents",
+            mode=target_schedule,
+            day=day,
+            segment=segment,
+        )
+        _run_activity_state_tail(
+            state_machine,
+            sense_json,
+            segment,
+            day,
+            target_schedule,
+            refresh=refresh,
+            verbose=verbose,
+            max_concurrency=max_concurrency,
+            skip_activity_prompts=skip_activity_prompts,
+        )
+        duration_ms = int((time.time() - start_time) * 1000)
+        emit(
+            "completed",
+            mode=target_schedule,
+            day=day,
+            segment=segment,
+            success=total_success,
+            failed=total_failed,
+            failed_names=all_failed_names,
+            duration_ms=duration_ms,
+        )
+        return (total_success, total_failed, all_failed_names)
+
     recommend = sense_json.get("recommend") or {}
     has_audio_embeddings = _has_audio_embeddings(seg_dir)
     agents_to_run: list[tuple[str, dict]] = []
@@ -1175,46 +1282,17 @@ def run_segment_sense(
             current_agents=[],
         )
 
-    if state_machine is not None:
-        routing_day = state_machine.last_segment_day or day
-        changes = state_machine.update(sense_json, segment, day)
-        # Persist completed activity records before running activity agents
-        ended_triples = [
-            (c["id"], c["facet"], c.get("_change"))
-            for c in changes
-            if c.get("state") == "ended"
-        ]
-        completed_lookup = {}
-        for rec in state_machine.get_completed_activities():
-            completed_lookup.setdefault(rec["id"], rec)
-        if state_machine.journal_root is not None:
-            try:
-                snapshot = {
-                    "last_segment_key": state_machine.last_segment_key,
-                    "last_segment_day": state_machine.last_segment_day,
-                    "active": {
-                        facet: {k: v for k, v in entry.items() if k != "_change"}
-                        for facet, entry in state_machine.state.items()
-                    },
-                }
-                atomic_replace(
-                    state_machine.journal_root / "awareness" / "activity_state.json",
-                    json.dumps(snapshot),
-                )
-            except Exception:
-                logging.debug("Failed to write activity state snapshot", exc_info=True)
-        _persist_and_maybe_run_activity_prompts(
-            routing_day=routing_day,
-            log_day=day,
-            segment=segment,
-            target_schedule=target_schedule,
-            ended_triples=ended_triples,
-            completed_lookup=completed_lookup,
-            refresh=refresh,
-            verbose=verbose,
-            max_concurrency=max_concurrency,
-            skip_activity_prompts=skip_activity_prompts,
-        )
+    _run_activity_state_tail(
+        state_machine,
+        sense_json,
+        segment,
+        day,
+        target_schedule,
+        refresh=refresh,
+        verbose=verbose,
+        max_concurrency=max_concurrency,
+        skip_activity_prompts=skip_activity_prompts,
+    )
 
     duration_ms = int((time.time() - start_time) * 1000)
     emit(
