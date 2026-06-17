@@ -6,18 +6,20 @@
 import json
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 import requests
 from typer.testing import CliRunner
 
-from solstone.apps.support.call import app
+from solstone.apps.support.call import app as support_cli_app
 from solstone.apps.support.diagnostics import collect_recent_errors
+from solstone.convey.chat_stream import read_chat_events
 
 DRY_RUN_BANNER = (
     "DRY RUN — nothing was sent. Re-run with --submit to actually file this."
 )
+STUB_DIAGNOSTICS = {"version": "9.9.9", "revision": "abc1234", "sample": "value"}
 _LEAK_NEEDLES = ("private_key", "keypair", "access_token")
 
 
@@ -99,12 +101,20 @@ def _enable_support_cli(monkeypatch):
 def _stub_dry_run_context(monkeypatch):
     monkeypatch.setattr(
         "solstone.apps.support.diagnostics.collect_all",
-        lambda: {"version": "9.9.9", "revision": "abc1234", "sample": "value"},
+        lambda: dict(STUB_DIAGNOSTICS),
     )
     monkeypatch.setattr(
         "solstone.apps.support.portal._get_portal_url_from_settings",
         lambda: "https://support.example.test",
     )
+
+
+def _today_support_drafts() -> list[dict]:
+    return [
+        event
+        for event in read_chat_events(date.today().strftime("%Y%m%d"))
+        if event["kind"] == "support_draft"
+    ]
 
 
 def test_config_route_reports_enabled_and_portal_url(support_client, monkeypatch):
@@ -428,8 +438,8 @@ def test_cli_dry_run_never_constructs_portal_client(cli, monkeypatch):
     monkeypatch.setattr("solstone.apps.support.portal.get_client", blocked_get_client)
 
     # Convey localhost only: no external support.solstone.app, no account mint.
-    feedback_result = cli.invoke(app, ["feedback", "-b", "x"])
-    create_result = cli.invoke(app, ["create", "-s", "s", "-d", "d"])
+    feedback_result = cli.invoke(support_cli_app, ["feedback", "-b", "x"])
+    create_result = cli.invoke(support_cli_app, ["create", "-s", "s", "-d", "d"])
 
     assert feedback_result.exit_code == 0
     assert create_result.exit_code == 0
@@ -440,7 +450,7 @@ def test_cli_feedback_dry_run_preview_content(cli, monkeypatch):
     _enable_support_cli(monkeypatch)
     _stub_dry_run_context(monkeypatch)
 
-    result = cli.invoke(app, ["feedback", "-b", "owner feedback"])
+    result = cli.invoke(support_cli_app, ["feedback", "-b", "owner feedback"])
 
     assert result.exit_code == 0
     assert result.stdout.splitlines()[0] == DRY_RUN_BANNER
@@ -454,7 +464,7 @@ def test_cli_create_dry_run_preview_content(cli, monkeypatch):
     _enable_support_cli(monkeypatch)
     _stub_dry_run_context(monkeypatch)
 
-    result = cli.invoke(app, ["create", "-s", "subj", "-d", "desc"])
+    result = cli.invoke(support_cli_app, ["create", "-s", "subj", "-d", "desc"])
 
     assert result.exit_code == 0
     assert result.stdout.splitlines()[0] == DRY_RUN_BANNER
@@ -462,11 +472,128 @@ def test_cli_create_dry_run_preview_content(cli, monkeypatch):
     assert "Subject:     subj" in result.stdout
 
 
+def test_cli_create_dry_run_captures_exact_submit_body(cli, monkeypatch):
+    _enable_support_cli(monkeypatch)
+    _stub_dry_run_context(monkeypatch)
+
+    result = cli.invoke(
+        support_cli_app,
+        ["create", "-s", "Subj", "-d", "Desc", "--anonymous"],
+    )
+
+    assert result.exit_code == 0
+    assert "DRY RUN" in result.stdout
+    drafts = _today_support_drafts()
+    assert len(drafts) == 1
+    draft = drafts[0]
+    assert draft["verb"] == "create"
+    assert draft["diagnostics_snapshot"] == STUB_DIAGNOSTICS
+    assert set(draft["payload"]) == {
+        "subject",
+        "description",
+        "product",
+        "severity",
+        "category",
+        "user_context",
+        "auto_context",
+        "anonymous",
+    }
+    assert draft["payload"]["subject"] == "Subj"
+    assert draft["payload"]["description"] == "Desc"
+    assert draft["payload"]["product"] == "solstone"
+    assert draft["payload"]["severity"] == "medium"
+    assert draft["payload"]["category"] is None
+    assert draft["payload"]["user_context"] == STUB_DIAGNOSTICS
+    assert draft["payload"]["auto_context"] is False
+    assert draft["payload"]["anonymous"] is True
+
+
+def test_cli_feedback_dry_run_captures_submit_body(cli, monkeypatch):
+    _enable_support_cli(monkeypatch)
+    _stub_dry_run_context(monkeypatch)
+
+    result = cli.invoke(support_cli_app, ["feedback", "-b", "Nice", "--anonymous"])
+
+    assert result.exit_code == 0
+    assert "DRY RUN" in result.stdout
+    drafts = _today_support_drafts()
+    assert len(drafts) == 1
+    draft = drafts[0]
+    assert draft["verb"] == "feedback"
+    assert draft["payload"] == {
+        "body": "Nice",
+        "product": "solstone",
+        "anonymous": True,
+    }
+    assert draft["diagnostics_snapshot"] == STUB_DIAGNOSTICS
+
+
+def test_cli_reply_no_submit_captures_draft_without_submit(cli, monkeypatch):
+    _enable_support_cli(monkeypatch)
+
+    result = cli.invoke(
+        support_cli_app,
+        ["reply", "42", "-b", "more info", "--no-submit"],
+    )
+
+    assert result.exit_code == 0
+    assert "DRY RUN" in result.stdout
+    drafts = _today_support_drafts()
+    assert len(drafts) == 1
+    draft = drafts[0]
+    assert draft["verb"] == "reply"
+    assert draft["payload"] == {"ticket_id": 42, "content": "more info"}
+    assert draft["diagnostics_snapshot"] is None
+
+
+def test_cli_reply_default_still_submits(cli, monkeypatch):
+    replies: list[tuple[int, str]] = []
+
+    class ReplyClient:
+        def reply_to_ticket(self, ticket_id: int, content: str) -> dict:
+            replies.append((ticket_id, content))
+            return {"id": 1}
+
+    _enable_support_cli(monkeypatch)
+    monkeypatch.setattr(
+        "solstone.apps.support.routes._get_client",
+        lambda: ReplyClient(),
+    )
+
+    result = cli.invoke(support_cli_app, ["reply", "42", "-b", "hi", "--yes"])
+
+    assert result.exit_code == 0
+    assert "Reply sent to ticket #42." in result.stdout
+    assert replies == [(42, "hi")]
+    assert _today_support_drafts() == []
+
+
+def test_cli_draft_capture_failure_is_nonfatal_and_visible(cli, monkeypatch):
+    from solstone.think.convey_client import ConveyClient, ConveyClientError
+
+    original_request = ConveyClient.request
+
+    def fail_draft(self, method, path, **kwargs):
+        if path == "/app/support/api/draft":
+            raise ConveyClientError("draft failed")
+        return original_request(self, method, path, **kwargs)
+
+    _enable_support_cli(monkeypatch)
+    _stub_dry_run_context(monkeypatch)
+    monkeypatch.setattr(ConveyClient, "request", fail_draft)
+
+    result = cli.invoke(support_cli_app, ["create", "-s", "Subj", "-d", "Desc"])
+
+    assert result.exit_code == 0
+    assert "DRY RUN" in result.stdout
+    assert "(Draft not captured" in result.stderr
+
+
 def test_cli_feedback_yes_without_submit_is_still_dry_run(cli, monkeypatch):
     _enable_support_cli(monkeypatch)
     _stub_dry_run_context(monkeypatch)
 
-    result = cli.invoke(app, ["feedback", "-b", "x", "-y"])
+    result = cli.invoke(support_cli_app, ["feedback", "-b", "x", "-y"])
 
     assert result.exit_code == 0
     assert result.stdout.splitlines()[0] == DRY_RUN_BANNER
@@ -482,7 +609,7 @@ def test_cli_feedback_submit_calls_tool(cli, monkeypatch):
     _enable_support_cli(monkeypatch)
     monkeypatch.setattr("solstone.apps.support.tools.support_feedback", recorder)
 
-    result = cli.invoke(app, ["feedback", "-b", "hello", "--submit", "-y"])
+    result = cli.invoke(support_cli_app, ["feedback", "-b", "hello", "--submit", "-y"])
 
     assert result.exit_code == 0
     assert len(captured) == 1
@@ -505,7 +632,8 @@ def test_cli_create_submit_calls_tool(cli, monkeypatch):
     monkeypatch.setattr("solstone.apps.support.tools.support_create", recorder)
 
     result = cli.invoke(
-        app, ["create", "-s", "S", "-d", "D", "--skip-kb", "--submit", "-y"]
+        support_cli_app,
+        ["create", "-s", "S", "-d", "D", "--skip-kb", "--submit", "-y"],
     )
 
     assert result.exit_code == 0
@@ -531,7 +659,7 @@ def test_cli_create_submit_confirm_negative_does_not_call_tool(cli, monkeypatch)
     monkeypatch.setattr("solstone.apps.support.tools.support_create", recorder)
 
     result = cli.invoke(
-        app,
+        support_cli_app,
         ["create", "-s", "S", "-d", "D", "--skip-kb", "--submit"],
         input="n\n",
     )
@@ -544,7 +672,7 @@ def test_cli_create_submit_confirm_negative_does_not_call_tool(cli, monkeypatch)
 def test_search_disabled_prints_byte_locked_message(cli, monkeypatch):
     monkeypatch.setattr("solstone.apps.support.portal.is_enabled", lambda: False)
 
-    result = cli.invoke(app, ["search", "foo"])
+    result = cli.invoke(support_cli_app, ["search", "foo"])
 
     assert result.exit_code == 1
     assert result.stdout == ""
@@ -554,7 +682,7 @@ def test_search_disabled_prints_byte_locked_message(cli, monkeypatch):
 def test_diagnose_is_ungated_when_disabled(cli, monkeypatch):
     monkeypatch.setattr("solstone.apps.support.portal.is_enabled", lambda: False)
 
-    result = cli.invoke(app, ["diagnose"])
+    result = cli.invoke(support_cli_app, ["diagnose"])
 
     assert result.exit_code == 0
     assert "# Local Diagnostics" in result.stdout
@@ -571,7 +699,7 @@ def test_search_convey_down_prints_notice(monkeypatch):
     )
     monkeypatch.setattr("solstone.apps.support.call.get_client", lambda: client)
 
-    result = CliRunner().invoke(app, ["search", "foo"])
+    result = CliRunner().invoke(support_cli_app, ["search", "foo"])
 
     assert result.exit_code == 1
     assert result.stdout == ""
@@ -591,7 +719,7 @@ def test_diagnose_convey_down_prints_build_identity_then_notice(monkeypatch):
     )
     monkeypatch.setattr("solstone.apps.support.call.get_client", lambda: client)
 
-    result = CliRunner().invoke(app, ["diagnose"])
+    result = CliRunner().invoke(support_cli_app, ["diagnose"])
 
     assert result.exit_code == 1
     assert result.stdout.startswith("# Local Diagnostics")
@@ -614,7 +742,7 @@ def test_article_portal_error_is_reason_message(cli, monkeypatch):
         lambda: ArticleClient(),
     )
 
-    result = cli.invoke(app, ["article", "intro"])
+    result = cli.invoke(support_cli_app, ["article", "intro"])
 
     assert result.exit_code == 1
     assert result.stdout == ""
@@ -632,7 +760,7 @@ def test_list_success_renders_rows(cli, monkeypatch):
         lambda: ListClient(),
     )
 
-    result = cli.invoke(app, ["list"])
+    result = cli.invoke(support_cli_app, ["list"])
 
     assert result.exit_code == 0
     assert "  #   7  [open        ] Hi" in result.stdout
@@ -662,7 +790,7 @@ def test_attach_success_and_skip_via_fake_client(monkeypatch, tmp_path):
     fake = FakeClient()
     monkeypatch.setattr("solstone.apps.support.call.get_client", lambda: fake)
 
-    result = CliRunner().invoke(app, ["attach", "42", str(a), str(b), "-y"])
+    result = CliRunner().invoke(support_cli_app, ["attach", "42", str(a), str(b), "-y"])
 
     assert result.exit_code == 0
     assert "Attached: a.png (id: 1)" in result.stdout
@@ -683,7 +811,9 @@ def test_attach_success_and_skip_via_fake_client(monkeypatch, tmp_path):
     skipping_fake = SkippingFakeClient()
     monkeypatch.setattr("solstone.apps.support.call.get_client", lambda: skipping_fake)
 
-    skipped = CliRunner().invoke(app, ["attach", "42", str(a), str(b), "-y"])
+    skipped = CliRunner().invoke(
+        support_cli_app, ["attach", "42", str(a), str(b), "-y"]
+    )
 
     assert skipped.exit_code == 0
     assert "Attached: b.png (id: 2)" in skipped.stdout
@@ -992,7 +1122,7 @@ def test_window_excludes_old_and_cli_empty_state(cli, tmp_path, monkeypatch):
 
     assert collect_recent_errors() == []
 
-    result = cli.invoke(app, ["diagnose"])
+    result = cli.invoke(support_cli_app, ["diagnose"])
 
     assert result.exit_code == 0
     assert "No recent errors." in result.stdout
@@ -1026,7 +1156,7 @@ def test_cli_count_matches_printed_rows(cli, tmp_path, monkeypatch):
     ]
     _write_log(health_dir, "count.log", lines)
 
-    result = cli.invoke(app, ["diagnose"])
+    result = cli.invoke(support_cli_app, ["diagnose"])
 
     assert result.exit_code == 0
     assert f"Recent errors ({count}):" in result.stdout

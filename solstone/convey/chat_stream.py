@@ -27,7 +27,7 @@ _CHAT_STREAM = "chat"
 _SEGMENT_WINDOW_MS = 300_000
 _APPENDED_CHAT_PATHS: dict[int, Path] = {}
 # owner_message may carry optional `source`; extras flow through unchanged.
-# sol_message may carry optional `thinking` and `offer`; talent_finished may
+# sol_message may carry optional `thinking`, `offer`, and `draft`; talent_finished may
 # carry optional `thinking`; extras flow through unchanged and are not part of
 # the required-field tuples below.
 _VALID_KINDS = {
@@ -60,6 +60,13 @@ _VALID_KINDS = {
     "sol_chat_request_superseded": ("request_id", "replaced_by"),
     "owner_chat_open": ("request_id", "surface"),
     "owner_chat_dismissed": ("request_id", "surface", "reason"),
+    "support_draft": (
+        "draft_id",
+        "captured_day",
+        "verb",
+        "payload",
+        "diagnostics_snapshot",
+    ),
 }
 _TRIGGER_KINDS = {
     "owner_message",
@@ -231,6 +238,7 @@ def reduce_chat_state(day: str) -> dict[str, Any]:
                 "requested_target": event["requested_target"],
                 "requested_task": event["requested_task"],
                 "offer": event.get("offer"),
+                "draft": event.get("draft"),
             }
             continue
 
@@ -345,6 +353,11 @@ def _require_journal_root() -> Path:
 
 def _day_for_ts(ts_ms: int) -> str:
     return _ts_to_local_datetime(ts_ms).strftime("%Y%m%d")
+
+
+def day_for_ts(ts: int) -> str:
+    """Return the chat-stream day bucket for an event timestamp (ms)."""
+    return _day_for_ts(ts)
 
 
 def _current_segment_key(day: str, ts_ms: int) -> str:

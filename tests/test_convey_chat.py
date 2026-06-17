@@ -11,8 +11,10 @@ import pytest
 from flask import Flask
 
 from solstone.apps.chat.copy import (
+    CHAT_CLOSER_SUPPORT_SEND_FAILED,
     CHAT_OFFER_SUPPORT_DECLINE,
     CHAT_OFFER_SUPPORT_PROMPT,
+    CHAT_SUPPORT_DRAFT_READY,
 )
 from solstone.convey.chat import ChatSpawnResult, chat_bp
 from solstone.convey.chat_stream import append_chat_event, read_chat_events
@@ -80,6 +82,12 @@ def _set_current_chat(chat_module, logical_use_id: str, raw_use_id: str | None) 
             "location": {"app": "sol", "path": "/app/sol", "facet": "work"},
             "retry_count": 0,
         }
+
+
+def _set_current_chat_trigger(chat_module, trigger: dict) -> None:
+    _set_current_chat(chat_module, "logical-chat", "raw-chat")
+    with chat_module._state_lock:
+        chat_module._current_chat_state["trigger"] = trigger
 
 
 def _talent_route_result(target: str, task: str = "file a ticket") -> dict:
@@ -350,6 +358,246 @@ def test_non_outbound_routes_are_not_gated(chat_client, monkeypatch, target):
         for event in events
         if event["kind"] == "sol_message" and event["use_id"] == "logical-chat"
     )
+    assert "offer" not in sol_message
+
+
+def test_clean_support_finish_with_pending_draft_emits_marker(chat_client, monkeypatch):
+    import solstone.convey.chat as chat
+
+    monkeypatch.setattr("solstone.convey.chat._run_next_action", lambda _action: None)
+    monkeypatch.setattr("solstone.convey.chat._emit_finish", lambda *_args: None)
+    monkeypatch.setattr("solstone.convey.chat._emit_error", lambda *_args: None)
+    draft_payload = {"subject": "Subj", "description": "Desc"}
+    diagnostics = {"version": "9.9.9", "revision": "abc1234"}
+    append_chat_event(
+        "support_draft",
+        draft_id="draft-1",
+        captured_day=date.today().strftime("%Y%m%d"),
+        verb="create",
+        payload=draft_payload,
+        diagnostics_snapshot=diagnostics,
+    )
+    _set_current_chat_trigger(
+        chat,
+        {"type": "talent_finished", "name": "support", "summary": "drafted"},
+    )
+
+    chat._on_cortex_finish(
+        {
+            "use_id": "raw-chat",
+            "result": json.dumps(
+                {
+                    "message": "I drafted a request.",
+                    "notes": "done",
+                    "talent_request": None,
+                }
+            ),
+        }
+    )
+
+    sol_message = next(
+        event
+        for event in read_chat_events(chat._today_day())
+        if event["kind"] == "sol_message"
+    )
+    assert sol_message["text"] == CHAT_SUPPORT_DRAFT_READY
+    assert sol_message["draft"] == {
+        "draft_id": "draft-1",
+        "verb": "create",
+        "payload": draft_payload,
+        "diagnostics_snapshot": diagnostics,
+    }
+    assert "offer" not in sol_message
+
+
+def test_errored_support_finish_with_pending_draft_keeps_send_failed_closer(
+    chat_client, monkeypatch
+):
+    import solstone.convey.chat as chat
+
+    monkeypatch.setattr("solstone.convey.chat._run_next_action", lambda _action: None)
+    monkeypatch.setattr("solstone.convey.chat._emit_finish", lambda *_args: None)
+    monkeypatch.setattr("solstone.convey.chat._emit_error", lambda *_args: None)
+    append_chat_event(
+        "support_draft",
+        draft_id="draft-1",
+        captured_day=date.today().strftime("%Y%m%d"),
+        verb="create",
+        payload={"subject": "Subj"},
+        diagnostics_snapshot={"version": "9.9.9"},
+    )
+    _set_current_chat_trigger(
+        chat,
+        {
+            "type": "talent_errored",
+            "name": "support",
+            "reason": "Traceback",
+            "reason_code": "wall_clock_exceeded",
+        },
+    )
+
+    chat._on_cortex_finish(
+        {
+            "use_id": "raw-chat",
+            "result": json.dumps(
+                {
+                    "message": "I drafted a request.",
+                    "notes": "blocked",
+                    "talent_request": None,
+                }
+            ),
+        }
+    )
+
+    sol_message = next(
+        event
+        for event in read_chat_events(chat._today_day())
+        if event["kind"] == "sol_message"
+    )
+    assert sol_message["text"] == CHAT_CLOSER_SUPPORT_SEND_FAILED
+    assert "draft" not in sol_message
+
+
+def test_clean_support_finish_without_pending_draft_does_not_emit_marker(
+    chat_client, monkeypatch
+):
+    import solstone.convey.chat as chat
+
+    monkeypatch.setattr("solstone.convey.chat._run_next_action", lambda _action: None)
+    monkeypatch.setattr("solstone.convey.chat._emit_finish", lambda *_args: None)
+    monkeypatch.setattr("solstone.convey.chat._emit_error", lambda *_args: None)
+    _set_current_chat_trigger(
+        chat,
+        {"type": "talent_finished", "name": "support", "summary": "done"},
+    )
+
+    chat._on_cortex_finish(
+        {
+            "use_id": "raw-chat",
+            "result": json.dumps(
+                {
+                    "message": "Done.",
+                    "notes": "done",
+                    "talent_request": None,
+                }
+            ),
+        }
+    )
+
+    sol_message = next(
+        event
+        for event in read_chat_events(chat._today_day())
+        if event["kind"] == "sol_message"
+    )
+    assert "draft" not in sol_message
+    assert sol_message["text"] != CHAT_SUPPORT_DRAFT_READY
+
+
+def test_non_support_finish_with_pending_draft_does_not_emit_marker(
+    chat_client, monkeypatch
+):
+    import solstone.convey.chat as chat
+
+    monkeypatch.setattr("solstone.convey.chat._run_next_action", lambda _action: None)
+    monkeypatch.setattr("solstone.convey.chat._emit_finish", lambda *_args: None)
+    monkeypatch.setattr("solstone.convey.chat._emit_error", lambda *_args: None)
+    append_chat_event(
+        "support_draft",
+        draft_id="draft-1",
+        captured_day=date.today().strftime("%Y%m%d"),
+        verb="create",
+        payload={"subject": "Subj"},
+        diagnostics_snapshot={"version": "9.9.9"},
+    )
+    _set_current_chat_trigger(
+        chat,
+        {"type": "talent_finished", "name": "read", "summary": "done"},
+    )
+
+    chat._on_cortex_finish(
+        {
+            "use_id": "raw-chat",
+            "result": json.dumps(
+                {
+                    "message": "Done.",
+                    "notes": "done",
+                    "talent_request": None,
+                }
+            ),
+        }
+    )
+
+    sol_message = next(
+        event
+        for event in read_chat_events(chat._today_day())
+        if event["kind"] == "sol_message"
+    )
+    assert "draft" not in sol_message
+
+
+def test_support_draft_state_result_seam_uses_latest_draft(monkeypatch):
+    import solstone.convey.chat as chat
+
+    monkeypatch.setattr(
+        chat,
+        "read_chat_events",
+        lambda _day: [
+            {"kind": "support_draft", "draft_id": "d1"},
+            {"kind": "result", "draft_id": "d1"},
+        ],
+    )
+    assert chat._support_draft_state("20260420") == "submitted"
+
+    monkeypatch.setattr(
+        chat,
+        "read_chat_events",
+        lambda _day: [
+            {"kind": "support_draft", "draft_id": "d1"},
+            {"kind": "support_draft", "draft_id": "d2"},
+            {"kind": "result", "draft_id": "d1"},
+        ],
+    )
+    assert chat._support_draft_state("20260420") == "pending"
+
+
+def test_support_finish_draft_marker_does_not_emit_offer(chat_client, monkeypatch):
+    import solstone.convey.chat as chat
+
+    monkeypatch.setattr("solstone.convey.chat._run_next_action", lambda _action: None)
+    monkeypatch.setattr("solstone.convey.chat._emit_finish", lambda *_args: None)
+    monkeypatch.setattr("solstone.convey.chat._emit_error", lambda *_args: None)
+    append_chat_event(
+        "support_draft",
+        draft_id="draft-1",
+        captured_day=date.today().strftime("%Y%m%d"),
+        verb="create",
+        payload={"subject": "Subj"},
+        diagnostics_snapshot=None,
+    )
+    _set_current_chat_trigger(
+        chat,
+        {"type": "talent_finished", "name": "support", "summary": "drafted"},
+    )
+
+    chat._on_cortex_finish(
+        {
+            "use_id": "raw-chat",
+            "result": json.dumps(
+                {
+                    "message": "I drafted a request.",
+                    "notes": "done",
+                    "talent_request": None,
+                }
+            ),
+        }
+    )
+
+    sol_message = next(
+        event
+        for event in read_chat_events(chat._today_day())
+        if event["kind"] == "sol_message"
+    )
+    assert "draft" in sol_message
     assert "offer" not in sol_message
 
 

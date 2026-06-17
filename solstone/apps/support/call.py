@@ -105,6 +105,36 @@ def _print_dry_run_preview(
     typer.echo("--- End dry run ---")
 
 
+def _capture_draft(
+    client: ConveyClient,
+    *,
+    verb: str,
+    payload: dict,
+    diagnostics_snapshot: dict | None,
+) -> None:
+    """POST the exact submit-path payload to the dormant draft-capture endpoint.
+
+    Non-fatal: a capture failure prints a notice and returns; it never raises, so a
+    dry-run / no-network reply stays infallible. ConveyUnreachableError is a
+    ConveyClientError subclass, so the single except covers unreachable too.
+    """
+    try:
+        client.request(
+            "POST",
+            "/app/support/api/draft",
+            json={
+                "verb": verb,
+                "payload": payload,
+                "diagnostics_snapshot": diagnostics_snapshot,
+            },
+        )
+    except ConveyClientError:
+        typer.echo(
+            "(Draft not captured — solstone wasn't reachable to save it for review.)",
+            err=True,
+        )
+
+
 def _local_build_identity() -> dict:
     try:
         ver = _pkg_version("solstone")
@@ -232,6 +262,21 @@ def create(
             body=description,
             diagnostics=diagnostics,
             portal_url=config["portal_url"],
+        )
+        _capture_draft(
+            client,
+            verb="create",
+            payload={
+                "subject": subject,
+                "description": description,
+                "product": product,
+                "severity": severity,
+                "category": category,
+                "user_context": diagnostics,
+                "auto_context": False,
+                "anonymous": anonymous,
+            },
+            diagnostics_snapshot=diagnostics,
         )
         return
 
@@ -368,11 +413,34 @@ def show(
 def reply(
     ticket_id: int = typer.Argument(..., help="Ticket ID."),
     body: str = typer.Option(..., "--body", "-b", help="Reply content."),
+    submit: bool = typer.Option(
+        True,
+        "--submit/--no-submit",
+        help=(
+            "Send the reply to solstone support (default). Pass --no-submit to "
+            "capture a draft for review without contacting the portal."
+        ),
+    ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
 ) -> None:
     """Reply to a ticket."""
     client = get_client()
     _check_enabled(client)
+
+    if not submit:
+        # No-network capture: stash the exact submit body as a draft. The portal is
+        # not contacted at all; nothing is sent.
+        typer.echo(
+            "DRY RUN — nothing was sent. Re-run with --submit to actually send this."
+        )
+        typer.echo(f"Reply to ticket #{ticket_id}:\n{body}")
+        _capture_draft(
+            client,
+            verb="reply",
+            payload={"ticket_id": ticket_id, "content": body},
+            diagnostics_snapshot=None,
+        )
+        return
 
     if not yes:
         typer.echo(f"Reply to ticket #{ticket_id}:\n{body}\n")
@@ -467,6 +535,12 @@ def feedback(
             body=body,
             diagnostics=diagnostics,
             portal_url=config["portal_url"],
+        )
+        _capture_draft(
+            client,
+            verb="feedback",
+            payload={"body": body, "product": product, "anonymous": anonymous},
+            diagnostics_snapshot=diagnostics,
         )
         return
 

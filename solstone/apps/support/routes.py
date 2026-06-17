@@ -9,10 +9,13 @@ Provides API endpoints consumed by workspace.html and the background service.
 from __future__ import annotations
 
 import logging
+import time
+import uuid
 from typing import Any
 
 from flask import Blueprint, jsonify, request
 
+from solstone.convey.chat_stream import append_chat_event, day_for_ts
 from solstone.convey.reasons import (
     FEATURE_UNAVAILABLE,
     INVALID_REQUEST_VALUE,
@@ -56,6 +59,46 @@ def config() -> Any:
     return jsonify(
         {"enabled": is_enabled(), "portal_url": _get_portal_url_from_settings()}
     )
+
+
+@support_bp.route("/api/draft", methods=["POST"])
+def capture_draft() -> Any:
+    """Capture a structured support draft into the chat stream — no portal I/O.
+
+    Dormant cutover seam: the support CLI POSTs the exact submit-path payload here
+    on a dry-run / no-network capture. Emits a backend-only ``support_draft`` chat
+    event and returns its ``draft_id``. Nothing is sent to solstone support.
+    """
+    if not _enabled():
+        return error_response(FEATURE_UNAVAILABLE, detail="Support is disabled")
+
+    payload = request.get_json(force=True)
+    verb = payload.get("verb")
+    draft_payload = payload.get("payload")
+    if verb is None or draft_payload is None:
+        return error_response(
+            MISSING_REQUIRED_FIELD, detail="verb and payload are required"
+        )
+    if verb not in {"create", "feedback", "reply"} or not isinstance(
+        draft_payload, dict
+    ):
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail="verb must be create|feedback|reply and payload must be an object",
+        )
+
+    ts = int(time.time() * 1000)
+    draft_id = uuid.uuid4().hex
+    append_chat_event(
+        "support_draft",
+        ts=ts,
+        draft_id=draft_id,
+        captured_day=day_for_ts(ts),
+        verb=verb,
+        payload=draft_payload,
+        diagnostics_snapshot=payload.get("diagnostics_snapshot"),
+    )
+    return jsonify({"draft_id": draft_id})
 
 
 @support_bp.route("/api/register", methods=["POST"])

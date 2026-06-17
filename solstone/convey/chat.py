@@ -30,6 +30,7 @@ from solstone.apps.chat.copy import (
     CHAT_CLOSER_TALENT_ERRORED_GENERIC,
     CHAT_OFFER_SUPPORT_DECLINE,
     CHAT_OFFER_SUPPORT_PROMPT,
+    CHAT_SUPPORT_DRAFT_READY,
 )
 from solstone.convey.chat_stream import (
     append_chat_event,
@@ -479,6 +480,23 @@ def _on_cortex_finish(message: dict[str, Any]) -> None:
                     )
                     requested_target = None
                     requested_task = None
+                draft: dict[str, Any] | None = None
+                if (
+                    trigger_type == "talent_finished"
+                    and trigger.get("name") in OUTBOUND_TALENTS
+                    and _support_draft_state(_today_day()) == "pending"
+                ):
+                    latest_draft = _latest_support_draft(_today_day())
+                    if latest_draft is not None:
+                        message_text = CHAT_SUPPORT_DRAFT_READY
+                        draft = {
+                            "draft_id": latest_draft.get("draft_id"),
+                            "verb": latest_draft.get("verb"),
+                            "payload": latest_draft.get("payload"),
+                            "diagnostics_snapshot": latest_draft.get(
+                                "diagnostics_snapshot"
+                            ),
+                        }
                 if requested_target in OUTBOUND_TALENTS:
                     consent = _support_consent_state(_today_day())
                     if consent == "none":
@@ -502,6 +520,8 @@ def _on_cortex_finish(message: dict[str, Any]) -> None:
                     sol_message_fields["thinking"] = thinking
                 if offer is not None:
                     sol_message_fields["offer"] = offer
+                if draft is not None:
+                    sol_message_fields["draft"] = draft
                 append_chat_event(
                     "sol_message",
                     **sol_message_fields,
@@ -1774,3 +1794,41 @@ def _support_consent_state(day: str) -> str:
     }:
         return "pending"
     return "none"
+
+
+def _support_draft_state(day: str) -> str:
+    """Deterministic, day-scoped support-draft state for the conversation.
+
+    Mirrors _support_consent_state. Walks history tracking the LATEST support_draft.
+    Returns:
+      "submitted" — a `result` event back-references the latest draft's draft_id
+                    (forward seam; no `result` writer exists yet, so this is
+                    present-but-inert today — the next lode adds only that writer).
+      "pending"   — a support_draft exists and is not yet submitted.
+      "none"      — no support_draft.
+    Precedence: submitted, then pending, else none.
+    """
+    latest_draft_id: str | None = None
+    result_draft_ids: set[str] = set()
+    for event in read_chat_events(day):
+        kind = event.get("kind")
+        if kind == "support_draft":
+            latest_draft_id = str(event.get("draft_id") or "")
+        elif kind == "result":
+            result_draft_id = str(event.get("draft_id") or "")
+            if result_draft_id:
+                result_draft_ids.add(result_draft_id)
+    if latest_draft_id and latest_draft_id in result_draft_ids:
+        return "submitted"
+    if latest_draft_id:
+        return "pending"
+    return "none"
+
+
+def _latest_support_draft(day: str) -> dict[str, Any] | None:
+    """Return the most recent support_draft event for ``day``, or None."""
+    latest: dict[str, Any] | None = None
+    for event in read_chat_events(day):
+        if event.get("kind") == "support_draft":
+            latest = event
+    return latest

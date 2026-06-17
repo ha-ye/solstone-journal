@@ -48,6 +48,10 @@ CHAT_THINKING_SETTING_HELP = "sol does some thinking before replying. Choose how
 # Brand rule: "solstone support", never "sol pbc".
 CHAT_OFFER_SUPPORT_PROMPT = "Sounds like something's not working — want me to bring in solstone support?"
 CHAT_OFFER_SUPPORT_DECLINE = "Okay — I'll keep this local. Tell me if you'd like me to bring in solstone support after all."
+# Deterministic support-draft-ready marker (backend-emitted; rides the sol_message
+# text on a clean support talent_finished with a pending draft). Brand: "solstone
+# support". Backend-only — no chat_copy.js twin (no card renders this lode).
+CHAT_SUPPORT_DRAFT_READY = "Here's the support request I put together — look it over before anything goes to solstone support."
 # fmt: on
 
 from typing import Literal

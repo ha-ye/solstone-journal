@@ -168,6 +168,26 @@ def test_chat_queue_depth_event_validates_depth(tmp_path, monkeypatch):
         append_chat_event("chat_queue_depth", ts=ts + 2, depth="3")
 
 
+def test_support_draft_event_round_trips(tmp_path, monkeypatch):
+    _setup_journal(tmp_path, monkeypatch)
+    ts = _ms(2026, 4, 20, 12, 0, 0)
+
+    event = append_chat_event(
+        "support_draft",
+        ts=ts,
+        draft_id="draft-1",
+        captured_day="20260420",
+        verb="create",
+        payload={"subject": "help"},
+        diagnostics_snapshot=None,
+    )
+
+    events = read_chat_events("20260420")
+    assert events == [event]
+    assert events[0]["kind"] == "support_draft"
+    assert events[0]["draft_id"] == "draft-1"
+
+
 def test_chat_error_preserves_optional_provider(tmp_path, monkeypatch):
     _setup_journal(tmp_path, monkeypatch)
     ts = _ms(2026, 4, 20, 12, 0, 0)
@@ -486,6 +506,7 @@ def test_reduce_chat_state_extracts_latest_sol_and_active_talents(
         "requested_target": "exec",
         "requested_task": "compare drafts",
         "offer": None,
+        "draft": None,
     }
     assert reduced["active_talents"] == [
         {
@@ -539,6 +560,46 @@ def test_reduce_chat_state_includes_offer_and_clears_on_later_sol_message(
 
     reduced = reduce_chat_state("20260420")
     assert reduced["latest_sol_message"]["offer"] is None
+
+
+def test_reduce_chat_state_includes_draft_and_clears_on_later_sol_message(
+    tmp_path, monkeypatch
+):
+    _setup_journal(tmp_path, monkeypatch)
+    start = _ms(2026, 4, 20, 12, 0, 0)
+    draft = {
+        "draft_id": "draft-1",
+        "verb": "create",
+        "payload": {"subject": "help"},
+        "diagnostics_snapshot": {"version": "9.9.9"},
+    }
+
+    append_chat_event(
+        "sol_message",
+        ts=start,
+        use_id="chat-draft",
+        text="draft ready",
+        notes="support draft",
+        requested_target=None,
+        requested_task=None,
+        draft=draft,
+    )
+
+    reduced = reduce_chat_state("20260420")
+    assert reduced["latest_sol_message"]["draft"] == draft
+
+    append_chat_event(
+        "sol_message",
+        ts=start + 1_000,
+        use_id="chat-answer",
+        text="done",
+        notes="answered",
+        requested_target=None,
+        requested_task=None,
+    )
+
+    reduced = reduce_chat_state("20260420")
+    assert reduced["latest_sol_message"]["draft"] is None
 
 
 def test_reduce_chat_state_returns_last_queue_depth(tmp_path, monkeypatch):

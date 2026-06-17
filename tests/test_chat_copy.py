@@ -177,6 +177,15 @@ def test_closer_constants_byte_parity():
     assert "try again" in chat_copy.CHAT_CLOSER_SUPPORT_SEND_FAILED.lower()
 
 
+def test_support_draft_ready_copy_bytes():
+    assert chat_copy.CHAT_SUPPORT_DRAFT_READY == (
+        "Here's the support request I put together — look it over before anything "
+        "goes to solstone support."
+    )
+    assert "solstone support" in chat_copy.CHAT_SUPPORT_DRAFT_READY
+    assert "sol pbc" not in chat_copy.CHAT_SUPPORT_DRAFT_READY
+
+
 def test_chat_placeholder_css_present():
     css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
 
