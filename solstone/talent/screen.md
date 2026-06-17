@@ -6,6 +6,7 @@
   "color": "#9c27b0",
   "schedule": "segment",
   "priority": 10,
+  "tier": 3,
   "output": "md",
   "load": {"transcripts": true, "percepts": "required", "talents": false}
 
