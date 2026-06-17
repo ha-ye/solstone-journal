@@ -186,6 +186,14 @@ def test_support_draft_ready_copy_bytes():
     assert "sol pbc" not in chat_copy.CHAT_SUPPORT_DRAFT_READY
 
 
+def test_draft_card_copy_present():
+    text = Path("solstone/convey/static/chat_copy.js").read_text(encoding="utf-8")
+    assert 'CHAT_DRAFT_SUBMIT: "send to solstone support"' in text
+    assert 'CHAT_DRAFT_CANCEL: "cancel"' in text
+    assert 'CHAT_DRAFT_DIAGNOSTICS_LABEL: "diagnostics included"' in text
+    assert "sol pbc" not in "send to solstone support"
+
+
 def test_chat_placeholder_css_present():
     css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
 

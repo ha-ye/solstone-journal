@@ -171,6 +171,11 @@
   const offerTextEl = offerEl ? offerEl.querySelector('.offer-text') : null;
   const offerYesBtn = document.getElementById('chatBarOfferYes');
   const offerNoBtn = document.getElementById('chatBarOfferNo');
+  const draftEl = document.getElementById('chatBarDraft');
+  const draftLeadEl = draftEl ? draftEl.querySelector('.chat-bar-draft-lead') : null;
+  const draftBodyEl = draftEl ? draftEl.querySelector('.chat-bar-draft-body') : null;
+  const draftSubmitBtn = document.getElementById('chatBarDraftSubmit');
+  const draftCancelBtn = document.getElementById('chatBarDraftCancel');
   const solPingDismiss = document.getElementById('chatBarSolPingDismiss');
   const talentsTray = document.getElementById('chatBarTalents');
   const form = document.getElementById('chatBarForm');
@@ -188,6 +193,7 @@
   const SOL_PING_OFFLINE_DELAY_MS = 30000;
   let trayPage = 0;
   let pendingSend = false;
+  let currentDraft = null;
   let modalUseId = null;
   let modalPollTimer = null;
   let modalChatCleanup = null;
@@ -346,6 +352,11 @@
     if (offerNoBtn) offerNoBtn.textContent = window.solChatCopy.CHAT_OFFER_SUPPORT_NO;
   }
 
+  function populateSupportDraftCopy() {
+    if (draftSubmitBtn) draftSubmitBtn.textContent = window.solChatCopy.CHAT_DRAFT_SUBMIT;
+    if (draftCancelBtn) draftCancelBtn.textContent = window.solChatCopy.CHAT_DRAFT_CANCEL;
+  }
+
   function showSupportOffer(text) {
     if (!offerEl) return;
     if (offerTextEl) offerTextEl.textContent = text || window.solChatCopy.CHAT_OFFER_SUPPORT_FALLBACK;
@@ -356,6 +367,93 @@
   function hideSupportOffer() {
     if (!offerEl) return;
     offerEl.hidden = true;
+  }
+
+  const DRAFT_VERB_FIELDS = {
+    create: [['subject', 'subject'], ['description', 'description'], ['severity', 'severity'], ['category', 'category'], ['product', 'product'], ['anonymous', 'anonymous']],
+    feedback: [['body', 'feedback'], ['product', 'product'], ['anonymous', 'anonymous']],
+    reply: [['ticket_id', 'ticket'], ['content', 'reply']]
+  };
+
+  function appendDraftValue(parent, value) {
+    if (value === null || typeof value !== 'object') {
+      const span = document.createElement('span');
+      span.className = 'chat-bar-draft-value';
+      span.textContent = value === null ? '—' : String(value);
+      parent.appendChild(span);
+      return;
+    }
+    if (Array.isArray(value)) {
+      const list = document.createElement('ul');
+      list.className = 'chat-bar-draft-list';
+      value.forEach(function(item) {
+        const li = document.createElement('li');
+        appendDraftValue(li, item);
+        list.appendChild(li);
+      });
+      parent.appendChild(list);
+      return;
+    }
+    const dl = document.createElement('dl');
+    dl.className = 'chat-bar-draft-kv';
+    Object.keys(value).forEach(function(key) {
+      const dt = document.createElement('dt');
+      dt.textContent = key;
+      const dd = document.createElement('dd');
+      appendDraftValue(dd, value[key]);
+      dl.appendChild(dt);
+      dl.appendChild(dd);
+    });
+    parent.appendChild(dl);
+  }
+
+  function showSupportDraft(draft, leadText) {
+    if (!draftEl || !draft) return;
+    currentDraft = draft;
+    if (draftSubmitBtn) draftSubmitBtn.disabled = false;
+    if (draftCancelBtn) draftCancelBtn.disabled = false;
+    if (draftLeadEl) draftLeadEl.textContent = leadText || '';
+    if (draftBodyEl) {
+      draftBodyEl.replaceChildren();
+      const fields = DRAFT_VERB_FIELDS[draft.verb] || [];
+      const payload = draft.payload || {};
+      fields.forEach(function(pair) {
+        const key = pair[0], label = pair[1];
+        if (!(key in payload)) return;
+        const row = document.createElement('div');
+        row.className = 'chat-bar-draft-field';
+        const lab = document.createElement('span');
+        lab.className = 'chat-bar-draft-label';
+        lab.textContent = label;
+        const val = document.createElement('span');
+        val.className = 'chat-bar-draft-fieldval';
+        val.textContent = String(payload[key] ?? '—');
+        row.appendChild(lab);
+        row.appendChild(val);
+        draftBodyEl.appendChild(row);
+      });
+      const diag = draft.diagnostics_snapshot;
+      if (diag && typeof diag === 'object') {
+        const section = document.createElement('div');
+        section.className = 'chat-bar-draft-diagnostics';
+        const head = document.createElement('div');
+        head.className = 'chat-bar-draft-diagnostics-label';
+        head.textContent = window.solChatCopy.CHAT_DRAFT_DIAGNOSTICS_LABEL;
+        section.appendChild(head);
+        appendDraftValue(section, diag);
+        draftBodyEl.appendChild(section);
+      }
+    }
+    draftEl.hidden = false;
+    setStatus('', '');
+  }
+
+  function hideSupportDraft() {
+    if (!draftEl) return;
+    draftEl.hidden = true;
+    currentDraft = null;
+    if (draftSubmitBtn) draftSubmitBtn.disabled = false;
+    if (draftCancelBtn) draftCancelBtn.disabled = false;
   }
 
   function getTalentEntries() {
@@ -967,6 +1065,7 @@
     if (eventName === 'owner_message') {
       setPendingState(false);
       hideSupportOffer();
+      hideSupportDraft();
       if (supportCapacityActive && !isSupportTalentRunning()) exitSupportCapacity();
       if (!solRequestState) {
         chatBarPendingPlaceholders.push({ ownerText: msg.text || '', ts: msg.ts || Date.now() });
@@ -988,10 +1087,15 @@
     if (eventName === 'sol_message') {
       if (solRequestState) return;
       clearPendingLivenessStatus();
-      if (msg.offer && msg.offer.kind === 'support') {
+      if (msg.draft) {
+        hideSupportOffer();
+        showSupportDraft(msg.draft, msg.text || '');
+      } else if (msg.offer && msg.offer.kind === 'support') {
+        hideSupportDraft();
         showSupportOffer(msg.text || '');
       } else {
         hideSupportOffer();
+        hideSupportDraft();
         setStatus(msg.text || '', msg.notes || msg.text || '');
       }
       if (supportCapacityActive && !isSupportTalentRunning()) exitSupportCapacity();
@@ -1076,6 +1180,7 @@
     if (!appBar) return;
     populateSupportCapacityCopy();
     populateSupportOfferCopy();
+    populateSupportDraftCopy();
     if (window.solChatBarSeed) {
       renderSolPing(window.solChatBarSeed);
     } else {
@@ -1084,9 +1189,15 @@
     try {
       var data = await window.apiJson('/api/chat/session');
       if (data.latest_sol_message && !solRequestState) {
-        if (data.latest_sol_message.offer && data.latest_sol_message.offer.kind === 'support') {
+        if (data.latest_sol_message.draft) {
+          hideSupportOffer();
+          showSupportDraft(data.latest_sol_message.draft, data.latest_sol_message.text || '');
+        } else if (data.latest_sol_message.offer && data.latest_sol_message.offer.kind === 'support') {
+          hideSupportDraft();
           showSupportOffer(data.latest_sol_message.text || '');
         } else {
+          hideSupportOffer();
+          hideSupportDraft();
           setStatus(
             data.latest_sol_message.text || '',
             data.latest_sol_message.notes || data.latest_sol_message.text || ''
@@ -1267,6 +1378,41 @@
           if (window.logError) window.logError(err, { context: 'chat-offer-decline' });
           return null;
         });
+      });
+    }
+
+    function submitDraftAction(endpoint) {
+      if (pendingSend) return;
+      if (!currentDraft || !currentDraft.draft_id) return;
+      const draftId = String(currentDraft.draft_id);
+      if (draftSubmitBtn) draftSubmitBtn.disabled = true;
+      if (draftCancelBtn) draftCancelBtn.disabled = true;
+      if (!window.apiJson) return;
+      window.apiJson(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ draft_id: draftId })
+      }).then(function(resp) {
+        const outcome = resp && resp.outcome;
+        if (outcome === 'not_found' || outcome === 'already_submitted' || outcome === 'superseded') {
+          hideSupportDraft();
+        }
+        return resp;
+      }).catch(function(err) {
+        if (window.logError) window.logError(err, { context: 'chat-support-draft' });
+        if (draftSubmitBtn) draftSubmitBtn.disabled = false;
+        if (draftCancelBtn) draftCancelBtn.disabled = false;
+        return null;
+      });
+    }
+    if (draftSubmitBtn) {
+      draftSubmitBtn.addEventListener('click', function() {
+        submitDraftAction('/api/chat/support/draft/confirm');
+      });
+    }
+    if (draftCancelBtn) {
+      draftCancelBtn.addEventListener('click', function() {
+        submitDraftAction('/api/chat/support/draft/cancel');
       });
     }
 

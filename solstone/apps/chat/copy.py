@@ -50,7 +50,8 @@ CHAT_OFFER_SUPPORT_PROMPT = "Sounds like something's not working — want me to 
 CHAT_OFFER_SUPPORT_DECLINE = "Okay — I'll keep this local. Tell me if you'd like me to bring in solstone support after all."
 # Deterministic support-draft-ready marker (backend-emitted; rides the sol_message
 # text on a clean support talent_finished with a pending draft). Brand: "solstone
-# support". Backend-only — no chat_copy.js twin (no card renders this lode).
+# support". Backend-only — no chat_copy.js twin; the C1 draft-review card renders
+# this as its lead line via the sol_message text.
 CHAT_SUPPORT_DRAFT_READY = "Here's the support request I put together — look it over before anything goes to solstone support."
 # Deterministic support-draft submit/cancel results. Brand: "solstone support".
 # Backend-only — no chat_copy.js twin.
