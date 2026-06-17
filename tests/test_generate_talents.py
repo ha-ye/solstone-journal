@@ -24,3 +24,19 @@ def test_root_agent_symlinks_point_to_agents():
     assert gemini_path.is_symlink()
     assert claude_path.readlink() == Path("AGENTS.md")
     assert gemini_path.readlink() == Path("AGENTS.md")
+
+
+def test_generation_params_thinking_budget_zero_disables_thinking():
+    """An explicit thinking_budget=0 must pass through (disable thinking), not
+    coalesce to the default — regression for the `or 8192*2` bug that turned 0
+    into 16384, making thinking impossible to disable from talent config."""
+    from solstone.think.talents import _generation_params
+
+    # explicit 0 -> 0 (disabled), not the default
+    assert _generation_params({"thinking_budget": 0})["thinking_budget"] == 0
+    # unset -> default
+    assert _generation_params({})["thinking_budget"] == 8192 * 2
+    # explicit None -> default
+    assert _generation_params({"thinking_budget": None})["thinking_budget"] == 8192 * 2
+    # explicit positive value -> passes through unchanged
+    assert _generation_params({"thinking_budget": 4096})["thinking_budget"] == 4096

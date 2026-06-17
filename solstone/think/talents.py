@@ -816,7 +816,14 @@ def _generation_params(config: dict) -> dict[str, Any]:
     return {
         "temperature": config.get("temperature", 0.3),
         "max_output_tokens": config.get("max_output_tokens") or 8192 * 6,
-        "thinking_budget": config.get("thinking_budget") or 8192 * 2,
+        # Default only when unset — an explicit thinking_budget=0 must pass through
+        # to disable thinking (see providers/google.py: budget=0 disables, omitting
+        # the config lets Gemini apply its own default). `or` would coalesce 0 -> default.
+        "thinking_budget": (
+            8192 * 2
+            if config.get("thinking_budget") is None
+            else config["thinking_budget"]
+        ),
     }
 
 
