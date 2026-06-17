@@ -1,13 +1,13 @@
 {
   "type": "cogitate",
-
   "title": "Entity Detector",
   "description": "Mines journal for entity mentions and records facet-scoped detections with day-specific context",
   "color": "#00897b",
   "schedule": "daily",
   "priority": 55,
   "multi_facet": true,
-  "group": "Entities"
+  "group": "Entities",
+  "hook": {"pre": "entities:entity_digest"}
 }
 
 $facets
@@ -22,7 +22,7 @@ Mine the journal for entity mentions (People, Companies, Projects, Tools, and ot
 
 ❌ DO NOT DETECT if:
 - Entity mentioned in passing from another facet's context
-- Entity appears in global search but not tied to this facet's work
+- Entity appears in context but not tied to this facet's work
 - Person/org from Facet A is merely referenced while working in Facet B
 - Transcript mentions "then I called my friend Sarah" but Sarah isn't relevant to this facet
 
@@ -36,13 +36,17 @@ Mine the journal for entity mentions (People, Companies, Projects, Tools, and ot
 
 **If a facet was quiet, 0 detections is perfectly acceptable and preferred over cross-contamination.**
 
-## Input Context
+## Inputs
 
-You receive:
-1. **Facet context** - the specific facet (e.g., "personal", "work") you are detecting entities for
-2. **Current date/time** - to focus on the analysis day's journal entries
-3. **Existing attached entities for THIS facet** - via `sol call entities list` to inform context (still detect if encountered)
-4. **Journal access** - `sol call` discovery commands and insight resources (some are facet-scoped, some are global)
+Facet-day evidence for the analysis day is provided below. It contains four deterministic sections:
+- Existing records: activity records already known for this facet and day
+- Per-span narratives: narrative summaries for captured spans in this facet and day
+- Detected entities (this day): entities already recorded for this facet and day
+- Already-attached entities: durable entities attached to this facet for context
+
+Use this digest as your source packet for the day. Do not broaden beyond it.
+
+$facet_day_digest
 
 ## Tooling
 
@@ -50,51 +54,45 @@ SOL_DAY and SOL_FACET are set in your environment. Commands default to the curre
 
 - `sol call entities list` - list entities attached to THIS facet (returns entities with entity_id)
 - `sol call entities list -d DAY` - list entities detected for THIS facet on a specific day
+- `sol call entities digest FACET -d DAY` - re-fetch the deterministic facet-day digest if needed
 - `sol call entities detect TYPE ENTITY DESCRIPTION` - record a detected entity FOR THIS FACET
   - The `entity` parameter can be entity_id, full name, or alias - if it matches an attached entity, uses that entity's canonical name
-
-Discovery tools (note facet scoping):
-- `sol call journal read AGENT` - read full agent output (e.g., knowledge_graph, followups) - GLOBAL
-- `sol call journal search QUERY -d DAY -a AGENT -f FACET -n LIMIT` - unified search across all journal content - facet-scopable
-- `sol call journal search QUERY -d DAY -a meetings -f FACET -n LIMIT` - search historical meetings - **FACET-SCOPED when facet parameter provided**
-
-**IMPORTANT**: When using GLOBAL search tools, you must actively filter results to find ONLY entities that participated in THIS facet's activities. Seeing an entity in a global search result does NOT automatically mean it belongs to this facet.
 
 ## Entity Detection Process
 
 ### Phase 1: Load Context
 
 1. Use the provided analysis day in YYYYMMDD format ($day_YYYYMMDD)
-2. Call `sol call entities list` to see entities already attached to THIS facet (this helps inform context, but you should STILL DETECT them if encountered on the analysis day - this creates historical tracking)
-3. Call `sol call entities list -d $day_YYYYMMDD` to check if detection already ran for THIS facet on the analysis day
+2. Read the provided facet-day digest for THIS facet and analysis day
+3. Review the "Detected entities (this day)" section to avoid duplicate detections
+4. Review the "Already-attached entities" section for canonical names and context, but still detect attached entities if they were encountered on the analysis day
 
 If detections already exist for THIS facet on the analysis day and look comprehensive, you may skip to avoid duplication.
 
-### Phase 2: Mine Journal Sources
+### Phase 2: Review the Facet-Day Digest
 
 **STRICT FACET SCOPING**: You must ONLY detect entities that participated in THIS facet's activities on the analysis day.
-Seeing an entity in a global search does NOT mean it belongs to this facet.
 
-**Search Strategy - Facet-First Approach:**
+Use the digest sections this way:
 
-**Priority 1: Facet-Scoped Events** (start here - most facet-specific)
-- `sol call journal search "" -d $day_YYYYMMDD -a meetings -f your_facet` - **FACET-SCOPED** when facet parameter provided
-- Events tagged to this facet are your most reliable source
-- Extract ALL entities that participated in this facet's events
+1. **Existing records**
+   - Treat activity records as the strongest structured evidence for what happened in this facet
+   - Extract entities from titles, descriptions, segments, and active_entities when they reflect active involvement
 
-**Priority 2: Knowledge Graphs** (use with strict facet filtering)
-- `sol call journal read knowledge_graph` for the analysis day
-- Knowledge graphs contain structured entity relationships (GLOBAL - filter for facet relevance)
-- **CRITICAL**: Only extract entities that are CLEARLY associated with THIS facet's activities
-- If an entity appears in the KG but has no obvious connection to this facet's work, skip it
-- Look for entities that appear alongside known facet-specific contexts
+2. **Per-span narratives**
+   - Read each narrative for people, companies, projects, and tools that were actually part of the day's work
+   - Prefer entities with concrete action, participation, decisions, collaboration, review, communication, or direct subject matter involvement
 
-**Priority 3: Insights and Transcripts** (use sparingly with extreme filtering)
-- `sol call journal search "people OR companies OR organizations OR projects OR entities" -d $day_YYYYMMDD -n 10` - GLOBAL, may include other facets
-- `sol call journal search "[entity names]" -d $day_YYYYMMDD -a audio` - GLOBAL, must validate facet relevance
-- For each result: verify the entity was actively involved in THIS facet's context, not just mentioned
+3. **Detected entities (this day)**
+   - Use this section to avoid recording the same entity multiple times
+   - If an entity is already detected and the existing description is adequate, do not duplicate it
 
-**Red flag check**: If you're finding many entities but facet events were empty, you're likely detecting entities from other facets. Stop and reassess.
+4. **Already-attached entities**
+   - Use attached entities to recognize canonical names and aliases
+   - Attached status alone is NOT evidence of day-specific involvement
+   - Only record an attached entity when today's records or narratives show active involvement
+
+**Red flag check**: If you're finding many entities but the records and narratives are thin or quiet, you're likely over-detecting from background context. Stop and reassess.
 
 ### Phase 3: Entity Extraction & Qualification
 
@@ -160,8 +158,8 @@ Before calling `sol call entities detect`, verify EACH entity passes this test:
 **Common Failure Modes to Avoid:**
 - Person from work facet mentioned during personal facet call → Don't detect in personal
 - Personal contact mentioned during work facet meeting → Don't detect in work
-- Tool used in another facet that came up in global search → Don't detect unless discussed in THIS facet
-- Entity prominent in knowledge graph but not tied to this facet's activities → Skip it
+- Tool used in another facet that came up in background context → Don't detect unless discussed in THIS facet
+- Entity listed as already-attached but absent from today's records/narratives → Skip it
 
 ### Phase 4: Record Detections
 
@@ -184,8 +182,7 @@ sol call entities detect Project "API Gateway" "merged performance improvements,
 ## Quality Guidelines
 
 ### DO:
-- Start with facet-scoped events as primary source
-- Use knowledge graphs with strict facet filtering
+- Start with the provided facet-day digest as the primary source
 - Record ALL people encountered, even brief mentions
 - Be selective with companies/organizations (only important relationships)
 - Be conservative with projects (only obvious/central ones)
@@ -205,9 +202,9 @@ sol call entities detect Project "API Gateway" "merged performance improvements,
 - Record entities without clear evidence from the analysis day
 - Invent or assume entities not in the journal
 - Record the same entity multiple times in one day (deduplicate)
-- Detect entities from other facets just because they appear in global searches
+- Detect entities from other facets just because they appear in background context
 - Feel pressure to hit detection quotas when facet is quiet
-- Detect entities that appear in knowledge graph but aren't tied to this facet
+- Detect entities listed only as attached when today's digest does not show involvement
 
 ## Interaction Protocol
 
@@ -215,7 +212,7 @@ When invoked:
 1. Announce the working day and the SPECIFIC FACET you are detecting entities for
 2. Use the provided analysis day in YYYYMMDD format ($day_YYYYMMDD)
 3. Check if detections already exist for THIS facet on the analysis day
-4. Start with facet events (facet-scoped), then expand to knowledge graph with strict filtering, filtering for facet relevance
+4. Review the facet-day digest records and narratives, using attached entities only as context
 5. Extract entities with day-specific context that are relevant to THIS facet, applying priority filters:
    - ALL people (highest priority) encountered in this facet's activities
    - SELECTIVE companies/organizations/projects (only important/central to this facet)

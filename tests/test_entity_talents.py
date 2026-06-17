@@ -57,10 +57,20 @@ def test_entities_agent_instruction_content(fixture_journal):
 
     # Check for key sections in the agent prompt
     assert "Core Mission" in prompt
+    assert "$facet_day_digest" in prompt
     assert "sol call entities detect" in prompt
     assert "sol call entities list" in prompt
-    assert "Knowledge Graphs" in prompt or "knowledge_graph" in prompt
+    assert "ONLY detect entities that were ACTIVELY INVOLVED" in prompt
+    assert (
+        "Person/org from Facet A is merely referenced while working in Facet B"
+        in prompt
+    )
+    assert "Facet Relevance Check" in prompt
+    assert "emit_final" in prompt
     assert "day-specific context" in prompt.lower()
+    assert "knowledge_graph" not in prompt
+    assert "sol call journal read" not in prompt
+    assert "sol call journal search" not in prompt
 
 
 def test_entities_review_agent_instruction_content(fixture_journal):

@@ -209,6 +209,24 @@ def list_entities(
         )
 
 
+@app.command("digest")
+def digest(
+    facet: str | None = typer.Argument(None, help="Facet name (or set SOL_FACET)."),
+    day: str | None = typer.Option(
+        None, "--day", "-d", help="Day (YYYYMMDD, or set SOL_DAY)."
+    ),
+) -> None:
+    """Print deterministic entity-detection digest for a facet day."""
+    facet = _resolve_sol_facet(facet)
+    day = _resolve_sol_day(day)
+    try:
+        body = _request("GET", f"/app/entities/api/{facet}/digest", params={"day": day})
+    except ConveyClientError as err:
+        _handle_entity_error(err)
+    content = body.get("content", "") if isinstance(body, dict) else ""
+    typer.echo(content)
+
+
 @app.command("move")
 def move_entity(
     entity: str = typer.Argument(help="Entity name or partial match."),
