@@ -63,13 +63,9 @@ class TestWriteSenseOutputs:
         density = json.loads((agents_dir / "density.json").read_text(encoding="utf-8"))
         assert set(density.keys()) == {
             "classification",
-            "transcript_lines",
-            "screen_frames",
             "timestamp",
         }
         assert density["classification"] == "active"
-        assert density["transcript_lines"] == 0
-        assert density["screen_frames"] == 0
 
         assert json.loads((agents_dir / "sense.json").read_text(encoding="utf-8")) == (
             sense_json
@@ -208,10 +204,45 @@ class TestWriteIdleStubs:
         agents_dir = seg_dir / "talents"
         assert (agents_dir / "density.json").exists()
         density = json.loads((agents_dir / "density.json").read_text(encoding="utf-8"))
+        assert set(density.keys()) == {"classification", "timestamp"}
         assert density["classification"] == "idle"
-        assert density["transcript_lines"] == 0
-        assert density["screen_frames"] == 0
         assert not (agents_dir / "activity.md").exists()
         assert not (agents_dir / "facets.json").exists()
         assert not (agents_dir / "speakers.json").exists()
         assert not (agents_dir / "sense.json").exists()
+
+
+class TestWriteChangeDetection:
+    def test_round_trip(self, tmp_path):
+        from solstone.think.sense_splitter import write_change_detection
+
+        seg_dir = Path(tmp_path) / "20260304" / "default" / "090000_300"
+        result = {
+            "timestamp": "2026-03-04T09:00:00+00:00",
+            "predecessor": None,
+            "change_class": "active",
+            "changed_sensors": ["screen"],
+            "sensors": {
+                "screen": {
+                    "monitors": {
+                        "center:DP-3": {
+                            "first_hash": "0000000000000000",
+                            "last_hash": "0000000000000001",
+                            "qualified_count": 2,
+                        }
+                    }
+                },
+                "transcript": {
+                    "present": False,
+                    "word_count": 0,
+                    "content_hash": None,
+                },
+            },
+        }
+
+        write_change_detection(seg_dir, result)
+
+        stored = json.loads(
+            (seg_dir / "talents" / "change.json").read_text(encoding="utf-8")
+        )
+        assert stored == result

@@ -38,6 +38,9 @@ def _frame(frame_id: int, timestamp: float, frame_bytes: bytes) -> dict:
 def _processor(video_path: Path, frames: list[dict], monkeypatch) -> object:
     processor = describe_module.VideoProcessor.__new__(describe_module.VideoProcessor)
     processor.video_path = video_path
+    processor.first_hash = None
+    processor.last_hash = None
+    processor.qualified_count = len(frames)
     processor.qualified_frames = []
     monkeypatch.setattr(processor, "process", lambda: frames)
     return processor
@@ -71,6 +74,26 @@ def _install_fakes(monkeypatch, outcomes: dict[int, dict]) -> list[tuple]:
         lambda tract, event, **kwargs: emitted.append((tract, event, kwargs)),
     )
     return emitted
+
+
+def test_build_metadata_header_includes_static_single_frame_hash(tmp_path, monkeypatch):
+    video_path = _video_path(tmp_path)
+    processor = describe_module.VideoProcessor.__new__(describe_module.VideoProcessor)
+    processor.video_path = video_path
+    processor.first_hash = 0x1234
+    processor.last_hash = 0x1234
+    processor.qualified_count = 1
+    monkeypatch.setenv("OBSERVER_NAME", "desk")
+    monkeypatch.setenv("SEGMENT_META", json.dumps({"stream": "default"}))
+
+    assert processor._build_metadata_header() == {
+        "raw": video_path.name,
+        "observer": "desk",
+        "stream": "default",
+        "first_hash": "0000000000001234",
+        "last_hash": "0000000000001234",
+        "qualified_count": 1,
+    }
 
 
 class FakeBatch:
@@ -162,7 +185,14 @@ async def test_success_with_mixed_results_promotes_byte_identical_jsonl(
     )
 
     request_type = describe_module.RequestType.DESCRIBE.value
-    header = json.dumps({"raw": video_path.name})
+    header = json.dumps(
+        {
+            "raw": video_path.name,
+            "first_hash": None,
+            "last_hash": None,
+            "qualified_count": 2,
+        }
+    )
     frame1 = json.dumps(
         {
             "frame_id": 1,
@@ -219,7 +249,17 @@ async def test_empty_run_promotes_header_only_file_for_event_precondition(
 
     assert output_path.exists()
     # async_main's completion event branch is unchanged and gated on this exists().
-    assert output_path.read_text() == json.dumps({"raw": video_path.name}) + "\n"
+    assert output_path.read_text() == (
+        json.dumps(
+            {
+                "raw": video_path.name,
+                "first_hash": None,
+                "last_hash": None,
+                "qualified_count": 0,
+            }
+        )
+        + "\n"
+    )
     _assert_no_describe_temp(output_path.parent)
 
 
@@ -240,7 +280,17 @@ async def test_all_frames_failed_promotes_header_only_then_raises(
         )
 
     assert output_path.exists()
-    assert output_path.read_text() == json.dumps({"raw": video_path.name}) + "\n"
+    assert output_path.read_text() == (
+        json.dumps(
+            {
+                "raw": video_path.name,
+                "first_hash": None,
+                "last_hash": None,
+                "qualified_count": 1,
+            }
+        )
+        + "\n"
+    )
     _assert_no_describe_temp(output_path.parent)
 
 

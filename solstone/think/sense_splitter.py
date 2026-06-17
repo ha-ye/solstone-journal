@@ -30,8 +30,6 @@ def write_sense_outputs(
         json.dumps(
             {
                 "classification": density,
-                "transcript_lines": 0,
-                "screen_frames": 0,
                 "timestamp": datetime.now(tz=timezone.utc).isoformat(),
             }
         ),
@@ -68,9 +66,12 @@ def write_idle_stubs(seg_dir: Path) -> None:
         json.dumps(
             {
                 "classification": "idle",
-                "transcript_lines": 0,
-                "screen_frames": 0,
                 "timestamp": datetime.now(tz=timezone.utc).isoformat(),
             }
         ),
     )
+
+
+def write_change_detection(seg_dir: Path, result: dict) -> None:
+    """Write segment change-detection state."""
+    atomic_replace(seg_dir / "talents" / "change.json", json.dumps(result))

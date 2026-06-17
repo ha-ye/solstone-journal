@@ -36,6 +36,11 @@ def _segment_configs(*names: str) -> dict[str, dict]:
             "type": "cogitate",
             "schedule": "segment",
         },
+        "documents": {
+            "priority": 20,
+            "type": "cogitate",
+            "schedule": "segment",
+        },
         "timeline:segment_summary": {
             "priority": 41,
             "type": "generate",
@@ -344,6 +349,66 @@ class TestRunSegmentSense:
         )
 
         assert spawned == expected
+
+    def test_non_idle_dispatch_set_unchanged_with_change_detection(
+        self, segment_dir, monkeypatch
+    ):
+        from solstone.think import thinking as think
+
+        spawned = []
+        (segment_dir / "audio.npz").write_bytes(b"npz")
+        _write_sense_output(
+            segment_dir,
+            {
+                "density": "active",
+                "recommend": {
+                    "screen_record": True,
+                    "speaker_attribution": True,
+                },
+                "facets": [],
+            },
+        )
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _segment_configs(
+                "sense",
+                "entities",
+                "documents",
+                "timeline:segment_summary",
+                "screen",
+                "speaker_attribution",
+            ),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "_callosum", None)
+
+        think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+
+        assert spawned == [
+            "sense",
+            "entities",
+            "documents",
+            "timeline:segment_summary",
+            "screen",
+            "speaker_attribution",
+        ]
 
     def test_refresh_bypasses_idle(self, segment_dir, monkeypatch):
         from solstone.think import thinking as think
@@ -1032,8 +1097,16 @@ class TestThinkJSONLEvents:
             for line in jsonl_path.read_text(encoding="utf-8").strip().splitlines()
         ]
         skips = [event for event in events if event["event"] == "talent.skip"]
+        dispatches = [event for event in events if event["event"] == "talent.dispatch"]
+        change_events = [
+            event for event in events if event["event"] == "sense.change_detect"
+        ]
 
         assert any(skip["reason"] == "density_idle" for skip in skips)
+        assert [event["name"] for event in dispatches] == ["sense"]
+        assert len(change_events) == 1
+        assert change_events[0]["change_class"] == "idle"
+        assert "changed_sensors" in change_events[0]
 
     def test_sense_complete_and_skip_events(self, segment_dir, monkeypatch):
         from solstone.think import thinking as think

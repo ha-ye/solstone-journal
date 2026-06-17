@@ -17,7 +17,7 @@ import logging
 import sys
 import threading
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from solstone.think.activities import (
@@ -28,6 +28,7 @@ from solstone.think.activities import (
 )
 from solstone.think.activity_state_machine import ActivityStateMachine
 from solstone.think.callosum import CallosumConnection
+from solstone.think.change_detection import detect_segment_change, resolve_predecessor
 from solstone.think.cluster import cluster_segments
 from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_THRESHOLD
 from solstone.think.cortex_client import (
@@ -53,7 +54,11 @@ from solstone.think.pipeline_health import (
     read_segment_progress,
 )
 from solstone.think.runner import run_task
-from solstone.think.sense_splitter import write_idle_stubs, write_sense_outputs
+from solstone.think.sense_splitter import (
+    write_change_detection,
+    write_idle_stubs,
+    write_sense_outputs,
+)
 from solstone.think.talent import get_output_path, get_talent_configs
 from solstone.think.talent_provenance import (
     compute_activity_input_hash,
@@ -691,6 +696,7 @@ def run_segment_sense(
     skip_activity_prompts: bool = False,
     skip_talents: frozenset[str] = frozenset(),
     live: bool = False,
+    predecessor: dict | None = None,
 ) -> tuple[int, int, list[str]]:
     """Run Sense-first linear orchestrator for a single segment.
 
@@ -908,6 +914,25 @@ def run_segment_sense(
         segment=segment,
         density=density,
         recommend=sense_json.get("recommend") or {},
+        **({"stream": stream} if stream else {}),
+    )
+    change_result = detect_segment_change(
+        day,
+        stream,
+        segment,
+        seg_dir,
+        predecessor=predecessor,
+        timestamp=datetime.now(tz=timezone.utc).isoformat(),
+    )
+    write_change_detection(seg_dir, change_result)
+    _jsonl_log(
+        "sense.change_detect",
+        mode=target_schedule,
+        day=day,
+        segment=segment,
+        change_class=change_result["change_class"],
+        changed_sensors=change_result["changed_sensors"],
+        predecessor=change_result["predecessor"],
         **({"stream": stream} if stream else {}),
     )
 
@@ -3436,6 +3461,7 @@ def main() -> None:
                         skip_activity_prompts=args.no_activity_prompts,
                         skip_talents=skip_talents,
                         live=False,
+                        predecessor=resolve_predecessor(day, seg_stream, seg_key),
                     )
                     batch_success += success
                     batch_failed += failed
@@ -3593,6 +3619,7 @@ def main() -> None:
                 skip_activity_prompts=args.no_activity_prompts,
                 skip_talents=skip_talents,
                 live=args.live,
+                predecessor=resolve_predecessor(day, resolved_stream, args.segment),
             )
         else:
             success_count, fail_count, failed_names, applicable_units = (
