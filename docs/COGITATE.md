@@ -77,7 +77,7 @@ pipes, redirects, chaining, and command substitution.
 ## Reads: domain reads vs raw evidence reads
 
 **Domain reads — the default.** Indexed, normalized, or semantic reads go through
-`sol call` verbs (e.g. `sol call activities list`, `sol call entities show`,
+`sol call` verbs (e.g. `sol call activities list`, `sol call entities search`,
 `sol call transcripts read`). Anything that needs authorization, derived state,
 normalization, or audit behavior is a domain read, not a raw read.
 

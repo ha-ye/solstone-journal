@@ -188,10 +188,6 @@ def test_read_default_matches_route_markdown(runner, journal):
             ],
             "Error: Cannot mix --segment, --segments, and --start/--length.\n",
         ),
-        (
-            ["read", "20990107", "--start", "090000"],
-            "Error: --start and --length must be used together.\n",
-        ),
     ],
 )
 def test_read_cli_side_validation_errors_byte_exact(runner, args, stderr):
@@ -200,6 +196,48 @@ def test_read_cli_side_validation_errors_byte_exact(runner, args, stderr):
     assert result.exit_code == 1
     assert result.stderr == stderr
     assert result.stdout == ""
+
+
+def test_read_start_alone_routes_range_read(runner, journal):
+    day = "20990107"
+    _write_segment(journal, day, "090000_300", audio_jsonl=True)
+    expected = _route_markdown(
+        journal,
+        day,
+        {
+            "transcripts": "1",
+            "percepts": "0",
+            "agents": "1",
+            "start": "000000",
+            "end": "235959",
+        },
+    )
+
+    result = runner.invoke(app, ["read", day, "--start", "000000"])
+
+    assert result.exit_code == 0
+    assert result.stdout == expected + "\n"
+
+
+def test_read_length_alone_routes_from_midnight(runner, journal):
+    day = "20990107"
+    _write_segment(journal, day, "090000_300", audio_jsonl=True)
+    expected = _route_markdown(
+        journal,
+        day,
+        {
+            "transcripts": "1",
+            "percepts": "0",
+            "agents": "1",
+            "start": "000000",
+            "end": "003000",
+        },
+    )
+
+    result = runner.invoke(app, ["read", day, "--length", "30"])
+
+    assert result.exit_code == 0
+    assert result.stdout == expected + "\n"
 
 
 def test_read_truncation_reports_exact_byte_counts(runner, journal):

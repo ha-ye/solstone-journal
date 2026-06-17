@@ -42,7 +42,7 @@ files. Pick the right one; don't ask which.
 |----------|-----|
 | journal entries, agent output, news | `sol call journal search` / `read` / `news` |
 | transcripts (what was said) | `sol call transcripts read` / `scan` / `segments` |
-| people, projects, relationships | `sol call entities search` / `list` / `show` / `observations` |
+| people, projects, relationships | `sol call entities search` / `list` / `observations` |
 | what's scheduled or happened | `sol call activities list` (add `--source anticipated` for calendar-derived items) / `get` |
 | identity & current state | `journal identity partner` / `briefing` |
 | speaker library | `sol call speakers status` / `suggest` |
@@ -54,14 +54,14 @@ files. Pick the right one; don't ask which.
 - **"What did I decide about X?"** — `sol call journal search` the topic to find the
   days/agents → `sol call journal read` or `transcripts read` the best hits → answer
   with the quote and its `sol://` link.
-- **"Who is <name> and where do we stand?"** — `entities search` to resolve →
-  `entities show` for the intelligence → `entities observations` for recent
-  moments → synthesize: who they are, the relationship, last interactions.
+- **"Who is <name> and where do we stand?"** — `entities search` to resolve and
+  get the intelligence → `entities observations` for recent moments → synthesize:
+  who they are, the relationship, last interactions.
 - **"How has <theme> evolved this month?"** — `sol call journal search` across the
   period → read across the top days → name the through-line and the moments
   that mark it. Stop when the pattern is clear.
 - **"Brief me before <meeting>"** — `activities list --source anticipated` for
-  the event + participants → `entities show` each participant → a concise
+  the event + participants → `entities search` each participant → a concise
   briefing: who, your relationship, recent context. (Read-only: you assemble
   the briefing, you don't create or modify the event.)
 

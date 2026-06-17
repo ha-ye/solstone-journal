@@ -165,6 +165,14 @@ class TestJournal:
         assert result.exit_code == 0
         assert "results" in result.output
 
+    def test_journal_search_positional_and_flag_forms_match(self):
+        """Search query positional and option forms should match."""
+        positional = runner.invoke(call_app, ["journal", "search", "test"])
+        flag = runner.invoke(call_app, ["journal", "search", "-q", "test"])
+
+        assert positional.exit_code == flag.exit_code
+        assert positional.stdout == flag.stdout
+
     def test_journal_facet(self):
         """Facet command shows summary for test-facet."""
         result = runner.invoke(call_app, ["journal", "facet", "show", "test-facet"])
@@ -178,6 +186,18 @@ class TestJournal:
         )
         assert result.exit_code == 0
         assert "Authentication" in result.output
+
+    def test_journal_news_positional_and_flag_forms_match(self):
+        """News facet positional and option forms should match."""
+        positional = runner.invoke(
+            call_app, ["journal", "news", "work", "--day", "20240101"]
+        )
+        flag = runner.invoke(
+            call_app, ["journal", "news", "-f", "work", "--day", "20240101"]
+        )
+
+        assert positional.exit_code == flag.exit_code
+        assert positional.stdout == flag.stdout
 
     def test_journal_search_shows_counts(self):
         """Search output includes facet/agent/day counts."""
@@ -200,6 +220,14 @@ class TestJournal:
         result = runner.invoke(call_app, ["journal", "agents", "20240101"])
         assert result.exit_code == 0
         assert "flow.md" in result.output
+
+    def test_journal_agents_positional_and_flag_forms_match(self):
+        """Agents day positional and option forms should match."""
+        positional = runner.invoke(call_app, ["journal", "agents", "20240101"])
+        flag = runner.invoke(call_app, ["journal", "agents", "-d", "20240101"])
+
+        assert positional.exit_code == flag.exit_code
+        assert positional.stdout == flag.stdout
 
     def test_journal_agents_no_data(self):
         """Agents command reports no data for missing day."""

@@ -85,6 +85,9 @@ app.add_typer(retention_app, name="retention")
 @app.command()
 def search(
     query: str = typer.Argument("", help="Search query (FTS5 syntax)."),
+    query_opt: str | None = typer.Option(
+        None, "--query", "-q", help="Search query (FTS5 syntax)."
+    ),
     limit: int = typer.Option(10, "--limit", "-n", help="Max results."),
     offset: int = typer.Option(0, "--offset", help="Skip N results."),
     day: str | None = typer.Option(None, "--day", "-d", help="Filter by day YYYYMMDD."),
@@ -104,6 +107,7 @@ def search(
     from solstone.think.indexer.journal import search_counts as search_counts_impl
     from solstone.think.indexer.journal import search_journal as search_journal_impl
 
+    query = query or query_opt or ""
     kwargs = {}
     if day is not None:
         kwargs["day"] = day
@@ -482,13 +486,16 @@ def news(
     name: str | None = typer.Argument(
         default=None, help="Facet name (default: SOL_FACET env)."
     ),
+    facet_opt: str | None = typer.Option(
+        None, "--facet", "-f", help="Facet name (default: SOL_FACET env)."
+    ),
     day: str | None = typer.Option(None, "--day", "-d", help="Specific day YYYYMMDD."),
     limit: int = typer.Option(5, "--limit", "-n", help="Max days to show."),
     cursor: str | None = typer.Option(None, "--cursor", help="Pagination cursor."),
     write: bool = typer.Option(False, "--write", "-w", help="Write news from stdin."),
 ) -> None:
     """Read or write facet news."""
-    name = resolve_sol_facet(name)
+    name = resolve_sol_facet(name or facet_opt)
     if write:
         day = resolve_sol_day(day)
     elif day is None:
@@ -529,6 +536,9 @@ def agents(
     day: str | None = typer.Argument(
         default=None, help="Day YYYYMMDD (default: SOL_DAY env)."
     ),
+    day_opt: str | None = typer.Option(
+        None, "--day", "-d", help="Day YYYYMMDD (default: SOL_DAY env)."
+    ),
     segment: str | None = typer.Option(
         None,
         "--segment",
@@ -537,7 +547,7 @@ def agents(
     ),
 ) -> None:
     """List available agent outputs for a day."""
-    day = resolve_sol_day(day)
+    day = resolve_sol_day(day or day_opt)
     segment = resolve_sol_segment(segment)
     day_dir = day_path(day, create=False)
 
