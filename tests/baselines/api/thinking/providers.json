@@ -1,4 +1,12 @@
 {
+  "active_lane": {
+    "cogitate": "byo",
+    "generate": "byo",
+    "lane": "byo",
+    "scout_enabled": false,
+    "scout_provenance_configured": false,
+    "split": false
+  },
   "ai_readiness": {
     "groups": [
       {
@@ -105,14 +113,6 @@
     "anthropic": false,
     "google": false,
     "openai": false
-  },
-  "active_lane": {
-    "cogitate": "byo",
-    "generate": "byo",
-    "lane": "byo",
-    "scout_enabled": false,
-    "scout_provenance_configured": false,
-    "split": false
   },
   "cogitate": {
     "backup": "anthropic",
@@ -270,7 +270,7 @@
       "group": "Think",
       "label": "Conversation Story",
       "schedule": "activity",
-      "tier": 2,
+      "tier": 3,
       "type": "generate"
     },
     "talent.system.daily_schedule": {
@@ -372,7 +372,7 @@
       "group": "Think",
       "label": "Screen Record",
       "schedule": "segment",
-      "tier": 2,
+      "tier": 3,
       "type": "generate"
     },
     "talent.system.sense": {
