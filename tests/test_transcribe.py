@@ -540,7 +540,7 @@ def test_process_audio_failed_embeddings_write_emits_failed_event(tmp_path):
             return_value=embeddings_data,
         ),
         patch(
-            "solstone.observe.transcribe.main.compute_overlap_and_logprobs",
+            "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
             return_value=(0.0, np.zeros((589, 7), dtype=np.float32)),
         ),
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
@@ -609,7 +609,7 @@ def test_process_audio_embeddings_write_round_trips_without_lock(tmp_path):
             return_value=embeddings_data,
         ),
         patch(
-            "solstone.observe.transcribe.main.compute_overlap_and_logprobs",
+            "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
             return_value=(0.0, np.zeros((589, 7), dtype=np.float32)),
         ),
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
@@ -667,7 +667,7 @@ def test_process_audio_diarizer_failure_is_fail_soft(tmp_path):
         ),
         patch("solstone.observe.transcribe.main._embed_statements", return_value=None),
         patch(
-            "solstone.observe.transcribe.main.compute_overlap_and_logprobs",
+            "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
             return_value=(0.5, np.zeros((589, 7), dtype=np.float32)),
         ),
         patch(

@@ -107,6 +107,17 @@ def _normalize_rows(embeddings: np.ndarray) -> np.ndarray:
     return embeddings / np.where(norms == 0, 1.0, norms)
 
 
+def _patch_hdbscan(monkeypatch, hdbscan) -> None:
+    import sklearn.cluster
+
+    monkeypatch.setattr(sklearn.cluster, "HDBSCAN", hdbscan)
+
+    from solstone.apps.speakers import owner as owner_module
+
+    if hasattr(owner_module, "HDBSCAN"):
+        monkeypatch.setattr(owner_module, "HDBSCAN", hdbscan)
+
+
 def _save_manual_owner_tags(
     env,
     principal_id: str,
@@ -264,7 +275,6 @@ def test_detect_owner_basic(speakers_env):
 
 
 def test_low_quality_too_few_stmts(speakers_env, monkeypatch):
-    import solstone.apps.speakers.owner as owner_module
     from solstone.apps.speakers.owner import detect_owner_candidate
 
     def stub_hdbscan(labels: np.ndarray):
@@ -297,7 +307,7 @@ def test_low_quality_too_few_stmts(speakers_env, monkeypatch):
             np.full(31, -1, dtype=np.int32),
         ]
     )
-    monkeypatch.setattr(owner_module, "HDBSCAN", stub_hdbscan(labels))
+    _patch_hdbscan(monkeypatch, stub_hdbscan(labels))
 
     result = detect_owner_candidate()
 
@@ -309,7 +319,6 @@ def test_low_quality_too_few_stmts(speakers_env, monkeypatch):
 
 
 def test_low_quality_median_duration_too_short(speakers_env, monkeypatch):
-    import solstone.apps.speakers.owner as owner_module
     from solstone.apps.speakers.owner import detect_owner_candidate
 
     def stub_hdbscan(labels: np.ndarray):
@@ -336,9 +345,7 @@ def test_low_quality_median_duration_too_short(speakers_env, monkeypatch):
         durations_s=np.full(60, 1.0, dtype=np.float32),
     )
 
-    monkeypatch.setattr(
-        owner_module, "HDBSCAN", stub_hdbscan(np.zeros(60, dtype=np.int32))
-    )
+    _patch_hdbscan(monkeypatch, stub_hdbscan(np.zeros(60, dtype=np.int32)))
 
     result = detect_owner_candidate()
 
@@ -351,7 +358,6 @@ def test_low_quality_median_duration_too_short(speakers_env, monkeypatch):
 
 
 def test_low_quality_cluster_too_diffuse(speakers_env, monkeypatch):
-    import solstone.apps.speakers.owner as owner_module
     from solstone.apps.speakers.owner import detect_owner_candidate
 
     def stub_hdbscan(labels: np.ndarray):
@@ -379,9 +385,7 @@ def test_low_quality_cluster_too_diffuse(speakers_env, monkeypatch):
         durations_s=np.full(60, 1.6, dtype=np.float32),
     )
 
-    monkeypatch.setattr(
-        owner_module, "HDBSCAN", stub_hdbscan(np.zeros(60, dtype=np.int32))
-    )
+    _patch_hdbscan(monkeypatch, stub_hdbscan(np.zeros(60, dtype=np.int32)))
 
     result = detect_owner_candidate()
 
@@ -394,7 +398,6 @@ def test_low_quality_cluster_too_diffuse(speakers_env, monkeypatch):
 
 
 def test_detect_owner_candidate_excludes_chaotic_segments(speakers_env, monkeypatch):
-    import solstone.apps.speakers.owner as owner_module
     from solstone.apps.speakers.owner import detect_owner_candidate
 
     class StubHDBSCAN:
@@ -439,7 +442,7 @@ def test_detect_owner_candidate_excludes_chaotic_segments(speakers_env, monkeypa
         overlap_detector=OVERLAP_DETECTOR_ID,
     )
 
-    monkeypatch.setattr(owner_module, "HDBSCAN", StubHDBSCAN)
+    _patch_hdbscan(monkeypatch, StubHDBSCAN)
 
     result = detect_owner_candidate()
 

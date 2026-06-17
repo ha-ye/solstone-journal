@@ -8,16 +8,20 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from io import BytesIO
 from pathlib import Path
-
-import numpy as np
+from typing import TYPE_CHECKING
 
 from solstone.think.journal_io.atomic import atomic_replace
 from solstone.think.journal_io.errors import MalformedDataError
 from solstone.think.journal_io.locking import hold_lock
 
+if TYPE_CHECKING:
+    import numpy as np
+
 
 def load_npz(path: Path) -> dict[str, np.ndarray] | None:
     """Load an NPZ file as a materialized key-to-array map."""
+    import numpy as np
+
     if not path.exists():
         return None
 
@@ -78,6 +82,8 @@ def _write_npz(
     *,
     expected_keys: tuple[str, ...],
 ) -> None:
+    import numpy as np
+
     buf = BytesIO()
     np.savez_compressed(buf, **arrays)
     atomic_replace(path, buf.getvalue())

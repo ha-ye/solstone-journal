@@ -28,8 +28,6 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
 from solstone.apps.speakers.owner import load_owner_centroid
 from solstone.think.entities import (
     entity_slug,
@@ -70,6 +68,8 @@ def bootstrap_voiceprints(dry_run: bool = False) -> dict[str, Any]:
     Returns:
         Dict with statistics about the bootstrap run
     """
+    import numpy as np
+
     from solstone.apps.speakers.routes import (
         _load_embeddings_file,
         _scan_segment_embeddings,
@@ -293,6 +293,8 @@ def merge_names(alias_name: str, canonical_name: str) -> dict[str, Any]:
 
 def detect_name_variant_candidates() -> dict[str, Any]:
     """Find actionable speaker name-variant candidates using voiceprint similarity."""
+    import numpy as np
+
     from solstone.think.entities import (
         load_entity_voiceprints_file,
         normalize_embedding,
@@ -616,6 +618,8 @@ def link_import(name: str, entity_id: str) -> dict[str, Any]:
 
 def seed_from_imports(dry_run: bool = False) -> dict[str, Any]:
     """Seed voiceprints from import segments with speaker-attributed transcripts."""
+    import numpy as np
+
     from solstone.apps.speakers.routes import (
         _load_embeddings_file,
         _scan_segment_embeddings,

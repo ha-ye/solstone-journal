@@ -88,7 +88,9 @@ def test_get_or_create_client_sets_timeout_and_bounded_retries(monkeypatch):
         "solstone.think.utils.get_config",
         lambda: {"providers": {"google_backend": "aistudio"}},
     )
-    monkeypatch.setattr(provider.genai, "Client", CapturingClient)
+    from google import genai as genai_module
+
+    monkeypatch.setattr(genai_module, "Client", CapturingClient)
 
     provider.get_or_create_client()
 

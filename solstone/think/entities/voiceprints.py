@@ -8,9 +8,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Callable
-
-import numpy as np
+from typing import TYPE_CHECKING, Callable
 
 from solstone.think.entities.journal import (
     ensure_journal_entity_memory,
@@ -19,12 +17,17 @@ from solstone.think.entities.journal import (
 from solstone.think.journal_io.errors import MalformedDataError
 from solstone.think.journal_io.npz import load_npz, update_npz
 
+if TYPE_CHECKING:
+    import numpy as np
+
 logger = logging.getLogger(__name__)
 VOICEPRINT_KEYS = ("embeddings", "metadata")
 
 
 def normalize_embedding(emb: np.ndarray) -> np.ndarray | None:
     """L2-normalize an embedding vector. Returns None if norm is zero."""
+    import numpy as np
+
     emb = emb.astype(np.float32)
     norm = np.linalg.norm(emb)
     if norm > 0:
@@ -78,6 +81,8 @@ def save_voiceprints_batch(
     new_items: list[tuple[np.ndarray, dict]],
 ) -> int:
     """Append a batch of normalized voiceprints to an entity in one write."""
+    import numpy as np
+
     if not new_items:
         return 0
 
@@ -135,6 +140,8 @@ def rewrite_voiceprint_metadata(
     updates = 0
 
     def transform(current: dict[str, np.ndarray]) -> dict[str, np.ndarray] | None:
+        import numpy as np
+
         nonlocal updates
         embeddings = current.get("embeddings")
         metadata_arr = current.get("metadata")

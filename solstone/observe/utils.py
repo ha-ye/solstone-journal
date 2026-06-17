@@ -3,6 +3,8 @@
 
 """Utilities for working with media files and shared observer helpers."""
 
+from __future__ import annotations
+
 import datetime
 import hashlib
 import json
@@ -14,9 +16,6 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import numpy as np
-import soundfile as sf
-
 from solstone.think.media import AUDIO_EXTENSIONS as _AUDIO_EXTENSIONS
 from solstone.think.media import IMAGE_EXTENSIONS as _IMAGE_EXTENSIONS
 from solstone.think.media import PDF_EXTENSIONS as _PDF_EXTENSIONS
@@ -24,6 +23,7 @@ from solstone.think.media import VIDEO_EXTENSIONS as _VIDEO_EXTENSIONS
 from solstone.think.utils import day_path
 
 if TYPE_CHECKING:
+    import numpy as np
     from PIL import Image
 
 logger = logging.getLogger(__name__)
@@ -61,6 +61,9 @@ def audio_to_flac_bytes(audio: np.ndarray, sample_rate: int) -> bytes:
     """
     import io
 
+    import numpy as np
+    import soundfile as sf
+
     # Convert to int16 for FLAC encoding
     audio_int16 = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
 
@@ -97,6 +100,8 @@ def load_audio(raw_path: Path, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
     RuntimeError
         If PyAV fails to decode a non-M4A file
     """
+    import numpy as np
+
     if raw_path.suffix.lower() != ".m4a":
         import av
 

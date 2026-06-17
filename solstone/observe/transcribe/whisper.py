@@ -24,11 +24,12 @@ import logging
 import tempfile
 import time
 from pathlib import Path
-
-import numpy as np
-import soundfile as sf
+from typing import TYPE_CHECKING
 
 from solstone.observe.transcribe.utils import build_statements_from_acoustic
+
+if TYPE_CHECKING:
+    import numpy as np
 
 # Default configuration
 DEFAULT_MODEL = "medium.en"
@@ -147,6 +148,9 @@ def transcribe(
         List of statements (sentence-aligned) with word-level data.
         Each statement has: id, start, end, text, words
     """
+    import numpy as np
+    import soundfile as sf
+
     model = _get_model(config)
 
     # Write audio to temp file (faster-whisper requires a file path)

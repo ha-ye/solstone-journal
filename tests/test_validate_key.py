@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import types
 from unittest.mock import Mock, patch
 
 import pytest
@@ -77,7 +79,7 @@ def test_validate_key_google_success():
     client.models.list.return_value = [Mock()]
 
     with (
-        patch.object(google.genai, "Client", return_value=client) as mock_cls,
+        patch("google.genai.Client", return_value=client) as mock_cls,
         patch.object(google, "_probe_backend", return_value="aistudio"),
     ):
         result = google.validate_key("test-key")
@@ -92,7 +94,7 @@ def test_validate_key_google_auth_error():
     client.models.list.side_effect = Exception("API key not valid")
 
     with (
-        patch.object(google.genai, "Client", return_value=client),
+        patch("google.genai.Client", return_value=client),
         patch.object(google, "_probe_backend", return_value="aistudio"),
     ):
         result = google.validate_key("bad-key")
@@ -107,7 +109,7 @@ def test_validate_key_google_returns_backend_aistudio():
     client.models.list.return_value = [Mock()]
 
     with (
-        patch.object(google.genai, "Client", return_value=client),
+        patch("google.genai.Client", return_value=client),
         patch.object(google, "_probe_backend", return_value="aistudio"),
     ):
         result = google.validate_key("test-key")
@@ -121,7 +123,7 @@ def test_validate_key_google_returns_backend_vertex():
     client.models.list.return_value = [Mock()]
 
     with (
-        patch.object(google.genai, "Client", return_value=client) as mock_cls,
+        patch("google.genai.Client", return_value=client) as mock_cls,
         patch.object(google, "_probe_backend", return_value="vertex"),
     ):
         result = google.validate_key("test-key")
@@ -131,7 +133,7 @@ def test_validate_key_google_returns_backend_vertex():
     assert mock_cls.call_args.kwargs["api_key"] == "test-key"
 
 
-def test_validate_vertex_credentials(tmp_path):
+def test_validate_vertex_credentials(tmp_path, monkeypatch):
     """validate_vertex_credentials creates SA-authenticated client."""
     import json
 
@@ -152,13 +154,22 @@ def test_validate_vertex_credentials(tmp_path):
 
     mock_creds = Mock()
     mock_creds.service_account_email = "test@project.iam.gserviceaccount.com"
+    mock_credentials = Mock()
+    mock_credentials.from_service_account_file.return_value = mock_creds
+
+    oauth2_mod = types.ModuleType("google.oauth2")
+    service_account_mod = types.ModuleType("google.oauth2.service_account")
+    service_account_mod.Credentials = mock_credentials
+    oauth2_mod.service_account = service_account_mod
+    google_mod = sys.modules["google"]
+    google_mod.oauth2 = oauth2_mod
+    monkeypatch.setitem(sys.modules, "google.oauth2", oauth2_mod)
+    monkeypatch.setitem(
+        sys.modules, "google.oauth2.service_account", service_account_mod
+    )
 
     with (
-        patch.object(google.genai, "Client", return_value=client) as mock_cls,
-        patch(
-            "google.oauth2.service_account.Credentials.from_service_account_file",
-            return_value=mock_creds,
-        ),
+        patch("google.genai.Client", return_value=client) as mock_cls,
     ):
         result = google.validate_vertex_credentials(str(sa_file))
 

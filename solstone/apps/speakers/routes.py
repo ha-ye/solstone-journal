@@ -15,9 +15,8 @@ import os
 import re
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import numpy as np
 from flask import (
     Blueprint,
     jsonify,
@@ -115,6 +114,9 @@ from solstone.think.utils import (
 )
 from solstone.think.utils import segment_key as validate_segment_key
 from solstone.think.utils import segment_path as get_segment_path
+
+if TYPE_CHECKING:
+    import numpy as np
 
 logger = logging.getLogger(__name__)
 VOICEPRINT_KEYS = ("embeddings", "metadata")
@@ -247,6 +249,8 @@ def _save_voiceprint(
     metadata_json = json.dumps(metadata)
 
     def transform(current: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        import numpy as np
+
         if current:
             existing_embeddings = current["embeddings"]
             existing_metadata = current["metadata"]
@@ -369,6 +373,8 @@ def _check_owner_contamination(embedding: np.ndarray) -> bool:
     Returns True if the embedding is contaminated (should NOT be saved
     to a non-owner entity's voiceprints).
     """
+    import numpy as np
+
     from solstone.apps.speakers.owner import load_owner_centroid
 
     centroid_data = load_owner_centroid()
