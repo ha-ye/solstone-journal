@@ -351,7 +351,8 @@ def test_show_effective_prompt_outbound_shows_submit_capability(capsys):
     assert config["access_tier"] == "outbound"
     assert caps.submit is True
     assert "tier: outbound" in output
-    assert "sol+reads+submit" in output
+    assert "tier: outbound (sol+submit)" in output
+    assert "tools: sol;" in output
 
 
 def test_inventory_row_set_matches_cogitate_loader():
@@ -392,7 +393,8 @@ def test_tier_inventory_matches_capabilities():
         assert tiers[tier]["sol"] is caps.sol
         assert tiers[tier]["reads"] is caps.reads
         assert tiers[tier]["submit"] is caps.submit
-        assert tiers[tier]["tools"] == ["sol", *COGITATE_READ_TOOL_NAMES]
+        expected_tools = ["sol", *COGITATE_READ_TOOL_NAMES] if caps.reads else ["sol"]
+        assert tiers[tier]["tools"] == expected_tools
 
 
 def test_inventory_json_uses_verbatim_rows_and_table_uses_same_values(capsys):

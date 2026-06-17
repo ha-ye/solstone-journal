@@ -106,13 +106,17 @@ def test_expects_emit_final(config, expected):
     [
         ("normal", (True, True, False)),
         ("system-read", (True, True, False)),
-        ("outbound", (True, True, True)),
+        ("outbound", (True, False, True)),
     ],
 )
 def test_capabilities_for_access_tier_real_tiers(tier, expected):
     caps = cogitate_contract.capabilities_for_access_tier(tier)
 
     assert (caps.sol, caps.reads, caps.submit) == expected
+
+
+def test_outbound_tier_has_no_read_tools():
+    assert cogitate_contract.capabilities_for_access_tier("outbound").reads is False
 
 
 @pytest.mark.parametrize("tier", ["repair", "code-agent", "bogus"])

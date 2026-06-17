@@ -384,11 +384,12 @@ def json_output(
         print(json.dumps(_to_jsonl_record(key, info), default=str))
 
 
-def _tier_summary(*, submit: bool) -> str:
+def _tier_summary(*, reads: bool, submit: bool) -> str:
     """Return the compact capability summary shown beside a tier."""
+    base = "sol+reads" if reads else "sol"
     if submit:
-        return "sol+reads+submit"
-    return "sol+reads, no submit"
+        return f"{base}+submit"
+    return f"{base}, no submit"
 
 
 def _tool_names_for_row(row: dict[str, Any]) -> list[str]:
@@ -413,7 +414,7 @@ def _tool_surface_line(config: dict[str, Any]) -> str:
     finalize = "emit_final" if expects_emit_final(config) else "FinishTool"
     return (
         f"tools: {tools}; finalize: {finalize}; tier: {access_tier} "
-        f"({_tier_summary(submit=caps.submit)})"
+        f"({_tier_summary(reads=caps.reads, submit=caps.submit)})"
     )
 
 
@@ -551,7 +552,7 @@ def _tier_inventory() -> dict[str, dict[str, Any]]:
             "sol": caps.sol,
             "reads": caps.reads,
             "submit": caps.submit,
-            "tools": ["sol", *COGITATE_READ_TOOL_NAMES],
+            "tools": _tool_names_for_row({"sol": caps.sol, "reads": caps.reads}),
         }
     return tiers
 
@@ -598,7 +599,7 @@ def _render_inventory_table(rows: list[dict[str, Any]]) -> None:
     for tier, info in tiers.items():
         print(
             f"  {tier}: tools={', '.join(info['tools'])}; "
-            f"{_tier_summary(submit=bool(info['submit']))}"
+            f"{_tier_summary(reads=bool(info['reads']), submit=bool(info['submit']))}"
         )
 
 

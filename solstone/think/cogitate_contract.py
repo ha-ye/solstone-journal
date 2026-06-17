@@ -53,7 +53,7 @@ class AccessCapabilities:
 _ACCESS_TIER_CAPABILITIES: dict[str, AccessCapabilities] = {
     "normal": AccessCapabilities(sol=True, reads=True, submit=False),
     "system-read": AccessCapabilities(sol=True, reads=True, submit=False),
-    "outbound": AccessCapabilities(sol=True, reads=True, submit=True),
+    "outbound": AccessCapabilities(sol=True, reads=False, submit=True),
 }
 
 _missing_access_tiers = set(COGITATE_ACCESS_TIERS) - set(_ACCESS_TIER_CAPABILITIES)

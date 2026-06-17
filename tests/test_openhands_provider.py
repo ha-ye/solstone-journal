@@ -1339,7 +1339,7 @@ def test_run_cogitate_passes_outbound_approval_to_policy(
         (
             "support:support",
             "outbound",
-            {"sol", "read_file", "list_directory", "glob", "grep_search"},
+            {"sol"},
             ["FinishTool"],
         ),
         (

@@ -125,7 +125,7 @@ enforcement are layered on top of it.
 |---|---|---|
 | `normal` | default cogitate talents | the `sol` tool (`sol` / `sol call`), the bounded raw-read tier, a finalization tool |
 | `system-read` | diagnostics boundary for scoped operational evidence | no cogitate talent claims it today (steward was demoted to a deterministic renderer + `lite` generate); the tier remains the declared diagnostics boundary and extension point, with scoped evidence arriving through a talent pre-hook rather than an extra model read tool |
-| `outbound` | comms-like talents that may submit something that leaves the machine (e.g. `support`) | `normal` reads / drafts plus submit-capable support commands gated on per-send owner approval supplied only by a human-initiated chat launch |
+| `outbound` | comms-like talents that may submit something that leaves the machine (e.g. `support`) | the `sol` tool (`sol` / `sol call`) and a finalization tool, plus submit-capable support commands gated on per-send owner approval supplied only by a human-initiated chat launch; no raw-read tier — drafts and evidence go through `sol` domain commands |
 
 Policy denies support send verbs (`create`, `reply`, `attach`, `feedback`) for
 `normal` / `system-read` runs. `outbound` runs may use those verbs only when the
