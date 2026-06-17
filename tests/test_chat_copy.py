@@ -186,12 +186,32 @@ def test_support_draft_ready_copy_bytes():
     assert "sol pbc" not in chat_copy.CHAT_SUPPORT_DRAFT_READY
 
 
+def test_support_attach_success_copy_bytes():
+    assert chat_copy.CHAT_SUPPORT_ATTACH_FILED_FORMAT == (
+        "I added that to solstone support ticket #{ticket_id}."
+    )
+    assert "solstone support" in chat_copy.CHAT_SUPPORT_ATTACH_FILED_FORMAT
+    assert "sol pbc" not in chat_copy.CHAT_SUPPORT_ATTACH_FILED_FORMAT
+    assert "sent" not in chat_copy.CHAT_SUPPORT_ATTACH_FILED_FORMAT.lower()
+    assert not hasattr(chat_copy, "CHAT_SUPPORT_ATTACH_UNSUPPORTED")
+
+
 def test_draft_card_copy_present():
     text = Path("solstone/convey/static/chat_copy.js").read_text(encoding="utf-8")
     assert 'CHAT_DRAFT_SUBMIT: "send to solstone support"' in text
     assert 'CHAT_DRAFT_CANCEL: "cancel"' in text
     assert 'CHAT_DRAFT_DIAGNOSTICS_LABEL: "diagnostics included"' in text
     assert "sol pbc" not in "send to solstone support"
+
+
+def test_support_attach_draft_card_branch_present():
+    text = Path("solstone/convey/templates/app.html").read_text(encoding="utf-8")
+    assert "function formatAttachmentSize(size)" in text
+    assert "if (draft.verb === 'attach')" in text
+    assert "formatAttachmentSize(payload.byte_size)" in text
+    assert "['ticket_id', 'ticket', payload.ticket_id]" in text
+    assert "['filename', 'file', payload.filename]" in text
+    assert "['byte_size', 'size', formatAttachmentSize(payload.byte_size)]" in text
 
 
 def test_chat_placeholder_css_present():

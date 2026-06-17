@@ -56,10 +56,10 @@ CHAT_SUPPORT_DRAFT_READY = "Here's the support request I put together — look i
 # Deterministic support-draft submit/cancel results. Brand: "solstone support".
 # Backend-only — no chat_copy.js twin.
 CHAT_SUPPORT_SUBMIT_FILED_FORMAT = "I sent that to solstone support as ticket #{ticket_id}."
+CHAT_SUPPORT_ATTACH_FILED_FORMAT = "I added that to solstone support ticket #{ticket_id}."
 CHAT_SUPPORT_SUBMIT_FAILED = "I couldn't finish reaching solstone support, so nothing was sent. Want me to try again?"
 CHAT_SUPPORT_SUBMIT_AMBIGUOUS = "I couldn't confirm whether solstone support received that. Check with solstone support before resending so we don't file it twice."
 CHAT_SUPPORT_DRAFT_CANCELLED = "Okay — nothing was sent to solstone support."
-CHAT_SUPPORT_ATTACH_UNSUPPORTED = "I can't send attachments to solstone support from here yet, so nothing was sent."
 # fmt: on
 
 from typing import Literal

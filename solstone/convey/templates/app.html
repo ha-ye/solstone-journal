@@ -407,6 +407,27 @@
     parent.appendChild(dl);
   }
 
+  function formatAttachmentSize(size) {
+    const bytes = Number(size) || 0;
+    if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+    if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+    return `${bytes} bytes`;
+  }
+
+  function appendDraftFieldRow(parent, label, value) {
+    const row = document.createElement('div');
+    row.className = 'chat-bar-draft-field';
+    const lab = document.createElement('span');
+    lab.className = 'chat-bar-draft-label';
+    lab.textContent = label;
+    const val = document.createElement('span');
+    val.className = 'chat-bar-draft-fieldval';
+    val.textContent = String(value ?? '—');
+    row.appendChild(lab);
+    row.appendChild(val);
+    parent.appendChild(row);
+  }
+
   function showSupportDraft(draft, leadText) {
     if (!draftEl || !draft) return;
     currentDraft = draft;
@@ -415,23 +436,23 @@
     if (draftLeadEl) draftLeadEl.textContent = leadText || '';
     if (draftBodyEl) {
       draftBodyEl.replaceChildren();
-      const fields = DRAFT_VERB_FIELDS[draft.verb] || [];
       const payload = draft.payload || {};
-      fields.forEach(function(pair) {
-        const key = pair[0], label = pair[1];
-        if (!(key in payload)) return;
-        const row = document.createElement('div');
-        row.className = 'chat-bar-draft-field';
-        const lab = document.createElement('span');
-        lab.className = 'chat-bar-draft-label';
-        lab.textContent = label;
-        const val = document.createElement('span');
-        val.className = 'chat-bar-draft-fieldval';
-        val.textContent = String(payload[key] ?? '—');
-        row.appendChild(lab);
-        row.appendChild(val);
-        draftBodyEl.appendChild(row);
-      });
+      if (draft.verb === 'attach') {
+        [
+          ['ticket_id', 'ticket', payload.ticket_id],
+          ['filename', 'file', payload.filename],
+          ['byte_size', 'size', formatAttachmentSize(payload.byte_size)]
+        ].forEach(function(pair) {
+          appendDraftFieldRow(draftBodyEl, pair[1], pair[2]);
+        });
+      } else {
+        const fields = DRAFT_VERB_FIELDS[draft.verb] || [];
+        fields.forEach(function(pair) {
+          const key = pair[0], label = pair[1];
+          if (!(key in payload)) return;
+          appendDraftFieldRow(draftBodyEl, label, payload[key]);
+        });
+      }
       const diag = draft.diagnostics_snapshot;
       if (diag && typeof diag === 'object') {
         const section = document.createElement('div');

@@ -72,6 +72,70 @@ def capture_draft() -> Any:
     if not _enabled():
         return error_response(FEATURE_UNAVAILABLE, detail="Support is disabled")
 
+    if request.files.get("file") is not None:
+        verb = request.form.get("verb")
+        if verb != "attach":
+            return error_response(
+                INVALID_REQUEST_VALUE,
+                detail="verb must be attach for multipart draft capture",
+            )
+        try:
+            ticket_id = int(request.form.get("ticket_id"))
+        except (TypeError, ValueError):
+            return error_response(
+                INVALID_REQUEST_VALUE, detail="ticket_id must be an integer"
+            )
+
+        uploaded = request.files["file"]
+        if not uploaded.filename:
+            return error_response(MISSING_REQUIRED_FIELD, detail="No filename")
+
+        import base64
+        from pathlib import Path
+
+        from solstone.apps.support.portal import PortalClient
+
+        suffix = Path(uploaded.filename).suffix.lower()
+        if suffix not in PortalClient.ALLOWED_CONTENT_TYPES:
+            return error_response(
+                INVALID_REQUEST_VALUE,
+                detail=(
+                    f"Unsupported file type: {suffix}. "
+                    f"Allowed: {', '.join(sorted(PortalClient.ALLOWED_CONTENT_TYPES))}"
+                ),
+            )
+
+        data = uploaded.read()
+        if len(data) > PortalClient.MAX_ATTACHMENT_SIZE:
+            return error_response(
+                INVALID_REQUEST_VALUE,
+                detail=(
+                    f"File too large: {len(data) / 1024 / 1024:.1f} MB "
+                    f"(max {PortalClient.MAX_ATTACHMENT_SIZE / 1024 / 1024:.0f} MB)"
+                ),
+            )
+
+        ts = int(time.time() * 1000)
+        draft_id = uuid.uuid4().hex
+        draft_payload = {
+            "ticket_id": ticket_id,
+            "filename": uploaded.filename,
+            "content_type": PortalClient.ALLOWED_CONTENT_TYPES[suffix],
+            "byte_size": len(data),
+            "content_b64": base64.b64encode(data).decode("ascii"),
+        }
+        # Stored draft intentionally retains base64 for confirm-time re-materialization.
+        append_chat_event(
+            "support_draft",
+            ts=ts,
+            draft_id=draft_id,
+            captured_day=day_for_ts(ts),
+            verb="attach",
+            payload=draft_payload,
+            diagnostics_snapshot=None,
+        )
+        return jsonify({"draft_id": draft_id})
+
     payload = request.get_json(force=True)
     verb = payload.get("verb")
     draft_payload = payload.get("payload")

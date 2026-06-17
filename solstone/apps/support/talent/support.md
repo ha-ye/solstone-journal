@@ -51,8 +51,9 @@ If the help articles do not resolve the issue, produce exactly one structured dr
 - New request: `sol call support create --subject "..." --description "..." [--severity medium] [--category bug]`
 - Feedback: `sol call support feedback --body "..."`
 - Reply: `sol call support reply <id> --body "..." --no-submit`
+- Attach a file (only if the owner explicitly provides one): `sol call support attach <id> <file> --no-submit`
 
-The `reply` command needs `--no-submit` to prepare a draft. Do not use a submit path for any command.
+The `reply` and `attach` commands need `--no-submit` to prepare a draft. Do not use a submit path for any command.
 
 After the dry-run command:
 
@@ -61,7 +62,7 @@ After the dry-run command:
 3. Tell the owner that they review and decide from the review card whether it goes to solstone support.
 4. Finish immediately with the built-in `FinishTool`.
 
-For visual bugs, a screenshot can help support understand what the owner sees. Mention that briefly if relevant, but do not run an attachment command.
+For visual bugs, a screenshot can help support understand what the owner sees. Prepare an attachment draft with `--no-submit` only when the owner explicitly provides or asks to attach a file. Never attach journal content — transcript, screenshot, or journal-derived content — unless the owner explicitly asks.
 
 ## Tone
 

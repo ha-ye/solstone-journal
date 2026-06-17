@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import threading
 import time
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import httpx
 import pytest
@@ -17,7 +19,7 @@ from solstone.apps.chat.copy import (
     CHAT_CLOSER_SUPPORT_SEND_FAILED,
     CHAT_OFFER_SUPPORT_DECLINE,
     CHAT_OFFER_SUPPORT_PROMPT,
-    CHAT_SUPPORT_ATTACH_UNSUPPORTED,
+    CHAT_SUPPORT_ATTACH_FILED_FORMAT,
     CHAT_SUPPORT_DRAFT_CANCELLED,
     CHAT_SUPPORT_DRAFT_READY,
     CHAT_SUPPORT_SUBMIT_AMBIGUOUS,
@@ -120,6 +122,21 @@ def _support_create_payload(diagnostics: dict) -> dict:
         "user_context": diagnostics,
         "auto_context": False,
         "anonymous": False,
+    }
+
+
+def _support_attach_payload(
+    data: bytes = b"attachment bytes",
+    *,
+    ticket_id: int = 77,
+    filename: str = "evidence.txt",
+) -> dict:
+    return {
+        "ticket_id": ticket_id,
+        "filename": filename,
+        "content_type": "text/plain",
+        "byte_size": len(data),
+        "content_b64": base64.b64encode(data).decode("ascii"),
     }
 
 
@@ -459,6 +476,65 @@ def test_clean_support_finish_with_pending_draft_emits_marker(chat_client, monke
     assert "offer" not in sol_message
 
 
+def test_clean_support_finish_with_attach_draft_emits_slim_marker(
+    chat_client, monkeypatch
+):
+    import solstone.convey.chat as chat
+
+    monkeypatch.setattr("solstone.convey.chat._run_next_action", lambda _action: None)
+    monkeypatch.setattr("solstone.convey.chat._emit_finish", lambda *_args: None)
+    monkeypatch.setattr("solstone.convey.chat._emit_error", lambda *_args: None)
+    full_payload = _support_attach_payload(b"private bytes", filename="shot.png")
+    expected_payload = {
+        "ticket_id": 77,
+        "filename": "shot.png",
+        "content_type": "text/plain",
+        "byte_size": len(b"private bytes"),
+    }
+    append_chat_event(
+        "support_draft",
+        draft_id="draft-attach-marker",
+        captured_day=date.today().strftime("%Y%m%d"),
+        verb="attach",
+        payload=full_payload,
+        diagnostics_snapshot=None,
+    )
+    _set_current_chat_trigger(
+        chat,
+        {"type": "talent_finished", "name": "support", "summary": "drafted"},
+    )
+
+    chat._on_cortex_finish(
+        {
+            "use_id": "raw-chat",
+            "result": json.dumps(
+                {
+                    "message": "I drafted an attachment.",
+                    "notes": "done",
+                    "talent_request": None,
+                }
+            ),
+        }
+    )
+
+    day = chat._today_day()
+    sol_message = next(
+        event for event in read_chat_events(day) if event["kind"] == "sol_message"
+    )
+    expected_draft = {
+        "draft_id": "draft-attach-marker",
+        "verb": "attach",
+        "payload": expected_payload,
+        "diagnostics_snapshot": None,
+    }
+    assert sol_message["draft"] == expected_draft
+    assert "content_b64" not in sol_message["draft"]["payload"]
+    assert reduce_chat_state(day)["latest_sol_message"]["draft"] == expected_draft
+    session = chat_client.get("/api/chat/session")
+    assert session.status_code == 200
+    assert session.get_json()["latest_sol_message"]["draft"] == expected_draft
+
+
 def test_errored_support_finish_with_pending_draft_keeps_send_failed_closer(
     chat_client, monkeypatch
 ):
@@ -790,7 +866,7 @@ def test_support_draft_confirm_reply_uses_support_reply(chat_client, monkeypatch
     assert replies == [(77, "More detail")]
 
 
-def test_support_draft_confirm_unsupported_attach_no_submit(chat_client, monkeypatch):
+def test_support_draft_confirm_attach_uploads_captured_bytes(chat_client, monkeypatch):
     import solstone.convey.chat as chat
 
     monkeypatch.setattr(
@@ -803,10 +879,20 @@ def test_support_draft_confirm_unsupported_attach_no_submit(chat_client, monkeyp
         "support_reply",
         lambda *_args: pytest.fail("support_reply should not be called"),
     )
+    captured = b"saved bytes"
+    calls: list[tuple[int, str, str | None, bytes]] = []
+
+    def record_support_attach(ticket_id, file_path, *, filename=None):
+        path = Path(file_path)
+        calls.append((ticket_id, file_path, filename, path.read_bytes()))
+        assert path.exists()
+        return {"id": "attachment-1"}
+
+    monkeypatch.setattr(chat, "support_attach", record_support_attach)
     _append_support_draft(
         "draft-attach",
         verb="attach",
-        payload={"ticket_id": 77, "file_path": "/tmp/nope"},
+        payload=_support_attach_payload(captured, filename="capture.txt"),
         diagnostics_snapshot=None,
     )
 
@@ -816,19 +902,262 @@ def test_support_draft_confirm_unsupported_attach_no_submit(chat_client, monkeyp
     )
 
     assert response.status_code == 200
-    assert response.get_json() == {"ok": False, "outcome": "unsupported"}
+    assert response.get_json() == {
+        "ok": True,
+        "outcome": "submitted",
+        "ticket_id": 77,
+    }
+    assert len(calls) == 1
+    ticket_id, tmp_path, filename, data = calls[0]
+    assert (ticket_id, filename, data) == (77, "capture.txt", captured)
+    assert not Path(tmp_path).exists()
     day = date.today().strftime("%Y%m%d")
     result = _events_of_kind(day, "result")[0]
     assert result == {
         "kind": "result",
         "ts": result["ts"],
         "draft_id": "draft-attach",
-        "ok": False,
-        "error": "attach_unsupported",
+        "ok": True,
+        "ticket_id": 77,
     }
     sol_message = _events_of_kind(day, "sol_message")[0]
-    assert sol_message["text"] == CHAT_SUPPORT_ATTACH_UNSUPPORTED
+    assert sol_message["text"] == CHAT_SUPPORT_ATTACH_FILED_FORMAT.format(ticket_id=77)
     assert "draft" not in sol_message
+
+
+def test_support_draft_confirm_attach_uses_captured_bytes_after_source_deleted(
+    chat_client, monkeypatch, tmp_path
+):
+    import solstone.convey.chat as chat
+    from solstone.apps.support.routes import support_bp
+
+    monkeypatch.setattr("solstone.apps.support.routes._enabled", lambda: True)
+    source = tmp_path / "source.txt"
+    original = b"original captured bytes"
+    source.write_bytes(original)
+
+    support_app = Flask(__name__)
+    support_app.config["TESTING"] = True
+    support_app.register_blueprint(support_bp)
+    with source.open("rb") as handle:
+        draft_response = support_app.test_client().post(
+            "/app/support/api/draft",
+            data={
+                "verb": "attach",
+                "ticket_id": "81",
+                "file": (handle, "source.txt"),
+            },
+            content_type="multipart/form-data",
+        )
+    assert draft_response.status_code == 200
+    draft_id = draft_response.get_json()["draft_id"]
+    source.unlink()
+
+    calls: list[bytes] = []
+
+    def record_support_attach(_ticket_id, file_path, *, filename=None):
+        calls.append(Path(file_path).read_bytes())
+        return {"id": "attachment-1"}
+
+    monkeypatch.setattr(chat, "support_attach", record_support_attach)
+
+    response = chat_client.post(
+        "/api/chat/support/draft/confirm",
+        json={"draft_id": draft_id},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "ok": True,
+        "outcome": "submitted",
+        "ticket_id": 81,
+    }
+    assert calls == [original]
+
+
+def test_support_draft_confirm_attach_cleans_temp_file_on_failure(
+    chat_client, monkeypatch
+):
+    import solstone.convey.chat as chat
+
+    temp_paths: list[str] = []
+
+    def fail_support_attach(_ticket_id, file_path, *, filename=None):
+        temp_paths.append(file_path)
+        request = httpx.Request("POST", "http://x")
+        raise httpx.ConnectError("x", request=request)
+
+    monkeypatch.setattr(chat, "support_attach", fail_support_attach)
+    _append_support_draft(
+        "draft-attach-fail",
+        verb="attach",
+        payload=_support_attach_payload(),
+        diagnostics_snapshot=None,
+    )
+
+    response = chat_client.post(
+        "/api/chat/support/draft/confirm",
+        json={"draft_id": "draft-attach-fail"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"ok": False, "outcome": "failed"}
+    assert len(temp_paths) == 1
+    assert not Path(temp_paths[0]).exists()
+
+
+def test_support_draft_confirm_attach_is_idempotent(chat_client, monkeypatch):
+    import solstone.convey.chat as chat
+
+    calls: list[tuple[int, str | None]] = []
+
+    def record_support_attach(ticket_id, _file_path, *, filename=None):
+        calls.append((ticket_id, filename))
+        return {"id": "attachment-1"}
+
+    monkeypatch.setattr(chat, "support_attach", record_support_attach)
+    _append_support_draft(
+        "draft-attach-once",
+        verb="attach",
+        payload=_support_attach_payload(filename="once.txt"),
+        diagnostics_snapshot=None,
+    )
+
+    first = chat_client.post(
+        "/api/chat/support/draft/confirm",
+        json={"draft_id": "draft-attach-once"},
+    )
+    second = chat_client.post(
+        "/api/chat/support/draft/confirm",
+        json={"draft_id": "draft-attach-once"},
+    )
+
+    assert first.status_code == 200
+    assert first.get_json()["outcome"] == "submitted"
+    assert second.status_code == 200
+    assert second.get_json() == {"ok": False, "outcome": "already_submitted"}
+    assert calls == [(77, "once.txt")]
+
+
+def test_support_draft_attach_superseded_terminal_and_cancel_noop(
+    chat_client, monkeypatch
+):
+    import solstone.convey.chat as chat
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        chat,
+        "support_attach",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or {"id": 1},
+    )
+    _append_support_draft(
+        "draft-attach-old",
+        verb="attach",
+        payload=_support_attach_payload(filename="old.txt"),
+        diagnostics_snapshot=None,
+    )
+    _append_support_draft(
+        "draft-attach-new",
+        verb="attach",
+        payload=_support_attach_payload(filename="new.txt"),
+        diagnostics_snapshot=None,
+    )
+
+    superseded = chat_client.post(
+        "/api/chat/support/draft/confirm",
+        json={"draft_id": "draft-attach-old"},
+    )
+    cancelled = chat_client.post(
+        "/api/chat/support/draft/cancel",
+        json={"draft_id": "draft-attach-new"},
+    )
+    terminal = chat_client.post(
+        "/api/chat/support/draft/confirm",
+        json={"draft_id": "draft-attach-new"},
+    )
+
+    assert superseded.status_code == 200
+    assert superseded.get_json() == {"ok": False, "outcome": "superseded"}
+    assert cancelled.status_code == 200
+    assert cancelled.get_json() == {"ok": True, "outcome": "cancelled"}
+    assert terminal.status_code == 200
+    assert terminal.get_json() == {"ok": False, "outcome": "already_submitted"}
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("exc_factory", "outcome", "copy_text", "ambiguous"),
+    [
+        (
+            lambda request: httpx.ConnectError("x", request=request),
+            "failed",
+            CHAT_SUPPORT_SUBMIT_FAILED,
+            False,
+        ),
+        (
+            lambda request: httpx.ReadTimeout("x", request=request),
+            "ambiguous",
+            CHAT_SUPPORT_SUBMIT_AMBIGUOUS,
+            True,
+        ),
+        (
+            lambda request: httpx.HTTPStatusError(
+                "bad request",
+                request=request,
+                response=httpx.Response(400, request=request),
+            ),
+            "failed",
+            CHAT_SUPPORT_SUBMIT_FAILED,
+            False,
+        ),
+        (
+            lambda request: httpx.HTTPStatusError(
+                "unavailable",
+                request=request,
+                response=httpx.Response(503, request=request),
+            ),
+            "ambiguous",
+            CHAT_SUPPORT_SUBMIT_AMBIGUOUS,
+            True,
+        ),
+    ],
+)
+def test_support_draft_confirm_attach_failure_copy_is_honest(
+    chat_client,
+    monkeypatch,
+    exc_factory,
+    outcome,
+    copy_text,
+    ambiguous,
+):
+    import solstone.convey.chat as chat
+
+    def fail_support_attach(_ticket_id, _file_path, *, filename=None):
+        request = httpx.Request("POST", "http://x")
+        raise exc_factory(request)
+
+    monkeypatch.setattr(chat, "support_attach", fail_support_attach)
+    _append_support_draft(
+        f"draft-attach-{outcome}-{ambiguous}",
+        verb="attach",
+        payload=_support_attach_payload(),
+        diagnostics_snapshot=None,
+    )
+
+    response = chat_client.post(
+        "/api/chat/support/draft/confirm",
+        json={"draft_id": f"draft-attach-{outcome}-{ambiguous}"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"ok": False, "outcome": outcome}
+    day = date.today().strftime("%Y%m%d")
+    result = _events_of_kind(day, "result")[0]
+    assert result["ok"] is False
+    assert "ticket_id" not in result
+    assert result.get("ambiguous") is True if ambiguous else "ambiguous" not in result
+    sol_message = _events_of_kind(day, "sol_message")[0]
+    assert sol_message["text"] == copy_text
 
 
 def test_support_draft_confirm_claim_is_race_safe(chat_client, monkeypatch):

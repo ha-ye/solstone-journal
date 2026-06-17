@@ -19,7 +19,7 @@ Draft tickets, search the knowledge base, prepare feedback, and check existing s
 
 3. **Diagnostics are auto-populated.** When creating a ticket, `sol call support create` includes system info (version, OS, services, recent errors). You do not need to gather this manually.
 
-4. **Draft only.** `create` and `feedback` run as dry-runs that save a draft for owner review. `reply` needs `--no-submit` to draft. Nothing is sent by the agent.
+4. **Draft only.** `create` and `feedback` run as dry-runs that save a draft for owner review. `reply` and `attach` need `--no-submit` to draft. Nothing is sent by the agent.
 
 ## Subcommands
 
@@ -93,7 +93,11 @@ sol call support show 42 --json
 
 ### Attachments
 
-Screenshots can help support understand visual bugs. In this draft-only workflow, do not run attachment commands; note the screenshot need in the draft and let the owner decide what to include during review.
+```bash
+sol call support attach 42 screenshot.png --no-submit
+```
+
+Screenshots can help support understand visual bugs. Prepare an attachment draft only when the owner explicitly provides or asks to attach a file, and always include `--no-submit`. Never attach journal content — transcript, screenshot, or journal-derived content — unless the owner explicitly asks. Nothing is sent by the agent.
 
 ### Feedback
 
@@ -168,7 +172,7 @@ Running `create` or `feedback` produces a safe dry-run preview and saves a draft
 ## Gotchas
 
 - **`create`/`feedback` are dry-run by default.** They save a draft for owner review. The `DRY RUN` banner in stdout is the signal that nothing was sent.
-- **`reply` needs `--no-submit` for drafts.** Always include it when preparing a reply for owner review.
+- **`reply` and `attach` need `--no-submit` for drafts.** Always include it when preparing a reply or attachment for owner review.
 - **KB-first is automatic on `create`.** The `create` command always searches the KB and shows matches for owner review before preparing the draft. Pass `--skip-kb` only if the issue is clearly unique.
 - **`--product` defaults to solstone.** Support handles other sol pbc products too. Confirm with the owner before preparing a non-solstone ticket.
 - **Diagnostics can include configuration.** Secrets are stripped, but the full diagnostic payload must still be shown to the owner.

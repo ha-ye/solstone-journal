@@ -17,6 +17,8 @@ def test_support_talent_prompt_is_draft_only() -> None:
     # The bare flag substring does not match the required reply flag `--no-submit`.
     assert "--submit" not in text
     assert "--no-submit" in text
+    assert "sol call support attach <id> <file> --no-submit" in text
+    assert "sol call support attach 42 screenshot.png --no-submit" in skill_text
     assert "send-approval" not in lower_text
     assert "per-send owner approval" not in lower_text
     assert "gate denial" not in lower_text

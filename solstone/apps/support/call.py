@@ -461,11 +461,55 @@ def reply(
 def attach(
     ticket_id: int = typer.Argument(..., help="Ticket ID to attach files to."),
     files: list[Path] = typer.Argument(..., help="File(s) to attach."),
+    submit: bool = typer.Option(
+        True,
+        "--submit/--no-submit",
+        help=(
+            "Upload the file(s) to solstone support (default). Pass --no-submit "
+            "to prepare a single-file draft for review without contacting the portal."
+        ),
+    ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
 ) -> None:
     """Attach file(s) to a ticket."""
     client = get_client()
     _check_enabled(client)
+
+    if not submit:
+        if len(files) > 1:
+            typer.echo(
+                "Attach one file at a time when preparing a draft for review.",
+                err=True,
+            )
+            raise typer.Exit(1)
+        f = files[0]
+        if not f.is_file():
+            typer.echo(f"Error: file not found: {f}", err=True)
+            raise typer.Exit(1)
+        try:
+            client.upload(
+                "/app/support/api/draft",
+                files={"file": (f.name, str(f), None)},
+                data={"verb": "attach", "ticket_id": str(ticket_id)},
+            )
+        except ConveyUnreachableError:
+            raise
+        except ConveyClientError as err:
+            typer.echo(err.detail or err.error, err=True)
+            raise typer.Exit(1) from err
+
+        size = f.stat().st_size
+        if size >= 1024 * 1024:
+            size_str = f"{size / 1024 / 1024:.1f} MB"
+        elif size >= 1024:
+            size_str = f"{size / 1024:.0f} KB"
+        else:
+            size_str = f"{size} bytes"
+        typer.echo(
+            "DRY RUN — nothing was sent. Re-run without --no-submit to upload this."
+        )
+        typer.echo(f"Attachment draft for ticket #{ticket_id}: {f.name} ({size_str})")
+        return
 
     # Validate files up front
     for f in files:

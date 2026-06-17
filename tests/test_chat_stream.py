@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
+import base64
 import json
 from datetime import datetime
 from pathlib import Path
@@ -186,6 +187,27 @@ def test_support_draft_event_round_trips(tmp_path, monkeypatch):
     assert events == [event]
     assert events[0]["kind"] == "support_draft"
     assert events[0]["draft_id"] == "draft-1"
+
+    attach_payload = {
+        "ticket_id": 42,
+        "filename": "evidence.txt",
+        "content_type": "text/plain",
+        "byte_size": 5,
+        "content_b64": base64.b64encode(b"bytes").decode("ascii"),
+    }
+    attach_event = append_chat_event(
+        "support_draft",
+        ts=ts + 1,
+        draft_id="draft-attach",
+        captured_day="20260420",
+        verb="attach",
+        payload=attach_payload,
+        diagnostics_snapshot=None,
+    )
+
+    events = read_chat_events("20260420")
+    assert events == [event, attach_event]
+    assert events[1]["payload"] == attach_payload
 
 
 def test_chat_error_preserves_optional_provider(tmp_path, monkeypatch):
@@ -568,10 +590,15 @@ def test_reduce_chat_state_includes_draft_and_clears_on_later_sol_message(
     _setup_journal(tmp_path, monkeypatch)
     start = _ms(2026, 4, 20, 12, 0, 0)
     draft = {
-        "draft_id": "draft-1",
-        "verb": "create",
-        "payload": {"subject": "help"},
-        "diagnostics_snapshot": {"version": "9.9.9"},
+        "draft_id": "draft-attach",
+        "verb": "attach",
+        "payload": {
+            "ticket_id": 42,
+            "filename": "evidence.txt",
+            "content_type": "text/plain",
+            "byte_size": 5,
+        },
+        "diagnostics_snapshot": None,
     }
 
     append_chat_event(
@@ -587,6 +614,7 @@ def test_reduce_chat_state_includes_draft_and_clears_on_later_sol_message(
 
     reduced = reduce_chat_state("20260420")
     assert reduced["latest_sol_message"]["draft"] == draft
+    assert "content_b64" not in reduced["latest_sol_message"]["draft"]["payload"]
 
     append_chat_event(
         "sol_message",

@@ -3,10 +3,12 @@
 
 """Tests for support app routes."""
 
+import base64
 import json
 import os
 import re
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import pytest
 import requests
@@ -115,6 +117,53 @@ def _today_support_drafts() -> list[dict]:
         for event in read_chat_events(date.today().strftime("%Y%m%d"))
         if event["kind"] == "support_draft"
     ]
+
+
+def _patch_flask_upload(monkeypatch):
+    from solstone.think.convey_client import (
+        MALFORMED_RESPONSE_MESSAGE,
+        SERVER_ERROR_MESSAGE,
+        ConveyClient,
+        ConveyClientError,
+    )
+
+    def flask_upload(self, path, *, files, data=None):
+        form = dict(data or {})
+        handles = []
+        try:
+            for field, (filename, file_path, content_type) in files.items():
+                handle = Path(file_path).open("rb")
+                handles.append(handle)
+                if content_type is None:
+                    form[field] = (handle, filename)
+                else:
+                    form[field] = (handle, filename, content_type)
+            response = self._session.post(
+                path,
+                data=form,
+                content_type="multipart/form-data",
+            )
+        finally:
+            for handle in handles:
+                handle.close()
+
+        parsed = response.get_json(silent=True)
+        status = response.status_code
+        if 200 <= status < 300:
+            if parsed is not None:
+                return parsed
+            raise ConveyClientError(MALFORMED_RESPONSE_MESSAGE, status=status)
+        if isinstance(parsed, dict) and ("error" in parsed or "reason_code" in parsed):
+            error = parsed.get("error") or parsed.get("reason_code")
+            raise ConveyClientError(
+                str(error),
+                reason_code=parsed.get("reason_code"),
+                detail=parsed.get("detail"),
+                status=status,
+            )
+        raise ConveyClientError(SERVER_ERROR_MESSAGE, status=status)
+
+    monkeypatch.setattr(ConveyClient, "upload", flask_upload)
 
 
 def test_config_route_reports_enabled_and_portal_url(support_client, monkeypatch):
@@ -565,6 +614,99 @@ def test_cli_reply_default_still_submits(cli, monkeypatch):
     assert result.exit_code == 0
     assert "Reply sent to ticket #42." in result.stdout
     assert replies == [(42, "hi")]
+    assert _today_support_drafts() == []
+
+
+def test_cli_attach_no_submit_captures_file_bytes_without_submit(
+    cli, monkeypatch, tmp_path
+):
+    _enable_support_cli(monkeypatch)
+    _patch_flask_upload(monkeypatch)
+    monkeypatch.setattr(
+        "solstone.apps.support.portal.get_client",
+        lambda *_args, **_kwargs: pytest.fail("portal client should not be used"),
+    )
+    monkeypatch.setattr(
+        "solstone.apps.support.tools.support_attach",
+        lambda *_args, **_kwargs: pytest.fail("support_attach should not be called"),
+    )
+    file_path = tmp_path / "evidence.txt"
+    file_bytes = b"captured at draft time"
+    file_path.write_bytes(file_bytes)
+
+    result = cli.invoke(
+        support_cli_app,
+        ["attach", "42", str(file_path), "--no-submit"],
+    )
+
+    assert result.exit_code == 0
+    assert "DRY RUN" in result.stdout
+    assert "evidence.txt" in result.stdout
+    drafts = _today_support_drafts()
+    assert len(drafts) == 1
+    draft = drafts[0]
+    assert draft["verb"] == "attach"
+    assert draft["diagnostics_snapshot"] is None
+    assert draft["payload"]["ticket_id"] == 42
+    assert draft["payload"]["filename"] == "evidence.txt"
+    assert draft["payload"]["content_type"] == "text/plain"
+    assert draft["payload"]["byte_size"] == len(file_bytes)
+    assert draft["payload"]["content_b64"] == base64.b64encode(file_bytes).decode(
+        "ascii"
+    )
+
+
+def test_cli_attach_no_submit_requires_one_file(cli, monkeypatch, tmp_path):
+    _enable_support_cli(monkeypatch)
+    one = tmp_path / "one.txt"
+    two = tmp_path / "two.txt"
+    one.write_text("one", encoding="utf-8")
+    two.write_text("two", encoding="utf-8")
+
+    result = cli.invoke(
+        support_cli_app,
+        ["attach", "42", str(one), str(two), "--no-submit"],
+    )
+
+    assert result.exit_code != 0
+    assert "Attach one file at a time" in result.stderr
+    assert _today_support_drafts() == []
+
+
+def test_cli_attach_no_submit_rejects_disallowed_type(cli, monkeypatch, tmp_path):
+    _enable_support_cli(monkeypatch)
+    _patch_flask_upload(monkeypatch)
+    file_path = tmp_path / "payload.exe"
+    file_path.write_bytes(b"nope")
+
+    result = cli.invoke(
+        support_cli_app,
+        ["attach", "42", str(file_path), "--no-submit"],
+    )
+
+    assert result.exit_code != 0
+    assert "Unsupported file type: .exe" in result.stderr
+    assert "Allowed:" in result.stderr
+    assert ".txt" in result.stderr
+    assert _today_support_drafts() == []
+
+
+def test_cli_attach_no_submit_rejects_oversize(cli, monkeypatch, tmp_path):
+    from solstone.apps.support.portal import PortalClient
+
+    _enable_support_cli(monkeypatch)
+    _patch_flask_upload(monkeypatch)
+    monkeypatch.setattr(PortalClient, "MAX_ATTACHMENT_SIZE", 3)
+    file_path = tmp_path / "large.txt"
+    file_path.write_bytes(b"larger")
+
+    result = cli.invoke(
+        support_cli_app,
+        ["attach", "42", str(file_path), "--no-submit"],
+    )
+
+    assert result.exit_code != 0
+    assert "File too large" in result.stderr
     assert _today_support_drafts() == []
 
 

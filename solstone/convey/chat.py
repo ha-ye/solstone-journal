@@ -31,14 +31,14 @@ from solstone.apps.chat.copy import (
     CHAT_CLOSER_TALENT_ERRORED_GENERIC,
     CHAT_OFFER_SUPPORT_DECLINE,
     CHAT_OFFER_SUPPORT_PROMPT,
-    CHAT_SUPPORT_ATTACH_UNSUPPORTED,
+    CHAT_SUPPORT_ATTACH_FILED_FORMAT,
     CHAT_SUPPORT_DRAFT_CANCELLED,
     CHAT_SUPPORT_DRAFT_READY,
     CHAT_SUPPORT_SUBMIT_AMBIGUOUS,
     CHAT_SUPPORT_SUBMIT_FAILED,
     CHAT_SUPPORT_SUBMIT_FILED_FORMAT,
 )
-from solstone.apps.support.tools import support_create, support_reply
+from solstone.apps.support.tools import support_attach, support_create, support_reply
 from solstone.convey.chat_stream import (
     append_chat_event,
     find_unresponded_trigger,
@@ -627,10 +627,21 @@ def _on_cortex_finish(message: dict[str, Any]) -> None:
                     latest_draft = _latest_support_draft(_today_day())
                     if latest_draft is not None:
                         message_text = CHAT_SUPPORT_DRAFT_READY
+                        verb = str(latest_draft.get("verb") or "")
+                        if verb == "attach":
+                            source_payload = latest_draft["payload"]
+                            marker_payload = {
+                                "ticket_id": source_payload["ticket_id"],
+                                "filename": source_payload["filename"],
+                                "content_type": source_payload["content_type"],
+                                "byte_size": source_payload["byte_size"],
+                            }
+                        else:
+                            marker_payload = latest_draft.get("payload")
                         draft = {
                             "draft_id": latest_draft.get("draft_id"),
-                            "verb": latest_draft.get("verb"),
-                            "payload": latest_draft.get("payload"),
+                            "verb": verb,
+                            "payload": marker_payload,
                             "diagnostics_snapshot": latest_draft.get(
                                 "diagnostics_snapshot"
                             ),
@@ -1942,17 +1953,6 @@ def _submit_support_draft(
     verb = str(draft_event["verb"])
     payload = draft_event["payload"]
     diagnostics_snapshot = draft_event["diagnostics_snapshot"]
-    if verb not in {"create", "feedback", "reply"}:
-        return SupportDraftSubmitResult(
-            ok=False,
-            outcome="unsupported",
-            text=CHAT_SUPPORT_ATTACH_UNSUPPORTED,
-            result_fields={
-                "draft_id": draft_id,
-                "ok": False,
-                "error": "attach_unsupported",
-            },
-        )
 
     try:
         if verb == "create":
@@ -1970,9 +1970,30 @@ def _submit_support_draft(
                 user_context=diagnostics_snapshot,
             )
             ticket_id = result_obj.get("id")
-        else:
+        elif verb == "reply":
             support_reply(payload["ticket_id"], payload["content"])
             ticket_id = payload["ticket_id"]
+        elif verb == "attach":
+            import base64
+            import tempfile
+            from pathlib import Path as AttachmentPath
+
+            suffix = AttachmentPath(payload["filename"]).suffix.lower()
+            data = base64.b64decode(payload["content_b64"])
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(data)
+                tmp_path = AttachmentPath(tmp.name)
+            try:
+                support_attach(
+                    payload["ticket_id"],
+                    str(tmp_path),
+                    filename=payload["filename"],
+                )
+            finally:
+                tmp_path.unlink(missing_ok=True)
+            ticket_id = payload["ticket_id"]
+        else:
+            raise ValueError(f"unknown draft verb: {verb}")
     except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
         return _support_submit_exception_result(draft_id, exc, ambiguous=False)
     except httpx.HTTPStatusError as exc:
@@ -1991,7 +2012,11 @@ def _submit_support_draft(
     return SupportDraftSubmitResult(
         ok=True,
         outcome="submitted",
-        text=CHAT_SUPPORT_SUBMIT_FILED_FORMAT.format(ticket_id=ticket_id),
+        text=(
+            CHAT_SUPPORT_ATTACH_FILED_FORMAT.format(ticket_id=ticket_id)
+            if verb == "attach"
+            else CHAT_SUPPORT_SUBMIT_FILED_FORMAT.format(ticket_id=ticket_id)
+        ),
         ticket_id=ticket_id,
         result_fields={"draft_id": draft_id, "ok": True, "ticket_id": ticket_id},
     )
