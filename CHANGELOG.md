@@ -4,6 +4,34 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.7] - 2026-06-18
+
+### Changed
+- stretches where nothing on your screen changes (a long overnight, a static window left open) now fold into a single continuation entry in your journal instead of many near-identical ones. sol skips re-describing what hasn't moved, so those stretches process faster and your journal reads cleaner.
+
+### Fixed
+- imported recordings now get their own activity record. before, an imported meeting that ran as one continuous stretch could finish without an activity record for it; now it gets one like everything else.
+- scheduled tasks that had quietly stopped running now run again on their own, with no action needed from you. an earlier change to how commands are named had left some saved schedules pointing at a form that no longer worked, and this repairs them.
+- a settings change you made could be lost if another change landed at the same moment. settings now save one at a time, so concurrent edits all stick.
+- your weekly reflection now completes and writes its summary reliably. before, it could spend its whole time budget looking in the wrong place and finish with nothing; it now reads from the right source and lands every time.
+
+## [0.6.5] - 2026-06-17
+
+### Added
+- you can mark a single day to be processed again with `journal reprocess DAY --mark-updated`. it re-queues that day even if it already finished, so you can pick up a day that needs another pass without re-running everything.
+
+### Changed
+- when sol files something with solstone support on your behalf, you now see and confirm the exact message before it leaves your machine. sol drafts the report, your journal shows you the full contents plus the diagnostic details that would be attached, and nothing is sent until you press send. sol has no path to send on its own; pressing send is the only way anything reaches support, and you can cancel instead and nothing leaves.
+- the local web interface no longer has its own password, login page, session cookie, or localhost-trust switch. once setup is complete, the local interface serves directly on the journal machine; linked devices continue to use their paired-device identity through link.
+- the connection-and-health indicator now shows the sol ring, with the ring itself carrying live status: whether your journal is reachable, whether observing is healthy, and whether a quiet notification is waiting. it updates continuously while the page is open.
+
+### Fixed
+- closed a window during device pairing where someone on your local network could have placed themselves in the middle of the exchange. when a new device pairs with your journal over the local network, it now cryptographically verifies it is talking to your real journal and refuses to continue if anything doesn't match. if you pair devices on shared or untrusted wi-fi, please update.
+- pairing a phone or tablet to your journal now works when the journal's machine has more than one network connection. before, the pairing code could advertise an address your other device couldn't actually reach, so the pairing would fail; it now offers every local address so your device can find one that works.
+- your journal keeps making progress even when one piece of work stalls. before, a single stuck step (transcribing a clip, thinking through a day, or a model call that never returned) could quietly freeze that part of your journal for hours or days while everything behind it waited; now every piece of work has a time limit, a stall surfaces instead of hiding, and the rest keeps flowing. re-processing a day that had no new activity also no longer loops on itself.
+- setting up a hosted service (private link or scout) from the web interface now works when your journal runs on a remote or headless machine. before, the approval step could stall at "setting up…" and never show you the link to continue; it now always gives you a one-tap link to approve.
+- installing from source on an aarch64 nvidia machine no longer fails partway through, and transcription works there. if you ran into this, this resolves it.
+
 ## [0.6.4] - 2026-06-15
 
 ### Added

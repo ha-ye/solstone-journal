@@ -8,13 +8,13 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-
-import numpy as np
-import onnxruntime as ort
-import soundfile as sf
-from scipy.signal import resample_poly
+from typing import TYPE_CHECKING
 
 from solstone.observe.utils import SAMPLE_RATE
+
+if TYPE_CHECKING:
+    import numpy as np
+    import onnxruntime as ort
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,7 @@ _overlap_session: ort.InferenceSession | None = None
 def _get_overlap_session() -> ort.InferenceSession:
     """Return a cached ONNX InferenceSession for the pyannote overlap model."""
     global _overlap_session
+    import onnxruntime as ort
 
     if _overlap_session is None:
         from solstone.observe.transcribe.main import (
@@ -65,6 +66,8 @@ def compute_overlap_fraction(
     audio: np.ndarray, sample_rate: int = SAMPLE_RATE
 ) -> float:
     """Compute the speech-conditioned overlap fraction for an audio segment."""
+    import numpy as np
+
     if sample_rate != SAMPLE_RATE:
         raise ValueError(
             f"pyannote overlap detector requires {SAMPLE_RATE} Hz audio, got {sample_rate}"
@@ -129,6 +132,8 @@ def compute_overlap_and_logprobs(
     (num_frames, 7) and can be passed directly to diarize() to skip a second
     pyannote inference pass.
     """
+    import numpy as np
+
     if sample_rate != SAMPLE_RATE:
         raise ValueError(
             f"pyannote overlap detector requires {SAMPLE_RATE} Hz audio, got {sample_rate}"
@@ -186,6 +191,10 @@ def compute_overlap_and_logprobs(
 
 def compute_overlap_fraction_for_wav(path: Path) -> float:
     """Load a WAV file and compute its speech-conditioned overlap fraction."""
+    import numpy as np
+    import soundfile as sf
+    from scipy.signal import resample_poly
+
     audio, sample_rate = sf.read(path, dtype="float32", always_2d=False)
     if audio.ndim > 1:
         audio = audio.mean(axis=1)

@@ -117,7 +117,7 @@
 <nav class="facet-bar{% if not app_registry.apps[app].facets_enabled() %} facets-disabled{% endif %}" aria-label="facets">
   <button id="hamburger" aria-label="toggle navigation" aria-expanded="false">☰</button>
   <div class="facet-pills-container"></div>
-  <button class="status-icon" aria-expanded="false" aria-controls="status-pane" aria-label="system status: connecting"><svg class="status-indicator status-indicator--connecting" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="#f59e0b" stroke-width="2.5" stroke-dasharray="24 8"/></svg><span id="quiet-notif-badge" class="quiet-notif-badge" style="display:none"></span></button>
+  <button class="status-icon" aria-expanded="false" aria-controls="status-pane" aria-label="system status: connecting"><img class="status-indicator status-indicator--connecting" src="/static/sol-status/active.svg" width="22" height="22" alt="" aria-hidden="true"><span id="quiet-notif-badge" class="quiet-notif-badge" style="display:none"></span></button>
   <span id="status-live-region" role="status" class="visually-hidden"></span>
 </nav>
 
@@ -171,6 +171,16 @@
   const offerTextEl = offerEl ? offerEl.querySelector('.offer-text') : null;
   const offerYesBtn = document.getElementById('chatBarOfferYes');
   const offerNoBtn = document.getElementById('chatBarOfferNo');
+  const draftEl = document.getElementById('chatBarDraft');
+  const resultEl = document.getElementById('chatBarResult');
+  const draftCardEl = draftEl ? draftEl.querySelector('.chat-bar-draft-card') : null;
+  const draftTitleEl = draftEl ? draftEl.querySelector('.chat-bar-draft-title') : null;
+  const draftRouteFromEl = draftEl ? draftEl.querySelector('.chat-bar-draft-route-from') : null;
+  const draftRouteToEl = draftEl ? draftEl.querySelector('.chat-bar-draft-route-to') : null;
+  const draftBodyEl = draftEl ? draftEl.querySelector('.chat-bar-draft-body') : null;
+  const draftFloorEl = draftEl ? draftEl.querySelector('.chat-bar-draft-floor') : null;
+  const draftSubmitBtn = document.getElementById('chatBarDraftSubmit');
+  const draftCancelBtn = document.getElementById('chatBarDraftCancel');
   const solPingDismiss = document.getElementById('chatBarSolPingDismiss');
   const talentsTray = document.getElementById('chatBarTalents');
   const form = document.getElementById('chatBarForm');
@@ -188,6 +198,7 @@
   const SOL_PING_OFFLINE_DELAY_MS = 30000;
   let trayPage = 0;
   let pendingSend = false;
+  let currentDraft = null;
   let modalUseId = null;
   let modalPollTimer = null;
   let modalChatCleanup = null;
@@ -346,8 +357,19 @@
     if (offerNoBtn) offerNoBtn.textContent = window.solChatCopy.CHAT_OFFER_SUPPORT_NO;
   }
 
+  function populateSupportDraftCopy() {
+    if (draftSubmitBtn) draftSubmitBtn.textContent = window.solChatCopy.CHAT_DRAFT_SUBMIT;
+    if (draftCancelBtn) draftCancelBtn.textContent = window.solChatCopy.CHAT_DRAFT_CANCEL;
+    if (draftCardEl) draftCardEl.setAttribute('aria-label', 'support draft for review');
+    if (draftTitleEl) draftTitleEl.textContent = window.solChatCopy.CHAT_DRAFT_HEADER;
+    if (draftRouteFromEl) draftRouteFromEl.textContent = window.solChatCopy.CHAT_CAPACITY_SUPPORT_ROUTE_FROM;
+    if (draftRouteToEl) draftRouteToEl.textContent = window.solChatCopy.CHAT_CAPACITY_SUPPORT_ROUTE_TO;
+    if (draftFloorEl) draftFloorEl.textContent = window.solChatCopy.CHAT_DRAFT_FLOOR;
+  }
+
   function showSupportOffer(text) {
     if (!offerEl) return;
+    hideSupportResult();
     if (offerTextEl) offerTextEl.textContent = text || window.solChatCopy.CHAT_OFFER_SUPPORT_FALLBACK;
     offerEl.hidden = false;
     setStatus('', '');
@@ -356,6 +378,333 @@
   function hideSupportOffer() {
     if (!offerEl) return;
     offerEl.hidden = true;
+  }
+
+  const FIELD_LABELS = {
+    subject: "subject",
+    description: "what's happening",
+    body: "your feedback",
+    content: "your message",
+    filename: "file",
+    content_type: "type",
+    byte_size: "size",
+    severity: "severity",
+    category: "area",
+    product: "product"
+  };
+
+  const DIAG_KEY_LABELS = {
+    version: "solstone version",
+    revision: "build",
+    platform: "system",
+    services: "services",
+    recent_errors: "recent errors",
+    config: "configuration",
+    provider_readiness: "ai providers"
+  };
+
+  const SUPPORT_OUTCOMES = {
+    "support draft submitted": { state: 'submitted', icon: '✓' },
+    "support draft failed": { state: 'failed', icon: '!' },
+    "support draft ambiguous": { state: 'ambiguous', icon: '?' },
+    "support draft cancelled": { state: 'cancelled', icon: '–' }
+  };
+
+  function formatAttachmentSize(size) {
+    const bytes = Number(size) || 0;
+    if (bytes >= 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+    if (bytes >= 1024) return String(Math.round(bytes / 1024)) + ' KB';
+    return String(bytes) + ' bytes';
+  }
+
+  function appendDraftFieldRow(parent, label, value) {
+    const row = document.createElement('div');
+    row.className = 'chat-bar-draft-field';
+    const lab = document.createElement('span');
+    lab.className = 'chat-bar-draft-label';
+    lab.textContent = label;
+    const val = document.createElement('span');
+    val.className = 'chat-bar-draft-fieldval';
+    val.textContent = String(value ?? '—');
+    row.appendChild(lab);
+    row.appendChild(val);
+    parent.appendChild(row);
+  }
+
+  function appendDraftKind(parent, kindLabel, ticketId) {
+    const row = document.createElement('div');
+    row.className = 'chat-bar-draft-kindrow';
+    const kind = document.createElement('span');
+    kind.className = 'chat-bar-draft-kind';
+    kind.textContent = kindLabel;
+    row.appendChild(kind);
+    if (ticketId !== undefined && ticketId !== null && String(ticketId).trim()) {
+      const ticket = document.createElement('span');
+      ticket.className = 'chat-bar-draft-ticket';
+      ticket.textContent = window.solChatCopy.CHAT_DRAFT_TICKET_FORMAT.replace('{ticket_id}', String(ticketId));
+      row.appendChild(ticket);
+    }
+    parent.appendChild(row);
+  }
+
+  function appendDraftFieldIfPresent(parent, payload, key, value) {
+    if (!(key in payload)) return;
+    appendDraftFieldRow(parent, FIELD_LABELS[key], value === undefined ? payload[key] : value);
+  }
+
+  function appendDraftMetaPill(parent, label, value) {
+    const pill = document.createElement('span');
+    pill.className = 'chat-bar-draft-pill';
+    pill.textContent = label + ': ' + String(value ?? '—');
+    parent.appendChild(pill);
+  }
+
+  function appendDraftMetaRow(parent, payload, keys) {
+    const row = document.createElement('div');
+    row.className = 'chat-bar-draft-meta';
+    keys.forEach(function(key) {
+      if (!(key in payload)) return;
+      appendDraftMetaPill(row, FIELD_LABELS[key], payload[key]);
+    });
+    parent.appendChild(row);
+    return row;
+  }
+
+  function appendNameAttachedPill(parent, payload) {
+    const pill = document.createElement('span');
+    pill.className = 'chat-bar-draft-pill';
+    pill.textContent = payload.anonymous === true
+      ? window.solChatCopy.CHAT_DRAFT_NAME_ATTACHED_NO
+      : window.solChatCopy.CHAT_DRAFT_NAME_ATTACHED_YES;
+    parent.appendChild(pill);
+  }
+
+  function renderCreateDraftBody(parent, payload, diagnostics) {
+    appendDraftKind(parent, window.solChatCopy.CHAT_DRAFT_KIND_CREATE);
+    appendDraftFieldIfPresent(parent, payload, 'subject');
+    appendDraftFieldIfPresent(parent, payload, 'description');
+    const meta = appendDraftMetaRow(parent, payload, ['severity', 'category', 'product']);
+    appendNameAttachedPill(meta, payload);
+    renderDiagnosticsBlock(parent, diagnostics);
+  }
+
+  function renderFeedbackDraftBody(parent, payload, diagnostics) {
+    appendDraftKind(parent, window.solChatCopy.CHAT_DRAFT_KIND_FEEDBACK);
+    appendDraftFieldIfPresent(parent, payload, 'body');
+    const meta = appendDraftMetaRow(parent, payload, ['product']);
+    appendNameAttachedPill(meta, payload);
+    renderDiagnosticsBlock(parent, diagnostics);
+  }
+
+  function renderReplyDraftBody(parent, payload) {
+    appendDraftKind(parent, window.solChatCopy.CHAT_DRAFT_KIND_REPLY, payload.ticket_id);
+    appendDraftFieldIfPresent(parent, payload, 'content');
+  }
+
+  function renderAttachDraftBody(parent, payload) {
+    appendDraftKind(parent, window.solChatCopy.CHAT_DRAFT_KIND_ATTACH, payload.ticket_id);
+    appendDraftFieldIfPresent(parent, payload, 'filename');
+    const meta = appendDraftMetaRow(parent, payload, ['content_type']);
+    if ('byte_size' in payload) appendDraftMetaPill(meta, FIELD_LABELS.byte_size, formatAttachmentSize(payload.byte_size));
+    const note = document.createElement('div');
+    note.className = 'chat-bar-draft-attach-note';
+    note.textContent = window.solChatCopy.CHAT_DRAFT_ATTACH_NOTE;
+    parent.appendChild(note);
+  }
+
+  function renderDraftBody(parent, draft) {
+    const payload = draft.payload || {};
+    if (draft.verb === 'create') {
+      renderCreateDraftBody(parent, payload, draft.diagnostics_snapshot);
+    } else if (draft.verb === 'feedback') {
+      renderFeedbackDraftBody(parent, payload, draft.diagnostics_snapshot);
+    } else if (draft.verb === 'reply') {
+      renderReplyDraftBody(parent, payload);
+    } else if (draft.verb === 'attach') {
+      renderAttachDraftBody(parent, payload);
+    }
+  }
+
+  function renderDiagnosticsBlock(parent, snapshot) {
+    const section = document.createElement('div');
+    section.className = 'chat-bar-draft-diagnostics';
+    const title = document.createElement('div');
+    title.className = 'chat-bar-draft-diagnostics-title';
+    title.textContent = window.solChatCopy.CHAT_DRAFT_DIAGNOSTICS_TITLE;
+    const note = document.createElement('div');
+    note.className = 'chat-bar-draft-diagnostics-note';
+    note.textContent = window.solChatCopy.CHAT_DRAFT_DIAGNOSTICS_NOTE;
+    const rows = document.createElement('div');
+    rows.className = 'chat-bar-draft-diagnostics-rows';
+    if (snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)) {
+      Object.keys(snapshot).forEach(function(key) {
+        appendDiagnosticsRow(rows, key, snapshot[key]);
+      });
+    }
+    section.appendChild(title);
+    section.appendChild(note);
+    section.appendChild(rows);
+    parent.appendChild(section);
+  }
+
+  function appendDiagnosticsRow(parent, key, value) {
+    const label = DIAG_KEY_LABELS[key] || key;
+    const row = document.createElement('div');
+    row.className = Array.isArray(value)
+      ? 'chat-bar-draft-diagnostic-row chat-bar-draft-diagnostic-row--array'
+      : 'chat-bar-draft-diagnostic-row';
+    if (!Array.isArray(value)) {
+      const labelEl = document.createElement('span');
+      labelEl.className = 'chat-bar-draft-label';
+      labelEl.textContent = label;
+      row.appendChild(labelEl);
+    }
+    const valueEl = document.createElement('div');
+    valueEl.className = 'chat-bar-draft-fieldval';
+    valueEl.appendChild(renderDiagnosticsValue(value, label));
+    row.appendChild(valueEl);
+    parent.appendChild(row);
+  }
+
+  function appendDiagnosticSubRow(parent, key, value) {
+    const row = document.createElement('div');
+    row.className = 'chat-bar-draft-diagnostic-subrow';
+    const label = document.createElement('span');
+    label.className = 'chat-bar-draft-label';
+    label.textContent = key;
+    const valueEl = document.createElement('div');
+    valueEl.className = 'chat-bar-draft-fieldval';
+    valueEl.appendChild(renderDiagnosticsValue(value, key));
+    row.appendChild(label);
+    row.appendChild(valueEl);
+    parent.appendChild(row);
+  }
+
+  function renderDiagnosticsValue(value, labelText) {
+    if (Array.isArray(value)) {
+      return renderDiagnosticsArray(value, labelText);
+    }
+    if (value === null || typeof value !== 'object') {
+      const span = document.createElement('span');
+      span.className = 'chat-bar-draft-value';
+      span.textContent = value === null ? '—' : String(value);
+      return span;
+    }
+    const keys = Object.keys(value);
+    if (keys.length === 0) {
+      const span = document.createElement('span');
+      span.className = 'chat-bar-draft-value';
+      span.textContent = '(none)';
+      return span;
+    }
+    const group = document.createElement('div');
+    group.className = 'chat-bar-draft-diagnostic-subrows';
+    keys.forEach(function(key) {
+      appendDiagnosticSubRow(group, key, value[key]);
+    });
+    return group;
+  }
+
+  function renderDiagnosticsArray(items, labelText) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'chat-bar-draft-diagnostic-array';
+    const expanded = items.length <= 5;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'chat-bar-draft-diagnostic-toggle';
+    button.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    button.textContent = String(labelText || '') + ' (' + String(items.length) + ')';
+    const content = document.createElement('div');
+    content.className = 'chat-bar-draft-diagnostic-array-items';
+    content.hidden = !expanded;
+    if (items.length === 0) {
+      const none = document.createElement('span');
+      none.className = 'chat-bar-draft-value';
+      none.textContent = '(none)';
+      content.appendChild(none);
+    } else {
+      items.forEach(function(item) {
+        const row = document.createElement('div');
+        row.className = 'chat-bar-draft-diagnostic-array-item';
+        row.appendChild(renderDiagnosticsValue(item, labelText));
+        content.appendChild(row);
+      });
+    }
+    button.addEventListener('click', function() {
+      const nextExpanded = button.getAttribute('aria-expanded') !== 'true';
+      button.setAttribute('aria-expanded', nextExpanded ? 'true' : 'false');
+      content.hidden = !nextExpanded;
+    });
+    wrapper.appendChild(button);
+    wrapper.appendChild(content);
+    return wrapper;
+  }
+
+  function renderSupportOutcome(msg) {
+    if (!msg || !resultEl) return false;
+    const outcome = SUPPORT_OUTCOMES[msg.notes || ''];
+    if (!outcome) return false;
+    resultEl.replaceChildren();
+    const strip = document.createElement('div');
+    strip.className = 'chat-bar-result-strip chat-bar-result-strip--' + outcome.state;
+    const icon = document.createElement('span');
+    icon.className = 'chat-bar-result-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = outcome.icon;
+    const text = document.createElement('span');
+    text.className = 'chat-bar-result-text';
+    text.textContent = msg.text || '';
+    strip.appendChild(icon);
+    strip.appendChild(text);
+    if (outcome.state === 'submitted') {
+      const link = document.createElement('a');
+      link.className = 'chat-bar-result-action';
+      link.href = '/app/support/';
+      link.textContent = window.solChatCopy.CHAT_RESULT_VIEW_IN_SUPPORT;
+      strip.appendChild(link);
+    } else if (outcome.state === 'failed') {
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'chat-bar-result-action chat-bar-result-action--button';
+      retry.textContent = window.solChatCopy.CHAT_RESULT_TRY_AGAIN;
+      retry.addEventListener('click', function() {
+        postChatMessage(window.solChatCopy.CHAT_RESULT_TRY_AGAIN_MESSAGE);
+      });
+      strip.appendChild(retry);
+    }
+    resultEl.appendChild(strip);
+    resultEl.hidden = false;
+    hideSupportDraft();
+    setStatus('', '');
+    return true;
+  }
+
+  function hideSupportResult() {
+    if (!resultEl) return;
+    resultEl.replaceChildren();
+    resultEl.hidden = true;
+  }
+
+  function showSupportDraft(draft) {
+    if (!draftEl || !draft) return;
+    currentDraft = draft;
+    if (draftSubmitBtn) draftSubmitBtn.disabled = false;
+    if (draftCancelBtn) draftCancelBtn.disabled = false;
+    hideSupportResult();
+    if (draftBodyEl) {
+      draftBodyEl.replaceChildren();
+      renderDraftBody(draftBodyEl, draft);
+    }
+    draftEl.hidden = false;
+    setStatus('', '');
+  }
+
+  function hideSupportDraft() {
+    if (!draftEl) return;
+    draftEl.hidden = true;
+    currentDraft = null;
+    if (draftSubmitBtn) draftSubmitBtn.disabled = false;
+    if (draftCancelBtn) draftCancelBtn.disabled = false;
   }
 
   function getTalentEntries() {
@@ -967,6 +1316,7 @@
     if (eventName === 'owner_message') {
       setPendingState(false);
       hideSupportOffer();
+      hideSupportDraft();
       if (supportCapacityActive && !isSupportTalentRunning()) exitSupportCapacity();
       if (!solRequestState) {
         chatBarPendingPlaceholders.push({ ownerText: msg.text || '', ts: msg.ts || Date.now() });
@@ -988,11 +1338,19 @@
     if (eventName === 'sol_message') {
       if (solRequestState) return;
       clearPendingLivenessStatus();
-      if (msg.offer && msg.offer.kind === 'support') {
+      if (msg.draft) {
+        hideSupportOffer();
+        showSupportDraft(msg.draft);
+      } else if (msg.offer && msg.offer.kind === 'support') {
+        hideSupportDraft();
         showSupportOffer(msg.text || '');
       } else {
         hideSupportOffer();
-        setStatus(msg.text || '', msg.notes || msg.text || '');
+        if (!renderSupportOutcome(msg)) {
+          hideSupportDraft();
+          hideSupportResult();
+          setStatus(msg.text || '', msg.notes || msg.text || '');
+        }
       }
       if (supportCapacityActive && !isSupportTalentRunning()) exitSupportCapacity();
       return;
@@ -1076,6 +1434,7 @@
     if (!appBar) return;
     populateSupportCapacityCopy();
     populateSupportOfferCopy();
+    populateSupportDraftCopy();
     if (window.solChatBarSeed) {
       renderSolPing(window.solChatBarSeed);
     } else {
@@ -1084,13 +1443,20 @@
     try {
       var data = await window.apiJson('/api/chat/session');
       if (data.latest_sol_message && !solRequestState) {
-        if (data.latest_sol_message.offer && data.latest_sol_message.offer.kind === 'support') {
-          showSupportOffer(data.latest_sol_message.text || '');
+        var msg = data.latest_sol_message;
+        if (msg.draft) {
+          hideSupportOffer();
+          showSupportDraft(msg.draft);
+        } else if (msg.offer && msg.offer.kind === 'support') {
+          hideSupportDraft();
+          showSupportOffer(msg.text || '');
         } else {
-          setStatus(
-            data.latest_sol_message.text || '',
-            data.latest_sol_message.notes || data.latest_sol_message.text || ''
-          );
+          hideSupportOffer();
+          if (!renderSupportOutcome(msg)) {
+            hideSupportDraft();
+            hideSupportResult();
+            setStatus(msg.text || '', msg.notes || msg.text || '');
+          }
         }
       }
       (data.active_talents || []).forEach(function(talent) {
@@ -1267,6 +1633,41 @@
           if (window.logError) window.logError(err, { context: 'chat-offer-decline' });
           return null;
         });
+      });
+    }
+
+    function submitDraftAction(endpoint) {
+      if (pendingSend) return;
+      if (!currentDraft || !currentDraft.draft_id) return;
+      const draftId = String(currentDraft.draft_id);
+      if (draftSubmitBtn) draftSubmitBtn.disabled = true;
+      if (draftCancelBtn) draftCancelBtn.disabled = true;
+      if (!window.apiJson) return;
+      window.apiJson(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ draft_id: draftId })
+      }).then(function(resp) {
+        const outcome = resp && resp.outcome;
+        if (outcome === 'not_found' || outcome === 'already_submitted' || outcome === 'superseded') {
+          hideSupportDraft();
+        }
+        return resp;
+      }).catch(function(err) {
+        if (window.logError) window.logError(err, { context: 'chat-support-draft' });
+        if (draftSubmitBtn) draftSubmitBtn.disabled = false;
+        if (draftCancelBtn) draftCancelBtn.disabled = false;
+        return null;
+      });
+    }
+    if (draftSubmitBtn) {
+      draftSubmitBtn.addEventListener('click', function() {
+        submitDraftAction('/api/chat/support/draft/confirm');
+      });
+    }
+    if (draftCancelBtn) {
+      draftCancelBtn.addEventListener('click', function() {
+        submitDraftAction('/api/chat/support/draft/cancel');
       });
     }
 

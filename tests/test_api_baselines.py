@@ -14,7 +14,7 @@ from tests._baseline_harness import (
     FROZEN_DATE,
     FROZEN_TZ_OFFSET,
     isolated_app_env,
-    make_logged_in_test_client,
+    make_test_client,
     prepare_isolated_journal,
 )
 from tests.conftest import _install_heavy_module_stubs
@@ -64,7 +64,7 @@ def _baseline_journal(tmp_path_factory):
 @pytest.fixture(scope="module")
 def client(_baseline_journal):
     with isolated_app_env(_baseline_journal):
-        yield make_logged_in_test_client(_baseline_journal)
+        yield make_test_client(_baseline_journal)
 
 
 @pytest.fixture(scope="module")

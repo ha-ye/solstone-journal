@@ -39,7 +39,7 @@ U2_COPY_VALUES = [
     copy.CHECK_AGAIN_LABEL,
     copy.PRIVATE_LINK_DISABLE_CTA,
     copy.PRIVATE_LINK_SETTING_UP,
-    copy.PRIVATE_LINK_BROWSER_FALLBACK,
+    copy.PRIVATE_LINK_PORTAL_CTA,
     copy.PRIVATE_LINK_SETUP_SUCCESS,
     copy.PRIVATE_LINK_SETUP_FAILED,
     copy.PRIVATE_LINK_DISABLE_SUCCESS,
@@ -98,7 +98,7 @@ def test_reach_shell_corrected_copy_is_locked() -> None:
     assert copy.APP_ONOFF_SUB_BYO == "on — reachable over your own network"
     assert copy.APP_ONOFF_SUB_HOSTED == "on — reachable from anywhere"
     assert copy.REACH_HOST_ADDRESS_DISCLOSURE == "▸ use a different address"
-    assert copy.REACH_HOST_ADDRESS_PLACEHOLDER == "192.168.1.44:5015"
+    assert copy.REACH_HOST_ADDRESS_PLACEHOLDER == "192.168.1.44:7657"
     assert copy.REACH_HOST_ADDRESS_APPLY_LABEL == "apply"
     assert copy.REACH_HOST_ADDRESS_CLEAR_LABEL == "clear"
     assert (
@@ -120,10 +120,7 @@ def test_reach_shell_corrected_copy_is_locked() -> None:
     assert copy.CHECK_AGAIN_LABEL == "check again"
     assert copy.PRIVATE_LINK_DISABLE_CTA == "turn off solstone private link"
     assert copy.PRIVATE_LINK_SETTING_UP == "setting up solstone private link…"
-    assert (
-        copy.PRIVATE_LINK_BROWSER_FALLBACK
-        == "couldn't open your browser. open this link to finish:"
-    )
+    assert copy.PRIVATE_LINK_PORTAL_CTA == "continue to approve →"
     assert (
         copy.PRIVATE_LINK_SETUP_SUCCESS
         == "solstone private link is on. your devices can reach home from anywhere."
@@ -147,13 +144,6 @@ def test_reach_shell_corrected_copy_is_locked() -> None:
     assert copy.PRIVATE_LINK_RETRY_CTA == "try again"
 
 
-def test_pair_web_password_settings_link_is_locked() -> None:
-    assert (
-        copy.PAIR_WEB_PASSWORD_SETTINGS_LINK
-        == "set a web password for this page in settings →"
-    )
-
-
 def test_reach_shell_copy_stays_in_bounds() -> None:
     banned_terms = (
         "sign in",
@@ -174,7 +164,6 @@ def test_reach_shell_copy_stays_in_bounds() -> None:
 
     for value in [
         *U2_COPY_VALUES,
-        copy.PAIR_WEB_PASSWORD_SETTINGS_LINK,
     ]:
         lowered = value.lower()
         for term in banned_terms:

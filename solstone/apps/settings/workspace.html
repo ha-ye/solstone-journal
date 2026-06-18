@@ -2070,7 +2070,6 @@ button:focus:not(:focus-visible) {
         <option value="chat">chat</option>
       </optgroup>
       <optgroup label="data">
-        <option value="security">security</option>
         <option value="sync">sync</option>
         <option value="storage">storage</option>
       </optgroup>
@@ -2117,7 +2116,6 @@ button:focus:not(:focus-visible) {
     </div>
     <div class="settings-nav-group">
       <div class="settings-nav-label">data</div>
-      <button class="settings-nav-item" data-section="security" id="tab-security" role="tab" aria-selected="false" aria-controls="section-security" tabindex="-1">security</button>
       <button class="settings-nav-item" data-section="sync" id="tab-sync" role="tab" aria-selected="false" aria-controls="section-sync" tabindex="-1">sync</button>
       <button class="settings-nav-item" data-section="storage" id="tab-storage" role="tab" aria-selected="false" aria-controls="section-storage" tabindex="-1">storage</button>
     </div>
@@ -2648,38 +2646,6 @@ button:focus:not(:focus-visible) {
       </form>
     </section>
 
-    <!-- Security Section -->
-    <section class="settings-section" id="section-security" role="tabpanel" aria-labelledby="tab-security">
-      <h2>security</h2>
-      <p class="settings-section-desc">{{ convey_copy.SETTINGS_SECURITY_DESC }}</p>
-      <p class="settings-section-desc"><a href="/app/link" style="color: #667eea;">{{ convey_copy.SETTINGS_SECURITY_REACH_HINT }}</a></p>
-
-      <form class="settings-form" onsubmit="return false;">
-
-      <div class="settings-field">
-        <div class="toggle-container" style="justify-content:flex-start; gap:1em;">
-          <label class="toggle-switch toggle-positive">
-            <input type="checkbox" id="field-trust-localhost" data-section="convey" data-key="trust_localhost">
-            <span class="slider"></span>
-          </label>
-          <span>trust localhost</span>
-        </div>
-        <small></small>
-      </div>
-
-      <div class="settings-field">
-        <label for="field-password">web password</label>
-        <div class="password-wrap">
-          <input type="password" id="field-password" data-section="convey" data-key="password" placeholder="enter password to protect web access">
-          <button type="button" class="password-toggle" id="passwordToggle" title="show password">
-            <span id="passwordToggleIcon">&#128065;</span>
-          </button>
-        </div>
-        <small>{{ convey_copy.SETTINGS_PASSWORD_HINT }}</small>
-      </div>
-      </form>
-    </section>
-
     <!-- Sync Section -->
     <section class="settings-section" id="section-sync" role="tabpanel" aria-labelledby="tab-sync">
       <h2>sync</h2>
@@ -3197,7 +3163,7 @@ setupModalAccessibility('customActivityModal');
 setupModalAccessibility('cleanupModal');
 
 // ========== NAVIGATION ==========
-const VALID_SECTIONS = ['guide', 'profile', 'agent', 'apikeys', 'transcription', 'observer', 'vision', 'sol-voice', 'chat', 'security', 'sync', 'storage', 'support', 'facets', 'facet-appearance', 'facet-activities', 'facet-activity'];
+  const VALID_SECTIONS = ['guide', 'profile', 'agent', 'apikeys', 'transcription', 'observer', 'vision', 'sol-voice', 'chat', 'sync', 'storage', 'support', 'facets', 'facet-appearance', 'facet-activities', 'facet-activity'];
 
 function switchSection(sectionId, updateHash = true) {
   // Validate section exists
@@ -3406,8 +3372,6 @@ document.querySelectorAll('.settings-nav-item').forEach(btn => {
   btn.addEventListener('click', () => switchSection(btn.dataset.section));
 });
 
-document.addEventListener('click', handleProvidersAnchorClick);
-
 // Keyboard navigation for settings nav tabs
 document.getElementById('settingsNav').addEventListener('keydown', (e) => {
   if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key)) return;
@@ -3586,11 +3550,6 @@ function populateFields(config) {
   document.getElementById('field-transcribe-enrich').checked = transcribe.enrich !== false;
   document.getElementById('field-transcribe-preserve').checked = transcribe.preserve_all || false;
   document.getElementById('field-transcribe-noise-upgrade').checked = transcribe.noise_upgrade !== false;
-
-  // Convey
-  const convey = config.convey || {};
-  document.getElementById('field-trust-localhost').checked = convey.trust_localhost !== false;
-  renderConveyHostFields(config);
 
   // Support settings
   const support = config.support || {};
@@ -3984,18 +3943,6 @@ function readAutoSaveControlValue(el) {
 function applySavedConfigResult(result, runtimeEnv) {
   configData = result.config;
   configData.runtime_env = runtimeEnv;
-  renderConveyHostFields(configData);
-}
-
-function renderConveyHostFields(config) {
-  const convey = config?.convey || {};
-  const passwordInput = document.getElementById('field-password');
-
-  if (passwordInput) {
-    passwordInput.placeholder = convey.has_password
-      ? 'Password set (enter to change)'
-      : 'Enter password to protect web access';
-  }
 }
 
 async function saveConfigValue(section, key, value) {
@@ -4585,10 +4532,11 @@ document.getElementById('createPersonalBtn').onclick = async () => {
 };
 
 // ========== PASSWORD/KEY TOGGLE ==========
-// Handle all password toggle buttons (password field + API key fields)
+// Handle all password toggle buttons for API key fields
 document.querySelectorAll('.password-toggle').forEach(btn => {
   btn.onclick = () => {
-    const targetId = btn.dataset.toggle || 'field-password';
+    const targetId = btn.dataset.toggle;
+    if (!targetId) return;
     const input = document.getElementById(targetId);
     const icon = btn.querySelector('span');
     if (input && icon) {

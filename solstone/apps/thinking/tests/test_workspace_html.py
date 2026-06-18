@@ -18,7 +18,6 @@ STATIC = Path(__file__).resolve().parents[1] / "static" / "thinking.js"
 def test_workspace_renders_each_lane(settings_env):
     journal_path, config = settings_env()
     config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
-    config.setdefault("convey", {})["trust_localhost"] = True
     (journal_path / "config" / "journal.json").write_text(
         json.dumps(config, indent=2) + "\n",
         encoding="utf-8",
@@ -39,6 +38,7 @@ def test_workspace_renders_each_lane(settings_env):
     assert 'id="scoutRefresh"' in html
     assert 'id="scoutDisable"' in html
     assert 'id="scoutLaneOperation"' in html
+    assert 'id="scoutLaneOperationLink"' in html
     for view in ("main", "scout-setup", "byo-setup", "local-setup", "lane-switch"):
         assert f'data-view="{view}"' in html
     assert 'data-open-view="scout-setup"' in html
@@ -66,6 +66,15 @@ def test_workspace_renders_each_lane(settings_env):
     assert "window.THINKING =" in html
     assert "window.THINKING_COPY =" in html
     assert "thinking/static/thinking.js" in html
+
+
+def test_scout_consent_static_behavior_is_wired() -> None:
+    js = STATIC.read_text(encoding="utf-8")
+
+    assert "window.open(url, '_blank', 'noopener')" in js
+    assert "scoutLaneOperationLink" in js
+    assert "operation.portal_url || ''" in js
+    assert "!!actions.enable && !operationActive" in js
 
 
 def test_copy_payload_round_trips_apostrophes() -> None:

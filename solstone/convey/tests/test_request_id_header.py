@@ -19,7 +19,7 @@ def _assert_request_id_header(response) -> None:
 def test_request_id_header_on_success(convey_env) -> None:
     env = convey_env()
 
-    response = env.client.get("/login")
+    response = env.client.get("/")
 
     _assert_request_id_header(response)
 

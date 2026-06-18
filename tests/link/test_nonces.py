@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from solstone.think.link.nonces import NONCE_TTL_SECONDS, Nonce, NonceStore
@@ -21,7 +20,6 @@ def test_add_and_consume(tmp_path: Path) -> None:
         issued_at=1000,
         expires_at=1000 + NONCE_TTL_SECONDS,
         used=False,
-        manual_code=None,
         role="",
     )
     assert consumed == Nonce(
@@ -30,7 +28,6 @@ def test_add_and_consume(tmp_path: Path) -> None:
         issued_at=1000,
         expires_at=1000 + NONCE_TTL_SECONDS,
         used=True,
-        manual_code=None,
         role="",
     )
 
@@ -87,82 +84,3 @@ def test_persistence_across_store_instances(tmp_path: Path) -> None:
 
     assert entry is not None
     assert entry.value == "shared"
-
-
-def test_consume_by_code_round_trip(tmp_path: Path) -> None:
-    store = NonceStore(tmp_path / "nonces.json")
-    store.add("abc123", "phone", manual_code="K7M3X9PW", now=1000)
-
-    consumed = store.consume_by_code("K7M3X9PW", now=1001)
-
-    assert consumed == Nonce(
-        value="abc123",
-        device_label="phone",
-        issued_at=1000,
-        expires_at=1000 + NONCE_TTL_SECONDS,
-        used=True,
-        manual_code="K7M3X9PW",
-        role="",
-    )
-    assert store.peek("abc123") == consumed
-
-
-def test_consume_by_code_single_use(tmp_path: Path) -> None:
-    store = NonceStore(tmp_path / "nonces.json")
-    store.add("abc123", "phone", manual_code="K7M3X9PW", now=1000)
-
-    assert store.consume_by_code("K7M3X9PW", now=1001) is not None
-    assert store.consume_by_code("K7M3X9PW", now=1002) is None
-
-
-def test_consume_by_code_unknown_returns_none(tmp_path: Path) -> None:
-    store = NonceStore(tmp_path / "nonces.json")
-    store.add("abc123", "phone", manual_code="K7M3X9PW", now=1000)
-
-    assert store.consume_by_code("AAAAAAAA", now=1001) is None
-
-
-def test_consume_by_code_expired_returns_none(tmp_path: Path) -> None:
-    store = NonceStore(tmp_path / "nonces.json")
-    store.add("abc123", "phone", manual_code="K7M3X9PW", now=1000)
-
-    assert store.consume_by_code("K7M3X9PW", now=1000 + NONCE_TTL_SECONDS + 1) is None
-
-
-def test_persistence_preserves_manual_code(tmp_path: Path) -> None:
-    path = tmp_path / "nonces.json"
-    first = NonceStore(path)
-    first.add("abc123", "phone", manual_code="K7M3X9PW", now=1000)
-
-    second = NonceStore(path)
-    entry = second.peek("abc123")
-
-    assert entry is not None
-    assert entry.manual_code == "K7M3X9PW"
-
-
-def test_read_tolerates_missing_manual_code(tmp_path: Path) -> None:
-    path = tmp_path / "nonces.json"
-    path.write_text(
-        json.dumps(
-            [
-                {
-                    "value": "abc123",
-                    "device_label": "phone",
-                    "issued_at": 1000,
-                    "expires_at": 1000 + NONCE_TTL_SECONDS,
-                    "used": False,
-                }
-            ]
-        ),
-        encoding="utf-8",
-    )
-    store = NonceStore(path)
-
-    entry = store.peek("abc123")
-    consumed = store.consume("abc123", now=1001)
-
-    assert entry is not None
-    assert entry.manual_code is None
-    assert consumed is not None
-    assert consumed.manual_code is None

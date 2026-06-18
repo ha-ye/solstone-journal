@@ -62,10 +62,10 @@ ACCESS_CASES: tuple[tuple[str, list[str]], ...] = (
     ("sol skills --help", ["sol", "skills", "--help"]),
     ("sol link --help", ["sol", "link", "--help"]),
     ("sol doctor --help", ["sol", "doctor", "--help"]),
+    ("journal transcribe --help", ["journal", "transcribe", "--help"]),
 )
 HINT_CASES: tuple[tuple[str, list[str]], ...] = (
     ("journal convey --help", ["journal", "convey", "--help"]),
-    ("journal transcribe --help", ["journal", "transcribe", "--help"]),
 )
 ROUTING_CASES: tuple[tuple[str, list[str], str], ...] = (
     (

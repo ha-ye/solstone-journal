@@ -16,7 +16,7 @@ import solstone.apps.thinking.routes as thinking_routes
 from solstone.apps.thinking import copy as thinking_copy
 from solstone.think.convey_client import ConveyClient
 from solstone.think.services import operations, scout, scout_handoff
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client
 
 runner = CliRunner()
 
@@ -41,7 +41,7 @@ def _thinking_client(journal_copy: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     for key in API_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
     client = ConveyClient(
-        session=make_logged_in_test_client(journal_copy),
+        session=make_test_client(journal_copy),
         base_url="",
     )
     monkeypatch.setattr(thinking_call, "get_client", lambda: client)
@@ -203,7 +203,7 @@ def test_scout_enable_polls_terminal_success(
 
     def runner_result(**_kwargs):
         scout.provision_scout_handoff(_approved_scout_payload())
-        return operations.HandoffResult("enabled", None, False, True, None)
+        return operations.HandoffResult("enabled", None, False)
 
     monkeypatch.setattr(scout_handoff, "run_scout_handoff", runner_result)
 
@@ -233,8 +233,6 @@ def test_scout_enable_exits_nonzero_on_repair_needed(
             "error",
             "Try again.",
             True,
-            False,
-            "http://portal.test/enable/scout",
         ),
     )
 
@@ -273,6 +271,7 @@ def test_scout_cli_copy_mirror_matches_thinking_copy() -> None:
         thinking_copy.SCOUT_STATE_ENDED,
         thinking_copy.SCOUT_STATE_REPAIR_NEEDED,
     }
+    assert thinking_call._SCOUT_CONSENT_CTA == thinking_copy.SCOUT_CONSENT_CTA
 
 
 def test_keys_set_clear_validate_and_invalid_env(

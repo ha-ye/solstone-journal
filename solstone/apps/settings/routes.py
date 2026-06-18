@@ -23,9 +23,6 @@ from solstone.apps.chat.config import (
 )
 from solstone.apps.settings import copy as settings_copy
 from solstone.apps.settings import install_copy, transcribe_resource
-from solstone.apps.settings.copy import (
-    CONVEY_REFUSE_NO_PASSWORD_TRUST,
-)
 from solstone.apps.utils import log_app_action
 from solstone.convey import chat_stream, state
 from solstone.convey import copy as convey_copy
@@ -40,7 +37,6 @@ from solstone.convey.reasons import (
     INVALID_REQUEST_VALUE,
     MISSING_REQUEST_BODY,
     MISSING_REQUIRED_FIELD,
-    NETWORK_SECURITY_REQUIRES_PASSWORD,
     SETTINGS_OPERATION_FAILED,
 )
 from solstone.convey.sol_initiated import copy as sol_voice_copy
@@ -58,6 +54,7 @@ from solstone.convey.sol_initiated.settings import (
 from solstone.convey.utils import error_response, respond_collection
 from solstone.think import facets
 from solstone.think.journal_config import (
+    hold_config_lock,
     write_journal_config,
 )
 from solstone.think.retention import (
@@ -132,11 +129,6 @@ def _compute_runtime_label() -> str:
         return "unsupported"
 
 
-def _convey_password_is_set(config: dict[str, Any]) -> bool:
-    password_hash = config.get("convey", {}).get("password_hash", "")
-    return bool(str(password_hash or "").strip())
-
-
 def _service_key_validation(config: dict[str, Any]) -> dict[str, Any]:
     providers_config = config.get("providers", {})
     key_validation = (
@@ -163,9 +155,8 @@ def _project_public_config(config: dict[str, Any]) -> dict[str, Any]:
     projected.pop("providers", None)
     convey_config = projected.setdefault("convey", {})
     convey_config.pop("secret", None)
-    has_pw = bool(convey_config.pop("password_hash", None))
+    convey_config.pop("password_hash", None)
     convey_config.pop("password", None)
-    convey_config["has_password"] = has_pw
     projected["runtime_env"] = {k: bool(os.getenv(k)) for k in API_KEY_ENV_VARS}
     return projected
 
@@ -236,8 +227,7 @@ def update_config() -> Any:
     """Update the journal configuration.
 
     Accepts JSON with a 'section' key and per-section config fields to update.
-    Supported writes include identity and transcribe settings, convey security
-    settings (password, trust_localhost), and API-key env vars.
+    Supported writes include identity and transcribe settings, and API-key env vars.
     """
     try:
         request_data = request.get_json()
@@ -274,7 +264,6 @@ def update_config() -> Any:
                 "timezone",
             ],
             "transcribe": ["backend", "enrich", "preserve_all", "noise_upgrade"],
-            "convey": ["password", "trust_localhost"],
             "support": ["enabled", "proactive", "anonymous_feedback", "portal_url"],
             "agent": ["name", "name_status", "named_date"],
             "env": API_KEY_ENV_VARS,
@@ -295,116 +284,90 @@ def update_config() -> Any:
                 detail=f"Unknown section: {section}",
             )
 
-        # Load existing config
-        old_config = get_journal_config()
-        config = get_journal_config()
+        with hold_config_lock():
+            # Load existing config
+            config = get_journal_config()
+            old_section = copy.deepcopy(config.get(section, {}))
 
-        # Ensure section exists
-        if section not in config:
-            config[section] = {}
+            # Ensure section exists
+            if section not in config:
+                config[section] = {}
 
-        # Track changes for logging
-        changed_fields = {}
-        old_section = old_config.get(section, {})
+            # Track changes for logging
+            changed_fields = {}
 
-        if section == "convey" and "password" in data:
-            raw_password = data.pop("password") or ""
-            if raw_password:
-                if len(raw_password) < 8:
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail="Password must be at least 8 characters",
-                    )
-                from werkzeug.security import generate_password_hash
+            # Update only allowed fields
+            for key in allowed_sections[section]:
+                if key in data:
+                    new_value = data[key]
+                    old_value = old_section.get(key)
+                    if old_value != new_value:
+                        changed_fields[key] = {"old": old_value, "new": new_value}
+                    config[section][key] = new_value
+                    if section == "env":
+                        if new_value:
+                            os.environ[key] = new_value
+                        else:
+                            os.environ.pop(key, None)
 
-                config["convey"]["password_hash"] = generate_password_hash(raw_password)
-                changed_fields["password"] = {
-                    "old": old_section.get("password_hash"),
-                    "new": config["convey"]["password_hash"],
+            # Handle nested backend configs for transcribe section
+            if section == "transcribe":
+                for backend_key, allowed_keys in transcribe_nested.items():
+                    if backend_key in data and isinstance(data[backend_key], dict):
+                        # Ensure nested dict exists
+                        if backend_key not in config[section]:
+                            config[section][backend_key] = {}
+                        old_backend = old_section.get(backend_key, {})
+                        # Update only allowed nested fields
+                        for nested_key in allowed_keys:
+                            if nested_key in data[backend_key]:
+                                new_value = data[backend_key][nested_key]
+                                old_value = old_backend.get(nested_key)
+                                if old_value != new_value:
+                                    changed_fields[f"{backend_key}.{nested_key}"] = {
+                                        "old": old_value,
+                                        "new": new_value,
+                                    }
+                                config[section][backend_key][nested_key] = new_value
+
+            if section == "env" and changed_fields:
+                if "providers" not in config:
+                    config["providers"] = {}
+                if "key_validation" not in config["providers"]:
+                    config["providers"]["key_validation"] = {}
+
+                # Validate service tokens (Rev.ai, Plaud) — not AI providers,
+                # so they use their own validators instead of think.providers.
+                SERVICE_TOKEN_VALIDATORS = {
+                    "REVAI_ACCESS_TOKEN": (
+                        "revai",
+                        "solstone.observe.transcribe.revai",
+                    ),
+                    "PLAUD_ACCESS_TOKEN": (
+                        "plaud",
+                        "solstone.think.importers.plaud",
+                    ),
                 }
+                for env_var in changed_fields:
+                    if env_var in SERVICE_TOKEN_VALIDATORS:
+                        val_key, module_path = SERVICE_TOKEN_VALIDATORS[env_var]
+                        new_val = data.get(env_var, "")
+                        if new_val:
+                            import importlib
 
-        has_password = _convey_password_is_set(config)
+                            mod = importlib.import_module(module_path)
+                            result = mod.validate_token(new_val)
+                            result["timestamp"] = datetime.now(timezone.utc).isoformat()
+                            config["providers"]["key_validation"][val_key] = result
+                        else:
+                            config["providers"]["key_validation"].pop(val_key, None)
 
-        if (
-            section == "convey"
-            and "trust_localhost" in data
-            and not bool(data["trust_localhost"])
-            and not has_password
-        ):
-            return error_response(
-                NETWORK_SECURITY_REQUIRES_PASSWORD,
-                detail=CONVEY_REFUSE_NO_PASSWORD_TRUST,
-            )
-
-        # Update only allowed fields
-        for key in allowed_sections[section]:
-            if key in data:
-                new_value = data[key]
-                old_value = old_section.get(key)
-                if old_value != new_value:
-                    changed_fields[key] = {"old": old_value, "new": new_value}
-                config[section][key] = new_value
-                if section == "env":
-                    if new_value:
-                        os.environ[key] = new_value
-                    else:
-                        os.environ.pop(key, None)
-
-        # Handle nested backend configs for transcribe section
-        if section == "transcribe":
-            for backend_key, allowed_keys in transcribe_nested.items():
-                if backend_key in data and isinstance(data[backend_key], dict):
-                    # Ensure nested dict exists
-                    if backend_key not in config[section]:
-                        config[section][backend_key] = {}
-                    old_backend = old_section.get(backend_key, {})
-                    # Update only allowed nested fields
-                    for nested_key in allowed_keys:
-                        if nested_key in data[backend_key]:
-                            new_value = data[backend_key][nested_key]
-                            old_value = old_backend.get(nested_key)
-                            if old_value != new_value:
-                                changed_fields[f"{backend_key}.{nested_key}"] = {
-                                    "old": old_value,
-                                    "new": new_value,
-                                }
-                            config[section][backend_key][nested_key] = new_value
-
-        if section == "env" and changed_fields:
-            if "providers" not in config:
-                config["providers"] = {}
-            if "key_validation" not in config["providers"]:
-                config["providers"]["key_validation"] = {}
-
-            # Validate service tokens (Rev.ai, Plaud) — not AI providers,
-            # so they use their own validators instead of think.providers.
-            SERVICE_TOKEN_VALIDATORS = {
-                "REVAI_ACCESS_TOKEN": ("revai", "solstone.observe.transcribe.revai"),
-                "PLAUD_ACCESS_TOKEN": ("plaud", "solstone.think.importers.plaud"),
-            }
-            for env_var in changed_fields:
-                if env_var in SERVICE_TOKEN_VALIDATORS:
-                    val_key, module_path = SERVICE_TOKEN_VALIDATORS[env_var]
-                    new_val = data.get(env_var, "")
-                    if new_val:
-                        import importlib
-
-                        mod = importlib.import_module(module_path)
-                        result = mod.validate_token(new_val)
-                        result["timestamp"] = datetime.now(timezone.utc).isoformat()
-                        config["providers"]["key_validation"][val_key] = result
-                    else:
-                        config["providers"]["key_validation"].pop(val_key, None)
-
-        write_journal_config(config)
+            write_journal_config(config)
 
         # Log if something changed (don't log sensitive values)
         if changed_fields:
             log_fields = changed_fields
-            if section == "convey" and "password" in log_fields:
-                # Don't log actual password values
-                log_fields = {"password": {"old": "***", "new": "***"}}
-            elif section == "env":
+            if section == "env":
                 # Don't log actual API key values
                 log_fields = {k: {"old": "***", "new": "***"} for k in changed_fields}
 
@@ -427,10 +390,6 @@ def update_config() -> Any:
     except Exception:
         logger.exception("error updating config")
         return _settings_operation_failed()
-
-
-def _trust_localhost_enabled(config: dict[str, Any]) -> bool:
-    return bool(config.get("convey", {}).get("trust_localhost", True))
 
 
 def _host_url_status_value() -> str:
@@ -497,14 +456,11 @@ def convey_status() -> Any:
         from solstone.think.service import DEFAULT_SERVICE_PORT
         from solstone.think.utils import read_service_port
 
-        config = get_journal_config()
         bind_host = _resolve_bind_host()
         port = read_service_port("convey") or DEFAULT_SERVICE_PORT
         status_text = convey_copy.format_convey_status(
             bind=f"{bind_host}:{port}",
             host_url=_host_url_status_value(),
-            password="set" if _convey_password_is_set(config) else "not set",
-            trust_localhost="yes" if _trust_localhost_enabled(config) else "no",
         )
         return jsonify({"status_text": status_text})
     except Exception:
@@ -755,18 +711,20 @@ def validate_all_keys() -> Any:
     """Re-validate configured transcription/import service tokens."""
 
     try:
-        config = get_journal_config()
-        key_validation = _compute_key_validation(config)
-
         if request.method == "GET":
+            config = get_journal_config()
+            key_validation = _compute_key_validation(config)
             return jsonify({"key_validation": key_validation})
 
-        providers_config = config.setdefault("providers", {})
-        existing = providers_config.setdefault("key_validation", {})
-        for key in ("revai", "plaud"):
-            existing.pop(key, None)
-        existing.update(key_validation)
-        write_journal_config(config)
+        with hold_config_lock():
+            config = get_journal_config()
+            key_validation = _compute_key_validation(config)
+            providers_config = config.setdefault("providers", {})
+            existing = providers_config.setdefault("key_validation", {})
+            for key in ("revai", "plaud"):
+                existing.pop(key, None)
+            existing.update(key_validation)
+            write_journal_config(config)
 
         return jsonify({"success": True, "key_validation": key_validation})
     except Exception:
@@ -841,115 +799,120 @@ def update_vision() -> Any:
         if not request_data:
             return error_response(MISSING_REQUEST_BODY, detail="No data provided")
 
-        # Load existing config
-        config = get_journal_config()
-        old_describe = copy.deepcopy(config.get("describe", {}))
+        with hold_config_lock():
+            # Load existing config
+            config = get_journal_config()
+            old_describe = copy.deepcopy(config.get("describe", {}))
 
-        # Ensure describe section exists
-        if "describe" not in config:
-            config["describe"] = {}
+            # Ensure describe section exists
+            if "describe" not in config:
+                config["describe"] = {}
 
-        changed_fields = {}
+            changed_fields = {}
 
-        # Handle max_extractions update
-        if "max_extractions" in request_data:
-            max_ext = request_data["max_extractions"]
-            if not isinstance(max_ext, int) or max_ext < 5 or max_ext > 100:
-                return error_response(
-                    INVALID_CONFIG_VALUE,
-                    detail="max_extractions must be an integer between 5 and 100",
-                )
-            old_val = old_describe.get("max_extractions")
-            if old_val != max_ext:
-                changed_fields["max_extractions"] = {"old": old_val, "new": max_ext}
-            config["describe"]["max_extractions"] = max_ext
-
-        # Handle redact rules update
-        if "redact" in request_data:
-            redact = request_data["redact"]
-            if not isinstance(redact, list) or not all(
-                isinstance(r, str) for r in redact
-            ):
-                return error_response(
-                    INVALID_CONFIG_VALUE,
-                    detail="redact must be a list of strings",
-                )
-            if len(redact) > 50:
-                return error_response(
-                    INVALID_CONFIG_VALUE,
-                    detail="redact may contain at most 50 rules",
-                )
-            if any(len(r) > 200 for r in redact):
-                return error_response(
-                    INVALID_CONFIG_VALUE,
-                    detail="each redact rule must be 200 characters or fewer",
-                )
-            # Filter out empty strings
-            redact = [r for r in redact if r.strip()]
-            old_val = old_describe.get("redact")
-            if old_val != redact:
-                changed_fields["redact"] = {"old": old_val, "new": redact}
-            config["describe"]["redact"] = redact
-
-        # Handle category overrides
-        if "categories" in request_data:
-            categories_data = request_data["categories"]
-            if "categories" not in config["describe"]:
-                config["describe"]["categories"] = {}
-
-            old_categories = old_describe.get("categories", {})
-
-            for name, cat_config in categories_data.items():
-                # Validate category exists
-                if name not in CATEGORIES:
+            # Handle max_extractions update
+            if "max_extractions" in request_data:
+                max_ext = request_data["max_extractions"]
+                if not isinstance(max_ext, int) or max_ext < 5 or max_ext > 100:
                     return error_response(
                         INVALID_CONFIG_VALUE,
-                        detail=f"Unknown category: {name}",
+                        detail="max_extractions must be an integer between 5 and 100",
                     )
+                old_val = old_describe.get("max_extractions")
+                if old_val != max_ext:
+                    changed_fields["max_extractions"] = {
+                        "old": old_val,
+                        "new": max_ext,
+                    }
+                config["describe"]["max_extractions"] = max_ext
 
-                old_cat = old_categories.get(name)
+            # Handle redact rules update
+            if "redact" in request_data:
+                redact = request_data["redact"]
+                if not isinstance(redact, list) or not all(
+                    isinstance(r, str) for r in redact
+                ):
+                    return error_response(
+                        INVALID_CONFIG_VALUE,
+                        detail="redact must be a list of strings",
+                    )
+                if len(redact) > 50:
+                    return error_response(
+                        INVALID_CONFIG_VALUE,
+                        detail="redact may contain at most 50 rules",
+                    )
+                if any(len(r) > 200 for r in redact):
+                    return error_response(
+                        INVALID_CONFIG_VALUE,
+                        detail="each redact rule must be 200 characters or fewer",
+                    )
+                # Filter out empty strings
+                redact = [r for r in redact if r.strip()]
+                old_val = old_describe.get("redact")
+                if old_val != redact:
+                    changed_fields["redact"] = {"old": old_val, "new": redact}
+                config["describe"]["redact"] = redact
 
-                # null means remove the override
-                if cat_config is None:
-                    if name in config["describe"]["categories"]:
-                        changed_fields[f"categories.{name}"] = {
-                            "old": old_cat,
-                            "new": None,
-                        }
-                        del config["describe"]["categories"][name]
-                    continue
+            # Handle category overrides
+            if "categories" in request_data:
+                categories_data = request_data["categories"]
+                if "categories" not in config["describe"]:
+                    config["describe"]["categories"] = {}
 
-                # Validate importance if specified
-                if "importance" in cat_config:
-                    importance = cat_config["importance"]
-                    if importance not in VALID_IMPORTANCE:
+                old_categories = old_describe.get("categories", {})
+
+                for name, cat_config in categories_data.items():
+                    # Validate category exists
+                    if name not in CATEGORIES:
                         return error_response(
                             INVALID_CONFIG_VALUE,
-                            detail=(
-                                f"Invalid importance for {name}: {importance}. "
-                                f"Must be one of: {', '.join(sorted(VALID_IMPORTANCE))}"
-                            ),
+                            detail=f"Unknown category: {name}",
                         )
 
-                # Validate extraction if specified (must be string)
-                if "extraction" in cat_config:
-                    extraction = cat_config["extraction"]
-                    if not isinstance(extraction, str):
-                        return error_response(
-                            INVALID_CONFIG_VALUE,
-                            detail=f"extraction for {name} must be a string",
-                        )
+                    old_cat = old_categories.get(name)
 
-                # Only store if there's something to override
-                if cat_config:
-                    if old_cat != cat_config:
-                        changed_fields[f"categories.{name}"] = {
-                            "old": old_cat,
-                            "new": cat_config,
-                        }
-                    config["describe"]["categories"][name] = cat_config
+                    # null means remove the override
+                    if cat_config is None:
+                        if name in config["describe"]["categories"]:
+                            changed_fields[f"categories.{name}"] = {
+                                "old": old_cat,
+                                "new": None,
+                            }
+                            del config["describe"]["categories"][name]
+                        continue
 
-        write_journal_config(config)
+                    # Validate importance if specified
+                    if "importance" in cat_config:
+                        importance = cat_config["importance"]
+                        if importance not in VALID_IMPORTANCE:
+                            return error_response(
+                                INVALID_CONFIG_VALUE,
+                                detail=(
+                                    f"Invalid importance for {name}: {importance}. "
+                                    "Must be one of: "
+                                    f"{', '.join(sorted(VALID_IMPORTANCE))}"
+                                ),
+                            )
+
+                    # Validate extraction if specified (must be string)
+                    if "extraction" in cat_config:
+                        extraction = cat_config["extraction"]
+                        if not isinstance(extraction, str):
+                            return error_response(
+                                INVALID_CONFIG_VALUE,
+                                detail=f"extraction for {name} must be a string",
+                            )
+
+                    # Only store if there's something to override
+                    if cat_config:
+                        if old_cat != cat_config:
+                            changed_fields[f"categories.{name}"] = {
+                                "old": old_cat,
+                                "new": cat_config,
+                            }
+                        config["describe"]["categories"][name] = cat_config
+
+            write_journal_config(config)
 
         # Log if something changed
         if changed_fields:
@@ -1030,70 +993,72 @@ def update_observe() -> Any:
         if not request_data:
             return error_response(MISSING_REQUEST_BODY, detail="No data provided")
 
-        # Load existing config
-        config = get_journal_config()
-        old_observe = copy.deepcopy(config.get("observe", {}))
+        with hold_config_lock():
+            # Load existing config
+            config = get_journal_config()
+            old_observe = copy.deepcopy(config.get("observe", {}))
 
-        # Ensure observe section exists
-        if "observe" not in config:
-            config["observe"] = {}
+            # Ensure observe section exists
+            if "observe" not in config:
+                config["observe"] = {}
 
-        changed_fields = {}
+            changed_fields = {}
 
-        # Handle tmux settings
-        if "tmux" in request_data:
-            tmux_data = request_data["tmux"]
-            if not isinstance(tmux_data, dict):
-                return error_response(
-                    INVALID_CONFIG_VALUE,
-                    detail="tmux must be an object",
-                )
-
-            if "tmux" not in config["observe"]:
-                config["observe"]["tmux"] = {}
-
-            old_tmux = old_observe.get("tmux", {})
-            defaults = OBSERVE_TMUX_DEFAULTS
-
-            # Validate and update enabled
-            if "enabled" in tmux_data:
-                enabled = tmux_data["enabled"]
-                if not isinstance(enabled, bool):
+            # Handle tmux settings
+            if "tmux" in request_data:
+                tmux_data = request_data["tmux"]
+                if not isinstance(tmux_data, dict):
                     return error_response(
                         INVALID_CONFIG_VALUE,
-                        detail="tmux.enabled must be a boolean",
+                        detail="tmux must be an object",
                     )
-                if enabled != old_tmux.get("enabled", defaults["enabled"]):
-                    config["observe"]["tmux"]["enabled"] = enabled
-                    changed_fields["tmux.enabled"] = enabled
 
-            # Validate and update capture_interval
-            if "capture_interval" in tmux_data:
-                capture_interval = tmux_data["capture_interval"]
-                min_val = defaults["capture_interval_min"]
-                max_val = defaults["capture_interval_max"]
-                if (
-                    not isinstance(capture_interval, int)
-                    or capture_interval < min_val
-                    or capture_interval > max_val
-                ):
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail=(
-                            "tmux.capture_interval must be an integer between "
-                            f"{min_val} and {max_val}"
-                        ),
-                    )
-                if capture_interval != old_tmux.get(
-                    "capture_interval", defaults["capture_interval"]
-                ):
-                    config["observe"]["tmux"]["capture_interval"] = capture_interval
-                    changed_fields["tmux.capture_interval"] = capture_interval
+                if "tmux" not in config["observe"]:
+                    config["observe"]["tmux"] = {}
 
-        # Save config if changed
+                old_tmux = old_observe.get("tmux", {})
+                defaults = OBSERVE_TMUX_DEFAULTS
+
+                # Validate and update enabled
+                if "enabled" in tmux_data:
+                    enabled = tmux_data["enabled"]
+                    if not isinstance(enabled, bool):
+                        return error_response(
+                            INVALID_CONFIG_VALUE,
+                            detail="tmux.enabled must be a boolean",
+                        )
+                    if enabled != old_tmux.get("enabled", defaults["enabled"]):
+                        config["observe"]["tmux"]["enabled"] = enabled
+                        changed_fields["tmux.enabled"] = enabled
+
+                # Validate and update capture_interval
+                if "capture_interval" in tmux_data:
+                    capture_interval = tmux_data["capture_interval"]
+                    min_val = defaults["capture_interval_min"]
+                    max_val = defaults["capture_interval_max"]
+                    if (
+                        not isinstance(capture_interval, int)
+                        or capture_interval < min_val
+                        or capture_interval > max_val
+                    ):
+                        return error_response(
+                            INVALID_CONFIG_VALUE,
+                            detail=(
+                                "tmux.capture_interval must be an integer between "
+                                f"{min_val} and {max_val}"
+                            ),
+                        )
+                    if capture_interval != old_tmux.get(
+                        "capture_interval", defaults["capture_interval"]
+                    ):
+                        config["observe"]["tmux"]["capture_interval"] = capture_interval
+                        changed_fields["tmux.capture_interval"] = capture_interval
+
+            # Save config if changed
+            if changed_fields:
+                write_journal_config(config)
+
         if changed_fields:
-            write_journal_config(config)
-
             log_app_action(
                 app="settings",
                 facet=None,
@@ -1826,74 +1791,78 @@ def update_storage() -> Any:
         if not request_data:
             return error_response(MISSING_REQUEST_BODY, detail="No data provided")
 
-        config = get_journal_config()
-        old_retention = config.get("retention", {})
+        with hold_config_lock():
+            config = get_journal_config()
+            old_retention = config.get("retention", {})
 
-        retention = config.setdefault("retention", {})
+            retention = config.setdefault("retention", {})
 
-        changed = {}
+            changed = {}
 
-        # Update global mode
-        if "raw_media" in request_data:
-            mode = request_data["raw_media"]
-            if mode not in ("keep", "days", "processed"):
-                return error_response(
-                    INVALID_CONFIG_VALUE,
-                    detail=f"Invalid mode: {mode}",
-                )
-            if retention.get("raw_media") != mode:
-                changed["raw_media"] = {"old": retention.get("raw_media"), "new": mode}
-            retention["raw_media"] = mode
-
-        # Update global days
-        if "raw_media_days" in request_data:
-            days = request_data["raw_media_days"]
-            if days is not None:
-                if not isinstance(days, int) or days < 1:
+            # Update global mode
+            if "raw_media" in request_data:
+                mode = request_data["raw_media"]
+                if mode not in ("keep", "days", "processed"):
                     return error_response(
                         INVALID_CONFIG_VALUE,
-                        detail="days must be a positive integer",
+                        detail=f"Invalid mode: {mode}",
                     )
-            if retention.get("raw_media_days") != days:
-                changed["raw_media_days"] = {
-                    "old": retention.get("raw_media_days"),
-                    "new": days,
-                }
-            retention["raw_media_days"] = days
+                if retention.get("raw_media") != mode:
+                    changed["raw_media"] = {
+                        "old": retention.get("raw_media"),
+                        "new": mode,
+                    }
+                retention["raw_media"] = mode
 
-        # Update per-stream overrides
-        if "per_stream" in request_data:
-            ps = request_data["per_stream"]
-            if not isinstance(ps, dict):
-                return error_response(
-                    INVALID_CONFIG_VALUE,
-                    detail="per_stream must be an object",
-                )
-            new_per_stream = {}
-            for stream_name, stream_cfg in ps.items():
-                if not isinstance(stream_cfg, dict):
-                    continue
-                mode = stream_cfg.get("raw_media")
-                if mode is not None and mode not in ("keep", "days", "processed"):
+            # Update global days
+            if "raw_media_days" in request_data:
+                days = request_data["raw_media_days"]
+                if days is not None:
+                    if not isinstance(days, int) or days < 1:
+                        return error_response(
+                            INVALID_CONFIG_VALUE,
+                            detail="days must be a positive integer",
+                        )
+                if retention.get("raw_media_days") != days:
+                    changed["raw_media_days"] = {
+                        "old": retention.get("raw_media_days"),
+                        "new": days,
+                    }
+                retention["raw_media_days"] = days
+
+            # Update per-stream overrides
+            if "per_stream" in request_data:
+                ps = request_data["per_stream"]
+                if not isinstance(ps, dict):
                     return error_response(
                         INVALID_CONFIG_VALUE,
-                        detail=f"Invalid mode for {stream_name}: {mode}",
+                        detail="per_stream must be an object",
                     )
-                days = stream_cfg.get("raw_media_days")
-                if days is not None and (not isinstance(days, int) or days < 1):
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail=f"Invalid days for {stream_name}",
-                    )
-                new_per_stream[stream_name] = stream_cfg
-            if old_retention.get("per_stream") != new_per_stream:
-                changed["per_stream"] = {
-                    "old": old_retention.get("per_stream"),
-                    "new": new_per_stream,
-                }
-            retention["per_stream"] = new_per_stream
+                new_per_stream = {}
+                for stream_name, stream_cfg in ps.items():
+                    if not isinstance(stream_cfg, dict):
+                        continue
+                    mode = stream_cfg.get("raw_media")
+                    if mode is not None and mode not in ("keep", "days", "processed"):
+                        return error_response(
+                            INVALID_CONFIG_VALUE,
+                            detail=f"Invalid mode for {stream_name}: {mode}",
+                        )
+                    days = stream_cfg.get("raw_media_days")
+                    if days is not None and (not isinstance(days, int) or days < 1):
+                        return error_response(
+                            INVALID_CONFIG_VALUE,
+                            detail=f"Invalid days for {stream_name}",
+                        )
+                    new_per_stream[stream_name] = stream_cfg
+                if old_retention.get("per_stream") != new_per_stream:
+                    changed["per_stream"] = {
+                        "old": old_retention.get("per_stream"),
+                        "new": new_per_stream,
+                    }
+                retention["per_stream"] = new_per_stream
 
-        write_journal_config(config)
+            write_journal_config(config)
 
         if changed:
             log_app_action(

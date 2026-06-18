@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-CONVEY_REFUSE_NO_PASSWORD_TRUST = "error: disabling localhost trust requires a password (otherwise no client could authenticate). set one first with: journal password set"
 LOCAL_ENDPOINT_DISCLOSURE = "inference runs on the endpoint you configured; your requests, including screen content for vision, are sent there."
 FACET_DETAIL_SUCCESS_HEADING = "{title} is ready"
 FACET_DETAIL_VALUE_FRAMING = (
@@ -17,7 +16,6 @@ FACET_DETAIL_SECONDARY_CTA = "create another facet"
 FACET_DETAIL_TERTIARY_ESCAPE = "back to settings"
 
 __all__ = [
-    "CONVEY_REFUSE_NO_PASSWORD_TRUST",
     "FACET_DETAIL_PRIMARY_CTA",
     "FACET_DETAIL_SECONDARY_CTA",
     "FACET_DETAIL_SUCCESS_HEADING",

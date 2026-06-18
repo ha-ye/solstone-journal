@@ -15,7 +15,6 @@ U4_COPY_VALUES = [
     copy.STEP_1,
     copy.STEP_2,
     copy.STEP_3,
-    copy.MANUAL_CODE_LABEL,
     copy.PAIR_NETWORK_LINE,
     copy.DETAILS_DISCLOSURE,
     copy.CA_FP_LABEL,
@@ -58,7 +57,6 @@ def test_u4_copy_values_are_locked() -> None:
     assert copy.STEP_1 == "open the camera on the device you're adding"
     assert copy.STEP_2 == "point it at this code"
     assert copy.STEP_3 == "tap the link to open solstone"
-    assert copy.MANUAL_CODE_LABEL == "can't scan? type this on the device:"
     assert copy.PAIR_NETWORK_LINE == (
         "this device needs to be on your network (or your VPN) to pair. "
         "expires in 5:00."

@@ -17,18 +17,19 @@ from solstone.apps.speakers.call import app
 from solstone.convey.reasons import SPEAKER_LABELS_BUSY, SPEAKER_VOICEPRINT_BUSY
 from solstone.think.convey_client import ConveyClient
 from solstone.think.journal_io import LockTimeout
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client, mark_setup_complete
 
 
 @pytest.fixture
 def journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    mark_setup_complete(tmp_path)
     return tmp_path
 
 
 @pytest.fixture
 def runner(journal: Path, monkeypatch: pytest.MonkeyPatch) -> CliRunner:
-    client = ConveyClient(session=make_logged_in_test_client(journal), base_url="")
+    client = ConveyClient(session=make_test_client(journal), base_url="")
     monkeypatch.setattr(speakers_call, "get_client", lambda: client)
     return CliRunner()
 

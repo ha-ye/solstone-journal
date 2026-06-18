@@ -40,20 +40,7 @@ This configuration helps meeting extraction identify the owner as a participant,
 
 ## Convey configuration
 
-The `convey` block contains settings for the web application:
-
-```json
-{
-  "convey": {
-    "password_hash": "<set via Settings > Security or journal password set>"
-  }
-}
-```
-
-Fields:
-- `password_hash` (string) – Hashed password for accessing the convey web application. Set via Settings → Security or `journal password set`.
-
-**UI Preferences:** The separate `config/convey.json` file stores UI/UX personalization (facet/app ordering, selected facet). All fields optional:
+The separate `config/convey.json` file stores UI/UX personalization (facet/app ordering, selected facet). All fields optional:
 
 ```json
 {

@@ -1,21 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Presentation-neutral spl browser-consent handoff flow."""
+"""Presentation-neutral spl consent handoff flow."""
 
 from __future__ import annotations
 
-import logging
 import time
-import webbrowser
 from collections.abc import Callable
 from typing import Any
 
 from solstone.think.link.paths import LinkState
 from solstone.think.services import operations, outcomes, portal_client, spl
 from solstone.think.services.constants import SERVICE_SPL
-
-log = logging.getLogger(__name__)
 
 _STATES = frozenset(
     {
@@ -34,12 +30,14 @@ class MalformedConsent(ValueError):
     """Raised when the spl consent payload violates the wire contract."""
 
 
-def _open_browser(url: str) -> bool:
-    try:
-        return bool(webbrowser.open(url, new=2))
-    except Exception as exc:
-        log.warning("spl browser open failed: %s", exc)
-        return False
+def build_spl_handoff_url() -> tuple[str, str, str]:
+    """Resolve the link instance, mint a nonce, and build the spl consent URL.
+
+    Returns ``(consent_url, nonce, base_url)``.
+    """
+
+    instance_id = LinkState.load_or_create().instance_id
+    return portal_client.build_consent_url(SERVICE_SPL, instance=instance_id)
 
 
 def _is_approved_at(value: Any) -> bool:
@@ -75,33 +73,12 @@ def _classify_spl_payload(payload: dict[str, Any]) -> str:
 
 def enable_spl_via_consent(
     *,
-    base_url: str | None = None,
-    instance_id: str | None = None,
+    base_url: str,
+    nonce: str,
     wait_seconds: int = portal_client.DEFAULT_WAIT_SECONDS,
-    open_browser: Callable[[str], bool] | None = None,
     poll_once: Callable[..., portal_client.PollOutcome] | None = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> outcomes.HandoffOutcome:
-    resolved_base_url = base_url or portal_client.portal_base_url()
-    nonce = portal_client.mint_nonce()
-    if instance_id is None:
-        try:
-            instance_id = LinkState.load_or_create().instance_id
-        except OSError:
-            log.warning("spl instance id resolution failed", exc_info=True)
-            return outcomes.outcome_for_code(outcomes.LOCAL_ERROR)
-    browser_url = portal_client.browser_url(
-        resolved_base_url,
-        nonce,
-        service=SERVICE_SPL,
-        instance=instance_id,
-    )
-    opener = open_browser or _open_browser
-    try:
-        opener(browser_url)
-    except Exception as exc:
-        log.warning("spl browser open failed: %s", exc)
-
     poll = poll_once or portal_client.poll_handoff_once
     deadline = clock() + wait_seconds
     while clock() < deadline:
@@ -110,7 +87,7 @@ def enable_spl_via_consent(
             max(0.1, deadline - clock()),
         )
         outcome = poll(
-            resolved_base_url,
+            base_url,
             nonce,
             timeout=timeout,
             component="switchboard",
@@ -162,27 +139,19 @@ def enable_spl_via_consent(
 
 def run_spl_handoff(
     *,
+    nonce: str,
+    base_url: str,
     poll_once: Callable[
         ..., portal_client.PollOutcome
     ] = portal_client.poll_handoff_once,
-    open_browser: Callable[[str], bool] = operations._open_browser,
     clock: Callable[[], float] = time.monotonic,
     wait_seconds: int = portal_client.DEFAULT_WAIT_SECONDS,
 ) -> operations.HandoffResult:
-    """Run the spl browser-consent flow synchronously for route/thread callers."""
-
-    browser_open_succeeded: bool | None = None
-    manual_url: str | None = None
-
-    def wrapped_open_browser(url: str) -> bool:
-        nonlocal browser_open_succeeded, manual_url
-        browser_open_succeeded, manual_url = operations.open_for_handoff(
-            url, open_browser
-        )
-        return browser_open_succeeded
+    """Run the spl consent flow synchronously for route/thread callers."""
 
     outcome = enable_spl_via_consent(
-        open_browser=wrapped_open_browser,
+        base_url=base_url,
+        nonce=nonce,
         poll_once=poll_once,
         clock=clock,
         wait_seconds=wait_seconds,
@@ -190,7 +159,5 @@ def run_spl_handoff(
     return operations._outcome_result(
         outcome.code,
         outcome.guidance,
-        browser_open_succeeded,
-        manual_url,
         subscribe_url=outcome.detail,
     )

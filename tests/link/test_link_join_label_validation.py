@@ -4,17 +4,19 @@
 from __future__ import annotations
 
 import argparse
-import json
 
 import pytest
 
+from solstone.apps.link.routes import _build_pair_link
 from solstone.think.link import join_cli
+
+PAIR_LINK = _build_pair_link("192.0.2.42", 7657, "a" * 32, "b" * 64)
 
 
 def _args(label: str | None) -> argparse.Namespace:
     return argparse.Namespace(
         home="http://receiver",
-        code="ABCD-EFGH",
+        code=PAIR_LINK,
         as_role=None,
         label=label,
     )
@@ -32,9 +34,7 @@ def test_invalid_labels_exit_2_without_writing(
     config_home = tmp_path / "config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
     calls = []
-    monkeypatch.setattr(
-        join_cli.urllib.request, "urlopen", lambda *a, **k: calls.append(a)
-    )
+    monkeypatch.setattr(join_cli, "_post_pair", lambda *a, **k: calls.append(a))
 
     result = join_cli.main(_args(label))
 
@@ -47,7 +47,7 @@ def test_invalid_labels_exit_2_without_writing(
     "label",
     ["laptop", "my-laptop", "my_laptop", "laptop.v2", "a", "a" * 80],
 )
-def test_valid_labels_reach_http_stage(
+def test_valid_labels_reach_pair_stage(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
     label: str,
@@ -55,11 +55,11 @@ def test_valid_labels_reach_http_stage(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     calls = []
 
-    def fake_urlopen(*args, **_kwargs):
+    def fake_post_pair(*args, **_kwargs):
         calls.append(args)
-        raise join_cli.urllib.error.URLError("stop")
+        raise ValueError("stop")
 
-    monkeypatch.setattr(join_cli.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(join_cli, "_post_pair", fake_post_pair)
 
     result = join_cli.main(_args(label))
 
@@ -74,11 +74,11 @@ def test_explicit_valid_label_is_sent_verbatim(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     calls = []
 
-    def fake_urlopen(request, **_kwargs):
-        calls.append(json.loads(request.data.decode("utf-8")))
-        raise join_cli.urllib.error.URLError("stop")
+    def fake_post_pair(_pair_request, body):
+        calls.append(body)
+        raise ValueError("stop")
 
-    monkeypatch.setattr(join_cli.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(join_cli, "_post_pair", fake_post_pair)
 
     result = join_cli.main(_args("Laptop.v2"))
 

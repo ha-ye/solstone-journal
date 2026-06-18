@@ -43,9 +43,8 @@ Rationale: all current imports are named imports from `tests.link.client`:
 `tests/link/test_lan_direct.py:16`, `tests/link/test_integration.py:13`, and
 `tests/link/test_identity_stamp.py:14`. A shim preserves those tests unchanged.
 The lifted module should define `__all__` so the shim's star import includes the
-private test helper `_http_request_bytes`. Keep `Client.pair` on the lifted
-class because existing integration tests call it directly, for example
-`tests/link/test_identity_stamp.py:37` and `tests/link/test_integration.py:42`.
+private test helper `_http_request_bytes`. The lifted class no longer exposes
+the historical plain-HTTP pair helper.
 
 The public exported names are:
 
@@ -105,8 +104,7 @@ Chosen: generate all cryptographic response material first, then perform the
 two durable writes in order: observer record first, authorized client second.
 
 Rationale: `/pair` consumes its nonce before `_complete_pairing()` at
-`solstone/apps/link/routes.py:384-398`; `/by-code` does the same at
-`solstone/apps/link/routes.py:424-437`. `NonceStore.consume()` writes the used
+`solstone/apps/link/routes.py:384-398`. `NonceStore.consume()` writes the used
 state immediately (`solstone/think/link/nonces.py:72-93`), so pairing is
 single-use regardless of downstream failures.
 
@@ -488,7 +486,7 @@ All branches preserve:
 
 State sequence for observer role:
 
-1. Nonce is consumed by `/pair` or `/by-code`.
+1. Nonce is consumed by `/pair`.
 2. CSR is signed and response material is built in memory.
 3. `mint_pl_observer_record()` writes `<fp-prefix-16>.json`.
 4. `AuthorizedClients.add()` writes `journal/link/authorized_clients.json`.

@@ -68,11 +68,11 @@ PROVIDER_LEVEL_CODES = frozenset(
 
 _SETTINGS_ACTION = RecoveryAction(
     label="Open Settings",
-    target="/app/thinking/#providers",
+    target="/app/thinking/#main",
 )
 _LOCAL_SETUP_ACTION = RecoveryAction(
     label="Open Local Model Setup",
-    target="/app/thinking/#providers",
+    target="/app/thinking/#local-setup",
 )
 
 _LOCAL_SETUP_DETAIL = "Finish local model setup, then try the request again."
@@ -258,6 +258,12 @@ _ENTRIES: dict[str, _Entry] = {
     "token_budget_exceeded": _Entry(
         klass="generic",
         summary="this run reached its resource budget before finishing",
+        detail="Try a shorter or more focused request.",
+        recovery_action=None,
+    ),
+    "wall_clock_exceeded": _Entry(
+        klass="generic",
+        summary="this run took too long to finish",
         detail="Try a shorter or more focused request.",
         recovery_action=None,
     ),

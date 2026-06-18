@@ -61,8 +61,6 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import numpy as np
-
 from solstone.apps.settings.install_copy import (
     STT_DETECTED_MEMORY_TEMPLATE,
     STT_DETECTED_MEMORY_UNKNOWN,
@@ -80,7 +78,6 @@ from solstone.observe.transcribe import (
     get_backend,
 )
 from solstone.observe.transcribe import transcribe as stt_transcribe
-from solstone.observe.transcribe.overlap import compute_overlap_and_logprobs
 from solstone.observe.transcribe.resource import (
     STT_SURFACE,
     local_stt_backend,
@@ -93,13 +90,6 @@ from solstone.observe.transcribe.whisper import (
     DEFAULT_MODEL,
 )
 from solstone.observe.utils import SAMPLE_RATE, get_segment_key, load_audio
-from solstone.observe.vad import (
-    AudioReduction,
-    VadResult,
-    reduce_audio,
-    restore_statement_timestamps,
-    run_vad,
-)
 from solstone.think.callosum import callosum_send
 from solstone.think.journal_io import write_text
 from solstone.think.journal_io.npz import write_npz
@@ -118,7 +108,10 @@ from solstone.think.utils import (
 )
 
 if TYPE_CHECKING:
+    import numpy as np
     import onnxruntime as ort
+
+    from solstone.observe.vad import AudioReduction, VadResult
 
 # Re-export defaults for backwards compatibility
 __all__ = [
@@ -256,6 +249,7 @@ def _get_embedder_session() -> ort.InferenceSession:
 def _compute_wespeaker_features(audio: np.ndarray, sample_rate: int) -> np.ndarray:
     """Compute Kaldi-style fbank features for the bundled WeSpeaker encoder."""
     import kaldi_native_fbank as knf
+    import numpy as np
 
     if sample_rate != SAMPLE_RATE:
         raise ValueError(
@@ -367,6 +361,8 @@ def _embed_statements(
         - statement_ids: (N,) int32 array of statement IDs
         - encoder: 0-d array naming the embedder
     """
+    import numpy as np
+
     try:
         session = _get_embedder_session()
         audio_duration = len(audio) / sample_rate
@@ -723,6 +719,8 @@ def process_audio(
         # Generate embeddings before timestamp restoration
         # Use reduced audio buffer if available for consistent timestamps
         embeddings_data = _embed_statements(stt_buffer, statements, SAMPLE_RATE)
+        from solstone.observe.transcribe.overlap import compute_overlap_and_logprobs
+
         overlap_fraction_value, pyannote_logprobs = compute_overlap_and_logprobs(
             audio_buffer
         )
@@ -730,6 +728,8 @@ def process_audio(
         # Restore original timestamps if audio was reduced (non-Gemini backends only)
         # Gemini with chunks already has timestamps in original audio time
         if reduction and not use_gemini_chunks:
+            from solstone.observe.vad import restore_statement_timestamps
+
             statements = restore_statement_timestamps(statements, reduction)
             logging.info(
                 f"  Restored timestamps from reduced audio "
@@ -871,6 +871,8 @@ def _process_one(
     preserve_all = transcribe_config.get("preserve_all", False)
 
     logging.info(f"Processing audio: {audio_path}")
+
+    from solstone.observe.vad import reduce_audio, run_vad
 
     # Load audio once - handles M4A multi-stream mixing
     audio_buffer = load_audio(audio_path)

@@ -99,12 +99,12 @@ COMMANDS: dict[str, Command] = {
     "install-models": Command("solstone.think.install_models", "service"),
     "install-provider": Command("solstone.think.install_provider", "service"),
     "skills": Command("solstone.think.skills_cli", "access"),
-    "password": Command("solstone.think.password_cli", "service"),
     "settings": Command("solstone.think.settings_cli", "service"),
     "streams": Command("solstone.think.streams", "service"),
     "segment": Command("solstone.think.segment", "service"),
     "journal-stats": Command("solstone.think.journal_stats", "service"),
     "reprocess": Command("solstone.think.reprocess", "service"),
+    "warm": Command("solstone.think.warm", "service"),
     # observe package - multimodal capture
     "transcribe": Command("solstone.observe.transcribe", "service"),
     "describe": Command("solstone.observe.describe", "service"),

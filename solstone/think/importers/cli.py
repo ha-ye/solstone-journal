@@ -1136,6 +1136,7 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
                         f"transcribed successfully ({total_elapsed}s)"
                     )
 
+            _touch_health_marker(day)
             _callosum.emit("supervisor", "drain", day=day)
 
         # Complete processing metadata
@@ -1434,7 +1435,12 @@ def main() -> None:
         if args.force:
             extra["force"] = True
         extra["auto"] = args.auto
-        _run_sync(args.sync, dry_run=not args.save, verbose=args.verbose, **extra)
+        _run_sync(
+            args.sync,
+            dry_run=args.dry_run or not args.save,
+            verbose=args.verbose,
+            **extra,
+        )
         return
 
     if not args.media:

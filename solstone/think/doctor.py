@@ -108,11 +108,16 @@ _DEFAULT_STT_MODEL_FIX = (
     "parakeet model is not downloaded — fetch it with: journal install-models"
 )
 JOURNAL_CAUGHT_UP_CHECK = Check("journal_caught_up", "advisory", ("linux", "darwin"))
+TASK_PACE_CHECK = Check("task_pace", "advisory", ("linux", "darwin"))
 _CAUGHT_UP_BACKLOG_FIX = (
     "solstone catches up on its own; reprocess a day from the health surface "
     "to prioritize it"
 )
 _CAUGHT_UP_CANT_TELL_FIX = "re-run journal doctor; check the health logs if it persists"
+_TASK_PACE_FIX = (
+    "a job is running long; it will be stopped automatically if it passes its cap "
+    "— no action needed unless it persists"
+)
 
 
 def python_sanity_check(args: Args) -> CheckResult:
@@ -600,6 +605,24 @@ def journal_caught_up_check(args: Args) -> CheckResult:
     return make_result(check, "warn", detail, _CAUGHT_UP_BACKLOG_FIX)
 
 
+def task_pace_check(args: Args) -> CheckResult:
+    del args
+    check = TASK_PACE_CHECK
+    status = fetch_supervisor_status()
+    if status is None:
+        return make_result(check, "skip", "supervisor status unavailable")
+    tasks = status.get("tasks") or []
+    slow = [t for t in tasks if t.get("slow") or t.get("stuck")]
+    if not slow:
+        return make_result(check, "ok", "tasks on pace")
+    names = ", ".join(
+        f"{t.get('name', '?')} "
+        f"({t.get('duration_seconds', 0)}s of {t.get('max_runtime_seconds', '?')}s cap)"
+        for t in slow
+    )
+    return make_result(check, "warn", f"running long: {names}", _TASK_PACE_FIX)
+
+
 def _resolve_configured_backend() -> str | None:
     """Read transcribe.backend from an existing journal config without creating anything.
 
@@ -694,6 +717,7 @@ JOURNAL_CHECKS: list[tuple[Check, Runner]] = [
     (SERVICE_RUNNING_CHECK, service_running_check),
     (JOURNAL_SYNC_CHECK, journal_sync_check),
     (JOURNAL_CAUGHT_UP_CHECK, journal_caught_up_check),
+    (TASK_PACE_CHECK, task_pace_check),
     (STALE_ALIAS_CHECK, partial(stale_alias_symlink_check, binary="journal")),
     (LAUNCHD_STALE_PLIST_CHECK, launchd_stale_plist_check),
     (DEFAULT_STT_READY_CHECK, default_stt_ready_check),

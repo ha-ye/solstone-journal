@@ -19,7 +19,6 @@ def _temp_journal(monkeypatch, tmp_path):
         json.dumps(
             {
                 "setup": {"completed_at": "2026-04-26T00:00:00Z"},
-                "convey": {"trust_localhost": True},
             }
         ),
         encoding="utf-8",

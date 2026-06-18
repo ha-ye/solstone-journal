@@ -33,6 +33,17 @@ def test_updated_days_clean(tmp_path, monkeypatch):
     assert updated_days() == []
 
 
+def test_updated_days_stream_newer_than_daily_is_updated(tmp_path, monkeypatch):
+    """Day with stream.updated newer than daily.updated is updated."""
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day_dir = tmp_path / "chronicle" / "20260101" / "health"
+    day_dir.mkdir(parents=True)
+    (day_dir / "daily.updated").touch()
+    time.sleep(0.05)
+    (day_dir / "stream.updated").touch()
+    assert updated_days() == ["20260101"]
+
+
 def test_updated_days_no_stream(tmp_path, monkeypatch):
     """Day without stream.updated is not updated (no stream data)."""
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))

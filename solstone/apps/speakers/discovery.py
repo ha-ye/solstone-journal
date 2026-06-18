@@ -12,9 +12,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-from sklearn.cluster import HDBSCAN
-
 from solstone.think.journal_io import atomic_replace
 from solstone.think.utils import day_dirs, day_path, get_journal, now_ms, segment_path
 
@@ -119,6 +116,9 @@ def _clear_discovery_cache() -> None:
 
 def discover_unknown_speakers() -> dict[str, Any]:
     """Scan journal for recurring unknown speaker clusters."""
+    import numpy as np
+    from sklearn.cluster import HDBSCAN
+
     load_owner_centroid = _owner_helpers()
     (
         load_embeddings_file,
@@ -334,6 +334,8 @@ def identify_cluster(
     cluster_id: int, name: str, entity_id: str | None = None
 ) -> dict[str, Any]:
     """Identify a discovered unknown speaker cluster."""
+    import numpy as np
+
     from solstone.apps.speakers.attribution import (
         append_speaker_correction,
         apply_label_patches,

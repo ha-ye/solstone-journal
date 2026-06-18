@@ -56,6 +56,14 @@
     }
   }
 
+  function setLink(id, url, text) {
+    const el = $(id);
+    if (!el) return;
+    el.hidden = !url;
+    el.href = url || '';
+    el.textContent = url ? text : '';
+  }
+
   function setHidden(id, hidden) {
     const el = $(id);
     if (!el) return;
@@ -442,6 +450,7 @@
       setText('scoutSetupSub', 'checking scout');
       setText('scoutSetupMeta', '');
       setMessage('scoutLaneOperation', '');
+      setLink('scoutLaneOperationLink', '', '');
       setHidden('scoutCheckstrip', true);
       setButtonState('scoutEnable', false, true);
       setButtonState('scoutRefresh', false, true);
@@ -481,7 +490,7 @@
     const operation = scout.operation;
     const operationActive = !!operation && !scoutTerminalPhases.has(operation.phase);
     const actions = scout.actions || {};
-    setButtonState('scoutEnable', !!actions.enable, operationActive || !actions.enable);
+    setButtonState('scoutEnable', !!actions.enable && !operationActive, !actions.enable);
     setButtonState(
       'scoutRefresh',
       !!actions.refresh && scoutState !== 'on',
@@ -498,8 +507,14 @@
         operationGuidance ? `${phaseLabel} — ${operationGuidance}` : phaseLabel,
         phase === 'repair_needed' ? 'error' : '',
       );
+      setLink(
+        'scoutLaneOperationLink',
+        operation.portal_url || '',
+        scoutCopy.consent_cta || 'continue to approve →',
+      );
     } else {
       setMessage('scoutLaneOperation', '');
+      setLink('scoutLaneOperationLink', '', '');
     }
   }
 
@@ -853,6 +868,11 @@
     return state.scout?.operation || null;
   }
 
+  function openConsentTab(operation) {
+    const url = operation?.portal_url;
+    if (url) window.open(url, '_blank', 'noopener');
+  }
+
   async function refreshLocalModels() {
     state.localModels = await api('api/local/models');
     renderLocalModels();
@@ -891,12 +911,14 @@
 
   async function enableScout() {
     setMessage('scoutLaneOperation', '');
+    let start;
     try {
-      await api('api/scout/enable', {method: 'POST'});
+      start = await api('api/scout/enable', {method: 'POST'});
     } catch (err) {
       setMessage('scoutLaneOperation', err.message, 'error');
       return;
     }
+    openConsentTab(start?.operation);
 
     const operation = await pollScoutUntilTerminal();
     const phase = operation?.phase;
@@ -923,7 +945,8 @@
   }
 
   async function refreshScoutOp() {
-    await api('api/scout/refresh', {method: 'POST'});
+    const start = await api('api/scout/refresh', {method: 'POST'});
+    openConsentTab(start?.operation);
     await pollScoutUntilTerminal();
     if (state.scout?.state === 'on') {
       await Promise.all([refreshProviders(), refreshKeys()]);

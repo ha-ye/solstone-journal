@@ -29,6 +29,9 @@ CHAT_CLOSER_LOOP_EXHAUSTED_PREFIX = "Here's what I have so far:"
 CHAT_CLOSER_DIFFERENT_ANGLE_SUFFIX = "Want me to try a different angle?"
 CHAT_CLOSER_TALENT_ERRORED_FORMAT = "I couldn't finish that lookup — {reason}. Want to try a different angle, or rephrase the question?"
 CHAT_CLOSER_TALENT_ERRORED_GENERIC = "I couldn't finish that lookup. Want to try a different angle, or rephrase the question?"
+# Deterministic support-send-failure closer (backend-selected on an outbound
+# talent_errored carrying a runtime-failure reason_code). Brand: "solstone support".
+CHAT_CLOSER_SUPPORT_SEND_FAILED = "I couldn't finish reaching solstone support, so nothing was sent. Want me to try again?"
 
 # T2.4 — thinking summary surfaces (CPO LOCKED)
 CHAT_THINKING_EXPANDER_LABEL = "Show thinking"
@@ -45,6 +48,18 @@ CHAT_THINKING_SETTING_HELP = "sol does some thinking before replying. Choose how
 # Brand rule: "solstone support", never "sol pbc".
 CHAT_OFFER_SUPPORT_PROMPT = "Sounds like something's not working — want me to bring in solstone support?"
 CHAT_OFFER_SUPPORT_DECLINE = "Okay — I'll keep this local. Tell me if you'd like me to bring in solstone support after all."
+# Deterministic support-draft-ready marker (backend-emitted; rides the sol_message
+# text on a clean support talent_finished with a pending draft). Brand: "solstone
+# support". Backend-only — no chat_copy.js twin; the C1 draft-review card renders
+# this as its lead line via the sol_message text.
+CHAT_SUPPORT_DRAFT_READY = "Here's the support request I put together — look it over before anything goes to solstone support."
+# Deterministic support-draft submit/cancel results. Brand: "solstone support".
+# Backend-only — no chat_copy.js twin.
+CHAT_SUPPORT_SUBMIT_FILED_FORMAT = "I sent that to solstone support as ticket #{ticket_id}."
+CHAT_SUPPORT_ATTACH_FILED_FORMAT = "I added that to solstone support ticket #{ticket_id}."
+CHAT_SUPPORT_SUBMIT_FAILED = "I couldn't finish reaching solstone support, so nothing was sent. Want me to try again?"
+CHAT_SUPPORT_SUBMIT_AMBIGUOUS = "I couldn't confirm whether solstone support received that. Check with solstone support before resending so we don't file it twice."
+CHAT_SUPPORT_DRAFT_CANCELLED = "Okay — nothing was sent to solstone support."
 # fmt: on
 
 from typing import Literal

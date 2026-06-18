@@ -301,7 +301,6 @@ def test_export_dl_regression_config_url_headers_and_body(
         "convey": {
             "password_hash": "secret",
             "secret": "secret",
-            "trust_localhost": True,
         },
     }
     (config_dir / "journal.json").write_text(json.dumps(config), encoding="utf-8")
@@ -329,7 +328,7 @@ def test_export_dl_regression_config_url_headers_and_body(
     )
     payload = mock_session.post.call_args.kwargs["json"]["config"]
     assert payload["identity"] == {"name": "Test"}
-    assert payload["convey"] == {"trust_localhost": True}
+    assert payload["convey"] == {}
 
 
 class _FakeInput(io.StringIO):

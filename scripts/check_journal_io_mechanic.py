@@ -88,6 +88,7 @@ JOURNAL_DATA_ANCHORS: frozenset[str] = frozenset(
 EXCLUDED_FILES: frozenset[str] = frozenset(
     {
         # Ops/runtime state and single-process guards.
+        "solstone/think/catchup_state.py",
         "solstone/think/scheduler.py",
         "solstone/think/supervisor.py",
         "solstone/think/readiness.py",

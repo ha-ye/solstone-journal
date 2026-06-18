@@ -84,6 +84,34 @@ def _seed_segment(
     return segment_dir
 
 
+def _append_segment_terminal(
+    journal: Path,
+    *,
+    name: str,
+    event: str = "talent.complete",
+    ts: int = 100,
+    stream: str = STREAM,
+) -> None:
+    health_dir = journal / "chronicle" / DAY / "health"
+    health_dir.mkdir(parents=True, exist_ok=True)
+    path = health_dir / "001_segment.jsonl"
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "event": event,
+                    "ts": ts,
+                    "mode": "segment",
+                    "day": DAY,
+                    "segment": ACTIVE_SEGMENT,
+                    "stream": stream,
+                    "name": name,
+                }
+            )
+            + "\n"
+        )
+
+
 def _patch_main_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     from solstone.think import thinking as think
 
@@ -174,10 +202,12 @@ def test_existing_segment_talent_output_prevents_second_llm_run(
     tmp_path,
     monkeypatch,
 ):
-    from solstone.think import talents
+    from solstone.think import models, talents
 
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
     out = (
-        tmp_path
+        journal
         / "chronicle"
         / DAY
         / STREAM
@@ -186,16 +216,13 @@ def test_existing_segment_talent_output_prevents_second_llm_run(
         / "entities.md"
     )
     events: list[dict] = []
-    called: list[int] = []
+    called: list[str] = []
 
-    async def fake_execute(config, emit_event):
-        called.append(1)
-        output_path = Path(config["output_path"])
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text("FRESH", encoding="utf-8")
-        emit_event({"event": "finish", "ts": 0, "result": "FRESH"})
+    def fake_generate_with_result(**kwargs):
+        called.append("generate")
+        return {"text": "FRESH", "usage": {"output_tokens": 500}}
 
-    monkeypatch.setattr(talents, "_execute_generate", fake_execute)
+    monkeypatch.setattr(models, "generate_with_result", fake_generate_with_result)
     monkeypatch.setattr(talents, "_run_pre_hooks", lambda config: {})
 
     config = {
@@ -204,7 +231,11 @@ def test_existing_segment_talent_output_prevents_second_llm_run(
         "provider": "google",
         "model": "x",
         "prompt": "think about this segment",
+        "day": DAY,
+        "segment": ACTIVE_SEGMENT,
+        "stream": STREAM,
         "output_path": str(out),
+        "output": "md",
         "refresh": False,
         "schedule": "segment",
     }
@@ -215,13 +246,213 @@ def test_existing_segment_talent_output_prevents_second_llm_run(
     assert len(called) == 1
     assert out.exists()
 
+    _append_segment_terminal(journal, name="entities")
+
     second_events: list[dict] = []
     asyncio.run(talents._run_talent(config, second_events.append, dry_run=False))
 
     finish_events = [event for event in second_events if event.get("event") == "finish"]
     assert len(called) == 1
     assert finish_events[-1]["result"] == "FRESH"
+    assert finish_events[-1]["cache_hit"] is True
+    assert finish_events[-1]["output_changed"] is False
     assert "usage" not in finish_events[-1]
+
+    changed_config = dict(config)
+    changed_config["model"] = "y"
+    third_events: list[dict] = []
+    asyncio.run(talents._run_talent(changed_config, third_events.append, dry_run=False))
+    assert len(called) == 2
+    third_finish = [event for event in third_events if event.get("event") == "finish"][
+        -1
+    ]
+    assert third_finish["cache_hit"] is False
+
+    transcript_changed_config = dict(changed_config)
+    transcript_changed_config["transcript"] = "new source content from the segment"
+    fourth_events: list[dict] = []
+    asyncio.run(
+        talents._run_talent(
+            transcript_changed_config,
+            fourth_events.append,
+            dry_run=False,
+        )
+    )
+    assert len(called) == 3
+    fourth_finish = [
+        event for event in fourth_events if event.get("event") == "finish"
+    ][-1]
+    assert fourth_finish["cache_hit"] is False
+
+
+def test_provenance_reuse_requires_successful_latest_terminal(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.think import models, talents
+
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    out = (
+        journal / "chronicle" / DAY / STREAM / ACTIVE_SEGMENT / "talents" / "screen.md"
+    )
+    called: list[str] = []
+
+    def fake_generate_with_result(**kwargs):
+        called.append("generate")
+        return {"text": "FRESH", "usage": {"output_tokens": 500}}
+
+    monkeypatch.setattr(models, "generate_with_result", fake_generate_with_result)
+    monkeypatch.setattr(talents, "_run_pre_hooks", lambda config: {})
+
+    config = {
+        "type": "generate",
+        "name": "screen",
+        "provider": "google",
+        "model": "x",
+        "prompt": "think about this segment",
+        "day": DAY,
+        "segment": ACTIVE_SEGMENT,
+        "stream": STREAM,
+        "output_path": str(out),
+        "output": "md",
+        "refresh": False,
+        "schedule": "segment",
+    }
+
+    asyncio.run(talents._run_talent(config, lambda event: None, dry_run=False))
+    _append_segment_terminal(journal, name="screen", ts=100)
+    _append_segment_terminal(journal, name="screen", event="talent.fail", ts=200)
+
+    events: list[dict] = []
+    asyncio.run(talents._run_talent(config, events.append, dry_run=False))
+
+    assert len(called) == 2
+    finish = [event for event in events if event.get("event") == "finish"][-1]
+    assert finish["cache_hit"] is False
+
+
+def test_refresh_identical_output_regenerates_without_output_changed(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.think import models, talents
+
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    out = (
+        journal / "chronicle" / DAY / STREAM / ACTIVE_SEGMENT / "talents" / "screen.md"
+    )
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("SAME", encoding="utf-8")
+    called: list[str] = []
+
+    def fake_generate_with_result(**kwargs):
+        called.append("generate")
+        return {"text": "SAME", "usage": {"output_tokens": 500}}
+
+    monkeypatch.setattr(models, "generate_with_result", fake_generate_with_result)
+    monkeypatch.setattr(talents, "_run_pre_hooks", lambda config: {})
+
+    events: list[dict] = []
+    asyncio.run(
+        talents._run_talent(
+            {
+                "type": "generate",
+                "name": "screen",
+                "provider": "google",
+                "model": "x",
+                "prompt": "think about this segment",
+                "day": DAY,
+                "segment": ACTIVE_SEGMENT,
+                "stream": STREAM,
+                "output_path": str(out),
+                "output": "md",
+                "refresh": True,
+                "schedule": "segment",
+            },
+            events.append,
+            dry_run=False,
+        )
+    )
+
+    finish = [event for event in events if event.get("event") == "finish"][-1]
+    assert len(called) == 1
+    assert finish["cache_hit"] is False
+    assert finish["output_changed"] is False
+
+
+def test_json_cache_reuse_requires_current_schema_validation(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.think import models, talents
+    from solstone.think.talent_provenance import output_digest, write_provenance
+
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    out = (
+        journal / "chronicle" / DAY / STREAM / ACTIVE_SEGMENT / "talents" / "sense.json"
+    )
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text('{"bad": true}', encoding="utf-8")
+
+    config = {
+        "type": "generate",
+        "name": "sense",
+        "provider": "google",
+        "model": "x",
+        "prompt": "think about this segment",
+        "day": DAY,
+        "segment": ACTIVE_SEGMENT,
+        "stream": STREAM,
+        "output_path": str(out),
+        "output": "json",
+        "json_schema": {
+            "type": "object",
+            "required": ["ok"],
+            "properties": {"ok": {"type": "boolean"}},
+        },
+        "refresh": False,
+        "schedule": "segment",
+    }
+    runtime_schema = talents.hydrate_runtime_enums(config["json_schema"])
+    output_sha256, output_size = output_digest(out)
+    write_provenance(
+        out,
+        identity_hash=talents._identity_hash(config, runtime_schema),
+        output_sha256=output_sha256,
+        output_size=output_size,
+        provider="google",
+        model="x",
+        fallback_from=None,
+        generation_params=talents._generation_params(config),
+        completed_at_ms=100,
+        use_id="seed",
+        identity_fields={"name": "sense"},
+    )
+    _append_segment_terminal(journal, name="sense", ts=100)
+
+    called: list[str] = []
+
+    def fake_generate_with_result(**kwargs):
+        called.append("generate")
+        return {
+            "text": '{"ok": true}',
+            "usage": {"output_tokens": 500},
+            "schema_validation": {"valid": True, "errors": []},
+        }
+
+    monkeypatch.setattr(models, "generate_with_result", fake_generate_with_result)
+    monkeypatch.setattr(talents, "_run_pre_hooks", lambda config: {})
+
+    events: list[dict] = []
+    asyncio.run(talents._run_talent(config, events.append, dry_run=False))
+
+    assert len(called) == 1
+    finish = [event for event in events if event.get("event") == "finish"][-1]
+    assert finish["cache_hit"] is False
+    assert out.read_text(encoding="utf-8") == '{"ok": true}'
 
 
 def test_activity_replay_dedupes_records_and_preserves_non_refresh(
@@ -260,9 +491,29 @@ def test_activity_replay_dedupes_records_and_preserves_non_refresh(
         lambda **kwargs: activity_calls.append(kwargs) or True,
     )
     monkeypatch.setattr(think, "_callosum", None)
-    monkeypatch.setattr(think, "_jsonl", None)
+    health_log = journal / "chronicle" / DAY / "health" / "activity_test.jsonl"
+    writer = think.ThinkingJSONLWriter(str(health_log))
+    monkeypatch.setattr(think, "_jsonl", writer)
 
-    for _ in range(2):
+    try:
+        for _ in range(2):
+            state_machine = ActivityStateMachine()
+            for segment in (ACTIVE_SEGMENT, IDLE_SEGMENT):
+                think.run_segment_sense(
+                    DAY,
+                    segment,
+                    refresh=False,
+                    verbose=False,
+                    stream=STREAM,
+                    state_machine=state_machine,
+                )
+
+        changed = _active_sense()
+        changed["activity_summary"] = "Writing tests with new context"
+        _write_sense_output(
+            journal / "chronicle" / DAY / STREAM / ACTIVE_SEGMENT,
+            changed,
+        )
         state_machine = ActivityStateMachine()
         for segment in (ACTIVE_SEGMENT, IDLE_SEGMENT):
             think.run_segment_sense(
@@ -273,6 +524,8 @@ def test_activity_replay_dedupes_records_and_preserves_non_refresh(
                 stream=STREAM,
                 state_machine=state_machine,
             )
+    finally:
+        writer.close()
 
     record_path = journal / "facets" / FACET / "activities" / f"{DAY}.jsonl"
     records = _read_jsonl(record_path)
@@ -281,9 +534,86 @@ def test_activity_replay_dedupes_records_and_preserves_non_refresh(
 
     assert len(matching) == 1
     assert len(activity_calls) == 2
-    # run_activity_prompts has no parent-side output-exists short-circuit; the
-    # child _run_talent cache guard covered above prevents the actual re-fire.
-    assert activity_calls[-1]["refresh"] is False
+    assert activity_calls[0]["refresh"] is False
+    assert activity_calls[1]["refresh"] is False
+    health_events = _read_jsonl(health_log)
+    assert any(event.get("event") == "activity.unchanged" for event in health_events)
+
+
+def test_cache_hit_priority_drain_suppresses_rescan_but_counts_segment_complete(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.think import thinking as think
+    from solstone.think.pipeline_health import (
+        read_completed_since,
+        read_segment_progress,
+    )
+
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    output_path = (
+        journal / "chronicle" / DAY / STREAM / ACTIVE_SEGMENT / "talents" / "screen.md"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("cached", encoding="utf-8")
+
+    use_id = "1700000000000"
+    use_dir = journal / "talents" / "screen"
+    use_dir.mkdir(parents=True, exist_ok=True)
+    (use_dir / f"{use_id}.jsonl").write_text(
+        json.dumps(
+            {
+                "event": "finish",
+                "ts": 300,
+                "use_id": use_id,
+                "name": "screen",
+                "result": "cached",
+                "cache_hit": True,
+                "output_changed": False,
+                "completed_at_ms": 100,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    health_log = journal / "chronicle" / DAY / "health" / "segment.jsonl"
+    writer = think.ThinkingJSONLWriter(str(health_log))
+    monkeypatch.setattr(think, "_jsonl", writer)
+    monkeypatch.setattr(
+        think,
+        "wait_for_uses",
+        lambda agent_ids, timeout=610: ({use_id: "finish"}, []),
+    )
+    rescan_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        think,
+        "run_queued_command",
+        lambda cmd, day, timeout=600: rescan_calls.append(cmd) or True,
+    )
+
+    try:
+        success, failed, failed_names = think._drain_priority_batch(
+            [(use_id, "screen", {"type": "generate", "output": "md"}, None)],
+            "segment",
+            DAY,
+            ACTIVE_SEGMENT,
+            STREAM,
+        )
+    finally:
+        writer.close()
+
+    assert (success, failed, failed_names) == (1, 0, [])
+    assert rescan_calls == []
+    health_events = _read_jsonl(health_log)
+    complete = [
+        event for event in health_events if event.get("event") == "talent.complete"
+    ][-1]
+    assert complete["cache_hit"] is True
+    assert complete["completed_at_ms"] == 100
+    assert read_completed_since(DAY, 0).segments == ()
+    assert "screen" in read_segment_progress(DAY)[(STREAM, ACTIVE_SEGMENT)].completed
 
 
 def test_segments_mode_zero_segment_noop(tmp_path, monkeypatch, caplog):

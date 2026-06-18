@@ -35,7 +35,6 @@ def empty_timeline_env(tmp_path: Path, monkeypatch):
     (journal / "config" / "journal.json").write_text(
         json.dumps(
             {
-                "convey": {"secret": "test-secret", "trust_localhost": True},
                 "setup": {"completed_at": 1700000000000},
             }
         )

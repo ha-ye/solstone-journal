@@ -23,18 +23,19 @@ from solstone.think.facet_review_candidates import (
     record_facet_candidate,
 )
 from solstone.think.journal_io import LockTimeout
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client, mark_setup_complete
 
 
 @pytest.fixture
 def journal(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    mark_setup_complete(tmp_path)
     return tmp_path
 
 
 @pytest.fixture
 def runner(journal, monkeypatch):
-    client = ConveyClient(session=make_logged_in_test_client(journal), base_url="")
+    client = ConveyClient(session=make_test_client(journal), base_url="")
     monkeypatch.setattr("solstone.apps.facets.call.get_client", lambda: client)
     return CliRunner()
 

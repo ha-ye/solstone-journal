@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
+import base64
 import json
 from datetime import datetime
 from pathlib import Path
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from solstone.apps.chat.copy import talent_label_for
 from solstone.convey.chat_stream import (
     append_chat_event,
     find_unresponded_trigger,
@@ -166,6 +168,47 @@ def test_chat_queue_depth_event_validates_depth(tmp_path, monkeypatch):
         append_chat_event("chat_queue_depth", ts=ts + 1)
     with pytest.raises(ValueError, match="chat_queue_depth depth must be an int"):
         append_chat_event("chat_queue_depth", ts=ts + 2, depth="3")
+
+
+def test_support_draft_event_round_trips(tmp_path, monkeypatch):
+    _setup_journal(tmp_path, monkeypatch)
+    ts = _ms(2026, 4, 20, 12, 0, 0)
+
+    event = append_chat_event(
+        "support_draft",
+        ts=ts,
+        draft_id="draft-1",
+        captured_day="20260420",
+        verb="create",
+        payload={"subject": "help"},
+        diagnostics_snapshot=None,
+    )
+
+    events = read_chat_events("20260420")
+    assert events == [event]
+    assert events[0]["kind"] == "support_draft"
+    assert events[0]["draft_id"] == "draft-1"
+
+    attach_payload = {
+        "ticket_id": 42,
+        "filename": "evidence.txt",
+        "content_type": "text/plain",
+        "byte_size": 5,
+        "content_b64": base64.b64encode(b"bytes").decode("ascii"),
+    }
+    attach_event = append_chat_event(
+        "support_draft",
+        ts=ts + 1,
+        draft_id="draft-attach",
+        captured_day="20260420",
+        verb="attach",
+        payload=attach_payload,
+        diagnostics_snapshot=None,
+    )
+
+    events = read_chat_events("20260420")
+    assert events == [event, attach_event]
+    assert events[1]["payload"] == attach_payload
 
 
 def test_chat_error_preserves_optional_provider(tmp_path, monkeypatch):
@@ -486,6 +529,9 @@ def test_reduce_chat_state_extracts_latest_sol_and_active_talents(
         "requested_target": "exec",
         "requested_task": "compare drafts",
         "offer": None,
+        "draft": None,
+        "sources": [],
+        "answer_state": "answered",
     }
     assert reduced["active_talents"] == [
         {
@@ -493,6 +539,7 @@ def test_reduce_chat_state_extracts_latest_sol_and_active_talents(
             "name": "exec",
             "task": "write summary",
             "started_at": start + 4_000,
+            "label": talent_label_for("exec", "running"),
         }
     ]
     assert reduced["completed_talents"] == [
@@ -502,9 +549,263 @@ def test_reduce_chat_state_extracts_latest_sol_and_active_talents(
             "task": "compare drafts",
             "summary": "done",
             "finished_at": start + 3_000,
+            "label": talent_label_for("exec", "finished"),
         }
     ]
+    assert reduced["errored_talents"] == [
+        {
+            "use_id": "exec-3",
+            "name": "exec",
+            "finished_at": start + 5_000,
+            "label": talent_label_for("exec", "errored"),
+        }
+    ]
+    assert reduced["chat_error"] == {
+        "reason": "unknown",
+        "provider": "",
+        "detail": "",
+    }
     assert reduced["queue_depth"] == 0
+
+
+def test_reduce_chat_state_enriches_talent_labels(tmp_path, monkeypatch):
+    _setup_journal(tmp_path, monkeypatch)
+    start = _ms(2026, 4, 20, 12, 0, 0)
+
+    append_chat_event(
+        "talent_spawned",
+        ts=start,
+        use_id="read-running",
+        name="read",
+        task="scan today",
+        started_at=start,
+    )
+    append_chat_event(
+        "talent_spawned",
+        ts=start + 1_000,
+        use_id="support-running",
+        name="support",
+        task="contact support",
+        started_at=start + 1_000,
+    )
+    append_chat_event(
+        "talent_spawned",
+        ts=start + 2_000,
+        use_id="read-finished",
+        name="read",
+        task="read memory",
+        started_at=start + 2_000,
+    )
+    append_chat_event(
+        "talent_finished",
+        ts=start + 3_000,
+        use_id="read-finished",
+        name="read",
+        summary="done",
+    )
+    append_chat_event(
+        "talent_spawned",
+        ts=start + 4_000,
+        use_id="support-finished",
+        name="support",
+        task="send draft",
+        started_at=start + 4_000,
+    )
+    append_chat_event(
+        "talent_finished",
+        ts=start + 5_000,
+        use_id="support-finished",
+        name="support",
+        summary="submitted",
+    )
+    append_chat_event(
+        "talent_spawned",
+        ts=start + 6_000,
+        use_id="read-errored",
+        name="read",
+        task="find note",
+        started_at=start + 6_000,
+    )
+    append_chat_event(
+        "talent_errored",
+        ts=start + 7_000,
+        use_id="read-errored",
+        name="read",
+        reason="timeout",
+    )
+    append_chat_event(
+        "talent_spawned",
+        ts=start + 8_000,
+        use_id="support-errored",
+        name="support",
+        task="send ticket",
+        started_at=start + 8_000,
+    )
+    append_chat_event(
+        "talent_errored",
+        ts=start + 9_000,
+        use_id="support-errored",
+        name="support",
+        reason="network",
+    )
+
+    reduced = reduce_chat_state("20260420")
+
+    assert reduced["active_talents"] == [
+        {
+            "use_id": "read-running",
+            "name": "read",
+            "task": "scan today",
+            "started_at": start,
+            "label": talent_label_for("read", "running"),
+        },
+        {
+            "use_id": "support-running",
+            "name": "support",
+            "task": "contact support",
+            "started_at": start + 1_000,
+            "label": talent_label_for("support", "running"),
+        },
+    ]
+    assert reduced["completed_talents"] == [
+        {
+            "use_id": "read-finished",
+            "name": "read",
+            "task": "read memory",
+            "summary": "done",
+            "finished_at": start + 3_000,
+            "label": talent_label_for("read", "finished"),
+        },
+        {
+            "use_id": "support-finished",
+            "name": "support",
+            "task": "send draft",
+            "summary": "submitted",
+            "finished_at": start + 5_000,
+            "label": talent_label_for("support", "finished"),
+        },
+    ]
+    assert reduced["errored_talents"] == [
+        {
+            "use_id": "read-errored",
+            "name": "read",
+            "finished_at": start + 7_000,
+            "label": talent_label_for("read", "errored"),
+        },
+        {
+            "use_id": "support-errored",
+            "name": "support",
+            "finished_at": start + 9_000,
+            "label": talent_label_for("support", "errored"),
+        },
+    ]
+
+
+def test_reduce_chat_state_unknown_talent_label_falls_back_to_name(
+    tmp_path, monkeypatch
+):
+    _setup_journal(tmp_path, monkeypatch)
+    start = _ms(2026, 4, 20, 12, 0, 0)
+
+    append_chat_event(
+        "talent_spawned",
+        ts=start,
+        use_id="mystery-1",
+        name="mystery",
+        task="unknown task",
+        started_at=start,
+    )
+
+    reduced = reduce_chat_state("20260420")
+
+    assert reduced["active_talents"] == [
+        {
+            "use_id": "mystery-1",
+            "name": "mystery",
+            "task": "unknown task",
+            "started_at": start,
+            "label": "mystery",
+        }
+    ]
+
+
+def test_reduce_chat_state_sol_message_sources_and_answer_state_defaults(
+    tmp_path, monkeypatch
+):
+    _setup_journal(tmp_path, monkeypatch)
+    start = _ms(2026, 4, 20, 12, 0, 0)
+    sources = [
+        {
+            "ref": "sol://20260313/archon/091500_300",
+            "label": "Mar 13",
+            "url": "/app/timeline/20260313",
+        }
+    ]
+
+    append_chat_event(
+        "sol_message",
+        ts=start,
+        use_id="chat-1",
+        text="partial",
+        notes="first",
+        requested_target=None,
+        requested_task=None,
+        sources=sources,
+        answer_state="partial",
+    )
+
+    reduced = reduce_chat_state("20260420")
+    assert reduced["latest_sol_message"]["sources"] == sources
+    assert reduced["latest_sol_message"]["answer_state"] == "partial"
+
+    append_chat_event(
+        "sol_message",
+        ts=start + 1_000,
+        use_id="chat-2",
+        text="answered",
+        notes="second",
+        requested_target=None,
+        requested_task=None,
+    )
+
+    reduced = reduce_chat_state("20260420")
+    assert reduced["latest_sol_message"]["sources"] == []
+    assert reduced["latest_sol_message"]["answer_state"] == "answered"
+
+
+def test_reduce_chat_state_chat_error_cleared_by_newer_sol_message(
+    tmp_path, monkeypatch
+):
+    _setup_journal(tmp_path, monkeypatch)
+    start = _ms(2026, 4, 20, 12, 0, 0)
+
+    append_chat_event(
+        "chat_error",
+        ts=start,
+        reason="provider_response_invalid",
+        use_id="chat-1",
+        provider="openai",
+        detail="bad json",
+    )
+
+    reduced = reduce_chat_state("20260420")
+    assert reduced["chat_error"] == {
+        "reason": "provider_response_invalid",
+        "provider": "openai",
+        "detail": "bad json",
+    }
+
+    append_chat_event(
+        "sol_message",
+        ts=start + 1_000,
+        use_id="chat-1",
+        text="recovered",
+        notes="ok",
+        requested_target=None,
+        requested_task=None,
+    )
+
+    assert reduce_chat_state("20260420")["chat_error"] is None
 
 
 def test_reduce_chat_state_includes_offer_and_clears_on_later_sol_message(
@@ -539,6 +840,52 @@ def test_reduce_chat_state_includes_offer_and_clears_on_later_sol_message(
 
     reduced = reduce_chat_state("20260420")
     assert reduced["latest_sol_message"]["offer"] is None
+
+
+def test_reduce_chat_state_includes_draft_and_clears_on_later_sol_message(
+    tmp_path, monkeypatch
+):
+    _setup_journal(tmp_path, monkeypatch)
+    start = _ms(2026, 4, 20, 12, 0, 0)
+    draft = {
+        "draft_id": "draft-attach",
+        "verb": "attach",
+        "payload": {
+            "ticket_id": 42,
+            "filename": "evidence.txt",
+            "content_type": "text/plain",
+            "byte_size": 5,
+        },
+        "diagnostics_snapshot": None,
+    }
+
+    append_chat_event(
+        "sol_message",
+        ts=start,
+        use_id="chat-draft",
+        text="draft ready",
+        notes="support draft",
+        requested_target=None,
+        requested_task=None,
+        draft=draft,
+    )
+
+    reduced = reduce_chat_state("20260420")
+    assert reduced["latest_sol_message"]["draft"] == draft
+    assert "content_b64" not in reduced["latest_sol_message"]["draft"]["payload"]
+
+    append_chat_event(
+        "sol_message",
+        ts=start + 1_000,
+        use_id="chat-answer",
+        text="done",
+        notes="answered",
+        requested_target=None,
+        requested_task=None,
+    )
+
+    reduced = reduce_chat_state("20260420")
+    assert reduced["latest_sol_message"]["draft"] is None
 
 
 def test_reduce_chat_state_returns_last_queue_depth(tmp_path, monkeypatch):

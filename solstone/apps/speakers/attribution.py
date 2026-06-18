@@ -27,9 +27,7 @@ import time
 from collections import defaultdict
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
-
-import numpy as np
+from typing import TYPE_CHECKING, Any
 
 from solstone.apps.speakers._overlap import _read_segment_overlap_fraction
 from solstone.apps.speakers.encoder_config import (
@@ -57,6 +55,9 @@ from solstone.think.journal_io import (
     write_json,
 )
 from solstone.think.utils import day_path, now_ms, segment_path
+
+if TYPE_CHECKING:
+    import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,8 @@ def _decay_weighted_centroid(
     normalize_embedding: Callable[[np.ndarray], np.ndarray | None],
 ) -> np.ndarray | None:
     """Build a same-stream-preferred, decay-weighted centroid."""
+    import numpy as np
+
     normalized_rows: list[tuple[np.ndarray, dict]] = []
     for emb, meta in zip(embeddings, metas):
         normalized = normalize_embedding(emb)
@@ -279,6 +282,8 @@ def attribute_segment(
         candidate_entity_ids - resolved entity IDs
         metadata         - owner centroid refresh timestamp + voiceprint counts
     """
+    import numpy as np
+
     (
         load_embeddings_file,
         normalize_embedding,
@@ -853,6 +858,8 @@ def accumulate_voiceprints(
 
     Returns dict mapping entity_id -> number of new embeddings saved.
     """
+    import numpy as np
+
     from solstone.think.entities import save_voiceprints_batch
 
     (

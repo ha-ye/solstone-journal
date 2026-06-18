@@ -101,7 +101,8 @@ See [CALLOSUM.md](CALLOSUM.md) for message protocol and [CORTEX.md](CORTEX.md) f
 | What | Where |
 |------|-------|
 | Current service logs | `journal/health/{service}.log` (symlinks) |
-| Daemon stdout/stderr | `journal/health/service.log` (combined, append-only). The managed wrapper exports `PYTHONUNBUFFERED=1` for supervisor runs so stdout/stderr flush in real time and show up in `journal service logs` without a restart. |
+| Supervisor log (rotated) | `journal/health/supervisor.log` — the supervisor's own RotatingFileHandler sink: 16 MiB active + up to 5 backups (`supervisor.log.1`..`supervisor.log.5`), ≈96 MiB ceiling. Older lines drop on rollover and at startup if a pre-existing file is over cap. |
+| Daemon stdout/stderr | `journal/health/service.log` (slow-growing service-manager stdout/stderr sink for startup/status prints; not rotated by the supervisor log handler). The managed wrapper exports `PYTHONUNBUFFERED=1` for supervisor runs so stdout/stderr flush in real time and show up in `journal service logs` without a restart. |
 | Day's process logs | `journal/{YYYYMMDD}/health/{ref}_{name}.log` |
 | Agent execution | `journal/talents/<name>/*.jsonl` |
 | Journal task log | `journal/task_log.txt` |

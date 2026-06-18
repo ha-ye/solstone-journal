@@ -79,7 +79,7 @@ journal setup
 
 want only the thin `sol` client — to talk to a journal running elsewhere? `uv tool install solstone` (no extras), or `uvx solstone` for an ephemeral one-shot.
 
-then open http://localhost:5015 in a browser; the first-run wizard handles identity and the gemini API key. an optional password can be configured later in settings → security.
+then open http://localhost:5015 in a browser; the first-run wizard handles identity and the gemini API key.
 
 see [INSTALL.md](INSTALL.md) for prerequisites, observer install, and troubleshooting; see [CONTRIBUTING.md](CONTRIBUTING.md) if you want to develop on solstone from a source checkout.
 

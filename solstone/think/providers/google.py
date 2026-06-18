@@ -33,14 +33,15 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from google import genai
-from google.genai import types
-
-from solstone.think.models import GEMINI_FLASH
+from solstone.think.models import DEFAULT_PROVIDER_TIMEOUT_S, GEMINI_FLASH
 
 from .shared import GenerateResult, classify_provider_error
+
+if TYPE_CHECKING:
+    from google import genai
+    from google.genai import types
 
 # Vertex's `maxOutputTokens` accepts 1..65535 inclusive — exactly 65536 returns
 # 400 INVALID_ARGUMENT ("supported range is from 1 (inclusive) to 65536
@@ -58,6 +59,8 @@ def _structured_to_google_contents(
     messages: list[dict[str, str]],
 ) -> list[types.Content]:
     """Map role/content dicts to Gemini-native Content objects."""
+    from google.genai import types
+
     mapped: list[types.Content] = []
     for msg in messages:
         role = msg["role"]
@@ -184,12 +187,23 @@ def get_or_create_client(client: genai.Client | None = None) -> genai.Client:
     if client is not None:
         return client
 
+    from google import genai
+    from google.genai import types
+
     from solstone.think.utils import get_config
 
     config = get_config()
     providers_config = config.get("providers", {})
 
-    http_options = types.HttpOptions(retry_options=types.HttpRetryOptions(attempts=8))
+    # attempts=3 (was 8) bounds the retry storm; per-call timeout arrives via
+    # _build_generate_config (models.py default 120s) and the SDK merges client
+    # retry_options + per-request timeout field-by-field. Worst-case wall is
+    # about 3 * DEFAULT_PROVIDER_TIMEOUT_S + SDK backoff, versus the unbounded
+    # hang attempts=8-with-no-timeout produced (the 77h describe wedge).
+    http_options = types.HttpOptions(
+        timeout=int(DEFAULT_PROVIDER_TIMEOUT_S * 1000),
+        retry_options=types.HttpRetryOptions(attempts=3),
+    )
 
     api_key = os.getenv("GOOGLE_API_KEY")
 
@@ -261,6 +275,8 @@ def _build_generate_config(
     Note: Gemini's max_output_tokens is actually the total budget (thinking + output).
     We compute this internally: total = max_output_tokens + thinking_budget.
     """
+    from google.genai import types
+
     # Compute total tokens: output + thinking budget
     total_tokens = max_output_tokens + (thinking_budget or 0)
     if total_tokens > GEMINI_MAX_OUTPUT_TOKENS:
@@ -473,6 +489,8 @@ def _summarize_contents(contents: Any) -> str:
     Captures part count, types, and image sizes — enough to correlate a 400 with
     the call shape without leaking text bodies. Used only by error logging.
     """
+    from google.genai import types
+
     if isinstance(contents, str):
         return f"str(len={len(contents)})"
     if not isinstance(contents, list):
@@ -684,6 +702,9 @@ def validate_key(api_key: str) -> dict:
     """
     global _detected_backend
     try:
+        from google import genai
+        from google.genai import types
+
         # Probe backend for this specific key (always probes, bypasses cache).
         backend = _probe_backend(api_key)
 
@@ -717,6 +738,8 @@ def validate_vertex_credentials(
     try:
         import json as _json
 
+        from google import genai
+        from google.genai import types
         from google.oauth2.service_account import Credentials
 
         creds = Credentials.from_service_account_file(

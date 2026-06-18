@@ -89,8 +89,7 @@ def test_operation_phase_maps_to_product_phase(
             "phase": raw_phase,
             "guidance": "next",
             "retryable": False,
-            "browser_open_succeeded": True,
-            "portal_url": None,
+            "portal_url": "https://services.test/enable/scout?nonce=NONCE",
             "elapsed_ms": 12,
         }
     )
@@ -98,6 +97,7 @@ def test_operation_phase_maps_to_product_phase(
     assert payload is not None
     assert payload["phase"] == expected
     assert payload["kind"] == "enable"
+    assert payload["portal_url"] == "https://services.test/enable/scout?nonce=NONCE"
     assert payload["elapsed_ms"] == 12
 
 

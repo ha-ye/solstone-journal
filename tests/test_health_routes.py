@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import json
+
 from solstone.convey import create_app
 from solstone.think.surfaces import health as health_surface
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client
 from tests.test_surfaces_health import (
     _clear_readiness_snapshot,
     _minimal_facet_tree,
@@ -27,6 +29,16 @@ def _assert_error(response, status: int) -> dict:
 
 def _configure_journal(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "journal.json").write_text(
+        json.dumps({"setup": {"completed_at": 1}}),
+        encoding="utf-8",
+    )
+
+
+def _configure_unset_journal(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
 
 def _freeze_health_surface(tmp_path, monkeypatch) -> None:
@@ -47,7 +59,7 @@ def _freeze_health_surface(tmp_path, monkeypatch) -> None:
 def test_summary_returns_report_shape(tmp_path, monkeypatch):
     _configure_journal(tmp_path, monkeypatch)
     _freeze_health_surface(tmp_path, monkeypatch)
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     response = client.get(f"{PREFIX}/summary?day=20260410")
 
@@ -64,7 +76,7 @@ def test_summary_returns_report_shape(tmp_path, monkeypatch):
 def test_summary_and_full_identical_for_same_day(tmp_path, monkeypatch):
     _configure_journal(tmp_path, monkeypatch)
     _freeze_health_surface(tmp_path, monkeypatch)
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     summary_response = client.get(f"{PREFIX}/summary?day=20260410")
     full_response = client.get(f"{PREFIX}/full?day=20260410")
@@ -77,7 +89,7 @@ def test_summary_and_full_identical_for_same_day(tmp_path, monkeypatch):
 def test_none_field_survives_as_json_null(tmp_path, monkeypatch):
     _configure_journal(tmp_path, monkeypatch)
     _freeze_health_surface(tmp_path, monkeypatch)
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     response = client.get(f"{PREFIX}/summary?day=20260410")
 
@@ -87,7 +99,7 @@ def test_none_field_survives_as_json_null(tmp_path, monkeypatch):
 
 def test_malformed_day_returns_400(tmp_path, monkeypatch):
     _configure_journal(tmp_path, monkeypatch)
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     data = _assert_error(client.get(f"{PREFIX}/summary?day=notaday"), 400)
 
@@ -97,7 +109,7 @@ def test_malformed_day_returns_400(tmp_path, monkeypatch):
 def test_range_valid_window(tmp_path, monkeypatch):
     _configure_journal(tmp_path, monkeypatch)
     _freeze_health_surface(tmp_path, monkeypatch)
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     response = client.get(f"{PREFIX}/range?day_from=20260404&day_to=20260410")
 
@@ -108,7 +120,7 @@ def test_range_valid_window(tmp_path, monkeypatch):
 def test_range_omit_both_uses_default_window(tmp_path, monkeypatch):
     _configure_journal(tmp_path, monkeypatch)
     _freeze_health_surface(tmp_path, monkeypatch)
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     response = client.get(f"{PREFIX}/range")
 
@@ -118,7 +130,7 @@ def test_range_omit_both_uses_default_window(tmp_path, monkeypatch):
 
 def test_range_only_one_endpoint_returns_400(tmp_path, monkeypatch):
     _configure_journal(tmp_path, monkeypatch)
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     data = _assert_error(client.get(f"{PREFIX}/range?day_from=20260404"), 400)
 
@@ -128,7 +140,7 @@ def test_range_only_one_endpoint_returns_400(tmp_path, monkeypatch):
 
 def test_range_inverted_returns_400_distinct_detail(tmp_path, monkeypatch):
     _configure_journal(tmp_path, monkeypatch)
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     data = _assert_error(
         client.get(f"{PREFIX}/range?day_from=20260410&day_to=20260404"),
@@ -139,8 +151,8 @@ def test_range_inverted_returns_400_distinct_detail(tmp_path, monkeypatch):
     assert "day_from must be <= day_to" in data["detail"]
 
 
-def test_health_requires_login(tmp_path, monkeypatch):
-    _configure_journal(tmp_path, monkeypatch)
+def test_health_redirects_to_init_when_setup_incomplete(tmp_path, monkeypatch):
+    _configure_unset_journal(tmp_path, monkeypatch)
     app = create_app(journal=str(tmp_path))
     app.config["TESTING"] = True
     client = app.test_client()
@@ -148,3 +160,4 @@ def test_health_requires_login(tmp_path, monkeypatch):
     response = client.get(f"{PREFIX}/summary")
 
     assert response.status_code == 302
+    assert "/init" in response.headers["Location"]

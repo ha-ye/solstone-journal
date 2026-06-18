@@ -118,6 +118,11 @@ def stream_name(
     return name
 
 
+def is_import_stream(name: str) -> bool:
+    """True for import streams (e.g. 'import.audio', 'import.apple')."""
+    return name.startswith("import.")
+
+
 def _streams_dir() -> Path:
     """Return the streams state directory, creating it if needed."""
     d = Path(get_journal()) / "streams"

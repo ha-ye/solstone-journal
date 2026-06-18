@@ -21,6 +21,7 @@ import threading
 import time
 from collections import OrderedDict, deque
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Callable, Iterable, NoReturn
 
@@ -28,10 +29,18 @@ import psutil
 
 from solstone.think import maintenance, scheduler
 from solstone.think.app_supervised import FLAG, is_app_supervised, resolve_parent_fd
+from solstone.think.backup.engine import BACKUP_MAX_RUNTIME, BACKUP_RUN_CMD
 from solstone.think.callosum import CallosumConnection, CallosumServer
+from solstone.think.catchup_state import (
+    KIND_DAILY_CATCHUP,
+    STUCK_THRESHOLD,
+    day_eligible_to_drain,
+    reconcile_interrupted_attempts,
+    record_attempt,
+    record_outcome,
+)
 from solstone.think.maint import run_pending_tasks
 from solstone.think.models import LOCAL_MODEL, is_local_provider_needed
-from solstone.think.pipeline_health import read_day_stuck
 from solstone.think.providers.mlx_server import MLX_SERVER_PROCESS_NAME
 from solstone.think.readiness import START_TIME_TOLERANCE_S, clear_ready, signal_ready
 from solstone.think.runner import ManagedProcess as RunnerManagedProcess
@@ -47,6 +56,7 @@ from solstone.think.sync_check import (
 from solstone.think.utils import (
     EXIT_EMPTY,
     EXIT_TEMPFAIL,
+    SOFT_RUNTIME_FRACTION,
     day_path,
     find_available_port,
     get_journal,
@@ -54,16 +64,28 @@ from solstone.think.utils import (
     get_rev,
     is_solstone_up,
     now_ms,
+    parse_duration_seconds,
     read_service_port,
     setup_cli,
     updated_days,
     write_service_port,
 )
 
+DEFAULT_TASK_MAX_RUNTIME = (
+    1800  # 30m wall-clock default for any uncapped TaskQueue partition
+)
+REACTIVE_TASK_CAPS = {
+    "daily": 21600,  # 6h daily/from-scratch reprocess
+    "segment": 4500,  # 75m per-segment think
+    "indexer": 7200,  # 2h indexer, above the code's own 1h rescan allotment
+    "importer": 3600,  # 1h importer
+}
 DEFAULT_THRESHOLD = 60
 CHECK_INTERVAL = 30
 MAX_UPDATED_CATCHUP = 4
 TEMPFAIL_DELAY = 15  # seconds to wait before retrying a tempfail exit
+CONVEY_READY_WINDOW_SECONDS = 60.0
+REALISTIC_COLD_BIND_SECONDS = 40.0
 HANDLE_SHUTDOWN_REAP_S = 3.0
 APP_SUPERVISED_SHUTDOWN_CEILING_S = 10.0
 APP_SUPERVISED_TASK_DRAIN_S = 2.0
@@ -78,7 +100,69 @@ LOCAL_WEDGE_PROVIDER_MAP_CAP = 512
 LOCAL_SERVER_READY_TIMEOUT_S = 300.0
 LOCAL_SERVER_HEALTH_POLL_INTERVAL_S = 1.0
 LOCAL_MODEL_WARMING_UP_COPY = "Local model is warming up..."
+# supervisor.log is size-rotated with a bounded on-disk footprint.
+# Hard ceiling = SUPERVISOR_LOG_MAX_BYTES * (SUPERVISOR_LOG_BACKUP_COUNT + 1)
+#   = 16 MiB * 6 = 96 MiB. Older lines drop; the most-recent tail is kept.
+SUPERVISOR_LOG_MAX_BYTES = 16 * 1024 * 1024
+SUPERVISOR_LOG_BACKUP_COUNT = 5
 logger = logging.getLogger(__name__)
+
+
+def _compact_log_if_oversized(log_path: Path, max_bytes: int) -> None:
+    try:
+        size = log_path.stat().st_size
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        logger.warning("Could not stat supervisor log before compaction: %s", error)
+        return
+
+    if size <= max_bytes:
+        return
+
+    compact_path = log_path.with_name(log_path.name + ".compact")
+    try:
+        with log_path.open("rb") as handle:
+            handle.seek(-max_bytes, os.SEEK_END)
+            tail = handle.read(max_bytes)
+
+        first_newline = tail.find(b"\n")
+        kept = tail[first_newline + 1 :] if first_newline != -1 else b""
+
+        with compact_path.open("wb") as handle:
+            handle.write(kept)
+        compact_path.rename(log_path)
+    except OSError as error:
+        logger.warning("Could not compact oversized supervisor log: %s", error)
+        try:
+            compact_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _configure_supervisor_logging(
+    log_path: Path,
+    level: int,
+    max_bytes: int = SUPERVISOR_LOG_MAX_BYTES,
+    backup_count: int = SUPERVISOR_LOG_BACKUP_COUNT,
+) -> None:
+    logging.getLogger().handlers = []
+    _compact_log_if_oversized(log_path, max_bytes)
+    logging.basicConfig(
+        level=level,
+        handlers=[
+            RotatingFileHandler(
+                log_path,
+                maxBytes=max_bytes,
+                backupCount=backup_count,
+                encoding="utf-8",
+            )
+        ],
+        format="%(asctime)s [supervisor:log] %(levelname)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    )
+
+
 _SERVICE_LIFECYCLE_VERBS = {
     "start",
     "stop",
@@ -459,6 +543,7 @@ class TaskQueue:
         self._cap_terminated: set[str] = set()
         self._stopped_ticks: dict[str, int] = {}
         self._caps: dict[str, int] = {}
+        self._default_cap = DEFAULT_TASK_MAX_RUNTIME
         self._pending: list[dict] = []
         self._ready = ready
         self._lock = threading.Lock()
@@ -600,6 +685,15 @@ class TaskQueue:
         with self._lock:
             self._caps[cmd_name] = seconds
 
+    def _effective_cap(self, cmd_name: str) -> int:
+        """Resolve the wall-clock cap for a partition: explicit override or default.
+
+        Lock-free: reads only `self._caps` (atomic dict get) and the immutable
+        `self._default_cap`, so it is safe whether or not the caller holds
+        `self._lock`.
+        """
+        return self._caps.get(cmd_name) or self._default_cap
+
     def get_active_by_cmd_name(self, name: str) -> str | None:
         """Return the first active ref matching a command name."""
         with self._lock:
@@ -613,9 +707,7 @@ class TaskQueue:
         with self._lock:
             for ref, managed in list(self._active.items()):
                 cmd_name = self.get_command_name(managed.cmd)
-                cap = self._caps.get(cmd_name)
-                if not cap:
-                    continue
+                cap = self._effective_cap(cmd_name)
 
                 elapsed = now - managed.start_time
                 if elapsed <= cap:
@@ -711,6 +803,7 @@ class TaskQueue:
         primary_ref = refs[0]
         service = cmd_name
         exit_status = "error"
+        attempt_recorded = False
 
         try:
             callosum.start()
@@ -721,6 +814,9 @@ class TaskQueue:
             )
             with self._lock:
                 self._active[primary_ref] = managed
+            started_at = time.time()
+            record_attempt(cmd, day, primary_ref, started_at=started_at)
+            attempt_recorded = True
 
             callosum.emit(
                 "supervisor",
@@ -799,6 +895,25 @@ class TaskQueue:
                     )
                 except Exception as exc:
                     logger.warning("scheduler completion writeback failed: %s", exc)
+            if attempt_recorded:
+                try:
+                    outcome_result = record_outcome(
+                        cmd,
+                        day,
+                        primary_ref,
+                        exit_status=exit_status,
+                        ended_at=ended_at,
+                    )
+                    if outcome_result.entered_backoff:
+                        _emit_catchup_backoff(
+                            callosum,
+                            day=outcome_result.day,
+                            attempts=outcome_result.attempts,
+                            consecutive=outcome_result.consecutive_non_completion,
+                            last_outcome=outcome_result.last_outcome,
+                        )
+                except Exception:
+                    logging.warning("catchup outcome writeback failed", exc_info=True)
             try:
                 callosum.stop()
             except Exception:
@@ -906,14 +1021,15 @@ class TaskQueue:
             if managed.is_running():
                 duration = int(now - managed.start_time)
                 cmd_name = TaskQueue.get_command_name(managed.cmd)
-                cap = self._caps.get(cmd_name)
+                cap = self._effective_cap(cmd_name)
                 tasks.append(
                     {
                         "ref": ref,
                         "name": cmd_name,
                         "duration_seconds": duration,
                         "max_runtime_seconds": cap,
-                        "stuck": cap is not None and duration > cap,
+                        "slow": duration >= cap * SOFT_RUNTIME_FRACTION,
+                        "stuck": duration > cap,
                     }
                 )
         return tasks
@@ -1222,6 +1338,41 @@ def _record_scheduler_completion(
             raise
 
 
+def _emit_catchup_backoff(
+    callosum,
+    *,
+    day: str | None,
+    attempts: int,
+    consecutive: int,
+    last_outcome: str,
+) -> None:
+    if callosum is None:
+        return
+    message = f"day {day} stuck after {attempts} attempts, last outcome {last_outcome}"
+    try:
+        callosum.emit(
+            "storage",
+            "warning",
+            level="warning",
+            type="catchup_backoff",
+            message=message,
+            current=consecutive,
+            threshold=STUCK_THRESHOLD,
+        )
+        callosum.emit(
+            "notification",
+            "show",
+            title="Catchup stuck",
+            message=message,
+            icon="⚠️",
+            action="/app/health",
+        )
+    except Exception:
+        logging.warning(
+            "Failed to emit catchup backoff notification for %s", day, exc_info=True
+        )
+
+
 def _emit_queue_event(cmd_name: str, running_ref: str, queue: list) -> None:
     """Emit supervisor.queue event with current queue state for a command.
 
@@ -1259,9 +1410,9 @@ def _handle_task_request(message: dict) -> None:
         if active_ref:
             with _task_queue._lock:
                 managed = _task_queue._active.get(active_ref)
-                cap = _task_queue._caps.get(cmd_name, 0)
+                cap = _task_queue._effective_cap(cmd_name)
             runtime = time.time() - managed.start_time if managed else 0
-            reason = "wedged" if cap and runtime > 2 * cap else "still_running"
+            reason = "wedged" if runtime > 2 * cap else "still_running"
             if _supervisor_callosum:
                 _supervisor_callosum.emit(
                     "supervisor",
@@ -1683,7 +1834,7 @@ def start_local_server() -> RunnerManagedProcess | None:
         "--n-gpu-layers",
         "999",
         "-c",
-        "16384",
+        str(local_server.LOCAL_SERVER_CONTEXT_TOKENS),
         "--device",
         "Vulkan0",
     ]
@@ -1782,7 +1933,7 @@ def start_callosum_in_process() -> CallosumServer:
 
 
 def wait_for_convey_ready(
-    convey_mp, *, timeout: float = 30.0, interval: float = 0.1
+    convey_mp, *, timeout: float = CONVEY_READY_WINDOW_SECONDS, interval: float = 0.1
 ) -> bool:
     """Poll until Convey accepts TCP connections, or fail fast on death/timeout."""
     start = time.monotonic()
@@ -2000,18 +2151,27 @@ def run_catchup_drain(
     *,
     exclude: set[str] | None = None,
 ) -> list[str]:
-    """Submit catchup daily think tasks for pending, non-stuck days."""
+    """Submit catchup daily think tasks for pending, eligible days."""
     all_updated = updated_days(exclude=exclude)
-    try:
-        survivors = [day for day in all_updated if not read_day_stuck(day)]
-    except Exception:
-        logging.warning("Stuck-day filter unavailable; draining unfiltered catchup set")
-        survivors = all_updated
 
-    freshest = survivors[-MAX_UPDATED_CATCHUP:]
-    merged = set(freshest) | set(force_days or [])
+    def _eligible(day: str) -> bool:
+        try:
+            return day_eligible_to_drain(day, KIND_DAILY_CATCHUP)
+        except Exception:
+            logging.warning(
+                "Catchup eligibility check failed for %s; treating as eligible",
+                day,
+            )
+            return True
+
+    eligible_natural = [day for day in all_updated if _eligible(day)]
+    # AC3: force uses the same backoff gate. AC8: cap natural days after
+    # eligibility; forced eligible days keep importer single-day intent.
+    freshest = eligible_natural[-MAX_UPDATED_CATCHUP:]
+    forced_eligible = [day for day in (force_days or []) if _eligible(day)]
+    merged = set(freshest) | set(forced_eligible)
     if not merged:
-        logging.info("no updated days to process")
+        logging.info("no eligible days to process")
         return []
 
     if _task_queue is None:
@@ -2024,6 +2184,22 @@ def run_catchup_drain(
         cmd = ["journal", "think", "-v", "--day", day_str]
         _task_queue.submit(cmd, day=day_str)
     return days
+
+
+def _startup_catchup_drain() -> None:
+    try:
+        transitions = reconcile_interrupted_attempts()
+        for transition in transitions:
+            _emit_catchup_backoff(
+                _supervisor_callosum,
+                day=transition.day,
+                attempts=transition.attempts,
+                consecutive=transition.consecutive_non_completion,
+                last_outcome=transition.last_outcome,
+            )
+    except Exception:
+        logging.warning("Catchup reconciliation failed", exc_info=True)
+    run_catchup_drain()
 
 
 def handle_daily_tasks() -> None:
@@ -2514,6 +2690,21 @@ def _ensure_venv_bin_on_path() -> None:
     os.environ["PATH"] = os.pathsep.join(parts)
 
 
+def register_baseline_caps(queue: TaskQueue) -> None:
+    """Register caps that must hold regardless of the schedule_enabled gate.
+
+    Reactive partitions (daily/segment/indexer/importer) and on-demand backup
+    can reach _active even under --no-schedule, so their caps cannot live behind
+    the schedule-only registration block.
+    """
+    for name, seconds in REACTIVE_TASK_CAPS.items():
+        queue.set_cap(name, seconds)
+    queue.set_cap(
+        TaskQueue.get_command_name(BACKUP_RUN_CMD),
+        parse_duration_seconds(BACKUP_MAX_RUNTIME),
+    )
+
+
 def main() -> None:
     parser = parse_args()
 
@@ -2530,13 +2721,7 @@ def main() -> None:
     log_level = logging.DEBUG if args.debug else logging.INFO
     log_path = journal_path / "health" / "supervisor.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    logging.getLogger().handlers = []
-    logging.basicConfig(
-        level=log_level,
-        handlers=[logging.FileHandler(log_path, encoding="utf-8")],
-        format="%(asctime)s [supervisor:log] %(levelname)s %(message)s",
-        datefmt="%Y-%m-%dT%H:%M:%S",
-    )
+    _configure_supervisor_logging(log_path, log_level)
 
     if args.verbose or args.debug:
         console_handler = logging.StreamHandler()
@@ -2618,6 +2803,7 @@ def main() -> None:
     global _task_queue
     procs: list[RunnerManagedProcess] = []
     convey_port = None
+    convey_proc = None
 
     # Remote mode: run sync instead of local processing
     _is_remote_mode = bool(args.remote)
@@ -2682,6 +2868,7 @@ def main() -> None:
 
     # Initialize task queue with callosum event callback
     _task_queue = TaskQueue(on_queue_change=_emit_queue_event, ready=False)
+    register_baseline_caps(_task_queue)
 
     # Now start other services (their startup events will be captured)
     if _is_remote_mode:
@@ -2692,11 +2879,11 @@ def main() -> None:
         os.environ["SOL_SUPERVISOR_SPAWNED"] = "1"
         if not args.no_convey:
             print(f"  Starting convey on port {args.port}...", flush=True)
-            proc, convey_port = start_convey_server(
+            convey_proc, convey_port = start_convey_server(
                 verbose=args.verbose, debug=args.debug, port=args.port
             )
-            procs.append(proc)
-            wait_for_convey_ready(proc)
+            procs.append(convey_proc)
+            wait_for_convey_ready(convey_proc)
             print("  Convey ready", flush=True)
         from solstone.think.providers.local_endpoint import resolve_local_endpoint
 
@@ -2755,16 +2942,24 @@ def main() -> None:
 
     # Startup catchup: submit thinks for days with pending stream data
     if daily_enabled:
-        run_catchup_drain()
+        _startup_catchup_drain()
 
     # Startup catch-up: submit overdue schedule entries missed while down
     if schedule_enabled and _supervisor_callosum:
         scheduler.catch_up()
 
     try:
-        print("  Supervisor ready", flush=True)
-        _sd_notify("READY=1")
-        signal_ready()
+        convey_accepting = convey_proc is None or is_solstone_up(timeout=1.0)
+        if convey_accepting:
+            print("  Supervisor ready", flush=True)
+            _sd_notify("READY=1")
+            signal_ready()
+        else:
+            logging.error(
+                "Convey is not accepting on :%s; withholding readiness marker, "
+                "continuing into supervise loop",
+                read_service_port("convey"),
+            )
         if app_supervised:
             start_parent_death_watcher()
         asyncio.run(

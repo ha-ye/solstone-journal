@@ -3,8 +3,8 @@
 
 """Caller-side `sol link join` implementation.
 
-Manual short-code form posts to `/app/link/by-code`; v3 pair-link URL form
-decodes the embedded nonce and posts to `/app/link/pair?token=<nonce>`.
+The pair-link URL form decodes the embedded nonce and posts to
+`/app/link/pair?token=<nonce>` over the framed mTLS listener.
 
 Role-less linked-system credentials are written under
 `$XDG_CONFIG_HOME/solstone-observer/spl/<label>/` when XDG_CONFIG_HOME is set,
@@ -37,22 +37,21 @@ import json
 import os
 import re
 import socket
-import ssl
 import sys
-import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from cryptography import x509
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 from solstone.apps.link.crockford32 import decode as crockford_decode
 from solstone.think.link.auth import is_peer
+from solstone.think.link.ca import ca_pin_matches
 from solstone.think.link.client import (
     _CONNECT_TIMEOUT_SECONDS,
     StreamResetError,
@@ -65,7 +64,6 @@ from solstone.think.link.tls import TlsError
 from solstone.think.utils import get_journal
 
 VALID_ROLES = {"", "phone", "observer", "peer"}
-MANUAL_CODE_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{8}$")
 LABEL_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 DEFAULT_CLIENT_LABEL = "linked-system"
 BUNDLE_FILES = {
@@ -82,7 +80,7 @@ _INSTANCE_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,256}$")
 class PairRequest:
     url: str
     body_base: dict[str, str]
-    secure: bool
+    ca_fingerprint_pin: str | None = None
 
 
 @dataclass(frozen=True)
@@ -97,7 +95,7 @@ class PairResponse:
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--home", help="Receiver base URL")
-    parser.add_argument("--code", required=True, help="Manual code or pair-link URL")
+    parser.add_argument("--code", required=True, help="pair-link URL")
     parser.add_argument("--as", dest="as_role", help="Optional tag to join as")
     parser.add_argument(
         "--label",
@@ -197,24 +195,12 @@ def main(args: argparse.Namespace) -> int:
 
 def _parse_pair_request(code: str, home: str | None) -> PairRequest:
     from solstone.apps.link.copy import PAIR_LINK_HOST, PAIR_LINK_PATH
-    from solstone.apps.link.manual_code import normalize as normalize_manual_code
 
     if code.startswith(f"https://{PAIR_LINK_HOST}{PAIR_LINK_PATH}#"):
         return _parse_pair_link(code, home)
-    canonical_code = normalize_manual_code(code)
-    if not MANUAL_CODE_RE.fullmatch(canonical_code):
-        raise ValueError(
-            f"Pair code did not match an accepted form. Use a pair-link like "
-            f"https://{PAIR_LINK_HOST}{PAIR_LINK_PATH}#... or an 8-character manual "
-            f"code with --home."
-        )
-    if not home:
-        raise ValueError("--home is required for manual pair codes")
-    base_url = home.rstrip("/")
-    return PairRequest(
-        url=f"{base_url}/app/link/by-code",
-        body_base={"code": canonical_code},
-        secure=False,
+    raise ValueError(
+        f"Pair code did not match an accepted form. Use a pair-link like "
+        f"https://{PAIR_LINK_HOST}{PAIR_LINK_PATH}#... from 'sol call link pair'."
     )
 
 
@@ -240,11 +226,15 @@ def _parse_pair_link(pair_link: str, home: str | None) -> PairRequest:
     ipv4 = str(ipaddress.IPv4Address(blob[2:6]))
     port = int.from_bytes(blob[6:8], "big")
     nonce_hex = blob[8:24].hex()
+    # blob[24:40] is the first 16 bytes of the home CA cert's DER SHA-256,
+    # embedded to pin the home to the joining device. Carry it so the pairing
+    # exchange can verify the home is who the pair-link claims (fail closed).
+    ca_fingerprint_pin = blob[24:40].hex()
     base_url = home.rstrip("/") if home else f"https://{ipv4}:{port}"
     return PairRequest(
         url=f"{base_url}/app/link/pair?token={nonce_hex}",
         body_base={},
-        secure=True,
+        ca_fingerprint_pin=ca_fingerprint_pin,
     )
 
 
@@ -327,50 +317,11 @@ def _build_csr(label: str) -> tuple[bytes, str]:
 
 
 def _post_pair(pair_request: PairRequest, body: dict[str, str]) -> PairResponse:
-    if pair_request.secure:
-        return _post_pair_framed(pair_request.url, body)
-    return _post_pair_plain(pair_request.url, body)
-
-
-def _post_pair_plain(url: str, body: dict[str, str]) -> PairResponse:
-    data = json.dumps(body).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=data,
-        headers={"content-type": "application/json"},
-        method="POST",
+    return _post_pair_framed(
+        pair_request.url,
+        body,
+        ca_fingerprint_pin=pair_request.ca_fingerprint_pin,
     )
-    # This is the trust-on-first-use join ceremony. The returned CA chain is
-    # persisted for future verification by the caller-side runtime.
-    context = ssl.create_default_context()
-    context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
-    try:
-        with urllib.request.urlopen(request, timeout=30, context=context) as response:
-            status = int(getattr(response, "status", response.getcode()))
-            landing_url = response.geturl()
-            content_type = response.headers.get_content_type()
-            raw_body = response.read()
-    except urllib.error.HTTPError as exc:
-        excerpt = exc.read().decode("utf-8", errors="replace")[:500]
-        raise ValueError(
-            f"Pair request failed with HTTP {exc.code}: {excerpt}"
-        ) from exc
-    except urllib.error.URLError as exc:
-        raise ValueError(f"Pair request failed: {exc.reason}") from exc
-    if status != 200:
-        excerpt = raw_body.decode("utf-8", errors="replace")[:500]
-        raise ValueError(f"Pair request failed with HTTP {status}: {excerpt}")
-    if content_type != "application/json":
-        raise ValueError(
-            f"Pair request reached an auth bounce or non-pairing endpoint: "
-            f"attempted {url}; landed at {landing_url}; content-type {content_type}."
-        )
-    try:
-        payload = json.loads(raw_body.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ValueError("Pair response was not valid JSON") from exc
-    return _parse_pair_response(payload)
 
 
 def _post_pair_framed(
@@ -438,12 +389,30 @@ async def _pair_exchange(
             raise ValueError("Pair response was not valid JSON") from exc
         response = _parse_pair_response(payload)
         if ca_fingerprint_pin is not None:
-            ca_fingerprint = _ca_fingerprint(_join_chain(response.ca_chain))
-            if ca_fingerprint != ca_fingerprint_pin:
+            chain_pem = _join_chain(response.ca_chain)
+            ca_fingerprint = _ca_fingerprint(chain_pem)
+            # 1. The CA chain the home returns must match the fingerprint pinned
+            #    in the pair-link (the embedded 16-byte prefix), or this is not
+            #    the home the pair-link came from. Fail closed.
+            if not ca_pin_matches(ca_fingerprint, ca_fingerprint_pin):
                 raise ValueError(
                     f"CA fingerprint mismatch: got {ca_fingerprint}, "
-                    f"expected {ca_fingerprint_pin}"
+                    f"expected prefix {ca_fingerprint_pin}"
                 )
+            # 2. Defense in depth: bind the *live* TLS peer to the pinned CA. A
+            #    relay that echoes the real CA chain in the response body but
+            #    terminates TLS with its own key cannot pass — it has no CA
+            #    private key to sign a leaf the pinned CA would vouch for.
+            peer_leaf = session.peer_certificate()
+            if peer_leaf is None:
+                raise ValueError(
+                    "Pairing TLS peer presented no certificate to verify "
+                    "against the pinned CA."
+                )
+            ca_cert = x509.load_pem_x509_certificate(
+                _first_cert_pem(chain_pem).encode("ascii")
+            )
+            _verify_leaf_signed_by_pinned_ca(peer_leaf, ca_cert)
         return response
     finally:
         await session.close()
@@ -488,6 +457,33 @@ def _ca_fingerprint(chain_pem: str) -> str:
     cert = x509.load_pem_x509_certificate(cert_pem.encode("ascii"))
     der = cert.public_bytes(serialization.Encoding.DER)
     return f"sha256:{hashlib.sha256(der).hexdigest()}"
+
+
+def _verify_leaf_signed_by_pinned_ca(
+    leaf: x509.Certificate,
+    ca_cert: x509.Certificate,
+) -> None:
+    """Raise unless ``leaf`` carries a valid signature from ``ca_cert``.
+
+    The link stack issues EC P-256 CAs and leaves, so verification is ECDSA.
+    Any other key type, or an invalid signature, fails closed.
+    """
+    public_key = ca_cert.public_key()
+    if not isinstance(public_key, ec.EllipticCurvePublicKey):
+        raise ValueError(
+            "Pinned CA uses an unexpected key type; refusing to trust the pairing peer."
+        )
+    try:
+        public_key.verify(
+            leaf.signature,
+            leaf.tbs_certificate_bytes,
+            ec.ECDSA(leaf.signature_hash_algorithm),
+        )
+    except InvalidSignature as exc:
+        raise ValueError(
+            "Pairing TLS peer certificate is not signed by the pinned CA "
+            "(possible man-in-the-middle during pairing)."
+        ) from exc
 
 
 def _first_cert_pem(chain_pem: str) -> str:

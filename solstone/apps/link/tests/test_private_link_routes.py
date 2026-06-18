@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import urllib.parse
 
 import pytest
 
@@ -108,7 +109,7 @@ def test_private_link_enable_busy_returns_service_busy(
     def slow_flow(**_kwargs):
         started.set()
         release.wait(2)
-        return operations.HandoffResult("enabled", None, False, True, None)
+        return operations.HandoffResult("enabled", None, False)
 
     monkeypatch.setattr(link_routes.spl_handoff, "run_spl_handoff", slow_flow)
 
@@ -132,6 +133,30 @@ def test_private_link_enable_already_enabled_guard(link_env):
     assert response.get_json()["reason_code"] == "invalid_operation_for_state"
 
 
+def test_private_link_enable_prepare_failure_returns_service_operation_failed(
+    link_env,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    env = link_env()
+    monkeypatch.setattr(
+        link_routes.spl_handoff,
+        "build_spl_handoff_url",
+        lambda: (_ for _ in ()).throw(OSError("locked")),
+    )
+    monkeypatch.setattr(
+        link_routes.spl_handoff,
+        "run_spl_handoff",
+        lambda **_kwargs: pytest.fail("handoff should not run"),
+    )
+
+    response = env.client.post("/app/link/private-link/enable")
+
+    assert response.status_code == 500
+    data = response.get_json()
+    assert data["reason_code"] == "service_operation_failed"
+    assert data["detail"] == "couldn't prepare the consent link"
+
+
 def test_private_link_enable_success_operation_reaches_enabled(
     link_env,
     monkeypatch: pytest.MonkeyPatch,
@@ -141,7 +166,7 @@ def test_private_link_enable_success_operation_reaches_enabled(
     monkeypatch.setattr(
         link_routes.spl_handoff,
         "run_spl_handoff",
-        lambda **_kwargs: operations.HandoffResult("enabled", None, False, True, None),
+        lambda **_kwargs: operations.HandoffResult("enabled", None, False),
     )
 
     response = env.client.post("/app/link/private-link/enable")
@@ -151,30 +176,34 @@ def test_private_link_enable_success_operation_reaches_enabled(
     assert payload["operation"]["phase"] == "enabled"
 
 
-def test_private_link_enable_browser_open_failure_is_surfaced(
+def test_private_link_enable_returns_consent_url(
     link_env,
     monkeypatch: pytest.MonkeyPatch,
 ):
     env = link_env()
+    consent_url = "https://services.test/enable/spl?nonce=NONCE&instance=00000000-0000"
+    monkeypatch.setattr(
+        link_routes.spl_handoff,
+        "build_spl_handoff_url",
+        lambda: (consent_url, "NONCE", "https://services.test"),
+    )
 
     monkeypatch.setattr(
         link_routes.spl_handoff,
         "run_spl_handoff",
-        lambda **_kwargs: operations.HandoffResult(
-            "enabled",
-            None,
-            False,
-            False,
-            "http://portal/x",
-        ),
+        lambda **_kwargs: operations.HandoffResult("enabled", None, False),
     )
 
     response = env.client.post("/app/link/private-link/enable")
+    started = response.get_json()
     payload = _wait_for_phase(env, "enabled")
+    parsed = urllib.parse.urlparse(started["operation"]["portal_url"])
 
     assert response.status_code == 202
-    assert payload["operation"]["browser_open_succeeded"] is False
-    assert payload["operation"]["portal_url"] == "http://portal/x"
+    assert started["operation"]["portal_url"] == consent_url
+    assert parsed.path == "/enable/spl"
+    assert urllib.parse.parse_qs(parsed.query)["nonce"] == ["NONCE"]
+    assert payload["operation"]["portal_url"] == consent_url
 
 
 def test_private_link_disable_success(link_env):

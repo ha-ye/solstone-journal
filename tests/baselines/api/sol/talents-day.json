@@ -38,17 +38,6 @@
     }
   },
   "talents": {
-    "activities:activities_review": {
-      "app": "activities",
-      "color": "#00695c",
-      "description": "Daily review for missed in-person meetings, calls, and brief interactions.",
-      "multi_facet": true,
-      "output_format": null,
-      "schedule": "daily",
-      "source": "app",
-      "title": "Activities Review",
-      "type": "cogitate"
-    },
     "chat": {
       "app": null,
       "color": "#6c757d",
@@ -305,7 +294,7 @@
     "support:support": {
       "app": "support",
       "color": "#0288d1",
-      "description": "Files and monitors support requests with sol pbc — consent-gated, never sends data without explicit owner approval",
+      "description": "Drafts support requests and feedback to sol pbc for owner review, searches help articles, and runs local diagnostics.",
       "multi_facet": false,
       "output_format": null,
       "schedule": null,

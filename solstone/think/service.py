@@ -42,7 +42,8 @@ from solstone.think.utils import get_journal, get_journal_info
 SERVICE_LABEL = "org.solpbc.solstone"
 SYSTEMD_UNIT = "solstone"
 DEFAULT_SERVICE_PORT = 5015
-READY_TIMEOUT_SECONDS = 60.0
+READY_TIMEOUT_SECONDS = 120.0
+SERVICE_START_TIMEOUT_SECONDS = 120
 SERVICE_FILE_DESCRIPTOR_LIMIT = 4096
 _LAUNCHD_UNLOAD_POLL_INTERVAL_S = 0.1
 _LAUNCHD_UNLOAD_TIMEOUT_S = 30.0
@@ -355,15 +356,7 @@ def _reconcile_launchd_plist() -> Reconciled:
     path.write_bytes(plistlib.dumps(data))
 
     uid = os.getuid()
-    subprocess.run(
-        ["launchctl", "bootout", f"gui/{uid}", str(path)],
-        capture_output=True,
-    )
-    result = subprocess.run(
-        ["launchctl", "bootstrap", f"gui/{uid}", str(path)],
-        capture_output=True,
-        text=True,
-    )
+    result = _reload_launchd_unit(uid, path)
     if result.returncode != 0:
         raise RuntimeError(f"launchctl bootstrap {path}: {result.stderr.strip()}")
 
@@ -556,6 +549,7 @@ def _generate_systemd_unit(
         f"\n"
         f"[Service]\n"
         f"Type=notify\n"
+        f"TimeoutStartSec={SERVICE_START_TIMEOUT_SECONDS}\n"
         f"ExecStart={journal} start {port}\n"
         f"Restart=on-failure\n"
         f"RestartSec=5\n"
@@ -631,6 +625,34 @@ def _bootstrap_launchd(uid: int, path: Path) -> subprocess.CompletedProcess:
     return result
 
 
+def _reload_launchd_unit(uid: int, path: Path) -> subprocess.CompletedProcess:
+    """Boot out the label, wait (bounded) for unload, then bootstrap with EIO retry."""
+    subprocess.run(
+        ["launchctl", "bootout", f"gui/{uid}/{SERVICE_LABEL}"],
+        capture_output=True,
+        check=False,
+    )
+
+    # bootout is async; wait (bounded) for launchd to drop the old label before
+    # bootstrapping. Any residual unload race is handled by the bounded bootstrap
+    # retry below.
+    deadline = time.monotonic() + _LAUNCHD_UNLOAD_TIMEOUT_S
+    while time.monotonic() < deadline:
+        try:
+            probe = subprocess.run(
+                ["launchctl", "print", f"gui/{uid}/{SERVICE_LABEL}"],
+                capture_output=True,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            break
+        if probe.returncode != 0:
+            break
+        time.sleep(_LAUNCHD_UNLOAD_POLL_INTERVAL_S)
+
+    return _bootstrap_launchd(uid, path)
+
+
 def _install(port: int = DEFAULT_SERVICE_PORT) -> int:
     platform = _platform()
     env = _collect_env()
@@ -646,33 +668,10 @@ def _install(port: int = DEFAULT_SERVICE_PORT) -> int:
         path.parent.mkdir(parents=True, exist_ok=True)
 
         uid = os.getuid()
-        subprocess.run(
-            ["launchctl", "bootout", f"gui/{uid}/{SERVICE_LABEL}"],
-            capture_output=True,
-            check=False,
-        )
-
-        # bootout is async; wait (bounded) for launchd to drop the old label
-        # before writing the plist. Any residual unload race is handled by the
-        # bounded bootstrap retry below.
-        deadline = time.monotonic() + _LAUNCHD_UNLOAD_TIMEOUT_S
-        while time.monotonic() < deadline:
-            try:
-                probe = subprocess.run(
-                    ["launchctl", "print", f"gui/{uid}/{SERVICE_LABEL}"],
-                    capture_output=True,
-                    check=False,
-                )
-            except (OSError, subprocess.SubprocessError):
-                break
-            if probe.returncode != 0:
-                break
-            time.sleep(_LAUNCHD_UNLOAD_POLL_INTERVAL_S)
-
         path.write_bytes(plist_data)
         print(f"Wrote {path}")
 
-        result = _bootstrap_launchd(uid, path)
+        result = _reload_launchd_unit(uid, path)
         if result.returncode != 0:
             if _is_launchd_eio(result):
                 logger.warning(

@@ -215,7 +215,6 @@ def _setup_config(tmp_path):
             "allow_network_access": False,
             "password_hash": "secret_hash",
             "secret": "secret_val",
-            "trust_localhost": True,
         },
         "setup": {"completed_at": 12345},
         "env": {"KEY": "val"},
@@ -1182,9 +1181,8 @@ class TestExportConfig:
             "json"
         ) or mock_session.post.call_args[1].get("json")
         posted_config = posted_data["config"]
-        assert posted_config["convey"] == {
-            "allow_network_access": False,
-            "trust_localhost": True,
-        }
+        assert posted_config["convey"] == {"allow_network_access": False}
+        assert "password_hash" not in posted_config["convey"]
+        assert "secret" not in posted_config["convey"]
         assert posted_config["setup"] == {"completed_at": 12345}
         assert posted_config["env"] == {"KEY": "val"}

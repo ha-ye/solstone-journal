@@ -27,7 +27,7 @@ You are a solstone cogitate talent running inside the live system. This runtime 
 
 # Locked cogitate access-tier vocabulary (the C1 contract). Downstream milestones
 # key per-talent assignment, enforcement, redesign, and lint off these names.
-COGITATE_ACCESS_TIERS = ("normal", "system-read", "outbound")
+COGITATE_ACCESS_TIERS = ("normal", "system-read", "outbound", "synthesis")
 
 # `code-agent` is a documented FUTURE tier — NOT part of the current cogitate
 # runtime (it needs write access, broad tools, and a repo cwd, deliberately out of
@@ -53,7 +53,12 @@ class AccessCapabilities:
 _ACCESS_TIER_CAPABILITIES: dict[str, AccessCapabilities] = {
     "normal": AccessCapabilities(sol=True, reads=True, submit=False),
     "system-read": AccessCapabilities(sol=True, reads=True, submit=False),
-    "outbound": AccessCapabilities(sol=True, reads=True, submit=True),
+    "outbound": AccessCapabilities(sol=True, reads=False, submit=True),
+    # Pure sol-surface synthesis: the journal is reached only through `sol`
+    # domain commands, with no raw-filesystem read tier and no outbound submit.
+    # For synthesis talents (weekly_reflection, partner) whose source of record
+    # is `sol call journal` / `sol call activities`, not the raw journal tree.
+    "synthesis": AccessCapabilities(sol=True, reads=False, submit=False),
 }
 
 _missing_access_tiers = set(COGITATE_ACCESS_TIERS) - set(_ACCESS_TIER_CAPABILITIES)

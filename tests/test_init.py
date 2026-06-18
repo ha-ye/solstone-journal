@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-import base64
 import json
 import re
 from pathlib import Path
@@ -32,11 +31,8 @@ def _make_empty_client(tmp_path, monkeypatch, *, timezone="America/Denver"):
     return app.test_client(), journal
 
 
-def _remove_password(journal_dir):
+def _clear_setup(journal_dir):
     config = _read_config(journal_dir)
-    config["convey"].pop("password_hash", None)
-    config["convey"].pop("password", None)
-    config["convey"].pop("trust_localhost", None)
     config.pop("setup", None)
     (journal_dir / "config" / "journal.json").write_text(json.dumps(config, indent=2))
 
@@ -68,7 +64,7 @@ def _save_test_observer(
 
 @pytest.fixture
 def fresh_client(journal_copy):
-    _remove_password(journal_copy)
+    _clear_setup(journal_copy)
     app = create_app(str(journal_copy))
     app.config["TESTING"] = True
     return app.test_client()
@@ -82,15 +78,15 @@ def configured_client(journal_copy):
 
 
 class TestInitDetection:
-    def test_redirects_to_init_when_no_password(self, fresh_client):
-        resp = fresh_client.get("/", headers={"X-Forwarded-For": "1.2.3.4"})
+    def test_redirects_to_init_when_setup_incomplete(self, fresh_client):
+        resp = fresh_client.get("/")
         assert resp.status_code == 302
         assert "/init" in resp.headers["Location"]
 
-    def test_redirects_to_login_when_password_exists(self, configured_client):
-        resp = configured_client.get("/", headers={"X-Forwarded-For": "1.2.3.4"})
+    def test_setup_complete_serves_root(self, configured_client):
+        resp = configured_client.get("/")
         assert resp.status_code == 302
-        assert "/login" in resp.headers["Location"]
+        assert resp.headers["Location"].endswith("/app/home/")
 
     def test_init_page_renders(self, fresh_client):
         resp = fresh_client.get("/init")
@@ -251,7 +247,6 @@ class TestInitDetection:
     def test_init_retention_reflects_persisted_state(self, journal_copy):
         config = _read_config(journal_copy)
         config.pop("setup", None)
-        config["convey"].pop("password_hash", None)
         config["retention"] = {"raw_media": "days", "raw_media_days": 14}
         (journal_copy / "config" / "journal.json").write_text(
             json.dumps(config, indent=2)
@@ -302,14 +297,13 @@ class TestInitDetection:
         assert config["identity"]["name"] == "OS User"
         assert config["identity"]["preferred"] == "osuser"
         assert config["identity"]["timezone"] == "America/Denver"
-        assert config["convey"]["secret"]
+        assert "convey" not in config
         assert b'value="OS User"' in resp.data
         assert b'value="osuser"' in resp.data
 
     def test_init_escapes_identity_values(self, journal_copy):
         config = _read_config(journal_copy)
         config.pop("setup", None)
-        config["convey"].pop("password_hash", None)
         config["identity"]["name"] = "<script>alert(1)</script>"
         (journal_copy / "config" / "journal.json").write_text(
             json.dumps(config, indent=2)
@@ -325,7 +319,6 @@ class TestInitDetection:
     def test_init_does_not_overwrite_existing_identity(self, journal_copy):
         config = _read_config(journal_copy)
         config.pop("setup", None)
-        config["convey"].pop("password_hash", None)
         config["identity"]["name"] = "Existing User"
         config["identity"]["preferred"] = "Existing"
         config["identity"]["timezone"] = "UTC"
@@ -429,8 +422,8 @@ class TestInitObservers:
         assert isinstance(data["thresholds"]["active_ms"], int)
         assert isinstance(data["thresholds"]["stale_ms"], int)
 
-    def test_observers_no_password_required(self, fresh_client, monkeypatch):
-        """Observers endpoint works without password_hash set."""
+    def test_observers_available_before_setup(self, fresh_client, monkeypatch):
+        """Observers endpoint works before setup completes."""
         monkeypatch.setattr(
             "solstone.apps.observer.utils.list_observers",
             lambda: [],
@@ -479,7 +472,7 @@ class TestInitObservers:
         assert observers[0]["elapsed_ms"] is None
         assert observers[0]["clock_skew"] is False
 
-    def test_init_observers_endpoint_parity(self, fresh_client):
+    def test_init_observers_endpoint_parity(self, fresh_client, journal_copy):
         current_now = now_ms()
         _save_test_observer(
             "aaaa0000",
@@ -499,9 +492,12 @@ class TestInitObservers:
             created_at=30,
             last_seen=current_now - 600_000,
         )
-
-        with fresh_client.session_transaction() as sess:
-            sess["logged_in"] = True
+        config = _read_config(journal_copy)
+        config["setup"] = {"completed_at": current_now}
+        (journal_copy / "config" / "journal.json").write_text(
+            json.dumps(config, indent=2),
+            encoding="utf-8",
+        )
 
         api_resp = fresh_client.get("/app/observer/api/list")
         init_resp = fresh_client.get("/init/observers")
@@ -535,7 +531,6 @@ class TestInitFinalize:
         resp = fresh_client.post(
             "/init/finalize",
             json={
-                "password": "securepass123",
                 "name": "Jane Doe",
                 "preferred": "Jane",
                 "timezone": "America/Denver",
@@ -549,12 +544,7 @@ class TestInitFinalize:
         assert data["redirect"] == "/app/thinking/"
 
         config = _read_config(journal_copy)
-        # Password
-        from werkzeug.security import check_password_hash
-
-        assert check_password_hash(config["convey"]["password_hash"], "securepass123")
         assert "allow_network_access" not in config["convey"]
-        assert config["convey"]["trust_localhost"] is True
         # Identity
         assert config["identity"]["name"] == "Jane Doe"
         assert config["identity"]["preferred"] == "Jane"
@@ -564,7 +554,7 @@ class TestInitFinalize:
         # Setup
         assert "completed_at" in config["setup"]
 
-    def test_finalize_no_password_succeeds(self, fresh_client, journal_copy):
+    def test_finalize_succeeds(self, fresh_client, journal_copy):
         resp = fresh_client.post(
             "/init/finalize",
             json={"name": "Jane"},
@@ -577,16 +567,6 @@ class TestInitFinalize:
         config = _read_config(journal_copy)
         assert "completed_at" in config["setup"]
         assert "allow_network_access" not in config["convey"]
-        assert config["convey"]["trust_localhost"] is True
-        assert "password_hash" not in config["convey"]
-
-    def test_finalize_password_too_short(self, fresh_client):
-        resp = fresh_client.post(
-            "/init/finalize",
-            json={"password": "short"},
-            content_type="application/json",
-        )
-        assert resp.status_code == 400
 
     def test_finalize_minimal(self, fresh_client, journal_copy):
         """Finalize with optional fields omitted."""
@@ -597,7 +577,6 @@ class TestInitFinalize:
         )
         assert resp.status_code == 200
         config = _read_config(journal_copy)
-        assert "password_hash" not in config["convey"]
         assert "completed_at" in config["setup"]
         # No gemini key written
         assert "GOOGLE_API_KEY" not in config.get("env", {})
@@ -646,25 +625,20 @@ class TestInitFinalize:
         assert config["identity"]["timezone"] == "America/Denver"
         assert "completed_at" in config["setup"]
 
-    def test_finalize_auto_login(self, fresh_client, journal_copy):
+    def test_finalize_completes_setup_access(self, fresh_client, journal_copy):
         response = fresh_client.post(
             "/init/finalize",
             json={},
             content_type="application/json",
         )
         assert response.get_json()["redirect"] == "/app/thinking/"
-        with fresh_client.session_transaction() as session:
-            assert session["logged_in"] is True
-        resp = fresh_client.get("/", headers={"X-Forwarded-For": "1.2.3.4"})
+        resp = fresh_client.get("/")
         assert resp.status_code == 302
-        location = resp.headers["Location"]
-        assert "/login" not in location
-        assert "/init" not in location
+        assert resp.headers["Location"].endswith("/app/home/")
 
     def test_finalize_no_early_config_write(self, fresh_client, journal_copy):
-        """Before finalize, config should have no password_hash or setup."""
+        """Before finalize, config should have no setup."""
         config = _read_config(journal_copy)
-        assert "password_hash" not in config.get("convey", {})
         assert "setup" not in config or "completed_at" not in config.get("setup", {})
 
     def test_post_init_redirect(self, fresh_client, journal_copy):
@@ -722,189 +696,3 @@ class TestInitFinalize:
         assert resp.get_json()["reason_code"] == "corrupt_config"
         write_config.assert_not_called()
         assert config_path.read_bytes() == before
-
-
-class TestRemovedEndpoints:
-    """Verify old endpoints no longer exist."""
-
-    def test_init_password_gone(self, fresh_client):
-        resp = fresh_client.post(
-            "/init/password",
-            json={"password": "securepass123"},
-            content_type="application/json",
-        )
-        assert resp.status_code in (404, 405)
-
-    def test_init_identity_gone(self, fresh_client):
-        resp = fresh_client.post(
-            "/init/identity",
-            json={"name": "Jane"},
-            content_type="application/json",
-        )
-        assert resp.status_code in (404, 405)
-
-    def test_init_provider_gone(self, fresh_client):
-        resp = fresh_client.post(
-            "/init/provider",
-            json={"key": "some-key"},
-            content_type="application/json",
-        )
-        assert resp.status_code in (404, 405)
-
-
-class TestLocalhostBypass:
-    """Tests for the opt-in trust_localhost bypass."""
-
-    def test_localhost_fresh_install_redirects_to_init(self, fresh_client):
-        """Plain localhost with no config → redirect to /init."""
-        resp = fresh_client.get("/")
-        assert resp.status_code == 302
-        assert "/init" in resp.headers["Location"]
-
-    def test_localhost_trust_bypass(self, journal_copy):
-        """Localhost + trust_localhost + setup.completed_at → pass through."""
-        config = _read_config(journal_copy)
-        config["convey"]["trust_localhost"] = True
-        config["setup"] = {"completed_at": 1700000000000}
-        (journal_copy / "config" / "journal.json").write_text(
-            json.dumps(config, indent=2)
-        )
-        app = create_app(str(journal_copy))
-        app.config["TESTING"] = True
-        client = app.test_client()
-        resp = client.get("/")
-        assert resp.status_code == 302
-        # Should redirect to home app, not login or init
-        assert "/login" not in resp.headers["Location"]
-        assert "/init" not in resp.headers["Location"]
-
-    def test_localhost_trust_without_setup_redirects_to_init(self, journal_copy):
-        """trust_localhost set but no setup.completed_at → redirect to /init."""
-        config = _read_config(journal_copy)
-        config["convey"]["trust_localhost"] = True
-        config.pop("setup", None)
-        config["convey"].pop("password_hash", None)
-        (journal_copy / "config" / "journal.json").write_text(
-            json.dumps(config, indent=2)
-        )
-        app = create_app(str(journal_copy))
-        app.config["TESTING"] = True
-        client = app.test_client()
-        resp = client.get("/")
-        assert resp.status_code == 302
-        assert "/init" in resp.headers["Location"]
-
-    def test_localhost_trust_disabled_redirects_to_login(self, journal_copy):
-        """Localhost + setup.completed_at + trust_localhost false → redirect to /login."""
-        config = _read_config(journal_copy)
-        config["convey"]["trust_localhost"] = False
-        config["setup"] = {"completed_at": 1700000000000}
-        (journal_copy / "config" / "journal.json").write_text(
-            json.dumps(config, indent=2)
-        )
-        app = create_app(str(journal_copy))
-        app.config["TESTING"] = True
-        client = app.test_client()
-        resp = client.get("/")
-        assert resp.status_code == 302
-        assert "/login" in resp.headers["Location"]
-
-    def test_proxy_header_defeats_trust_localhost(self, configured_client):
-        """Proxy headers prevent trust_localhost bypass."""
-        resp = configured_client.get("/", headers={"X-Forwarded-For": "1.2.3.4"})
-        assert resp.status_code == 302
-        assert "/login" in resp.headers["Location"]
-
-
-class TestBasicAuth:
-    """Tests for Basic Auth support."""
-
-    def test_basic_auth_correct_password(self, configured_client):
-        """Basic Auth with correct password → authenticated."""
-        creds = base64.b64encode(b":test123").decode()
-        resp = configured_client.get(
-            "/",
-            headers={
-                "Authorization": f"Basic {creds}",
-                "X-Forwarded-For": "1.2.3.4",
-            },
-        )
-        assert resp.status_code == 302
-        # Should redirect to home app, not login or init
-        assert "/login" not in resp.headers["Location"]
-        assert "/init" not in resp.headers["Location"]
-
-    def test_basic_auth_wrong_password(self, configured_client):
-        """Basic Auth with wrong password → redirect to /login."""
-        creds = base64.b64encode(b":wrongpassword").decode()
-        resp = configured_client.get(
-            "/",
-            headers={
-                "Authorization": f"Basic {creds}",
-                "X-Forwarded-For": "1.2.3.4",
-            },
-        )
-        assert resp.status_code == 302
-        assert "/login" in resp.headers["Location"]
-
-    def test_basic_auth_no_session(self, configured_client):
-        """Basic Auth does not create a session — next request without header fails."""
-        creds = base64.b64encode(b":test123").decode()
-        # First request with Basic Auth succeeds
-        resp1 = configured_client.get(
-            "/",
-            headers={
-                "Authorization": f"Basic {creds}",
-                "X-Forwarded-For": "1.2.3.4",
-            },
-        )
-        assert "/login" not in resp1.headers["Location"]
-
-        # Second request without Basic Auth → should redirect to login
-        resp2 = configured_client.get("/", headers={"X-Forwarded-For": "1.2.3.4"})
-        assert resp2.status_code == 302
-        assert "/login" in resp2.headers["Location"]
-
-
-class TestSetupMigration:
-    """Tests for the _migrate_setup_completed migration.
-
-    Legacy-only: handles journals where password was set via CLI before
-    web onboarding existed. New onboarding writes all config atomically.
-    """
-
-    def test_migration_writes_setup_and_trust(self, journal_copy):
-        """App startup with password_hash but no setup.completed_at writes both."""
-        config = _read_config(journal_copy)
-        config.pop("setup", None)
-        config["convey"].pop("trust_localhost", None)
-        (journal_copy / "config" / "journal.json").write_text(
-            json.dumps(config, indent=2)
-        )
-
-        # create_app triggers the migration
-        create_app(str(journal_copy))
-
-        config = _read_config(journal_copy)
-        assert "completed_at" in config.get("setup", {})
-        assert config["convey"].get("trust_localhost") is True
-
-    def test_migration_idempotent(self, journal_copy):
-        """Running migration twice is a no-op."""
-        config = _read_config(journal_copy)
-        config.pop("setup", None)
-        config["convey"].pop("trust_localhost", None)
-        (journal_copy / "config" / "journal.json").write_text(
-            json.dumps(config, indent=2)
-        )
-
-        # First run triggers migration
-        create_app(str(journal_copy))
-        config1 = _read_config(journal_copy)
-        ts1 = config1["setup"]["completed_at"]
-
-        # Second run should be a no-op
-        create_app(str(journal_copy))
-        config2 = _read_config(journal_copy)
-        assert config2["setup"]["completed_at"] == ts1
-        assert config2["convey"]["trust_localhost"] is True

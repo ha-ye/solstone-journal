@@ -36,7 +36,7 @@ def test_ensure_journal_config_creates_file_with_os_defaults(tmp_path, monkeypat
     assert config["identity"]["name"] == "Test User"
     assert config["identity"]["preferred"] == "tester"
     assert config["identity"]["timezone"] == "America/Denver"
-    assert config["convey"]["secret"]
+    assert "convey" not in config
 
 
 def test_ensure_journal_config_is_idempotent(tmp_path, monkeypatch):
@@ -98,9 +98,9 @@ def test_ensure_journal_config_timezone_resolver_failure_is_isolated(
     assert _config_path(tmp_path).exists()
 
 
-def test_ensure_journal_config_backfills_secret_without_touching_identity(
+def test_ensure_journal_config_reads_existing_config_without_touching_identity(
     tmp_path, monkeypatch
-):
+) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     _mock_os(monkeypatch, identity=("OS User", "osuser"), timezone="America/New_York")
     config_path = _config_path(tmp_path)
@@ -111,15 +111,12 @@ def test_ensure_journal_config_backfills_secret_without_touching_identity(
             "preferred": "Existing",
             "timezone": "UTC",
         },
-        "convey": {"trust_localhost": True},
     }
     config_path.write_text(json.dumps(staged), encoding="utf-8")
 
     config = utils.ensure_journal_config()
 
-    assert config["identity"] == staged["identity"]
-    assert config["convey"]["trust_localhost"] is True
-    assert config["convey"]["secret"]
+    assert config == staged
 
 
 def test_ensure_journal_config_raises_on_corrupt_existing_config_without_writing(

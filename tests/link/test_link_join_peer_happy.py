@@ -7,107 +7,52 @@ import argparse
 import json
 import stat
 from pathlib import Path
-from typing import Any
 
 import pytest
 from cryptography.hazmat.primitives import serialization
 
+from solstone.apps.link.routes import _build_pair_link
 from solstone.think.link import join_cli
 from solstone.think.link.ca import generate_ca
 
-
-class _FakeHeaders:
-    def __init__(self, content_type: str) -> None:
-        self._content_type = content_type
-
-    def get_content_type(self) -> str:
-        return self._content_type
-
-
-class _FakeResponse:
-    def __init__(
-        self,
-        body: bytes,
-        *,
-        status: int = 200,
-        url: str = "",
-        content_type: str = "application/json",
-    ) -> None:
-        self._body = body
-        self.status = status
-        self._url = url
-        self.headers = _FakeHeaders(content_type)
-
-    def __enter__(self) -> _FakeResponse:
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        return None
-
-    def read(self) -> bytes:
-        return self._body
-
-    def getcode(self) -> int:
-        return self.status
-
-    def geturl(self) -> str:
-        return self._url
+PAIR_LINK = _build_pair_link("192.0.2.42", 7657, "a" * 32, "b" * 64)
 
 
 def _args() -> argparse.Namespace:
     return argparse.Namespace(
         home="http://receiver",
-        code="ABCD-EFGH",
+        code=PAIR_LINK,
         as_role="peer",
         label="my-peer",
     )
 
 
-def _success_payload(tmp_path: Path) -> dict[str, Any]:
+def _pair_response(tmp_path: Path) -> join_cli.PairResponse:
     ca = generate_ca(tmp_path / "ca")
     ca_pem = ca.cert.public_bytes(serialization.Encoding.PEM).decode("ascii")
-    return {
-        "client_cert": "-----BEGIN CERTIFICATE-----\nclient\n-----END CERTIFICATE-----\n",
-        "ca_chain": [ca_pem],
-        "instance_id": "inst-1",
-        "home_label": "solstone",
-        "home_attestation": "header.payload.signature",
-        "local_endpoints": [{"host": "127.0.0.1", "port": 7657}],
-        "fingerprint": "sha256:client",
-    }
-
-
-def _mock_urlopen(
-    monkeypatch: pytest.MonkeyPatch,
-    payload: dict[str, Any] | bytes,
-    *,
-    status: int = 200,
-    calls: list[tuple[str, dict[str, Any]]] | None = None,
-) -> None:
-    body = (
-        payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
+    return join_cli.PairResponse(
+        client_cert="-----BEGIN CERTIFICATE-----\nclient\n-----END CERTIFICATE-----\n",
+        ca_chain=[ca_pem],
+        instance_id="inst-1",
+        home_label="solstone",
+        home_attestation="header.payload.signature",
+        local_endpoints=[{"host": "127.0.0.1", "port": 7657}],
     )
 
-    def fake_urlopen(request, **_kwargs):
-        if calls is not None:
-            calls.append(
-                (
-                    request.full_url,
-                    json.loads(request.data.decode("utf-8")),
-                )
-            )
-        return _FakeResponse(body, status=status, url=request.full_url)
 
-    monkeypatch.setattr(join_cli.urllib.request, "urlopen", fake_urlopen)
+def _mock_post_pair(
+    monkeypatch: pytest.MonkeyPatch, response: join_cli.PairResponse
+) -> None:
+    monkeypatch.setattr(join_cli, "_post_pair", lambda *_args, **_kwargs: response)
 
 
-def test_short_code_happy_path_writes_peer_bundle(
+def test_pair_link_happy_path_writes_peer_bundle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    _mock_urlopen(monkeypatch, _success_payload(tmp_path))
+    _mock_post_pair(monkeypatch, _pair_response(tmp_path))
 
     result = join_cli.main(_args())
 

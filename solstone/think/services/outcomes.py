@@ -34,7 +34,7 @@ CODES = frozenset(
 
 GUIDANCE: dict[str, str | None] = {
     APPROVED: None,
-    PENDING: "Keep the browser open while the request finishes.",
+    PENDING: "Keep the approval page open while the request finishes.",
     REVOKED: "Consent was not granted. Start a new enable flow when ready.",
     EXPIRED: "This enable link is no longer active. Start a new enable flow.",
     MALFORMED: (

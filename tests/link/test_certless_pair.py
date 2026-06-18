@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from solstone.think.link.auth import AuthorizedClients
-from solstone.think.link.client import _build_csr
+from solstone.think.link.join_cli import _build_csr
 from solstone.think.link.nonces import NonceStore
 from solstone.think.link.paths import authorized_clients_path, nonces_path
 from tests.link.certless_helpers import (

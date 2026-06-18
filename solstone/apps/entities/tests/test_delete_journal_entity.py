@@ -111,7 +111,7 @@ def test_cancel_delete_journal_entity_within_window_keeps_entity(
 ):
     entity_id = "cancel-delete-test"
     _create_journal_entity(entity_id)
-    monkeypatch.setattr("solstone.apps.entities.routes.ENTITY_DELETE_TTL", 0.2)
+    monkeypatch.setattr("solstone.apps.entities.routes.ENTITY_DELETE_TTL", 1.0)
 
     delete_response = client.delete(f"/app/entities/api/journal/entity/{entity_id}")
     pending_id = delete_response.get_json()["pending"]

@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import psutil
@@ -292,6 +293,80 @@ def test_graceful_shutdown_calls_stop_process_for_each_managed_proc(
     assert stop_order == ["spl", "cortex", "sense", "convey"]
 
 
+@pytest.mark.parametrize(
+    ("convey_accepting", "expected_ready"),
+    [(True, True), (False, False)],
+)
+def test_supervisor_readiness_marker_requires_started_convey_accepting(
+    tmp_path, monkeypatch, convey_accepting, expected_ready
+):
+    """A started Convey process must still accept before supervisor marks ready."""
+    mod = importlib.reload(importlib.import_module("solstone.think.supervisor"))
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.delenv("SOL_SUPERVISOR_SPAWNED", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["supervisor", "0", "--no-daily", "--no-schedule"],
+    )
+    monkeypatch.setattr(mod, "run_pending_tasks", lambda *a, **k: (0, 0))
+    monkeypatch.setattr(mod, "_sweep_orphaned_sol_processes", lambda *_a, **_k: 0)
+    monkeypatch.setattr(mod.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(mod, "start_callosum_in_process", lambda: None)
+    monkeypatch.setattr(mod, "stop_callosum_in_process", lambda **_kwargs: None)
+    monkeypatch.setattr(mod, "wait_for_convey_ready", lambda _proc: True)
+    monkeypatch.setattr(mod, "is_solstone_up", lambda timeout=1.0: convey_accepting)
+    monkeypatch.setattr(mod, "is_local_provider_needed", lambda: False)
+    monkeypatch.setattr(mod, "read_service_port", lambda _name: 5015)
+
+    class FakeCallosumConnection:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self, *args, **kwargs):
+            pass
+
+        def emit(self, *args, **kwargs):
+            pass
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(mod, "CallosumConnection", FakeCallosumConnection)
+
+    procs = []
+    for name in ["convey", "sense", "cortex", "spl"]:
+        managed = _TaskManagedStub(cmd=["journal", name])
+        managed.name = name
+        procs.append(managed)
+
+    monkeypatch.setattr(
+        mod,
+        "start_convey_server",
+        lambda verbose, debug=False, port=0: (procs[0], 5015),
+    )
+    monkeypatch.setattr(mod, "start_sense", lambda: procs[1])
+    monkeypatch.setattr(mod, "start_cortex_server", lambda: procs[2])
+    monkeypatch.setattr(mod, "start_spl_service", lambda: procs[3])
+    monkeypatch.setattr(mod, "_stop_process", lambda managed, **_kwargs: None)
+
+    events: list[str] = []
+    monkeypatch.setattr(mod, "signal_ready", lambda: events.append("ready"))
+
+    def interrupt_supervise(coro):
+        coro.close()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(mod.asyncio, "run", interrupt_supervise)
+
+    try:
+        mod.main()
+    finally:
+        os.environ.pop("SOL_SUPERVISOR_SPAWNED", None)
+
+    assert ("ready" in events) is expected_ready
+
+
 def _run_supervisor_main_for_shutdown_knobs(tmp_path, monkeypatch, *, argv):
     mod = importlib.reload(importlib.import_module("solstone.think.supervisor"))
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
@@ -332,7 +407,14 @@ def _run_supervisor_main_for_shutdown_knobs(tmp_path, monkeypatch, *, argv):
 
     class FakeTaskQueue:
         def __init__(self, *args, **kwargs):
-            pass
+            self.caps = {}
+
+        @staticmethod
+        def get_command_name(cmd):
+            return mod._command_partition(cmd)
+
+        def set_cap(self, cmd_name, seconds):
+            self.caps[cmd_name] = seconds
 
         def set_ready(self):
             pass
@@ -856,6 +938,49 @@ def test_scheduler_weekly_cap_registers_under_weekly(monkeypatch):
         queue.set_cap(mod.TaskQueue.get_command_name(cmd), seconds)
 
     assert queue._caps == {"weekly": 60.0}
+
+
+def test_reactive_task_caps_values():
+    mod = importlib.import_module("solstone.think.supervisor")
+
+    assert mod.REACTIVE_TASK_CAPS == {
+        "daily": 21600,
+        "segment": 4500,
+        "indexer": 7200,
+        "importer": 3600,
+    }
+
+
+def test_register_baseline_caps_sets_explicit_caps():
+    mod = importlib.import_module("solstone.think.supervisor")
+    queue = mod.TaskQueue(on_queue_change=None)
+
+    mod.register_baseline_caps(queue)
+
+    backup_partition = mod.TaskQueue.get_command_name(
+        ["journal", "maintenance", "run", "backup:run"]
+    )
+    expected = {
+        "daily": 21600,
+        "segment": 4500,
+        "indexer": 7200,
+        "importer": 3600,
+        backup_partition: 25200,
+    }
+    for name, seconds in expected.items():
+        assert queue._effective_cap(name) == seconds
+        assert queue._effective_cap(name) != mod.DEFAULT_TASK_MAX_RUNTIME
+
+
+def test_from_scratch_reprocess_resolves_to_daily():
+    mod = importlib.import_module("solstone.think.supervisor")
+
+    assert (
+        mod.TaskQueue.get_command_name(
+            ["journal", "think", "-v", "--day", "20260527", "--from-scratch"]
+        )
+        == "daily"
+    )
 
 
 def test_queue_event_carries_mode_partition_name(monkeypatch):
@@ -1464,6 +1589,203 @@ def test_run_task_completes_when_scheduler_writeback_fails(monkeypatch):
     process_next.assert_called_once_with("heartbeat")
 
 
+def test_run_task_records_attempt_and_outcome_on_spawn(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    queue = mod.TaskQueue(on_queue_change=None)
+    callosum = MagicMock()
+    record_attempt = MagicMock()
+    record_outcome = MagicMock(return_value=SimpleNamespace(entered_backoff=False))
+
+    class FakeCallosum:
+        def start(self, callback=None):
+            return None
+
+        def emit(self, *args, **kwargs):
+            return callosum.emit(*args, **kwargs)
+
+        def stop(self):
+            return callosum.stop()
+
+    managed = MagicMock()
+    managed.pid = 12345
+    managed.wait.return_value = 0
+    managed.cleanup = MagicMock()
+
+    def fake_spawn(cmd, *, ref=None, callosum=None, day=None, env=None):
+        managed.cmd = cmd
+        managed.ref = ref
+        return managed
+
+    monkeypatch.setattr(mod, "CallosumConnection", FakeCallosum)
+    monkeypatch.setattr(mod.RunnerManagedProcess, "spawn", fake_spawn)
+    monkeypatch.setattr(mod, "record_attempt", record_attempt)
+    monkeypatch.setattr(mod, "record_outcome", record_outcome)
+    monkeypatch.setattr(queue, "_process_next", MagicMock())
+
+    cmd = ["journal", "think", "-v", "--day", "20250101"]
+    queue._run_task(["ref-1"], cmd, "daily", "20250101")
+
+    record_attempt.assert_called_once()
+    assert record_attempt.call_args.args == (cmd, "20250101", "ref-1")
+    assert isinstance(record_attempt.call_args.kwargs["started_at"], float)
+    record_outcome.assert_called_once()
+    assert record_outcome.call_args.args == (cmd, "20250101", "ref-1")
+    assert record_outcome.call_args.kwargs["exit_status"] == "ok"
+    assert isinstance(record_outcome.call_args.kwargs["ended_at"], float)
+
+
+def test_run_task_spawn_failure_does_not_record_attempt_or_outcome(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    queue = mod.TaskQueue(on_queue_change=None)
+    callosum = MagicMock()
+    record_attempt = MagicMock()
+    record_outcome = MagicMock()
+    process_next = MagicMock()
+
+    class FakeCallosum:
+        def start(self, callback=None):
+            return None
+
+        def emit(self, *args, **kwargs):
+            return callosum.emit(*args, **kwargs)
+
+        def stop(self):
+            return callosum.stop()
+
+    def fake_spawn(cmd, *, ref=None, callosum=None, day=None, env=None):
+        raise RuntimeError("spawn failed")
+
+    monkeypatch.setattr(mod, "CallosumConnection", FakeCallosum)
+    monkeypatch.setattr(mod.RunnerManagedProcess, "spawn", fake_spawn)
+    monkeypatch.setattr(mod, "record_attempt", record_attempt)
+    monkeypatch.setattr(mod, "record_outcome", record_outcome)
+    monkeypatch.setattr(queue, "_process_next", process_next)
+
+    cmd = ["journal", "think", "-v", "--day", "20250101"]
+    queue._run_task(["ref-1"], cmd, "daily", "20250101")
+
+    record_attempt.assert_not_called()
+    record_outcome.assert_not_called()
+    callosum.stop.assert_called_once()
+    process_next.assert_called_once_with("daily")
+
+
+def test_submit_coalesce_does_not_record_attempt(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    queue = mod.TaskQueue(on_queue_change=None)
+    monkeypatch.setattr(mod, "record_attempt", MagicMock())
+    _capture_thread_starts(monkeypatch, mod)
+    cmd = ["journal", "think", "-v", "--day", "20250101"]
+
+    queue.submit(cmd, ref="running", day="20250101")
+    queue.submit(cmd, ref="queued", day="20250101")
+    queue.submit(cmd, ref="coalesced", day="20250101")
+
+    mod.record_attempt.assert_not_called()
+    assert queue._queues["daily"][0]["refs"] == ["queued", "coalesced"]
+
+
+def test_handle_task_request_skip_does_not_record(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    queue = mod.TaskQueue(on_queue_change=None)
+    managed = _TaskManagedStub(
+        cmd=["journal", "importer", "--sync", "plaud"], start_time=100.0
+    )
+    queue._active["active-ref"] = managed
+    queue.set_cap("importer", 50)
+
+    monkeypatch.setattr(mod, "_task_queue", queue)
+    monkeypatch.setattr(mod, "_supervisor_callosum", MagicMock())
+    monkeypatch.setattr(mod, "record_attempt", MagicMock())
+    monkeypatch.setattr(mod.time, "time", lambda: 150.0)
+
+    mod._handle_task_request(
+        {
+            "tract": "supervisor",
+            "event": "request",
+            "cmd": ["journal", "importer", "--sync", "plaud"],
+            "ref": "requested-ref",
+        }
+    )
+
+    mod.record_attempt.assert_not_called()
+
+
+def test_run_task_emits_backoff_notification_once(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    queue = mod.TaskQueue(on_queue_change=None)
+    callosum = MagicMock()
+
+    class FakeCallosum:
+        def start(self, callback=None):
+            return None
+
+        def emit(self, *args, **kwargs):
+            return callosum.emit(*args, **kwargs)
+
+        def stop(self):
+            return callosum.stop()
+
+    managed = MagicMock()
+    managed.pid = 12345
+    managed.wait.return_value = 0
+    managed.cleanup = MagicMock()
+
+    def fake_spawn(cmd, *, ref=None, callosum=None, day=None, env=None):
+        managed.cmd = cmd
+        managed.ref = ref
+        return managed
+
+    monkeypatch.setattr(mod, "CallosumConnection", FakeCallosum)
+    monkeypatch.setattr(mod.RunnerManagedProcess, "spawn", fake_spawn)
+    monkeypatch.setattr(mod, "record_attempt", MagicMock())
+    record_outcome = MagicMock(
+        return_value=SimpleNamespace(
+            entered_backoff=True,
+            day="20250101",
+            attempts=3,
+            consecutive_non_completion=3,
+            last_outcome="timeout",
+        )
+    )
+    monkeypatch.setattr(mod, "record_outcome", record_outcome)
+    monkeypatch.setattr(queue, "_process_next", MagicMock())
+    cmd = ["journal", "think", "-v", "--day", "20250101"]
+
+    queue._run_task(["ref-1"], cmd, "daily", "20250101")
+
+    emitted = [call_args.args[:2] for call_args in callosum.emit.call_args_list]
+    assert ("storage", "warning") in emitted
+    assert ("notification", "show") in emitted
+
+    callosum.emit.reset_mock()
+    record_outcome.return_value = SimpleNamespace(entered_backoff=False)
+    queue._run_task(["ref-2"], cmd, "daily", "20250101")
+
+    emitted = [call_args.args[:2] for call_args in callosum.emit.call_args_list]
+    assert ("storage", "warning") not in emitted
+    assert ("notification", "show") not in emitted
+
+
+def test_startup_catchup_drain_reconciles_before_drain(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    order = []
+
+    def reconcile():
+        order.append("reconcile")
+        return []
+
+    def drain():
+        order.append("drain")
+
+    monkeypatch.setattr(mod, "reconcile_interrupted_attempts", reconcile)
+    monkeypatch.setattr(mod, "run_catchup_drain", drain)
+
+    mod._startup_catchup_drain()
+
+    assert order == ["reconcile", "drain"]
+
+
 def test_record_scheduler_completion_serializes_concurrent_writes(
     tmp_path, monkeypatch
 ):
@@ -1663,7 +1985,7 @@ def test_enforce_deadlines_terminates_when_elapsed_exceeds_cap(caplog, monkeypat
     ) in caplog.text
 
 
-def test_collect_task_status_no_cap(monkeypatch):
+def test_collect_task_status_reports_default_cap(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     queue = mod.TaskQueue(on_queue_change=None)
     managed = _TaskManagedStub(cmd=["journal", "providers"], start_time=100.0)
@@ -1675,7 +1997,8 @@ def test_collect_task_status_no_cap(monkeypatch):
             "ref": "ref-1",
             "name": "providers",
             "duration_seconds": 12,
-            "max_runtime_seconds": None,
+            "max_runtime_seconds": mod.DEFAULT_TASK_MAX_RUNTIME,
+            "slow": False,
             "stuck": False,
         }
     ]
@@ -1692,6 +2015,22 @@ def test_collect_task_status_under_cap(monkeypatch):
     status = queue.collect_task_status()
 
     assert status[0]["max_runtime_seconds"] == 300
+    assert status[0]["slow"] is False
+    assert status[0]["stuck"] is False
+
+
+def test_collect_task_status_slow_under_cap(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    queue = mod.TaskQueue(on_queue_change=None)
+    managed = _TaskManagedStub(cmd=["journal", "providers"], start_time=100.0)
+    queue._active["ref-1"] = managed
+    queue.set_cap("providers", 15)
+    monkeypatch.setattr(mod.time, "time", lambda: 112.0)
+
+    status = queue.collect_task_status()
+
+    assert status[0]["max_runtime_seconds"] == 15
+    assert status[0]["slow"] is True
     assert status[0]["stuck"] is False
 
 
@@ -1706,6 +2045,22 @@ def test_collect_task_status_over_cap(monkeypatch):
     status = queue.collect_task_status()
 
     assert status[0]["max_runtime_seconds"] == 5
+    assert status[0]["slow"] is True
+    assert status[0]["stuck"] is True
+
+
+def test_collect_task_status_default_cap_stuck(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    queue = mod.TaskQueue(on_queue_change=None)
+    managed = _TaskManagedStub(cmd=["journal", "providers"], start_time=100.0)
+    queue._active["ref-1"] = managed
+    monkeypatch.setattr(
+        mod.time, "time", lambda: 100.0 + mod.DEFAULT_TASK_MAX_RUNTIME + 5
+    )
+
+    status = queue.collect_task_status()
+
+    assert status[0]["max_runtime_seconds"] == mod.DEFAULT_TASK_MAX_RUNTIME
     assert status[0]["stuck"] is True
 
 
@@ -1766,15 +2121,23 @@ def test_terminate_managed_logs_timeout(caplog):
     assert "task did not terminate within 3.0s for test" in caplog.text
 
 
-def test_enforce_deadlines_noop_when_no_cap():
+def test_enforce_deadlines_terminates_uncapped_at_default(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     queue = mod.TaskQueue(on_queue_change=None)
     managed = _TaskManagedStub(cmd=["sol", "import"], start_time=100.0)
     queue._active["ref-1"] = managed
 
-    queue.enforce_deadlines(10_000.0)
+    def terminate_now(key, managed_arg, timeout, reason):
+        assert key == "ref-1"
+        assert managed_arg is managed
+        assert timeout == 2.0
+        assert reason == "cap"
+        managed_arg.terminate(timeout=timeout)
 
-    managed.terminate.assert_not_called()
+    monkeypatch.setattr(mod, "_start_termination_thread", terminate_now)
+    queue.enforce_deadlines(100.0 + mod.DEFAULT_TASK_MAX_RUNTIME + 1)
+
+    managed.terminate.assert_called_once_with(timeout=2.0)
 
 
 def test_restart_service_uses_single_termination_path(monkeypatch):
@@ -2016,7 +2379,7 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
             "--n-gpu-layers",
             "999",
             "-c",
-            "16384",
+            str(local_server.LOCAL_SERVER_CONTEXT_TOKENS),
             "--device",
             "Vulkan0",
             "--mmproj",

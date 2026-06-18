@@ -12,31 +12,31 @@
   const CHAT_REASONS = Object.freeze({
     "provider_key_missing": {
       "template": "{provider} needs credentials before it can read your screen descriptions",
-      "action": {"label": "Open Settings", "href": "/app/thinking/#providers"}
+      "action": {"label": "Open Settings", "href": "/app/thinking/#main"}
     },
     "ram_insufficient": {
       "template": "the local model needs more memory than this machine has",
-      "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#providers"}
+      "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#local-setup"}
     },
     "gpu_unavailable": {
       "template": "local models need GPU acceleration on this computer",
-      "action": {"label": "Open Settings", "href": "/app/thinking/#providers"}
+      "action": {"label": "Open Settings", "href": "/app/thinking/#main"}
     },
     "gpu_probe_failed": {
       "template": "local GPU check couldn't finish",
-      "action": {"label": "Open Settings", "href": "/app/thinking/#providers"}
+      "action": {"label": "Open Settings", "href": "/app/thinking/#main"}
     },
     "local_model_missing": {
       "template": "local model setup is not finished",
-      "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#providers"}
+      "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#local-setup"}
     },
     "model_missing": {
       "template": "local model setup is not finished",
-      "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#providers"}
+      "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#local-setup"}
     },
     "binary_missing": {
       "template": "local model setup is not finished",
-      "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#providers"}
+      "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#local-setup"}
     },
     "local_model_installing": {
       "template": "local model setup is finishing",
@@ -52,35 +52,35 @@
     },
     "local_server_unhealthy": {
       "template": "the local model isn't responding",
-      "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#providers"}
+      "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#local-setup"}
     },
     "local_endpoint_unreachable": {
       "template": "The inference endpoint you configured could not be reached.",
-      "action": {"label": "Open Settings", "href": "/app/thinking/#providers"}
+      "action": {"label": "Open Settings", "href": "/app/thinking/#main"}
     },
     "local_endpoint_contract_failed": {
       "template": "The configured endpoint did not respond in the expected format.",
-      "action": {"label": "Open Settings", "href": "/app/thinking/#providers"}
+      "action": {"label": "Open Settings", "href": "/app/thinking/#main"}
     },
     "unsupported_platform": {
       "template": "this machine is not supported for local model setup",
-      "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#providers"}
+      "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#local-setup"}
     },
     "unsupported_model": {
       "template": "this local model is not supported",
-      "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#providers"}
+      "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#local-setup"}
     },
     "sha256_mismatch": {
       "template": "local model setup could not be verified",
-      "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#providers"}
+      "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#local-setup"}
     },
     "archive_path_traversal": {
       "template": "local model setup could not be verified",
-      "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#providers"}
+      "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#local-setup"}
     },
     "provider_key_invalid": {
       "template": "your {provider} key didn't validate",
-      "action": {"label": "Open Settings", "href": "/app/thinking/#providers"}
+      "action": {"label": "Open Settings", "href": "/app/thinking/#main"}
     },
     "provider_quota_exceeded": {
       "template": "your {provider} quota is spent",
@@ -120,6 +120,10 @@
     },
     "token_budget_exceeded": {
       "template": "this run reached its resource budget before finishing",
+      "action": null
+    },
+    "wall_clock_exceeded": {
+      "template": "this run took too long to finish",
       "action": null
     },
     "unknown": {

@@ -278,7 +278,6 @@ def _setup_config(journal_root: Path) -> None:
             "retention": {"days": 30},
             "convey": {
                 "allow_network_access": False,
-                "trust_localhost": True,
                 "secret": "shhh",
             },
             "env": {"API_KEY": "xyz"},

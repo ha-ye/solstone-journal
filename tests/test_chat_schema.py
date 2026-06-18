@@ -19,3 +19,10 @@ def test_chat_schema_has_no_offer_affordance() -> None:
 
     assert "offer" not in schema["properties"]
     assert "offer" not in schema["required"]
+
+
+def test_chat_schema_has_no_draft_affordance() -> None:
+    schema = _load_chat_schema()
+
+    assert "draft" not in schema["properties"]
+    assert "draft" not in schema["required"]

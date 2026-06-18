@@ -360,6 +360,33 @@ def test_scan_journal(journal_fixture):
     assert index_path.exists()
 
 
+def test_known_agents_returns_indexed_agents(journal_fixture):
+    """known_agents() returns distinct non-empty lowercase agent names."""
+    import solstone.think.utils as think_utils
+    from solstone.think.indexer.journal import known_agents, scan_journal
+
+    think_utils._journal_path_cache = None
+    scan_journal(str(journal_fixture), full=True)
+    agents = known_agents()
+    assert agents  # non-empty
+    assert "flow" in agents
+    assert all(a and a == a.lower() for a in agents)
+
+
+def test_known_agents_empty_on_unscanned_journal(tmp_path, monkeypatch):
+    """A fresh journal with no built index yields an empty set."""
+    from solstone.think.indexer.journal import known_agents
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    import solstone.think.utils as think_utils
+
+    think_utils._journal_path_cache = None
+    try:
+        assert known_agents() == set()
+    finally:
+        think_utils._journal_path_cache = None
+
+
 def test_search_journal_outputs(journal_fixture):
     """Test searching returns agent output chunks."""
     from solstone.think.indexer.journal import scan_journal, search_journal

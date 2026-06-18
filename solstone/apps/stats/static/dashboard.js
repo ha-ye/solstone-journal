@@ -976,12 +976,12 @@ const Dashboard = (function() {
   return {
     load: function(url) {
       fetch(url, {
-        credentials: 'same-origin'  // Include cookies for authentication
+        credentials: 'same-origin'
       })
         .then(response => {
           if (!response.ok) {
             if (response.status === 401 || response.redirected) {
-              // Redirected to login, reload the page
+              // Access changed while viewing the dashboard; reload the page.
               window.location.reload();
               return;
             }

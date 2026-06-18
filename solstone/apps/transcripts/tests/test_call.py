@@ -9,18 +9,19 @@ from typer.testing import CliRunner
 
 from solstone.apps.transcripts.call import app
 from solstone.think.convey_client import ConveyClient
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client, mark_setup_complete
 
 
 @pytest.fixture
 def journal(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    mark_setup_complete(tmp_path)
     return tmp_path
 
 
 @pytest.fixture
 def runner(journal, monkeypatch):
-    client = ConveyClient(session=make_logged_in_test_client(journal), base_url="")
+    client = ConveyClient(session=make_test_client(journal), base_url="")
     monkeypatch.setattr("solstone.apps.transcripts.call.get_client", lambda: client)
     return CliRunner()
 
@@ -52,7 +53,7 @@ def _write_segment(
 
 
 def _route_markdown(journal, day: str, params: dict[str, str]) -> str:
-    client = ConveyClient(session=make_logged_in_test_client(journal), base_url="")
+    client = ConveyClient(session=make_test_client(journal), base_url="")
     return client.request("GET", f"/app/transcripts/api/read/{day}", params=params)[
         "markdown"
     ]
@@ -187,10 +188,6 @@ def test_read_default_matches_route_markdown(runner, journal):
             ],
             "Error: Cannot mix --segment, --segments, and --start/--length.\n",
         ),
-        (
-            ["read", "20990107", "--start", "090000"],
-            "Error: --start and --length must be used together.\n",
-        ),
     ],
 )
 def test_read_cli_side_validation_errors_byte_exact(runner, args, stderr):
@@ -199,6 +196,48 @@ def test_read_cli_side_validation_errors_byte_exact(runner, args, stderr):
     assert result.exit_code == 1
     assert result.stderr == stderr
     assert result.stdout == ""
+
+
+def test_read_start_alone_routes_range_read(runner, journal):
+    day = "20990107"
+    _write_segment(journal, day, "090000_300", audio_jsonl=True)
+    expected = _route_markdown(
+        journal,
+        day,
+        {
+            "transcripts": "1",
+            "percepts": "0",
+            "agents": "1",
+            "start": "000000",
+            "end": "235959",
+        },
+    )
+
+    result = runner.invoke(app, ["read", day, "--start", "000000"])
+
+    assert result.exit_code == 0
+    assert result.stdout == expected + "\n"
+
+
+def test_read_length_alone_routes_from_midnight(runner, journal):
+    day = "20990107"
+    _write_segment(journal, day, "090000_300", audio_jsonl=True)
+    expected = _route_markdown(
+        journal,
+        day,
+        {
+            "transcripts": "1",
+            "percepts": "0",
+            "agents": "1",
+            "start": "000000",
+            "end": "003000",
+        },
+    )
+
+    result = runner.invoke(app, ["read", day, "--length", "30"])
+
+    assert result.exit_code == 0
+    assert result.stdout == expected + "\n"
 
 
 def test_read_truncation_reports_exact_byte_counts(runner, journal):

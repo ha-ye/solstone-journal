@@ -187,13 +187,14 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Observations (`observations.jsonl`) | `solstone/think/entities/observations.py` |
 | Activities (`facets/*/activities/*.jsonl`) | `solstone/think/activities.py` |
 | Timeline (`chronicle/<day>/timeline.json`, `chronicle/**/<seg>/timeline.json`, root `timeline.json`) | `solstone/apps/timeline/maintenance.py` + `solstone/apps/timeline/talent/segment_summary.py` |
-| Per-segment sense outputs (`chronicle/**/<seg>/talents/{sense.json,facets.json,speakers.json,density.json,activity.md,sense.md}`) | `solstone/think/sense_splitter.py` |
+| Per-segment sense outputs (`chronicle/**/<seg>/talents/{sense.json,facets.json,speakers.json,density.json,change.json,activity.md,sense.md}`) | `solstone/think/sense_splitter.py` |
 | Awareness (`awareness/current.json`, `awareness/YYYYMMDD.jsonl`) | `solstone/think/awareness.py` |
 | Awareness activity state (`awareness/activity_state.json`) | `solstone/think/thinking.py` |
 | Identity (`identity/*.md`, `identity/history.jsonl` audit log) | `solstone/think/identity.py` |
 | Todos (`facets/*/todos/*.jsonl`) | `solstone/apps/todos/todo.py` |
 | Chronicle chat stream (`chronicle/**/chat/<seg>/chat.jsonl`) | `solstone/convey/chat_stream.py` |
 | Day talent-output accumulator (`chronicle/<day>/talents/<name>.jsonl`) | `solstone/think/day_accumulator.py` |
+| Talent provenance sidecars (`chronicle/<day>/health/talent-provenance/**`) | `solstone/think/talent_provenance.py` |
 | Config (`config/journal.json`) | `solstone/think/journal_config.py` |
 | Schedules (`config/schedules.json`) | `solstone/think/schedule_config.py` |
 | Push devices (`config/push_devices.json`) | `solstone/think/push/devices.py` |

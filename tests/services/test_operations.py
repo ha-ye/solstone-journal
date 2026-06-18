@@ -31,16 +31,18 @@ def test_start_operation_raises_busy_for_same_service() -> None:
     started = threading.Event()
     release = threading.Event()
 
-    def flow(_open_browser):
+    def flow():
         started.set()
         release.wait(2)
-        return operations.HandoffResult("enabled", None, False, True, None)
+        return operations.HandoffResult("enabled", None, False)
 
-    operations.start_operation("scout", "enable", flow)
+    operations.start_operation("scout", "enable", "https://portal.test/scout", flow)
     _wait_until(started.is_set)
 
     with pytest.raises(operations.OperationBusyError):
-        operations.start_operation("scout", "refresh", flow)
+        operations.start_operation(
+            "scout", "refresh", "https://portal.test/scout", flow
+        )
 
     release.set()
 
@@ -50,18 +52,20 @@ def test_different_services_can_run_concurrently() -> None:
     spl_started = threading.Event()
     release = threading.Event()
 
-    def scout_flow(_open_browser):
+    def scout_flow():
         scout_started.set()
         release.wait(2)
-        return operations.HandoffResult("enabled", None, False, True, None)
+        return operations.HandoffResult("enabled", None, False)
 
-    def spl_flow(_open_browser):
+    def spl_flow():
         spl_started.set()
         release.wait(2)
-        return operations.HandoffResult("enabled", None, False, True, None)
+        return operations.HandoffResult("enabled", None, False)
 
-    operations.start_operation("scout", "enable", scout_flow)
-    operations.start_operation("spl", "spl_enable", spl_flow)
+    operations.start_operation(
+        "scout", "enable", "https://portal.test/scout", scout_flow
+    )
+    operations.start_operation("spl", "spl_enable", "https://portal.test/spl", spl_flow)
 
     _wait_until(scout_started.is_set)
     _wait_until(spl_started.is_set)
@@ -74,9 +78,8 @@ def test_sweep_drops_completed_entry_after_grace(
     operations.start_operation(
         "scout",
         "enable",
-        lambda _open_browser: operations.HandoffResult(
-            "enabled", None, False, True, None
-        ),
+        "https://portal.test/scout",
+        lambda: operations.HandoffResult("enabled", None, False),
     )
     _wait_until(lambda: operations.operation_for_service("scout")["phase"] == "enabled")
 
@@ -86,10 +89,10 @@ def test_sweep_drops_completed_entry_after_grace(
 
 
 def test_flow_exception_becomes_retryable_error() -> None:
-    def fail(_open_browser):
+    def fail():
         raise RuntimeError("boom")
 
-    operations.start_operation("scout", "enable", fail)
+    operations.start_operation("scout", "enable", "https://portal.test/scout", fail)
 
     def is_error() -> bool:
         operation = operations.operation_for_service("scout")
@@ -98,17 +101,15 @@ def test_flow_exception_becomes_retryable_error() -> None:
     _wait_until(is_error)
     operation = operations.operation_for_service("scout")
     assert operation["retryable"] is True
-    assert operation["browser_open_succeeded"] is None
-    assert operation["portal_url"] is None
+    assert operation["portal_url"] == "https://portal.test/scout"
 
 
 def test_clear_registry_empties_entries() -> None:
     operations.start_operation(
         "scout",
         "enable",
-        lambda _open_browser: operations.HandoffResult(
-            "enabled", None, False, True, None
-        ),
+        "https://portal.test/scout",
+        lambda: operations.HandoffResult("enabled", None, False),
     )
     _wait_until(lambda: operations.operation_for_service("scout") is not None)
 

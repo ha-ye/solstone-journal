@@ -20,7 +20,6 @@ from solstone.convey.sol_initiated.settings import load_settings
 def _base_config() -> dict:
     return {
         "setup": {"completed_at": "2026-05-09T00:00:00Z"},
-        "convey": {"trust_localhost": True},
     }
 
 

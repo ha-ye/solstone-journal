@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 import solstone.think.deferred_deletes as deferred_deletes
 from solstone.apps.entities.copy import entities_copy_payload
+from solstone.apps.entities.talent.entity_digest import assemble_facet_day_digest
 from solstone.apps.utils import log_app_action
 from solstone.convey import state
 from solstone.convey.reasons import (
@@ -244,6 +245,19 @@ def get_detected_entities(facet_name: str) -> Any:
     if not day:
         return error_response(MISSING_REQUIRED_FIELD, detail="day is required")
     return respond_collection(load_entities(facet_name, day))
+
+
+@entities_bp.route("/api/<facet_name>/digest", methods=["GET"])
+def get_facet_day_digest(facet_name: str) -> Any:
+    """Return deterministic digest evidence for one facet day."""
+    day = request.args.get("day", "")
+    if not day:
+        return error_response(MISSING_REQUIRED_FIELD, detail="day is required")
+    return jsonify(
+        content=assemble_facet_day_digest(facet_name, day),
+        facet=facet_name,
+        day=day,
+    )
 
 
 @entities_bp.route("/api/<facet_name>/detected", methods=["POST"])

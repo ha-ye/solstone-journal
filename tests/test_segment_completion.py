@@ -305,6 +305,29 @@ def test_read_segment_progress_tracks_latest_sense_density(segment_journal):
     assert read_segment_progress(DAY)[(None, SEGMENT)].density == "idle"
 
 
+def test_read_segment_progress_captures_change_class(segment_journal):
+    _write_health(
+        segment_journal,
+        DAY,
+        "001_segment.jsonl",
+        [
+            _sense_complete(SEGMENT, "active", 1, stream=STREAM),
+            _segment_event(
+                "sense.change_detect",
+                SEGMENT,
+                ts=2,
+                stream=STREAM,
+                change_class="redundant",
+            ),
+        ],
+    )
+
+    progress = read_segment_progress(DAY)[(STREAM, SEGMENT)]
+
+    assert progress.change_class == "redundant"
+    assert segment_fully_thought(progress) == (True, None)
+
+
 def test_stream_keyed_progress_separates_duplicate_segment_ids(segment_journal):
     day = "20990408"
     _seed_segment(segment_journal, day, SEGMENT, stream="alpha")
@@ -461,6 +484,20 @@ def test_segment_fully_thought_idle_short_circuits():
     progress = SegmentProgress(
         sensed=True,
         density="idle",
+        change_class=None,
+        dispatched=frozenset({"sense"}),
+        completed=frozenset({"sense"}),
+        unconfigured=frozenset(),
+    )
+
+    assert segment_fully_thought(progress) == (True, None)
+
+
+def test_segment_fully_thought_redundant_short_circuits():
+    progress = SegmentProgress(
+        sensed=True,
+        density="active",
+        change_class="redundant",
         dispatched=frozenset({"sense"}),
         completed=frozenset({"sense"}),
         unconfigured=frozenset(),
@@ -473,6 +510,7 @@ def test_segment_fully_thought_requires_floor_after_sense():
     progress = SegmentProgress(
         sensed=True,
         density="active",
+        change_class=None,
         dispatched=frozenset({"sense"}),
         completed=frozenset({"sense"}),
         unconfigured=frozenset(),
@@ -502,6 +540,7 @@ def test_segment_fully_thought_does_not_require_rolling_talents():
     progress = SegmentProgress(
         sensed=True,
         density="active",
+        change_class=None,
         dispatched=frozenset({"sense", "entities", "documents"}),
         completed=frozenset({"sense", "entities", "documents"}),
         unconfigured=frozenset(),
@@ -514,6 +553,7 @@ def test_segment_fully_thought_allows_unconfigured_floor_talent():
     progress = SegmentProgress(
         sensed=True,
         density="active",
+        change_class=None,
         dispatched=frozenset({"sense", "documents"}),
         completed=frozenset({"sense", "documents"}),
         unconfigured=frozenset({"entities"}),
@@ -526,6 +566,7 @@ def test_segment_fully_thought_requires_dispatched_completion():
     progress = SegmentProgress(
         sensed=True,
         density="active",
+        change_class=None,
         dispatched=frozenset({"sense", "entities", "documents", "screen"}),
         completed=frozenset({"sense", "entities", "documents"}),
         unconfigured=frozenset(),

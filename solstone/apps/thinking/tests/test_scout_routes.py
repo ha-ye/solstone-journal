@@ -32,6 +32,7 @@ def _read_config(journal: Path) -> dict:
 
 
 def _write_config(payload: dict) -> None:
+    payload.setdefault("setup", {"completed_at": 1700000000000})
     write_journal_config(payload)
 
 
@@ -48,9 +49,6 @@ def thinking_client(journal_copy: Path):
     app = create_app(journal=str(journal_copy.resolve()))
     app.config["TESTING"] = True
     client = app.test_client()
-    with client.session_transaction() as session:
-        session["logged_in"] = True
-        session.permanent = True
     return client
 
 
@@ -118,7 +116,7 @@ def test_enable_success_remaps_terminal_phase_and_reads_enabled_state(
 ) -> None:
     def runner(**_kwargs):
         scout.provision_scout_handoff(_approved_payload())
-        return operations.HandoffResult("enabled", None, False, True, None)
+        return operations.HandoffResult("enabled", None, False)
 
     monkeypatch.setattr(scout_handoff, "run_scout_handoff", runner)
 
@@ -169,7 +167,7 @@ def test_refresh_allowed_only_when_requested_or_on(
     monkeypatch.setattr(
         scout_handoff,
         "run_scout_handoff",
-        lambda **_kwargs: operations.HandoffResult("pending", None, False, True, None),
+        lambda **_kwargs: operations.HandoffResult("pending", None, False),
     )
 
     off_response = thinking_client.post("/app/thinking/api/scout/refresh")
@@ -190,7 +188,7 @@ def test_service_busy_for_second_scout_operation(
     def runner(**_kwargs):
         started.set()
         release.wait(2)
-        return operations.HandoffResult("enabled", None, False, True, None)
+        return operations.HandoffResult("enabled", None, False)
 
     monkeypatch.setattr(scout_handoff, "run_scout_handoff", runner)
 
@@ -300,8 +298,6 @@ def test_terminal_phase_remap(
             raw_phase,
             "next step",
             raw_phase == "error",
-            True,
-            None,
         ),
     )
 

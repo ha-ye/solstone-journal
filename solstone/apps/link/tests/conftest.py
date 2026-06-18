@@ -9,6 +9,16 @@ import json
 
 import pytest
 
+from solstone.think.link.local_endpoints import LocalEndpoint
+
+
+class _StubWatcher:
+    def __init__(self, endpoints: list[LocalEndpoint]) -> None:
+        self._endpoints = endpoints
+
+    def snapshot(self) -> list[LocalEndpoint]:
+        return list(self._endpoints)
+
 
 @pytest.fixture
 def link_env(tmp_path, monkeypatch):
@@ -19,6 +29,7 @@ def link_env(tmp_path, monkeypatch):
         posture: str | None = None,
         totp_secret: str | None = None,
         provision: bool = True,
+        local_endpoints: list[LocalEndpoint] | None = None,
     ):
         journal = tmp_path / "journal"
         journal.mkdir(exist_ok=True)
@@ -27,7 +38,6 @@ def link_env(tmp_path, monkeypatch):
         config_dir.mkdir(parents=True, exist_ok=True)
         config_file = config_dir / "journal.json"
         config = {
-            "convey": {"trust_localhost": True},
             "setup": {"completed_at": 1700000000000},
         }
         if posture is not None:
@@ -50,6 +60,18 @@ def link_env(tmp_path, monkeypatch):
 
         app = create_app(journal=str(journal))
         client = app.test_client()
+        endpoints = (
+            [LocalEndpoint(ip="192.168.1.50", port=7657, scope="lan")]
+            if local_endpoints is None
+            else list(local_endpoints)
+        )
+        from solstone.apps.link import routes as link_routes
+
+        monkeypatch.setattr(
+            link_routes,
+            "get_interface_watcher",
+            lambda: _StubWatcher(endpoints),
+        )
 
         class Env:
             def __init__(self):

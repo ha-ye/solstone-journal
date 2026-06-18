@@ -44,6 +44,7 @@ DETERMINISTIC_FAILURE_REASON_CODES = frozenset(
         "max_turns_exhausted",
         "no_output",
         "token_budget_exceeded",
+        "wall_clock_exceeded",
     }
 )
 

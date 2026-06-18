@@ -233,22 +233,21 @@ def read(
         )
         raise typer.Exit(1)
 
-    if (start is not None) != (length is not None):
-        typer.echo("Error: --start and --length must be used together.", err=True)
-        raise typer.Exit(1)
-
     params: dict[str, str] = {
         "transcripts": "1" if sources["transcripts"] else "0",
         "percepts": "1" if sources["percepts"] else "0",
         "agents": "1" if sources["agents"] else "0",
     }
-    if start is not None and length is not None:
+    if start is not None or length is not None:
         from datetime import datetime, timedelta
 
-        start_dt = datetime.strptime(start, "%H%M%S")
-        end_dt = start_dt + timedelta(minutes=length)
-        params["start"] = start
-        params["end"] = end_dt.strftime("%H%M%S")
+        effective_start = start if start is not None else "000000"
+        if length is not None:
+            start_dt = datetime.strptime(effective_start, "%H%M%S")
+            params["end"] = (start_dt + timedelta(minutes=length)).strftime("%H%M%S")
+        else:
+            params["end"] = "235959"
+        params["start"] = effective_start
     elif segments is not None:
         params["segments"] = segments
         if stream:

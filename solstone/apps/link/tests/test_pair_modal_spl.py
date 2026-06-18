@@ -38,14 +38,17 @@ def test_spl_pair_modal_is_qr_only_with_rotation_affordance(link_env) -> None:
     assert pair_script.count("5 * 60 * 1000") == 1
 
 
-def test_direct_pair_modal_keeps_manual_code_and_expired_copy(link_env) -> None:
+def test_direct_pair_modal_keeps_network_and_expired_copy(
+    link_env,
+) -> None:
     env = link_env()
 
     response = env.client.get("/app/link/")
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)
-    assert 'id="link-pair-manual-code"' in body
+    assert 'id="link-pair-manual-code"' not in body
+    assert copy.PAIR_NETWORK_LINE in body
     assert copy.EXPIRED_BUTTON in body
     assert copy.PAIR_ROTATE_NOTE not in body
     assert 'const LINK_POSTURE = "direct";' in body

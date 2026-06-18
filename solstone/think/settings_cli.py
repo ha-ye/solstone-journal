@@ -8,26 +8,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import Any
 
 from solstone.convey.cli import _resolve_bind_host
 from solstone.convey.copy import format_convey_status
 from solstone.think.pairing.config import get_host_url
 from solstone.think.service import DEFAULT_SERVICE_PORT
 from solstone.think.utils import (
-    get_config,
     read_service_port,
     setup_cli,
 )
-
-
-def _trust_localhost_enabled(config: dict[str, Any]) -> bool:
-    return bool(config.get("convey", {}).get("trust_localhost", True))
-
-
-def _convey_password_is_set(config: dict[str, Any]) -> bool:
-    password_hash = config.get("convey", {}).get("password_hash", "")
-    return bool(str(password_hash or "").strip())
 
 
 def _host_url_status_value() -> str:
@@ -38,17 +27,15 @@ def _convey_port() -> int:
     return read_service_port("convey") or DEFAULT_SERVICE_PORT
 
 
-def _status_payload(config: dict[str, Any]) -> dict[str, Any]:
+def _status_payload() -> dict[str, str]:
     return {
         "effective_host_url": get_host_url(),
-        "password_configured": _convey_password_is_set(config),
     }
 
 
 def _print_status(*, as_json: bool) -> None:
-    config = get_config()
     if as_json:
-        print(json.dumps(_status_payload(config), indent=2))
+        print(json.dumps(_status_payload(), indent=2))
         return
 
     bind_host = _resolve_bind_host()
@@ -57,8 +44,6 @@ def _print_status(*, as_json: bool) -> None:
         format_convey_status(
             bind=f"{bind_host}:{port}",
             host_url=_host_url_status_value(),
-            password="set" if _convey_password_is_set(config) else "not set",
-            trust_localhost="yes" if _trust_localhost_enabled(config) else "no",
         )
     )
 

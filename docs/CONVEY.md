@@ -16,19 +16,9 @@ Run the server with:
 convey
 ```
 
-### Authentication
-
-Password authentication is configured from Settings → Security. For headless setups, use the CLI:
-
-```bash
-journal password set
-```
-
-When a password is set, it is stored as a secure hash in `config/journal.json` under `convey.password_hash`.
-
 ## Architecture
 
-Convey uses an **app plugin system** where all functional views are implemented as independent apps in the `/apps/` directory. The core `solstone/convey/` package provides authentication, WebSocket communication, and the app loading infrastructure.
+Convey uses an **app plugin system** where all functional views are implemented as independent apps in the `/apps/` directory. The core `solstone/convey/` package provides access gating, WebSocket communication, and the app loading infrastructure.
 
 ```
 convey/
@@ -36,14 +26,11 @@ convey/
   state.py           - global state (journal_root)
   bridge.py          - Callosum WebSocket bridge for real-time events
   utils.py           - shared helpers (format_date, spawn_agent, etc.)
-  views/
-      __init__.py    - blueprint registration
-      home.py        - authentication (login/logout) and root redirect
+  root.py            - access gate, setup routes, and root redirect
   templates/
       app.html       - main app container template
       menu_bar.html  - dynamic left sidebar menu
       status_pane.html - WebSocket status indicator
-      login.html     - login page
       macros.html    - Jinja macros
   static/            - shared CSS and JavaScript
       app.css        - app system styles
@@ -73,11 +60,9 @@ Browse `/apps/` to see available apps.
 
 ### Core Routes
 
-The `solstone/convey/views/home.py` module provides essential routes:
+The `solstone/convey/root.py` module provides essential routes:
 
 - `/` - Redirects to `/app/home/`
-- `/login` - Authentication page
-- `/logout` - Clear session and redirect to login
 - `/favicon.ico` - Serve favicon
 
 All functional views are accessed at `/app/{name}/` URLs.
@@ -123,7 +108,7 @@ from a client-supplied field. Key-based ingest authenticates with an
 `Authorization: Bearer` header — never a key in the URL path — and derives its
 storage scope from the authenticated record; a scope id in the URL is an assertion
 to check against that record, not an input. Any key-authenticated route must be in
-the `require_login` allowlist.
+the `require_access` allowlist.
 
 **Pagination.** Use `parse_pagination_params()` (offset/limit, max 100) or a cursor;
 no list endpoint returns an unbounded full array.

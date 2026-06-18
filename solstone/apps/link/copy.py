@@ -5,20 +5,12 @@
 
 from __future__ import annotations
 
-from solstone.think.link.nonces import NONCE_TTL_SECONDS
-
 PAIR_LINK_HOST = "go.solstone.app"
 PAIR_LINK_PATH = "/p"
-MANUAL_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"  # Crockford base32.
-MANUAL_CODE_LEN = 8
-MANUAL_CODE_GROUP = 4
-PAIR_CODE_TTL_SECONDS = NONCE_TTL_SECONDS
-CLI_MANUAL_CODE_LABEL = "manual code"
 MODAL_TITLE = "pair a device"
 STEP_1 = "open the camera on the device you're adding"
 STEP_2 = "point it at this code"
 STEP_3 = "tap the link to open solstone"
-MANUAL_CODE_LABEL = "can't scan? type this on the device:"
 PAIR_NETWORK_LINE = (
     "this device needs to be on your network (or your VPN) to pair. expires in 5:00."
 )
@@ -50,8 +42,6 @@ SUCCESS_VERIFY_NOTE_ANYWHERE = (
     "fingerprint should match what it shows. didn't do this?"
 )
 SUCCESS_REMOVE_LABEL = "that wasn't me — remove"
-PAIR_WEB_PASSWORD_SETTINGS_LINK = "set a web password for this page in settings →"
-
 # --- U4 first-run hero ---
 HERO_TITLE = "let's connect a device"
 HERO_BODY = (
@@ -107,7 +97,7 @@ APP_ONOFF_SUB_BYO = "on — reachable over your own network"
 APP_ONOFF_SUB_HOSTED = "on — reachable from anywhere"
 REACH_HOME_ADDRESS_LABEL = "home address"
 REACH_HOST_ADDRESS_DISCLOSURE = "▸ use a different address"
-REACH_HOST_ADDRESS_PLACEHOLDER = "192.168.1.44:5015"
+REACH_HOST_ADDRESS_PLACEHOLDER = "192.168.1.44:7657"
 REACH_HOST_ADDRESS_APPLY_LABEL = "apply"
 REACH_HOST_ADDRESS_CLEAR_LABEL = "clear"
 REACH_VPN_CANDIDATE_LABEL = "VPN address"
@@ -122,7 +112,7 @@ REACH_SPL_CONNECTING_NOTE = "your home is connecting. this is usually quick."
 CHECK_AGAIN_LABEL = "check again"
 PRIVATE_LINK_DISABLE_CTA = "turn off solstone private link"
 PRIVATE_LINK_SETTING_UP = "setting up solstone private link…"
-PRIVATE_LINK_BROWSER_FALLBACK = "couldn't open your browser. open this link to finish:"
+PRIVATE_LINK_PORTAL_CTA = "continue to approve →"
 PRIVATE_LINK_SETUP_SUCCESS = (
     "solstone private link is on. your devices can reach home from anywhere."
 )

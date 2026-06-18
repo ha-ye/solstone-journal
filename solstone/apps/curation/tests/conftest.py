@@ -24,7 +24,6 @@ def curation_env(tmp_path, monkeypatch):
         (config_dir / "journal.json").write_text(
             json.dumps(
                 {
-                    "convey": {"trust_localhost": True},
                     "setup": {"completed_at": 1700000000000},
                 },
                 indent=2,

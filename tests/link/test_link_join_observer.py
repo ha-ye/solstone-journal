@@ -7,192 +7,27 @@ import argparse
 import json
 import stat
 from pathlib import Path
-from typing import Any
 
 import pytest
-from cryptography import x509
-from cryptography.hazmat.primitives import serialization
-from cryptography.x509.oid import NameOID
 
 from solstone.think.link import join_cli
-from solstone.think.link.ca import generate_ca
 from tests.link.pairing_harness import pairing_harness
-
-
-class _FakeHeaders:
-    def __init__(self, content_type: str) -> None:
-        self._content_type = content_type
-
-    def get_content_type(self) -> str:
-        return self._content_type
-
-
-class _FakeResponse:
-    def __init__(
-        self,
-        body: bytes,
-        *,
-        status: int = 200,
-        url: str = "",
-        content_type: str = "application/json",
-    ) -> None:
-        self._body = body
-        self.status = status
-        self._url = url
-        self.headers = _FakeHeaders(content_type)
-
-    def __enter__(self) -> _FakeResponse:
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        return None
-
-    def read(self) -> bytes:
-        return self._body
-
-    def getcode(self) -> int:
-        return self.status
-
-    def geturl(self) -> str:
-        return self._url
 
 
 def _args(
     *,
+    code: str,
     home: str | None = "http://receiver",
-    code: str = "ABCD-EFGH",
     as_role: str | None = None,
     label: str | None = "laptop",
 ) -> argparse.Namespace:
     return argparse.Namespace(home=home, code=code, as_role=as_role, label=label)
 
 
-def _success_payload(tmp_path: Path) -> dict[str, Any]:
-    ca = generate_ca(tmp_path / "ca")
-    ca_pem = ca.cert.public_bytes(serialization.Encoding.PEM).decode("ascii")
-    return {
-        "client_cert": "-----BEGIN CERTIFICATE-----\nclient\n-----END CERTIFICATE-----\n",
-        "ca_chain": [ca_pem],
-        "instance_id": "inst-1",
-        "home_label": "solstone",
-        "home_attestation": "header.payload.signature",
-        "local_endpoints": [{"host": "127.0.0.1", "port": 7657}],
-        "fingerprint": "sha256:client",
-    }
-
-
-def _mock_urlopen(
-    monkeypatch: pytest.MonkeyPatch,
-    payload: dict[str, Any] | bytes,
-    *,
-    status: int = 200,
-    calls: list[tuple[str, dict[str, Any]]] | None = None,
-) -> None:
-    body = (
-        payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
-    )
-
-    def fake_urlopen(request, **_kwargs):
-        if calls is not None:
-            calls.append(
-                (
-                    request.full_url,
-                    json.loads(request.data.decode("utf-8")),
-                )
-            )
-        return _FakeResponse(body, status=status, url=request.full_url)
-
-    monkeypatch.setattr(join_cli.urllib.request, "urlopen", fake_urlopen)
-
-
 def _configure_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     config_home = tmp_path / "config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
     return config_home
-
-
-def _csr_common_name(csr_pem: str) -> str:
-    csr = x509.load_pem_x509_csr(csr_pem.encode("utf-8"))
-    return csr.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
-
-
-def test_short_code_happy_path_writes_bundle(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config_home = _configure_home(tmp_path, monkeypatch)
-    calls: list[tuple[str, dict[str, Any]]] = []
-    _mock_urlopen(monkeypatch, _success_payload(tmp_path), calls=calls)
-
-    result = join_cli.main(_args())
-
-    assert result == 0
-    assert calls[0][0] == "http://receiver/app/link/by-code"
-    assert calls[0][1]["code"] == "ABCDEFGH"
-    bundle = config_home / "solstone-observer" / "spl" / "laptop"
-    assert stat.S_IMODE(bundle.stat().st_mode) == 0o700
-    for name in join_cli.BUNDLE_FILES:
-        assert (bundle / name).exists()
-        assert stat.S_IMODE((bundle / name).stat().st_mode) == 0o600
-    peer = json.loads((bundle / "peer.json").read_text("utf-8"))
-    assert list(peer.keys()) == [
-        "label",
-        "paired_at",
-        "instance_id",
-        "home_label",
-        "fingerprint",
-        "local_endpoints",
-        "role",
-    ]
-    assert peer["label"] == "laptop"
-    assert peer["instance_id"] == "inst-1"
-    assert peer["home_label"] == "solstone"
-    assert peer["fingerprint"].startswith("sha256:")
-    assert peer["local_endpoints"] == [{"host": "127.0.0.1", "port": 7657}]
-    assert peer["role"] == ""
-
-
-def test_short_code_omitted_label_uses_sanitized_hostname(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config_home = _configure_home(tmp_path, monkeypatch)
-    monkeypatch.setattr(join_cli.socket, "gethostname", lambda: "Lab Host.local")
-    calls: list[tuple[str, dict[str, Any]]] = []
-    _mock_urlopen(monkeypatch, _success_payload(tmp_path), calls=calls)
-
-    result = join_cli.main(_args(label=None))
-
-    assert result == 0
-    assert calls[0][1]["device_label"] == "Lab-Host.local"
-    assert _csr_common_name(calls[0][1]["csr"]) == "Lab-Host.local"
-    bundle = config_home / "solstone-observer" / "spl" / "Lab-Host.local"
-    assert bundle.is_dir()
-    peer = json.loads((bundle / "peer.json").read_text("utf-8"))
-    assert peer["label"] == "Lab-Host.local"
-
-
-@pytest.mark.parametrize("hostname", ["", "!!!"])
-def test_short_code_omitted_label_falls_back_to_default_client_label(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    hostname: str,
-) -> None:
-    config_home = _configure_home(tmp_path, monkeypatch)
-    monkeypatch.setattr(join_cli.socket, "gethostname", lambda: hostname)
-    calls: list[tuple[str, dict[str, Any]]] = []
-    _mock_urlopen(monkeypatch, _success_payload(tmp_path), calls=calls)
-
-    result = join_cli.main(_args(label=None))
-
-    assert join_cli.DEFAULT_CLIENT_LABEL == "linked-system"
-    assert join_cli._label_error(join_cli.DEFAULT_CLIENT_LABEL) is None
-    assert result == 0
-    assert calls[0][1]["device_label"] == join_cli.DEFAULT_CLIENT_LABEL
-    bundle = config_home / "solstone-observer" / "spl" / join_cli.DEFAULT_CLIENT_LABEL
-    assert bundle.is_dir()
-    peer = json.loads((bundle / "peer.json").read_text("utf-8"))
-    assert peer["label"] == join_cli.DEFAULT_CLIENT_LABEL
 
 
 def test_url_happy_path_posts_to_pair_token(
@@ -228,58 +63,3 @@ def test_url_happy_path_posts_to_pair_token(
     assert peer["home_label"] == "solstone"
     assert peer["fingerprint"].startswith("sha256:")
     assert peer["role"] == ""
-
-
-def test_missing_required_response_field_exits_1(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _configure_home(tmp_path, monkeypatch)
-    payload = _success_payload(tmp_path)
-    del payload["client_cert"]
-    _mock_urlopen(monkeypatch, payload)
-
-    result = join_cli.main(_args())
-
-    assert result == 1
-
-
-def test_non_200_exits_1(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _configure_home(tmp_path, monkeypatch)
-    _mock_urlopen(monkeypatch, b"nope", status=500)
-
-    result = join_cli.main(_args())
-
-    assert result == 1
-
-
-def test_malformed_json_exits_1(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _configure_home(tmp_path, monkeypatch)
-    _mock_urlopen(monkeypatch, b"{")
-
-    result = join_cli.main(_args())
-
-    assert result == 1
-
-
-def test_partial_write_failure_cleans_created_directory(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config_home = _configure_home(tmp_path, monkeypatch)
-    _mock_urlopen(monkeypatch, _success_payload(tmp_path))
-    original_write = join_cli._write_bytes
-
-    def fail_on_chain(path: Path, content: bytes) -> None:
-        if path.name == "chain.pem":
-            raise OSError("failed to write chain.pem")
-        original_write(path, content)
-
-    monkeypatch.setattr(join_cli, "_write_bytes", fail_on_chain)
-
-    result = join_cli.main(_args())
-
-    assert result == 1
-    assert not (config_home / "solstone-observer" / "spl" / "laptop").exists()

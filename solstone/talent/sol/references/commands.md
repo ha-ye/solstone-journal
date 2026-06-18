@@ -24,7 +24,7 @@ Read: `list`, `search`
 
 Write: `accept-merge-candidate`, `attach`, `consolidate`, `dismiss-merge-candidate`, `merge`, `merge-candidates`, `move`, `record-merge-candidate`, `update`
 
-Other: `aka`, `detect`, `observations`, `observe`
+Other: `aka`, `detect`, `digest`, `observations`, `observe`
 
 Guidance: `solstone/apps/entities/talent/entities/SKILL.md`
 

@@ -22,7 +22,6 @@ def convey_env(tmp_path, monkeypatch):
         config_file.write_text(
             json.dumps(
                 {
-                    "convey": {"trust_localhost": True},
                     "setup": {"completed_at": 1700000000000},
                 },
                 indent=2,
@@ -59,7 +58,6 @@ def convey_env_setup_pending(tmp_path, monkeypatch):
         config_file.write_text(
             json.dumps(
                 {
-                    "convey": {"trust_localhost": True},
                     "setup": {},
                 },
                 indent=2,

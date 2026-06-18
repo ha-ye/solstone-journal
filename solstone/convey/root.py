@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Root blueprint: authentication and core routes."""
+"""Root blueprint: access gate and core routes."""
 
 from __future__ import annotations
 
@@ -24,11 +24,9 @@ from flask import (
     render_template,
     request,
     send_from_directory,
-    session,
     stream_with_context,
     url_for,
 )
-from werkzeug.security import check_password_hash, generate_password_hash
 
 from solstone.think.cluster import cluster_segments
 from solstone.think.journal_config import write_journal_config
@@ -44,23 +42,11 @@ from .config import (
     locked_modify_convey_config,
     seed_default_app_navigation,
 )
-from .copy import LOGIN_NO_PASSWORD_CONFIGURED
 from .reasons import INVALID_CONFIG_VALUE, PL_REVOKED
 from .secure_listener import get_authorized_clients
 from .utils import error_response, error_response_with_reason
 
 logger = logging.getLogger(__name__)
-
-
-def _get_password_hash() -> str:
-    """Get current password hash from config, reloading on each call."""
-    try:
-        config = get_config()
-        convey_config = config.get("convey", {})
-        return convey_config.get("password_hash", "")
-    except Exception:
-        # Intended fail-closed-on-unreadable-config: no hash means no password auth.
-        return ""
 
 
 def _is_setup_complete() -> bool:
@@ -73,17 +59,6 @@ def _is_setup_complete() -> bool:
         return False
 
 
-def _check_basic_auth() -> bool:
-    """Check Basic Auth credentials against stored password hash."""
-    auth = request.authorization
-    if not auth or auth.type != "basic":
-        return False
-    password_hash = _get_password_hash()
-    if not password_hash:
-        return False
-    return check_password_hash(password_hash, auth.password or "")
-
-
 bp = Blueprint(
     "root",
     __name__,
@@ -93,7 +68,7 @@ bp = Blueprint(
 
 
 @bp.before_app_request
-def require_login() -> Any:
+def require_access() -> Any:
     if request.endpoint is None:
         return None
 
@@ -102,7 +77,6 @@ def require_login() -> Any:
         "root.init_validate_provider",
         "root.init_observers",
         "root.init_finalize",
-        "root.login",
         "static",
         "root.static",
         "root.favicon",
@@ -143,35 +117,11 @@ def require_login() -> Any:
             detail="paired device revoked",
         )
 
-    # Session cookie
-    if session.get("logged_in"):
-        return None
-
-    # Basic Auth (per-request, no session creation)
-    if _check_basic_auth():
-        return None
-
     # Check setup state
-    setup_complete = _is_setup_complete()
-
-    # Opt-in localhost bypass (requires completed setup + trust_localhost flag)
-    if setup_complete:
-        config = get_config()
-        if config.get("convey", {}).get("trust_localhost", True):
-            remote_addr = request.remote_addr
-            is_localhost = remote_addr in ("127.0.0.1", "::1", "localhost")
-            proxy_headers = (
-                request.headers.get("X-Forwarded-For")
-                or request.headers.get("X-Real-IP")
-                or request.headers.get("X-Forwarded-Host")
-            )
-            if is_localhost and not proxy_headers:
-                return None
-
-    # Not authenticated — redirect based on setup state
-    if not setup_complete:
+    if not _is_setup_complete():
         return redirect(url_for("root.init"))
-    return redirect(url_for("root.login"))
+
+    return None
 
 
 @bp.route("/sse/events", methods=["GET"], endpoint="callosum_sse")
@@ -221,26 +171,6 @@ def callosum_sse() -> Response:
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-
-
-@bp.route("/login", methods=["GET", "POST"])
-def login() -> Any:
-    # Re-check password from config on each request
-    password_hash = _get_password_hash()
-
-    # If no password is configured, show error page
-    if not password_hash:
-        error = LOGIN_NO_PASSWORD_CONFIGURED
-        return render_template("login.html", error=error, no_password=True)
-
-    error = None
-    if request.method == "POST":
-        if check_password_hash(password_hash, request.form.get("password", "")):
-            session["logged_in"] = True
-            session.permanent = True
-            return redirect(url_for("root.index"))
-        error = "incorrect password. passwords are case-sensitive. if you've forgotten it, you can reset via journal password set on the command line."
-    return render_template("login.html", error=error, no_password=False)
 
 
 @bp.route("/init")
@@ -316,24 +246,10 @@ def init_observers() -> Any:
 def init_finalize() -> Any:
     data = request.get_json(silent=True) or {}
 
-    password = data.get("password") or ""
-    if password and len(password) < 8:
-        return error_response(
-            INVALID_CONFIG_VALUE,
-            detail="Password must be at least 8 characters",
-        )
-
     from solstone.think.utils import now_ms
 
     config = get_config()
-    convey_config = config.setdefault("convey", {})
-    convey_config.pop("allow_network_access", None)
-    convey_update = {
-        "trust_localhost": True,
-    }
-    if password:
-        convey_update["password_hash"] = generate_password_hash(password)
-    convey_config.update(convey_update)
+    config.setdefault("convey", {}).pop("allow_network_access", None)
     config.setdefault("identity", {}).update(
         {
             k: v
@@ -375,15 +291,7 @@ def init_finalize() -> Any:
     except Exception:
         logger.error("default app navigation seed convey-config PERSIST failed")
 
-    session["logged_in"] = True
-    session.permanent = True
     return jsonify({"success": True, "redirect": url_for("app:thinking.index")})
-
-
-@bp.route("/logout")
-def logout() -> Any:
-    session.pop("logged_in", None)
-    return redirect(url_for("root.login"))
 
 
 @bp.route("/favicon.ico")

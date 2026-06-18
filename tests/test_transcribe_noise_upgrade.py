@@ -220,9 +220,9 @@ class TestNoiseUpgradeGate:
             patch(
                 "solstone.observe.transcribe.main.load_audio", return_value=audio_buffer
             ),
-            patch("solstone.observe.transcribe.main.run_vad", return_value=vad),
+            patch("solstone.observe.vad.run_vad", return_value=vad),
             patch(
-                "solstone.observe.transcribe.main.reduce_audio",
+                "solstone.observe.vad.reduce_audio",
                 return_value=(None, None),
             ),
             patch(
@@ -257,9 +257,9 @@ class TestNoiseUpgradeGate:
             patch(
                 "solstone.observe.transcribe.main.load_audio", return_value=audio_buffer
             ),
-            patch("solstone.observe.transcribe.main.run_vad", return_value=vad),
+            patch("solstone.observe.vad.run_vad", return_value=vad),
             patch(
-                "solstone.observe.transcribe.main.reduce_audio",
+                "solstone.observe.vad.reduce_audio",
                 return_value=(None, None),
             ),
             patch(
@@ -294,9 +294,9 @@ class TestNoiseUpgradeGate:
             patch(
                 "solstone.observe.transcribe.main.load_audio", return_value=audio_buffer
             ),
-            patch("solstone.observe.transcribe.main.run_vad", return_value=vad),
+            patch("solstone.observe.vad.run_vad", return_value=vad),
             patch(
-                "solstone.observe.transcribe.main.reduce_audio",
+                "solstone.observe.vad.reduce_audio",
                 return_value=(None, None),
             ),
             patch(
@@ -331,9 +331,9 @@ class TestNoiseUpgradeGate:
             patch(
                 "solstone.observe.transcribe.main.load_audio", return_value=audio_buffer
             ),
-            patch("solstone.observe.transcribe.main.run_vad", return_value=vad),
+            patch("solstone.observe.vad.run_vad", return_value=vad),
             patch(
-                "solstone.observe.transcribe.main.reduce_audio",
+                "solstone.observe.vad.reduce_audio",
                 return_value=(None, None),
             ),
             patch(
@@ -413,9 +413,9 @@ class TestNoiseUpgradeGate:
             patch(
                 "solstone.observe.transcribe.main.load_audio", return_value=audio_buffer
             ),
-            patch("solstone.observe.transcribe.main.run_vad", return_value=vad),
+            patch("solstone.observe.vad.run_vad", return_value=vad),
             patch(
-                "solstone.observe.transcribe.main.reduce_audio",
+                "solstone.observe.vad.reduce_audio",
                 return_value=(None, None),
             ),
             patch(

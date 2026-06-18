@@ -21,8 +21,7 @@ Pair-link QR joins target the secure listener advertised by LINK_DIRECT_PORT
 (:7657) and speak its TLS + framed mux protocol before dispatching POST
 /app/link/pair into this Flask route. The open nonce admits a cert-less
 pairing stream; the QR's CA fingerprint pins the home CA before the signed
-client certificate is issued. Manual short-code joins remain over the normal
-Convey HTTP listener via /by-code + --home.
+client certificate is issued.
 """
 
 from __future__ import annotations
@@ -45,17 +44,10 @@ from flask import Blueprint, Response, abort, g, jsonify, request
 
 from solstone.apps.link import copy as link_copy
 from solstone.apps.link.copy import (
-    MANUAL_CODE_LEN,
     PAIR_LINK_HOST,
     PAIR_LINK_PATH,
 )
 from solstone.apps.link.crockford32 import encode as crockford_encode
-from solstone.apps.link.manual_code import (
-    generate as generate_manual_code,
-)
-from solstone.apps.link.manual_code import (
-    normalize as normalize_manual_code,
-)
 from solstone.apps.link.relay_link import (
     TOTP_STEP_SECONDS,
     compute_current_totp,
@@ -115,10 +107,9 @@ from solstone.think.pairing.config import (
 )
 from solstone.think.services import operations, spl, spl_handoff
 from solstone.think.services import status as service_status
-from solstone.think.utils import get_config, get_journal, now_ms
+from solstone.think.utils import get_journal, now_ms
 
 logger = logging.getLogger(__name__)
-MANUAL_CODE_RE = re.compile(rf"^[0-9A-HJKMNP-TV-Z]{{{MANUAL_CODE_LEN}}}$")
 _SENDER_INSTANCE_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,256}$")
 VALID_ROLES = {"", "phone", "observer", "peer"}
 # The watcher emits only lan/ula today; vpn stays empty until a scope is wired.
@@ -173,11 +164,6 @@ def _is_loopback_request() -> bool:
     return request.remote_addr in {"127.0.0.1", "::1"}
 
 
-def _convey_password_is_set() -> bool:
-    password_hash = get_config().get("convey", {}).get("password_hash", "")
-    return bool(str(password_hash or "").strip())
-
-
 def _read_link_connection_event() -> str | None:
     event = get_cached_state().get("link_connection")
     return event if isinstance(event, str) else None
@@ -186,6 +172,28 @@ def _read_link_connection_event() -> str | None:
 def _current_local_endpoints() -> list[LocalEndpoint]:
     watcher = get_interface_watcher()
     return watcher.snapshot() if watcher else []
+
+
+def _list_pair_link_candidates() -> list[str]:
+    """Return up to 4 watcher IPv4 candidates, detect-ip hinted, deduped then capped."""
+    candidates: list[str] = []
+    for endpoint in _current_local_endpoints():
+        address = ipaddress.ip_address(endpoint.ip)
+        if isinstance(address, ipaddress.IPv4Address):
+            candidates.append(str(address))
+
+    route_ip = _detect_lan_ip()
+    if route_ip in candidates:
+        candidates.remove(route_ip)
+        candidates.insert(0, route_ip)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate not in seen:
+            deduped.append(candidate)
+            seen.add(candidate)
+    return deduped[:4]
 
 
 def _secure_listener_port() -> int:
@@ -198,26 +206,11 @@ def _secure_listener_port() -> int:
     return interface_watcher.LINK_DIRECT_PORT
 
 
-def _resolve_host_port() -> str:
-    """Best-effort LAN host:port for the convey host."""
-    host = request.host
-    try:
-        hostname, _, port = host.partition(":")
-        if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
-            lan_ip = _detect_lan_ip()
-            if lan_ip:
-                host = f"{lan_ip}:{port}" if port else lan_ip
-    except Exception:
-        logger.debug("lan ip detection failed", exc_info=True)
-    return host
-
-
 def _effective_home_address() -> tuple[bool, str | None]:
     override_addr = override_host_port()
     if override_addr is not None:
         return True, override_addr
-    lan_accessible = _is_lan_accessible()
-    return lan_accessible, _resolve_host_port() if lan_accessible else None
+    return _is_lan_accessible(), None
 
 
 def _detect_lan_ip() -> str | None:
@@ -248,7 +241,7 @@ def _build_pair_link(
     nonce: str,
     ca_fp: str,
 ) -> str:
-    """Build the v3 pair-link URL.
+    """Build the v04 pair-link URL.
 
     Layout:
     version(1) | addr_type(1) | ipv4(4) | port_be(2) | nonce(16) | ca_fp[:16].
@@ -263,14 +256,40 @@ def _build_pair_link(
     return f"https://{PAIR_LINK_HOST}{PAIR_LINK_PATH}#{crockford_encode(blob)}"
 
 
+def _build_pair_link_v05(
+    candidates: list[str],
+    port: int,
+    nonce: str,
+    ca_fp: str,
+) -> str:
+    """Build the v05 multi-address pair-link URL.
+
+    Layout:
+    version(1) | addr_type(1) | count(1) | port_be(2) | ipv4(4)*count |
+    nonce(16) | ca_fp[:16].
+
+    v05 places the shared port before the address list, unlike v04's single
+    address-before-port layout. Count is capped at 4; length is 37 + 4*count.
+    """
+    count = len(candidates)
+    blob = (
+        b"\x05\x01"
+        + bytes([count])
+        + port.to_bytes(2, "big")
+        + b"".join(ipaddress.IPv4Address(c).packed for c in candidates)
+        + bytes.fromhex(nonce)
+        + bytes.fromhex(ca_fp)[:16]
+    )
+    assert len(blob) == 37 + 4 * count
+    return f"https://{PAIR_LINK_HOST}{PAIR_LINK_PATH}#{crockford_encode(blob)}"
+
+
 @dataclass(frozen=True)
 class PairStartResponse:
     nonce: str
     pair_link: str
-    manual_code: str
     expires_in: int
     device_label: str
-    lan_url: str
     ca_fingerprint: str
 
 
@@ -355,10 +374,11 @@ def _private_link_status() -> dict[str, Any]:
 def _start_operation_response(
     service: str,
     kind: str,
-    flow: Callable[[Callable[[str], bool]], operations.HandoffResult],
+    portal_url: str | None,
+    flow: Callable[[], operations.HandoffResult],
 ) -> tuple[Response, int]:
     try:
-        operation = operations.start_operation(service, kind, flow)
+        operation = operations.start_operation(service, kind, portal_url, flow)
     except operations.OperationBusyError:
         return error_response(SERVICE_BUSY, detail="operation already running")
     return jsonify({"success": True, "service": service, "operation": operation}), 202
@@ -404,7 +424,6 @@ def api_status() -> Any:
             "enrolled": token_present,
             "relay_url": relay_url(),
             "ca_fingerprint": ca_fp,
-            "has_password": _convey_password_is_set(),
             "lan_accessible": lan_accessible,
             "posture": posture,
             "reachability": reachability,
@@ -427,10 +446,18 @@ def private_link_enable() -> tuple[Response, int]:
             INVALID_OPERATION_FOR_STATE,
             detail="solstone private link is already on",
         )
+    try:
+        consent_url, nonce, base_url = spl_handoff.build_spl_handoff_url()
+    except OSError:
+        return error_response(
+            SERVICE_OPERATION_FAILED,
+            detail="couldn't prepare the consent link",
+        )
     return _start_operation_response(
         "spl",
         "spl_enable",
-        lambda opener: spl_handoff.run_spl_handoff(open_browser=opener),
+        consent_url,
+        lambda: spl_handoff.run_spl_handoff(nonce=nonce, base_url=base_url),
     )
 
 
@@ -506,9 +533,6 @@ def pair_start() -> Any:
     if not isinstance(role, str) or role not in VALID_ROLES:
         return error_response(PAIRING_REQUEST_INVALID, detail="invalid role")
 
-    lan_url = override_host_port() or _resolve_host_port()
-    hostname, _, _ = lan_url.partition(":")
-
     nonce_ttl: int | None = None
     if read_posture() == "spl":
         secret = load_totp_secret()
@@ -536,19 +560,25 @@ def pair_start() -> Any:
         expires_in = TOTP_STEP_SECONDS
         nonce_ttl = TOTP_STEP_SECONDS
     else:
-        try:
-            ipaddress.IPv4Address(hostname)
-        except ValueError:
+        ca_fp = _ca_fingerprint()
+        port = _secure_listener_port()
+        override = override_host_port()
+        if override is not None:
+            candidates = [override.partition(":")[0]]
+        else:
+            candidates = _list_pair_link_candidates()
+        if not candidates:
             return error_response(
                 PAIRING_REQUEST_INVALID,
-                detail=f"pair-link requires an IPv4 LAN address; got {hostname!r}",
+                detail="pair-link requires an IPv4 LAN address; none found",
             )
-        ca_fp = _ca_fingerprint()
         nonce = generate_nonce()
-        pair_link = _build_pair_link(hostname, _secure_listener_port(), nonce, ca_fp)
+        if len(candidates) == 1:
+            pair_link = _build_pair_link(candidates[0], port, nonce, ca_fp)
+        else:
+            pair_link = _build_pair_link_v05(candidates, port, nonce, ca_fp)
         expires_in = 300
 
-    manual_code_hyphenated = generate_manual_code()
     add_kwargs: dict[str, Any] = {}
     if nonce_ttl is not None:
         add_kwargs["ttl"] = nonce_ttl
@@ -556,16 +586,13 @@ def pair_start() -> Any:
         nonce,
         device_label,
         role=role,
-        manual_code=normalize_manual_code(manual_code_hyphenated),
         **add_kwargs,
     )
     response = PairStartResponse(
         nonce=nonce,
         pair_link=pair_link,
-        manual_code=manual_code_hyphenated,
         expires_in=expires_in,
         device_label=device_label,
-        lan_url=lan_url,
         ca_fingerprint=ca_fp,
     )
     return _jsonify_preserving_order(asdict(response))
@@ -714,66 +741,6 @@ def pair() -> Any:
         )
     except ValueError as exc:
         logger.info("pair: bad csr: %s", exc)
-        return error_response(PAIRING_KEY_INVALID, detail=f"bad csr: {exc}")
-    _emit_pair_complete(
-        _display_label(assigned_label, client_label),
-        fingerprint,
-        paired_at,
-        network=network,
-    )
-    return jsonify(response)
-
-
-@link_bp.route("/by-code", methods=["POST"])
-def by_code() -> Any:
-    """Mobile pair endpoint — accepts CSR + manual code."""
-    body = request.get_json(silent=True) or {}
-    code = body.get("code")
-    csr_pem = body.get("csr")
-    device_label = str(body.get("device_label") or "").strip()
-
-    if not isinstance(code, str) or not isinstance(csr_pem, str):
-        return error_response(
-            MISSING_REQUIRED_FIELD,
-            detail="missing fields (code + csr required)",
-        )
-    raw_sender_instance_id = body.get("sender_instance_id")
-    sender_instance_id: str | None = None
-    if raw_sender_instance_id is not None:
-        if not isinstance(
-            raw_sender_instance_id, str
-        ) or not _SENDER_INSTANCE_ID_RE.fullmatch(raw_sender_instance_id):
-            return error_response(
-                PAIRING_REQUEST_INVALID,
-                detail=f"bad sender_instance_id: {raw_sender_instance_id}",
-            )
-        sender_instance_id = raw_sender_instance_id
-
-    canonical_code = normalize_manual_code(code)
-    if not MANUAL_CODE_RE.fullmatch(canonical_code):
-        return error_response(PAIRING_REQUEST_INVALID, detail="bad code")
-
-    consumed = _nonces().consume_by_code(canonical_code)
-    if consumed is None:
-        return error_response(
-            OPERATION_NO_LONGER_AVAILABLE,
-            detail="nonce expired or used",
-        )
-
-    assigned_label = consumed.device_label
-    client_label = device_label
-    network = _rough_network(g.identity.mode)
-    try:
-        response, fingerprint, paired_at = _complete_pairing(
-            consumed,
-            csr_pem,
-            assigned_label,
-            client_label,
-            network=network,
-            sender_instance_id=sender_instance_id,
-        )
-    except ValueError as exc:
-        logger.info("by-code: bad csr: %s", exc)
         return error_response(PAIRING_KEY_INVALID, detail=f"bad csr: {exc}")
     _emit_pair_complete(
         _display_label(assigned_label, client_label),

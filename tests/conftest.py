@@ -66,45 +66,13 @@ def _install_heavy_module_stubs():
 
         st_mod.SentenceTransformer = DummyST
         sys.modules["sentence_transformers"] = st_mod
-    if "sklearn.metrics.pairwise" not in sys.modules:
-        pairwise = types.ModuleType("pairwise")
-
-        def cosine_similarity(a, b):
-            return [[1.0]]
-
-        pairwise.cosine_similarity = cosine_similarity
-        metrics = types.ModuleType("metrics")
-        metrics.pairwise = pairwise
-
-        cluster = types.ModuleType("sklearn.cluster")
-
-        class DummyHDBSCAN:
-            def __init__(self, **k):
-                pass
-
-            def fit(self, X):
-                self.labels_ = np.full(len(X), -1, dtype=int)
-                return self
-
-        cluster.HDBSCAN = DummyHDBSCAN
-
-        sklearn = types.ModuleType("sklearn")
-        sklearn.metrics = metrics
-        sklearn.cluster = cluster
-        sklearn.__spec__ = importlib.machinery.ModuleSpec("sklearn", loader=None)
-        metrics.__spec__ = importlib.machinery.ModuleSpec(
-            "sklearn.metrics", loader=None
-        )
-        pairwise.__spec__ = importlib.machinery.ModuleSpec(
-            "sklearn.metrics.pairwise", loader=None
-        )
-        cluster.__spec__ = importlib.machinery.ModuleSpec(
-            "sklearn.cluster", loader=None
-        )
-        sys.modules["sklearn"] = sklearn
-        sys.modules["sklearn.metrics"] = metrics
-        sys.modules["sklearn.metrics.pairwise"] = pairwise
-        sys.modules["sklearn.cluster"] = cluster
+    # NOTE: do NOT stub sklearn. scikit-learn is a hard, installed dependency
+    # (pyproject `scikit-learn>=1.3`) and the speakers discovery/owner code uses
+    # the real `sklearn.cluster.HDBSCAN`. A persistent `sys.modules` stub here
+    # leaked a DummyHDBSCAN (labels every point as noise) into whichever
+    # co-scheduled test imported it first under xdist, silently breaking the
+    # real-clustering tests. Only genuinely-absent heavy deps (usearch,
+    # sentence_transformers) belong in this stub set.
     if "dotenv" not in sys.modules:
         dotenv_mod = types.ModuleType("dotenv")
 
@@ -158,11 +126,16 @@ def set_test_journal_path(monkeypatch, _isolate_os_environ):
     This ensures all tests have a valid SOLSTONE_JOURNAL without needing
     to explicitly set it in each test.
     """
+    import solstone.think.utils as think_utils
+
     monkeypatch.setenv(
         "SOLSTONE_JOURNAL",
         str(Path("tests/fixtures/journal").resolve()),
     )
     monkeypatch.setenv("SOL_SKIP_SUPERVISOR_CHECK", "1")
+    think_utils._journal_path_cache = None
+    yield
+    think_utils._journal_path_cache = None
 
 
 @pytest.fixture(autouse=True)
@@ -216,6 +189,9 @@ def journal_copy(tmp_path, monkeypatch):
     dst = tmp_path / "journal"
     copytree_tracked(src, dst)
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(dst.resolve()))
+    import solstone.think.utils as think_utils
+
+    think_utils._journal_path_cache = None
     return dst
 
 
@@ -295,6 +271,7 @@ def add_module_stubs(monkeypatch):
     class MockHttpOptions:
         def __init__(self, **k):
             self.timeout = k.get("timeout")
+            self.retry_options = k.get("retry_options")
 
     class MockThinkingConfig:
         def __init__(self, **k):
@@ -307,7 +284,7 @@ def add_module_stubs(monkeypatch):
 
     class MockHttpRetryOptions:
         def __init__(self, **k):
-            pass
+            self.attempts = k.get("attempts")
 
     genai_mod.types = types.SimpleNamespace(
         GenerateContentConfig=MockGenerateContentConfig,

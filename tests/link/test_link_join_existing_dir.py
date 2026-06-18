@@ -7,13 +7,16 @@ import argparse
 
 import pytest
 
+from solstone.apps.link.routes import _build_pair_link
 from solstone.think.link import join_cli
+
+PAIR_LINK = _build_pair_link("192.0.2.42", 7657, "a" * 32, "b" * 64)
 
 
 def _args() -> argparse.Namespace:
     return argparse.Namespace(
         home="http://receiver",
-        code="ABCD-EFGH",
+        code=PAIR_LINK,
         as_role=None,
         label="laptop",
     )
@@ -49,11 +52,11 @@ def test_existing_ds_store_only_proceeds_to_next_stage(
     (bundle / ".DS_Store").write_text("", encoding="utf-8")
     calls = []
 
-    def fake_urlopen(*args, **_kwargs):
+    def fake_post_pair(*args, **_kwargs):
         calls.append(args)
-        raise join_cli.urllib.error.URLError("stop")
+        raise ValueError("stop")
 
-    monkeypatch.setattr(join_cli.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(join_cli, "_post_pair", fake_post_pair)
 
     result = join_cli.main(_args())
 

@@ -78,9 +78,9 @@
     ), error => error.serverMessage === 'Request failed (HTTP 400)');
 
     await expectApiError('401 no redirect', () => withFetch(
-      async () => response({ status: 401, statusText: 'Unauthorized', body: '{"error":"login"}' }),
+      async () => response({ status: 401, statusText: 'Unauthorized', body: '{"error":"unauthorized"}' }),
       () => window.apiJson('/auth', { noAuthRedirect: true })
-    ), error => error.status === 401 && error.serverMessage === 'login');
+    ), error => error.status === 401 && error.serverMessage === 'unauthorized');
 
     await expectApiError('403 no redirect', () => withFetch(
       async () => response({ status: 403, statusText: 'Forbidden', body: '{"message":"disabled"}' }),

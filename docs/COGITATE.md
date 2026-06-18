@@ -77,7 +77,7 @@ pipes, redirects, chaining, and command substitution.
 ## Reads: domain reads vs raw evidence reads
 
 **Domain reads — the default.** Indexed, normalized, or semantic reads go through
-`sol call` verbs (e.g. `sol call activities list`, `sol call entities show`,
+`sol call` verbs (e.g. `sol call activities list`, `sol call entities search`,
 `sol call transcripts read`). Anything that needs authorization, derived state,
 normalization, or audit behavior is a domain read, not a raw read.
 
@@ -125,7 +125,8 @@ enforcement are layered on top of it.
 |---|---|---|
 | `normal` | default cogitate talents | the `sol` tool (`sol` / `sol call`), the bounded raw-read tier, a finalization tool |
 | `system-read` | diagnostics boundary for scoped operational evidence | no cogitate talent claims it today (steward was demoted to a deterministic renderer + `lite` generate); the tier remains the declared diagnostics boundary and extension point, with scoped evidence arriving through a talent pre-hook rather than an extra model read tool |
-| `outbound` | comms-like talents that may submit something that leaves the machine (e.g. `support`) | `normal` reads / drafts plus submit-capable support commands gated on per-send owner approval supplied only by a human-initiated chat launch |
+| `outbound` | comms-like talents that may submit something that leaves the machine (e.g. `support`) | the `sol` tool (`sol` / `sol call`) and a finalization tool, plus submit-capable support commands gated on per-send owner approval supplied only by a human-initiated chat launch; no raw-read tier — drafts and evidence go through `sol` domain commands |
+| `synthesis` | pure sol-surface synthesis talents (e.g. `weekly_reflection`, `partner`) whose source of record is `sol call journal` / `sol call activities`, not the raw journal tree | the `sol` tool (`sol` / `sol call`) and a finalization tool; **no raw-read tier and no submit** — same as `outbound` minus the outbound submit capability. Removing the raw-read tools keeps a synthesis talent from spelunking `chronicle/` / `talents/` / `facets/` and burning its budget instead of reaching the journal through `sol` |
 
 Policy denies support send verbs (`create`, `reply`, `attach`, `feedback`) for
 `normal` / `system-read` runs. `outbound` runs may use those verbs only when the

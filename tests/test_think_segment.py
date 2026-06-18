@@ -36,6 +36,11 @@ def _segment_configs(*names: str) -> dict[str, dict]:
             "type": "cogitate",
             "schedule": "segment",
         },
+        "documents": {
+            "priority": 20,
+            "type": "cogitate",
+            "schedule": "segment",
+        },
         "timeline:segment_summary": {
             "priority": 41,
             "type": "generate",
@@ -67,6 +72,113 @@ def _write_sense_output(segment_dir: Path, sense_json: dict) -> None:
         json.dumps(sense_json),
         encoding="utf-8",
     )
+
+
+def _active_sense_json() -> dict:
+    return {
+        "density": "active",
+        "content_type": "coding",
+        "activity_summary": "coding work",
+        "recommend": {
+            "screen_record": True,
+            "speaker_attribution": True,
+        },
+        "facets": [{"facet": "work", "activity": "coding", "level": "high"}],
+        "entities": [],
+        "meeting_detected": False,
+        "speakers": [],
+    }
+
+
+def _write_screen_header(
+    segment_dir: Path,
+    *,
+    first_hash: str = "0000000000000000",
+    last_hash: str = "0000000000000000",
+) -> None:
+    (segment_dir / "center_DP-3_screen.jsonl").write_text(
+        json.dumps(
+            {
+                "raw": "center_DP-3_screen.webm",
+                "first_hash": first_hash,
+                "last_hash": last_hash,
+                "qualified_count": 1,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_predecessor_change(
+    predecessor_dir: Path,
+    *,
+    screen_last_hash: str = "0000000000000000",
+    transcript: dict | None = None,
+) -> None:
+    if transcript is None:
+        transcript = {
+            "present": False,
+            "word_count": 0,
+            "content_hash": None,
+        }
+    payload = {
+        "timestamp": "2024-01-15T11:55:00+00:00",
+        "predecessor": None,
+        "change_class": "active",
+        "changed_sensors": ["screen"],
+        "sensors": {
+            "screen": {
+                "monitors": {
+                    "center:DP-3": {
+                        "first_hash": "0000000000000000",
+                        "last_hash": screen_last_hash,
+                        "qualified_count": 1,
+                    }
+                }
+            },
+            "transcript": transcript,
+        },
+    }
+    talents_dir = predecessor_dir / "talents"
+    talents_dir.mkdir(parents=True, exist_ok=True)
+    (talents_dir / "change.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+
+def _make_predecessor(segment_dir: Path) -> Path:
+    predecessor_dir = segment_dir.parent / "115000_300"
+    predecessor_dir.mkdir(parents=True, exist_ok=True)
+    _write_predecessor_change(predecessor_dir)
+    return predecessor_dir
+
+
+def _patch_segment_cortex(monkeypatch, think, spawned: list[str]) -> None:
+    monkeypatch.setattr(
+        think,
+        "get_talent_configs",
+        lambda schedule=None, **kwargs: _segment_configs(
+            "sense",
+            "entities",
+            "documents",
+            "timeline:segment_summary",
+            "screen",
+            "speaker_attribution",
+        ),
+    )
+    monkeypatch.setattr(
+        think,
+        "cortex_request",
+        lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+    )
+    monkeypatch.setattr(
+        think,
+        "wait_for_uses",
+        lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+    )
+    monkeypatch.setattr(think, "_callosum", None)
 
 
 class TestLoadSegmentFacets:
@@ -344,6 +456,314 @@ class TestRunSegmentSense:
         )
 
         assert spawned == expected
+
+    def test_non_idle_dispatch_set_unchanged_with_change_detection(
+        self, segment_dir, monkeypatch
+    ):
+        from solstone.think import thinking as think
+
+        spawned = []
+        (segment_dir / "audio.npz").write_bytes(b"npz")
+        _write_sense_output(
+            segment_dir,
+            {
+                "density": "active",
+                "recommend": {
+                    "screen_record": True,
+                    "speaker_attribution": True,
+                },
+                "facets": [],
+            },
+        )
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _segment_configs(
+                "sense",
+                "entities",
+                "documents",
+                "timeline:segment_summary",
+                "screen",
+                "speaker_attribution",
+            ),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "_callosum", None)
+
+        think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+
+        assert spawned == [
+            "sense",
+            "entities",
+            "documents",
+            "timeline:segment_summary",
+            "screen",
+            "speaker_attribution",
+        ]
+
+    def test_redundant_skips_writeups_and_writes_continuation(
+        self, segment_dir, monkeypatch
+    ):
+        from solstone.think import thinking as think
+        from solstone.think.change_detection import resolve_predecessor
+
+        spawned = []
+        _make_predecessor(segment_dir)
+        _write_screen_header(segment_dir, first_hash="0000000000000000")
+        (segment_dir / "audio.npz").write_bytes(b"npz")
+        _write_sense_output(segment_dir, _active_sense_json())
+        _patch_segment_cortex(monkeypatch, think, spawned)
+
+        success, failed, failed_names = think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+            predecessor=resolve_predecessor("20240115", "default", "120000_300"),
+        )
+
+        assert (success, failed, failed_names) == (1, 0, [])
+        assert spawned == ["sense"]
+        change = json.loads((segment_dir / "talents" / "change.json").read_text())
+        assert change["change_class"] == "redundant"
+        assert change["sensors"]["transcript"]["present"] is False
+        timeline = json.loads((segment_dir / "timeline.json").read_text())
+        assert timeline["continuation_of"] == "115000_300"
+        assert timeline["title"]
+        assert timeline["description"]
+
+    def test_active_changed_sensor_dispatches_full_set(self, segment_dir, monkeypatch):
+        from solstone.think import thinking as think
+        from solstone.think.change_detection import resolve_predecessor
+
+        spawned = []
+        _make_predecessor(segment_dir)
+        _write_screen_header(segment_dir, first_hash="00000000000000ff")
+        (segment_dir / "audio.npz").write_bytes(b"npz")
+        _write_sense_output(segment_dir, _active_sense_json())
+        _patch_segment_cortex(monkeypatch, think, spawned)
+
+        think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+            predecessor=resolve_predecessor("20240115", "default", "120000_300"),
+        )
+
+        assert spawned == [
+            "sense",
+            "entities",
+            "documents",
+            "timeline:segment_summary",
+            "screen",
+            "speaker_attribution",
+        ]
+        change = json.loads((segment_dir / "talents" / "change.json").read_text())
+        assert change["change_class"] == "active"
+        assert change["changed_sensors"] == ["screen"]
+
+    def test_changed_transcript_is_active_not_redundant(self, segment_dir, monkeypatch):
+        from solstone.think import thinking as think
+        from solstone.think.change_detection import resolve_predecessor
+
+        spawned = []
+        predecessor_dir = _make_predecessor(segment_dir)
+        _write_predecessor_change(
+            predecessor_dir,
+            transcript={
+                "present": True,
+                "word_count": 1,
+                "content_hash": "sha256:previous",
+            },
+        )
+        _write_screen_header(segment_dir, first_hash="0000000000000000")
+        (segment_dir / "audio.jsonl").write_text(
+            json.dumps({})
+            + "\n"
+            + json.dumps(
+                {
+                    "start": "00:00:01",
+                    "text": "one two three four five six seven eight",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (segment_dir / "audio.npz").write_bytes(b"npz")
+        _write_sense_output(segment_dir, _active_sense_json())
+        _patch_segment_cortex(monkeypatch, think, spawned)
+
+        think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+            predecessor=resolve_predecessor("20240115", "default", "120000_300"),
+        )
+
+        assert spawned == [
+            "sense",
+            "entities",
+            "documents",
+            "timeline:segment_summary",
+            "screen",
+            "speaker_attribution",
+        ]
+        change = json.loads((segment_dir / "talents" / "change.json").read_text())
+        assert change["change_class"] == "active"
+        assert change["changed_sensors"] == ["transcript"]
+
+    def test_refresh_bypasses_redundant(self, segment_dir, monkeypatch):
+        from solstone.think import thinking as think
+        from solstone.think.change_detection import resolve_predecessor
+
+        spawned = []
+        _make_predecessor(segment_dir)
+        _write_screen_header(segment_dir, first_hash="0000000000000000")
+        (segment_dir / "audio.npz").write_bytes(b"npz")
+        _write_sense_output(segment_dir, _active_sense_json())
+        _patch_segment_cortex(monkeypatch, think, spawned)
+
+        think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=True,
+            verbose=False,
+            stream="default",
+            predecessor=resolve_predecessor("20240115", "default", "120000_300"),
+        )
+
+        assert spawned == [
+            "sense",
+            "entities",
+            "documents",
+            "timeline:segment_summary",
+            "screen",
+            "speaker_attribution",
+        ]
+        assert not (segment_dir / "timeline.json").exists()
+
+    def test_redundant_continuation_is_idempotent(self, segment_dir, monkeypatch):
+        from solstone.think import thinking as think
+        from solstone.think.change_detection import resolve_predecessor
+
+        spawned = []
+        _make_predecessor(segment_dir)
+        _write_screen_header(segment_dir, first_hash="0000000000000000")
+        _write_sense_output(segment_dir, _active_sense_json())
+        _patch_segment_cortex(monkeypatch, think, spawned)
+        predecessor = resolve_predecessor("20240115", "default", "120000_300")
+
+        think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+            predecessor=predecessor,
+        )
+        first = (segment_dir / "timeline.json").read_bytes()
+        think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+            predecessor=predecessor,
+        )
+        second = (segment_dir / "timeline.json").read_bytes()
+
+        assert first == second
+
+    def test_redundant_state_machine_matches_active(self, tmp_path, monkeypatch):
+        from solstone.think import thinking as think
+        from solstone.think.activity_state_machine import ActivityStateMachine
+        from solstone.think.change_detection import resolve_predecessor
+
+        def prepare(journal: Path) -> Path:
+            seg_dir = journal / "chronicle" / "20240115" / "default" / "120000_300"
+            seg_dir.mkdir(parents=True)
+            (seg_dir / "talents").mkdir(parents=True)
+            _make_predecessor(seg_dir)
+            _write_screen_header(seg_dir, first_hash="0000000000000000")
+            _write_sense_output(seg_dir, _active_sense_json())
+            state = {
+                "last_segment_key": "115000_300",
+                "last_segment_day": "20240115",
+                "active": {
+                    "work": {
+                        "id": "coding-115000_300",
+                        "activity": "coding",
+                        "state": "active",
+                        "since": "115000_300",
+                        "description": "coding work",
+                        "level": "high",
+                        "active_entities": [],
+                        "facet": "work",
+                        "segment": "115000_300",
+                        "segments": ["115000_300"],
+                    }
+                },
+            }
+            state_path = journal / "awareness" / "activity_state.json"
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            return seg_dir
+
+        def run_case(
+            journal: Path, *, refresh: bool
+        ) -> tuple[ActivityStateMachine, bytes]:
+            spawned: list[str] = []
+            monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+            _patch_segment_cortex(monkeypatch, think, spawned)
+            state_machine = ActivityStateMachine(journal_root=journal)
+            think.run_segment_sense(
+                "20240115",
+                "120000_300",
+                refresh=refresh,
+                verbose=False,
+                stream="default",
+                state_machine=state_machine,
+                predecessor=resolve_predecessor("20240115", "default", "120000_300"),
+            )
+            snapshot = (journal / "awareness" / "activity_state.json").read_bytes()
+            return state_machine, snapshot
+
+        redundant_journal = tmp_path / "redundant"
+        active_journal = tmp_path / "active"
+        prepare(redundant_journal)
+        prepare(active_journal)
+
+        redundant_sm, redundant_snapshot = run_case(redundant_journal, refresh=False)
+        active_sm, active_snapshot = run_case(active_journal, refresh=True)
+
+        assert redundant_snapshot == active_snapshot
+        assert redundant_sm.state["work"]["segments"] == ["115000_300", "120000_300"]
+        assert active_sm.state["work"]["segments"] == ["115000_300", "120000_300"]
+        assert redundant_sm.state["work"]["_change"] == "continuing"
+        assert active_sm.state["work"]["_change"] == "continuing"
+        assert redundant_sm.get_completed_activities() == []
+        assert active_sm.get_completed_activities() == []
 
     def test_refresh_bypasses_idle(self, segment_dir, monkeypatch):
         from solstone.think import thinking as think
@@ -1032,8 +1452,16 @@ class TestThinkJSONLEvents:
             for line in jsonl_path.read_text(encoding="utf-8").strip().splitlines()
         ]
         skips = [event for event in events if event["event"] == "talent.skip"]
+        dispatches = [event for event in events if event["event"] == "talent.dispatch"]
+        change_events = [
+            event for event in events if event["event"] == "sense.change_detect"
+        ]
 
         assert any(skip["reason"] == "density_idle" for skip in skips)
+        assert [event["name"] for event in dispatches] == ["sense"]
+        assert len(change_events) == 1
+        assert change_events[0]["change_class"] == "idle"
+        assert "changed_sensors" in change_events[0]
 
     def test_sense_complete_and_skip_events(self, segment_dir, monkeypatch):
         from solstone.think import thinking as think

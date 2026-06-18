@@ -65,7 +65,7 @@ def test_private_link_setup_success(
     monkeypatch.setattr(
         link_routes.spl_handoff,
         "run_spl_handoff",
-        lambda **_kwargs: operations.HandoffResult("enabled", None, False, True, None),
+        lambda **_kwargs: operations.HandoffResult("enabled", None, False),
     )
 
     result = _invoke("setup", "--wait-seconds", "1", "--poll-interval", "0.01")
@@ -75,29 +75,28 @@ def test_private_link_setup_success(
     assert "solstone private link is on" in result.stdout
 
 
-def test_private_link_setup_browser_fallback_prints_portal_url(
+def test_private_link_setup_prints_consent_url(
     link_env,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     env = link_env()
     _configure_cli(env, monkeypatch)
+    consent_url = "https://services.test/enable/spl?nonce=NONCE&instance=INSTANCE"
+    monkeypatch.setattr(
+        link_routes.spl_handoff,
+        "build_spl_handoff_url",
+        lambda: (consent_url, "NONCE", "https://services.test"),
+    )
     monkeypatch.setattr(
         link_routes.spl_handoff,
         "run_spl_handoff",
-        lambda **_kwargs: operations.HandoffResult(
-            "enabled",
-            None,
-            False,
-            False,
-            "http://portal/x",
-        ),
+        lambda **_kwargs: operations.HandoffResult("enabled", None, False),
     )
 
     result = _invoke("setup", "--wait-seconds", "1", "--poll-interval", "0.01")
 
     assert result.exit_code == 0
-    assert "couldn't open your browser" in result.stdout
-    assert "http://portal/x" in result.stdout
+    assert f"{link_call.PRIVATE_LINK_PORTAL_CTA} {consent_url}" in result.stdout
 
 
 def test_private_link_setup_error_exits_nonzero(
@@ -109,13 +108,7 @@ def test_private_link_setup_error_exits_nonzero(
     monkeypatch.setattr(
         link_routes.spl_handoff,
         "run_spl_handoff",
-        lambda **_kwargs: operations.HandoffResult(
-            "error",
-            "try again",
-            True,
-            True,
-            None,
-        ),
+        lambda **_kwargs: operations.HandoffResult("error", "try again", True),
     )
 
     result = _invoke("setup", "--wait-seconds", "1", "--poll-interval", "0.01")
@@ -140,9 +133,7 @@ def test_private_link_setup_needs_subscription_exits_zero(
             "needs_subscription",
             "private link needs an active subscription before it can turn on.",
             False,
-            True,
-            None,
-            subscribe_url,
+            subscribe_url=subscribe_url,
         ),
     )
 

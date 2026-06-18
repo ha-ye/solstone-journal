@@ -7,7 +7,7 @@ from typer.testing import CliRunner
 
 from solstone.apps.activities.call import app
 from solstone.think.convey_client import ConveyClient
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client
 
 runner = CliRunner()
 
@@ -29,7 +29,6 @@ def _configure_cli_env(tmp_path, monkeypatch) -> None:
     (config_dir / "journal.json").write_text(
         json.dumps(
             {
-                "convey": {"trust_localhost": True},
                 "setup": {"completed_at": 1700000000000},
             }
         )
@@ -51,7 +50,7 @@ def _configure_cli_env(tmp_path, monkeypatch) -> None:
     import solstone.think.utils as think_utils
 
     think_utils._journal_path_cache = None
-    client = ConveyClient(session=make_logged_in_test_client(tmp_path), base_url="")
+    client = ConveyClient(session=make_test_client(tmp_path), base_url="")
     monkeypatch.setattr("solstone.apps.activities.call.get_client", lambda: client)
 
 

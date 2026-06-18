@@ -30,6 +30,9 @@ def _set_journal(tmp_path, monkeypatch) -> Path:
     journal = tmp_path / "journal"
     journal.mkdir()
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    import solstone.think.utils as think_utils
+
+    think_utils._journal_path_cache = None
     return journal
 
 

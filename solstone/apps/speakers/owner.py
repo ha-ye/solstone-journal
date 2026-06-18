@@ -10,10 +10,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
-
-import numpy as np
-from sklearn.cluster import HDBSCAN
+from typing import TYPE_CHECKING, Any
 
 from solstone.apps.speakers._overlap import _read_segment_overlap_fraction
 from solstone.apps.speakers.encoder_config import (
@@ -34,6 +31,9 @@ from solstone.think.entities.voiceprints import load_entity_voiceprints_file
 from solstone.think.journal_io.errors import LockTimeout
 from solstone.think.journal_io.npz import load_npz, save_npz
 from solstone.think.utils import day_dirs, get_journal, segment_path
+
+if TYPE_CHECKING:
+    import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +125,8 @@ def _bail_low_quality(
 
 def _pairwise_cosines(embeddings: np.ndarray) -> np.ndarray:
     """Return pairwise cosine similarities for a cluster of embeddings."""
+    import numpy as np
+
     n = embeddings.shape[0]
     if n < 2:
         return np.empty(0, dtype=np.float32)
@@ -148,6 +150,8 @@ def _pairwise_cosines(embeddings: np.ndarray) -> np.ndarray:
 
 def compute_intra_cosine_p25(embeddings: np.ndarray) -> float | None:
     """Return p25 pairwise cosine for embeddings, or None when unavailable."""
+    import numpy as np
+
     cosines = _pairwise_cosines(np.asarray(embeddings, dtype=np.float32))
     if cosines.size == 0:
         return None
@@ -464,6 +468,8 @@ def _write_owner_centroid(
     principal_id: str, centroid: np.ndarray, cluster_size: int
 ) -> Path:
     """Write owner_centroid.npz with the canonical schema."""
+    import numpy as np
+
     owner_path = ensure_journal_entity_memory(principal_id) / "owner_centroid.npz"
     save_npz(
         owner_path,
@@ -486,6 +492,8 @@ def _apply_owner_quality_gates(
     source: str,
 ) -> dict[str, Any] | None:
     """Return a low-quality payload when a gate fails, or None when all pass."""
+    import numpy as np
+
     cluster_size = int(cluster_embeddings.shape[0])
     if cluster_size < OWNER_BOOTSTRAP_MIN_STMTS:
         return _bail_low_quality(
@@ -531,6 +539,8 @@ def _collect_manual_tag_embeddings(
     principal_id: str,
 ) -> tuple[np.ndarray, list[dict[str, Any]]]:
     """Load validated owner-tag embeddings and provenance for the principal."""
+    import numpy as np
+
     load_embeddings_file, _, _ = _routes_helpers()
 
     rows = _load_manual_tag_rows(principal_id)
@@ -588,6 +598,7 @@ def _collect_manual_tag_embeddings(
 def load_owner_provisional_centroid(principal_id: str) -> np.ndarray | None:
     """Load or rebuild a cached provisional owner centroid from manual tags."""
     global _PROVISIONAL_GUARD_CACHE
+    import numpy as np
 
     centroid_path = journal_entity_memory_path(principal_id) / "owner_centroid.npz"
     if centroid_path.exists():
@@ -649,6 +660,8 @@ def _subsample_embeddings(
     embeddings: np.ndarray, provenance: list[dict[str, Any]]
 ) -> tuple[np.ndarray, list[dict[str, Any]]]:
     """Subsample embeddings proportionally across streams when over the limit."""
+    import numpy as np
+
     total = len(embeddings)
     if total <= MAX_EMBEDDINGS:
         return embeddings, provenance
@@ -699,6 +712,9 @@ def _subsample_embeddings(
 
 def detect_owner_candidate() -> dict[str, Any]:
     """Detect a likely owner voice centroid from journal embeddings."""
+    import numpy as np
+    from sklearn.cluster import HDBSCAN
+
     load_embeddings_file, normalize_embedding, scan_segment_embeddings = (
         _routes_helpers()
     )
@@ -943,6 +959,8 @@ def _load_owner_voiceprint_summary(
 
 def load_owner_centroid() -> OwnerCentroid | None:
     """Load the confirmed owner centroid and metadata for the principal entity."""
+    import numpy as np
+
     principal = get_journal_principal()
     if not principal:
         return None
@@ -994,6 +1012,8 @@ def classify_sentences(
     day: str, stream: str, segment_key: str, source: str
 ) -> list[dict[str, Any]]:
     """Classify segment sentences against the confirmed owner centroid."""
+    import numpy as np
+
     load_embeddings_file, normalize_embedding, _ = _routes_helpers()
 
     centroid_data = load_owner_centroid()
@@ -1034,6 +1054,8 @@ def confirm_owner_candidate() -> dict[str, Any]:
 
     Returns a dict with status and principal_id on success, or an error key.
     """
+    import numpy as np
+
     from solstone.think.entities import entity_slug
     from solstone.think.entities.core import get_identity_names
     from solstone.think.entities.journal import (
@@ -1093,6 +1115,8 @@ def confirm_owner_candidate() -> dict[str, Any]:
 
 def bootstrap_owner_from_manual_tags() -> dict[str, Any]:
     """Promote validated principal manual tags into a confirmed owner centroid."""
+    import numpy as np
+
     _, normalize_embedding, _ = _routes_helpers()
 
     principal_id = _principal_id_or_none()

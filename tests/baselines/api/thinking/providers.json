@@ -1,4 +1,12 @@
 {
+  "active_lane": {
+    "cogitate": "byo",
+    "generate": "byo",
+    "lane": "byo",
+    "scout_enabled": false,
+    "scout_provenance_configured": false,
+    "split": false
+  },
   "ai_readiness": {
     "groups": [
       {
@@ -10,7 +18,7 @@
         "provider": "openai",
         "reason_code": "provider_key_missing",
         "recovery_action": {
-          "href": "/app/thinking/#providers",
+          "href": "/app/thinking/#main",
           "label": "Open Settings"
         },
         "semantic_key": "provider_key_missing:openai:",
@@ -28,7 +36,7 @@
         "provider": "google",
         "reason_code": "provider_key_missing",
         "recovery_action": {
-          "href": "/app/thinking/#providers",
+          "href": "/app/thinking/#main",
           "label": "Open Settings"
         },
         "semantic_key": "provider_key_missing:google:",
@@ -48,7 +56,7 @@
         "provider": "openai",
         "reason_code": "provider_key_missing",
         "recovery_action": {
-          "href": "/app/thinking/#providers",
+          "href": "/app/thinking/#main",
           "label": "Open Settings"
         },
         "semantic_key": "provider_key_missing:openai:",
@@ -66,7 +74,7 @@
         "provider": "google",
         "reason_code": "provider_key_missing",
         "recovery_action": {
-          "href": "/app/thinking/#providers",
+          "href": "/app/thinking/#main",
           "label": "Open Settings"
         },
         "semantic_key": "provider_key_missing:google:",
@@ -85,7 +93,7 @@
       "provider": "local",
       "reason_code": "local_model_missing",
       "recovery_action": {
-        "href": "/app/thinking/#providers",
+        "href": "/app/thinking/#local-setup",
         "label": "Open Local Model Setup"
       },
       "semantic_key": "local_model_missing:local:local/qwen3.5-4b",
@@ -105,14 +113,6 @@
     "anthropic": false,
     "google": false,
     "openai": false
-  },
-  "active_lane": {
-    "cogitate": "byo",
-    "generate": "byo",
-    "lane": "byo",
-    "scout_enabled": false,
-    "scout_provenance_configured": false,
-    "split": false
   },
   "cogitate": {
     "backup": "anthropic",
@@ -205,14 +205,6 @@
       "label": "Agent Prompt Generation",
       "tier": 2
     },
-    "talent.activities.activities_review": {
-      "disabled": false,
-      "group": "Activities",
-      "label": "Activities Review",
-      "schedule": "daily",
-      "tier": 2,
-      "type": "cogitate"
-    },
     "talent.entities.entities": {
       "disabled": false,
       "group": "Entities",
@@ -270,7 +262,7 @@
       "group": "Think",
       "label": "Conversation Story",
       "schedule": "activity",
-      "tier": 2,
+      "tier": 3,
       "type": "generate"
     },
     "talent.system.daily_schedule": {
@@ -372,7 +364,7 @@
       "group": "Think",
       "label": "Screen Record",
       "schedule": "segment",
-      "tier": 2,
+      "tier": 3,
       "type": "generate"
     },
     "talent.system.sense": {

@@ -10,8 +10,10 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import huggingface_hub
 import pytest
 from huggingface_hub import RepoFile
+from huggingface_hub import constants as hf_constants
 
 from solstone.think.journal_config import read_journal_config
 from solstone.think.models import GEMMA4_26B_A4B_4BIT, QWEN_35_9B
@@ -27,7 +29,7 @@ def _init_journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         encoding="utf-8",
     )
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr(mlx_install.constants, "HF_HUB_CACHE", str(tmp_path / "hf"))
+    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path / "hf"))
 
 
 def _local_status() -> dict:
@@ -206,9 +208,7 @@ def test_install_local_mlx_writes_canonical_sequence(
         return variant_dir
 
     monkeypatch.setattr(mlx_install, "is_mlx_available_for_model", fake_available)
-    monkeypatch.setattr(
-        mlx_install.huggingface_hub, "snapshot_download", fake_snapshot_download
-    )
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
     monkeypatch.setattr(mlx_install, "validate_snapshot_sha256", fake_verify)
     monkeypatch.setattr(mlx_install, "create_gemma4_variant", fake_create)
 
@@ -270,7 +270,7 @@ def test_download_failure_transitions_failed(
     def fail_download(**_kwargs):
         raise RuntimeError("download broke")
 
-    monkeypatch.setattr(mlx_install.huggingface_hub, "snapshot_download", fail_download)
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fail_download)
 
     with pytest.raises(RuntimeError, match="download broke"):
         mlx_install.install_local_mlx()
@@ -294,9 +294,7 @@ def test_verify_failure_transitions_failed(
     def fail_verify(_spec, _snapshot_dir):
         raise mlx_install.MLXVerificationError("verify broke")
 
-    monkeypatch.setattr(
-        mlx_install.huggingface_hub, "snapshot_download", fake_snapshot_download
-    )
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
     monkeypatch.setattr(mlx_install, "validate_snapshot_sha256", fail_verify)
 
     with pytest.raises(mlx_install.MLXVerificationError, match="verify broke"):
@@ -315,9 +313,7 @@ def test_installing_failure_transitions_failed(
     snapshot_dir, _sha = _write_snapshot(spec)
 
     monkeypatch.setattr(
-        mlx_install.huggingface_hub,
-        "snapshot_download",
-        lambda **_kwargs: str(snapshot_dir),
+        huggingface_hub, "snapshot_download", lambda **_kwargs: str(snapshot_dir)
     )
     monkeypatch.setattr(mlx_install, "validate_snapshot_sha256", lambda *_args: None)
 
@@ -345,9 +341,7 @@ def test_idempotent_rerun_skips_network(
     def fake_verify(_spec, _snapshot_dir):
         calls["verify"] += 1
 
-    monkeypatch.setattr(
-        mlx_install.huggingface_hub, "snapshot_download", fake_snapshot_download
-    )
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
     monkeypatch.setattr(mlx_install, "validate_snapshot_sha256", fake_verify)
 
     assert mlx_install.install_local_mlx()["install_state"] == "installed"
@@ -378,7 +372,7 @@ def test_validate_snapshot_sha256_uses_lfs_metadata(
                 )
             ]
 
-    monkeypatch.setattr(mlx_install.huggingface_hub, "HfApi", lambda: FakeApi())
+    monkeypatch.setattr(huggingface_hub, "HfApi", lambda: FakeApi())
 
     mlx_install.validate_snapshot_sha256(spec, snapshot_dir)
 

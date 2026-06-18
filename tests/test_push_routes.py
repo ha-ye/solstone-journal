@@ -132,12 +132,10 @@ def test_register_refuses_none_fingerprint_on_loopback(journal_copy):
     assert response.get_json()["reason_code"] == "push_request_invalid"
 
 
-def test_register_refuses_none_fingerprint_on_session_auth(journal_copy):
+def test_register_refuses_missing_paired_identity(journal_copy):
     app = create_app(str(journal_copy))
     app.config["TESTING"] = True
     client = app.test_client()
-    with client.session_transaction() as session:
-        session["logged_in"] = True
     try:
         response = client.post(
             "/api/push/register",

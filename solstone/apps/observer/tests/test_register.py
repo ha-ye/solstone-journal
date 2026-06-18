@@ -163,8 +163,6 @@ def test_register_works_before_setup_complete(tmp_path, monkeypatch):
 
     config_path = journal_copy / "config" / "journal.json"
     config = json.loads(config_path.read_text())
-    config.setdefault("convey", {}).pop("password_hash", None)
-    config["convey"].pop("password", None)
     config.setdefault("setup", {}).pop("completed_at", None)
     config_path.write_text(json.dumps(config, indent=2))
 

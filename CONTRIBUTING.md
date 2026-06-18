@@ -66,13 +66,12 @@ journal setup
 
 The source-checkout journal lives at `journal/` inside the repo unless you pass `--journal` or have already configured another path.
 
-Configure API keys and the web password in `journal/config/journal.json`. This file is the only key configuration method for source-checkout development:
+Configure API keys in `journal/config/journal.json`. This file is the only key configuration method for source-checkout development:
 
 ```bash
 mkdir -p journal/config
 cat > journal/config/journal.json << 'EOF'
 {
-  "convey": {},
   "env": {
     "GOOGLE_API_KEY": "your-key-here"
   }
@@ -81,11 +80,10 @@ EOF
 chmod 600 journal/config/journal.json
 ```
 
-Run `journal password set` to configure web authentication. Replace `your-key-here` with your Google AI API key. Optional provider keys can be added to the same `env` object:
+Replace `your-key-here` with your Google AI API key. Optional provider keys can be added to the same `env` object:
 
 ```json
 {
-  "convey": {},
   "env": {
     "GOOGLE_API_KEY": "your-gemini-key",
     "OPENAI_API_KEY": "your-openai-key",

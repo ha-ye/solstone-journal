@@ -70,6 +70,27 @@ def origin_for_segment(seg_dir):
     return "/".join(parts[ci + 1 :])
 
 
+def write_continuation_summary(seg_dir: Path, predecessor_segment_key: str) -> None:
+    """Write a deterministic continuation timeline entry for a redundant segment.
+
+    A redundant segment is unchanged versus its stream-predecessor, so it skips
+    the LLM segment-summary dispatch. This records a cheap, attributable
+    continuation entry that names the predecessor segment key in
+    ``continuation_of``. The payload carries no wall-clock field, so
+    re-running an unchanged segment reproduces it byte-for-byte.
+    """
+    payload = {
+        "title": "Continued",
+        "description": "Unchanged from the prior window.",
+        "origin": origin_for_segment(seg_dir),
+        "continuation_of": predecessor_segment_key,
+    }
+    atomic_replace(
+        seg_dir / "timeline.json",
+        json.dumps(payload, ensure_ascii=False) + "\n",
+    )
+
+
 def _candidate_segment_dirs(day: str, segment: str, stream: str | None) -> list[Path]:
     candidates: list[Path] = []
     seen: set[Path] = set()

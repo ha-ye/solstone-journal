@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import json
+
 from solstone.convey import create_app
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client
 from tests.test_surfaces_ledger import (
     _commitment,
     _minimal_facet_tree,
@@ -25,6 +27,16 @@ def _assert_error(response, status: int) -> dict:
 
 
 def _configure_journal(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "journal.json").write_text(
+        json.dumps({"setup": {"completed_at": 1}}),
+        encoding="utf-8",
+    )
+
+
+def _configure_unset_journal(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
 
@@ -54,7 +66,7 @@ def test_ledger_list_collection_envelope_and_bound(tmp_path, monkeypatch):
             _utc_ms(f"2026-04-10T09:{index:02d}:00Z"),
             commitments=[_commitment(action=f"action number {index}")],
         )
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     response = client.get(PREFIX)
 
@@ -90,7 +102,7 @@ def test_ledger_list_counterparty_filter_narrows_total(tmp_path, monkeypatch):
                 )
             ],
         )
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     all_response = client.get(PREFIX)
     filtered_response = client.get(f"{PREFIX}?counterparty=Ravi")
@@ -103,7 +115,7 @@ def test_ledger_list_counterparty_filter_narrows_total(tmp_path, monkeypatch):
 def test_ledger_list_bad_state_returns_invalid_request_value(tmp_path, monkeypatch):
     _configure_journal(tmp_path, monkeypatch)
     _minimal_facet_tree(tmp_path)
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     data = _assert_error(client.get(f"{PREFIX}?state=bogus"), 400)
 
@@ -113,7 +125,7 @@ def test_ledger_list_bad_state_returns_invalid_request_value(tmp_path, monkeypat
 def test_ledger_list_bad_sort_returns_invalid_request_value(tmp_path, monkeypatch):
     _configure_journal(tmp_path, monkeypatch)
     _minimal_facet_tree(tmp_path)
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     data = _assert_error(client.get(f"{PREFIX}?sort=bogus"), 400)
 
@@ -125,7 +137,7 @@ def test_ledger_list_bad_age_days_gte_returns_invalid_request_value(
 ):
     _configure_journal(tmp_path, monkeypatch)
     _minimal_facet_tree(tmp_path)
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     data = _assert_error(client.get(f"{PREFIX}?age_days_gte=abc"), 400)
 
@@ -135,7 +147,7 @@ def test_ledger_list_bad_age_days_gte_returns_invalid_request_value(
 def test_ledger_list_bad_closed_since_returns_invalid_day(tmp_path, monkeypatch):
     _configure_journal(tmp_path, monkeypatch)
     _minimal_facet_tree(tmp_path)
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     notaday = _assert_error(client.get(f"{PREFIX}?closed_since=notaday"), 400)
     bad_month = _assert_error(client.get(f"{PREFIX}?closed_since=20261301"), 400)
@@ -154,7 +166,7 @@ def test_ledger_decisions_collection_envelope_and_routing(tmp_path, monkeypatch)
         _utc_ms("2026-04-10T09:00:00Z"),
         decisions=[_decision(action="move launch review")],
     )
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     response = client.get(f"{PREFIX}/decisions")
 
@@ -168,7 +180,7 @@ def test_ledger_decisions_collection_envelope_and_routing(tmp_path, monkeypatch)
 def test_ledger_decisions_bad_since_returns_invalid_day(tmp_path, monkeypatch):
     _configure_journal(tmp_path, monkeypatch)
     _minimal_facet_tree(tmp_path)
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     data = _assert_error(client.get(f"{PREFIX}/decisions?since=bad"), 400)
 
@@ -185,7 +197,7 @@ def test_ledger_get_item_returns_recursive_dataclass_dict(tmp_path, monkeypatch)
         _utc_ms("2026-04-10T09:00:00Z"),
         commitments=[_commitment()],
     )
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
     item_id = client.get(PREFIX).get_json()["items"][0]["id"]
 
     response = client.get(f"{PREFIX}/{item_id}")
@@ -200,7 +212,7 @@ def test_ledger_get_item_returns_recursive_dataclass_dict(tmp_path, monkeypatch)
 def test_ledger_get_item_missing_returns_ledger_item_not_found(tmp_path, monkeypatch):
     _configure_journal(tmp_path, monkeypatch)
     _minimal_facet_tree(tmp_path)
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     data = _assert_error(client.get(f"{PREFIX}/does-not-exist"), 404)
 
@@ -217,7 +229,7 @@ def test_ledger_close_flips_state(tmp_path, monkeypatch):
         _utc_ms("2026-04-10T09:00:00Z"),
         commitments=[_commitment()],
     )
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
     item_id = client.get(PREFIX).get_json()["items"][0]["id"]
 
     closed_response = client.post(f"{PREFIX}/{item_id}/close", json={"note": "done"})
@@ -242,7 +254,7 @@ def test_ledger_close_decision_id_returns_ledger_item_not_found(tmp_path, monkey
         _utc_ms("2026-04-10T09:00:00Z"),
         decisions=[_decision()],
     )
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
     decision_id = client.get(f"{PREFIX}/decisions").get_json()["items"][0]["id"]
 
     data = _assert_error(
@@ -255,7 +267,7 @@ def test_ledger_close_decision_id_returns_ledger_item_not_found(tmp_path, monkey
 def test_ledger_close_no_body_returns_missing_request_body(tmp_path, monkeypatch):
     _configure_journal(tmp_path, monkeypatch)
     _minimal_facet_tree(tmp_path)
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     data = _assert_error(client.post(f"{PREFIX}/does-not-exist/close"), 400)
 
@@ -265,7 +277,7 @@ def test_ledger_close_no_body_returns_missing_request_body(tmp_path, monkeypatch
 def test_ledger_close_non_json_returns_invalid_json_request(tmp_path, monkeypatch):
     _configure_journal(tmp_path, monkeypatch)
     _minimal_facet_tree(tmp_path)
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     data = _assert_error(
         client.post(
@@ -282,7 +294,7 @@ def test_ledger_close_non_json_returns_invalid_json_request(tmp_path, monkeypatc
 def test_ledger_close_empty_note_returns_missing_required_field(tmp_path, monkeypatch):
     _configure_journal(tmp_path, monkeypatch)
     _minimal_facet_tree(tmp_path)
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     data = _assert_error(
         client.post(f"{PREFIX}/does-not-exist/close", json={"note": "  "}), 400
@@ -294,7 +306,7 @@ def test_ledger_close_empty_note_returns_missing_required_field(tmp_path, monkey
 def test_ledger_close_bad_as_state_returns_invalid_request_value(tmp_path, monkeypatch):
     _configure_journal(tmp_path, monkeypatch)
     _minimal_facet_tree(tmp_path)
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     data = _assert_error(
         client.post(
@@ -307,8 +319,8 @@ def test_ledger_close_bad_as_state_returns_invalid_request_value(tmp_path, monke
     assert data["reason_code"] == "invalid_request_value"
 
 
-def test_ledger_requires_login(tmp_path, monkeypatch):
-    _configure_journal(tmp_path, monkeypatch)
+def test_ledger_redirects_to_init_when_setup_incomplete(tmp_path, monkeypatch):
+    _configure_unset_journal(tmp_path, monkeypatch)
     app = create_app(journal=str(tmp_path))
     app.config["TESTING"] = True
     client = app.test_client()
@@ -316,3 +328,4 @@ def test_ledger_requires_login(tmp_path, monkeypatch):
     response = client.get(PREFIX)
 
     assert response.status_code == 302
+    assert "/init" in response.headers["Location"]

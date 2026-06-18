@@ -129,6 +129,16 @@ class ActivityStateMachine:
             "created_at": int(time.time() * 1000),
         }
 
+    def close_active(
+        self, segment_key: str, change: str = "ended_day_end"
+    ) -> list[dict]:
+        """End every still-active activity (end-of-batch flush).
+
+        Mirrors the end transitions: a completed record is appended per active
+        entry and state is cleared. Returns the 'ended' change entries.
+        """
+        return self._end_all(segment_key, change)
+
     def update(
         self,
         sense_output: dict,

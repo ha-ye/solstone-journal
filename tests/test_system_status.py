@@ -5,6 +5,7 @@
 
 import json
 import sys
+import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 
@@ -29,7 +30,6 @@ def client(tmp_path, monkeypatch):
     journal = tmp_path
     (journal / "config").mkdir(parents=True, exist_ok=True)
     config = {
-        "convey": {"password_hash": "", "trust_localhost": True},
         "setup": {"completed_at": 1},
     }
     (journal / "config" / "journal.json").write_text(json.dumps(config))
@@ -38,6 +38,33 @@ def client(tmp_path, monkeypatch):
 
 
 class TestSystemStatusEndpoint:
+    def test_latest_version_check_targets_journal_release_repo(self, monkeypatch):
+        seen: dict[str, object] = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def read(self):
+                return b'{"tag_name": "v0.6.4"}'
+
+        def fake_urlopen(req, timeout):
+            seen["url"] = req.full_url
+            seen["timeout"] = timeout
+            return FakeResponse()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+        assert system_mod._check_latest_version() == {"latest": "0.6.4"}
+        assert (
+            seen["url"]
+            == "https://api.github.com/repos/solpbc/solstone-journal/releases/latest"
+        )
+        assert seen["timeout"] == 5
+
     def test_returns_valid_json_shape(self, client):
         with patch.object(
             system_mod,

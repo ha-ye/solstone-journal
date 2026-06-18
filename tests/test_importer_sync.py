@@ -536,6 +536,30 @@ def test_plaud_sync_save_records_import_one_errors(tmp_path, monkeypatch):
     assert all("import boom" in error for error in result["errors"])
 
 
+@pytest.mark.parametrize(
+    ("flags", "expected_dry_run"),
+    [
+        ([], True),
+        (["--save"], False),
+        (["--dry-run"], True),
+        (["--save", "--dry-run"], True),
+    ],
+)
+def test_sync_cli_dry_run_flag_matrix(flags, expected_dry_run, monkeypatch, tmp_path):
+    """--dry-run is authoritative for sync dispatch dry-run behavior."""
+    import sys
+
+    from solstone.think.importers.cli import main
+
+    monkeypatch.setattr(sys, "argv", ["sol import", "--sync", "plaud", *flags])
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    with patch("solstone.think.importers.cli._run_sync") as mock_run:
+        main()
+
+    assert mock_run.call_args.kwargs["dry_run"] is expected_dry_run
+
+
 def test_plaud_sync_cli_flag(capsys, monkeypatch, tmp_path):
     """sol import --sync plaud runs sync in dry-run mode."""
     import sys

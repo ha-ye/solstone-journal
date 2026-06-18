@@ -14,7 +14,7 @@ export TMPDIR := /var/tmp
 PYTEST_BASETEMP_INIT := BASETEMP=$$(mktemp -d /var/tmp/solstone-pytest-XXXXXX); trap 'rm -rf "$$BASETEMP"' EXIT INT TERM;
 PYTEST_BASETEMP_FLAG := --basetemp "$$BASETEMP"
 
-.PHONY: install uninstall test test-cov test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api update-api-baselines service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-call-http-only check-tools-http-only check-access-imports-clean check-thin-base-install check-cogitate-prompts smoke-cogitate release release-test FORCE
+.PHONY: install uninstall test test-cov test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api update-api-baselines service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-call-http-only check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-thin-base-install check-cogitate-prompts smoke-cogitate release release-test FORCE
 
 # Default target - install package in editable mode
 all: install
@@ -24,7 +24,15 @@ VENV := .venv
 VENV_BIN := $(VENV)/bin
 VENV_PY := $(VENV_BIN)/python
 PYTHON := $(VENV_PY)
-PARAKEET_ONNX_VARIANT ?= $(shell if nvidia-smi -L >/dev/null 2>&1; then echo cuda; else echo cpu; fi)
+# Pick the GPU (CUDA) transcription runtime only on x86_64 NVIDIA hosts. The
+# CUDA bundle resolves onnxruntime-gpu, which ships NO aarch64 wheel on PyPI, so
+# an aarch64 NVIDIA host (e.g. DGX Spark / GB10) that auto-selected `cuda` would
+# die in the `.installed` `uv sync` below — before the per-arch `install` guard
+# (which correctly skips non-x86_64 Linux) ever runs. Gating on x86_64 also
+# keeps this coherent with the STT arch decision (aarch64-linux transcribes on
+# whisper/CPU). Everything non-x86_64 falls to the CPU `journal` bundle, whose
+# onnxruntime has aarch64 wheels. Guarded by tests/test_makefile_journal_extra.py.
+PARAKEET_ONNX_VARIANT ?= $(shell if [ "$$(uname -m)" = "x86_64" ] && nvidia-smi -L >/dev/null 2>&1; then echo cuda; else echo cpu; fi)
 
 # Dev install extras: install exactly ONE journal-host bundle for this host.
 # [journal] (CPU) and [journal-cuda] (GPU) are the SAME stack and differ only in
@@ -104,7 +112,7 @@ install: .installed
 			echo "journal install: JOURNAL_EXTRA=$(JOURNAL_EXTRA)"; \
 			$(UV) sync --group dev $(EXTRAS_ARGS) || { echo "journal install: uv sync --group dev $(EXTRAS_ARGS) failed" >&2; exit 1; }; \
 			if [ "$(PARAKEET_ONNX_VARIANT)" = "cuda" ]; then \
-				$(UV) pip install --reinstall onnxruntime-gpu || { echo "parakeet install: failed to force-reinstall onnxruntime-gpu" >&2; exit 1; }; \
+				$(UV) sync --group dev $(EXTRAS_ARGS) --reinstall-package onnxruntime-gpu || { echo "parakeet install: failed to force-reinstall onnxruntime-gpu" >&2; exit 1; }; \
 				$(VENV_PY) -c "import onnxruntime as ort; ort.preload_dlls(cuda=True, cudnn=True); assert 'CUDAExecutionProvider' in ort.get_available_providers(), 'CUDAExecutionProvider missing after install'; print('parakeet install: CUDA runtime ready')" || { echo "parakeet install: CUDA runtime validation failed" >&2; exit 1; }; \
 			fi; \
 		else \
@@ -152,7 +160,7 @@ sandbox: .installed
 	# Boot supervisor in background \
 	SOLSTONE_JOURNAL="$$SANDBOX_JOURNAL" PATH=$(CURDIR)/$(VENV_BIN):$$PATH \
 		$(VENV_BIN)/journal supervisor 0 --no-daily \
-		> "$$SANDBOX_JOURNAL/health/supervisor.log" 2>&1 & \
+		> "$$SANDBOX_JOURNAL/health/service.log" 2>&1 & \
 	echo $$! > .sandbox.pid; \
 	echo "Supervisor PID: $$(cat .sandbox.pid)"; \
 	# Poll for readiness \
@@ -401,6 +409,9 @@ install-checks: .installed
 	@echo "=== Running access-imports-clean check ==="
 	@$(MAKE) check-access-imports-clean
 	@echo ""
+	@echo "=== Running convey-bind-imports-clean check ==="
+	@$(MAKE) check-convey-bind-imports-clean
+	@echo ""
 	@echo "=== Running cogitate-prompt check ==="
 	@$(MAKE) check-cogitate-prompts
 	@echo ""
@@ -492,6 +503,10 @@ check-tools-http-only: .installed
 # Thin sol access surface import-clean gate (fast meta_path simulation; in ci)
 check-access-imports-clean: .installed
 	$(VENV_BIN)/python scripts/check_access_imports_clean.py
+
+# Convey bind path import-clean gate
+check-convey-bind-imports-clean: .installed
+	$(VENV_BIN)/python scripts/check_convey_bind_imports_clean.py
 
 # Faithful thin-base gate: build a fresh venv with the REAL base partition (no
 # extras) and assert the access surface imports clean against it. Heavier than

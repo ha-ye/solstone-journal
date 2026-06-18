@@ -6,6 +6,7 @@
   "schedule": "activity",
   "activities": ["meeting", "call", "messaging", "email"],
   "priority": 20,
+  "tier": 3,
   "output": "json",
   "schema": "story.schema.json",
   "hook": {"post": "story"},

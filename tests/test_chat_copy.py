@@ -162,6 +162,7 @@ def test_closer_constants_byte_parity():
         "CHAT_CLOSER_DIFFERENT_ANGLE_SUFFIX": "Want me to try a different angle?",
         "CHAT_CLOSER_TALENT_ERRORED_FORMAT": "I couldn't finish that lookup — {reason}. Want to try a different angle, or rephrase the question?",
         "CHAT_CLOSER_TALENT_ERRORED_GENERIC": "I couldn't finish that lookup. Want to try a different angle, or rephrase the question?",
+        "CHAT_CLOSER_SUPPORT_SEND_FAILED": "I couldn't finish reaching solstone support, so nothing was sent. Want me to try again?",
     }
 
     for name, literal in expected.items():
@@ -169,6 +170,81 @@ def test_closer_constants_byte_parity():
         assert literal in text
 
     assert "\u2014" in chat_copy.CHAT_CLOSER_TALENT_ERRORED_FORMAT
+    assert "solstone support" in chat_copy.CHAT_CLOSER_SUPPORT_SEND_FAILED
+    assert "sol pbc" not in chat_copy.CHAT_CLOSER_SUPPORT_SEND_FAILED
+    assert "live chat" not in chat_copy.CHAT_CLOSER_SUPPORT_SEND_FAILED
+    assert "lookup" not in chat_copy.CHAT_CLOSER_SUPPORT_SEND_FAILED
+    assert "try again" in chat_copy.CHAT_CLOSER_SUPPORT_SEND_FAILED.lower()
+
+
+def test_support_draft_ready_copy_bytes():
+    assert chat_copy.CHAT_SUPPORT_DRAFT_READY == (
+        "Here's the support request I put together — look it over before anything "
+        "goes to solstone support."
+    )
+    assert "solstone support" in chat_copy.CHAT_SUPPORT_DRAFT_READY
+    assert "sol pbc" not in chat_copy.CHAT_SUPPORT_DRAFT_READY
+
+
+def test_support_attach_success_copy_bytes():
+    assert chat_copy.CHAT_SUPPORT_ATTACH_FILED_FORMAT == (
+        "I added that to solstone support ticket #{ticket_id}."
+    )
+    assert "solstone support" in chat_copy.CHAT_SUPPORT_ATTACH_FILED_FORMAT
+    assert "sol pbc" not in chat_copy.CHAT_SUPPORT_ATTACH_FILED_FORMAT
+    assert "sent" not in chat_copy.CHAT_SUPPORT_ATTACH_FILED_FORMAT.lower()
+    assert not hasattr(chat_copy, "CHAT_SUPPORT_ATTACH_UNSUPPORTED")
+
+
+def test_draft_card_copy_present():
+    text = Path("solstone/convey/static/chat_copy.js").read_text(encoding="utf-8")
+    expected = (
+        'CHAT_DRAFT_SUBMIT: "send to solstone support"',
+        'CHAT_DRAFT_CANCEL: "cancel"',
+        'CHAT_DRAFT_HEADER: "review before this goes to solstone support"',
+        'CHAT_DRAFT_KIND_CREATE: "new support request"',
+        'CHAT_DRAFT_KIND_FEEDBACK: "send feedback"',
+        'CHAT_DRAFT_KIND_REPLY: "reply"',
+        'CHAT_DRAFT_KIND_ATTACH: "attach a file"',
+        'CHAT_DRAFT_TICKET_FORMAT: "ticket #{ticket_id}"',
+        'CHAT_DRAFT_DIAGNOSTICS_TITLE: "what\'s included with this request"',
+        (
+            'CHAT_DRAFT_DIAGNOSTICS_NOTE: "these exact values go to solstone '
+            'support with your request. nothing else leaves this machine."'
+        ),
+        (
+            'CHAT_DRAFT_ATTACH_NOTE: "the contents of this file go to solstone '
+            'support. nothing else leaves this machine."'
+        ),
+        'CHAT_DRAFT_FLOOR: "nothing is sent until you choose"',
+        'CHAT_DRAFT_NAME_ATTACHED_YES: "name attached: yes"',
+        'CHAT_DRAFT_NAME_ATTACHED_NO: "name attached: no"',
+        'CHAT_RESULT_VIEW_IN_SUPPORT: "view in support →"',
+        'CHAT_RESULT_TRY_AGAIN: "try again"',
+        (
+            'CHAT_RESULT_TRY_AGAIN_MESSAGE: "please try sending that to '
+            'solstone support again"'
+        ),
+    )
+    for needle in expected:
+        assert needle in text
+    assert "CHAT_DRAFT_DIAGNOSTICS_LABEL" not in text
+    assert "sol pbc" not in "send to solstone support"
+
+
+def test_support_attach_draft_card_branch_present():
+    text = Path("solstone/convey/templates/app.html").read_text(encoding="utf-8")
+    assert "function formatAttachmentSize(size)" in text
+    assert "function renderAttachDraftBody(parent, payload)" in text
+    assert "window.solChatCopy.CHAT_DRAFT_KIND_ATTACH" in text
+    assert "formatAttachmentSize(payload.byte_size)" in text
+    assert "appendDraftKind(parent, window.solChatCopy.CHAT_DRAFT_KIND_ATTACH" in text
+    assert "appendDraftFieldIfPresent(parent, payload, 'filename')" in text
+    assert "appendDraftMetaRow(parent, payload, ['content_type'])" in text
+    assert "window.solChatCopy.CHAT_DRAFT_ATTACH_NOTE" in text
+    assert "['ticket_id', 'ticket', payload.ticket_id]" not in text
+    assert "['filename', 'file', payload.filename]" not in text
+    assert "['byte_size', 'size', formatAttachmentSize(payload.byte_size)]" not in text
 
 
 def test_chat_placeholder_css_present():

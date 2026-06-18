@@ -49,18 +49,16 @@
   const liveRegion = document.getElementById('status-live-region');
   let statusPaneOpen = false;
   let _lastHistoryLen = -1;
-  let _systemStatusInterval = null;
-  let _lastCaptureStatus = null;
 
   // Shared label updater — called from here and from websocket.js
   window.updateStatusLabel = function() {
     if (!statusIcon) return;
-    const metrics = window.appEvents?.getMetrics?.();
-    const state = metrics?.state || 'connecting';
+    const label = window.appEvents?.statusLabel || 'connecting';
     const expanded = statusIcon.getAttribute('aria-expanded') === 'true';
     statusIcon.setAttribute('aria-label',
-      'system status: ' + state + ', ' + (expanded ? 'expanded' : 'collapsed'));
-	  if (liveRegion) liveRegion.textContent = state;
+      'system status: ' + label + ', ' + (expanded ? 'expanded' : 'collapsed'));
+    statusIcon.setAttribute('title', label);
+    if (liveRegion) liveRegion.textContent = label;
   };
 
   function updateDiagnosticConsoleLink() {
@@ -85,10 +83,8 @@
         renderQuietNotifs();
         updateStatusPane();
         fetchSystemStatus();
-        _systemStatusInterval = setInterval(fetchSystemStatus, 60000);
       } else {
         statusPane.classList.remove('visible');
-        if (_systemStatusInterval) { clearInterval(_systemStatusInterval); _systemStatusInterval = null; }
         statusIcon.focus();
       }
     });
@@ -100,7 +96,6 @@
         statusPaneOpen = false;
         statusPane.classList.remove('visible');
         statusIcon.setAttribute('aria-expanded', 'false');
-        if (_systemStatusInterval) { clearInterval(_systemStatusInterval); _systemStatusInterval = null; }
         window.updateStatusLabel();
         statusIcon.focus();
       }
@@ -112,11 +107,10 @@
         statusPaneOpen = false;
         statusPane.classList.remove('visible');
         statusIcon.setAttribute('aria-expanded', 'false');
-        if (_systemStatusInterval) { clearInterval(_systemStatusInterval); _systemStatusInterval = null; }
         window.updateStatusLabel();
         statusIcon.focus();
-	  }
-	});
+      }
+    });
 
     if (statusConsoleLink) {
       statusConsoleLink.addEventListener('click', (e) => {
@@ -128,7 +122,6 @@
         statusPaneOpen = false;
         statusPane.classList.remove('visible');
         statusIcon.setAttribute('aria-expanded', 'false');
-        if (_systemStatusInterval) { clearInterval(_systemStatusInterval); _systemStatusInterval = null; }
         window.updateStatusLabel();
       });
     }
@@ -136,6 +129,7 @@
 
   // Update status pane metrics
   function updateStatusPane() {
+    window.renderStatusMark?.();
     updateDiagnosticConsoleLink();
     if (!window.appEvents) return;
     if (!statusPaneOpen) return;
@@ -200,33 +194,34 @@
       }
     }
 
-    // Update composite icon if we have observer data
-    if (_lastCaptureStatus !== null) updateCompositeIcon();
-
     // Update notification history
     updateNotificationHistory();
     updateBellState();
   }
 
-	  function fetchSystemStatus() {
+  function fetchSystemStatus() {
     fetch('/api/system/status')
       .then(r => r.ok ? r.json() : null)
       .catch(() => null)
       .then(data => {
-        if (!data) return;
-        _lastCaptureStatus = data.capture?.status || null;
-        renderCaptureSection(data.capture);
-        renderVersionSection(data.version);
-        updateCompositeIcon();
-	      });
-	  }
+        if (data) {
+          window.appEvents?.setCaptureStatus?.(data.capture?.status ?? 'unknown');
+          if (statusPaneOpen) {
+            renderCaptureSection(data.capture);
+            renderVersionSection(data.version);
+          }
+        } else {
+          window.appEvents?.setCaptureStatus?.('unknown');
+        }
+      });
+  }
 
-	  function formatObserverLastReported(observers) {
-	    const seen = observers.filter(o => typeof o.last_seen === 'number');
-	    if (!seen.length) return '';
-	    const lastSeen = Math.max(...seen.map(o => o.last_seen));
-	    return relativeTime(Date.now() - lastSeen) + ' ago';
-	  }
+  function formatObserverLastReported(observers) {
+    const seen = observers.filter(o => typeof o.last_seen === 'number');
+    if (!seen.length) return '';
+    const lastSeen = Math.max(...seen.map(o => o.last_seen));
+    return relativeTime(Date.now() - lastSeen) + ' ago';
+  }
 
 	  function restartObserverFromStatusPane(button, resultEl) {
 	    button.disabled = true;
@@ -306,40 +301,7 @@
     }
   }
 
-  function updateCompositeIcon() {
-    const metrics = window.appEvents?.getMetrics?.();
-    const wsState = metrics?.state || 'disconnected';
-
-    // Map observer status to severity: active=0, no_observers=0, stale=1, offline=2
-    // Map WS state to severity: connected=0, connecting=1, disconnected=2
-    const captureSeverity = { active: 0, no_observers: 0, stale: 1, offline: 2 };
-    const wsSeverity = { connected: 0, connecting: 1, disconnected: 2 };
-
-    const cs = captureSeverity[_lastCaptureStatus] ?? 0;
-    const ws = wsSeverity[wsState] ?? 2;
-
-    // Only override icon if observer status makes it worse than WS alone
-    if (cs <= ws) return;
-
-    const worst = Math.max(cs, ws);
-    const iconState = worst === 0 ? 'connected' : worst === 1 ? 'connecting' : 'disconnected';
-
-    // Directly update the SVG without touching connectionState
-    const icon = document.querySelector('.facet-bar .status-icon');
-    if (!icon) return;
-
-    const svgs = {
-      connected: '<svg class="status-indicator" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="#10b981"/></svg>',
-      connecting: '<svg class="status-indicator status-indicator--connecting" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="#f59e0b" stroke-width="2.5" stroke-dasharray="24 8"/></svg>',
-      disconnected: '<svg class="status-indicator" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 2 L14 13 L2 13 Z" fill="#ef4444"/></svg>'
-    };
-
-    const badge = icon.querySelector('#quiet-notif-badge');
-    icon.innerHTML = svgs[iconState] || svgs.disconnected;
-    if (badge) icon.appendChild(badge);
-  }
-
-  function renderQuietNotifs() {
+	  function renderQuietNotifs() {
     const section = document.getElementById('quiet-notifs-section');
     const list = document.getElementById('quiet-notifs-list');
     if (!section || !list) return;
@@ -458,8 +420,10 @@
     });
   }
 
-	  // Update status pane every second
-	  setInterval(updateStatusPane, 1000);
+  fetchSystemStatus();
+  setInterval(fetchSystemStatus, 60000);
+  // Update status pane every second
+  setInterval(updateStatusPane, 1000);
   window.addEventListener('diagnostic-console-updated', updateDiagnosticConsoleLink);
   // Initial update
   setTimeout(updateStatusPane, 100);

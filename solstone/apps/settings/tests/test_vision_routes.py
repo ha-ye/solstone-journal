@@ -10,7 +10,6 @@ from solstone.think.utils import get_config
 def _base_config() -> dict:
     return {
         "setup": {"completed_at": "2026-05-09T00:00:00Z"},
-        "convey": {"trust_localhost": True},
         "describe": {"max_extractions": 37},
     }
 

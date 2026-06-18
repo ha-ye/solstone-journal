@@ -386,7 +386,9 @@ def _blocked_reason(availability: dict[str, bool | float | int | str | None]) ->
 
 def _disk_target() -> Path:
     if _is_mlx_backend():
-        return Path(mlx_install.constants.HF_HUB_CACHE)
+        from huggingface_hub import constants
+
+        return Path(constants.HF_HUB_CACHE)
     return local_install.cache_root()
 
 

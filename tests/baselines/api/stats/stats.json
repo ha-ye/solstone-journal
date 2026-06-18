@@ -42,6 +42,7 @@
       "schedule": "activity",
       "schema": "story.schema.json",
       "source": "system",
+      "tier": 3,
       "title": "Conversation Story",
       "type": "generate"
     },
@@ -312,6 +313,7 @@
       "priority": 10,
       "schedule": "segment",
       "source": "system",
+      "tier": 3,
       "title": "Screen Record",
       "type": "generate"
     },

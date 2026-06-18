@@ -175,12 +175,15 @@ def _echo_merge_preview(fields: dict) -> None:
 @app.command("list")
 def list_entities(
     facet: str | None = typer.Argument(None, help="Facet name (or set SOL_FACET)."),
+    facet_opt: str | None = typer.Option(
+        None, "--facet", "-f", help="Facet name (or set SOL_FACET)."
+    ),
     day: str | None = typer.Option(
         None, "--day", "-d", help="Day (YYYYMMDD) for detected entities."
     ),
 ) -> None:
     """List entities for a facet."""
-    facet = _resolve_sol_facet(facet)
+    facet = _resolve_sol_facet(facet or facet_opt)
     try:
         if day is None:
             body = _request("GET", f"/app/entities/api/{facet}")
@@ -207,6 +210,27 @@ def list_entities(
             f"{entity.get('name')} ({entity.get('type')}): "
             f"{entity.get('description', '')}"
         )
+
+
+@app.command("digest")
+def digest(
+    facet: str | None = typer.Argument(None, help="Facet name (or set SOL_FACET)."),
+    facet_opt: str | None = typer.Option(
+        None, "--facet", "-f", help="Facet name (or set SOL_FACET)."
+    ),
+    day: str | None = typer.Option(
+        None, "--day", "-d", help="Day (YYYYMMDD, or set SOL_DAY)."
+    ),
+) -> None:
+    """Print deterministic entity-detection digest for a facet day."""
+    facet = _resolve_sol_facet(facet or facet_opt)
+    day = _resolve_sol_day(day)
+    try:
+        body = _request("GET", f"/app/entities/api/{facet}/digest", params={"day": day})
+    except ConveyClientError as err:
+        _handle_entity_error(err)
+    content = body.get("content", "") if isinstance(body, dict) else ""
+    typer.echo(content)
 
 
 @app.command("move")
@@ -711,6 +735,7 @@ def observe_entity(
 
 @app.command("search")
 def entity_search(
+    query_pos: str | None = typer.Argument(None, help="Text search."),
     query: str | None = typer.Option(None, "--query", "-q", help="Text search."),
     type_: str | None = typer.Option(None, "--type", "-t", help="Entity type."),
     facet: str | None = typer.Option(None, "--facet", "-f", help="Filter by facet."),
@@ -718,6 +743,7 @@ def entity_search(
     limit: int = typer.Option(20, "--limit", "-n", help="Max results."),
 ) -> None:
     """Search entities by text, type, facet, or activity."""
+    query = query_pos or query
     try:
         body = _request(
             "GET",

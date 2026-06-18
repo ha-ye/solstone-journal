@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from solstone.think.catchup_state import read_backoff_summary
 from solstone.think.cluster import cluster_segments
 from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_REASON_CODES
 from solstone.think.utils import (
@@ -45,6 +46,7 @@ WHY_SENSED_NOT_THOUGHT = "sensed_not_thought"
 
 REASON_CORRUPT_RAW = "corrupt_raw"
 REASON_FAILING_STEP = "failing_step"
+REASON_CATCHUP_BACKOFF = "catchup_backoff"
 
 BACKLOG_STATE_COMPLETE = "complete"
 BACKLOG_STATE_PENDING = "pending"
@@ -58,6 +60,7 @@ class SegmentProgress:
 
     sensed: bool
     density: str | None
+    change_class: str | None
     dispatched: frozenset[str]
     completed: frozenset[str]
     unconfigured: frozenset[str]
@@ -103,6 +106,7 @@ class TerminalState:
 
     latest_event: str
     latest_ts: int
+    last_real_complete_ts: int | None
     trailing_fail_count: int
     deterministic_fail_count: int
     last_fail_ts: int | None
@@ -176,6 +180,11 @@ class BacklogDay:
     provider: str | None
     model: str | None
     error: BacklogError | None
+    backoff_stuck: bool = False
+    backoff_attempts: int = 0
+    backoff_consecutive_non_completion: int = 0
+    backoff_last_outcome: str | None = None
+    backoff_next_retry_at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -358,7 +367,7 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
     """Return latest terminal talent state per unit for one day."""
     records: dict[
         TerminalUnit,
-        list[tuple[int, int, str, str | None, str | None, str | None]],
+        list[tuple[int, int, str, str | None, str | None, str | None, bool]],
     ] = {}
     sequence = 0
 
@@ -431,6 +440,7 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
                             _str_or_none(rec.get("reason_code")),
                             _str_or_none(rec.get("provider")),
                             _str_or_none(rec.get("model")),
+                            rec.get("cache_hit") is True,
                         )
                     )
     except Exception:
@@ -444,14 +454,38 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
     states: dict[TerminalUnit, TerminalState] = {}
     for unit, unit_records in records.items():
         ordered = sorted(unit_records, key=lambda item: (item[0], item[1]))
-        latest_ts, _seq, latest_event, _reason_code, _provider, _model = ordered[-1]
+        latest_ts, _seq, latest_event, _reason_code, _provider, _model, _cache_hit = (
+            ordered[-1]
+        )
+        real_complete_ts = [
+            ts
+            for ts, _seq, event, _reason_code, _provider, _model, cache_hit in ordered
+            if event == TERMINAL_COMPLETE and not cache_hit
+        ]
+        last_real_complete_ts = max(real_complete_ts) if real_complete_ts else None
         trailing_fail_count = 0
-        for _ts, _seq, event, _reason_code, _provider, _model in reversed(ordered):
+        for (
+            _ts,
+            _seq,
+            event,
+            _reason_code,
+            _provider,
+            _model,
+            _cache_hit,
+        ) in reversed(ordered):
             if event != TERMINAL_FAIL:
                 break
             trailing_fail_count += 1
         deterministic_fail_count = 0
-        for _ts, _seq, event, reason_code, _provider, _model in reversed(ordered):
+        for (
+            _ts,
+            _seq,
+            event,
+            reason_code,
+            _provider,
+            _model,
+            _cache_hit,
+        ) in reversed(ordered):
             if event == TERMINAL_COMPLETE:
                 break
             if (
@@ -466,6 +500,7 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
         states[unit] = TerminalState(
             latest_event=latest_event,
             latest_ts=latest_ts,
+            last_real_complete_ts=last_real_complete_ts,
             trailing_fail_count=trailing_fail_count,
             deterministic_fail_count=deterministic_fail_count,
             last_fail_ts=last_fail[0] if last_fail else None,
@@ -510,15 +545,20 @@ def read_completed_since(day: str, since_ms: int) -> CompletionsSince:
 
     for scan_day in (day, prev):
         for unit, state in read_terminal_states(scan_day).items():
-            if state.latest_event != TERMINAL_COMPLETE or state.latest_ts <= since_ms:
+            real_complete_ts = state.last_real_complete_ts
+            if (
+                state.latest_event != TERMINAL_COMPLETE
+                or real_complete_ts is None
+                or real_complete_ts <= since_ms
+            ):
                 continue
 
             if unit.segment:
                 seg_key = (unit.stream, unit.segment)
-                seg_max[seg_key] = max(seg_max.get(seg_key, 0), state.latest_ts)
+                seg_max[seg_key] = max(seg_max.get(seg_key, 0), real_complete_ts)
             elif unit.activity:
                 act_key = (unit.facet, unit.activity)
-                act_max[act_key] = max(act_max.get(act_key, 0), state.latest_ts)
+                act_max[act_key] = max(act_max.get(act_key, 0), real_complete_ts)
 
     segments = tuple(
         sorted(
@@ -595,6 +635,7 @@ def read_segment_progress(day: str) -> dict[tuple[str | None, str], SegmentProgr
     This function does not create, modify, or delete journal state.
     """
     latest_sense: dict[tuple[str | None, str], tuple[int, str | None]] = {}
+    latest_change: dict[tuple[str | None, str], tuple[int, str | None]] = {}
     dispatched: dict[tuple[str | None, str], set[str]] = {}
     terminals: dict[tuple[str | None, str], dict[str, tuple[int, bool]]] = {}
     unconfigured: dict[tuple[str | None, str], set[str]] = {}
@@ -646,6 +687,20 @@ def read_segment_progress(day: str) -> dict[tuple[str | None, str], SegmentProgr
                             density = None
                         if key not in latest_sense or ts >= latest_sense[key][0]:
                             latest_sense[key] = (ts, density)
+                    elif event == "sense.change_detect":
+                        try:
+                            ts = int(rec["ts"])
+                        except (KeyError, TypeError, ValueError):
+                            logger.debug(
+                                "pipeline_health: skipping sense.change_detect with invalid ts in %s",
+                                path,
+                            )
+                            continue
+                        change_class = rec.get("change_class")
+                        if not isinstance(change_class, str):
+                            change_class = None
+                        if key not in latest_change or ts >= latest_change[key][0]:
+                            latest_change[key] = (ts, change_class)
                     elif event == "talent.dispatch":
                         name = rec.get("name")
                         if isinstance(name, str):
@@ -690,13 +745,20 @@ def read_segment_progress(day: str) -> dict[tuple[str | None, str], SegmentProgr
         )
         return {}
 
-    segments = set(latest_sense) | set(dispatched) | set(terminals) | set(unconfigured)
+    segments = (
+        set(latest_sense)
+        | set(latest_change)
+        | set(dispatched)
+        | set(terminals)
+        | set(unconfigured)
+    )
     progress: dict[tuple[str | None, str], SegmentProgress] = {}
     for key in sorted(segments, key=lambda k: (k[1], k[0] is not None, k[0] or "")):
         segment_terminals = terminals.get(key, {})
         progress[key] = SegmentProgress(
             sensed=key in latest_sense,
             density=latest_sense.get(key, (0, None))[1],
+            change_class=latest_change.get(key, (0, None))[1],
             dispatched=frozenset(dispatched.get(key, set())),
             completed=frozenset(
                 name
@@ -724,6 +786,8 @@ def segment_fully_thought(progress: SegmentProgress | None) -> tuple[bool, str |
     if progress is None or not progress.sensed:
         return False, "no_sense_complete"
     if progress.density == "idle":
+        return True, None
+    if progress.change_class == "redundant":
         return True, None
     for name in SEGMENT_FLOOR_TALENTS:
         if name not in progress.completed and name not in progress.unconfigured:
@@ -1149,6 +1213,7 @@ def read_backlog_view(window: int = BACKLOG_DEFAULT_WINDOW) -> BacklogView:
         why = _segment_backlog_units(
             day, segments, progress, terminal_states, stream_ms
         ) + _non_segment_failed_units(terminal_states, stream_ms)
+        backoff = read_backoff_summary(day)
         segment_depth = completion.not_sensed + completion.not_thought
         if any(unit.why == WHY_CORRUPT_RAW and unit.stuck for unit in why):
             reason = REASON_CORRUPT_RAW
@@ -1158,7 +1223,12 @@ def read_backlog_view(window: int = BACKLOG_DEFAULT_WINDOW) -> BacklogView:
             reason = None
 
         representative = _representative_reason_unit(why)
-        if any(unit.stuck for unit in why):
+        reason_code = representative.reason_code if representative else None
+        if reason is None and backoff:
+            reason = REASON_CATCHUP_BACKOFF
+            reason_code = "catchup_backoff"
+
+        if any(unit.stuck for unit in why) or backoff:
             state = BACKLOG_STATE_STUCK
         elif segment_depth > 0 or why:
             state = BACKLOG_STATE_PENDING
@@ -1174,10 +1244,17 @@ def read_backlog_view(window: int = BACKLOG_DEFAULT_WINDOW) -> BacklogView:
                 not_sensed=completion.not_sensed,
                 why=why,
                 reason=reason,
-                reason_code=representative.reason_code if representative else None,
+                reason_code=reason_code,
                 provider=representative.provider if representative else None,
                 model=representative.model if representative else None,
                 error=None,
+                backoff_stuck=bool(backoff),
+                backoff_attempts=backoff["attempts"] if backoff else 0,
+                backoff_consecutive_non_completion=(
+                    backoff["consecutive_non_completion"] if backoff else 0
+                ),
+                backoff_last_outcome=backoff["last_outcome"] if backoff else None,
+                backoff_next_retry_at=backoff["next_retry_at"] if backoff else None,
             )
         )
 

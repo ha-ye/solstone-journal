@@ -77,6 +77,11 @@ def _format_entry(
         return _format_sol_request(entry)
     if kind in {
         "chat_queue_depth",
+        # Backend-only support deterministic-send events: not chat content to
+        # index, so skip silently (they ride the chat stream for state/idempotency).
+        "support_draft",
+        "support_submit_claim",
+        "result",
         KIND_SOL_CHAT_REQUEST_SUPERSEDED,
         KIND_OWNER_CHAT_OPEN,
         KIND_OWNER_CHAT_DISMISSED,

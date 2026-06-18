@@ -38,7 +38,7 @@ def test_main_accepts_journal_relative_path(tmp_path, monkeypatch):
 
     with (
         patch("solstone.observe.transcribe.main.load_audio", mock_load),
-        patch("solstone.observe.transcribe.main.run_vad", mock_vad),
+        patch("solstone.observe.vad.run_vad", mock_vad),
         patch("solstone.observe.transcribe.main.callosum_send"),
         patch(
             "solstone.observe.transcribe.main.get_segment_key",

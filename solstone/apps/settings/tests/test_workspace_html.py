@@ -115,9 +115,12 @@ def test_workspace_cogitate_auth_control_removed():
     assert "document.getElementById('field-cogitate-auth')" not in text
 
 
-def test_workspace_security_network_mode_ui_removed_and_link_hint_present():
+def test_workspace_security_section_removed():
     text = _workspace_text()
     for removed in (
+        '<option value="security">',
+        'id="tab-security"',
+        'id="section-security"',
         'id="conveyNetworkButton"',
         'id="conveyNetworkMode"',
         'id="conveyNetworkDesc"',
@@ -133,16 +136,10 @@ def test_workspace_security_network_mode_ui_removed_and_link_hint_present():
         "toggleConveyNetworkAccess",
         "showConveyPasswordDisclosure",
         "submitConveyPasswordDisclosure",
+        "function renderConveyHostFields(",
+        'id="field-trust-localhost"',
     ):
         assert removed not in text, removed
-
-    assert 'id="conveyLanUrlDisplay"' not in text
-    assert 'id="field-host-url"' not in text
-    assert "function renderConveyHostFields(" in text
-    assert 'id="field-password"' in text
-    assert 'id="field-trust-localhost"' in text
-    assert 'href="/app/link"' in text
-    assert "{{ convey_copy.SETTINGS_SECURITY_REACH_HINT }}" in text
 
 
 def test_workspace_guide_is_default_static_section():
@@ -211,3 +208,49 @@ def test_workspace_guide_copy_stays_in_bounds():
     dynamic_terms = ("fetch(", "/api/", "setInterval", "enable", "disable", "poll")
     for term in dynamic_terms:
         assert term not in guide
+
+
+def test_document_level_listeners_reference_defined_handlers():
+    """Guard against orphaned parse-time event registrations.
+
+    A top-level ``document.addEventListener('<event>', <handler>)`` runs the
+    moment the settings ``<script>`` is parsed. If ``<handler>`` is a bare
+    identifier that is never declared, it throws a ReferenceError at parse time
+    and aborts the entire script — so ``initSettings`` never registers, no
+    config loads, and no auto-save listeners bind, leaving every setting
+    silently un-saveable. This guards that class: every document-level listener
+    registered against a bare named handler must have that handler declared
+    somewhere in the script.
+    """
+    text = _workspace_text()
+
+    # The settings app is a single inline <script> block.
+    script_match = re.search(r"<script>(.*)</script>", text, re.DOTALL)
+    assert script_match, "settings <script> block not found"
+    script = script_match.group(1)
+
+    # Match only `document.addEventListener('<event>', <bareIdentifier>)` — a
+    # document-level registration whose handler is a named reference followed
+    # immediately by ')'. This deliberately ignores inline function/arrow
+    # literals (not followed by ')') and member-target registrations like
+    # `el.addEventListener(...)`, which legitimately bind handlers declared in
+    # nested scopes.
+    registrations = re.findall(
+        r"\bdocument\.addEventListener\(\s*'[^']+'\s*,\s*([A-Za-z_$][\w$]*)\s*\)",
+        script,
+    )
+    assert registrations, (
+        "no document.addEventListener(named-handler) registrations found"
+    )
+
+    for handler in registrations:
+        declared = re.search(
+            rf"(?:async\s+)?function\s+{re.escape(handler)}\b"
+            rf"|\b(?:const|let|var)\s+{re.escape(handler)}\b",
+            script,
+        )
+        assert declared, (
+            f"document.addEventListener registers handler '{handler}', but it is "
+            f"never declared in the settings script. A parse-time ReferenceError "
+            f"would abort settings init and silently break all settings saving."
+        )

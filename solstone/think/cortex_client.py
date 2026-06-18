@@ -308,6 +308,36 @@ def read_use_provider_model_reason(
     return provider, model, reason_code
 
 
+def read_use_finish_fields(use_id: str) -> dict[str, bool | int | None]:
+    """Return cache/indexing fields from a use log's finish event."""
+    defaults: dict[str, bool | int | None] = {
+        "output_changed": True,
+        "cache_hit": False,
+        "completed_at_ms": None,
+    }
+    try:
+        events = read_use_events(use_id)
+    except FileNotFoundError:
+        return defaults
+
+    for event in reversed(events):
+        if event.get("event") != "finish":
+            continue
+        output_changed = event.get("output_changed")
+        cache_hit = event.get("cache_hit")
+        completed_at_ms = event.get("completed_at_ms")
+        return {
+            "output_changed": output_changed
+            if isinstance(output_changed, bool)
+            else True,
+            "cache_hit": cache_hit is True,
+            "completed_at_ms": (
+                completed_at_ms if isinstance(completed_at_ms, int) else None
+            ),
+        }
+    return defaults
+
+
 def cortex_uses(
     limit: int = 10,
     offset: int = 0,

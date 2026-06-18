@@ -586,7 +586,7 @@ def test_step_journal_materializes_journal_config(
     assert config["identity"]["name"] == "Setup User"
     assert config["identity"]["preferred"] == "setup"
     assert config["identity"]["timezone"] == "America/Denver"
-    assert config["convey"]["secret"]
+    assert "convey" not in config
     assert str(config_path.resolve()) in result.paths
 
 

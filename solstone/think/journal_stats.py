@@ -77,6 +77,14 @@ def _serialize_backlog_day(day: BacklogDay) -> dict:
         data["provider"] = day.provider
     if day.model:
         data["model"] = day.model
+    if day.backoff_stuck:
+        data["backoff_stuck"] = True
+        data["backoff_attempts"] = day.backoff_attempts
+        data["backoff_consecutive_non_completion"] = (
+            day.backoff_consecutive_non_completion
+        )
+        data["backoff_last_outcome"] = day.backoff_last_outcome
+        data["backoff_next_retry_at"] = day.backoff_next_retry_at
     return data
 
 

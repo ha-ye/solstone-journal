@@ -52,26 +52,3 @@ def test_pair_route_normalizes_consumed_nonce_role(
     entries = link_routes._authorized().snapshot()
     assert len(entries) == 1
     assert entries[0].role == expected_role
-
-
-@pytest.mark.parametrize(
-    ("role", "expected_role"),
-    [("phone", ""), ("observer", ""), ("peer", "peer")],
-)
-def test_by_code_route_normalizes_consumed_nonce_role(
-    link_env,
-    role: str,
-    expected_role: str,
-) -> None:
-    env = link_env()
-    started = _start_pair(env, role)
-
-    response = env.client.post(
-        "/app/link/by-code",
-        json={"code": started["manual_code"], "csr": _make_csr(role)},
-    )
-
-    assert response.status_code == 200
-    entries = link_routes._authorized().snapshot()
-    assert len(entries) == 1
-    assert entries[0].role == expected_role

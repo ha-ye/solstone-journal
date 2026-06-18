@@ -41,7 +41,6 @@ def backup_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         (config_dir / "journal.json").write_text(
             json.dumps(
                 {
-                    "convey": {"trust_localhost": True},
                     "setup": {"completed_at": 1700000000000},
                 },
                 indent=2,
@@ -55,9 +54,6 @@ def backup_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         app = create_app(journal=str(journal))
         app.config["TESTING"] = True
         client = app.test_client()
-        with client.session_transaction() as session:
-            session["logged_in"] = True
-            session.permanent = True
         return Env(journal=journal, client=client, app=app)
 
     return _create

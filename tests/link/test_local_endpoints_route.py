@@ -28,7 +28,6 @@ def link_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     (config_dir / "journal.json").write_text(
         json.dumps(
             {
-                "convey": {"trust_localhost": True},
                 "setup": {"completed_at": 1},
             }
         ),
@@ -80,8 +79,6 @@ def test_local_endpoints_returns_watcher_snapshot(link_client) -> None:
 
 
 def test_local_endpoints_non_loopback_404(link_client) -> None:
-    with link_client.session_transaction() as session:
-        session["logged_in"] = True
     response = link_client.get(
         "/app/link/local-endpoints",
         environ_base={"REMOTE_ADDR": "192.168.1.5"},

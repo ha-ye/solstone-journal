@@ -27,7 +27,7 @@ from solstone.think.entities.journal import load_journal_entity, save_journal_en
 from solstone.think.entities.observations import add_observation, save_observations
 from solstone.think.entities.review_candidates import save_candidates
 from solstone.think.journal_io import LockTimeout
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client
 
 runner = CliRunner()
 
@@ -37,7 +37,7 @@ def _entities_client(monkeypatch: pytest.MonkeyPatch) -> None:
     def client() -> ConveyClient:
         journal = Path(os.environ["SOLSTONE_JOURNAL"])
         return ConveyClient(
-            session=make_logged_in_test_client(journal),
+            session=make_test_client(journal),
             base_url="",
         )
 
@@ -123,7 +123,6 @@ def _ensure_config(journal: Path) -> None:
     (config_dir / "journal.json").write_text(
         json.dumps(
             {
-                "convey": {"trust_localhost": True},
                 "setup": {"completed_at": 1700000000000},
             }
         )

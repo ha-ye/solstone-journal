@@ -323,6 +323,9 @@ class VideoProcessor:
     DHASH_THRESHOLD = 8
     # Skip frame if Convey UI covers more than this fraction of the frame
     MASK_SKIP_THRESHOLD = 0.8
+    first_hash: Optional[int] = None
+    last_hash: Optional[int] = None
+    qualified_count: int = 0
 
     def __init__(self, video_path: Path):
         self.video_path = video_path
@@ -343,6 +346,9 @@ class VideoProcessor:
         """
         # Cache for the last qualified frame hash
         last_hash: Optional[int] = None
+        self.first_hash = None
+        self.last_hash = None
+        self.qualified_count = 0
 
         # Imports deferred: av (PyAV) and cv2 (via observe.aruco) bundle
         # mismatched libavdevice majors. Keeping them out of module scope
@@ -422,6 +428,8 @@ class VideoProcessor:
                     if last_hash is None:
                         frame_data["frame_bytes"] = self._frame_to_bytes(pil_img)
                         last_hash = self._dhash(pil_img)
+                        self.first_hash = last_hash
+                        self.last_hash = last_hash
                         pil_img.close()
 
                         self.qualified_frames.append(frame_data)
@@ -446,11 +454,13 @@ class VideoProcessor:
 
                     # Update cached frame hash
                     last_hash = current_hash
+                    self.last_hash = current_hash
 
                     logger.debug(
                         f"Qualified frame at {timestamp:.2f}s (hamming: {distance})"
                     )
 
+                self.qualified_count = len(self.qualified_frames)
                 logger.info(
                     f"Processed {frame_count} frames from {self.video_path.name}, "
                     f"{len(self.qualified_frames)} qualified"
@@ -469,6 +479,36 @@ class VideoProcessor:
             )
             raise
         return self.qualified_frames
+
+    @staticmethod
+    def _format_dhash(hash_value: int | None) -> str | None:
+        if hash_value is None:
+            return None
+        return f"{hash_value:016x}"
+
+    def _build_metadata_header(self) -> dict:
+        # Files are in segment directories, filename is simple (e.g., center_DP-3_screen.webm)
+        metadata = {"raw": self.video_path.name}
+
+        # Add observer origin if set (from sense.py for observer uploads)
+        observer = os.getenv("OBSERVER_NAME")
+        if observer:
+            metadata["observer"] = observer
+
+        # Add segment metadata (from sense.py via SEGMENT_META env var)
+        segment_meta_str = os.getenv("SEGMENT_META")
+        if segment_meta_str:
+            try:
+                segment_meta = json.loads(segment_meta_str)
+                for key, value in segment_meta.items():
+                    metadata[key] = value
+            except json.JSONDecodeError:
+                logger.warning(f"Invalid SEGMENT_META JSON: {segment_meta_str[:100]}")
+
+        metadata["first_hash"] = self._format_dhash(self.first_hash)
+        metadata["last_hash"] = self._format_dhash(self.last_hash)
+        metadata["qualified_count"] = self.qualified_count
+        return metadata
 
     def _dhash(self, img: Image.Image) -> int:
         """Compute 64-bit dHash (difference hash) for perceptual comparison."""
@@ -599,27 +639,7 @@ class VideoProcessor:
         try:
             # Write metadata header to JSONL file with actual video filename
             if output_file:
-                # Files are in segment directories, filename is simple (e.g., center_DP-3_screen.webm)
-                metadata = {"raw": self.video_path.name}
-
-                # Add observer origin if set (from sense.py for observer uploads)
-                observer = os.getenv("OBSERVER_NAME")
-                if observer:
-                    metadata["observer"] = observer
-
-                # Add segment metadata (from sense.py via SEGMENT_META env var)
-                segment_meta_str = os.getenv("SEGMENT_META")
-                if segment_meta_str:
-                    try:
-                        segment_meta = json.loads(segment_meta_str)
-                        for key, value in segment_meta.items():
-                            metadata[key] = value
-                    except json.JSONDecodeError:
-                        logger.warning(
-                            f"Invalid SEGMENT_META JSON: {segment_meta_str[:100]}"
-                        )
-
-                output_file.write(json.dumps(metadata) + "\n")
+                output_file.write(json.dumps(self._build_metadata_header()) + "\n")
 
             # Resolve model for frame description (tier from describe.md frontmatter)
             _, frame_model = resolve_provider(FRAME_CONTEXT, "generate")

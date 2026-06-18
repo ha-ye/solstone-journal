@@ -193,3 +193,24 @@ def test_pair_modal_error_state_present(link_env) -> None:
     assert copy.PAIR_ERROR_BODY in body_text
     assert "function showPairError" in body
     assert body.count("showPairError(") >= 2
+
+
+def test_private_link_consent_link_rendering(link_env) -> None:
+    env = link_env()
+    response = env.client.get("/app/link/")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    body_text = _normalized_body(body)
+
+    assert "browser_open_" + "succeeded" not in body
+    assert "PRIVATE_LINK_TERMINAL_PHASES.has(operation.phase)" in body
+    assert "privateLinkSetup.hidden = !!operation &&" in body
+    assert "typeof operation.portal_url === 'string'" in body
+    assert "PRIVATE_LINK_PORTAL_CTA" in body
+    assert copy.PRIVATE_LINK_PORTAL_CTA in body_text
+
+    setup_start = body.index("async function startPrivateLinkSetup")
+    setup_end = body.index("async function disablePrivateLink", setup_start)
+    setup_body = body[setup_start:setup_end]
+    assert "window.open(consentUrl, '_blank', 'noopener')" in setup_body

@@ -95,10 +95,11 @@ def _thinking_operation_failed(detail: str = GENERIC_THINKING_ERROR) -> Any:
 
 def _start_scout_operation(
     kind: str,
-    flow: Callable[[Callable[[str], bool]], operations.HandoffResult],
+    portal_url: str | None,
+    flow: Callable[[], operations.HandoffResult],
 ) -> Any:
     try:
-        payload = operations.start_operation("scout", kind, flow)
+        payload = operations.start_operation("scout", kind, portal_url, flow)
     except operations.OperationBusyError:
         return error_response(SERVICE_BUSY, detail="operation already running")
     return (
@@ -444,11 +445,14 @@ def scout_enable() -> Any:
                 INVALID_OPERATION_FOR_STATE,
                 detail=thinking_copy.SCOUT_MANUAL_KEY_BLOCK_COPY,
             )
+        consent_url, nonce, base_url = scout_handoff.build_scout_handoff_url()
         return _start_scout_operation(
             "enable",
-            lambda opener: scout_handoff.run_scout_handoff(
+            consent_url,
+            lambda: scout_handoff.run_scout_handoff(
                 refresh=False,
-                open_browser=opener,
+                nonce=nonce,
+                base_url=base_url,
             ),
         )
     except Exception:
@@ -468,11 +472,14 @@ def scout_refresh() -> Any:
                 INVALID_OPERATION_FOR_STATE,
                 detail="Scout refresh isn't available right now.",
             )
+        consent_url, nonce, base_url = scout_handoff.build_scout_handoff_url()
         return _start_scout_operation(
             "refresh",
-            lambda opener: scout_handoff.run_scout_handoff(
+            consent_url,
+            lambda: scout_handoff.run_scout_handoff(
                 refresh=True,
-                open_browser=opener,
+                nonce=nonce,
+                base_url=base_url,
             ),
         )
     except Exception:

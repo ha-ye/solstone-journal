@@ -39,22 +39,6 @@ def test_consume_preserves_role(tmp_path: Path) -> None:
     assert consumed.role == "observer"
 
 
-def test_consume_by_code_preserves_role(tmp_path: Path) -> None:
-    store = NonceStore(tmp_path / "nonces.json")
-    store.add(
-        "abc123",
-        "Observer",
-        role="observer",
-        manual_code="K7M3X9PW",
-        now=1000,
-    )
-
-    consumed = store.consume_by_code("K7M3X9PW", now=1001)
-
-    assert consumed is not None
-    assert consumed.role == "observer"
-
-
 def test_read_legacy_nonce_defaults_role_less(tmp_path: Path) -> None:
     path = tmp_path / "nonces.json"
     path.write_text(
@@ -66,7 +50,6 @@ def test_read_legacy_nonce_defaults_role_less(tmp_path: Path) -> None:
                     "issued_at": 1000,
                     "expires_at": 1000 + NONCE_TTL_SECONDS,
                     "used": False,
-                    "manual_code": None,
                 }
             ],
         )

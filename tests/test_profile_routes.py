@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import json
+
 from solstone.convey import create_app
 from solstone.think.surfaces import profile as profile_surface
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client
 from tests.test_surfaces_profile import (
     _activity_record,
     _append_activity,
@@ -30,8 +32,22 @@ def _assert_error(response, status: int) -> dict:
     return data
 
 
-def _seed_ravi(tmp_path, monkeypatch) -> None:
+def _configure_journal(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "journal.json").write_text(
+        json.dumps({"setup": {"completed_at": 1}}),
+        encoding="utf-8",
+    )
+
+
+def _configure_unset_journal(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+
+def _seed_ravi(tmp_path, monkeypatch) -> None:
+    _configure_journal(tmp_path, monkeypatch)
     _minimal_facet_tree(
         tmp_path,
         journal_entities=({"id": "ravi", "name": "Ravi", "type": "Person"},),
@@ -58,7 +74,7 @@ def _seed_ravi(tmp_path, monkeypatch) -> None:
 
 def test_profile_full_composed(tmp_path, monkeypatch):
     _seed_ravi(tmp_path, monkeypatch)
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     response = client.get(f"{PROFILE_PREFIX}/Ravi")
 
@@ -72,10 +88,10 @@ def test_profile_full_composed(tmp_path, monkeypatch):
 
 
 def test_profile_full_not_found(tmp_path, monkeypatch):
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _configure_journal(tmp_path, monkeypatch)
     _minimal_facet_tree(tmp_path)
     monkeypatch.setattr(profile_surface, "_today_day", lambda: "20260607")
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     data = _assert_error(client.get(f"{PROFILE_PREFIX}/missing"), 404)
 
@@ -84,7 +100,7 @@ def test_profile_full_not_found(tmp_path, monkeypatch):
 
 def test_profile_brief(tmp_path, monkeypatch):
     _seed_ravi(tmp_path, monkeypatch)
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     response = client.get(f"{PROFILE_PREFIX}/Ravi/brief")
 
@@ -94,7 +110,7 @@ def test_profile_brief(tmp_path, monkeypatch):
 
 def test_profile_cadence(tmp_path, monkeypatch):
     _seed_ravi(tmp_path, monkeypatch)
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     response = client.get(f"{PROFILE_PREFIX}/Ravi/cadence")
     mentions_response = client.get(
@@ -108,7 +124,7 @@ def test_profile_cadence(tmp_path, monkeypatch):
 
 def test_profiles_active_collection_envelope(tmp_path, monkeypatch):
     _seed_ravi(tmp_path, monkeypatch)
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     response = client.get(f"{PROFILES_PREFIX}/active")
 
@@ -123,18 +139,18 @@ def test_profiles_active_collection_envelope(tmp_path, monkeypatch):
 def test_profiles_active_bad_window_days_returns_invalid_request_value(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _configure_journal(tmp_path, monkeypatch)
     _minimal_facet_tree(tmp_path)
     monkeypatch.setattr(profile_surface, "_today_day", lambda: "20260607")
-    client = make_logged_in_test_client(tmp_path)
+    client = make_test_client(tmp_path)
 
     data = _assert_error(client.get(f"{PROFILES_PREFIX}/active?window_days=abc"), 400)
 
     assert data["reason_code"] == "invalid_request_value"
 
 
-def test_profile_requires_login(tmp_path, monkeypatch):
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+def test_profile_redirects_to_init_when_setup_incomplete(tmp_path, monkeypatch):
+    _configure_unset_journal(tmp_path, monkeypatch)
     app = create_app(journal=str(tmp_path))
     app.config["TESTING"] = True
     client = app.test_client()
@@ -142,3 +158,4 @@ def test_profile_requires_login(tmp_path, monkeypatch):
     response = client.get(f"{PROFILE_PREFIX}/Ravi")
 
     assert response.status_code == 302
+    assert "/init" in response.headers["Location"]

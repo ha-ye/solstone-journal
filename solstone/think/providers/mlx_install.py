@@ -15,10 +15,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import huggingface_hub
-from huggingface_hub import constants
-from huggingface_hub.file_download import repo_folder_name
-
 from solstone.think.journal_config import read_journal_config, write_journal_config
 from solstone.think.models import GEMMA4_26B_A4B_4BIT, QWEN_35_9B
 from solstone.think.providers.install_state import (
@@ -143,6 +139,9 @@ def resolve_model_spec(model_id: str | None = None) -> MLXModelSpec:
 
 
 def snapshot_dir_for_spec(spec: MLXModelSpec) -> Path:
+    from huggingface_hub import constants
+    from huggingface_hub.file_download import repo_folder_name
+
     repo_folder = repo_folder_name(repo_id=spec.repo, repo_type="model")
     return Path(constants.HF_HUB_CACHE) / repo_folder / "snapshots" / spec.revision
 
@@ -183,6 +182,8 @@ def _snapshot_present(snapshot_dir: Path) -> bool:
 def _remote_safetensors_metadata(
     spec: MLXModelSpec, paths: list[str]
 ) -> dict[str, tuple[str, int]]:
+    import huggingface_hub
+
     wanted = set(paths)
     found: dict[str, tuple[str, int]] = {}
     api = huggingface_hub.HfApi()
@@ -409,6 +410,8 @@ def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
 
 
 def install_local_mlx(model_id: str = QWEN_35_9B) -> InstallStatus:
+    import huggingface_hub
+
     try:
         _write_status(transition_state(_read_status(), new_state="resolving"))
         spec = resolve_model_spec(model_id)

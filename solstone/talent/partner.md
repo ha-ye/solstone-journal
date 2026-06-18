@@ -1,5 +1,6 @@
 {
   "type": "cogitate",
+  "access_tier": "synthesis",
 
   "title": "Partner Profile",
   "description": "Weekly observation of the journal owner's behavioral patterns — work style, communication, priorities, decision-making, expertise",
@@ -19,7 +20,8 @@ This is not a conversation. Gather data, observe patterns, update the profile, t
 
 ## Step 1: Read current state
 
-Read `identity/partner.md` with the `read_file` tool.
+Read the current profile with `journal identity partner` — the settled
+`sol`-surface read form for `identity/partner.md`.
 
 Note which sections have real observations vs `[observing]` placeholders.
 
@@ -33,7 +35,6 @@ and query each source. If a source returns empty or errors, skip it — gaps are
 2. For each active facet (from `sol call journal facets`):
    - `sol call journal news FACET --day YYYYMMDD` (most recent day available) — work themes
 3. `sol call journal search "" --day-from YYYYMMDD -a pulse -n 10` — pulse narratives for behavioral patterns
-4. `sol call journal search "" --day-from YYYYMMDD -a decisions -n 10` — decision patterns
 
 ## Step 3: Analyze and write observations
 

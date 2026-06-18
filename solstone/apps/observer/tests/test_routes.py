@@ -2313,7 +2313,7 @@ def test_ingest_partial_duplicate_creates_new_segment(observer_env):
     assert second_data["segment"] != first_segment
 
 
-def test_ingest_partial_match_logged_in_history(observer_env):
+def test_ingest_partial_match_history(observer_env):
     """Test that partial SHA256 matches are logged in history record."""
     env = observer_env()
 

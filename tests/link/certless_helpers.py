@@ -75,10 +75,8 @@ def write_config(
     journal: Path,
     *,
     link: dict[str, Any] | None = None,
-    trust_localhost: bool = True,
 ) -> None:
     config: dict[str, Any] = {
-        "convey": {"trust_localhost": trust_localhost},
         "setup": {"completed_at": 1700000000000},
     }
     if link is not None:

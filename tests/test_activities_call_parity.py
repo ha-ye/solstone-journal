@@ -14,7 +14,7 @@ from solstone.apps.activities.call import app
 from solstone.convey.reasons import ACTIVITIES_BUSY
 from solstone.think.convey_client import ConveyClient
 from solstone.think.journal_io import LockTimeout
-from tests._baseline_harness import make_logged_in_test_client
+from tests._baseline_harness import make_test_client
 
 DAY = "20260418"
 PREV_DAY = "20260417"
@@ -36,7 +36,7 @@ def journal(tmp_path, monkeypatch):
 
 @pytest.fixture
 def runner(journal, monkeypatch):
-    client = ConveyClient(session=make_logged_in_test_client(journal), base_url="")
+    client = ConveyClient(session=make_test_client(journal), base_url="")
     monkeypatch.setattr("solstone.apps.activities.call.get_client", lambda: client)
     return CliRunner()
 
@@ -52,7 +52,6 @@ def _seed_journal(
     (config_dir / "journal.json").write_text(
         json.dumps(
             {
-                "convey": {"trust_localhost": True},
                 "setup": {"completed_at": 1700000000000},
             }
         )

@@ -20,6 +20,9 @@
   let connectedAt = null;
   let lastMessageAt = null;
   let connectionState = 'disconnected';
+  let lastCaptureStatus = null;
+  let lastRenderedVariant = null;
+  let lastRenderedSpin = null;
   let disconnectTimerId = null;
   let disconnectCardId = null;
   let disconnectSecondPhaseTimerId = null;
@@ -184,29 +187,87 @@
     });
   }
 
-	  function updateStatusIcon(state) {
+  function deriveStatusMark(wsState, captureStatus, hasUnviewedNotifs) {
+    let variant;
+    let spin = false;
+
+    if (wsState === 'disconnected') {
+      variant = 'x';
+    } else if (wsState === 'connecting') {
+      variant = 'active';
+      spin = true;
+    } else if (captureStatus === 'offline') {
+      variant = 'error';
+    } else if (captureStatus === null || captureStatus === 'unknown') {
+      variant = 'question';
+    } else if (hasUnviewedNotifs) {
+      variant = 'bang';
+    } else if (captureStatus === 'stale') {
+      variant = 'half';
+    } else if (captureStatus === 'no_observers') {
+      variant = 'paused';
+    } else if (captureStatus === 'active') {
+      variant = 'active';
+    } else {
+      variant = 'question';
+    }
+
+    const labels = {
+      active: 'active',
+      x: 'disconnected',
+      error: 'observers offline',
+      question: 'status unknown',
+      bang: 'attention',
+      half: 'observers stale',
+      paused: 'no observers'
+    };
+
+    return {
+      variant,
+      spin,
+      label: spin ? 'connecting' : labels[variant]
+    };
+  }
+
+  function renderStatusMark() {
     if (!statusIcon) {
       statusIcon = document.querySelector('.facet-bar .status-icon');
     }
+    if (!statusIcon) return;
 
-    if (statusIcon) {
-      const badge = statusIcon.querySelector('#quiet-notif-badge');
-      const svgs = {
-        connected: '<svg class="status-indicator" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="#10b981"/></svg>',
-        connecting: '<svg class="status-indicator status-indicator--connecting" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="#f59e0b" stroke-width="2.5" stroke-dasharray="24 8"/></svg>',
-        disconnected: '<svg class="status-indicator" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 2 L14 13 L2 13 Z" fill="#ef4444"/></svg>'
-      };
-      const labels = {
-        connected: 'connected',
-        connecting: 'connecting',
-        disconnected: 'disconnected'
-      };
+    const badge = statusIcon.querySelector('#quiet-notif-badge');
+    const hasUnviewed = !!badge && badge.style.display !== 'none';
+    const mark = deriveStatusMark(connectionState, lastCaptureStatus, hasUnviewed);
+    if (window.appEvents) {
+      window.appEvents.statusLabel = mark.label;
+    }
 
-      statusIcon.innerHTML = svgs[state] || svgs.disconnected;
-      if (badge) {
-        statusIcon.appendChild(badge);
-      }
-      statusIcon.setAttribute('title', labels[state] || state);
+    if (mark.variant === lastRenderedVariant && mark.spin === lastRenderedSpin) {
+      window.updateStatusLabel?.();
+      return;
+    }
+
+    let img = statusIcon.querySelector('img.status-indicator');
+    if (!img) {
+      img = document.createElement('img');
+      img.className = 'status-indicator';
+      img.alt = '';
+      img.setAttribute('aria-hidden', 'true');
+      img.width = 22;
+      img.height = 22;
+      statusIcon.insertBefore(img, badge || statusIcon.firstChild);
+    }
+
+    img.src = '/static/sol-status/' + mark.variant + '.svg';
+    img.classList.toggle('status-indicator--connecting', mark.spin);
+    lastRenderedVariant = mark.variant;
+    lastRenderedSpin = mark.spin;
+    window.updateStatusLabel?.();
+  }
+
+  function updateStatusIcon(state) {
+    if (!statusIcon) {
+      statusIcon = document.querySelector('.facet-bar .status-icon');
     }
 
     const previousState = connectionState;
@@ -214,8 +275,8 @@
     if (previousState !== state) {
       notifyConnectionState();
     }
-	    window.updateStatusLabel?.();
-	  }
+    renderStatusMark();
+  }
 
 	  function reconnectAttemptDetails() {
 	    if (!reconnectAttempts.length) return 'no reconnect attempts recorded yet.';
@@ -354,7 +415,16 @@
     };
   }
 
+  window.renderStatusMark = renderStatusMark;
+
   window.appEvents = {
+    statusLabel: 'connecting',
+
+    setCaptureStatus(status) {
+      lastCaptureStatus = status ?? null;
+      renderStatusMark();
+    },
+
     /**
      * Listen for events from a specific tract or all events.
      *

@@ -94,6 +94,23 @@ def browser_url(
     return url
 
 
+def build_consent_url(
+    service: str, *, instance: str | None = None
+) -> tuple[str, str, str]:
+    """Mint a nonce and build the portal consent URL for ``service``.
+
+    Returns ``(consent_url, nonce, base_url)``.
+    """
+
+    base_url = portal_base_url()
+    nonce = mint_nonce()
+    return (
+        browser_url(base_url, nonce, service=service, instance=instance),
+        nonce,
+        base_url,
+    )
+
+
 def is_timeout_error(exc: BaseException) -> bool:
     if isinstance(exc, (socket.timeout, TimeoutError)):
         return True

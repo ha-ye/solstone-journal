@@ -15,21 +15,31 @@ import re
 import threading
 from collections import deque
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
+import httpx
 from flask import Blueprint, jsonify, request
 
+import solstone.convey.chat_stream as chat_stream
 from solstone.apps.chat.copy import (
     CHAT_CLOSER_DIFFERENT_ANGLE_SUFFIX,
     CHAT_CLOSER_LOOP_EXHAUSTED_PREFIX,
+    CHAT_CLOSER_SUPPORT_SEND_FAILED,
     CHAT_CLOSER_TALENT_ERRORED_FORMAT,
     CHAT_CLOSER_TALENT_ERRORED_GENERIC,
     CHAT_OFFER_SUPPORT_DECLINE,
     CHAT_OFFER_SUPPORT_PROMPT,
+    CHAT_SUPPORT_ATTACH_FILED_FORMAT,
+    CHAT_SUPPORT_DRAFT_CANCELLED,
+    CHAT_SUPPORT_DRAFT_READY,
+    CHAT_SUPPORT_SUBMIT_AMBIGUOUS,
+    CHAT_SUPPORT_SUBMIT_FAILED,
+    CHAT_SUPPORT_SUBMIT_FILED_FORMAT,
 )
+from solstone.apps.support.tools import support_attach, support_create, support_reply
+from solstone.convey.chat_sources import parse_sol_sources
 from solstone.convey.chat_stream import (
     append_chat_event,
     find_unresponded_trigger,
@@ -51,6 +61,7 @@ from solstone.convey.sol_initiated import (
 from solstone.convey.sol_initiated.copy import KIND_SOL_CHAT_REQUEST, SURFACE_CONVEY
 from solstone.convey.utils import error_response
 from solstone.think.callosum import CallosumConnection, callosum_send
+from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_REASON_CODES
 from solstone.think.cortex_client import CortexSpawnUnavailable
 from solstone.think.utils import get_journal, now_ms
 
@@ -109,6 +120,15 @@ class ChatSpawnResult:
     detail: str = ""
 
 
+@dataclass(frozen=True)
+class SupportDraftSubmitResult:
+    ok: bool
+    outcome: str
+    text: str
+    result_fields: dict[str, Any]
+    ticket_id: Any = None
+
+
 @chat_bp.route("", methods=["POST"])
 def post_chat() -> Any:
     """Accept an owner message and schedule the chat singleton."""
@@ -142,7 +162,6 @@ def post_chat() -> Any:
         "type": "owner_message",
         "message": message,
     }
-    outbound_approval = uuid4().hex
 
     with _state_lock:
         if _current_chat_use_id is not None and len(_queued_triggers) >= 10:
@@ -158,7 +177,6 @@ def post_chat() -> Any:
                 logical_use_id,
                 trigger,
                 location,
-                outbound_approval=outbound_approval,
             )
             queued = False
             response_use_id = logical_use_id
@@ -166,7 +184,6 @@ def post_chat() -> Any:
             response_use_id = _enqueue_trigger_locked(
                 trigger,
                 location,
-                outbound_approval=outbound_approval,
             )
             queued = True
 
@@ -255,8 +272,139 @@ def decline_offer() -> Any:
         notes="owner declined the support offer",
         requested_target=None,
         requested_task=None,
+        sources=[],
+        answer_state="answered",
     )
     return jsonify(ok=True)
+
+
+@chat_bp.route("/support/draft/confirm", methods=["POST"])
+def confirm_support_draft() -> Any:
+    """Owner confirmed a captured support draft; submit it through support tools."""
+    payload = request.get_json(force=True, silent=True) or {}
+    draft_id = str(payload.get("draft_id") or "").strip()
+    if not draft_id:
+        return error_response(MISSING_REQUIRED_FIELD, detail="draft_id required")
+
+    resolved = _resolve_support_draft(draft_id)
+    if resolved is None:
+        return jsonify(ok=False, outcome="not_found")
+    draft_event, captured_day = resolved
+
+    with chat_stream._CHAT_LOCK:
+        # Lock order: hold only _CHAT_LOCK here; accepted v1 crash-window leaves a claim without TTL.
+        events = chat_stream.read_chat_events(captured_day)
+        if _draft_is_terminal(events, draft_id):
+            return jsonify(ok=False, outcome="already_submitted")
+        latest_draft = _latest_support_draft(captured_day)
+        latest_draft_id = str((latest_draft or {}).get("draft_id") or "")
+        if latest_draft_id != draft_id:
+            return jsonify(ok=False, outcome="superseded")
+        stored_claim = chat_stream.append_chat_events_locked(
+            [
+                (
+                    "support_submit_claim",
+                    {
+                        "ts": _next_chat_ts_for_day(captured_day, events),
+                        "draft_id": draft_id,
+                    },
+                )
+            ],
+            _lock_already_held=True,
+        )
+    chat_stream._finalize_chat_event_appends(stored_claim)
+
+    submit_result = _submit_support_draft(draft_event, draft_id)
+    append_chat_event(
+        "result",
+        ts=_next_chat_ts_for_day(
+            captured_day,
+            chat_stream.read_chat_events(captured_day),
+        ),
+        **submit_result.result_fields,
+    )
+    # Lock order: reserve under _state_lock after _CHAT_LOCK is fully released.
+    with _state_lock:
+        use_id = _reserve_use_id_locked()
+    append_chat_event(
+        "sol_message",
+        ts=_next_chat_ts_for_day(
+            captured_day,
+            chat_stream.read_chat_events(captured_day),
+        ),
+        use_id=use_id,
+        text=submit_result.text,
+        notes=f"support draft {submit_result.outcome}",
+        requested_target=None,
+        requested_task=None,
+        sources=[],
+        answer_state="answered",
+    )
+
+    response: dict[str, Any] = {
+        "ok": submit_result.ok,
+        "outcome": submit_result.outcome,
+    }
+    if submit_result.outcome == "submitted":
+        response["ticket_id"] = submit_result.ticket_id
+    return jsonify(response)
+
+
+@chat_bp.route("/support/draft/cancel", methods=["POST"])
+def cancel_support_draft() -> Any:
+    """Owner cancelled a captured support draft without contacting support."""
+    payload = request.get_json(force=True, silent=True) or {}
+    draft_id = str(payload.get("draft_id") or "").strip()
+    if not draft_id:
+        return error_response(MISSING_REQUIRED_FIELD, detail="draft_id required")
+
+    resolved = _resolve_support_draft(draft_id)
+    if resolved is None:
+        return jsonify(ok=False, outcome="not_found")
+    _draft_event, captured_day = resolved
+
+    # Lock order: reserve under _state_lock before _CHAT_LOCK is acquired.
+    with _state_lock:
+        use_id = _reserve_use_id_locked()
+    with chat_stream._CHAT_LOCK:
+        # Lock order: hold only _CHAT_LOCK here; accepted v1 crash-window leaves a claim without TTL.
+        events = chat_stream.read_chat_events(captured_day)
+        if _draft_is_terminal(events, draft_id):
+            return jsonify(ok=False, outcome="already_submitted")
+        latest_draft = _latest_support_draft(captured_day)
+        latest_draft_id = str((latest_draft or {}).get("draft_id") or "")
+        if latest_draft_id != draft_id:
+            return jsonify(ok=False, outcome="superseded")
+        terminal_ts = _next_chat_ts_for_day(captured_day, events)
+        stored = chat_stream.append_chat_events_locked(
+            [
+                (
+                    "result",
+                    {
+                        "ts": terminal_ts,
+                        "draft_id": draft_id,
+                        "ok": False,
+                        "cancelled": True,
+                    },
+                ),
+                (
+                    "sol_message",
+                    {
+                        "ts": terminal_ts,
+                        "use_id": use_id,
+                        "text": CHAT_SUPPORT_DRAFT_CANCELLED,
+                        "notes": "support draft cancelled",
+                        "requested_target": None,
+                        "requested_task": None,
+                        "sources": [],
+                        "answer_state": "answered",
+                    },
+                ),
+            ],
+            _lock_already_held=True,
+        )
+    chat_stream._finalize_chat_event_appends(stored)
+    return jsonify(ok=True, outcome="cancelled")
 
 
 @chat_bp.route("/talent-log/<use_id>", methods=["GET"])
@@ -459,6 +607,7 @@ def _on_cortex_finish(message: dict[str, Any]) -> None:
                     else None
                 )
                 offer: dict[str, Any] | None = None
+                answer_state = "answered"
                 trigger = _current_chat_state.get("trigger") or {}
                 trigger_type = trigger.get("type")
                 if trigger_type in {"talent_finished", "talent_errored"}:
@@ -470,11 +619,45 @@ def _on_cortex_finish(message: dict[str, Any]) -> None:
                     message_text = _compose_terminal_closer(
                         exit_mode,
                         message_text,
+                        talent_name=trigger.get("name"),
                         talent_errored_reason=trigger.get("reason"),
+                        talent_errored_reason_code=trigger.get("reason_code"),
                         talent_finished_summary=trigger.get("summary"),
+                    )
+                    answer_state = (
+                        "failed" if exit_mode == "talent_errored" else "partial"
                     )
                     requested_target = None
                     requested_task = None
+                draft: dict[str, Any] | None = None
+                if (
+                    trigger_type == "talent_finished"
+                    and trigger.get("name") in OUTBOUND_TALENTS
+                    and _support_draft_state(_today_day()) == "pending"
+                ):
+                    latest_draft = _latest_support_draft(_today_day())
+                    if latest_draft is not None:
+                        message_text = CHAT_SUPPORT_DRAFT_READY
+                        verb = str(latest_draft.get("verb") or "")
+                        if verb == "attach":
+                            source_payload = latest_draft["payload"]
+                            marker_payload = {
+                                "ticket_id": source_payload["ticket_id"],
+                                "filename": source_payload["filename"],
+                                "content_type": source_payload["content_type"],
+                                "byte_size": source_payload["byte_size"],
+                            }
+                        else:
+                            marker_payload = latest_draft.get("payload")
+                        draft = {
+                            "draft_id": latest_draft.get("draft_id"),
+                            "verb": verb,
+                            "payload": marker_payload,
+                            "diagnostics_snapshot": latest_draft.get(
+                                "diagnostics_snapshot"
+                            ),
+                        }
+                        answer_state = "answered"
                 if requested_target in OUTBOUND_TALENTS:
                     consent = _support_consent_state(_today_day())
                     if consent == "none":
@@ -493,11 +676,15 @@ def _on_cortex_finish(message: dict[str, Any]) -> None:
                     "notes": parsed["notes"],
                     "requested_target": requested_target,
                     "requested_task": requested_task,
+                    "sources": parse_sol_sources(message_text),
+                    "answer_state": answer_state,
                 }
                 if thinking is not None:
                     sol_message_fields["thinking"] = thinking
                 if offer is not None:
                     sol_message_fields["offer"] = offer
+                if draft is not None:
+                    sol_message_fields["draft"] = draft
                 append_chat_event(
                     "sol_message",
                     **sol_message_fields,
@@ -537,9 +724,6 @@ def _on_cortex_finish(message: dict[str, Any]) -> None:
                             "task": requested_task,
                             "context": parsed["talent_request"].get("context") or {},
                             "location": dict(_current_chat_state["location"]),
-                            "outbound_approval": _current_chat_state.get(
-                                "outbound_approval"
-                            ),
                         }
                 else:
                     if not message_text:
@@ -630,12 +814,14 @@ def _on_cortex_error(message: dict[str, Any]) -> None:
             next_info = _clear_current_locked()
         elif use_id in _active_talents:
             reason = str(message.get("error") or "unknown")
+            reason_code = message.get("reason_code") or None
             _evict_thinking_locked(use_id)
             next_info = _handle_talent_terminal_locked(
                 use_id,
                 "talent_errored",
                 "reason",
                 reason,
+                reason_code=reason_code,
             )
         elif _is_superseded_raw_use_id_locked(use_id):
             logger.debug(
@@ -669,6 +855,7 @@ def _handle_talent_terminal_locked(
     result_field_name: str,
     result_value: str,
     *,
+    reason_code: str | None = None,
     terminal_message: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     _cancel_watchdog_locked(use_id)
@@ -681,12 +868,15 @@ def _handle_talent_terminal_locked(
         talent_name,
         result_field_name,
         result_value,
+        reason_code=reason_code,
     )
     event_fields: dict[str, Any] = {
         "use_id": use_id,
         "name": talent_name,
         result_field_name: result_value,
     }
+    if reason_code:
+        event_fields["reason_code"] = reason_code
     if kind == "talent_finished" and terminal_message is not None:
         thinking = _drain_thinking_locked(use_id, terminal_message)
         if thinking is not None:
@@ -792,7 +982,6 @@ def _spawn_talent(action: dict[str, Any]) -> bool:
         "path": action["location"]["path"],
         "facet": action["location"]["facet"],
         "chat_parent_use_id": action["logical_use_id"],
-        "outbound_approval": action.get("outbound_approval"),
     }
     spawn_name = DISPATCH_SPAWN_NAMES.get(action["target"], action["target"])
     try:
@@ -943,7 +1132,6 @@ def _recover_chat_if_needed() -> None:
         location = _location_for_trigger(day, unresolved)
         logical_use_id = _reserve_use_id_locked()
         trigger = _trigger_from_stream_event(unresolved)
-        # Recovered triggers are disk-derived and intentionally carry no approval.
         start_info = _activate_current_locked(logical_use_id, trigger, location)
 
     if start_info is not None:
@@ -960,7 +1148,6 @@ def _activate_current_locked(
     logical_use_id: str,
     trigger: dict[str, Any],
     location: dict[str, str],
-    outbound_approval: str | None = None,
 ) -> dict[str, Any]:
     global _current_chat_use_id, _current_chat_state
 
@@ -972,7 +1159,6 @@ def _activate_current_locked(
         "trigger": dict(trigger),
         "location": dict(location),
         "retry_count": 0,
-        "outbound_approval": outbound_approval,
     }
     _set_current_raw_use_locked(logical_use_id, raw_use_id)
     return _build_spawn_info_locked(logical_use_id)
@@ -992,13 +1178,11 @@ def _build_spawn_info_locked(logical_use_id: str) -> dict[str, Any]:
 def _enqueue_trigger_locked(
     trigger: dict[str, Any],
     location: dict[str, str],
-    outbound_approval: str | None = None,
 ) -> str:
     queued = {
         "use_id": _reserve_use_id_locked(),
         "trigger": dict(trigger),
         "location": dict(location),
-        "outbound_approval": outbound_approval,
     }
     _queued_triggers.append(queued)
     append_chat_event("chat_queue_depth", depth=len(_queued_triggers))
@@ -1025,7 +1209,6 @@ def _clear_current_locked() -> dict[str, Any] | None:
         str(queued["use_id"]),
         dict(queued["trigger"]),
         dict(queued["location"]),
-        outbound_approval=queued.get("outbound_approval"),
     )
 
 
@@ -1373,7 +1556,9 @@ def _compose_terminal_closer(
     exit_mode: str,
     raw_message: str | None,
     *,
+    talent_name: str | None = None,
     talent_errored_reason: str | None = None,
+    talent_errored_reason_code: str | None = None,
     talent_finished_summary: str | None = None,
 ) -> str:
     if exit_mode == "loop_exhausted":
@@ -1391,6 +1576,11 @@ def _compose_terminal_closer(
         )
 
     if exit_mode == "talent_errored":
+        if (
+            talent_name in OUTBOUND_TALENTS
+            and talent_errored_reason_code in DETERMINISTIC_FAILURE_REASON_CODES
+        ):
+            return CHAT_CLOSER_SUPPORT_SEND_FAILED
         reason = _clean_talent_errored_reason(talent_errored_reason)
         if reason:
             return CHAT_CLOSER_TALENT_ERRORED_FORMAT.format(reason=reason)
@@ -1601,6 +1791,7 @@ def _trigger_from_stream_event(event: dict[str, Any]) -> dict[str, Any]:
             event.get("name", "exec"),
             "reason",
             event.get("reason", ""),
+            reason_code=event.get("reason_code"),
         )
     raise ValueError(f"unsupported trigger event: {kind}")
 
@@ -1611,13 +1802,18 @@ def _talent_terminal_trigger(
     name: Any,
     result_field_name: str,
     result_value: Any,
+    *,
+    reason_code: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    trigger = {
         "type": kind,
         "use_id": use_id,
         "name": name,
         result_field_name: result_value,
     }
+    if reason_code:
+        trigger["reason_code"] = reason_code
+    return trigger
 
 
 def _read_talent_log(use_id: str) -> dict[str, Any] | None:
@@ -1726,6 +1922,148 @@ def _today_day() -> str:
     return datetime.now().strftime("%Y%m%d")
 
 
+def _resolve_support_draft(draft_id: str) -> tuple[dict[str, Any], str] | None:
+    today = _today_day()
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+    for day in (today, yesterday):
+        for event in read_chat_events(day):
+            if (
+                event.get("kind") == "support_draft"
+                and str(event.get("draft_id") or "") == draft_id
+            ):
+                return event, str(event["captured_day"])
+    return None
+
+
+def _draft_is_terminal(events: list[dict[str, Any]], draft_id: str) -> bool:
+    for event in events:
+        if event.get("kind") not in {"result", "support_submit_claim"}:
+            continue
+        if str(event.get("draft_id") or "") == draft_id:
+            return True
+    return False
+
+
+def _next_chat_ts_for_day(day: str, events: list[dict[str, Any]]) -> int:
+    day_start = datetime.strptime(day, "%Y%m%d")
+    start_ms = int(day_start.timestamp() * 1000)
+    end_ms = int((day_start + timedelta(days=1)).timestamp() * 1000) - 1
+    max_ts = max(
+        (
+            event["ts"]
+            for event in events
+            if isinstance(event.get("ts"), int)
+            and chat_stream.day_for_ts(int(event["ts"])) == day
+        ),
+        default=start_ms,
+    )
+    return min(max_ts + 1, end_ms)
+
+
+def _submit_support_draft(
+    draft_event: dict[str, Any],
+    draft_id: str,
+) -> SupportDraftSubmitResult:
+    verb = str(draft_event["verb"])
+    payload = draft_event["payload"]
+    diagnostics_snapshot = draft_event["diagnostics_snapshot"]
+
+    try:
+        if verb == "create":
+            result_obj = support_create(**payload)
+            ticket_id = result_obj.get("id")
+        elif verb == "feedback":
+            result_obj = support_create(
+                subject="User feedback",
+                description=payload["body"],
+                product=payload["product"],
+                severity="low",
+                category="feedback",
+                anonymous=payload["anonymous"],
+                auto_context=False,
+                user_context=diagnostics_snapshot,
+            )
+            ticket_id = result_obj.get("id")
+        elif verb == "reply":
+            support_reply(payload["ticket_id"], payload["content"])
+            ticket_id = payload["ticket_id"]
+        elif verb == "attach":
+            import base64
+            import tempfile
+            from pathlib import Path as AttachmentPath
+
+            suffix = AttachmentPath(payload["filename"]).suffix.lower()
+            data = base64.b64decode(payload["content_b64"])
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(data)
+                tmp_path = AttachmentPath(tmp.name)
+            try:
+                support_attach(
+                    payload["ticket_id"],
+                    str(tmp_path),
+                    filename=payload["filename"],
+                )
+            finally:
+                tmp_path.unlink(missing_ok=True)
+            ticket_id = payload["ticket_id"]
+        else:
+            raise ValueError(f"unknown draft verb: {verb}")
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+        return _support_submit_exception_result(draft_id, exc, ambiguous=False)
+    except httpx.HTTPStatusError as exc:
+        return _support_submit_exception_result(
+            draft_id,
+            exc,
+            ambiguous=exc.response.status_code >= 500,
+        )
+    except RuntimeError as exc:
+        return _support_submit_exception_result(draft_id, exc, ambiguous=False)
+    except (httpx.ReadTimeout, httpx.WriteTimeout) as exc:
+        return _support_submit_exception_result(draft_id, exc, ambiguous=True)
+    except httpx.HTTPError as exc:
+        return _support_submit_exception_result(draft_id, exc, ambiguous=True)
+
+    return SupportDraftSubmitResult(
+        ok=True,
+        outcome="submitted",
+        text=(
+            CHAT_SUPPORT_ATTACH_FILED_FORMAT.format(ticket_id=ticket_id)
+            if verb == "attach"
+            else CHAT_SUPPORT_SUBMIT_FILED_FORMAT.format(ticket_id=ticket_id)
+        ),
+        ticket_id=ticket_id,
+        result_fields={"draft_id": draft_id, "ok": True, "ticket_id": ticket_id},
+    )
+
+
+def _support_submit_exception_result(
+    draft_id: str,
+    exc: BaseException,
+    *,
+    ambiguous: bool,
+) -> SupportDraftSubmitResult:
+    outcome = "ambiguous" if ambiguous else "failed"
+    logger.warning(
+        "Support draft submit %s with %s",
+        outcome,
+        exc.__class__.__name__,
+        exc_info=True,
+    )
+    fields: dict[str, Any] = {
+        "draft_id": draft_id,
+        "ok": False,
+        "error": exc.__class__.__name__,
+    }
+    if ambiguous:
+        fields["ambiguous"] = True
+    return SupportDraftSubmitResult(
+        ok=False,
+        outcome=outcome,
+        text=CHAT_SUPPORT_SUBMIT_AMBIGUOUS if ambiguous else CHAT_SUPPORT_SUBMIT_FAILED,
+        result_fields=fields,
+    )
+
+
 def _support_consent_state(day: str) -> str:
     """Deterministic, day-scoped support-consent state for the conversation.
 
@@ -1751,3 +2089,41 @@ def _support_consent_state(day: str) -> str:
     }:
         return "pending"
     return "none"
+
+
+def _support_draft_state(day: str) -> str:
+    """Deterministic, day-scoped support-draft state for the conversation.
+
+    Mirrors _support_consent_state. Walks history tracking the LATEST support_draft.
+    Returns:
+      "submitted" — a `result` event back-references the latest draft's draft_id
+                    (forward seam; no `result` writer exists yet, so this is
+                    present-but-inert today — the next lode adds only that writer).
+      "pending"   — a support_draft exists and is not yet submitted.
+      "none"      — no support_draft.
+    Precedence: submitted, then pending, else none.
+    """
+    latest_draft_id: str | None = None
+    result_draft_ids: set[str] = set()
+    for event in read_chat_events(day):
+        kind = event.get("kind")
+        if kind == "support_draft":
+            latest_draft_id = str(event.get("draft_id") or "")
+        elif kind == "result":
+            result_draft_id = str(event.get("draft_id") or "")
+            if result_draft_id:
+                result_draft_ids.add(result_draft_id)
+    if latest_draft_id and latest_draft_id in result_draft_ids:
+        return "submitted"
+    if latest_draft_id:
+        return "pending"
+    return "none"
+
+
+def _latest_support_draft(day: str) -> dict[str, Any] | None:
+    """Return the most recent support_draft event for ``day``, or None."""
+    latest: dict[str, Any] | None = None
+    for event in read_chat_events(day):
+        if event.get("kind") == "support_draft":
+            latest = event
+    return latest

@@ -11,6 +11,26 @@
       <button id="chatBarOfferNo" type="button" class="offer-btn offer-btn--no"></button>
     </span>
   </div>
+  <div id="chatBarDraft" class="chat-bar-draft" aria-live="polite" hidden>
+    <div class="chat-bar-draft-card" role="group" aria-label="">
+      <div class="chat-bar-draft-header">
+        <span class="chat-bar-draft-dot" aria-hidden="true"></span>
+        <span class="chat-bar-draft-title"></span>
+        <span class="chat-bar-draft-route">
+          <span class="chat-bar-draft-route-from"></span>
+          <span class="chat-bar-draft-route-arrow" aria-hidden="true">→</span>
+          <span class="chat-bar-draft-route-to"></span>
+        </span>
+      </div>
+      <div class="chat-bar-draft-body"></div>
+      <div class="chat-bar-draft-actions">
+        <button id="chatBarDraftSubmit" type="button" class="chat-bar-draft-btn chat-bar-draft-btn--submit"></button>
+        <button id="chatBarDraftCancel" type="button" class="chat-bar-draft-btn chat-bar-draft-btn--cancel"></button>
+        <span class="chat-bar-draft-floor"></span>
+      </div>
+    </div>
+  </div>
+  <div id="chatBarResult" class="chat-bar-result" aria-live="polite" hidden></div>
   <div id="chatBarStatus" class="chat-bar-status" aria-live="polite">
     <span id="chatBarSolPingDot" class="chat-bar-sol-ping-dot" aria-hidden="true" hidden></span>
     <span id="chatBarStatusText"></span>
