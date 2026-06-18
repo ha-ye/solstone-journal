@@ -3372,8 +3372,6 @@ document.querySelectorAll('.settings-nav-item').forEach(btn => {
   btn.addEventListener('click', () => switchSection(btn.dataset.section));
 });
 
-document.addEventListener('click', handleProvidersAnchorClick);
-
 // Keyboard navigation for settings nav tabs
 document.getElementById('settingsNav').addEventListener('keydown', (e) => {
   if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key)) return;
