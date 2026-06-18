@@ -32,10 +32,10 @@ def _filename_to_agent_key(filename: str) -> str:
     Reverse of get_output_name(): converts filesystem names back to agent keys.
 
     Args:
-        filename: Filename stem (e.g., "entities" or "_activities_review")
+        filename: Filename stem (e.g., "entities" or "_app_name")
 
     Returns:
-        Agent key (e.g., "entities" or "activities:review")
+        Agent key (e.g., "entities" or "app:name")
     """
     if filename.startswith("_"):
         # App agent: "_app_name" -> "app:name"
@@ -51,7 +51,7 @@ def _agent_matches_filter(
     """Check if an agent output file matches the filter.
 
     Args:
-        filename: Filename stem (e.g., "entities" or "_activities_review")
+        filename: Filename stem (e.g., "entities" or "_app_name")
         agent_filter: Dict mapping agent keys to bool/"required", or None for all
 
     Returns:

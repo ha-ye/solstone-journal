@@ -9,6 +9,29 @@ from solstone.apps.entities.talent.entity_digest import (
     assemble_facet_day_digest,
     pre_process,
 )
+from solstone.think.activities import assemble_activity_records_and_narratives
+
+GOLDEN_MONTAGUE_20260306 = (
+    "## Existing records\n"
+    "- id=engineering_143000_300 | activity=engineering | title=Deep work on Verona Platform integration | description=Deep work on Verona Platform integration | segments=143000_300 | active_entities=romeo_montague, juliet_capulet\n"
+    "\n"
+    "## Per-span narratives\n"
+    "### engineering_143000_300/session_review.md\n"
+    "segment_key=143000_300\n"
+    "\n"
+    "# Engineering Session Review\n"
+    "\n"
+    "## Summary\n"
+    "Deep integration work on the Verona Platform. Romeo focused on routing layer while Juliet handled schema translation.\n"
+    "\n"
+    "## Key Changes\n"
+    "- Integrated mesh routing with schema translation pipeline\n"
+    "- Achieved end-to-end test coverage\n"
+    "- Platform renamed from Balcony App to Verona Platform\n"
+    "\n"
+    "## Engagement\n"
+    "High focus, pair programming session."
+)
 
 
 def test_assemble_facet_day_digest_includes_records_narratives_and_entities(
@@ -26,6 +49,13 @@ def test_assemble_facet_day_digest_includes_records_narratives_and_entities(
     assert "Romeo Montague" in digest
     assert "Verona Platform" in digest
     assert "Montague Tech" in digest
+
+
+def test_assemble_activity_records_and_narratives_byte_identical(journal_copy):
+    assert (
+        assemble_activity_records_and_narratives("montague", "20260306")
+        == GOLDEN_MONTAGUE_20260306
+    )
 
 
 def test_pre_process_returns_facet_day_digest_template_vars(journal_copy):
