@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from solstone.think.journal_io.atomic import atomic_replace
+from solstone.think.journal_io.locking import hold_lock
 from solstone.think.utils import get_journal
 
 logger = logging.getLogger(__name__)
@@ -40,9 +41,10 @@ def save_chat_config(updates: dict[str, Any]) -> dict[str, Any]:
         )
         clean_updates.pop("thinking_surfaces", None)
 
-    merged = _deep_merge(_read_chat_config(), clean_updates)
-    config = _normalize_config(merged)
-    _write_chat_config(config)
+    with hold_lock(_chat_config_path()):
+        merged = _deep_merge(_read_chat_config(), clean_updates)
+        config = _normalize_config(merged)
+        _write_chat_config(config)
     return config
 
 
