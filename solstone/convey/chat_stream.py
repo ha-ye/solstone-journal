@@ -28,9 +28,10 @@ _CHAT_STREAM = "chat"
 _SEGMENT_WINDOW_MS = 300_000
 _APPENDED_CHAT_PATHS: dict[int, Path] = {}
 # owner_message may carry optional `source`; extras flow through unchanged.
-# sol_message may carry optional `thinking`, `offer`, `draft`, `sources`, and
-# `answer_state`; result may carry optional `ticket_id`, `error`, `ambiguous`, and
-# `cancelled`; talent_finished may carry optional `thinking`. Extras flow through
+# sol_message may carry optional `thinking`, `offer`, `draft`, `sources`,
+# `answer_state`, and folded-turn `origin`; result may carry optional `ticket_id`,
+# `error`, `ambiguous`, and `cancelled`; talent_finished may carry optional
+# `thinking`. talent_queued records a deferred spawn intent. Extras flow through
 # unchanged and are not part of the required-field tuples below.
 _VALID_KINDS = {
     "owner_message": ("text", "app", "path", "facet"),
@@ -42,6 +43,16 @@ _VALID_KINDS = {
         "requested_task",
     ),
     "talent_spawned": ("use_id", "name", "task", "started_at"),
+    "talent_queued": (
+        "use_id",
+        "name",
+        "task",
+        "queued_at",
+        "chat_use_id",
+        "ask",
+        "context",
+        "location",
+    ),
     "talent_finished": ("use_id", "name", "summary"),
     "talent_errored": ("use_id", "name", "reason"),
     "reflection_ready": ("day", "url"),
@@ -233,6 +244,7 @@ def reduce_chat_state(day: str) -> dict[str, Any]:
     active_talents: dict[str, dict[str, Any]] = {}
     completed_talents: list[dict[str, Any]] = []
     errored_talents: list[dict[str, Any]] = []
+    queued_talents: dict[str, dict[str, Any]] = {}
     chat_error: dict[str, Any] | None = None
     queue_depth = 0
 
@@ -252,13 +264,24 @@ def reduce_chat_state(day: str) -> dict[str, Any]:
                 "requested_task": event["requested_task"],
                 "offer": event.get("offer"),
                 "draft": event.get("draft"),
+                "origin": event.get("origin"),
                 "sources": event.get("sources", []),
                 "answer_state": event.get("answer_state", "answered"),
             }
             chat_error = None
             continue
 
+        if kind == "talent_queued":
+            queued_talents[str(event["use_id"])] = {
+                "use_id": event["use_id"],
+                "name": event["name"],
+                "task": event["task"],
+                "queued_at": event["queued_at"],
+            }
+            continue
+
         if kind == "talent_spawned":
+            queued_talents.pop(str(event["use_id"]), None)
             active_talents[str(event["use_id"])] = {
                 "use_id": event["use_id"],
                 "name": event["name"],
@@ -269,6 +292,7 @@ def reduce_chat_state(day: str) -> dict[str, Any]:
             continue
 
         if kind == "talent_finished":
+            queued_talents.pop(str(event["use_id"]), None)
             started = active_talents.pop(str(event["use_id"]), None)
             completed_talents.append(
                 {
@@ -283,6 +307,7 @@ def reduce_chat_state(day: str) -> dict[str, Any]:
             continue
 
         if kind == "talent_errored":
+            queued_talents.pop(str(event["use_id"]), None)
             active_talents.pop(str(event["use_id"]), None)
             errored_talents.append(
                 {
@@ -311,6 +336,13 @@ def reduce_chat_state(day: str) -> dict[str, Any]:
             active_talents.values(),
             key=lambda talent: (
                 int(talent.get("started_at", 0) or 0),
+                str(talent["use_id"]),
+            ),
+        ),
+        "queued_talents": sorted(
+            queued_talents.values(),
+            key=lambda talent: (
+                int(talent.get("queued_at", 0) or 0),
                 str(talent["use_id"]),
             ),
         ),

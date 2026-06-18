@@ -103,12 +103,14 @@ def _session_finish(
     use_id: str = USE_ID,
     text: str = "Recovered answer",
     requested_target: str | None = None,
+    origin: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "latest_sol_message": {
             "use_id": use_id,
             "text": text,
             "requested_target": requested_target,
+            "origin": origin,
         }
     }
 
@@ -326,6 +328,18 @@ def test_session_terminal_finish_only_current_use_id() -> None:
         )
         is None
     )
+    assert chat_cli._session_terminal(
+        FakeClient(
+            [
+                _session_finish(
+                    use_id=FOREIGN_USE_ID,
+                    text="Folded answer",
+                    origin={"logical_use_id": USE_ID, "ask": "hello"},
+                )
+            ]
+        ),
+        USE_ID,
+    ) == {"kind": "finish", "result": "Folded answer"}
     assert (
         chat_cli._session_terminal(
             FakeClient([_session_finish(requested_target="exec")]),
@@ -367,6 +381,34 @@ def test_main_live_sse_finish_prints_answer_without_fallback_warning(
 
     captured = capsys.readouterr()
     assert captured.out == "Live answer\n"
+    assert captured.err == ""
+    assert client.calls == [("POST", "/api/chat", {"message": "hello"})]
+
+
+def test_main_live_sse_origin_fold_prints_answer(monkeypatch, capsys) -> None:
+    client = FakeClient([_post_success()])
+    _install_main_fakes(
+        monkeypatch,
+        argv=["hello"],
+        client=client,
+        sse_chunks=[
+            _frame(
+                {
+                    "tract": "chat",
+                    "event": "sol_message",
+                    "use_id": FOREIGN_USE_ID,
+                    "text": "Folded answer",
+                    "requested_target": None,
+                    "origin": {"logical_use_id": USE_ID, "ask": "hello"},
+                }
+            )
+        ],
+    )
+
+    chat_cli.main()
+
+    captured = capsys.readouterr()
+    assert captured.out == "Folded answer\n"
     assert captured.err == ""
     assert client.calls == [("POST", "/api/chat", {"message": "hello"})]
 

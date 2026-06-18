@@ -138,13 +138,30 @@ def _render_post_error(exc: ConveyClientError) -> str:
     return "\n".join(lines)
 
 
+def _origin_logical_use_id(message: dict) -> str:
+    origin = message.get("origin")
+    if not isinstance(origin, dict):
+        return ""
+    return str(origin.get("logical_use_id") or "")
+
+
+def _is_fold_terminal_message(message: dict, use_id: str) -> bool:
+    return (
+        message.get("requested_target") is None
+        and _origin_logical_use_id(message) == use_id
+    )
+
+
 def _session_terminal(client: ConveyClient, use_id: str) -> dict | None:
     try:
         data = client.request("GET", "/api/chat/session")
     except ConveyClientError:
         return None
     latest = (data or {}).get("latest_sol_message") or {}
-    if str(latest.get("use_id") or "") != use_id:
+    if str(latest.get("use_id") or "") != use_id and not _is_fold_terminal_message(
+        latest,
+        use_id,
+    ):
         return None
     if latest.get("requested_target") is not None:
         return None
@@ -320,6 +337,21 @@ def main() -> None:
                 state["last_event_at"] = time.monotonic()
             if event_name == "sol_message" and msg.get("requested_target"):
                 render_event_progress(msg)
+            return
+
+        if (
+            logical_use_id is not None
+            and event_name == "sol_message"
+            and _is_fold_terminal_message(msg, logical_use_id)
+        ):
+            with lock:
+                state["last_event_at"] = time.monotonic()
+            set_terminal(
+                {
+                    "kind": "finish",
+                    "result": str(msg.get("text") or ""),
+                }
+            )
             return
 
         if logical_use_id is not None and event_name == "talent_finished":

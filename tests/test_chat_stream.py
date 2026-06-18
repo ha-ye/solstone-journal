@@ -530,6 +530,7 @@ def test_reduce_chat_state_extracts_latest_sol_and_active_talents(
         "requested_task": "compare drafts",
         "offer": None,
         "draft": None,
+        "origin": None,
         "sources": [],
         "answer_state": "answered",
     }
@@ -566,6 +567,7 @@ def test_reduce_chat_state_extracts_latest_sol_and_active_talents(
         "detail": "",
     }
     assert reduced["queue_depth"] == 0
+    assert reduced["queued_talents"] == []
 
 
 def test_reduce_chat_state_enriches_talent_labels(tmp_path, monkeypatch):
@@ -901,6 +903,66 @@ def test_reduce_chat_state_returns_last_queue_depth(tmp_path, monkeypatch):
     assert reduce_chat_state("20260420")["queue_depth"] == 1
 
 
+def test_reduce_chat_state_surfaces_sol_message_origin(tmp_path, monkeypatch):
+    _setup_journal(tmp_path, monkeypatch)
+    start = _ms(2026, 4, 20, 12, 0, 0)
+    origin = {"logical_use_id": "chat-dispatch", "ask": "look this up"}
+
+    append_chat_event(
+        "sol_message",
+        ts=start,
+        use_id="chat-fold",
+        text="folded answer",
+        notes="",
+        requested_target=None,
+        requested_task=None,
+        origin=origin,
+    )
+
+    reduced = reduce_chat_state("20260420")
+    assert reduced["latest_sol_message"]["origin"] == origin
+
+
+def test_reduce_chat_state_tracks_queued_talents_until_spawn(tmp_path, monkeypatch):
+    _setup_journal(tmp_path, monkeypatch)
+    start = _ms(2026, 4, 20, 12, 0, 0)
+
+    append_chat_event(
+        "talent_queued",
+        ts=start,
+        use_id="talent-queued",
+        name="exec",
+        task="research",
+        queued_at=start,
+        chat_use_id="chat-dispatch",
+        ask="research this",
+        context={"scope": "today"},
+        location={"app": "sol", "path": "/app/sol", "facet": "work"},
+    )
+
+    assert reduce_chat_state("20260420")["queued_talents"] == [
+        {
+            "use_id": "talent-queued",
+            "name": "exec",
+            "task": "research",
+            "queued_at": start,
+        }
+    ]
+
+    append_chat_event(
+        "talent_spawned",
+        ts=start + 1_000,
+        use_id="talent-queued",
+        name="exec",
+        task="research",
+        started_at=start + 1_000,
+    )
+
+    reduced = reduce_chat_state("20260420")
+    assert reduced["queued_talents"] == []
+    assert reduced["active_talents"][0]["use_id"] == "talent-queued"
+
+
 def test_append_reflection_ready_event(tmp_path, monkeypatch):
     _setup_journal(tmp_path, monkeypatch)
     ts = _ms(2026, 4, 20, 12, 0, 0)
@@ -969,6 +1031,86 @@ def test_find_unresponded_trigger_talent_finished(tmp_path, monkeypatch):
     assert trigger is not None
     assert trigger["kind"] == "talent_finished"
     assert trigger["summary"] == "done"
+
+
+def test_find_unresponded_trigger_after_dispatch_ack_and_spawn(tmp_path, monkeypatch):
+    _setup_journal(tmp_path, monkeypatch)
+    start = _ms(2026, 4, 20, 12, 0, 0)
+
+    append_chat_event(
+        "owner_message",
+        ts=start,
+        text="look this up",
+        app="sol",
+        path="/chat",
+        facet="work",
+    )
+    append_chat_event(
+        "sol_message",
+        ts=start + 1_000,
+        use_id="chat-dispatch",
+        text="working",
+        notes="",
+        requested_target="exec",
+        requested_task="research",
+    )
+    append_chat_event(
+        "talent_spawned",
+        ts=start + 2_000,
+        use_id="talent-1",
+        name="exec",
+        task="research",
+        started_at=start + 2_000,
+    )
+    append_chat_event(
+        "talent_finished",
+        ts=start + 3_000,
+        use_id="talent-1",
+        name="exec",
+        summary="done",
+    )
+
+    trigger = find_unresponded_trigger("20260420")
+    assert trigger is not None
+    assert trigger["kind"] == "talent_finished"
+    assert trigger["use_id"] == "talent-1"
+
+
+def test_talent_queued_is_not_an_unresponded_trigger(tmp_path, monkeypatch):
+    _setup_journal(tmp_path, monkeypatch)
+    start = _ms(2026, 4, 20, 12, 0, 0)
+
+    append_chat_event(
+        "owner_message",
+        ts=start,
+        text="look this up",
+        app="sol",
+        path="/chat",
+        facet="work",
+    )
+    append_chat_event(
+        "sol_message",
+        ts=start + 1_000,
+        use_id="chat-dispatch",
+        text="working",
+        notes="",
+        requested_target="exec",
+        requested_task="research",
+    )
+    append_chat_event(
+        "talent_queued",
+        ts=start + 2_000,
+        use_id="talent-queued",
+        name="exec",
+        task="research",
+        queued_at=start + 2_000,
+        chat_use_id="chat-dispatch",
+        ask="look this up",
+        context={},
+        location={"app": "sol", "path": "/chat", "facet": "work"},
+    )
+
+    assert find_unresponded_trigger("20260420") is None
 
 
 def test_find_unresponded_trigger_resolved(tmp_path, monkeypatch):

@@ -12,7 +12,6 @@ from typing import Any
 from solstone.convey.chat_stream import read_chat_tail, reduce_chat_state
 from solstone.convey.sol_initiated.copy import (
     KIND_SOL_CHAT_REQUEST,
-    SYNTHETIC_TRIGGER_LABEL,
     TRIGGER_LABEL_SOL_INITIATED,
 )
 
@@ -254,9 +253,6 @@ def _render_trigger_context(
         _append_terminal_trigger_context(lines, trigger_kind, payload)
     elif trigger_kind == "talent_errored":
         _append_terminal_trigger_context(lines, trigger_kind, payload)
-    elif trigger_kind == "synthetic-max-active":
-        if payload.get("reason"):
-            lines.append(f"- Reason: {payload['reason']}")
     else:
         if payload:
             for key, value in payload.items():
@@ -268,8 +264,6 @@ def _render_trigger_context(
 def _prompt_trigger_kind(trigger_kind: str | None) -> str:
     if trigger_kind == KIND_SOL_CHAT_REQUEST:
         return TRIGGER_LABEL_SOL_INITIATED
-    if trigger_kind == "synthetic-max-active":
-        return SYNTHETIC_TRIGGER_LABEL
     return str(trigger_kind or "")
 
 
