@@ -6,3 +6,4 @@ Open `solstone/convey/static/tests/support.html` in a browser; each assertion re
 Open `solstone/convey/static/tests/surface-state.html` in a browser; each assertion reports pass/fail inline.
 Open `solstone/convey/static/tests/ws-listen.html` in a browser; each assertion reports pass/fail inline.
 Open `solstone/convey/static/tests/register-task.html` in a browser; each assertion reports pass/fail inline.
+Open `solstone/convey/static/tests/support-draft-card.html` in a browser; each assertion reports pass/fail inline.
