@@ -4,6 +4,17 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.7] - 2026-06-18
+
+### Changed
+- stretches where nothing on your screen changes (a long overnight, a static window left open) now fold into a single continuation entry in your journal instead of many near-identical ones. sol skips re-describing what hasn't moved, so those stretches process faster and your journal reads cleaner.
+
+### Fixed
+- imported recordings now get their own activity record. before, an imported meeting that ran as one continuous stretch could finish without an activity record for it; now it gets one like everything else.
+- scheduled tasks that had quietly stopped running now run again on their own, with no action needed from you. an earlier change to how commands are named had left some saved schedules pointing at a form that no longer worked, and this repairs them.
+- a settings change you made could be lost if another change landed at the same moment. settings now save one at a time, so concurrent edits all stick.
+- your weekly reflection now completes and writes its summary reliably. before, it could spend its whole time budget looking in the wrong place and finish with nothing; it now reads from the right source and lands every time.
+
 ## [0.6.5] - 2026-06-17
 
 ### Added
