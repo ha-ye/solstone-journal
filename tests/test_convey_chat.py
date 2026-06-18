@@ -25,6 +25,7 @@ from solstone.apps.chat.copy import (
     CHAT_SUPPORT_SUBMIT_AMBIGUOUS,
     CHAT_SUPPORT_SUBMIT_FAILED,
     CHAT_SUPPORT_SUBMIT_FILED_FORMAT,
+    talent_label_for,
 )
 from solstone.convey.chat import ChatSpawnResult, chat_bp
 from solstone.convey.chat_stream import (
@@ -529,6 +530,8 @@ def test_clean_support_finish_with_attach_draft_emits_slim_marker(
     }
     assert sol_message["draft"] == expected_draft
     assert "content_b64" not in sol_message["draft"]["payload"]
+    assert sol_message["sources"] == []
+    assert sol_message["answer_state"] == "answered"
     assert reduce_chat_state(day)["latest_sol_message"]["draft"] == expected_draft
     session = chat_client.get("/api/chat/session")
     assert session.status_code == 200
@@ -581,6 +584,8 @@ def test_errored_support_finish_with_pending_draft_keeps_send_failed_closer(
     )
     assert sol_message["text"] == CHAT_CLOSER_SUPPORT_SEND_FAILED
     assert "draft" not in sol_message
+    assert sol_message["sources"] == []
+    assert sol_message["answer_state"] == "failed"
 
 
 def test_clean_support_finish_without_pending_draft_does_not_emit_marker(
@@ -616,6 +621,8 @@ def test_clean_support_finish_without_pending_draft_does_not_emit_marker(
     )
     assert "draft" not in sol_message
     assert sol_message["text"] != CHAT_SUPPORT_DRAFT_READY
+    assert sol_message["sources"] == []
+    assert sol_message["answer_state"] == "partial"
 
 
 def test_non_support_finish_with_pending_draft_does_not_emit_marker(
@@ -724,6 +731,8 @@ def test_support_finish_draft_marker_does_not_emit_offer(chat_client, monkeypatc
     )
     assert "draft" in sol_message
     assert "offer" not in sol_message
+    assert sol_message["sources"] == []
+    assert sol_message["answer_state"] == "answered"
 
 
 def test_decline_offer_endpoint_appends_local_sol_message(chat_client, monkeypatch):
@@ -739,6 +748,8 @@ def test_decline_offer_endpoint_appends_local_sol_message(chat_client, monkeypat
     sol_message = next(event for event in events if event["kind"] == "sol_message")
     assert sol_message["text"] == CHAT_OFFER_SUPPORT_DECLINE
     assert "offer" not in sol_message
+    assert sol_message["sources"] == []
+    assert sol_message["answer_state"] == "answered"
     assert [event for event in events if event["kind"] == "talent_spawned"] == []
 
 
@@ -1356,6 +1367,8 @@ def test_support_draft_confirm_sol_message_supersedes_draft(chat_client, monkeyp
     sol_message = _events_of_kind(day, "sol_message")[-1]
     assert sol_message["text"] == CHAT_SUPPORT_SUBMIT_FILED_FORMAT.format(ticket_id=123)
     assert "draft" not in sol_message
+    assert sol_message["sources"] == []
+    assert sol_message["answer_state"] == "answered"
     assert reduce_chat_state(day)["latest_sol_message"]["draft"] is None
     session = chat_client.get("/api/chat/session")
     assert session.status_code == 200
@@ -1451,6 +1464,8 @@ def test_support_draft_cancel_records_terminal_result_without_submit(
     sol_message = _events_of_kind(day, "sol_message")[0]
     assert sol_message["text"] == CHAT_SUPPORT_DRAFT_CANCELLED
     assert "draft" not in sol_message
+    assert sol_message["sources"] == []
+    assert sol_message["answer_state"] == "answered"
     assert _events_of_kind(day, "talent_spawned") == []
     assert chat._support_draft_state(day) == "submitted"
 
@@ -2202,16 +2217,21 @@ def test_session_endpoint_reduces_from_chat_stream(chat_client, monkeypatch):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["latest_sol_message"]["text"] == "hello"
+    assert payload["latest_sol_message"]["sources"] == []
+    assert payload["latest_sol_message"]["answer_state"] == "answered"
     assert payload["active_talents"] == []
     assert payload["completed_talents"] == [
         {
             "finished_at": finished_at,
+            "label": talent_label_for("exec", "finished"),
             "name": "exec",
             "summary": "done",
             "task": "research",
             "use_id": "1713626000001",
         }
     ]
+    assert payload["errored_talents"] == []
+    assert payload["chat_error"] is None
 
 
 def test_chat_session_retries_unresolved_trigger_when_idle(chat_client, monkeypatch):

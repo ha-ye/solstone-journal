@@ -12,6 +12,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from solstone.apps.chat.copy import talent_label_for
 from solstone.think.utils import (
     day_path,
     get_journal,
@@ -27,10 +28,10 @@ _CHAT_STREAM = "chat"
 _SEGMENT_WINDOW_MS = 300_000
 _APPENDED_CHAT_PATHS: dict[int, Path] = {}
 # owner_message may carry optional `source`; extras flow through unchanged.
-# sol_message may carry optional `thinking`, `offer`, and `draft`; result may
-# carry optional `ticket_id`, `error`, `ambiguous`, and `cancelled`; talent_finished
-# may carry optional `thinking`. Extras flow through unchanged and are not part of
-# the required-field tuples below.
+# sol_message may carry optional `thinking`, `offer`, `draft`, `sources`, and
+# `answer_state`; result may carry optional `ticket_id`, `error`, `ambiguous`, and
+# `cancelled`; talent_finished may carry optional `thinking`. Extras flow through
+# unchanged and are not part of the required-field tuples below.
 _VALID_KINDS = {
     "owner_message": ("text", "app", "path", "facet"),
     "sol_message": (
@@ -77,6 +78,13 @@ _TRIGGER_KINDS = {
     "talent_errored",
     "sol_chat_request",
 }
+
+
+def _talent_label(name: Any, status: str) -> str:
+    try:
+        return talent_label_for(str(name), status)
+    except ValueError:
+        return str(name)
 
 
 def append_chat_event(kind: str, **fields: Any) -> dict[str, Any]:
@@ -224,6 +232,8 @@ def reduce_chat_state(day: str) -> dict[str, Any]:
     latest_sol_message: dict[str, Any] | None = None
     active_talents: dict[str, dict[str, Any]] = {}
     completed_talents: list[dict[str, Any]] = []
+    errored_talents: list[dict[str, Any]] = []
+    chat_error: dict[str, Any] | None = None
     queue_depth = 0
 
     for event in read_chat_events(day):
@@ -242,7 +252,10 @@ def reduce_chat_state(day: str) -> dict[str, Any]:
                 "requested_task": event["requested_task"],
                 "offer": event.get("offer"),
                 "draft": event.get("draft"),
+                "sources": event.get("sources", []),
+                "answer_state": event.get("answer_state", "answered"),
             }
+            chat_error = None
             continue
 
         if kind == "talent_spawned":
@@ -251,6 +264,7 @@ def reduce_chat_state(day: str) -> dict[str, Any]:
                 "name": event["name"],
                 "task": event["task"],
                 "started_at": event["started_at"],
+                "label": _talent_label(event["name"], "running"),
             }
             continue
 
@@ -263,12 +277,29 @@ def reduce_chat_state(day: str) -> dict[str, Any]:
                     "task": started["task"] if started else None,
                     "summary": event["summary"],
                     "finished_at": event["ts"],
+                    "label": _talent_label(event["name"], "finished"),
                 }
             )
             continue
 
         if kind == "talent_errored":
             active_talents.pop(str(event["use_id"]), None)
+            errored_talents.append(
+                {
+                    "use_id": event["use_id"],
+                    "name": event["name"],
+                    "finished_at": event["ts"],
+                    "label": _talent_label(event["name"], "errored"),
+                }
+            )
+            continue
+
+        if kind == "chat_error":
+            chat_error = {
+                "reason": event["reason"],
+                "provider": event.get("provider", ""),
+                "detail": event.get("detail", ""),
+            }
             continue
 
         if kind == "reflection_ready":
@@ -284,6 +315,8 @@ def reduce_chat_state(day: str) -> dict[str, Any]:
             ),
         ),
         "completed_talents": completed_talents,
+        "errored_talents": errored_talents,
+        "chat_error": chat_error,
         "queue_depth": queue_depth,
     }
 

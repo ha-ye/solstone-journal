@@ -39,6 +39,7 @@ from solstone.apps.chat.copy import (
     CHAT_SUPPORT_SUBMIT_FILED_FORMAT,
 )
 from solstone.apps.support.tools import support_attach, support_create, support_reply
+from solstone.convey.chat_sources import parse_sol_sources
 from solstone.convey.chat_stream import (
     append_chat_event,
     find_unresponded_trigger,
@@ -271,6 +272,8 @@ def decline_offer() -> Any:
         notes="owner declined the support offer",
         requested_target=None,
         requested_task=None,
+        sources=[],
+        answer_state="answered",
     )
     return jsonify(ok=True)
 
@@ -334,6 +337,8 @@ def confirm_support_draft() -> Any:
         notes=f"support draft {submit_result.outcome}",
         requested_target=None,
         requested_task=None,
+        sources=[],
+        answer_state="answered",
     )
 
     response: dict[str, Any] = {
@@ -391,6 +396,8 @@ def cancel_support_draft() -> Any:
                         "notes": "support draft cancelled",
                         "requested_target": None,
                         "requested_task": None,
+                        "sources": [],
+                        "answer_state": "answered",
                     },
                 ),
             ],
@@ -600,6 +607,7 @@ def _on_cortex_finish(message: dict[str, Any]) -> None:
                     else None
                 )
                 offer: dict[str, Any] | None = None
+                answer_state = "answered"
                 trigger = _current_chat_state.get("trigger") or {}
                 trigger_type = trigger.get("type")
                 if trigger_type in {"talent_finished", "talent_errored"}:
@@ -615,6 +623,9 @@ def _on_cortex_finish(message: dict[str, Any]) -> None:
                         talent_errored_reason=trigger.get("reason"),
                         talent_errored_reason_code=trigger.get("reason_code"),
                         talent_finished_summary=trigger.get("summary"),
+                    )
+                    answer_state = (
+                        "failed" if exit_mode == "talent_errored" else "partial"
                     )
                     requested_target = None
                     requested_task = None
@@ -646,6 +657,7 @@ def _on_cortex_finish(message: dict[str, Any]) -> None:
                                 "diagnostics_snapshot"
                             ),
                         }
+                        answer_state = "answered"
                 if requested_target in OUTBOUND_TALENTS:
                     consent = _support_consent_state(_today_day())
                     if consent == "none":
@@ -664,6 +676,8 @@ def _on_cortex_finish(message: dict[str, Any]) -> None:
                     "notes": parsed["notes"],
                     "requested_target": requested_target,
                     "requested_task": requested_task,
+                    "sources": parse_sol_sources(message_text),
+                    "answer_state": answer_state,
                 }
                 if thinking is not None:
                     sol_message_fields["thinking"] = thinking
