@@ -63,7 +63,11 @@ def test_cogitate_finalization_class_assembles_on_contract(
         *(["sol"] if caps.sol else []),
         *(COGITATE_READ_TOOL_NAMES if caps.reads else ()),
     ]
-    assert tool_surface == ["sol", *COGITATE_READ_TOOL_NAMES]
+    # Every real cogitate tier exposes the `sol` surface; the bounded raw-read
+    # tools are present iff the talent's access tier grants reads. The
+    # `synthesis` tier (e.g. weekly_reflection) is sol-only by design.
+    expected_surface = ["sol", *COGITATE_READ_TOOL_NAMES] if caps.reads else ["sol"]
+    assert tool_surface == expected_surface
 
     body, system = assemble_prompt(config, sol_tool_name="sol")
     assert isinstance(body, str)

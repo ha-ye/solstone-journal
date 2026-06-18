@@ -1,5 +1,6 @@
 {
   "type": "cogitate",
+  "access_tier": "synthesis",
   "title": "Weekly Reflection",
   "description": "Sunday-start weekly reflection synthesized from the journal",
   "schedule": "weekly",

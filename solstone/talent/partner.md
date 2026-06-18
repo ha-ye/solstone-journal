@@ -1,5 +1,6 @@
 {
   "type": "cogitate",
+  "access_tier": "synthesis",
 
   "title": "Partner Profile",
   "description": "Weekly observation of the journal owner's behavioral patterns — work style, communication, priorities, decision-making, expertise",
@@ -19,7 +20,8 @@ This is not a conversation. Gather data, observe patterns, update the profile, t
 
 ## Step 1: Read current state
 
-Read `identity/partner.md` with the `read_file` tool.
+Read the current profile with `journal identity partner` — the settled
+`sol`-surface read form for `identity/partner.md`.
 
 Note which sections have real observations vs `[observing]` placeholders.
 

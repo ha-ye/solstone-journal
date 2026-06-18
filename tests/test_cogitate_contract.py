@@ -66,7 +66,7 @@ def test_prompt_body_unchanged_under_cogitate_injection():
 
 
 def test_cogitate_vocabulary_lock():
-    assert COGITATE_ACCESS_TIERS == ("normal", "system-read", "outbound")
+    assert COGITATE_ACCESS_TIERS == ("normal", "system-read", "outbound", "synthesis")
     assert COGITATE_READ_TOOL_NAMES == (
         "read_file",
         "list_directory",
@@ -107,6 +107,7 @@ def test_expects_emit_final(config, expected):
         ("normal", (True, True, False)),
         ("system-read", (True, True, False)),
         ("outbound", (True, False, True)),
+        ("synthesis", (True, False, False)),
     ],
 )
 def test_capabilities_for_access_tier_real_tiers(tier, expected):
