@@ -112,7 +112,7 @@ install: .installed
 			echo "journal install: JOURNAL_EXTRA=$(JOURNAL_EXTRA)"; \
 			$(UV) sync --group dev $(EXTRAS_ARGS) || { echo "journal install: uv sync --group dev $(EXTRAS_ARGS) failed" >&2; exit 1; }; \
 			if [ "$(PARAKEET_ONNX_VARIANT)" = "cuda" ]; then \
-				$(UV) pip install --reinstall onnxruntime-gpu || { echo "parakeet install: failed to force-reinstall onnxruntime-gpu" >&2; exit 1; }; \
+				$(UV) sync --group dev $(EXTRAS_ARGS) --reinstall-package onnxruntime-gpu || { echo "parakeet install: failed to force-reinstall onnxruntime-gpu" >&2; exit 1; }; \
 				$(VENV_PY) -c "import onnxruntime as ort; ort.preload_dlls(cuda=True, cudnn=True); assert 'CUDAExecutionProvider' in ort.get_available_providers(), 'CUDAExecutionProvider missing after install'; print('parakeet install: CUDA runtime ready')" || { echo "parakeet install: CUDA runtime validation failed" >&2; exit 1; }; \
 			fi; \
 		else \
