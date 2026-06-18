@@ -961,6 +961,21 @@ def _build_where_clause(
     return where_clause, params
 
 
+def known_agents() -> set[str]:
+    """Return the distinct, non-empty agent names present in the index.
+
+    Read-only: used to validate an explicit ``--agent`` filter before searching,
+    so an unknown agent fails loudly instead of silently matching nothing. Agent
+    names are stored lowercased at index time, so the returned set is lowercase.
+    """
+    conn, _ = get_journal_index()
+    rows = conn.execute(
+        "SELECT DISTINCT agent FROM chunks WHERE agent IS NOT NULL AND agent != ''"
+    ).fetchall()
+    conn.close()
+    return {row[0] for row in rows}
+
+
 def search_journal(
     query: str,
     limit: int = 10,

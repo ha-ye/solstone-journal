@@ -104,6 +104,7 @@ def search(
     ),
 ) -> None:
     """Search the journal index."""
+    from solstone.think.indexer.journal import known_agents
     from solstone.think.indexer.journal import search_counts as search_counts_impl
     from solstone.think.indexer.journal import search_journal as search_journal_impl
 
@@ -118,6 +119,13 @@ def search(
     if facet is not None:
         kwargs["facet"] = facet
     if agent is not None:
+        known = known_agents()
+        if known and agent.lower() not in known:
+            typer.echo(
+                f"error: unknown agent '{agent}'. Known agents: {', '.join(sorted(known))}",
+                err=True,
+            )
+            raise typer.Exit(1)
         kwargs["agent"] = agent
     if stream is not None:
         kwargs["stream"] = stream

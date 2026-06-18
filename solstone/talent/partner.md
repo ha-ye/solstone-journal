@@ -35,7 +35,6 @@ and query each source. If a source returns empty or errors, skip it — gaps are
 2. For each active facet (from `sol call journal facets`):
    - `sol call journal news FACET --day YYYYMMDD` (most recent day available) — work themes
 3. `sol call journal search "" --day-from YYYYMMDD -a pulse -n 10` — pulse narratives for behavioral patterns
-4. `sol call journal search "" --day-from YYYYMMDD -a decisions -n 10` — decision patterns
 
 ## Step 3: Analyze and write observations
 

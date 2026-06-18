@@ -55,6 +55,26 @@ def facet_journal(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def search_index_journal(tmp_path, monkeypatch):
+    """A tmp journal with a built unified index containing known agents."""
+    from solstone.think.indexer.journal import scan_journal
+
+    journal = tmp_path / "journal"
+    day = journal / "chronicle" / "20240101" / "talents"
+    day.mkdir(parents=True)
+    (day / "flow.md").write_text("# Flow\n\nWorked on project alpha.\n")
+    (day / "screen.md").write_text("# Screen\n\nViewed documentation.\n")
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    import solstone.think.utils as think_utils
+
+    think_utils._journal_path_cache = None
+    scan_journal(str(journal), full=True)
+    yield journal
+    think_utils._journal_path_cache = None
+
+
+@pytest.fixture
 def merge_journal(tmp_path, monkeypatch):
     """Create a journal with source and destination facets for merge testing."""
     journal = tmp_path / "journal"
@@ -164,6 +184,53 @@ class TestJournal:
         result = runner.invoke(call_app, ["journal", "search", "test", "--limit", "5"])
         assert result.exit_code == 0
         assert "results" in result.output
+
+    def test_journal_search_unknown_agent_fails_loudly(self, search_index_journal):
+        """An unknown --agent errors to stderr naming known agents; search does not run."""
+        result = runner.invoke(call_app, ["journal", "search", "", "-a", "bogus"])
+        assert result.exit_code != 0
+        assert "unknown agent 'bogus'" in result.stderr
+        assert "flow" in result.stderr  # the known set is listed
+
+    def test_journal_search_valid_agent_ok(self, search_index_journal):
+        """A valid agent runs normally with no error."""
+        result = runner.invoke(call_app, ["journal", "search", "project", "-a", "flow"])
+        assert result.exit_code == 0
+        assert "unknown agent" not in (result.stderr or "")
+
+    def test_journal_search_valid_agent_mixed_case_ok(self, search_index_journal):
+        """A valid agent with mixed case is case-folded, not a false error."""
+        result = runner.invoke(call_app, ["journal", "search", "project", "-a", "Flow"])
+        assert result.exit_code == 0
+        assert "unknown agent" not in (result.stderr or "")
+
+    def test_journal_search_valid_agent_empty_window_zero_results(
+        self, search_index_journal
+    ):
+        """A valid agent with an empty day window still returns 0 results, exit 0."""
+        result = runner.invoke(
+            call_app, ["journal", "search", "", "-a", "flow", "--day", "19990101"]
+        )
+        assert result.exit_code == 0
+        assert "0 results" in result.output
+
+    def test_journal_search_empty_index_skips_agent_validation(
+        self, tmp_path, monkeypatch
+    ):
+        """An empty/un-indexed journal must not false-positive on --agent."""
+        journal = tmp_path / "journal"
+        journal.mkdir()
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+        import solstone.think.utils as think_utils
+
+        think_utils._journal_path_cache = None
+        try:
+            result = runner.invoke(
+                call_app, ["journal", "search", "", "-a", "anything"]
+            )
+            assert result.exit_code == 0
+        finally:
+            think_utils._journal_path_cache = None
 
     def test_journal_search_positional_and_flag_forms_match(self):
         """Search query positional and option forms should match."""
