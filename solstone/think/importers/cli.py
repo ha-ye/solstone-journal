@@ -1435,7 +1435,12 @@ def main() -> None:
         if args.force:
             extra["force"] = True
         extra["auto"] = args.auto
-        _run_sync(args.sync, dry_run=not args.save, verbose=args.verbose, **extra)
+        _run_sync(
+            args.sync,
+            dry_run=args.dry_run or not args.save,
+            verbose=args.verbose,
+            **extra,
+        )
         return
 
     if not args.media:
