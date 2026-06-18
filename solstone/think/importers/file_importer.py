@@ -70,6 +70,7 @@ FILE_IMPORTER_REGISTRY: dict[str, str] = {
     "gemini": "solstone.think.importers.gemini",
     "document": "solstone.think.importers.documents",
     "journal_archive": "solstone.think.importers.journal_archive",
+    "mentra": "solstone.think.importers.mentra_bridge",
 }
 
 

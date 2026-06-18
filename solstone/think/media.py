@@ -13,6 +13,14 @@ FORMATS = [
     (".webm", "video/webm", "video"),
     (".mp4", "video/mp4", "video"),
     (".mov", "video/quicktime", "video"),
+    (".png", "image/png", "image"),
+    (".jpg", "image/jpeg", "image"),
+    (".jpeg", "image/jpeg", "image"),
+    (".heic", "image/heic", "image"),
+    (".heif", "image/heif", "image"),
+    (".gif", "image/gif", "image"),
+    (".webp", "image/webp", "image"),
+    (".tiff", "image/tiff", "image"),
 ]
 
 AUDIO_EXTENSIONS: frozenset[str] = frozenset(
@@ -24,6 +32,6 @@ VIDEO_EXTENSIONS: frozenset[str] = frozenset(
 MEDIA_EXTENSIONS: frozenset[str] = frozenset(ext for ext, _, _ in FORMATS)
 MIME_TYPES: dict[str, str] = {ext: mime for ext, mime, _ in FORMATS}
 IMAGE_EXTENSIONS: frozenset[str] = frozenset(
-    {".png", ".jpg", ".jpeg", ".heic", ".heif", ".gif", ".webp", ".tiff"}
+    ext for ext, _, kind in FORMATS if kind == "image"
 )
 PDF_EXTENSIONS: frozenset[str] = frozenset({".pdf"})
