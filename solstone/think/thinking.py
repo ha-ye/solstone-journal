@@ -59,6 +59,7 @@ from solstone.think.sense_splitter import (
     write_idle_stubs,
     write_sense_outputs,
 )
+from solstone.think.streams import is_import_stream
 from solstone.think.talent import get_output_path, get_talent_configs
 from solstone.think.talent_provenance import (
     compute_activity_input_hash,
@@ -378,6 +379,54 @@ def _run_activity_state_tail(
         max_concurrency=max_concurrency,
         skip_activity_prompts=skip_activity_prompts,
     )
+
+
+def _flush_batch_state_machines(
+    batch_state_machines: dict,
+    day: str,
+    *,
+    refresh: bool,
+    verbose: bool,
+    max_concurrency: int,
+    skip_activity_prompts: bool,
+) -> None:
+    """Close dangling-active activities left when the segment batch ends.
+
+    Finality guard: import/finite streams are always safe to flush (a
+    recording's segments all exist at import time); live/observer streams are
+    flushed only when the day is capture-final (day strictly before today), so
+    an ongoing activity on today is never truncated.
+    """
+    current_day = datetime.now().strftime("%Y%m%d")
+    for stream, sm in batch_state_machines.items():
+        if sm.last_segment_key is None:
+            continue
+        stream_is_import = bool(stream) and is_import_stream(stream)
+        if not (stream_is_import or day < current_day):
+            continue
+        changes = sm.close_active(sm.last_segment_key)
+        ended_triples = [
+            (c["id"], c["facet"], c.get("_change"))
+            for c in changes
+            if c.get("state") == "ended"
+        ]
+        if not ended_triples:
+            continue
+        completed_lookup: dict = {}
+        for rec in sm.get_completed_activities():
+            completed_lookup.setdefault(rec["id"], rec)
+        _persist_and_maybe_run_activity_prompts(
+            routing_day=sm.last_segment_day or day,
+            log_day=day,
+            segment=sm.last_segment_key,
+            target_schedule="segment",
+            ended_triples=ended_triples,
+            completed_lookup=completed_lookup,
+            refresh=refresh,
+            verbose=verbose,
+            max_concurrency=max_concurrency,
+            skip_activity_prompts=skip_activity_prompts,
+        )
 
 
 def _log_skip(name: str, reason: str, detail: str, **extra) -> None:
@@ -3518,11 +3567,15 @@ def main() -> None:
             batch_start = time.time()
             batch_success = 0
             batch_failed = 0
-            batch_state_machine = ActivityStateMachine()
+            batch_state_machines: dict = {}
 
             for i, seg in enumerate(segments, 1):
                 seg_key = seg["key"]
                 seg_stream = seg.get("stream")
+                sm = batch_state_machines.get(seg_stream)
+                if sm is None:
+                    sm = ActivityStateMachine()
+                    batch_state_machines[seg_stream] = sm
                 logging.info(
                     f"Processing segment {i}/{total}: {seg_key} ({seg['start']}-{seg['end']})"
                 )
@@ -3535,7 +3588,7 @@ def main() -> None:
                         max_concurrency=args.jobs,
                         stream=seg_stream,
                         timeout=None if args.no_timeout else 610,
-                        state_machine=batch_state_machine,
+                        state_machine=sm,
                         skip_activity_prompts=args.no_activity_prompts,
                         skip_talents=skip_talents,
                         live=False,
@@ -3548,6 +3601,15 @@ def main() -> None:
                     logging.exception(f"Segment {seg_key} failed with exception")
                     batch_failed += 1
                     _update_status(segments_completed=i, segments_total=total)
+
+            _flush_batch_state_machines(
+                batch_state_machines,
+                day,
+                refresh=args.refresh,
+                verbose=args.verbose,
+                max_concurrency=args.jobs,
+                skip_activity_prompts=args.no_activity_prompts,
+            )
 
             duration_ms = int((time.time() - batch_start) * 1000)
             logging.info(

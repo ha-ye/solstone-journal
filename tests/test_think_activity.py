@@ -785,6 +785,30 @@ class TestActivityPersistenceRoundTrip:
             "recommend": {},
         }
 
+    def _active_machine(
+        self,
+        segments,
+        *,
+        day="20260412",
+        content_type="meeting",
+        facet="work",
+    ):
+        from solstone.think.activity_state_machine import ActivityStateMachine
+
+        sm = ActivityStateMachine()
+        facets = [{"facet": facet, "activity": content_type, "level": "high"}]
+        for segment in segments:
+            sm.update(
+                self._sense(
+                    content_type=content_type,
+                    facets=facets,
+                    summary=f"{content_type} in {facet}.",
+                ),
+                segment,
+                day,
+            )
+        return sm
+
     def test_multi_segment_round_trip(self, monkeypatch):
         """Multi-segment activity persists and loads with all segments intact."""
         from solstone.think.activities import (
@@ -1017,6 +1041,176 @@ class TestActivityPersistenceRoundTrip:
             # Both have 2 segments
             assert work_records[0]["segments"] == ["090000_300", "090500_300"]
             assert personal_records[0]["segments"] == ["090000_300", "090500_300"]
+
+    def test_close_active_flushes_dangling_activity(self, monkeypatch):
+        """Dangling active state closes to one persisted clustered record."""
+        from solstone.think.activities import (
+            append_activity_record,
+            load_activity_records,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            monkeypatch.setenv("SOLSTONE_JOURNAL", tmpdir)
+
+            segments = ["090000_300", "090500_300", "091000_300"]
+            sm = self._active_machine(segments, day="20260412", facet="work")
+
+            assert sm.get_completed_activities() == []
+
+            changes = sm.close_active("091000_300")
+            ended = [c for c in changes if c.get("state") == "ended"]
+            assert len(ended) == 1
+            assert ended[0]["_change"] == "ended_day_end"
+
+            completed_lookup = {}
+            for rec in sm.get_completed_activities():
+                completed_lookup.setdefault(rec["id"], rec)
+            for change in ended:
+                append_activity_record(
+                    change["facet"],
+                    "20260412",
+                    completed_lookup[change["id"]],
+                )
+
+            records = load_activity_records("work", "20260412")
+            assert len(records) == 1
+            assert records[0]["segments"] == segments
+
+    def test_flush_import_day_clusters_one_record(self, monkeypatch):
+        """Import stream batch flush writes one clustered dangling record."""
+        from solstone.think.activities import load_activity_records
+        from solstone.think.thinking import _flush_batch_state_machines
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            monkeypatch.setenv("SOLSTONE_JOURNAL", tmpdir)
+
+            segments = ["162416_300", "162916_300", "163416_300"]
+            sm = self._active_machine(segments, day="20260412", facet="solstone")
+            _flush_batch_state_machines(
+                {"import.audio": sm},
+                "20260412",
+                refresh=False,
+                verbose=False,
+                max_concurrency=1,
+                skip_activity_prompts=True,
+            )
+
+            records = load_activity_records("solstone", "20260412")
+            assert len(records) == 1
+            assert records[0]["segments"] == segments
+
+    def test_flush_is_idempotent(self, monkeypatch):
+        """Equivalent batch flushes for the same import day dedupe by id."""
+        from solstone.think.activities import load_activity_records
+        from solstone.think.thinking import _flush_batch_state_machines
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            monkeypatch.setenv("SOLSTONE_JOURNAL", tmpdir)
+
+            segments = ["162416_300", "162916_300"]
+            for _ in range(2):
+                sm = self._active_machine(segments, day="20260412", facet="solstone")
+                _flush_batch_state_machines(
+                    {"import.audio": sm},
+                    "20260412",
+                    refresh=False,
+                    verbose=False,
+                    max_concurrency=1,
+                    skip_activity_prompts=True,
+                )
+
+            records = load_activity_records("solstone", "20260412")
+            assert len(records) == 1
+            assert records[0]["segments"] == segments
+
+    def test_flush_cross_stream_no_merge(self, monkeypatch):
+        """Per-stream machines keep same-facet streams as separate records."""
+        from solstone.think.activities import load_activity_records
+        from solstone.think.thinking import _flush_batch_state_machines
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            monkeypatch.setenv("SOLSTONE_JOURNAL", tmpdir)
+
+            observer_segments = ["090000_300", "090500_300"]
+            import_segments = ["090200_300", "090700_300"]
+            observer_sm = self._active_machine(
+                observer_segments,
+                day="20260412",
+                content_type="meeting",
+                facet="work",
+            )
+            import_sm = self._active_machine(
+                import_segments,
+                day="20260412",
+                content_type="meeting",
+                facet="work",
+            )
+
+            _flush_batch_state_machines(
+                {"archon": observer_sm, "import.audio": import_sm},
+                "20260412",
+                refresh=False,
+                verbose=False,
+                max_concurrency=1,
+                skip_activity_prompts=True,
+            )
+
+            records = load_activity_records("work", "20260412")
+            assert len(records) == 2
+            by_id = {record["id"]: record for record in records}
+            assert by_id["meeting_090000_300"]["segments"] == observer_segments
+            assert by_id["meeting_090200_300"]["segments"] == import_segments
+
+    def test_flush_observer_active_on_today_not_flushed(self, monkeypatch):
+        """Current-day observer streams are not truncated by batch flush."""
+        from datetime import datetime
+
+        from solstone.think.activities import load_activity_records
+        from solstone.think.thinking import _flush_batch_state_machines
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            monkeypatch.setenv("SOLSTONE_JOURNAL", tmpdir)
+
+            day = datetime.now().strftime("%Y%m%d")
+            sm = self._active_machine(["090000_300", "090500_300"], day=day)
+
+            _flush_batch_state_machines(
+                {"archon": sm},
+                day,
+                refresh=False,
+                verbose=False,
+                max_concurrency=1,
+                skip_activity_prompts=True,
+            )
+
+            assert load_activity_records("work", day) == []
+
+    def test_flush_observer_past_day_is_flushed(self, monkeypatch):
+        """Past observer streams are closed at day end."""
+        from datetime import datetime, timedelta
+
+        from solstone.think.activities import load_activity_records
+        from solstone.think.thinking import _flush_batch_state_machines
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            monkeypatch.setenv("SOLSTONE_JOURNAL", tmpdir)
+
+            day = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+            segments = ["090000_300", "090500_300"]
+            sm = self._active_machine(segments, day=day)
+
+            _flush_batch_state_machines(
+                {"archon": sm},
+                day,
+                refresh=False,
+                verbose=False,
+                max_concurrency=1,
+                skip_activity_prompts=True,
+            )
+
+            records = load_activity_records("work", day)
+            assert len(records) == 1
+            assert records[0]["segments"] == segments
 
 
 class TestCreatedAtRoutesCompat:
