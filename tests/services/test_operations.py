@@ -101,7 +101,56 @@ def test_flow_exception_becomes_retryable_error() -> None:
     _wait_until(is_error)
     operation = operations.operation_for_service("scout")
     assert operation["retryable"] is True
-    assert operation["portal_url"] == "https://portal.test/scout"
+    # terminal phase ⇒ no actionable portal CTA.
+    assert operation["portal_url"] is None
+
+
+def test_terminal_enabled_entry_drops_portal_url_in_grace() -> None:
+    operations.start_operation(
+        "scout",
+        "enable",
+        "https://portal.test/scout",
+        lambda: operations.HandoffResult("enabled", None, False),
+    )
+    _wait_until(lambda: operations.operation_for_service("scout")["phase"] == "enabled")
+    # entry stays in the registry for the 30s grace window after ending, but a
+    # terminal phase must not surface an actionable consent CTA.
+    op = operations.operation_for_service("scout")
+    assert op["phase"] == "enabled"
+    assert op["portal_url"] is None
+
+
+def test_non_terminal_phases_keep_portal_url() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def flow():
+        started.set()
+        release.wait(2)
+        return operations.HandoffResult("enabled", None, False)
+
+    start = operations.start_operation(
+        "scout", "enable", "https://portal.test/scout", flow
+    )
+    assert start["phase"] == "starting"
+    assert start["portal_url"] == "https://portal.test/scout"
+    _wait_until(started.is_set)
+    waiting = operations.operation_for_service("scout")
+    assert waiting["phase"] == "waiting"
+    assert waiting["portal_url"] == "https://portal.test/scout"
+    release.set()
+
+
+def test_pending_phase_keeps_portal_url() -> None:
+    operations.start_operation(
+        "scout",
+        "enable",
+        "https://portal.test/scout",
+        lambda: operations.HandoffResult("pending", "approve in the portal", False),
+    )
+    _wait_until(lambda: operations.operation_for_service("scout")["phase"] == "pending")
+    op = operations.operation_for_service("scout")
+    assert op["portal_url"] == "https://portal.test/scout"
 
 
 def test_clear_registry_empties_entries() -> None:

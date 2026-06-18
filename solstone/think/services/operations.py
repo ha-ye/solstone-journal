@@ -20,6 +20,12 @@ RETRYABLE_CODES = frozenset(
     {outcomes.EXPIRED, outcomes.NETWORK_ERROR, outcomes.LOCAL_ERROR}
 )
 OPERATION_GRACE_SECONDS = 30.0
+# Phases at which an operation is finished — no actionable consent CTA should
+# be surfaced (the portal page is already satisfied or moot). Mirrors the JS
+# PRIVATE_LINK_TERMINAL_PHASES set in solstone/apps/link/workspace.html — the
+# two sit on opposite sides of the Python/JS boundary with no shared source,
+# so keep them in lockstep.
+TERMINAL_PHASES = frozenset({"enabled", "needs_subscription", "revoked", "error"})
 
 
 class OperationBusyError(RuntimeError):
@@ -105,12 +111,13 @@ def _operation_payload(
     entry: OperationEntry, now: float | None = None
 ) -> dict[str, Any]:
     ts = time.monotonic() if now is None else now
+    portal_url = None if entry.phase in TERMINAL_PHASES else entry.portal_url
     return {
         "kind": entry.kind,
         "phase": entry.phase,
         "guidance": entry.guidance,
         "retryable": entry.retryable,
-        "portal_url": entry.portal_url,
+        "portal_url": portal_url,
         "subscribe_url": entry.subscribe_url,
         "elapsed_ms": int(max(0.0, ts - entry.started_monotonic) * 1000),
     }

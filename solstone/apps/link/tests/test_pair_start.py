@@ -22,6 +22,7 @@ PAIR_START_KEYS = [
     "nonce",
     "pair_link",
     "expires_in",
+    "rotating",
     "device_label",
     "ca_fingerprint",
 ]
@@ -44,6 +45,7 @@ def test_pair_start_shape_and_locked_order(link_env) -> None:
     )
     snap = link_routes._nonces().snapshot()
     assert payload["expires_in"] == NONCE_TTL_SECONDS
+    assert payload["rotating"] is False
     assert len(snap) == 1
     assert snap[0].expires_at - snap[0].issued_at == NONCE_TTL_SECONDS
     assert "pair_url" not in payload
@@ -265,5 +267,6 @@ def test_pair_start_spl_response_order_and_display_fingerprint(link_env) -> None
     payload = response.get_json()
     ca = load_or_generate_ca(ca_dir())
     assert list(payload.keys()) == PAIR_START_KEYS
+    assert payload["rotating"] is True
     assert payload["ca_fingerprint"] == ca.fingerprint_sha256()
     assert payload["ca_fingerprint"] != ca.spki_fingerprint_sha256()

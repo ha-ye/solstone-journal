@@ -193,8 +193,7 @@
           <li>{{ link_copy.STEP_3 }}</li>
         </ol>
 
-        {% if posture == "spl" %}
-        <div id="link-pair-rotation" class="link-pair-rotation">
+        <div id="link-pair-rotation" class="link-pair-rotation" hidden>
           <span id="link-pair-rotation-ring" class="link-pair-rotation-ring" aria-hidden="true">
             <svg viewBox="0 0 40 40" focusable="false">
               <circle class="link-pair-rotation-track" cx="20" cy="20" r="17"></circle>
@@ -203,9 +202,7 @@
           </span>
           <span class="link-pair-rotate-note">{{ link_copy.PAIR_ROTATE_NOTE }}</span>
         </div>
-        {% else %}
-        <p class="link-pair-network">{{ link_copy.PAIR_NETWORK_LINE }}</p>
-        {% endif %}
+        <p id="link-pair-network" class="link-pair-network" hidden>{{ link_copy.PAIR_NETWORK_LINE }}</p>
 
         <label class="link-modal-label link-pair-label-edit">
           {{ link_copy.DEVICE_LABEL_FIELD_LABEL }}
@@ -469,8 +466,10 @@
   .link-pair-expired-btn { border: none; border-radius: 5px; background: #E8923A; color: #1A1A1A; cursor: pointer; font-weight: 500; padding: 0.6em 1em; }
   .link-pair-steps { margin: 0; padding-left: 1.4em; line-height: 1.55; color: #333; }
   .link-pair-network { grid-column: 1 / -1; margin: 0; }
+  .link-pair-network[hidden] { display: none; }
   .link-pair-network { color: #555; }
   .link-pair-rotation { grid-column: 1 / -1; display: flex; align-items: center; gap: 0.65em; margin: 0; color: #555; }
+  .link-pair-rotation[hidden] { display: none; }
   .link-pair-rotation-ring { width: 28px; height: 28px; flex: 0 0 28px; color: #B06A1A; }
   .link-pair-rotation-ring svg { display: block; width: 100%; height: 100%; transform: rotate(-90deg); }
   .link-pair-rotation-track,
@@ -520,7 +519,6 @@
 
 <script>
 (function () {
-  const LINK_POSTURE = {{ posture|tojson }};
   const SPL_PAIR_WINDOW_MS = 5 * 60 * 1000;
   const statusText = document.getElementById('link-status-text');
   const statusDot = document.getElementById('link-status-dot');
@@ -565,7 +563,8 @@
   let viewedMode = null;
   let lastPosture = null;
   let reachRevealed = false;
-  const PRIVATE_LINK_TERMINAL_PHASES = new Set(['enabled', 'revoked', 'error', 'needs_subscription']);
+  // Mirror of operations.TERMINAL_PHASES (solstone/think/services/operations.py) — keep in lockstep.
+  const PRIVATE_LINK_TERMINAL_PHASES = new Set(['enabled', 'needs_subscription', 'revoked', 'error']);
   const PRIVATE_LINK_POLL_TIMEOUT_MS = 900000;
   let privateLinkRetryAction = null;
 
@@ -578,6 +577,8 @@
   const qrExpired = document.getElementById('link-qr-expired');
   const pairRegenerate = document.getElementById('link-pair-regenerate');
   const rotationRing = document.getElementById('link-pair-rotation-ring');
+  const pairRotation = document.getElementById('link-pair-rotation');
+  const pairNetwork = document.getElementById('link-pair-network');
   const caFpEl = document.getElementById('link-pair-ca-fp');
   const pairError = document.getElementById('link-pair-error');
   const pairErrorCancel = document.getElementById('link-pair-error-cancel');
@@ -614,6 +615,11 @@
     toast.textContent = msg;
     toast.hidden = false;
     setTimeout(() => { toast.hidden = true; }, 2500);
+  }
+
+  function setPairCopy(rotating) {
+    if (pairRotation) pairRotation.hidden = !rotating;
+    if (pairNetwork) pairNetwork.hidden = rotating;
   }
 
   function relativeTime(iso) {
@@ -1573,7 +1579,7 @@
     qrContainer.querySelector('svg').setAttribute('data-module-count', qr.getModuleCount());
   }
 
-  async function requestPairCode() {
+  async function requestPairCode({ restart = false } = {}) {
     clearExpiryTimer();
     clearRotationTimer();
     resetRotationRing();
@@ -1593,9 +1599,17 @@
     caFpEl.textContent = data.ca_fingerprint;
     deviceLabelInput.value = data.device_label;
 
+    const rotating = Boolean(data.rotating);
+    setPairCopy(rotating);  // authoritative copy toggle from the live response
+
     const expiresIn = Number(data.expires_in) || 300;
-    if (LINK_POSTURE === 'spl') {
-      if (!splWindowActive) return;
+    if (rotating) {
+      if (!splWindowActive) {
+        // Mid-session rotation re-fetch that finished after the 5-min window
+        // closed: bail without re-arming. A fresh start opens the window.
+        if (!restart) return;
+        startSplPairWindow();
+      }
       startRotationRing(expiresIn);
       rotationTimer = setTimeout(() => {
         if (!splWindowActive || pairModal.hidden) return;
@@ -1605,6 +1619,12 @@
         });
       }, expiresIn * 1000);
       return;
+    }
+
+    // direct: tear down any SPL-window machinery a wrong modal-open guess started
+    if (splWindowActive) {
+      splWindowActive = false;
+      clearWindowTimer();
     }
     expiryTimer = setTimeout(handleExpiry, expiresIn * 1000);
   }
@@ -1664,9 +1684,7 @@
     pairModal.hidden = false;
     cleanupPairEvents();
     resetPairCodeState();
-    if (LINK_POSTURE === 'spl') {
-      startSplPairWindow();
-    }
+    setPairCopy(latestStatus?.posture === 'spl');
     if (window.appEvents) {
       pairEventsCleanup = window.appEvents.listen('link', (payload) => {
         if (payload.event === 'pair_complete') {
@@ -1674,7 +1692,7 @@
         }
       });
     }
-    requestPairCode().catch((err) => {
+    requestPairCode({ restart: true }).catch((err) => {
       showPairError();
       window.logError(err, { context: 'link: requestPairCode failed' });
     });
@@ -1753,18 +1771,10 @@
     }
   });
   pairRegenerate.addEventListener('click', () => {
-    if (LINK_POSTURE === 'spl') {
-      startSplPairWindow();
-      requestPairCode().catch((err) => {
-        showPairError();
-        window.logError(err, { context: 'link: restart pair window failed' });
-      });
-      return;
-    }
     autoRefreshFired = false;
     qrExpired.hidden = true;
     qrContainer.classList.remove('is-expired');
-    requestPairCode().catch((err) => {
+    requestPairCode({ restart: true }).catch((err) => {
       showPairError();
       window.logError(err, { context: 'link: regenerate pair code failed' });
     });
