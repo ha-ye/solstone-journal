@@ -25,7 +25,7 @@ from solstone.think.push.devices import (
     status_view,
 )
 from solstone.think.push.portal_dispatch import dispatch_via_portal
-from solstone.think.push.relay_auth import push_relay_token
+from solstone.think.push.reach import ensure_reach_token, read_reach_token
 
 push_bp = Blueprint("push", __name__, url_prefix="/api/push")
 
@@ -100,6 +100,7 @@ def register_push_device():
         environment=environment,
         platform=platform,
     )
+    ensure_reach_token()
     return jsonify({"registered": True, "device_count": count})
 
 
@@ -122,7 +123,7 @@ def push_status():
     return jsonify(
         {
             "device_count": len(devices),
-            "relay_available": bool(push_relay_token()),
+            "relay_available": bool(read_reach_token()),
             "devices": [status_view(device) for device in devices],
         }
     )
@@ -133,12 +134,6 @@ def send_push_test():
     body, error = _optional_json_object()
     if error is not None:
         return error
-    if not push_relay_token():
-        return error_response(
-            FEATURE_UNAVAILABLE,
-            status=503,
-            detail="push relay unavailable",
-        )
     if not load_devices():
         return error_response(
             FEATURE_UNAVAILABLE,

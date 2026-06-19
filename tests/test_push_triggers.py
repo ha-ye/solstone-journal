@@ -68,7 +68,6 @@ def _fail_dedup_dispatch(**kwargs):
 
 
 def _install_fold_success(monkeypatch, calls: list[dict[str, str]]) -> None:
-    monkeypatch.setattr(triggers, "push_relay_token", lambda: "tok")
     monkeypatch.setattr(triggers, "load_devices", lambda: [_device_row()])
     monkeypatch.setattr(triggers, "dispatch_via_portal", _fail_dispatch_via_portal)
     monkeypatch.setattr(
@@ -87,7 +86,6 @@ def _install_chat_seed(monkeypatch) -> None:
 
 def test_handle_sol_chat_request_routes_via_portal(monkeypatch, tmp_path):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr(triggers, "push_relay_token", lambda: "tok")
     monkeypatch.setattr(triggers, "load_devices", lambda: [_device_row()])
     calls: list[dict[str, str]] = []
     monkeypatch.setattr(
@@ -119,14 +117,12 @@ def test_handle_sol_chat_request_routes_via_portal(monkeypatch, tmp_path):
     ]
 
 
-def test_handle_sol_chat_request_no_token_skips_without_dispatch(monkeypatch, tmp_path):
+def test_handle_sol_chat_request_dispatch_none_logs_portal_unavailable(
+    monkeypatch, tmp_path
+):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr(triggers, "push_relay_token", lambda: "")
-
-    def fail_dispatch(**kwargs):
-        raise AssertionError("dispatch should not be called")
-
-    monkeypatch.setattr(triggers, "dispatch_via_portal", fail_dispatch)
+    monkeypatch.setattr(triggers, "load_devices", lambda: [_device_row()])
+    monkeypatch.setattr(triggers, "dispatch_via_portal", lambda **kwargs: None)
 
     triggers.handle_sol_chat_request(
         {
@@ -145,7 +141,7 @@ def test_handle_sol_chat_request_no_token_skips_without_dispatch(monkeypatch, tm
             "dedupe_key": "req-1",
             "category": "notice",
             "outcome": "skipped",
-            "reason": "no_relay_token",
+            "reason": "portal_unavailable",
         }
     ]
 
@@ -154,7 +150,6 @@ def test_handle_sol_chat_request_no_devices_skips_without_dispatch(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr(triggers, "push_relay_token", lambda: "tok")
     monkeypatch.setattr(triggers, "load_devices", lambda: [])
 
     def fail_dispatch(**kwargs):
@@ -186,7 +181,6 @@ def test_handle_sol_chat_request_no_devices_skips_without_dispatch(
 
 def test_handle_sol_chat_request_portal_unavailable_logs_skip(monkeypatch, tmp_path):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr(triggers, "push_relay_token", lambda: "tok")
     monkeypatch.setattr(triggers, "load_devices", lambda: [_device_row()])
     monkeypatch.setattr(triggers, "dispatch_via_portal", lambda **kwargs: None)
 
@@ -215,7 +209,6 @@ def test_handle_sol_chat_request_portal_unavailable_logs_skip(monkeypatch, tmp_p
 @pytest.mark.parametrize("event", [KIND_OWNER_CHAT_OPEN, KIND_OWNER_CHAT_DISMISSED])
 def test_handle_chat_lifecycle_routes_via_portal(monkeypatch, tmp_path, event):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr(triggers, "push_relay_token", lambda: "tok")
     monkeypatch.setattr(triggers, "load_devices", lambda: [_device_row()])
     calls: list[dict[str, str]] = []
     monkeypatch.setattr(
@@ -241,14 +234,12 @@ def test_handle_chat_lifecycle_routes_via_portal(monkeypatch, tmp_path, event):
     ]
 
 
-def test_handle_chat_lifecycle_no_token_skips_without_dispatch(monkeypatch, tmp_path):
+def test_handle_chat_lifecycle_dispatch_none_logs_portal_unavailable(
+    monkeypatch, tmp_path
+):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr(triggers, "push_relay_token", lambda: "")
-
-    def fail_dispatch(**kwargs):
-        raise AssertionError("dispatch should not be called")
-
-    monkeypatch.setattr(triggers, "dispatch_dedup_via_portal", fail_dispatch)
+    monkeypatch.setattr(triggers, "load_devices", lambda: [_device_row()])
+    monkeypatch.setattr(triggers, "dispatch_dedup_via_portal", lambda **kwargs: None)
 
     triggers.handle_chat_lifecycle(
         {"tract": "chat", "event": KIND_OWNER_CHAT_OPEN, "request_id": "req-1"}
@@ -261,14 +252,13 @@ def test_handle_chat_lifecycle_no_token_skips_without_dispatch(monkeypatch, tmp_
             "dedupe_key": "req-1",
             "category": KIND_OWNER_CHAT_OPEN,
             "outcome": "skipped",
-            "reason": "no_relay_token",
+            "reason": "portal_unavailable",
         }
     ]
 
 
 def test_handle_chat_lifecycle_portal_unavailable_logs_skip(monkeypatch, tmp_path):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr(triggers, "push_relay_token", lambda: "tok")
     monkeypatch.setattr(triggers, "load_devices", lambda: [_device_row()])
     monkeypatch.setattr(triggers, "dispatch_dedup_via_portal", lambda **kwargs: None)
 
@@ -387,7 +377,6 @@ def test_handle_chat_fold_recovery_shape_stays_content_free(monkeypatch, tmp_pat
 )
 def test_handle_chat_fold_noop_shapes_do_not_dispatch(monkeypatch, tmp_path, message):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr(triggers, "push_relay_token", lambda: "tok")
     monkeypatch.setattr(triggers, "load_devices", lambda: [_device_row()])
     monkeypatch.setattr(triggers, "dispatch_via_portal", _fail_dispatch_via_portal)
     monkeypatch.setattr(triggers, "dispatch_dedup_via_portal", _fail_dedup_dispatch)
@@ -406,7 +395,6 @@ def test_handle_chat_fold_suppresses_when_owner_viewing(monkeypatch, tmp_path):
         surface="convey",
         ts=_FOLD_TS_MS - 5 * 60 * 1000,
     )
-    monkeypatch.setattr(triggers, "push_relay_token", lambda: "tok")
     monkeypatch.setattr(triggers, "load_devices", lambda: [_device_row()])
     monkeypatch.setattr(triggers, "dispatch_via_portal", _fail_dispatch_via_portal)
     monkeypatch.setattr(triggers, "dispatch_dedup_via_portal", _fail_dedup_dispatch)
@@ -484,11 +472,11 @@ def test_handle_chat_fold_uses_origin_logical_id_for_dedup(monkeypatch, tmp_path
     ]
 
 
-def test_handle_chat_fold_no_token_skips_without_dispatch(monkeypatch, tmp_path):
+def test_handle_chat_fold_dispatch_none_logs_portal_unavailable(monkeypatch, tmp_path):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr(triggers, "push_relay_token", lambda: "")
+    monkeypatch.setattr(triggers, "load_devices", lambda: [_device_row()])
     monkeypatch.setattr(triggers, "dispatch_via_portal", _fail_dispatch_via_portal)
-    monkeypatch.setattr(triggers, "dispatch_dedup_via_portal", _fail_dedup_dispatch)
+    monkeypatch.setattr(triggers, "dispatch_dedup_via_portal", lambda **kwargs: None)
 
     triggers.handle_chat_fold(_fold_message(route_id="dispatch-1"))
 
@@ -499,14 +487,13 @@ def test_handle_chat_fold_no_token_skips_without_dispatch(monkeypatch, tmp_path)
             "dedupe_key": "dispatch-1",
             "category": triggers.FOLD_PUSH_ACTION,
             "outcome": "skipped",
-            "reason": "no_relay_token",
+            "reason": "portal_unavailable",
         }
     ]
 
 
 def test_handle_chat_fold_no_devices_skips_without_dispatch(monkeypatch, tmp_path):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr(triggers, "push_relay_token", lambda: "tok")
     monkeypatch.setattr(triggers, "load_devices", lambda: [])
     monkeypatch.setattr(triggers, "dispatch_via_portal", _fail_dispatch_via_portal)
     monkeypatch.setattr(triggers, "dispatch_dedup_via_portal", _fail_dedup_dispatch)
@@ -527,7 +514,6 @@ def test_handle_chat_fold_no_devices_skips_without_dispatch(monkeypatch, tmp_pat
 
 def test_handle_chat_fold_portal_unavailable_logs_skip(monkeypatch, tmp_path):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr(triggers, "push_relay_token", lambda: "tok")
     monkeypatch.setattr(triggers, "load_devices", lambda: [_device_row()])
     monkeypatch.setattr(triggers, "dispatch_via_portal", _fail_dispatch_via_portal)
     monkeypatch.setattr(triggers, "dispatch_dedup_via_portal", lambda **kwargs: None)
@@ -556,7 +542,6 @@ def test_handle_chat_fold_portal_unavailable_logs_skip(monkeypatch, tmp_path):
 )
 def test_non_chat_or_wrong_event_messages_are_noops(monkeypatch, tmp_path, message):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr(triggers, "push_relay_token", lambda: "tok")
     monkeypatch.setattr(triggers, "dispatch_via_portal", _fail_dispatch_via_portal)
     monkeypatch.setattr(triggers, "dispatch_dedup_via_portal", _fail_dedup_dispatch)
 

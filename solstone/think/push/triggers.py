@@ -22,7 +22,6 @@ from solstone.think.push.portal_dispatch import (
     dispatch_dedup_via_portal,
     dispatch_via_portal,
 )
-from solstone.think.push.relay_auth import push_relay_token
 from solstone.think.utils import get_journal
 
 logger = logging.getLogger("solstone.push.triggers")
@@ -70,19 +69,6 @@ def handle_sol_chat_request(message: dict[str, Any]) -> None:
     summary = str(message.get("summary") or "")
     category = str(message.get("category") or "")
     kind = f"{KIND_SOL_CHAT_REQUEST}_push"
-
-    if not push_relay_token():
-        _append_nudge_log(
-            {
-                "ts": int(time.time()),
-                "kind": kind,
-                "dedupe_key": request_id,
-                "category": category,
-                "outcome": "skipped",
-                "reason": "no_relay_token",
-            }
-        )
-        return
 
     if not load_devices():
         _append_nudge_log(
@@ -156,19 +142,6 @@ def handle_chat_fold(message: dict[str, Any]) -> None:
         )
         return
 
-    if not push_relay_token():
-        _append_nudge_log(
-            {
-                "ts": int(time.time()),
-                "kind": kind,
-                "dedupe_key": route_id,
-                "category": FOLD_PUSH_ACTION,
-                "outcome": "skipped",
-                "reason": "no_relay_token",
-            }
-        )
-        return
-
     if not load_devices():
         _append_nudge_log(
             {
@@ -226,19 +199,6 @@ def handle_chat_lifecycle(message: dict[str, Any]) -> None:
     if not request_id:
         return
     kind = "sol_chat_lifecycle_push"
-
-    if not push_relay_token():
-        _append_nudge_log(
-            {
-                "ts": int(time.time()),
-                "kind": kind,
-                "dedupe_key": request_id,
-                "category": event,
-                "outcome": "skipped",
-                "reason": "no_relay_token",
-            }
-        )
-        return
 
     if not load_devices():
         _append_nudge_log(

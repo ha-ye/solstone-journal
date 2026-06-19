@@ -214,6 +214,35 @@ def mint_attestation(
     return f"{header_b64}.{payload_b64}.{sig_b64}"
 
 
+def mint_reach_assertion(
+    ca: LoadedCa,
+    instance_id: str,
+    *,
+    now: int | None = None,
+) -> str:
+    """Mint an ES256 assertion JWT for reach push-relay enrollment."""
+    iat = now if now is not None else int(time.time())
+    exp = iat + ATTESTATION_LIFETIME_SECONDS
+    header = {"alg": "ES256", "typ": "home-reach"}
+    claims = {
+        "iss": f"home:{instance_id}",
+        "aud": "solstone-reach",
+        "scope": "push.relay.enroll",
+        "instance_id": instance_id,
+        "iat": iat,
+        "exp": exp,
+        "jti": str(uuid.uuid4()),
+    }
+    header_b64 = _b64url(json.dumps(header, separators=(",", ":")).encode("utf-8"))
+    payload_b64 = _b64url(json.dumps(claims, separators=(",", ":")).encode("utf-8"))
+    signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
+    der_sig = ca.private_key.sign(signing_input, ec.ECDSA(hashes.SHA256()))
+    r, s = decode_dss_signature(der_sig)
+    raw_sig = r.to_bytes(32, "big") + s.to_bytes(32, "big")
+    sig_b64 = _b64url(raw_sig)
+    return f"{header_b64}.{payload_b64}.{sig_b64}"
+
+
 def cert_fingerprint(cert_pem: str | bytes) -> str:
     """Compute `sha256:<hex>` over the DER form of a PEM-encoded cert."""
     pem_bytes = cert_pem.encode("utf-8") if isinstance(cert_pem, str) else cert_pem

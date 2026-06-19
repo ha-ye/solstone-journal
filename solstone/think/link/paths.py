@@ -126,7 +126,7 @@ class LinkState:
     @classmethod
     def load(cls, *, default_label: str = "solstone") -> LinkState | None:
         """Pure read of `state.json`; None if unprovisioned/unreadable. No write."""
-        path = state_path()
+        path = Path(get_journal()) / "link" / "state.json"
         if not path.exists():
             return None
         try:

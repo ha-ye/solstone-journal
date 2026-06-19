@@ -172,7 +172,6 @@ def test_sol_request_open_endpoint_broadcast_suppresses_push(
     assert (tract, kind) == ("chat", KIND_OWNER_CHAT_OPEN)
     assert kwargs["request_id"] == "req-1"
 
-    monkeypatch.setattr(triggers, "push_relay_token", lambda: "tok")
     monkeypatch.setattr(
         triggers,
         "load_devices",
