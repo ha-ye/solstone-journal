@@ -22,9 +22,15 @@
         <span><strong>{{ sol_voice_copy.CHAT_ORIGIN_PROVENANCE_LABEL_DEDUPE }}</strong> {{ origin.dedupe or "" }}</span>
         <span><strong>{{ sol_voice_copy.CHAT_ORIGIN_PROVENANCE_LABEL_SINCE_TS }}</strong> {{ origin.since_ts or "" }}</span>
       </div>
-    </div>
-  {% endif %}
-	  <article class="chat-bubble chat-bubble--sol"
+	    </div>
+	  {% endif %}
+	  {% if ev.origin %}
+	    <div class="chat-dispatch-origin" data-dispatch-logical-id="{{ ev.origin.logical_use_id }}">
+	      <span class="chat-dispatch-origin__prefix">{{ chat_copy.CHAT_DISPATCH_ORIGIN_PREFIX }}</span>
+	      <span class="chat-dispatch-origin__ask">{{ ev.origin.ask }}</span>
+	    </div>
+	  {% endif %}
+		  <article class="chat-bubble chat-bubble--sol"
 	           {% if ev.notes %}title="{{ ev.notes }}"{% endif %}
 	           aria-label="{{ agent_name }}: {{ ev.text }}">
 	    <span class="chat-bubble-author">{{ agent_name }}</span>
@@ -39,7 +45,14 @@
 	      <div class="chat-thinking-content" id="{{ thinking_id }}" hidden>{{ ev.thinking.content }}</div>
 	    {% endif %}
 	  {% endif %}
-{% elif ev.kind == "talent_spawned" %}
+	{% elif ev.kind == "talent_queued" %}
+	  <div class="chat-talent-card chat-talent-card--queued"
+	       data-talent-use-id="{{ ev.use_id }}"
+	       data-talent-status="queued">
+	    <span class="chat-talent-card-label">{{ chat_copy.CHAT_TALENT_QUEUED_LABEL }}</span>
+	    {% if ev.task %}<span class="chat-talent-card-task">{{ ev.task }}</span>{% endif %}
+	  </div>
+	{% elif ev.kind == "talent_spawned" %}
   <button type="button"
 	          class="chat-talent-card chat-talent-card--spawned"
 	          data-talent-use-id="{{ ev.use_id }}"

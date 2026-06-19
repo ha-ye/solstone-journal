@@ -30,9 +30,11 @@
 
   window.solChatCopy = {
     talentLabel,
-    CHAT_QUEUE_INDICATOR_SINGULAR: "1 message waiting",
-    CHAT_QUEUE_INDICATOR_PLURAL_FORMAT: "{count} messages waiting",
+    CHAT_JOBS_INDICATOR_SINGULAR: "sol is running 1 job",
+    CHAT_JOBS_INDICATOR_PLURAL_FORMAT: "sol is running {count} jobs",
     CHAT_QUEUE_DEPTH_CAP_MESSAGE: "Give sol a moment to catch up — you have 10 messages waiting.",
+    CHAT_TALENT_QUEUED_LABEL: "Waiting to start…",
+    CHAT_DISPATCH_ORIGIN_PREFIX: "in reply to:",
     CHAT_LIVENESS_THINKING: "sol is thinking…",
     CHAT_LIVENESS_TASK_FORMAT: "{label} {task}",
     CHAT_LIVENESS_SUPPORT: "reaching solstone support on your behalf…",

@@ -15,10 +15,12 @@ TALENT_LABEL_SUPPORT_RUNNING = "Reaching solstone support…"
 TALENT_LABEL_SUPPORT_FINISHED = "Reached solstone support"
 TALENT_LABEL_SUPPORT_ERRORED = "Couldn't reach solstone support"
 
-# T1.4 — queue depth indicators (lowercase "sol" per system-anatomy canon)
-CHAT_QUEUE_INDICATOR_SINGULAR = "1 message waiting"
-CHAT_QUEUE_INDICATOR_PLURAL_FORMAT = "{count} messages waiting"
+# T1.4 — active/queued job indicators (lowercase "sol" per system-anatomy canon)
+CHAT_JOBS_INDICATOR_SINGULAR = "sol is running 1 job"
+CHAT_JOBS_INDICATOR_PLURAL_FORMAT = "sol is running {count} jobs"
 CHAT_QUEUE_DEPTH_CAP_MESSAGE = "Give sol a moment to catch up — you have 10 messages waiting."
+CHAT_TALENT_QUEUED_LABEL = "Waiting to start…"
+CHAT_DISPATCH_ORIGIN_PREFIX = "in reply to:"
 
 # T1.1 — liveness placeholder bubble
 CHAT_LIVENESS_THINKING = "sol is thinking…"

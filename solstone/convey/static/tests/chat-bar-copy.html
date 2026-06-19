@@ -35,17 +35,17 @@
       report(name, !!condition);
     }
 
-    function setQueueDepth(count) {
-      const depthValue = Number(count || 0);
-      if (!Number.isFinite(depthValue) || depthValue < 1) {
+    function setJobsIndicator(count) {
+      const countValue = Number(count || 0);
+      if (!Number.isFinite(countValue) || countValue < 1) {
         queueStatus.textContent = '';
         queueStatus.hidden = true;
         return;
       }
-      const depth = Math.floor(depthValue);
-      queueStatus.textContent = depth === 1
-        ? window.solChatCopy.CHAT_QUEUE_INDICATOR_SINGULAR
-        : window.solChatCopy.CHAT_QUEUE_INDICATOR_PLURAL_FORMAT.replace('{count}', String(depth));
+      const jobCount = Math.floor(countValue);
+      queueStatus.textContent = jobCount === 1
+        ? window.solChatCopy.CHAT_JOBS_INDICATOR_SINGULAR
+        : window.solChatCopy.CHAT_JOBS_INDICATOR_PLURAL_FORMAT.replace('{count}', String(jobCount));
       queueStatus.hidden = false;
     }
 
@@ -87,16 +87,16 @@
         .replace('{task}', 'Retrieve the history for Adrian Kunzle and Bill Putsis from this week');
       assert('liveness phase two composition', phaseTwo === 'Making that change… Retrieve the history for Adrian Kunzle and Bill Putsis from this week');
 
-      setQueueDepth(0);
-      assert('zero depth hides queue', queueStatus.hidden && queueStatus.textContent === '');
-      setQueueDepth(1);
-      assert('singular depth text', !queueStatus.hidden && queueStatus.textContent === '1 message waiting');
-      setQueueDepth(4);
-      assert('plural depth text', !queueStatus.hidden && queueStatus.textContent === '4 messages waiting');
+      setJobsIndicator(0);
+      assert('zero jobs hides queue', queueStatus.hidden && queueStatus.textContent === '');
+      setJobsIndicator(1);
+      assert('singular jobs text', !queueStatus.hidden && queueStatus.textContent === 'sol is running 1 job');
+      setJobsIndicator(4);
+      assert('plural jobs text', !queueStatus.hidden && queueStatus.textContent === 'sol is running 4 jobs');
       showQueueCapMessage();
       assert('cap message text', queueStatus.textContent === 'Give sol a moment to catch up — you have 10 messages waiting.');
-      setQueueDepth(9);
-      assert('depth clears cap message', queueStatus.textContent === '9 messages waiting');
+      setJobsIndicator(9);
+      assert('jobs indicator clears cap message', queueStatus.textContent === 'sol is running 9 jobs');
 
       summary.className = failures ? 'fail' : 'pass';
       summary.textContent = failures

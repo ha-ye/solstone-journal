@@ -81,7 +81,13 @@ def test_chat_bar_terminal_overwrites_liveness_without_retry_button(chat_html):
         in chat_html
     )
     assert "clearPendingLivenessStatus();" in chat_html
-    assert "setStatus(msg.text || '', msg.notes || msg.text || '');" in chat_html
+    assert "setStatus(msg.text || '', statusTitleFor(msg));" in chat_html
+    assert "function statusTitleFor(msg)" in chat_html
+    status_title_block = chat_html.split("function statusTitleFor(msg)", 1)[1].split(
+        "function renderJobsIndicator()", 1
+    )[0]
+    assert "window.solChatCopy.CHAT_DISPATCH_ORIGIN_PREFIX" in status_title_block
+    assert "msg.notes || msg.text || ''" in status_title_block
     assert (
         "setStatus(renderedReason.message, renderedReason.message, renderedReason.action);"
         in chat_html
@@ -124,9 +130,7 @@ def test_support_draft_card_structure_and_result_helper(chat_html):
     assert "if (!renderSupportOutcome(msg))" in chat_html
     assert "function hideSupportResult()" in chat_html
     assert "window.solChatCopy.CHAT_RESULT_TRY_AGAIN_MESSAGE" in chat_html
-    assert (
-        chat_html.count("setStatus(msg.text || '', msg.notes || msg.text || '');") == 2
-    )
+    assert chat_html.count("setStatus(msg.text || '', statusTitleFor(msg));") == 2
 
 
 def test_chat_bar_talent_terminal_clears_liveness(chat_html):
