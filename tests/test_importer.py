@@ -9,11 +9,16 @@ import os
 import subprocess
 import time
 import zipfile
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
+from flask import Flask, g
+from PIL import Image
 
+import solstone.think.utils as think_utils
+from solstone.convey.secure_listener import ConveyIdentity
 from solstone.think.importers.file_importer import ImportPreview, ImportResult
 from solstone.think.importers.shared import install_source_file
 from solstone.think.utils import day_path
@@ -82,6 +87,144 @@ def _read_action_entries(journal_root: Path) -> list[dict]:
         for line in log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+
+
+def _import_route_client(
+    tmp_path: Path,
+    monkeypatch,
+    identity: ConveyIdentity | None = None,
+):
+    import_routes = importlib.import_module("solstone.apps.import.routes")
+    monkeypatch.setattr(
+        import_routes.state, "journal_root", str(tmp_path), raising=False
+    )
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    think_utils._journal_path_cache = None
+    monkeypatch.setattr(import_routes, "detect_created", lambda *args, **kwargs: None)
+    monkeypatch.setattr(import_routes, "now_ms", lambda: 1_765_000_000_000)
+
+    stamped = identity or ConveyIdentity(
+        mode="dl",
+        fingerprint=None,
+        device_label=None,
+        paired_at=None,
+        session_id=None,
+    )
+    app = Flask(__name__)
+    app.config["TESTING"] = True
+
+    @app.before_request
+    def stamp_identity():
+        g.identity = stamped
+
+    app.register_blueprint(import_routes.import_bp)
+    return app.test_client()
+
+
+def _post_import_save(client, data: dict):
+    payload = {
+        "file": (BytesIO(b"hello"), "note.txt"),
+        **data,
+    }
+    return client.post(
+        "/app/import/api/save",
+        data=payload,
+        content_type="multipart/form-data",
+    )
+
+
+def test_import_save_stamps_web_dashboard_provenance(tmp_path, monkeypatch):
+    client = _import_route_client(tmp_path, monkeypatch)
+
+    response = _post_import_save(client, {"observer_handle": "phone-share"})
+
+    assert response.status_code == 200
+    timestamp = response.get_json()["timestamp"]
+    metadata = json.loads(
+        (tmp_path / "imports" / timestamp / "import.json").read_text(encoding="utf-8")
+    )
+    assert metadata["imported_via"] == "web_dashboard"
+    assert metadata["link_id"] is None
+    assert metadata["observer_handle"] == "phone-share"
+
+
+def test_import_save_persists_imported_via_override(tmp_path, monkeypatch):
+    client = _import_route_client(tmp_path, monkeypatch)
+
+    response = _post_import_save(client, {"imported_via": "mobile_share"})
+
+    assert response.status_code == 200
+    timestamp = response.get_json()["timestamp"]
+    metadata = json.loads(
+        (tmp_path / "imports" / timestamp / "import.json").read_text(encoding="utf-8")
+    )
+    assert metadata["imported_via"] == "mobile_share"
+
+
+def test_import_save_stamps_pl_link_id(tmp_path, monkeypatch):
+    fingerprint = "sha256:" + ("a" * 64)
+    client = _import_route_client(
+        tmp_path,
+        monkeypatch,
+        ConveyIdentity(
+            mode="pl-direct",
+            fingerprint=fingerprint,
+            device_label="peer",
+            paired_at="2026-05-20T00:00:00Z",
+            session_id="session-1",
+        ),
+    )
+
+    response = _post_import_save(client, {})
+
+    assert response.status_code == 200
+    timestamp = response.get_json()["timestamp"]
+    metadata = json.loads(
+        (tmp_path / "imports" / timestamp / "import.json").read_text(encoding="utf-8")
+    )
+    assert metadata["link_id"] == fingerprint
+
+
+def test_cli_import_provenance_defaults(tmp_path, monkeypatch):
+    shared = importlib.import_module("solstone.think.importers.shared")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    think_utils._journal_path_cache = None
+
+    assert shared.read_provenance(tmp_path, "missing") == {
+        "imported_via": "cli",
+        "link_id": None,
+        "observer_handle": None,
+    }
+
+    media = tmp_path / "note.txt"
+    media.write_text("hello", encoding="utf-8")
+    shared._setup_import(str(media), "20260115_120000", None, None, None)
+    metadata = json.loads(
+        (tmp_path / "imports" / "20260115_120000" / "import.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert metadata["imported_via"] == "cli"
+    assert metadata["link_id"] is None
+    assert metadata["observer_handle"] is None
+
+
+def test_build_import_info_old_metadata_defaults_provenance_none(tmp_path):
+    from solstone.think.importers.utils import build_import_info
+
+    timestamp = "20260115_120000"
+    import_dir = tmp_path / "imports" / timestamp
+    import_dir.mkdir(parents=True)
+    (import_dir / "import.json").write_text(
+        json.dumps({"original_filename": "old.txt"}),
+        encoding="utf-8",
+    )
+
+    info = build_import_info(tmp_path, timestamp)
+
+    assert info["imported_via"] is None
+    assert info["link_id"] is None
+    assert info["observer_handle"] is None
 
 
 def test_slice_audio_segment(tmp_path):
@@ -1308,6 +1451,44 @@ def test_file_importer_with_timestamp(tmp_path, monkeypatch):
     assert mock_call.kwargs["import_id"] == "20260303_120000"
     # File importers write a manifest (but not source files) in imports/
     assert (tmp_path / "imports" / "20260303_120000" / "manifest.json").exists()
+
+
+@pytest.mark.parametrize("source_args", [[], ["--source", "quick"]])
+def test_image_dispatch_uses_file_importer_not_audio(
+    tmp_path, monkeypatch, source_args
+):
+    """Image imports auto-detect the image file importer, including Quick Import."""
+    mod = importlib.import_module("solstone.think.importers.cli")
+    images = importlib.import_module("solstone.think.importers.images")
+
+    image_file = tmp_path / "shot.png"
+    Image.new("RGB", (8, 8), "red").save(image_file)
+    ts = dt.datetime(2026, 3, 3, 12, 0, 0).timestamp()
+    os.utime(image_file, (ts, ts))
+
+    callosum = MagicMock()
+    mock_prepare_audio_segments = MagicMock(
+        side_effect=AssertionError("audio path should not be used for image import")
+    )
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(
+        "sys.argv",
+        ["sol import", str(image_file), *source_args, "--timestamp", "20260303_120000"],
+    )
+    monkeypatch.setattr(images, "_describe_image", lambda image: "A red square.")
+    monkeypatch.setattr(mod, "CallosumConnection", lambda **kwargs: callosum)
+    monkeypatch.setattr(mod, "get_rev", lambda: "test-rev")
+    monkeypatch.setattr(mod, "_status_emitter", lambda: None)
+    monkeypatch.setattr(mod, "prepare_audio_segments", mock_prepare_audio_segments)
+    monkeypatch.setattr(mod, "index_file", lambda *args, **kwargs: None)
+
+    mod.main()
+
+    mock_prepare_audio_segments.assert_not_called()
+    segments = list((tmp_path / "chronicle").glob("*/import.image/*"))
+    assert len(segments) == 1
+    assert (segments[0] / "image_transcript.md").exists()
 
 
 def test_file_importer_observed_events_are_batch_and_drain_distinct_days(

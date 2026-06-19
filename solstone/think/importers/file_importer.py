@@ -69,6 +69,7 @@ FILE_IMPORTER_REGISTRY: dict[str, str] = {
     "kindle": "solstone.think.importers.kindle",
     "gemini": "solstone.think.importers.gemini",
     "document": "solstone.think.importers.documents",
+    "image": "solstone.think.importers.images",
     "journal_archive": "solstone.think.importers.journal_archive",
 }
 

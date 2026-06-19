@@ -248,8 +248,15 @@ def test_ingest_new_segments(ingest_env):
     assert log_entries[0]["item_id"] == "20260413/laptop/143022_300"
     assert log_entries[0]["item_type"] == "segment"
     assert log_entries[0]["reason"] == "new segment"
+    assert log_entries[0]["imported_via"] == "peer_link"
+    assert log_entries[0]["link_id"] is None
     assert "sender_fingerprint" not in log_entries[0]
     assert "sender_instance_id" not in log_entries[0]
+    assert all(
+        record["imported_via"] == "peer_link"
+        for record in state_data["20260413"].values()
+    )
+    assert all(record["link_id"] is None for record in state_data["20260413"].values())
     assert all(
         "sender_fingerprint" not in record for record in state_data["20260413"].values()
     )
@@ -368,10 +375,14 @@ def test_pl_ingest_stamps_sender_fingerprint(pl_ingest_env):
     assert response.status_code == 200
     state_data = _read_state(env["key_prefix"])
     state_record = state_data["20260413"]["laptop/143022_300"]
+    assert state_record["imported_via"] == "peer_link"
+    assert state_record["link_id"] == env["fingerprint"]
     assert state_record["sender_fingerprint"] == env["fingerprint"]
     assert "sender_instance_id" not in state_record
 
     log_entries = _read_log(env["key_prefix"])
+    assert log_entries[0]["imported_via"] == "peer_link"
+    assert log_entries[0]["link_id"] == env["fingerprint"]
     assert log_entries[0]["sender_fingerprint"] == env["fingerprint"]
     assert "sender_instance_id" not in log_entries[0]
 
@@ -749,7 +760,9 @@ def test_ingest_state_json_manifest_sync(ingest_env):
                         "sha256": compute_bytes_sha256(b'{"text":"one"}\n'),
                         "size": len(b'{"text":"one"}\n'),
                     },
-                ]
+                ],
+                "imported_via": "peer_link",
+                "link_id": None,
             }
         }
     }
