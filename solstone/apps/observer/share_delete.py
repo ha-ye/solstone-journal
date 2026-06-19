@@ -17,9 +17,8 @@ from solstone.think.utils import day_dirs, get_journal, iter_segments
 
 logger = logging.getLogger(__name__)
 
-SHARE_STREAM = "import.share"
 LOCATION_STREAM = "location"
-DELETABLE_SOURCE_STREAMS = {SHARE_STREAM, LOCATION_STREAM}
+DELETABLE_SOURCE_STREAMS = {LOCATION_STREAM}
 
 _SEGMENT_NOT_REMOVED_REASON = (
     "This segment could not be removed from disk. Try again after checking file "
@@ -205,7 +204,7 @@ def delete_source_stream(stream: str) -> dict:
     }
     # The location source's owner-facing delete receipt counts distinct days
     # ("removed ... across {N} days"); surface the day count the op already
-    # computed. import.share's receipt shape is left unchanged.
+    # computed.
     if stream == LOCATION_STREAM:
         removed["days"] = len(days_with_segments)
     receipt = {

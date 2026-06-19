@@ -59,7 +59,7 @@ from solstone.think.link.paths import authorized_clients_path
 from solstone.think.streams import stream_name, update_stream, write_segment_stream
 from solstone.think.utils import day_path, iter_segments, now_ms, segment_path
 
-from .share_delete import DELETABLE_SOURCE_STREAMS, SHARE_STREAM, delete_source_stream
+from .share_delete import DELETABLE_SOURCE_STREAMS, delete_source_stream
 from .utils import (
     ObserverRegistry,
     append_history_record,
@@ -494,12 +494,6 @@ def api_delete(key_prefix: str) -> Any:
         )
 
     return jsonify({"status": "ok"})
-
-
-@observer_bp.route("/api/delete-source", methods=["POST"])
-def api_delete_source() -> Any:
-    """Delete everything the iOS Share Sheet contributed."""
-    return jsonify(delete_source_stream(SHARE_STREAM))
 
 
 @observer_bp.route("/api/<key_prefix>/key")

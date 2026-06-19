@@ -3,15 +3,21 @@
 
 """Self-contained fixtures for observer app tests.
 
-These fixtures are fully standalone and only depend on pytest builtins.
-No shared dependencies from the root conftest.py are required.
+These fixtures do not depend on root conftest.py fixtures. The repo-root path
+bootstrap below lets app-only test runs load common test harness helpers.
 """
 
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 
 import pytest
+
+ROOT = Path(__file__).resolve().parents[4]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 @pytest.fixture
