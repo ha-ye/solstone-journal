@@ -4,6 +4,20 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.8] - 2026-06-18
+
+### Added
+- you can now import a single image, and sol describes what's in it and adds the entry to your journal. drop in a png, jpeg, webp, gif, or tiff from the web interface or the command line, the same way you import a recording.
+
+### Changed
+- chatting with sol no longer makes you wait. when sol kicks off a longer piece of work from a chat, it tells you what it's doing right away and keeps the conversation open, then folds the answer back in once it's ready. the chat shows how many jobs sol has running so you can keep going in the meantime.
+
+### Fixed
+- settings now save again. for the past several days, changes you made in settings would quietly revert on reload, with no save button and no error to tell you why. this resolves the underlying cause, so every section saves and sticks.
+- finishing the private link setup no longer looks unfinished. when you turned link on and paired a device, a leftover "continue to approve" prompt could linger next to the success message, and the pairing screen could show the wrong text and a code that didn't refresh. the screen now reflects what's actually happening.
+- on linux, installing solstone with gpu support no longer fails partway through. some installs pulled a graphics runtime that didn't match the rest of the install, so transcription couldn't load. the install now keeps the pieces in step.
+- previewing an import no longer imports it for real. on the command-line importer, asking for a preview while also passing the save flag would import the media live instead of just showing you what it found. a preview now always wins, so you can look before you commit.
+
 ## [0.6.7] - 2026-06-18
 
 ### Changed
