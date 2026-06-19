@@ -129,11 +129,12 @@ the I pronoun, no exception class names or paths. Put those specifics in
 ### Observer Callosum SSE Feed
 
 Observer clients can open a server-sent events feed at
-`/app/observer/<key>/callosum`. The feed is a passive view of the Callosum bus:
-each `data:` frame is the same event-shaped payload the bridge saw
-(`tract`, `event`, `ts`, plus event fields). Chat events appear only after the
-chat append path has written its JSONL record, so subscribers see post-disk
-state rather than speculative messages.
+`/app/observer/callosum`. The observer key is supplied in the
+`X-Solstone-Observer` header or the `Authorization: Bearer` header. The feed is
+a passive view of the Callosum bus: each `data:` frame is the same event-shaped
+payload the bridge saw (`tract`, `event`, `ts`, plus event fields). Chat events
+appear only after the chat append path has written its JSONL record, so
+subscribers see post-disk state rather than speculative messages.
 
 This endpoint is inside the observer trust boundary. It performs no redaction
 or per-field filtering because observers are treated as part of the local
@@ -146,9 +147,24 @@ and relies on producers to keep `tract`/`event`/`ts` discipline. In a hosted or
 multi-tenant mode, the feed will also need scoping by the observer's authorized
 facet or scope set before forwarding any event.
 
-The observer SSE feed (`/app/observer/api/list` flipping `live` on/off as a
-Callosum ping flows through the bridge) is exercised by the `apps/observer` SSE
-tests; a registered observer client opens the feed and the bridge emits the ping.
+<!-- BEGIN GENERATED callosum-registry -->
+| Tract | Events |
+|---|---|
+| `activity` | `live`, `recorded` |
+| `chat` | `owner_message`, `sol_message`, `talent_spawned`, `talent_finished`, `talent_errored`, `reflection_ready`, `chat_queue_depth`, `chat_error`, `sol_chat_request`, `sol_chat_request_superseded`, `owner_chat_open`, `owner_chat_dismissed`, `support_draft`, `result`, `support_submit_claim` |
+| `cortex` | `request`, `start`, `thinking`, `tool_start`, `tool_end`, `finish`, `error`, `talent_updated`, `info`, `status` |
+| `importer` | `started`, `status`, `completed`, `error` |
+| `logs` | `exec`, `line`, `exit` |
+| `navigate` | `request` |
+| `notification` | `*` |
+| `observe` | `status`, `observing`, `detected`, `described`, `transcribed`, `observed` |
+| `supervisor` | `started`, `stopped`, `restarting`, `status`, `queue` |
+| `sync` | `status` |
+| `think` | `started`, `status`, `group_started`, `group_completed`, `talent_started`, `talent_completed`, `completed`, `segments_started`, `segments_completed` |
+<!-- END GENERATED callosum-registry -->
+
+The observer SSE feed is exercised by the `apps/observer` SSE tests; a
+registered observer client opens the feed and the bridge emits the ping.
 
 ### Adding a New App
 
