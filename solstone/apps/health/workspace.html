@@ -2242,6 +2242,8 @@
     updateErrorSummary();
   }
 
+  let recentErrorPanelSeq = 0;
+
   function updateErrorSummary() {
     if (state.recentErrors.length === 0 && !state.recentErrorsFilter && state.agentErrorsOk) {
       elements.errorSummary.classList.add('hidden');
@@ -2319,8 +2321,15 @@
         row.setAttribute('data-key', key);
         row.style.cssText = 'padding: 0.3em 0; font-size: 0.85em; color: #374151; border-bottom: 1px solid #e5e7eb; display: flex; align-items: baseline; gap: 0.4em; flex-wrap: wrap;';
 
-        const info = document.createElement('span');
-        row.appendChild(info);
+        const panelId = 'recent-error-panel-' + (++recentErrorPanelSeq);
+
+        const summaryBtn = document.createElement('button');
+        summaryBtn.type = 'button';
+        summaryBtn.setAttribute('data-action', 'toggle-error');
+        summaryBtn.setAttribute('aria-expanded', 'false');
+        summaryBtn.setAttribute('aria-controls', panelId);
+        summaryBtn.style.cssText = 'flex: 1 1 auto; min-width: 0; text-align: left; background: none; border: none; padding: 0; margin: 0; font: inherit; color: inherit; cursor: pointer;';
+        row.appendChild(summaryBtn);
 
         const actions = document.createElement('span');
         actions.style.cssText = 'margin-left: auto; display: flex; gap: 0.3em;';
@@ -2335,46 +2344,46 @@
         dismissBtn.textContent = 'dismiss';
         actions.appendChild(dismissBtn);
         row.appendChild(actions);
+
+        const panel = document.createElement('div');
+        panel.id = panelId;
+        panel.hidden = true;
+        panel.setAttribute('data-error-panel', 'true');
+        panel.style.cssText = 'flex-basis: 100%; width: 100%; padding: 0.35em 0 0.1em; color: #374151;';
+        row.appendChild(panel);
       }
 
       const icon = e.type === 'agent' ? '⚙' : e.type === 'import' ? '↓' : '⚠';
       const ago = relativeTime(Date.now() - (e.ts || Date.now()));
-      const info = row.children[0];
-      info.textContent = '';
-      info.appendChild(document.createTextNode(icon + ' '));
+      const summaryBtn = row.querySelector('[data-action="toggle-error"]');
+      summaryBtn.textContent = '';
+      summaryBtn.appendChild(document.createTextNode(icon + ' '));
       const strong = document.createElement('strong');
       strong.textContent = e.name;
-      info.appendChild(strong);
-      info.appendChild(document.createTextNode(' — ' + truncate(recentErrorOwnerMessage(e), 70) + ' '));
+      summaryBtn.appendChild(strong);
+      summaryBtn.appendChild(document.createTextNode(' — ' + truncate(recentErrorOwnerMessage(e), 70) + ' '));
       if (count > 1) {
         const countSpan = document.createElement('span');
         countSpan.style.cssText = 'color: #6b7280; font-size: 0.85em; font-weight: 600;';
         countSpan.textContent = `×${count} `;
-        info.appendChild(countSpan);
+        summaryBtn.appendChild(countSpan);
       }
       const timeSpan = document.createElement('span');
       timeSpan.style.cssText = 'color: #9ca3af; font-size: 0.85em;';
       timeSpan.textContent = ago + ' ago';
-      info.appendChild(timeSpan);
+      summaryBtn.appendChild(timeSpan);
 
-      let detail = row.querySelector('[data-error-detail]');
+      const panel = row.querySelector('[data-error-panel]');
+      panel.textContent = '';
+      const fullMsg = document.createElement('div');
+      fullMsg.textContent = recentErrorOwnerMessage(e);
+      panel.appendChild(fullMsg);
       const detailText = recentErrorDetailText(e);
       if (detailText) {
-        if (!detail) {
-          detail = document.createElement('details');
-          detail.setAttribute('data-error-detail', 'true');
-          detail.style.cssText = 'font-size: 0.8em; color: #6b7280;';
-          const summary = document.createElement('summary');
-          summary.textContent = 'details';
-          detail.appendChild(summary);
-          const body = document.createElement('span');
-          body.setAttribute('data-error-detail-body', 'true');
-          detail.appendChild(body);
-          row.insertBefore(detail, row.querySelector('[data-action="view-logs"]').parentElement);
-        }
-        detail.querySelector('[data-error-detail-body]').textContent = detailText;
-      } else if (detail) {
-        detail.remove();
+        const tech = document.createElement('div');
+        tech.style.cssText = 'margin-top: 0.3em; font-size: 0.85em; color: #6b7280;';
+        tech.textContent = detailText;
+        panel.appendChild(tech);
       }
 
       const viewBtn = row.querySelector('[data-action="view-logs"]');
@@ -2458,6 +2467,13 @@
     const btn = e.target.closest('[data-action]');
     if (!btn) return;
     const action = btn.dataset.action;
+    if (action === 'toggle-error') {
+      const expanded = btn.getAttribute('aria-expanded') === 'true';
+      btn.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+      const panel = document.getElementById(btn.getAttribute('aria-controls'));
+      if (panel) panel.hidden = expanded;
+      return;
+    }
     if (action === 'dismiss') {
       const idx = parseInt(btn.dataset.errorIndex, 10);
       if (!isNaN(idx) && idx >= 0 && idx < state.recentErrors.length) {
@@ -4136,14 +4152,17 @@
 	    logsCard.scrollIntoView({behavior: 'smooth'});
 	  }
 
+	  function runRecentErrorsFocus(day, talent) {
+	    state.recentErrorsFilter = { day, talent };
+	    state.pendingRecentErrorsFocus = true;
+	    updateErrorSummary();
+	  }
 	  function focusRecentErrors() {
 	    const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
 	    if (deepLinkLog || hashParams.get('focus') !== 'recent-errors') return;
 	    const day = hashParams.get('day') || 'today';
 	    const talent = hashParams.get('talent') || '';
-	    state.recentErrorsFilter = { day, talent };
-	    state.pendingRecentErrorsFocus = true;
-	    updateErrorSummary();
+	    runRecentErrorsFocus(day, talent);
 	  }
 	  function seedAgentErrors() {
 	    const seed = Array.isArray(window.HEALTH_AGENT_ERRORS) ? window.HEALTH_AGENT_ERRORS : [];
@@ -4154,6 +4173,10 @@
 	  seedAgentErrors();
 	  focusRecentErrors();
 	  window.addEventListener('hashchange', focusRecentErrors);
+	  document.getElementById('glanceErrors')?.addEventListener('click', (e) => {
+	    e.preventDefault();
+	    runRecentErrorsFocus('today', '');
+	  });
 
 		  // Listen to all Callosum events
   function initHealthRealtime() {

@@ -977,6 +977,7 @@
     </div>
     <div class="pulse-section-body">
       <div class="pulse-narrative-content" id="pulse-narrative-content"></div>
+      <!-- data-conversation is load-bearing: the delegated dashboard click handler early-returns for plain links without it (native top-jump). Do not remove. -->
       <a href="#" class="pulse-tell-more" data-conversation="Tell me more about what's happening today">tell me more →</a>
       {% if narrative_updated_at %}
       <div class="pulse-narrative-meta">updated at {{ narrative_updated_at }}</div>

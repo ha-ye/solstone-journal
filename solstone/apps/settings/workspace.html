@@ -2672,7 +2672,7 @@ button:focus:not(:focus-visible) {
         </div>
 
         <p id="plaudSyncTokenNote" style="display: none; color: #888; font-size: 0.85em; margin-top: 1em; padding: 0.75em; background: #f8f9fa; border-radius: 4px;">
-          configure your Plaud token in <a href="#apikeys" style="color: #667eea;">API keys</a> to enable sync.
+          configure your Plaud token in <a href="#apikeys" id="plaudApiKeysLink" style="color: #667eea;">API keys</a> to enable sync.
         </p>
       </div>
 
@@ -4787,6 +4787,12 @@ document.getElementById('field-transcribe-backend').addEventListener('change', a
 
 // Backend key warning link
 document.getElementById('backendKeyLink')?.addEventListener('click', (e) => {
+  e.preventDefault();
+  switchSection('apikeys');
+});
+
+// Plaud sync token note → API keys section
+document.getElementById('plaudApiKeysLink')?.addEventListener('click', (e) => {
   e.preventDefault();
   switchSection('apikeys');
 });

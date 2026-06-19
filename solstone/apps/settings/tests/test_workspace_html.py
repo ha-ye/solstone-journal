@@ -42,6 +42,13 @@ def test_apikeys_inputs_are_masked_by_default():
         assert f'data-key="{moved_key}"' not in text
 
 
+def test_plaud_token_note_routes_to_apikeys_section():
+    text = _workspace_text()
+
+    assert 'id="plaudApiKeysLink"' in text
+    assert "getElementById('plaudApiKeysLink')?.addEventListener('click'" in text
+
+
 def test_password_toggle_does_not_steal_focus():
     text = _workspace_text()
     # Anchor on the querySelectorAll forEach, not the class="password-toggle" buttons.
