@@ -12,7 +12,7 @@ from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 
 from solstone.think.push.devices import load_devices, remove_devices_by_tokens
-from solstone.think.push.relay_auth import push_relay_token
+from solstone.think.push.reach import ensure_reach_token
 from solstone.think.services.portal_client import portal_base_url, request_headers
 
 logger = logging.getLogger(__name__)
@@ -46,12 +46,12 @@ def _prune_revoked(payload: dict) -> None:
 
 
 def dispatch_via_portal(*, request_id: str, summary: str, category: str) -> dict | None:
-    dispatch_token = push_relay_token()
-    if not dispatch_token:
-        return None
-
     devices = _outbound_devices()
     if not devices:
+        return None
+
+    dispatch_token = ensure_reach_token()
+    if not dispatch_token:
         return None
 
     body = json.dumps(
@@ -125,12 +125,12 @@ def dispatch_via_portal(*, request_id: str, summary: str, category: str) -> dict
 
 
 def dispatch_dedup_via_portal(*, request_id: str, action: str) -> dict | None:
-    dispatch_token = push_relay_token()
-    if not dispatch_token:
-        return None
-
     devices = _outbound_devices()
     if not devices:
+        return None
+
+    dispatch_token = ensure_reach_token()
+    if not dispatch_token:
         return None
 
     body = json.dumps(

@@ -106,7 +106,7 @@ def test_stop_all_push_runtime_clears_runtime(monkeypatch):
     assert get_runtime_state() is None
 
 
-def test_on_callosum_message_calls_both_handlers(monkeypatch):
+def test_on_callosum_message_calls_all_handlers(monkeypatch):
     calls: list[tuple[str, dict[str, str]]] = []
     request_handler = "handle_sol_chat_" + "request"
     monkeypatch.setattr(
@@ -119,8 +119,17 @@ def test_on_callosum_message_calls_both_handlers(monkeypatch):
         "handle_chat_lifecycle",
         lambda message: calls.append(("chat_lifecycle", message)),
     )
+    monkeypatch.setattr(
+        runtime.triggers,
+        "handle_chat_fold",
+        lambda message: calls.append(("chat_fold", message)),
+    )
     message = {"tract": "chat", "event": KIND_SOL_CHAT_REQUEST, "request_id": "req-1"}
 
     runtime._on_callosum_message(message)
 
-    assert calls == [("request_handler", message), ("chat_lifecycle", message)]
+    assert calls == [
+        ("request_handler", message),
+        ("chat_lifecycle", message),
+        ("chat_fold", message),
+    ]

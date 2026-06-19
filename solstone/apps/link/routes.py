@@ -289,6 +289,7 @@ class PairStartResponse:
     nonce: str
     pair_link: str
     expires_in: int
+    rotating: bool
     device_label: str
     ca_fingerprint: str
 
@@ -558,6 +559,7 @@ def pair_start() -> Any:
             relay_origin=relay_origin,
         )
         expires_in = TOTP_STEP_SECONDS
+        rotating = True
         nonce_ttl = TOTP_STEP_SECONDS
     else:
         ca_fp = _ca_fingerprint()
@@ -578,6 +580,7 @@ def pair_start() -> Any:
         else:
             pair_link = _build_pair_link_v05(candidates, port, nonce, ca_fp)
         expires_in = 300
+        rotating = False
 
     add_kwargs: dict[str, Any] = {}
     if nonce_ttl is not None:
@@ -592,6 +595,7 @@ def pair_start() -> Any:
         nonce=nonce,
         pair_link=pair_link,
         expires_in=expires_in,
+        rotating=rotating,
         device_label=device_label,
         ca_fingerprint=ca_fp,
     )

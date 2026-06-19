@@ -203,7 +203,8 @@ def test_private_link_enable_returns_consent_url(
     assert started["operation"]["portal_url"] == consent_url
     assert parsed.path == "/enable/spl"
     assert urllib.parse.parse_qs(parsed.query)["nonce"] == ["NONCE"]
-    assert payload["operation"]["portal_url"] == consent_url
+    # enabled is terminal ⇒ CTA suppressed.
+    assert payload["operation"]["portal_url"] is None
 
 
 def test_private_link_disable_success(link_env):

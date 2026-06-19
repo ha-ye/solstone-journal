@@ -73,6 +73,14 @@ def test_liveness_and_error_detail_copy_bytes():
     assert chat_copy.CHAT_ERROR_DETAIL_COLLAPSER_LABEL == "Hide details"
 
 
+def test_jobs_and_dispatch_origin_copy_bytes():
+    assert chat_copy.CHAT_TALENT_QUEUED_LABEL == "Waiting to start…"
+    assert "…" in chat_copy.CHAT_TALENT_QUEUED_LABEL
+    assert chat_copy.CHAT_DISPATCH_ORIGIN_PREFIX == "in reply to:"
+    assert chat_copy.CHAT_JOBS_INDICATOR_SINGULAR == "sol is running 1 job"
+    assert chat_copy.CHAT_JOBS_INDICATOR_PLURAL_FORMAT == "sol is running {count} jobs"
+
+
 def test_thinking_copy_bytes():
     expected = """CHAT_THINKING_EXPANDER_LABEL = "Show thinking"
 CHAT_THINKING_COLLAPSER_LABEL = "Hide thinking"
@@ -121,17 +129,31 @@ def test_js_parity():
         },
     }
     assert (
-        f'CHAT_QUEUE_INDICATOR_SINGULAR: "{chat_copy.CHAT_QUEUE_INDICATOR_SINGULAR}"'
+        f'CHAT_JOBS_INDICATOR_SINGULAR: "{chat_copy.CHAT_JOBS_INDICATOR_SINGULAR}"'
         in text
     )
     assert (
-        "CHAT_QUEUE_INDICATOR_PLURAL_FORMAT: "
-        f'"{chat_copy.CHAT_QUEUE_INDICATOR_PLURAL_FORMAT}"'
+        "CHAT_JOBS_INDICATOR_PLURAL_FORMAT: "
+        f'"{chat_copy.CHAT_JOBS_INDICATOR_PLURAL_FORMAT}"'
     ) in text
+    for jobs_copy in (
+        chat_copy.CHAT_JOBS_INDICATOR_SINGULAR,
+        chat_copy.CHAT_JOBS_INDICATOR_PLURAL_FORMAT,
+    ):
+        assert "sol is running" in jobs_copy
+        assert "Sol" not in jobs_copy
+        assert "sol pbc" not in jobs_copy
     assert (
         f'CHAT_QUEUE_DEPTH_CAP_MESSAGE: "{chat_copy.CHAT_QUEUE_DEPTH_CAP_MESSAGE}"'
         in text
     )
+    assert f'CHAT_TALENT_QUEUED_LABEL: "{chat_copy.CHAT_TALENT_QUEUED_LABEL}"' in text
+    assert (
+        f'CHAT_DISPATCH_ORIGIN_PREFIX: "{chat_copy.CHAT_DISPATCH_ORIGIN_PREFIX}"'
+        in text
+    )
+    assert "Sol" not in chat_copy.CHAT_DISPATCH_ORIGIN_PREFIX
+    assert "sol pbc" not in chat_copy.CHAT_DISPATCH_ORIGIN_PREFIX
     assert f'CHAT_LIVENESS_THINKING: "{chat_copy.CHAT_LIVENESS_THINKING}"' in text
     assert f'CHAT_LIVENESS_TASK_FORMAT: "{chat_copy.CHAT_LIVENESS_TASK_FORMAT}"' in text
     assert (

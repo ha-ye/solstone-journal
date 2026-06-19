@@ -258,7 +258,11 @@ def register_ingest_routes(bp) -> None:
                     }
                     for name in expected_names
                 ]
-                state_record: dict[str, Any] = {"files": file_records}
+                state_record: dict[str, Any] = {
+                    "files": file_records,
+                    "imported_via": "peer_link",
+                    "link_id": sender_fingerprint,
+                }
                 if sender_fingerprint is not None:
                     state_record["sender_fingerprint"] = sender_fingerprint
                 if sender_instance_id is not None:
@@ -276,6 +280,8 @@ def register_ingest_routes(bp) -> None:
                     "reason": reason,
                     "files": expected_names,
                 }
+                entry["imported_via"] = "peer_link"
+                entry["link_id"] = sender_fingerprint
                 if action == "deconflicted":
                     entry["original_key"] = original_segment_key
                 if sender_fingerprint is not None:

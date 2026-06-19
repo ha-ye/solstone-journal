@@ -13,7 +13,11 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
-from solstone.think.importers.utils import save_import_file, write_import_metadata
+from solstone.think.importers.utils import (
+    read_import_metadata,
+    save_import_file,
+    write_import_metadata,
+)
 from solstone.think.journal_io import atomic_replace, install_file, write_text
 from solstone.think.media import MIME_TYPES
 from solstone.think.utils import day_path, get_journal, now_ms
@@ -28,6 +32,22 @@ def _get_relative_path(path: str) -> str:
         return os.path.relpath(path, journal_path)
     except ValueError:
         return path
+
+
+def read_provenance(journal_root: Path, import_id: str) -> dict[str, str | None]:
+    """Read origin-provenance fields from an import's import.json.
+
+    Defaults to a CLI-direct import (cli/None/None) when no import.json exists.
+    """
+    try:
+        meta = read_import_metadata(journal_root, import_id)
+    except FileNotFoundError:
+        return {"imported_via": "cli", "link_id": None, "observer_handle": None}
+    return {
+        "imported_via": meta.get("imported_via") or "cli",
+        "link_id": meta.get("link_id"),
+        "observer_handle": meta.get("observer_handle"),
+    }
 
 
 def _write_import_jsonl(
@@ -419,6 +439,9 @@ def _setup_import(
         "facet": facet,
         "setting": setting,
         "file_path": str(new_path),
+        "imported_via": "cli",
+        "link_id": None,
+        "observer_handle": None,
     }
 
     write_import_metadata(
@@ -572,6 +595,9 @@ def write_manifest(
     entry_count: int,
     files_created: list[str],
     days_affected: list[str] | None = None,
+    imported_via: str = "cli",
+    link_id: str | None = None,
+    observer_handle: str | None = None,
 ) -> Path:
     """Write an import manifest for deduplication tracking.
 
@@ -593,6 +619,9 @@ def write_manifest(
         "days_affected": days_affected,
         "files_created": files_created,
         "imported_at": dt.datetime.now().isoformat(),
+        "imported_via": imported_via,
+        "link_id": link_id,
+        "observer_handle": observer_handle,
     }
     manifest_dir = journal_root / "imports" / import_id
     manifest_dir.mkdir(parents=True, exist_ok=True)

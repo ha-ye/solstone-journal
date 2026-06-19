@@ -43,17 +43,7 @@ class FakeResponse:
 
 def _setup_journal(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.delenv("PUSH_RELAY_SECRET", raising=False)
     monkeypatch.delenv("SERVICES_PORTAL_URL", raising=False)
-
-
-def _write_relay_config(journal: Path, token: str = "tok") -> None:
-    path = journal / "config" / "journal.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"services": {"push": {"relay_token": token}}}),
-        encoding="utf-8",
-    )
 
 
 def _register_device(
@@ -100,7 +90,7 @@ def test_dispatch_body_includes_normalized_registered_devices(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _setup_journal(monkeypatch, tmp_path)
-    _write_relay_config(tmp_path)
+    monkeypatch.setattr(portal_dispatch, "ensure_reach_token", lambda: "tok")
     _register_device("fp-1", "a" * 64)
     _register_device("fp-2", "b" * 64, environment="production")
     requests = _capture_urlopen(monkeypatch)
@@ -137,11 +127,13 @@ def test_dispatch_body_includes_normalized_registered_devices(
     }
 
 
-def test_dispatch_uses_push_relay_token_without_scout_config(
+def test_dispatch_uses_reach_token_for_authorization(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _setup_journal(monkeypatch, tmp_path)
-    _write_relay_config(tmp_path, "relay-config-token")
+    monkeypatch.setattr(
+        portal_dispatch, "ensure_reach_token", lambda: "reach-config-token"
+    )
     _register_device("fp-1", "a" * 64)
     requests = _capture_urlopen(monkeypatch)
 
@@ -152,14 +144,14 @@ def test_dispatch_uses_push_relay_token_without_scout_config(
     )
 
     assert result == {"ok": True}
-    assert _headers(requests[0])["authorization"] == "Bearer relay-config-token"
+    assert _headers(requests[0])["authorization"] == "Bearer reach-config-token"
 
 
 def test_revoked_tokens_prune_matching_devices_only(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _setup_journal(monkeypatch, tmp_path)
-    _write_relay_config(tmp_path)
+    monkeypatch.setattr(portal_dispatch, "ensure_reach_token", lambda: "tok")
     _register_device("fp-1", "a" * 64)
     _register_device("fp-2", "b" * 64)
     _register_device("fp-3", "c" * 64)
@@ -214,13 +206,16 @@ def test_dispatch_short_circuits_empty_registry_without_posting(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _setup_journal(monkeypatch, tmp_path)
-    _write_relay_config(tmp_path)
     requests: list[Request] = []
+
+    def fail_ensure() -> str:
+        raise AssertionError("ensure_reach_token should not be called")
 
     def fail_urlopen(request: Request, timeout: float = 0) -> FakeResponse:
         requests.append(request)
         raise AssertionError("urlopen should not be called")
 
+    monkeypatch.setattr(portal_dispatch, "ensure_reach_token", fail_ensure)
     monkeypatch.setattr(portal_dispatch.urllib_request, "urlopen", fail_urlopen)
 
     result = portal_dispatch.dispatch_via_portal(
@@ -231,21 +226,3 @@ def test_dispatch_short_circuits_empty_registry_without_posting(
 
     assert result is None
     assert requests == []
-
-
-def test_dispatch_uses_env_fallback_when_config_absent(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _setup_journal(monkeypatch, tmp_path)
-    monkeypatch.setenv("PUSH_RELAY_SECRET", "env-relay-token")
-    _register_device("fp-1", "a" * 64)
-    requests = _capture_urlopen(monkeypatch)
-
-    result = portal_dispatch.dispatch_via_portal(
-        request_id="req-1",
-        summary="hello",
-        category=APNS_CATEGORY_SOL_CHAT_REQUEST,
-    )
-
-    assert result == {"ok": True}
-    assert _headers(requests[0])["authorization"] == "Bearer env-relay-token"

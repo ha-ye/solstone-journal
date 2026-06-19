@@ -12,7 +12,6 @@ SURFACE_CONVEY = "convey"
 SOL_PINGED_OFFLINE_TOOLTIP = "sol-pinged but offline — refresh"
 
 TRIGGER_LABEL_SOL_INITIATED = "sol_initiated"
-SYNTHETIC_TRIGGER_LABEL = "synthetic"
 
 THROTTLE_MUTE_WINDOW = "mute-window"
 THROTTLE_RATE_FLOOR = "rate-floor"

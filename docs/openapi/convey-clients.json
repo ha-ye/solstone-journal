@@ -1,0 +1,2035 @@
+{
+  "components": {
+    "schemas": {
+      "CallosumEvent": {
+        "additionalProperties": true,
+        "properties": {
+          "event": {
+            "type": "string"
+          },
+          "tract": {
+            "type": "string"
+          },
+          "ts": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tract",
+          "event",
+          "ts"
+        ],
+        "type": "object"
+      },
+      "Error": {
+        "additionalProperties": true,
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "reason_code": {
+            "enum": [
+              "activities_busy",
+              "activity_already_exists",
+              "activity_invalid",
+              "activity_not_found",
+              "activity_protected",
+              "agent_unavailable",
+              "auth_key_invalid",
+              "auth_required",
+              "awareness_busy",
+              "awareness_section_not_found",
+              "backup_busy",
+              "backup_not_confirmed",
+              "backup_operation_failed",
+              "backup_unavailable",
+              "chat_queue_full",
+              "convey_busy",
+              "convey_operation_failed",
+              "corrupt_config",
+              "entity_alias_conflict",
+              "entity_already_exists",
+              "entity_blocked",
+              "entity_busy",
+              "entity_not_found",
+              "entity_operation_failed",
+              "facet_already_exists",
+              "facet_not_found",
+              "feature_unavailable",
+              "file_not_found",
+              "file_read_failed",
+              "health_report_failed",
+              "identity_busy",
+              "import_conflict",
+              "import_metadata_failed",
+              "import_not_found",
+              "ingest_no_files",
+              "ingest_storage_failed",
+              "invalid_config_value",
+              "invalid_day",
+              "invalid_entity_type",
+              "invalid_json_request",
+              "invalid_month",
+              "invalid_operation_for_state",
+              "invalid_path",
+              "invalid_request_value",
+              "invalid_segment_or_stream",
+              "journal_source_problem",
+              "ledger_item_not_found",
+              "local_request_only",
+              "missing_request_body",
+              "missing_required_field",
+              "observer_restart_failed",
+              "operation_no_longer_available",
+              "paired_device_not_found",
+              "pairing_key_invalid",
+              "pairing_request_invalid",
+              "pl_revoked",
+              "principal_entity_protected",
+              "provider_key_missing",
+              "push_request_invalid",
+              "raw_media_not_available",
+              "recovery_key_mismatch",
+              "reprocess_already_complete",
+              "reprocess_past_only",
+              "reprocess_unreachable",
+              "service_busy",
+              "service_operation_failed",
+              "settings_operation_failed",
+              "speaker_attribution_state_invalid",
+              "speaker_command_failed",
+              "speaker_labels_busy",
+              "speaker_not_found",
+              "speaker_owner_centroid_required",
+              "speaker_owner_voice_too_close",
+              "speaker_review_unavailable",
+              "speaker_sentence_missing",
+              "speaker_voiceprint_busy",
+              "support_portal_failed",
+              "talent_not_found",
+              "talent_operation_failed",
+              "talent_run_malformed",
+              "talent_run_pending",
+              "timeline_month_not_found",
+              "unknown_service",
+              "voice_unavailable"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "reason_code",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "SegmentFile": {
+        "additionalProperties": true,
+        "properties": {
+          "current_path": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "submitted_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "size",
+          "sha256",
+          "status"
+        ],
+        "type": "object"
+      },
+      "SegmentItem": {
+        "additionalProperties": true,
+        "properties": {
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/SegmentFile"
+            },
+            "type": "array"
+          },
+          "key": {
+            "type": "string"
+          },
+          "observed": {
+            "type": "boolean"
+          },
+          "original_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "observed",
+          "files"
+        ],
+        "type": "object"
+      },
+      "SegmentsEnvelope": {
+        "additionalProperties": true,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SegmentItem"
+            },
+            "type": "array"
+          },
+          "protocol_version": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "protocol_version"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Generated native-client contract for the Convey HTTP surface. Regenerate with `make openapi`; do not hand-edit this file.",
+    "title": "Solstone Convey Native-Client Contract",
+    "version": "1.0.0",
+    "x-generated": true,
+    "x-generated-by": "make openapi (scripts/build_openapi_contract.py)"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/push/register": {
+      "delete": {
+        "description": "Remove the push token for the current paired device fingerprint.",
+        "operationId": "push.unregister",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "device_count": 0,
+                  "removed": true
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "device_count": {
+                      "type": "integer"
+                    },
+                    "removed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "removed",
+                    "device_count"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Push token removal result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No paired device fingerprint was available on the connection.",
+            "x-reason-codes": [
+              "push_request_invalid"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          }
+        },
+        "summary": "Unregister push device",
+        "tags": [
+          "push"
+        ]
+      },
+      "post": {
+        "description": "Register or replace an iOS push token for the paired device fingerprint on the current connection.",
+        "operationId": "push.register",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "bundle_id": "org.solpbc.solstone-swift",
+                "device_token": "abcdef0123456789",
+                "environment": "development",
+                "platform": "ios"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "bundle_id": {
+                    "type": "string"
+                  },
+                  "device_token": {
+                    "type": "string"
+                  },
+                  "environment": {
+                    "type": "string"
+                  },
+                  "platform": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "device_token",
+                  "bundle_id",
+                  "environment",
+                  "platform"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "device_count": 1,
+                  "registered": true
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "device_count": {
+                      "type": "integer"
+                    },
+                    "registered": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "registered",
+                    "device_count"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Push token registered."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Push registration request failed validation.",
+            "x-reason-codes": [
+              "invalid_json_request",
+              "push_request_invalid"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          }
+        },
+        "summary": "Register push device",
+        "tags": [
+          "push"
+        ]
+      }
+    },
+    "/app/link/api/status": {
+      "get": {
+        "description": "Return the current link service posture and reachability view.",
+        "operationId": "link.status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "ca_fingerprint": "9c5f2e0c8e6a42f0a32e55e5cf7f5b4a",
+                  "enrolled": true,
+                  "home_address": null,
+                  "home_label": "home",
+                  "instance_id": "4d1f3d57-4f39-4930-b8f8-5e6f2a84d51a",
+                  "lan_accessible": true,
+                  "posture": "lan",
+                  "reachability": "local",
+                  "relay_state": "not_configured",
+                  "relay_url": "https://relay.solstone.local",
+                  "vpn": {
+                    "active": null,
+                    "candidates": []
+                  }
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "ca_fingerprint": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "enrolled": {
+                      "type": "boolean"
+                    },
+                    "home_address": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "home_label": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "instance_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "lan_accessible": {
+                      "type": "boolean"
+                    },
+                    "posture": {
+                      "type": "string"
+                    },
+                    "reachability": {
+                      "type": "string"
+                    },
+                    "relay_state": {
+                      "type": "string"
+                    },
+                    "relay_url": {
+                      "type": "string"
+                    },
+                    "vpn": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "active": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "candidates": {
+                          "items": {
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "instance_id",
+                    "home_label",
+                    "enrolled",
+                    "relay_url",
+                    "ca_fingerprint",
+                    "lan_accessible",
+                    "posture",
+                    "reachability",
+                    "relay_state",
+                    "home_address",
+                    "vpn"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Link status snapshot."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          }
+        },
+        "summary": "Read link status",
+        "tags": [
+          "link"
+        ]
+      }
+    },
+    "/app/link/local-endpoints": {
+      "get": {
+        "description": "Return loopback-only LAN endpoint hints for link clients.",
+        "operationId": "link.localEndpoints",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "endpoints": [
+                    {
+                      "ip": "192.168.1.10",
+                      "port": 7657,
+                      "scope": "lan"
+                    }
+                  ],
+                  "generated_at": "2026-06-18T12:00:00Z",
+                  "ttl_s": 3600,
+                  "v": 1
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "endpoints": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "ip": {
+                            "type": "string"
+                          },
+                          "port": {
+                            "type": "integer"
+                          },
+                          "scope": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "ip",
+                          "port",
+                          "scope"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "generated_at": {
+                      "type": "string"
+                    },
+                    "ttl_s": {
+                      "type": "integer"
+                    },
+                    "v": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "v",
+                    "endpoints",
+                    "ttl_s",
+                    "generated_at"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Current local endpoint advertisement."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          },
+          "404": {
+            "description": "Non-loopback request; bare Flask abort, no reason body."
+          }
+        },
+        "summary": "List local link endpoints",
+        "tags": [
+          "link"
+        ]
+      }
+    },
+    "/app/link/pair": {
+      "post": {
+        "description": "Accept a client CSR plus nonce, then return a signed certificate and home attestation.",
+        "operationId": "link.pair",
+        "parameters": [
+          {
+            "description": "Pairing nonce; the body nonce can be used instead.",
+            "in": "query",
+            "name": "token",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "csr": "-----BEGIN CERTIFICATE REQUEST-----\n...\n-----END CERTIFICATE REQUEST-----\n",
+                "device_label": "Jer iPhone",
+                "nonce": "5f0d8c8b9f1e48b0a5f80b98f3d5e9b0",
+                "sender_instance_id": "ios-01"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "csr": {
+                    "type": "string"
+                  },
+                  "device_label": {
+                    "type": "string"
+                  },
+                  "nonce": {
+                    "type": "string"
+                  },
+                  "sender_instance_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "csr"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "ca_chain": [
+                    "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n"
+                  ],
+                  "client_cert": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n",
+                  "fingerprint": "sha256:abc123",
+                  "home_attestation": "eyJhbGciOi...",
+                  "home_label": "home",
+                  "instance_id": "4d1f3d57-4f39-4930-b8f8-5e6f2a84d51a",
+                  "local_endpoints": [
+                    {
+                      "ip": "192.168.1.10",
+                      "port": 7657,
+                      "scope": "lan"
+                    }
+                  ]
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "ca_chain": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "client_cert": {
+                      "type": "string"
+                    },
+                    "fingerprint": {
+                      "type": "string"
+                    },
+                    "home_attestation": {
+                      "type": "string"
+                    },
+                    "home_label": {
+                      "type": "string"
+                    },
+                    "instance_id": {
+                      "type": "string"
+                    },
+                    "local_endpoints": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "ip": {
+                            "type": "string"
+                          },
+                          "port": {
+                            "type": "integer"
+                          },
+                          "scope": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "ip",
+                          "port",
+                          "scope"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "client_cert",
+                    "ca_chain",
+                    "instance_id",
+                    "home_label",
+                    "home_attestation",
+                    "fingerprint"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Signed link material for the paired client."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Pair request rejected by handler validation.",
+            "x-reason-codes": [
+              "missing_required_field",
+              "pairing_key_invalid",
+              "pairing_request_invalid"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Nonce expired or was already used.",
+            "x-reason-codes": [
+              "operation_no_longer_available"
+            ]
+          }
+        },
+        "summary": "Complete link pairing",
+        "tags": [
+          "link"
+        ]
+      }
+    },
+    "/app/link/pair-start": {
+      "post": {
+        "description": "Create a short-lived pairing nonce and return the link payload a native client can scan or open.",
+        "operationId": "link.pairStart",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "device_label": "Jer iPhone",
+                "role": "phone"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "device_label": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "ca_fingerprint": "9c5f2e0c8e6a42f0a32e55e5cf7f5b4a",
+                  "device_label": "Jer iPhone",
+                  "expires_in": 300,
+                  "nonce": "5f0d8c8b9f1e48b0a5f80b98f3d5e9b0",
+                  "pair_link": "https://solstone.link/pair#0ABCD...",
+                  "rotating": false
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "ca_fingerprint": {
+                      "type": "string"
+                    },
+                    "device_label": {
+                      "type": "string"
+                    },
+                    "expires_in": {
+                      "type": "integer"
+                    },
+                    "nonce": {
+                      "type": "string"
+                    },
+                    "pair_link": {
+                      "type": "string"
+                    },
+                    "rotating": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "nonce",
+                    "pair_link",
+                    "expires_in",
+                    "rotating",
+                    "device_label",
+                    "ca_fingerprint"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Pairing nonce and link payload."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Pair-start request rejected by handler validation.",
+            "x-reason-codes": [
+              "invalid_operation_for_state",
+              "pairing_request_invalid"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          }
+        },
+        "summary": "Start link pairing",
+        "tags": [
+          "link"
+        ]
+      }
+    },
+    "/app/link/unpair": {
+      "post": {
+        "description": "Remove a paired client by fingerprint or device label.",
+        "operationId": "link.unpair",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "fingerprint": "sha256:abc123"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "device_label": {
+                    "type": "string"
+                  },
+                  "fingerprint": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "unpaired": "sha256:abc123"
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "unpaired": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "unpaired"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The revoked fingerprint."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Neither fingerprint nor device label was supplied.",
+            "x-reason-codes": [
+              "missing_required_field"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No paired device matched the request.",
+            "x-reason-codes": [
+              "paired_device_not_found"
+            ]
+          }
+        },
+        "summary": "Unpair a device",
+        "tags": [
+          "link"
+        ]
+      }
+    },
+    "/app/observer/callosum": {
+      "get": {
+        "description": "Open an observer-authenticated Server-Sent Events feed. Frames: data `data: {json}\\n\\n`; heartbeat `: heartbeat\\n\\n`; error `event: error\\ndata: {Error}\\n\\n`.",
+        "operationId": "observer.callosumStream",
+        "parameters": [
+          {
+            "description": "Observer handle. Preferred over Authorization when present.",
+            "in": "header",
+            "name": "X-Solstone-Observer",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Bearer observer handle.",
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "example": {
+                  "day": "20260618",
+                  "event": "observing",
+                  "segment": "143022_300",
+                  "tract": "observe",
+                  "ts": 1781803200000
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/CallosumEvent"
+                }
+              }
+            },
+            "description": "Callosum event stream. Data frames carry CallosumEvent JSON; heartbeat frames are comments; error frames carry Error JSON.",
+            "x-sse-error-frame": {
+              "description": "In-stream `event: error` frames emit only these. auth_key_invalid is excluded here because key validity is established at stream open (routes.py:259-261); mid-stream re-checks only cover observer missing/revoked/disabled (routes.py:281-292).",
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              },
+              "x-reason-codes": [
+                "auth_required",
+                "feature_unavailable",
+                "pl_revoked"
+              ]
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Stream-open observer auth failure; codes include 401 and 403 outcomes.",
+            "x-reason-codes": [
+              "auth_key_invalid",
+              "auth_required",
+              "feature_unavailable",
+              "pl_revoked"
+            ]
+          }
+        },
+        "summary": "Stream Callosum events",
+        "tags": [
+          "observer"
+        ]
+      }
+    },
+    "/app/observer/ingest": {
+      "post": {
+        "description": "Upload one capture segment as multipart form data and trigger local observe processing.",
+        "operationId": "observer.ingestUpload",
+        "parameters": [
+          {
+            "description": "Observer handle. Preferred over Authorization when present.",
+            "in": "header",
+            "name": "X-Solstone-Observer",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Bearer observer handle.",
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "example": {
+                "day": "20260618",
+                "files": [
+                  "screen.png",
+                  "audio.flac"
+                ],
+                "host": "archon",
+                "meta": "{\"facet\":\"work\"}",
+                "platform": "linux",
+                "segment": "143022_300"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "day": {
+                    "type": "string"
+                  },
+                  "files": {
+                    "items": {
+                      "format": "binary",
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "host": {
+                    "type": "string"
+                  },
+                  "meta": {
+                    "type": "string"
+                  },
+                  "platform": {
+                    "type": "string"
+                  },
+                  "segment": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "segment",
+                  "day",
+                  "files"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "duplicate": {
+                    "summary": "Duplicate segment",
+                    "value": {
+                      "existing_segment": "143022_300",
+                      "message": "All files already received",
+                      "status": "duplicate"
+                    }
+                  },
+                  "normal": {
+                    "summary": "New segment accepted",
+                    "value": {
+                      "bytes": 524288,
+                      "files": [
+                        "screen.png",
+                        "audio.flac"
+                      ],
+                      "segment": "143022_300",
+                      "status": "ok"
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "bytes": {
+                      "type": "integer"
+                    },
+                    "existing_segment": {
+                      "type": "string"
+                    },
+                    "files": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "segment": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Upload accepted, collision-adjusted, or duplicate."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Upload request failed validation.",
+            "x-reason-codes": [
+              "ingest_no_files",
+              "invalid_day",
+              "invalid_segment_or_stream",
+              "missing_required_field"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Observer handle missing or invalid.",
+            "x-reason-codes": [
+              "auth_key_invalid",
+              "auth_required"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Observer is disabled or revoked.",
+            "x-reason-codes": [
+              "feature_unavailable",
+              "pl_revoked"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Uploaded file could not be stored.",
+            "x-reason-codes": [
+              "ingest_storage_failed"
+            ]
+          },
+          "507": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No segment slot was available after collision handling.",
+            "x-reason-codes": [
+              "ingest_storage_failed"
+            ]
+          }
+        },
+        "summary": "Upload observer segment files",
+        "tags": [
+          "observer"
+        ]
+      }
+    },
+    "/app/observer/ingest/event": {
+      "post": {
+        "description": "Relay an observer-originated event onto the local Callosum bus.",
+        "operationId": "observer.ingestEvent",
+        "parameters": [
+          {
+            "description": "Observer handle. Preferred over Authorization when present.",
+            "in": "header",
+            "name": "X-Solstone-Observer",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Bearer observer handle.",
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "event": "status",
+                "state": "recording",
+                "tract": "observe"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "event": {
+                    "type": "string"
+                  },
+                  "tract": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "tract",
+                  "event"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": "ok"
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Event relayed."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Tract or event was missing.",
+            "x-reason-codes": [
+              "missing_required_field"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Observer handle missing or invalid.",
+            "x-reason-codes": [
+              "auth_key_invalid",
+              "auth_required"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Observer is disabled or revoked.",
+            "x-reason-codes": [
+              "feature_unavailable",
+              "pl_revoked"
+            ]
+          }
+        },
+        "summary": "Relay observer event",
+        "tags": [
+          "observer"
+        ]
+      }
+    },
+    "/app/observer/ingest/manifest": {
+      "get": {
+        "description": "Return days with uploaded observer segment history.",
+        "operationId": "observer.ingestManifest",
+        "parameters": [
+          {
+            "description": "Observer handle. Preferred over Authorization when present.",
+            "in": "header",
+            "name": "X-Solstone-Observer",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Bearer observer handle.",
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "days": {
+                    "20260618": {
+                      "segments": 2
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "days": {
+                      "additionalProperties": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "segments": {
+                            "type": "integer"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "days"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Available manifest days keyed by day."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Observer handle missing or invalid.",
+            "x-reason-codes": [
+              "auth_key_invalid",
+              "auth_required"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Observer is disabled or revoked.",
+            "x-reason-codes": [
+              "feature_unavailable",
+              "pl_revoked"
+            ]
+          }
+        },
+        "summary": "List observer manifest days",
+        "tags": [
+          "observer"
+        ]
+      }
+    },
+    "/app/observer/ingest/manifest/{day}": {
+      "get": {
+        "description": "Return file hashes and sizes for every segment on one day.",
+        "operationId": "observer.ingestManifestDay",
+        "parameters": [
+          {
+            "description": "Observer handle. Preferred over Authorization when present.",
+            "in": "header",
+            "name": "X-Solstone-Observer",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Bearer observer handle.",
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "YYYYMMDD day.",
+            "in": "path",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "created_at": 1781803200000,
+                  "day": "20260618",
+                  "host": "archon",
+                  "segments": {
+                    "archon/143022_300": {
+                      "files": [
+                        {
+                          "name": "screen.png",
+                          "sha256": "5f70bf18a086007016bb522ec180fd0b",
+                          "size": 2048
+                        }
+                      ]
+                    }
+                  },
+                  "version": 1
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "created_at": {
+                      "type": "integer"
+                    },
+                    "day": {
+                      "type": "string"
+                    },
+                    "host": {
+                      "type": "string"
+                    },
+                    "segments": {
+                      "additionalProperties": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "files": {
+                            "items": {
+                              "additionalProperties": true,
+                              "properties": {
+                                "name": {
+                                  "type": "string"
+                                },
+                                "sha256": {
+                                  "type": "string"
+                                },
+                                "size": {
+                                  "type": "integer"
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "sha256",
+                                "size"
+                              ],
+                              "type": "object"
+                            },
+                            "type": "array"
+                          }
+                        },
+                        "required": [
+                          "files"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "object"
+                    },
+                    "version": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "version",
+                    "day",
+                    "created_at",
+                    "host",
+                    "segments"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Day transfer manifest."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Day path parameter was invalid.",
+            "x-reason-codes": [
+              "invalid_day"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Observer handle missing or invalid.",
+            "x-reason-codes": [
+              "auth_key_invalid",
+              "auth_required"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Observer is disabled or revoked.",
+            "x-reason-codes": [
+              "feature_unavailable",
+              "pl_revoked"
+            ]
+          }
+        },
+        "summary": "Read transfer manifest for a day",
+        "tags": [
+          "observer"
+        ]
+      }
+    },
+    "/app/observer/ingest/segments/{day}": {
+      "get": {
+        "description": "Return segment upload history for one day. Protocol version 2 and newer receive a collection envelope; older or absent protocol headers receive a legacy bare array.",
+        "operationId": "observer.ingestSegments",
+        "parameters": [
+          {
+            "description": "Observer handle. Preferred over Authorization when present.",
+            "in": "header",
+            "name": "X-Solstone-Observer",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Bearer observer handle.",
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "YYYYMMDD day.",
+            "in": "path",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Fallback stream for legacy observer history rows.",
+            "in": "query",
+            "name": "stream",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": ">= current protocol version returns the collection envelope; lower or absent returns the legacy bare array.",
+            "in": "header",
+            "name": "X-Solstone-Protocol-Version",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "legacy": {
+                    "summary": "Legacy bare array",
+                    "value": [
+                      {
+                        "files": [
+                          {
+                            "name": "screen.png",
+                            "sha256": "5f70bf18a086007016bb522ec180fd0b",
+                            "size": 2048,
+                            "status": "present"
+                          }
+                        ],
+                        "key": "143022_300",
+                        "observed": true
+                      }
+                    ]
+                  },
+                  "v2": {
+                    "summary": "Protocol v2 envelope",
+                    "value": {
+                      "items": [
+                        {
+                          "files": [
+                            {
+                              "name": "screen.png",
+                              "sha256": "5f70bf18a086007016bb522ec180fd0b",
+                              "size": 2048,
+                              "status": "present"
+                            }
+                          ],
+                          "key": "143022_300",
+                          "observed": true
+                        }
+                      ],
+                      "protocol_version": 2,
+                      "total": 1
+                    }
+                  }
+                },
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/SegmentsEnvelope"
+                    },
+                    {
+                      "items": {
+                        "$ref": "#/components/schemas/SegmentItem"
+                      },
+                      "type": "array"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Segment verification response."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Day path parameter was invalid.",
+            "x-reason-codes": [
+              "invalid_day"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Observer handle missing or invalid.",
+            "x-reason-codes": [
+              "auth_key_invalid",
+              "auth_required"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Observer is disabled or revoked.",
+            "x-reason-codes": [
+              "feature_unavailable",
+              "pl_revoked"
+            ]
+          }
+        },
+        "summary": "List uploaded observer segments",
+        "tags": [
+          "observer"
+        ]
+      }
+    },
+    "/app/observer/register": {
+      "post": {
+        "description": "Register a trusted local or paired-link observer and lock its stream identity.",
+        "operationId": "observer.register",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "hostname": "archon",
+                "label": "Archon desktop",
+                "platform": "linux",
+                "stream_type": "desktop",
+                "version": "1.4.0"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "hostname": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "platform": {
+                    "type": "string"
+                  },
+                  "stream_type": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "platform",
+                  "hostname",
+                  "stream_type",
+                  "version"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "ingest_url": "/app/observer/ingest",
+                  "key": "x7J7k2observerHandle",
+                  "name": "archon",
+                  "prefix": "x7J7k2ob",
+                  "protocol_version": 2
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "ingest_url": {
+                      "type": "string"
+                    },
+                    "key": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "prefix": {
+                      "type": "string"
+                    },
+                    "protocol_version": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "prefix",
+                    "name",
+                    "ingest_url",
+                    "protocol_version"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Observer registration descriptor."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Register request failed validation.",
+            "x-reason-codes": [
+              "invalid_segment_or_stream",
+              "missing_required_field"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Register caller was not trusted localhost or paired link.",
+            "x-reason-codes": [
+              "local_request_only"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Observer record could not be saved.",
+            "x-reason-codes": [
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Register observer",
+        "tags": [
+          "observer"
+        ]
+      }
+    }
+  },
+  "x-callosum-registry": {
+    "activity": [
+      "live",
+      "recorded"
+    ],
+    "chat": [
+      "owner_message",
+      "sol_message",
+      "talent_spawned",
+      "talent_finished",
+      "talent_errored",
+      "reflection_ready",
+      "chat_queue_depth",
+      "chat_error",
+      "sol_chat_request",
+      "sol_chat_request_superseded",
+      "owner_chat_open",
+      "owner_chat_dismissed",
+      "support_draft",
+      "result",
+      "support_submit_claim"
+    ],
+    "cortex": [
+      "request",
+      "start",
+      "thinking",
+      "tool_start",
+      "tool_end",
+      "finish",
+      "error",
+      "talent_updated",
+      "info",
+      "status"
+    ],
+    "importer": [
+      "started",
+      "status",
+      "completed",
+      "error"
+    ],
+    "logs": [
+      "exec",
+      "line",
+      "exit"
+    ],
+    "navigate": [
+      "request"
+    ],
+    "notification": [
+      "*"
+    ],
+    "observe": [
+      "status",
+      "observing",
+      "detected",
+      "described",
+      "transcribed",
+      "observed"
+    ],
+    "supervisor": [
+      "started",
+      "stopped",
+      "restarting",
+      "status",
+      "queue"
+    ],
+    "sync": [
+      "status"
+    ],
+    "think": [
+      "started",
+      "status",
+      "group_started",
+      "group_completed",
+      "talent_started",
+      "talent_completed",
+      "completed",
+      "segments_started",
+      "segments_completed"
+    ]
+  }
+}

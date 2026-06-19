@@ -352,6 +352,9 @@ def build_import_info(
                 import_data["facet"] = import_meta.get("facet")
                 import_data["setting"] = import_meta.get("setting")
                 import_data["user_timestamp"] = import_meta.get("user_timestamp")
+                import_data["imported_via"] = import_meta.get("imported_via")
+                import_data["link_id"] = import_meta.get("link_id")
+                import_data["observer_handle"] = import_meta.get("observer_handle")
                 task_id = import_meta.get("task_id")
                 import_data["task_id"] = task_id
                 # Use upload_timestamp if available for better sorting

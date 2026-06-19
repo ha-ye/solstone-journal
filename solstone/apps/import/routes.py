@@ -186,6 +186,17 @@ SOURCE_METADATA = [
         "accept": ".pdf",
     },
     {
+        "name": "image",
+        "display_name": "Image",
+        "emoji": "🖼️",
+        "icon": "image",
+        "description": "Add a photo or screenshot and let sol describe what's in it",
+        "input_type": "file",
+        "upload_prompt": "Upload an image (PNG, JPEG, WebP, GIF, TIFF)",
+        "has_guide": False,
+        "accept": ".png,.jpg,.jpeg,.webp,.gif,.tiff",
+    },
+    {
         "name": "quick",
         "display_name": "Quick Import",
         "emoji": "⚡",
@@ -197,6 +208,14 @@ SOURCE_METADATA = [
         "accept": "",
     },
 ]
+
+
+def _link_id_from_identity() -> str | None:
+    return (
+        g.identity.fingerprint
+        if g.identity.mode in {"pl-direct", "pl-via-spl"}
+        else None
+    )
 
 
 @import_bp.route("/api/save", methods=["POST"])
@@ -306,6 +325,9 @@ def import_save() -> Any:
         "facet": facet,  # Include selected facet
         "setting": setting,
         "file_path": str(file_path),  # Store the actual file path
+        "imported_via": request.form.get("imported_via", "").strip() or "web_dashboard",
+        "link_id": _link_id_from_identity(),
+        "observer_handle": request.form.get("observer_handle", "").strip() or None,
     }
 
     # Write metadata using utility function
@@ -379,6 +401,9 @@ def import_save_path() -> Any:
         "facet": facet,
         "setting": setting,
         "is_local_path": True,
+        "imported_via": data.get("imported_via", "").strip() or "web_dashboard",
+        "link_id": _link_id_from_identity(),
+        "observer_handle": data.get("observer_handle", "").strip() or None,
     }
 
     write_import_metadata(

@@ -581,17 +581,17 @@ def test_ingest_invalid_key(observer_env):
 
 
 def test_delete_source_requires_auth(observer_env):
-    """Deleting the share source requires observer auth."""
+    """Deleting the location source requires observer auth."""
     env = observer_env()
-    seg_dir = _plant_source_segment(env)
+    seg_dir = _plant_location_segment(env)
 
-    resp = env.client.delete("/app/observer/source/import.share")
+    resp = env.client.delete("/app/observer/source/location")
     assert resp.status_code == 401
     assert resp.get_json()["reason_code"] == "auth_required"
     assert seg_dir.exists()
 
     resp = env.client.delete(
-        "/app/observer/source/import.share",
+        "/app/observer/source/location",
         headers={"Authorization": "Bearer invalid-key-12345"},
     )
     assert resp.status_code == 401
@@ -625,65 +625,38 @@ def test_delete_source_hard_pin_rejects_other_stream(observer_env):
         day="20250104",
         segment="140000_300",
     )
-    resp = env.client.delete(
-        "/app/observer/source/import.share",
-        headers=headers,
-        data={"stream": "import.audio"},
-    )
+    resp = env.client.delete("/app/observer/source/import.share", headers=headers)
     assert resp.status_code == 400
     assert resp.get_json()["detail"] == "Only known source streams can be deleted"
     assert share_seg.exists()
 
+    form_location_seg = _plant_location_segment(
+        env,
+        day="20250105",
+        segment="120000_300",
+    )
     resp = env.client.delete(
-        "/app/observer/source/import.share",
+        "/app/observer/source/location",
+        headers=headers,
+        data={"stream": "import.share"},
+    )
+    assert resp.status_code == 400
+    assert resp.get_json()["detail"] == "Only known source streams can be deleted"
+    assert form_location_seg.exists()
+
+    meta_location_seg = _plant_location_segment(
+        env,
+        day="20250106",
+        segment="120000_300",
+    )
+    resp = env.client.delete(
+        "/app/observer/source/location",
         headers=headers,
         data={"meta": json.dumps({"stream": "import.audio"})},
     )
     assert resp.status_code == 400
     assert resp.get_json()["detail"] == "Only known source streams can be deleted"
-    assert share_seg.exists()
-
-
-def test_delete_source_happy_path(observer_env):
-    """A valid observer key deletes the import.share source."""
-    env = observer_env()
-    create_resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "test-observer"},
-        content_type="application/json",
-    )
-    key = create_resp.get_json()["key"]
-    seg_dir = _plant_source_segment(env)
-
-    resp = env.client.delete(
-        "/app/observer/source/import.share",
-        headers={"Authorization": f"Bearer {key}"},
-    )
-
-    assert resp.status_code == 200
-    receipt = resp.get_json()
-    assert receipt["target"]["stream"] == "import.share"
-    assert receipt["removed"]["segments"] == 1
-    assert receipt["removed"]["originals"] == 1
-    assert receipt["removed"]["in_segment_derived"] == 1
-    assert not seg_dir.exists()
-
-
-def test_api_delete_source_hardcodes_share_stream(observer_env):
-    env = observer_env()
-    share_seg = _plant_source_segment(env)
-    location_seg = _plant_location_segment(env, segment="130000_300")
-
-    resp = env.client.post("/app/observer/api/delete-source")
-
-    assert resp.status_code == 200
-    receipt = resp.get_json()
-    assert receipt["target"]["stream"] == "import.share"
-    assert receipt["removed"]["segments"] == 1
-    assert receipt["removed"]["originals"] == 1
-    assert receipt["removed"]["in_segment_derived"] == 1
-    assert not share_seg.exists()
-    assert location_seg.exists()
+    assert meta_location_seg.exists()
 
 
 def test_delete_source_location_happy_path(observer_env):
@@ -708,58 +681,6 @@ def test_delete_source_location_happy_path(observer_env):
     assert receipt["removed"]["originals"] == 1
     assert receipt["removed"]["in_segment_derived"] == 0
     assert not seg_dir.exists()
-
-
-def test_delete_source_path_wins_over_candidate(observer_env):
-    env = observer_env()
-    create_resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "test-observer"},
-        content_type="application/json",
-    )
-    key = create_resp.get_json()["key"]
-    headers = {"Authorization": f"Bearer {key}"}
-    form_location_seg = _plant_location_segment(
-        env,
-        day="20250105",
-        segment="120000_300",
-    )
-    form_share_seg = _plant_source_segment(
-        env,
-        day="20250105",
-        segment="130000_300",
-    )
-
-    form_resp = env.client.delete(
-        "/app/observer/source/location",
-        headers=headers,
-        data={"stream": "import.share"},
-    )
-
-    assert form_resp.status_code == 200
-    assert not form_location_seg.exists()
-    assert form_share_seg.exists()
-
-    meta_location_seg = _plant_location_segment(
-        env,
-        day="20250106",
-        segment="120000_300",
-    )
-    meta_share_seg = _plant_source_segment(
-        env,
-        day="20250106",
-        segment="130000_300",
-    )
-
-    meta_resp = env.client.delete(
-        "/app/observer/source/location",
-        headers=headers,
-        data={"meta": json.dumps({"stream": "import.share"})},
-    )
-
-    assert meta_resp.status_code == 200
-    assert not meta_location_seg.exists()
-    assert meta_share_seg.exists()
 
 
 def test_ingest_missing_segment(observer_env):

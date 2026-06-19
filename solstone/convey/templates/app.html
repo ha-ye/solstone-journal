@@ -192,6 +192,7 @@
   const modalStatus = document.getElementById('talentViewStatus');
   const modalTimeline = document.getElementById('talentViewTimeline');
   const talentState = new Map();
+  const queuedJobs = new Map();
   const LEGACY_KEYS = ['solstone:' + 'conversationState', 'solstone:' + 'chatBarState'];
   const NEEDS_YOU_PENDING_KEY = 'solstone:needs-you-pending-prompt';
   const SOL_INITIATED = window.SOL_INITIATED || {};
@@ -276,18 +277,27 @@
     }
   }
 
-  function setQueueDepth(count) {
+  function statusTitleFor(msg) {
+    return msg.origin && msg.origin.ask
+      ? window.solChatCopy.CHAT_DISPATCH_ORIGIN_PREFIX + ' ' + msg.origin.ask
+      : msg.notes || msg.text || '';
+  }
+
+  function renderJobsIndicator() {
     if (!queueStatus) return;
-    var depth = Number(count || 0);
-    if (!Number.isFinite(depth) || depth < 1) {
+    var runningCount = 0;
+    for (const entry of talentState.values()) {
+      if (entry && entry.status === 'running') runningCount += 1;
+    }
+    var count = runningCount + queuedJobs.size;
+    if (count < 1) {
       queueStatus.textContent = '';
       queueStatus.hidden = true;
       return;
     }
-    depth = Math.floor(depth);
-    queueStatus.textContent = depth === 1
-      ? window.solChatCopy.CHAT_QUEUE_INDICATOR_SINGULAR
-      : window.solChatCopy.CHAT_QUEUE_INDICATOR_PLURAL_FORMAT.replace('{count}', String(depth));
+    queueStatus.textContent = count === 1
+      ? window.solChatCopy.CHAT_JOBS_INDICATOR_SINGULAR
+      : window.solChatCopy.CHAT_JOBS_INDICATOR_PLURAL_FORMAT.replace('{count}', String(count));
     queueStatus.hidden = false;
   }
 
@@ -299,8 +309,12 @@
 
   function setPendingState(active) {
     pendingSend = !!active;
-    if (input) input.disabled = pendingSend;
-    if (sendBtn) sendBtn.disabled = pendingSend;
+  }
+
+  function disableComposer() {
+    pendingSend = true;
+    if (input) input.disabled = true;
+    if (sendBtn) sendBtn.disabled = true;
   }
 
   function clearPendingLivenessStatus() {
@@ -1314,7 +1328,6 @@
       return;
     }
     if (eventName === 'owner_message') {
-      setPendingState(false);
       hideSupportOffer();
       hideSupportDraft();
       if (supportCapacityActive && !isSupportTalentRunning()) exitSupportCapacity();
@@ -1331,10 +1344,6 @@
       }
       return;
     }
-    if (eventName === 'chat_queue_depth') {
-      setQueueDepth(msg.depth);
-      return;
-    }
     if (eventName === 'sol_message') {
       if (solRequestState) return;
       clearPendingLivenessStatus();
@@ -1349,10 +1358,21 @@
         if (!renderSupportOutcome(msg)) {
           hideSupportDraft();
           hideSupportResult();
-          setStatus(msg.text || '', msg.notes || msg.text || '');
+          setStatus(msg.text || '', statusTitleFor(msg));
         }
       }
       if (supportCapacityActive && !isSupportTalentRunning()) exitSupportCapacity();
+      return;
+    }
+    if (eventName === 'talent_queued') {
+      var queuedUseId = String(msg.use_id || '');
+      if (queuedUseId) {
+        queuedJobs.set(queuedUseId, {
+          name: msg.name || '',
+          task: msg.task || ''
+        });
+        renderJobsIndicator();
+      }
       return;
     }
     if (eventName === 'talent_spawned') {
@@ -1363,6 +1383,8 @@
         status: 'running',
         updatedAt: msg.started_at || msg.ts || Date.now()
       });
+      queuedJobs.delete(String(msg.use_id || ''));
+      renderJobsIndicator();
       if (String(msg.name || '') === 'support') {
         enterSupportCapacity();
         return;
@@ -1390,6 +1412,8 @@
         status: 'finished',
         updatedAt: msg.ts || Date.now()
       });
+      queuedJobs.delete(String(msg.use_id || ''));
+      renderJobsIndicator();
       if (modalUseId && modalUseId === String(msg.use_id || '')) {
         refreshTalentView(modalUseId);
       }
@@ -1406,6 +1430,8 @@
         status: 'errored',
         updatedAt: msg.ts || Date.now()
       });
+      queuedJobs.delete(String(msg.use_id || ''));
+      renderJobsIndicator();
       if (modalUseId && modalUseId === String(msg.use_id || '')) {
         refreshTalentView(modalUseId);
       }
@@ -1455,7 +1481,7 @@
           if (!renderSupportOutcome(msg)) {
             hideSupportDraft();
             hideSupportResult();
-            setStatus(msg.text || '', msg.notes || msg.text || '');
+            setStatus(msg.text || '', statusTitleFor(msg));
           }
         }
       }
@@ -1477,9 +1503,17 @@
           updatedAt: talent.finished_at
         });
       });
-      setQueueDepth(data.queue_depth);
+      (data.queued_talents || []).forEach(function(talent) {
+        var queuedUseId = String(talent.use_id || '');
+        if (!queuedUseId) return;
+        queuedJobs.set(queuedUseId, {
+          name: talent.name || '',
+          task: talent.task || ''
+        });
+      });
+      renderJobsIndicator();
     } catch (err) {
-      setPendingState(true);
+      disableComposer();
       var hydrateError = `Couldn't load recent chat session. ${window.CONVEY_COPY.RELOAD_HINT}`;
       setStatus(
         hydrateError,
@@ -1522,7 +1556,6 @@
       }
       window.__needsYouPendingSource = null;
       window.__needsYouPendingPrompt = null;
-      setQueueDepth(0);
       return true;
     } catch (_err) {
       var renderedReason = window.renderChatReason('unknown', '');

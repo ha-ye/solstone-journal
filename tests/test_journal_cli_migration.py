@@ -84,6 +84,11 @@ def _skip_line(path: Path, line: str) -> bool:
     # wherever it appears (the init template and the tests that assert it).
     if "how should sol think" in line:
         return True
+    # "let sol describe what's in it" is owner-facing import-affordance copy (sol
+    # the keeper describing an image), not a `sol describe` service-command
+    # reference. Exempt the prose phrase wherever it appears.
+    if "let sol describe what's in it" in line:
+        return True
     if path.parts and path.parts[0] == "tests":
         argv_markers = (
             "sys.argv",

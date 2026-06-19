@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import uuid
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ from solstone.think.link.ca import (
     load_ca,
     load_or_generate_ca,
     mint_attestation,
+    mint_reach_assertion,
     sign_csr,
 )
 
@@ -132,6 +134,45 @@ def test_attestation_signed_by_ca_verifies(tmp_path: Path) -> None:
     assert payload["exp"] - payload["iat"] == 240
     assert isinstance(payload["jti"], str)
     assert payload["jti"]
+
+    assert len(raw_sig) == 64
+    r = int.from_bytes(raw_sig[:32], "big")
+    s = int.from_bytes(raw_sig[32:], "big")
+    der_sig = encode_dss_signature(r, s)
+
+    public_key = serialization.load_pem_public_key(ca.pubkey_spki_pem.encode("ascii"))
+    assert isinstance(public_key, ec.EllipticCurvePublicKey)
+    public_key.verify(
+        der_sig,
+        f"{header_b64}.{payload_b64}".encode("ascii"),
+        ec.ECDSA(hashes.SHA256()),
+    )
+
+
+def test_reach_assertion_signed_by_ca_verifies(tmp_path: Path) -> None:
+    ca = generate_ca(tmp_path / "ca")
+    instance_id = "deadbeef-dead-beef-dead-beefdeadbeef"
+
+    jwt = mint_reach_assertion(ca, instance_id, now=1_745_006_400)
+    segments = jwt.split(".")
+
+    assert len(segments) == 3
+    header_b64, payload_b64, sig_b64 = segments
+
+    header = json.loads(_b64_decode(header_b64))
+    payload = json.loads(_b64_decode(payload_b64))
+    raw_sig = _b64_decode(sig_b64)
+
+    assert header == {"alg": "ES256", "typ": "home-reach"}
+    assert payload["iss"] == f"home:{instance_id}"
+    assert payload["aud"] == "solstone-reach"
+    assert payload["scope"] == "push.relay.enroll"
+    assert payload["instance_id"] == instance_id
+    assert payload["iat"] == 1_745_006_400
+    assert payload["exp"] == 1_745_006_640
+    assert payload["exp"] - payload["iat"] == 240
+    assert uuid.UUID(payload["jti"])
+    assert "device_fp" not in payload
 
     assert len(raw_sig) == 64
     r = int.from_bytes(raw_sig[:32], "big")
