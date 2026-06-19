@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "solstone-journal-format:observer-ingest-envelope",
+  "title": "Observer ingest envelope",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["day", "segment", "stream", "observer", "files"],
+  "properties": {
+    "day": {"type": "string", "pattern": "^\\d{8}$"},
+    "segment": {"type": "string", "pattern": "^\\d{6}_\\d+$"},
+    "stream": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+    "observer": {"type": "string"},
+    "host": {"type": "string"},
+    "platform": {"type": "string"},
+    "meta": {"type": "object", "additionalProperties": true},
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["submitted", "written", "size", "sha256"],
+        "properties": {
+          "submitted": {"type": "string"},
+          "written": {"type": "string"},
+          "size": {"type": "integer", "minimum": 1},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    }
+  },
+  "x-journal-contract": {
+    "format_id": "observer-ingest-envelope",
+    "schema_owner": "observe.protocol",
+    "reference_writer": "solstone.apps.observer.routes.ingest_upload",
+    "allowed_producers": ["native observers", "solstone observe transfer"],
+    "write_discipline": "multipart envelope validated before segment write",
+    "file_kind": "ingest_envelope",
+    "key_fields": ["day", "segment", "stream", "observer", "files[].written", "files[].sha256"],
+    "producer_write_paths": ["POST /app/observer/ingest"]
+  }
+}

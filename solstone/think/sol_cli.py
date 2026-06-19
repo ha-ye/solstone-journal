@@ -95,6 +95,7 @@ COMMANDS: dict[str, Command] = {
     "health": Command("solstone.think.health_cli", "service"),
     "notify": Command("solstone.think.notify_cli", "access"),
     "doctor": Command("solstone.think.doctor", "universal"),
+    "contract": Command("solstone.think.contract_cli", "universal"),
     "config": Command("solstone.think.config_cli", "service"),
     "install-models": Command("solstone.think.install_models", "service"),
     "install-provider": Command("solstone.think.install_provider", "service"),
@@ -161,7 +162,7 @@ ACCESS_HELP_GROUPS: tuple[HelpGroup, ...] = (
     HelpGroup(SOL_HELP_GROUP_DIAGNOSE, ("notify", "doctor")),
     HelpGroup(
         SOL_HELP_GROUP_TOOLS,
-        ("skills", "link"),
+        ("skills", "link", "contract"),
     ),
 )
 

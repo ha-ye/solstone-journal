@@ -34,6 +34,16 @@ from solstone.think.journal_io.locking import (
     hold_lock,
 )
 
+# Migration helpers
+from solstone.think.journal_io.migrate import (
+    RewriteResult,
+    locked_rewrite_json,
+    locked_rewrite_jsonl,
+    rewrite_json,
+    rewrite_jsonl,
+    validate_fixture,
+)
+
 # Path spine and containment
 from solstone.think.journal_io.paths import (
     contained_path,
@@ -78,6 +88,13 @@ __all__ = [
     # Locking
     "DEFAULT_LOCK_TIMEOUT",
     "hold_lock",
+    # Migration helpers
+    "RewriteResult",
+    "locked_rewrite_json",
+    "locked_rewrite_jsonl",
+    "rewrite_json",
+    "rewrite_jsonl",
+    "validate_fixture",
     # Readers
     "MalformedPolicy",
     "read_json",

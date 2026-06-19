@@ -255,6 +255,11 @@ OPERATIONS: list[OperationSpec] = [
                 "Upload request failed validation.",
             ),
             _json_error(
+                422,
+                ("ingest_contract_invalid",),
+                "Uploaded contract-covered file failed journal contract validation.",
+            ),
+            _json_error(
                 500,
                 ("ingest_storage_failed",),
                 "Uploaded file could not be stored.",

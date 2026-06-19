@@ -1,0 +1,41 @@
+{
+  "description": "Journal producer-facing layout lifecycle. Read paths remain broader than producer write paths for legacy compatibility.",
+  "lifecycle": [
+    {
+      "stage": "draft",
+      "segment_key": "HHMMSS_draft",
+      "producer_write_paths": [
+        "chronicle/YYYYMMDD/{stream}/HHMMSS_draft/"
+      ],
+      "notes": "Local observers may assemble incomplete segment contents under a draft key before upload or finalization."
+    },
+    {
+      "stage": "upload-envelope",
+      "producer_write_paths": [
+        "POST /app/observer/ingest multipart fields day, segment, stream/meta, files[]"
+      ],
+      "notes": "Native observers submit a normalized segment envelope plus files; the journal validates before writing."
+    },
+    {
+      "stage": "accepted",
+      "producer_write_paths": [
+        "chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/{stream.json,audio.jsonl,screen.jsonl}"
+      ],
+      "legacy_read_paths": [
+        "chronicle/YYYYMMDD/HHMMSS_LEN/{stream.json,audio.jsonl,screen.jsonl}",
+        "chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/{source}_audio.jsonl",
+        "chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/{source}_transcript.jsonl",
+        "chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/{position}_{connector}_screen.jsonl"
+      ],
+      "notes": "Accepted producer paths are stream-qualified. Readers tolerate older flat and prefixed names."
+    },
+    {
+      "stage": "finalized",
+      "segment_key": "HHMMSS_LEN",
+      "producer_write_paths": [
+        "chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/"
+      ],
+      "notes": "Finalized segment keys carry start time and duration, with no per-record schema_version."
+    }
+  ]
+}

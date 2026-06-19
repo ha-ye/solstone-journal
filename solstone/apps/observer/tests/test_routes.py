@@ -2400,6 +2400,90 @@ def test_ingest_mixed_zero_byte_files(observer_env):
     assert expected_file.read_bytes() == valid_data
 
 
+def test_ingest_contract_sidecar_invalid_quarantined_without_emit(
+    observer_env, monkeypatch
+):
+    env = observer_env()
+    emitted = []
+    monkeypatch.setattr(
+        routes_module,
+        "emit",
+        lambda tract, event, **fields: emitted.append((tract, event, fields)),
+    )
+
+    resp = env.client.post(
+        "/app/observer/api/create",
+        json={"name": "contract-test"},
+        content_type="application/json",
+    )
+    key = resp.get_json()["key"]
+
+    invalid_audio = b'{"raw":"audio.flac"}\n{"start":"00:00:00"}\n'
+    resp = env.client.post(
+        "/app/observer/ingest",
+        headers={"Authorization": f"Bearer {key}"},
+        data={
+            "day": "20250103",
+            "segment": "120000_300",
+            "files": (io.BytesIO(invalid_audio), "120000_300_audio.jsonl"),
+        },
+    )
+
+    body = resp.get_json()
+    assert resp.status_code == 422
+    assert body["status"] == "failed"
+    assert body["reason_code"] == "ingest_contract_invalid"
+    assert any(
+        "audio.jsonl" in item and "text" in item for item in body["invalid_files"]
+    )
+    assert emitted == []
+
+    assert not (_day_dir(env) / "contract-test" / "120000_300").exists()
+    failed_dir = env.journal / "chronicle" / body["failed_path"]
+    assert failed_dir.exists()
+    assert (failed_dir / "120000_300_audio.jsonl").read_bytes() == invalid_audio
+
+
+def test_ingest_contract_sidecars_valid_are_accepted(observer_env, monkeypatch):
+    env = observer_env()
+    emitted = []
+    monkeypatch.setattr(
+        routes_module,
+        "emit",
+        lambda tract, event, **fields: emitted.append((tract, event, fields)),
+    )
+
+    resp = env.client.post(
+        "/app/observer/api/create",
+        json={"name": "contract-valid-test"},
+        content_type="application/json",
+    )
+    key = resp.get_json()["key"]
+
+    audio = b'{"raw":"audio.flac"}\n{"start":"00:00:00","text":"hello"}\n'
+    screen = b'{"raw":"screen.mp4","qualified_count":1}\n{"timestamp":1.0}\n'
+    stream = b'{"stream":"contract-valid-test","prev_day":null,"prev_segment":null,"seq":1}\n'
+    resp = env.client.post(
+        "/app/observer/ingest",
+        headers={"Authorization": f"Bearer {key}"},
+        data={
+            "day": "20250103",
+            "segment": "120000_300",
+            "files": [
+                (io.BytesIO(audio), "120000_300_audio.jsonl"),
+                (io.BytesIO(screen), "screen.jsonl"),
+                (io.BytesIO(stream), "stream.json"),
+            ],
+        },
+    )
+
+    body = resp.get_json()
+    assert resp.status_code == 200
+    assert body["status"] == "ok"
+    assert body["files"] == ["audio.jsonl", "screen.jsonl", "stream.json"]
+    assert len(emitted) == 1
+
+
 def test_ingest_stream_qualifier_preserved(observer_env):
     """Regression: tmux observer must land in host.tmux, not host stream.
 

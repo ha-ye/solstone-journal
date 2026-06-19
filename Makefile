@@ -14,7 +14,7 @@ export TMPDIR := /var/tmp
 PYTEST_BASETEMP_INIT := BASETEMP=$$(mktemp -d /var/tmp/solstone-pytest-XXXXXX); trap 'rm -rf "$$BASETEMP"' EXIT INT TERM;
 PYTEST_BASETEMP_FLAG := --basetemp "$$BASETEMP"
 
-.PHONY: install uninstall test test-cov test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills openapi check-openapi dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api update-api-baselines service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-call-http-only check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-thin-base-install check-cogitate-prompts smoke-cogitate release release-test FORCE
+.PHONY: install uninstall test test-cov test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills openapi check-openapi contract check-contract dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api update-api-baselines service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-call-http-only check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-thin-base-install check-cogitate-prompts smoke-cogitate release release-test FORCE
 
 # Default target - install package in editable mode
 all: install
@@ -421,6 +421,9 @@ install-checks: .installed
 	@echo "=== Checking OpenAPI contract ==="
 	@$(MAKE) check-openapi
 	@echo ""
+	@echo "=== Checking journal format contract ==="
+	@$(MAKE) check-contract
+	@echo ""
 	@echo "=== Checking extras consistency ==="
 	@$(VENV_BIN)/python scripts/check_extras_consistency.py
 	@echo ""
@@ -532,6 +535,13 @@ openapi:
 check-openapi: .installed
 	$(VENV_BIN)/python scripts/check_openapi_contract.py
 	$(VENV_BIN)/python scripts/build_openapi_contract.py --check
+
+contract:
+	$(VENV_BIN)/python -m solstone.think.contract_cli build
+
+check-contract: .installed
+	$(VENV_BIN)/python -m solstone.think.contract_cli check
+	$(VENV_BIN)/python -m solstone.think.contract_cli build --check
 
 # Re-run the live four-backend integrated-façade cogitate smoke. Spawns the
 # archived runner (extro `vpe/workspace/archived/`) against this venv so the

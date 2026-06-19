@@ -66,6 +66,7 @@
               "import_conflict",
               "import_metadata_failed",
               "import_not_found",
+              "ingest_contract_invalid",
               "ingest_no_files",
               "ingest_storage_failed",
               "invalid_config_value",
@@ -1236,6 +1237,19 @@
             "x-reason-codes": [
               "feature_unavailable",
               "pl_revoked"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Uploaded contract-covered file failed journal contract validation.",
+            "x-reason-codes": [
+              "ingest_contract_invalid"
             ]
           },
           "500": {

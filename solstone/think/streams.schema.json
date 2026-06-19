@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "solstone-journal-format:stream-json",
+  "title": "Segment stream marker",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["stream", "seq"],
+  "properties": {
+    "stream": {"type": "string"},
+    "prev_day": {"type": ["string", "null"]},
+    "prev_segment": {"type": ["string", "null"]},
+    "seq": {"type": "integer", "minimum": 1}
+  },
+  "x-journal-contract": {
+    "format_id": "stream-json",
+    "schema_owner": "think.streams",
+    "reference_writer": "solstone.think.streams.write_segment_stream",
+    "allowed_producers": ["journal stream writer", "native observers via ingest"],
+    "write_discipline": "atomic JSON replace",
+    "file_kind": "json",
+    "key_fields": ["stream", "prev_day", "prev_segment", "seq"],
+    "producer_write_paths": ["chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/stream.json"],
+    "legacy_read_paths": ["chronicle/YYYYMMDD/HHMMSS_LEN/stream.json"]
+  }
+}

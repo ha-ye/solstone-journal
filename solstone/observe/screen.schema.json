@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "solstone-journal-format:screen-jsonl",
+  "title": "Screen analysis JSONL",
+  "type": "object",
+  "additionalProperties": true,
+  "$defs": {
+    "header": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["raw"],
+      "properties": {
+        "raw": {"type": "string"},
+        "observer": {"type": "string"},
+        "first_hash": {"type": ["string", "null"]},
+        "last_hash": {"type": ["string", "null"]},
+        "qualified_count": {"type": "integer"}
+      }
+    },
+    "record": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["timestamp"],
+      "properties": {
+        "timestamp": {"type": "number"},
+        "frame_id": {"type": ["integer", "string"]},
+        "analysis": {"type": "object", "additionalProperties": true},
+        "content": {"type": "object", "additionalProperties": true},
+        "aruco": {},
+        "enhanced": {"type": "boolean"},
+        "error": {"type": "string"},
+        "requests": {"type": "array"}
+      }
+    }
+  },
+  "x-journal-contract": {
+    "format_id": "screen-jsonl",
+    "schema_owner": "observe.describe",
+    "reference_writer": "solstone.observe.describe.VideoProcessor",
+    "allowed_producers": ["journal screen describer", "native observers via ingest"],
+    "write_discipline": "headered_jsonl temp line-write plus atomic promote",
+    "file_kind": "headered_jsonl",
+    "key_fields": ["header.raw", "header.first_hash", "header.last_hash", "header.qualified_count", "record.timestamp", "record.frame_id", "record.analysis", "record.content"],
+    "producer_write_paths": ["chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/screen.jsonl"],
+    "legacy_read_paths": ["chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/{position}_{connector}_screen.jsonl"]
+  }
+}

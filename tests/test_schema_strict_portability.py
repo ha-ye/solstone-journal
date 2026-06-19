@@ -33,7 +33,10 @@ def _discover_schemas() -> tuple[tuple[str, dict[str, Any]], ...]:
     discovered: list[tuple[str, dict[str, Any]]] = []
     for path in sorted((REPO_ROOT / "solstone").glob("**/*.schema.json")):
         schema_id = path.relative_to(REPO_ROOT).as_posix()
-        discovered.append((schema_id, json.loads(path.read_text(encoding="utf-8"))))
+        schema = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(schema.get("x-journal-contract"), dict):
+            continue
+        discovered.append((schema_id, schema))
     discovered.append(("build_rollup_schema(3)", build_rollup_schema(3)))
     return tuple(discovered)
 

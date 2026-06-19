@@ -1,0 +1,423 @@
+{
+  "contract": "solstone-journal-at-rest",
+  "contract_version": 1,
+  "description": "Generated journal at-rest contract bundle. Do not hand-edit; regenerate with `sol contract build`.",
+  "generated_by": "sol contract build",
+  "layout": {
+    "description": "Journal producer-facing layout lifecycle. Read paths remain broader than producer write paths for legacy compatibility.",
+    "lifecycle": [
+      {
+        "notes": "Local observers may assemble incomplete segment contents under a draft key before upload or finalization.",
+        "producer_write_paths": [
+          "chronicle/YYYYMMDD/{stream}/HHMMSS_draft/"
+        ],
+        "segment_key": "HHMMSS_draft",
+        "stage": "draft"
+      },
+      {
+        "notes": "Native observers submit a normalized segment envelope plus files; the journal validates before writing.",
+        "producer_write_paths": [
+          "POST /app/observer/ingest multipart fields day, segment, stream/meta, files[]"
+        ],
+        "stage": "upload-envelope"
+      },
+      {
+        "legacy_read_paths": [
+          "chronicle/YYYYMMDD/HHMMSS_LEN/{stream.json,audio.jsonl,screen.jsonl}",
+          "chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/{source}_audio.jsonl",
+          "chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/{source}_transcript.jsonl",
+          "chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/{position}_{connector}_screen.jsonl"
+        ],
+        "notes": "Accepted producer paths are stream-qualified. Readers tolerate older flat and prefixed names.",
+        "producer_write_paths": [
+          "chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/{stream.json,audio.jsonl,screen.jsonl}"
+        ],
+        "stage": "accepted"
+      },
+      {
+        "notes": "Finalized segment keys carry start time and duration, with no per-record schema_version.",
+        "producer_write_paths": [
+          "chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/"
+        ],
+        "segment_key": "HHMMSS_LEN",
+        "stage": "finalized"
+      }
+    ]
+  },
+  "schemas": {
+    "audio-jsonl": {
+      "schema": {
+        "$defs": {
+          "header": {
+            "additionalProperties": true,
+            "properties": {
+              "backend": {
+                "type": "string"
+              },
+              "duration": {
+                "type": "number"
+              },
+              "facet": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "imported": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "model": {
+                "type": "string"
+              },
+              "noisy": {
+                "type": "boolean"
+              },
+              "observer": {
+                "type": "string"
+              },
+              "raw": {
+                "type": "string"
+              },
+              "setting": {
+                "type": "string"
+              },
+              "topics": {
+                "type": "array"
+              },
+              "warning": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "raw"
+            ],
+            "type": "object"
+          },
+          "record": {
+            "additionalProperties": true,
+            "properties": {
+              "corrected": {
+                "type": "string"
+              },
+              "emotion": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "speaker": {
+                "type": [
+                  "string",
+                  "integer"
+                ]
+              },
+              "start": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "start",
+              "text"
+            ],
+            "type": "object"
+          }
+        },
+        "$id": "solstone-journal-format:audio-jsonl",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": true,
+        "title": "Audio transcript JSONL",
+        "type": "object",
+        "x-journal-contract": {
+          "allowed_producers": [
+            "journal transcriber",
+            "native observers via ingest"
+          ],
+          "file_kind": "headered_jsonl",
+          "format_id": "audio-jsonl",
+          "key_fields": [
+            "header.raw",
+            "record.start",
+            "record.text",
+            "record.corrected",
+            "record.source",
+            "record.speaker",
+            "record.emotion"
+          ],
+          "legacy_read_paths": [
+            "chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/{source}_audio.jsonl"
+          ],
+          "producer_write_paths": [
+            "chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/audio.jsonl"
+          ],
+          "reference_writer": "solstone.observe.transcribe.main",
+          "schema_owner": "observe.transcribe",
+          "write_discipline": "headered_jsonl atomic whole-file replace"
+        }
+      },
+      "source": "solstone/observe/transcribe/audio.schema.json"
+    },
+    "observer-ingest-envelope": {
+      "schema": {
+        "$id": "solstone-journal-format:observer-ingest-envelope",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": true,
+        "properties": {
+          "day": {
+            "pattern": "^\\d{8}$",
+            "type": "string"
+          },
+          "files": {
+            "items": {
+              "additionalProperties": true,
+              "properties": {
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "submitted": {
+                  "type": "string"
+                },
+                "written": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "submitted",
+                "written",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "host": {
+            "type": "string"
+          },
+          "meta": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "observer": {
+            "type": "string"
+          },
+          "platform": {
+            "type": "string"
+          },
+          "segment": {
+            "pattern": "^\\d{6}_\\d+$",
+            "type": "string"
+          },
+          "stream": {
+            "pattern": "^[a-z0-9][a-z0-9._-]*$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "day",
+          "segment",
+          "stream",
+          "observer",
+          "files"
+        ],
+        "title": "Observer ingest envelope",
+        "type": "object",
+        "x-journal-contract": {
+          "allowed_producers": [
+            "native observers",
+            "solstone observe transfer"
+          ],
+          "file_kind": "ingest_envelope",
+          "format_id": "observer-ingest-envelope",
+          "key_fields": [
+            "day",
+            "segment",
+            "stream",
+            "observer",
+            "files[].written",
+            "files[].sha256"
+          ],
+          "producer_write_paths": [
+            "POST /app/observer/ingest"
+          ],
+          "reference_writer": "solstone.apps.observer.routes.ingest_upload",
+          "schema_owner": "observe.protocol",
+          "write_discipline": "multipart envelope validated before segment write"
+        }
+      },
+      "source": "solstone/observe/protocol.schema.json"
+    },
+    "screen-jsonl": {
+      "schema": {
+        "$defs": {
+          "header": {
+            "additionalProperties": true,
+            "properties": {
+              "first_hash": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "last_hash": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "observer": {
+                "type": "string"
+              },
+              "qualified_count": {
+                "type": "integer"
+              },
+              "raw": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "raw"
+            ],
+            "type": "object"
+          },
+          "record": {
+            "additionalProperties": true,
+            "properties": {
+              "analysis": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "aruco": {},
+              "content": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "enhanced": {
+                "type": "boolean"
+              },
+              "error": {
+                "type": "string"
+              },
+              "frame_id": {
+                "type": [
+                  "integer",
+                  "string"
+                ]
+              },
+              "requests": {
+                "type": "array"
+              },
+              "timestamp": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "timestamp"
+            ],
+            "type": "object"
+          }
+        },
+        "$id": "solstone-journal-format:screen-jsonl",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": true,
+        "title": "Screen analysis JSONL",
+        "type": "object",
+        "x-journal-contract": {
+          "allowed_producers": [
+            "journal screen describer",
+            "native observers via ingest"
+          ],
+          "file_kind": "headered_jsonl",
+          "format_id": "screen-jsonl",
+          "key_fields": [
+            "header.raw",
+            "header.first_hash",
+            "header.last_hash",
+            "header.qualified_count",
+            "record.timestamp",
+            "record.frame_id",
+            "record.analysis",
+            "record.content"
+          ],
+          "legacy_read_paths": [
+            "chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/{position}_{connector}_screen.jsonl"
+          ],
+          "producer_write_paths": [
+            "chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/screen.jsonl"
+          ],
+          "reference_writer": "solstone.observe.describe.VideoProcessor",
+          "schema_owner": "observe.describe",
+          "write_discipline": "headered_jsonl temp line-write plus atomic promote"
+        }
+      },
+      "source": "solstone/observe/screen.schema.json"
+    },
+    "stream-json": {
+      "schema": {
+        "$id": "solstone-journal-format:stream-json",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": true,
+        "properties": {
+          "prev_day": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prev_segment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "seq": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "stream": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "stream",
+          "seq"
+        ],
+        "title": "Segment stream marker",
+        "type": "object",
+        "x-journal-contract": {
+          "allowed_producers": [
+            "journal stream writer",
+            "native observers via ingest"
+          ],
+          "file_kind": "json",
+          "format_id": "stream-json",
+          "key_fields": [
+            "stream",
+            "prev_day",
+            "prev_segment",
+            "seq"
+          ],
+          "legacy_read_paths": [
+            "chronicle/YYYYMMDD/HHMMSS_LEN/stream.json"
+          ],
+          "producer_write_paths": [
+            "chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/stream.json"
+          ],
+          "reference_writer": "solstone.think.streams.write_segment_stream",
+          "schema_owner": "think.streams",
+          "write_discipline": "atomic JSON replace"
+        }
+      },
+      "source": "solstone/think/streams.schema.json"
+    }
+  }
+}
