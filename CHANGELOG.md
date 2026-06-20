@@ -4,6 +4,11 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.9] - 2026-06-19
+
+### Fixed
+- the error view on your health page now opens the way you'd expect. the "errors today" count jumps you to recent errors every time you click it, not just the first time, and each error row opens in place to show the full plain-language message (and the technical detail when there is one). before, some rows wouldn't open at all. the "api keys" link in settings also now jumps you to the right section on a repeat click.
+
 ## [0.6.8] - 2026-06-18
 
 ### Added
