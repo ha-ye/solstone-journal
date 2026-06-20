@@ -7,13 +7,13 @@ from __future__ import annotations
 
 from typing import Any
 
-SERVICE_NAME = "solstone backup"
+SERVICE_NAME = "encrypted backup"
 
 # The journal-bound brand-lock (entry point) — the trust promise binds to the
 # journal (the memory store where Article 8 binds), never to the software.
 JOURNAL_BRAND_LOCK = "your journal is always private, only yours."
 INTRO_SUBTITLE = (
-    "Make an encrypted copy of your journal somewhere safe — only you can read it."
+    "make an encrypted copy of your journal somewhere safe — only you can read it."
 )
 INTRO_BULLETS = [
     "end-to-end encrypted",
@@ -21,40 +21,40 @@ INTRO_BULLETS = [
     "delete anytime",
 ]
 INTRO_STEPS = "you'll save a recovery key, then choose where your backup lives."
-# The byo ⟷ solstone hosted mode selector (destination step). v1 is byo-only;
+# The byo ⟷ hosted-by-sol-pbc mode selector (destination step). v1 is byo-only;
 # the hosted lane is shown as an honest "coming later" state — never a dead
 # "set up hosting" control, since the hosted service does not exist yet.
 MODE_BYO_TITLE = "your own"
 MODE_BYO_DESC = "your bucket, your credentials. the default."
 # the byo covenant beat — load-bearing ("sol pbc is never in the path").
 MODE_BYO_NOTE = "sol pbc is never in the path."
-MODE_HOSTED_TITLE = "solstone hosted"
+MODE_HOSTED_TITLE = "hosted by sol pbc"
 MODE_HOSTED_TAG = "coming later"
-MODE_HOSTED_DESC = "sol pbc runs the off-machine part for you."
+MODE_HOSTED_DESC = "sol pbc runs the off-device part for you."
 MODE_HOSTED_NOTE = "operated by sol pbc"
 MODE_HOSTED_COMING = (
-    "this isn't available yet. for now, solstone backup uses your own bucket "
+    "this isn't available yet. for now, encrypted backup uses your own bucket "
     "— sol pbc is never in the path."
 )
 EDUCATE_STAKES = (
-    "If you lose your recovery key, no one can recover your journal — not even sol pbc."
+    "if you lose your recovery key, no one can recover your journal — not even sol pbc."
 )
-THEFT_HONESTY = "Anyone with your recovery key can read everything in your backup — store it like a master password."
-CONFIRM_PROMPT = "Enter the recovery key you just recorded."
+THEFT_HONESTY = "anyone with your recovery key can read everything in your backup — store it like a master password."
+CONFIRM_PROMPT = "enter the recovery key you just recorded."
 CONFIRM_ESCAPE = "see key again"
-PM_CAUTION = "Only store your recovery key in a password manager you trust. sol pbc doesn't recommend a specific one."
+PM_CAUTION = "only store your recovery key in a password manager you trust. sol pbc doesn't recommend a specific one."
 DESTRUCTIVE_ACTION = "turn off & delete backup"
 DESTRUCTIVE_CAPTION = (
-    "This deletes all your backup data. No new backups will be created."
+    "this deletes all your backup data. no new backups will be created."
 )
-OBJECT_LOCK_WARNING = "Don't enable Compliance-mode Object Lock on the bucket — it conflicts with backup pruning and lock cleanup. If you need immutability, use Governance mode."
+OBJECT_LOCK_WARNING = "don't enable Compliance-mode Object Lock on the bucket — it conflicts with backup pruning and lock cleanup. if you need immutability, use Governance mode."
 OBJECT_LOCK_SUMMARY = "bucket setup notes"
-OPTIONAL_INVARIANT = "solstone runs on your machine; this is optional."
+OPTIONAL_INVARIANT = "solstone runs on your device; this is optional."
 SAVE_PASSWORD_MANAGER = "save to my password manager"
 SAVE_COPY = "copy"
 SAVE_CONTINUE = "continue"
 CLIPBOARD_CAVEAT = (
-    "Copying puts your recovery key on the clipboard — clear it after you save it."
+    "copying puts your recovery key on the clipboard — clear it after you save it."
 )
 REPOSITORY_HINT = (
     "the restic repository for your bucket — e.g. s3:s3.amazonaws.com/your-bucket"
@@ -73,32 +73,32 @@ PHASE_LABELS = {
 }
 
 DESTINATION_REASON_LABELS = {
-    "repo_exists": "Destination is reachable and already set up.",
-    "repo_missing": "Destination is reachable and needs setup.",
-    "auth_failed": "The destination rejected the key or credentials. Check the recovery key and destination details.",
-    "locked": "The destination is busy. Try again shortly.",
-    "timeout": "The destination took too long to respond. Try again shortly.",
-    "unreachable": "I couldn't reach the destination. Check the repository path and try again.",
+    "repo_exists": "destination is reachable and already set up.",
+    "repo_missing": "destination is reachable and needs setup.",
+    "auth_failed": "the destination rejected the key or credentials. check the recovery key and destination details.",
+    "locked": "the destination is busy. try again shortly.",
+    "timeout": "the destination took too long to respond. try again shortly.",
+    "unreachable": "i couldn't reach the destination. check the repository path and try again.",
 }
 
 OPERATION_REASON_LABELS = {
-    "backup_busy": "Another backup task is already running. Try again in a moment.",
-    "backup_not_confirmed": "Confirm your recovery key before turning on backup.",
-    "backup_operation_failed": "I couldn't finish that backup action. Check the recovery key and destination, then try again.",
-    "backup_unavailable": "I couldn't ask the background service to start a backup. Start it, then try again.",
-    "invalid_key": "That recovery key didn't unlock the backup. Re-enter the key from your saved copy.",
-    "invalid_config_value": "Use non-negative whole numbers, then save again.",
-    "invalid_operation_for_state": "Finish the current backup setup step, then try again.",
-    "invalid_request_value": "Check the destination details and try again.",
-    "restic_unavailable": "I couldn't prepare the backup tool. Try again after setup finishes.",
-    "repo_missing": "I couldn't find a backup repository at that destination.",
-    "auth_failed": "That recovery key didn't unlock the backup. Check the key first, then the destination details.",
-    "locked": "The destination is busy. Try again shortly.",
-    "timeout": "The destination took too long to respond. Try again shortly.",
-    "failed": "I couldn't finish the backup action. Check the recovery key and destination, then try again.",
-    "incomplete": "The backup action didn't finish. You can try again.",
-    "missing_required_field": "Fill in the required fields, then try again.",
-    "recovery_key_mismatch": "That didn't match your recovery key. Re-enter the key from your saved copy.",
+    "backup_busy": "another backup task is already running. try again in a moment.",
+    "backup_not_confirmed": "confirm your recovery key before turning on backup.",
+    "backup_operation_failed": "i couldn't finish that backup action. check the recovery key and destination, then try again.",
+    "backup_unavailable": "i couldn't ask the background service to start a backup. start it, then try again.",
+    "invalid_key": "that recovery key didn't unlock the backup. re-enter the key from your saved copy.",
+    "invalid_config_value": "use non-negative whole numbers, then save again.",
+    "invalid_operation_for_state": "finish the current backup setup step, then try again.",
+    "invalid_request_value": "check the destination details and try again.",
+    "restic_unavailable": "i couldn't prepare the backup tool. try again after setup finishes.",
+    "repo_missing": "i couldn't find a backup repository at that destination.",
+    "auth_failed": "that recovery key didn't unlock the backup. check the key first, then the destination details.",
+    "locked": "the destination is busy. try again shortly.",
+    "timeout": "the destination took too long to respond. try again shortly.",
+    "failed": "i couldn't finish the backup action. check the recovery key and destination, then try again.",
+    "incomplete": "the backup action didn't finish. you can try again.",
+    "missing_required_field": "fill in the required fields, then try again.",
+    "recovery_key_mismatch": "that didn't match your recovery key. re-enter the key from your saved copy.",
 }
 
 ACTION_LABELS = {
@@ -150,10 +150,10 @@ STATUS_LABELS = {
 }
 
 RESTORE_EXPECTATION = (
-    "A large restore can take a while. You can leave this page open while it runs."
+    "a large restore can take a while. you can leave this page open while it runs."
 )
 ERROR_INTRO = (
-    "Start with the recovery key. If it still fails, check the destination details."
+    "start with the recovery key. if it still fails, check the destination details."
 )
 
 

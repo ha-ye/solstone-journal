@@ -50,14 +50,14 @@ def run_prune_routine(args: list[str]) -> int:
 ROUTINES = [
     MaintenanceRoutine(
         name="run",
-        description="Run solstone backup.",
+        description="run encrypted backup.",
         every="hourly",
         run=run_backup_routine,
         max_runtime=BACKUP_MAX_RUNTIME,
     ),
     MaintenanceRoutine(
         name="prune",
-        description="Apply solstone backup retention policy.",
+        description="apply encrypted backup retention policy.",
         every="daily",
         run=run_prune_routine,
         max_runtime=PRUNE_MAX_RUNTIME,

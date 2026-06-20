@@ -166,7 +166,7 @@
   color: var(--text-muted, #555);
 }
 
-/* the byo ⟷ solstone hosted mode selector (§2b) */
+/* the byo ⟷ hosted-by-sol-pbc mode selector (§2b) */
 .backup-modes {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
