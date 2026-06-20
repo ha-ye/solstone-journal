@@ -343,7 +343,7 @@
         desc.textContent = "this computer can't run a local model yet — it needs a supported GPU. ";
         const link = document.createElement('a');
         link.className = 'textlink';
-        link.href = 'https://services.solstone.app/docs/local-requirements';
+        link.href = 'https://support.solstone.app/kb/solstone-memory-and-local-models';
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
         link.textContent = 'minimum requirements ↗';
@@ -754,7 +754,7 @@
       if (local.tone === 'bad') {
         const requirements = document.createElement('a');
         requirements.className = 'textlink';
-        requirements.href = 'https://services.solstone.app/docs/local-requirements';
+        requirements.href = 'https://support.solstone.app/kb/solstone-memory-and-local-models';
         requirements.target = '_blank';
         requirements.rel = 'noopener noreferrer';
         requirements.textContent = 'minimum requirements ↗';
