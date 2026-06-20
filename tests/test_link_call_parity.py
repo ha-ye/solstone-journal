@@ -496,7 +496,7 @@ def test_status_provisioned_and_not_provisioned(journal, runner):
         "Relay URL:     https://link.solstone.app\n"
         "Enrolled:      no\n"
         "Reach posture: direct\n"
-        "Private link:  not enabled\n"
+        "Private network: not enabled\n"
         "Paired devices: 1\n"
         "Listen-WS state: (query convey /app/link/api/status for live state)\n"
     )
@@ -517,7 +517,7 @@ def test_status_unprovisioned_does_not_write_state(journal, runner, monkeypatch)
         "Relay URL:     https://link.solstone.app\n"
         "Enrolled:      no\n"
         "Reach posture: direct\n"
-        "Private link:  not enabled\n"
+        "Private network: not enabled\n"
         "Paired devices: 0\n"
         "Listen-WS state: (query convey /app/link/api/status for live state)\n"
     )

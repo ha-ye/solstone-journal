@@ -445,7 +445,7 @@ def private_link_enable() -> tuple[Response, int]:
     if _private_link_status()["state"] == "enabled":
         return error_response(
             INVALID_OPERATION_FOR_STATE,
-            detail="solstone private link is already on",
+            detail="your private network is already on",
         )
     try:
         consent_url, nonce, base_url = spl_handoff.build_spl_handoff_url()

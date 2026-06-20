@@ -71,8 +71,8 @@ def test_private_link_setup_success(
     result = _invoke("setup", "--wait-seconds", "1", "--poll-interval", "0.01")
 
     assert result.exit_code == 0
-    assert "setting up solstone private link" in result.stdout
-    assert "solstone private link is on" in result.stdout
+    assert "setting up your private network" in result.stdout
+    assert "your private network is on" in result.stdout
 
 
 def test_private_link_setup_prints_consent_url(
@@ -115,7 +115,7 @@ def test_private_link_setup_error_exits_nonzero(
     output = result.stdout + result.stderr
 
     assert result.exit_code == 1
-    assert "couldn't finish setting up solstone private link" in output
+    assert "couldn't finish setting up your private network" in output
     assert "try again" in output
 
 
@@ -131,7 +131,7 @@ def test_private_link_setup_needs_subscription_exits_zero(
         "run_spl_handoff",
         lambda **_kwargs: operations.HandoffResult(
             "needs_subscription",
-            "private link needs an active subscription before it can turn on.",
+            "your private network needs an active subscription before it can turn on.",
             False,
             subscribe_url=subscribe_url,
         ),
@@ -140,7 +140,7 @@ def test_private_link_setup_needs_subscription_exits_zero(
     result = _invoke("setup", "--wait-seconds", "1", "--poll-interval", "0.01")
 
     assert result.exit_code == 0
-    assert "private link needs an active subscription" in result.stdout
+    assert "your private network needs an active subscription" in result.stdout
     assert subscribe_url in result.stdout
 
 
@@ -155,7 +155,7 @@ def test_private_link_disable_success(
     result = _invoke("disable")
 
     assert result.exit_code == 0
-    assert "solstone private link is off" in result.stdout
+    assert "your private network is off" in result.stdout
 
 
 def test_private_link_disable_failure_prints_repair(
@@ -175,4 +175,4 @@ def test_private_link_disable_failure_prints_repair(
     output = result.stdout + result.stderr
 
     assert result.exit_code == 1
-    assert "couldn't turn off solstone private link" in output
+    assert "couldn't turn off your private network" in output

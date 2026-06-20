@@ -27,7 +27,7 @@ from solstone.think.convey_client import ConveyClientError, convey_cli, get_clie
 app = typer.Typer(
     help="Link — tunnel service for reaching this solstone from linked systems."
 )
-private_link_app = typer.Typer(help="solstone private link — reach home from anywhere.")
+private_link_app = typer.Typer(help="private network — reach home from anywhere.")
 app.add_typer(private_link_app, name="private-link")
 
 PAIR_TIMEOUT_SECONDS = 300
@@ -35,23 +35,23 @@ VALID_ROLES = {"", "phone", "observer", "peer"}
 LINKED_SYSTEMS_HEADING = "Linked systems:"
 PEERS_HEADING = "Peers:"
 PRIVATE_LINK_TERMINAL_PHASES = {"enabled", "revoked", "error", "needs_subscription"}
-PRIVATE_LINK_SETTING_UP = "setting up solstone private link..."
+PRIVATE_LINK_SETTING_UP = "setting up your private network..."
 PRIVATE_LINK_SETUP_SUCCESS = (
-    "solstone private link is on. your devices can reach home from anywhere."
+    "your private network is on. your devices can reach home from anywhere."
 )
-PRIVATE_LINK_SETUP_FAILED = "couldn't finish setting up solstone private link."
+PRIVATE_LINK_SETUP_FAILED = "couldn't finish setting up your private network."
 PRIVATE_LINK_PORTAL_CTA = "continue to approve →"
 PRIVATE_LINK_NEEDS_SUBSCRIPTION = (
-    "private link needs an active subscription before it can turn on. "
-    "your consent is saved; set one up, then enable private link again:"
+    "your private network needs an active subscription before it can turn on. "
+    "your consent is saved; set one up, then enable your private network again:"
 )
 PRIVATE_LINK_DISABLE_SUCCESS = (
-    "solstone private link is off. devices connect directly again."
+    "your private network is off. devices connect directly again."
 )
 PRIVATE_LINK_DISABLE_FAILED = (
-    "couldn't turn off solstone private link — it's still on. try again."
+    "couldn't turn off your private network — it's still on. try again."
 )
-PRIVATE_LINK_NEEDS_REPAIR = "solstone private link needs setting up again."
+PRIVATE_LINK_NEEDS_REPAIR = "your private network needs setting up again."
 PRIVATE_LINK_STATE_LABELS = {
     "enabled": "enabled",
     "not_enabled": "not enabled",
@@ -62,7 +62,7 @@ CLI_PAIR_JOIN_HINT = "link this device with:"
 CLI_PAIR_CA_FINGERPRINT_LABEL = "CA fingerprint"
 CLI_PAIR_NO_LAN_ADDRESS = (
     "can't start pairing — your solstone isn't reachable on a network address "
-    "yet. turn on solstone private link to pair from anywhere, or connect this "
+    "yet. turn on your private network to pair from anywhere, or connect this "
     "device to your home network."
 )
 
@@ -163,14 +163,14 @@ def _poll_private_link_until_terminal(
             return status, phase, str(guidance) if guidance else None
 
         if time.monotonic() >= deadline:
-            return status, "timeout", "timed out waiting for solstone private link."
+            return status, "timeout", "timed out waiting for your private network."
 
         if interval:
             time.sleep(interval)
 
 
 def _echo_private_link_status(status: dict[str, Any]) -> None:
-    posture = "solstone private link" if status.get("posture") == "spl" else "direct"
+    posture = "private network" if status.get("posture") == "spl" else "direct"
     typer.echo(f"posture: {posture}")
     typer.echo(f"state: {_private_link_state_label(status.get('state'))}")
     typer.echo(f"enrolled: {'yes' if status.get('enrolled') else 'no'}")
@@ -219,7 +219,7 @@ def _echo_private_link_terminal(
 @private_link_app.command("status")
 @convey_cli
 def private_link_status() -> None:
-    """Show solstone private link status."""
+    """Show private network status."""
 
     _echo_private_link_status(_get_private_link_status())
 
@@ -234,7 +234,7 @@ def private_link_setup(
         1.0, "--poll-interval", help="Seconds between status polls."
     ),
 ) -> None:
-    """Set up solstone private link."""
+    """Set up private network."""
 
     typer.echo(PRIVATE_LINK_SETTING_UP)
     response = _post_private_link("/app/link/private-link/enable")
@@ -251,7 +251,7 @@ def private_link_setup(
 @private_link_app.command("disable")
 @convey_cli
 def private_link_disable() -> None:
-    """Turn off solstone private link."""
+    """Turn off private network."""
 
     try:
         response = _post_private_link("/app/link/private-link/disable")
@@ -455,10 +455,10 @@ def status() -> None:
         typer.echo(f"Home label:    {state['home_label']}")
     typer.echo(f"Relay URL:     {state['relay_url']}")
     typer.echo(f"Enrolled:      {'yes' if state['enrolled'] else 'no'}")
-    posture = (
-        "solstone private link" if private_link.get("posture") == "spl" else "direct"
-    )
+    posture = "private network" if private_link.get("posture") == "spl" else "direct"
     typer.echo(f"Reach posture: {posture}")
-    typer.echo(f"Private link:  {_private_link_state_label(private_link.get('state'))}")
+    typer.echo(
+        f"Private network: {_private_link_state_label(private_link.get('state'))}"
+    )
     typer.echo(f"Paired devices: {paired_count}")
     typer.echo("Listen-WS state: (query convey /app/link/api/status for live state)")

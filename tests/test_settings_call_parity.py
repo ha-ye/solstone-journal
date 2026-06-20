@@ -360,5 +360,5 @@ def test_convey_status_host_url(
     assert bad_host.exit_code == 1
     assert bad_host.stderr == (
         "this needs an ip address — to reach home by name from anywhere, "
-        "set up solstone private link\n"
+        "turn on your private network\n"
     )

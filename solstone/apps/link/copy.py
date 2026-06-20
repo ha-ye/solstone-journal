@@ -59,7 +59,7 @@ STATUS_SENTENCES = {
     "offline": "can't reach your solstone right now.",
     "lan_unreachable": "your solstone is running, but devices can't reach it to pair yet.",
     "spl_online": "your solstone is reachable from anywhere.",
-    "spl_finishing_setup": "finishing setup with solstone private link...",
+    "spl_finishing_setup": "finishing setup with your private network…",
     "spl_offline": (
         "your solstone isn't reaching the network right now — devices can't connect "
         "from away. on your home wifi they still work."
@@ -78,7 +78,7 @@ MODE_BYO_DESC = (
     "VPN. the default."
 )
 MODE_BYO_DISCLOSURE = "sol pbc is never in the path"
-MODE_HOSTED_NAME = "solstone hosted"
+MODE_HOSTED_NAME = "private network"
 MODE_HOSTED_DESC = (
     "reach your journal from anywhere, through a relay sol pbc runs for you."
 )
@@ -92,7 +92,7 @@ MODE_HOSTED_SETUP_NOTE = (
     "it can't read."
 )
 MODE_HOSTED_SETUP_CTA = "set up the relay →"
-APP_ONOFF_LABEL = "link"
+APP_ONOFF_LABEL = "network"
 APP_ONOFF_SUB_BYO = "on — reachable over your own network"
 APP_ONOFF_SUB_HOSTED = "on — reachable from anywhere"
 REACH_HOME_ADDRESS_LABEL = "home address"
@@ -107,29 +107,29 @@ REACH_SPL_TRUST_LINE = (
     "the connection is end-to-end encrypted — sol pbc and cloudflare can see "
     "that your device and home met, and nothing inside."
 )
-REACH_SPL_MANAGE_LABEL = "manage solstone private link at services.solstone.app →"
+REACH_SPL_MANAGE_LABEL = "manage your private network at services.solstone.app →"
 REACH_SPL_CONNECTING_NOTE = "your home is connecting. this is usually quick."
 CHECK_AGAIN_LABEL = "check again"
-PRIVATE_LINK_DISABLE_CTA = "turn off solstone private link"
-PRIVATE_LINK_SETTING_UP = "setting up solstone private link…"
+PRIVATE_LINK_DISABLE_CTA = "turn off your private network"
+PRIVATE_LINK_SETTING_UP = "setting up your private network…"
 PRIVATE_LINK_PORTAL_CTA = "continue to approve →"
 PRIVATE_LINK_SETUP_SUCCESS = (
-    "solstone private link is on. your devices can reach home from anywhere."
+    "your private network is on. your devices can reach home from anywhere."
 )
-PRIVATE_LINK_SETUP_FAILED = "couldn't finish setting up solstone private link."
-PRIVATE_LINK_NEEDS_SUBSCRIPTION_HEADLINE = "private link needs a subscription"
+PRIVATE_LINK_SETUP_FAILED = "couldn't finish setting up your private network."
+PRIVATE_LINK_NEEDS_SUBSCRIPTION_HEADLINE = "your private network needs a subscription"
 PRIVATE_LINK_NEEDS_SUBSCRIPTION_DETAIL = (
-    "your consent is saved. private link needs an active subscription before it can "
-    "turn on; set one up, then enable it again."
+    "your consent is saved. your private network needs an active subscription "
+    "before it can turn on; set one up, then enable it again."
 )
 PRIVATE_LINK_NEEDS_SUBSCRIPTION_CTA = "set up a subscription"
 PRIVATE_LINK_DISABLE_SUCCESS = (
-    "solstone private link is off. devices connect directly again."
+    "your private network is off. devices connect directly again."
 )
 PRIVATE_LINK_DISABLE_FAILED = (
-    "couldn't turn off solstone private link — it's still on. try again."
+    "couldn't turn off your private network — it's still on. try again."
 )
-PRIVATE_LINK_NEEDS_REPAIR = "solstone private link needs setting up again."
+PRIVATE_LINK_NEEDS_REPAIR = "your private network needs setting up again."
 PRIVATE_LINK_RETRY_CTA = "try again"
 
 # --- U3 device-section copy ---

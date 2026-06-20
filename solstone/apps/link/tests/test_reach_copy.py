@@ -58,7 +58,7 @@ def test_reach_shell_spec_fixed_copy_is_locked() -> None:
         "offline": "can't reach your solstone right now.",
         "lan_unreachable": "your solstone is running, but devices can't reach it to pair yet.",
         "spl_online": "your solstone is reachable from anywhere.",
-        "spl_finishing_setup": "finishing setup with solstone private link...",
+        "spl_finishing_setup": "finishing setup with your private network…",
         "spl_offline": (
             "your solstone isn't reaching the network right now — devices can't "
             "connect from away. on your home wifi they still work."
@@ -80,7 +80,7 @@ def test_reach_shell_corrected_copy_is_locked() -> None:
         "your own VPN. the default."
     )
     assert copy.MODE_BYO_DISCLOSURE == "sol pbc is never in the path"
-    assert copy.MODE_HOSTED_NAME == "solstone hosted"
+    assert copy.MODE_HOSTED_NAME == "private network"
     assert copy.MODE_HOSTED_DESC == (
         "reach your journal from anywhere, through a relay sol pbc runs for you."
     )
@@ -94,7 +94,7 @@ def test_reach_shell_corrected_copy_is_locked() -> None:
         "encrypted traffic it can't read."
     )
     assert copy.MODE_HOSTED_SETUP_CTA == "set up the relay →"
-    assert copy.APP_ONOFF_LABEL == "link"
+    assert copy.APP_ONOFF_LABEL == "network"
     assert copy.APP_ONOFF_SUB_BYO == "on — reachable over your own network"
     assert copy.APP_ONOFF_SUB_HOSTED == "on — reachable from anywhere"
     assert copy.REACH_HOST_ADDRESS_DISCLOSURE == "▸ use a different address"
@@ -111,35 +111,34 @@ def test_reach_shell_corrected_copy_is_locked() -> None:
     )
     assert (
         copy.REACH_SPL_MANAGE_LABEL
-        == "manage solstone private link at services.solstone.app →"
+        == "manage your private network at services.solstone.app →"
     )
     assert (
         copy.REACH_SPL_CONNECTING_NOTE
         == "your home is connecting. this is usually quick."
     )
     assert copy.CHECK_AGAIN_LABEL == "check again"
-    assert copy.PRIVATE_LINK_DISABLE_CTA == "turn off solstone private link"
-    assert copy.PRIVATE_LINK_SETTING_UP == "setting up solstone private link…"
+    assert copy.PRIVATE_LINK_DISABLE_CTA == "turn off your private network"
+    assert copy.PRIVATE_LINK_SETTING_UP == "setting up your private network…"
     assert copy.PRIVATE_LINK_PORTAL_CTA == "continue to approve →"
     assert (
         copy.PRIVATE_LINK_SETUP_SUCCESS
-        == "solstone private link is on. your devices can reach home from anywhere."
+        == "your private network is on. your devices can reach home from anywhere."
     )
     assert (
         copy.PRIVATE_LINK_SETUP_FAILED
-        == "couldn't finish setting up solstone private link."
+        == "couldn't finish setting up your private network."
     )
     assert (
         copy.PRIVATE_LINK_DISABLE_SUCCESS
-        == "solstone private link is off. devices connect directly again."
+        == "your private network is off. devices connect directly again."
     )
     assert (
         copy.PRIVATE_LINK_DISABLE_FAILED
-        == "couldn't turn off solstone private link — it's still on. try again."
+        == "couldn't turn off your private network — it's still on. try again."
     )
     assert (
-        copy.PRIVATE_LINK_NEEDS_REPAIR
-        == "solstone private link needs setting up again."
+        copy.PRIVATE_LINK_NEEDS_REPAIR == "your private network needs setting up again."
     )
     assert copy.PRIVATE_LINK_RETRY_CTA == "try again"
 
@@ -170,8 +169,14 @@ def test_reach_shell_copy_stays_in_bounds() -> None:
             assert term not in lowered, value
         assert not acronym_re.search(lowered), value
 
-    spl_values = [
-        copy.REACH_SPL_MANAGE_LABEL,
-        copy.PRIVATE_LINK_DISABLE_CTA,
-    ]
-    assert all("solstone private link" in value for value in spl_values)
+    # the reach service is now named "private network"; the legacy names
+    # ("solstone private link" / "solstone hosted" / bare "private link") must
+    # never reappear in customer-facing reach copy.
+    assert copy.MODE_HOSTED_NAME == "private network"
+    assert "private network" in copy.REACH_SPL_MANAGE_LABEL
+    assert "private network" in copy.PRIVATE_LINK_DISABLE_CTA
+    for value in U2_COPY_VALUES:
+        lowered = value.lower()
+        assert "solstone private link" not in lowered, value
+        assert "solstone hosted" not in lowered, value
+        assert "private link" not in lowered, value

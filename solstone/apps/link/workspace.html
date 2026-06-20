@@ -897,7 +897,7 @@
     if (!operation) {
       if (latestPrivateLink.state === 'inconsistent') {
         setPrivateLinkOperation(
-          window.LinkCopy.PRIVATE_LINK_NEEDS_REPAIR || 'solstone private link needs setting up again.',
+          window.LinkCopy.PRIVATE_LINK_NEEDS_REPAIR || 'your private network needs setting up again.',
           '',
           { retryAction: startPrivateLinkSetup },
         );
@@ -908,19 +908,19 @@
     }
 
     const phase = operation.phase;
-    let headline = window.LinkCopy.PRIVATE_LINK_SETTING_UP || 'setting up solstone private link...';
+    let headline = window.LinkCopy.PRIVATE_LINK_SETTING_UP || 'setting up your private network...';
     let detail = typeof operation.guidance === 'string' ? operation.guidance : '';
     let retryAction = null;
     let subscribeUrl = '';
 
     if (phase === 'enabled') {
-      headline = window.LinkCopy.PRIVATE_LINK_SETUP_SUCCESS || 'solstone private link is on.';
+      headline = window.LinkCopy.PRIVATE_LINK_SETUP_SUCCESS || 'your private network is on.';
     } else if (phase === 'needs_subscription') {
-      headline = window.LinkCopy.PRIVATE_LINK_NEEDS_SUBSCRIPTION_HEADLINE || 'private link needs a subscription';
+      headline = window.LinkCopy.PRIVATE_LINK_NEEDS_SUBSCRIPTION_HEADLINE || 'your private network needs a subscription';
       detail = window.LinkCopy.PRIVATE_LINK_NEEDS_SUBSCRIPTION_DETAIL || detail;
       subscribeUrl = typeof operation.subscribe_url === 'string' ? operation.subscribe_url : '';
     } else if (phase === 'revoked' || phase === 'error') {
-      headline = window.LinkCopy.PRIVATE_LINK_SETUP_FAILED || "couldn't finish setting up solstone private link.";
+      headline = window.LinkCopy.PRIVATE_LINK_SETUP_FAILED || "couldn't finish setting up your private network.";
       retryAction = startPrivateLinkSetup;
     }
 
@@ -956,8 +956,8 @@
       await privateLinkSleep(1000);
     }
     setPrivateLinkOperation(
-      window.LinkCopy.PRIVATE_LINK_SETUP_FAILED || "couldn't finish setting up solstone private link.",
-      'timed out waiting for solstone private link.',
+      window.LinkCopy.PRIVATE_LINK_SETUP_FAILED || "couldn't finish setting up your private network.",
+      'timed out waiting for your private network.',
       { retryAction: startPrivateLinkSetup },
     );
     return null;
@@ -965,7 +965,7 @@
 
   async function startPrivateLinkSetup() {
     setPrivateLinkButtonsBusy(true);
-    setPrivateLinkOperation(window.LinkCopy.PRIVATE_LINK_SETTING_UP || 'setting up solstone private link...');
+    setPrivateLinkOperation(window.LinkCopy.PRIVATE_LINK_SETTING_UP || 'setting up your private network...');
     try {
       const start = await window.apiJson('/app/link/private-link/enable', { method: 'POST' });
       const consentUrl = start?.operation?.portal_url;
@@ -975,7 +975,7 @@
       await refreshStatus();
     } catch (err) {
       setPrivateLinkOperation(
-        window.LinkCopy.PRIVATE_LINK_SETUP_FAILED || "couldn't finish setting up solstone private link.",
+        window.LinkCopy.PRIVATE_LINK_SETUP_FAILED || "couldn't finish setting up your private network.",
         err?.rawDetail || err?.serverMessage || err?.message || '',
         { retryAction: startPrivateLinkSetup },
       );
@@ -992,10 +992,10 @@
       const status = result?.status || {};
       latestPrivateLink = status;
       if (status.state === 'not_enabled') {
-        setPrivateLinkOperation(window.LinkCopy.PRIVATE_LINK_DISABLE_SUCCESS || 'solstone private link is off.');
+        setPrivateLinkOperation(window.LinkCopy.PRIVATE_LINK_DISABLE_SUCCESS || 'your private network is off.');
       } else {
         setPrivateLinkOperation(
-          window.LinkCopy.PRIVATE_LINK_NEEDS_REPAIR || 'solstone private link needs setting up again.',
+          window.LinkCopy.PRIVATE_LINK_NEEDS_REPAIR || 'your private network needs setting up again.',
           '',
           { retryAction: startPrivateLinkSetup },
         );
@@ -1003,7 +1003,7 @@
       await refreshStatus();
     } catch (err) {
       setPrivateLinkOperation(
-        window.LinkCopy.PRIVATE_LINK_DISABLE_FAILED || "couldn't turn off solstone private link.",
+        window.LinkCopy.PRIVATE_LINK_DISABLE_FAILED || "couldn't turn off your private network.",
         err?.rawDetail || err?.serverMessage || err?.message || '',
         { retryAction: disablePrivateLink },
       );

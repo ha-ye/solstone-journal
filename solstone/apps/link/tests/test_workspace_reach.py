@@ -20,6 +20,7 @@ def _normalized_body(body: str) -> str:
         .replace("\\u2014", "—")
         .replace("\\u2192", "→")
         .replace("\\u25b8", "▸")
+        .replace("\\u2026", "…")
     )
 
 
