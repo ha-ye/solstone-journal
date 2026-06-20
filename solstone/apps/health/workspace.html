@@ -1434,7 +1434,7 @@
         <div class="vitals-value" id="schedulesValue" aria-hidden="true"></div>
       </div>
     </div>
-    <div class="trust-indicator" id="trustIndicator">🔒 all data stored locally on this machine</div>
+    <div class="trust-indicator" id="trustIndicator">🔒 all data stored locally on your device</div>
   </div>
 
   <div class="dashboard-card activity-section hidden" id="errorSummary">
@@ -3488,7 +3488,7 @@
     if (!s || (s.queue_size === 0 && !s.segment)) {
       elements.syncCard.classList.add('hidden');
       if (elements.trustIndicator) {
-        elements.trustIndicator.textContent = '🔒 All data stored locally on this machine';
+        elements.trustIndicator.textContent = '🔒 all data stored locally on your device';
       }
       updateAllQuiet();
       updateStatusSummary();
@@ -3508,7 +3508,7 @@
       if (s && s.host) {
         elements.trustIndicator.textContent = '🔒 All data stored locally · Syncing to ' + s.host;
       } else {
-        elements.trustIndicator.textContent = '🔒 All data stored locally on this machine';
+        elements.trustIndicator.textContent = '🔒 all data stored locally on your device';
       }
     }
 
