@@ -135,6 +135,12 @@ def create_app(journal: str = "") -> Flask:
     registry = AppRegistry()
     registry.discover()
     registry.register_blueprints(app)
+    # One deliberate legacy alias: shipped iOS clients pair against /app/link/*.
+    # Serve the SAME view objects at the legacy prefix under endpoint names
+    # app:link.* so the cert-less gate's app:link.pair references keep resolving.
+    # Single-app special case — NOT a generic per-app alias framework.
+    network_bp = registry.apps["network"].blueprint
+    app.register_blueprint(network_bp, name="app:link", url_prefix="/app/link")
 
     # Register app system context processors
     register_app_context(app, registry)

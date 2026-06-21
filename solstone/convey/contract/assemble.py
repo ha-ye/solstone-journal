@@ -16,7 +16,7 @@ from solstone.convey.reasons import Reason
 from .spec import FieldSpec, OperationSpec, ParamSpec, RequestSpec, ResponseSpec
 
 FRAGMENT_MODULES = [
-    "solstone.apps.link.contract",
+    "solstone.apps.network.contract",
     "solstone.apps.observer.contract",
     "solstone.convey.push_contract",
 ]

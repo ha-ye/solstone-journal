@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from solstone.apps.link.contract import OPERATIONS as LINK_OPERATIONS
+from solstone.apps.network.contract import OPERATIONS as LINK_OPERATIONS
 from solstone.apps.observer.contract import OPERATIONS as OBSERVER_OPERATIONS
 from solstone.convey import create_app
 from solstone.convey.contract.assemble import build_document
@@ -28,11 +28,11 @@ from tests._baseline_harness import (
 
 CONTRACTED_PATHS = {
     "/api/push/register",
-    "/app/link/api/status",
-    "/app/link/local-endpoints",
-    "/app/link/pair",
-    "/app/link/pair-start",
-    "/app/link/unpair",
+    "/app/network/api/status",
+    "/app/network/local-endpoints",
+    "/app/network/pair",
+    "/app/network/pair-start",
+    "/app/network/unpair",
     "/app/observer/callosum",
     "/app/observer/ingest",
     "/app/observer/ingest/event",
@@ -245,7 +245,7 @@ def test_named_response_no_drift(contract_app):
     document = build_document()
     allowed = _declared_response_fields(document, "link.status")
 
-    response = client.get("/app/link/api/status")
+    response = client.get("/app/network/api/status")
 
     assert response.status_code == 200
     body = response.get_json()

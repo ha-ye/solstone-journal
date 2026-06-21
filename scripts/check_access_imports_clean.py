@@ -79,6 +79,9 @@ ROUTING_CASES: tuple[tuple[str, list[str], str], ...] = (
         "is a journal-access command",
     ),
 )
+# Keep in lockstep with solstone.think.call.CALL_NAME_OVERRIDES. The network app
+# intentionally keeps its shipped public command name `sol call link`.
+CALL_NAME_OVERRIDES = {"network": "link"}
 
 CHILD = r"""
 import importlib
@@ -136,7 +139,7 @@ def _call_app_names(root: Path) -> list[str]:
     if not apps_dir.is_dir():
         return []
     return sorted(
-        app_dir.name
+        CALL_NAME_OVERRIDES.get(app_dir.name, app_dir.name)
         for app_dir in apps_dir.iterdir()
         if app_dir.is_dir()
         and not app_dir.name.startswith("_")

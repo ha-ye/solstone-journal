@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from solstone.apps.link import routes as link_routes
+from solstone.apps.network import routes as link_routes
 from solstone.convey import root as root_module
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.paths import authorized_clients_path
@@ -31,7 +31,7 @@ def test_fingerprinted_pl_identity_rechecked_each_request(
     client = app.test_client()
     identity = pl_identity(FINGERPRINT)
     response = client.get(
-        "/app/link/api/status",
+        "/app/network/api/status",
         base_url="https://solstone.local",
         environ_overrides={"pl.identity": identity},
     )
@@ -41,7 +41,7 @@ def test_fingerprinted_pl_identity_rechecked_each_request(
     authorized_clients_path().write_text(json.dumps([], indent=2) + "\n")
 
     response = client.get(
-        "/app/link/api/status",
+        "/app/network/api/status",
         base_url="https://solstone.local",
         environ_overrides={"pl.identity": identity},
     )
@@ -62,7 +62,7 @@ def test_corrupt_authorized_clients_fails_closed_without_last_good_cache(
     client = app.test_client()
     identity = pl_identity(FINGERPRINT)
     response = client.get(
-        "/app/link/api/status",
+        "/app/network/api/status",
         base_url="https://solstone.local",
         environ_overrides={"pl.identity": identity},
     )
@@ -72,7 +72,7 @@ def test_corrupt_authorized_clients_fails_closed_without_last_good_cache(
     authorized_clients_path().write_text("{not json", encoding="utf-8")
 
     response = client.get(
-        "/app/link/api/status",
+        "/app/network/api/status",
         base_url="https://solstone.local",
         environ_overrides={"pl.identity": identity},
     )

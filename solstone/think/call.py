@@ -19,6 +19,9 @@ from pathlib import Path
 import typer
 
 logger = logging.getLogger(__name__)
+# Keep in lockstep with scripts/check_access_imports_clean.py. The network app
+# keeps its shipped CLI subcommand name `sol call link`.
+CALL_NAME_OVERRIDES = {"network": "link"}
 
 call_app = typer.Typer(
     name="call",
@@ -67,7 +70,9 @@ def _discover_app_calls() -> None:
                 )
                 continue
 
-            call_app.add_typer(sub_app, name=app_name)
+            call_app.add_typer(
+                sub_app, name=CALL_NAME_OVERRIDES.get(app_name, app_name)
+            )
             logger.info(f"Loaded CLI commands from app: {app_name}")
         except Exception as e:
             if strict:

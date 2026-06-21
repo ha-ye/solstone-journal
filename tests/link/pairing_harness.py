@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 from OpenSSL import SSL
 
-from solstone.apps.link.routes import _build_pair_link
+from solstone.apps.network.routes import _build_pair_link
 from solstone.convey.secure_listener.identity import ConveyIdentity
 from solstone.convey.secure_listener.mux import Multiplexer, StreamWriter
 from solstone.convey.secure_listener.tls import (
@@ -84,7 +84,7 @@ class PairingHarness:
         )
 
     def pair_url(self, nonce: str) -> str:
-        return f"https://{self.host}:{self.port}/app/link/pair?token={nonce}"
+        return f"https://{self.host}:{self.port}/app/network/pair?token={nonce}"
 
     def wait_until_idle(self, timeout: float = 1.0) -> bool:
         deadline = time.monotonic() + timeout

@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from cryptography.hazmat.primitives import serialization
 
-from solstone.apps.link.routes import _build_pair_link
+from solstone.apps.network.routes import _build_pair_link
 from solstone.convey.secure_listener.tls import issue_server_cert
 from solstone.think.link import client as link_client
 from solstone.think.link import join_cli
@@ -266,7 +266,7 @@ def test_post_pair_framed_requires_explicit_port() -> None:
     # Criterion 9: pair-link framed targets must include an explicit port.
     with pytest.raises(ValueError) as exc_info:
         join_cli._post_pair_framed(
-            "https://receiver/app/link/pair?token=x",
+            "https://receiver/app/network/pair?token=x",
             _csr_body(),
         )
 
@@ -355,7 +355,7 @@ def test_framed_connect_refused_is_single_line_error() -> None:
 
     with pytest.raises(ValueError) as exc_info:
         join_cli._post_pair_framed(
-            f"https://127.0.0.1:{port}/app/link/pair?token=x",
+            f"https://127.0.0.1:{port}/app/network/pair?token=x",
             _csr_body(),
         )
 
@@ -379,7 +379,7 @@ def test_framed_tls_failure_is_single_line_error(
 
     with pytest.raises(ValueError) as exc_info:
         join_cli._post_pair_framed(
-            "https://127.0.0.1:1/app/link/pair?token=x",
+            "https://127.0.0.1:1/app/network/pair?token=x",
             _csr_body(),
         )
 
@@ -403,7 +403,7 @@ def test_framed_handshake_then_drop_is_single_line_error(
 
     with pytest.raises(ValueError) as exc_info:
         join_cli._post_pair_framed(
-            "https://127.0.0.1:1/app/link/pair?token=x",
+            "https://127.0.0.1:1/app/network/pair?token=x",
             _csr_body(),
         )
 
@@ -424,7 +424,7 @@ def test_framed_connect_timeout_is_single_line_error(
 
     with pytest.raises(ValueError) as exc_info:
         join_cli._post_pair_framed(
-            "https://127.0.0.1:1/app/link/pair?token=x",
+            "https://127.0.0.1:1/app/network/pair?token=x",
             _csr_body(),
         )
 

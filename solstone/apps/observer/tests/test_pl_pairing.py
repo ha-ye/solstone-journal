@@ -15,8 +15,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
-from solstone.apps.link import routes as link_routes
-from solstone.apps.link.tests.conftest import _StubWatcher
+from solstone.apps.network import routes as link_routes
+from solstone.apps.network.tests.conftest import _StubWatcher
 from solstone.convey.secure_listener import ConveyIdentity
 from solstone.think.link.local_endpoints import LocalEndpoint
 from solstone.think.link.nonces import Nonce
@@ -75,7 +75,7 @@ def _make_csr(label: str = "test") -> str:
 
 def _start_pair(env, *, role: str = "", label: str = "Pair Device") -> dict:
     response = env.client.post(
-        "/app/link/pair-start",
+        "/app/network/pair-start",
         json={"device_label": label, "role": role},
     )
     assert response.status_code == 200
@@ -85,7 +85,7 @@ def _start_pair(env, *, role: str = "", label: str = "Pair Device") -> dict:
 def _pair(env, *, role: str = "", label: str = "Pair Device") -> dict:
     started = _start_pair(env, role=role, label=label)
     response = env.client.post(
-        "/app/link/pair",
+        "/app/network/pair",
         json={"nonce": started["nonce"], "csr": _make_csr(label)},
     )
     assert response.status_code == 200

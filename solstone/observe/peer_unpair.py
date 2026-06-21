@@ -47,7 +47,7 @@ def _do_unpair(
     stdout: TextIO = sys.stdout,
 ) -> None:
     response = session.post(
-        "/app/link/unpair",
+        "/app/network/unpair",
         json={"fingerprint": peer.cert_fingerprint},
     )
     if response.status_code == 200:

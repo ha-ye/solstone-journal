@@ -22,7 +22,7 @@ RETRYABLE_CODES = frozenset(
 OPERATION_GRACE_SECONDS = 30.0
 # Phases at which an operation is finished — no actionable consent CTA should
 # be surfaced (the portal page is already satisfied or moot). Mirrors the JS
-# PRIVATE_LINK_TERMINAL_PHASES set in solstone/apps/link/workspace.html — the
+# PRIVATE_LINK_TERMINAL_PHASES set in solstone/apps/network/workspace.html — the
 # two sit on opposite sides of the Python/JS boundary with no shared source,
 # so keep them in lockstep.
 TERMINAL_PHASES = frozenset({"enabled", "needs_subscription", "revoked", "error"})

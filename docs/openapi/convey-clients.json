@@ -384,7 +384,7 @@
         ]
       }
     },
-    "/app/link/api/status": {
+    "/app/network/api/status": {
       "get": {
         "description": "Return the current link service posture and reachability view.",
         "operationId": "link.status",
@@ -511,7 +511,7 @@
         ]
       }
     },
-    "/app/link/local-endpoints": {
+    "/app/network/local-endpoints": {
       "get": {
         "description": "Return loopback-only LAN endpoint hints for link clients.",
         "operationId": "link.localEndpoints",
@@ -602,7 +602,7 @@
         ]
       }
     },
-    "/app/link/pair": {
+    "/app/network/pair": {
       "post": {
         "description": "Accept a client CSR plus nonce, then return a signed certificate and home attestation.",
         "operationId": "link.pair",
@@ -782,7 +782,7 @@
         ]
       }
     },
-    "/app/link/pair-start": {
+    "/app/network/pair-start": {
       "post": {
         "description": "Create a short-lived pairing nonce and return the link payload a native client can scan or open.",
         "operationId": "link.pairStart",
@@ -890,7 +890,7 @@
         ]
       }
     },
-    "/app/link/unpair": {
+    "/app/network/unpair": {
       "post": {
         "description": "Remove a paired client by fingerprint or device label.",
         "operationId": "link.unpair",

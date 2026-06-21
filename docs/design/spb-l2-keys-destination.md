@@ -51,7 +51,7 @@ is in this lode.
 Canonical recovery key:
 
 - Exactly 64 uppercase Crockford characters.
-- Alphabet source: `from solstone.apps.link.crockford32 import ALPHABET`.
+- Alphabet source: `from solstone.apps.network.crockford32 import ALPHABET`.
 - Generated as `secrets.choice(ALPHABET)` per character.
 - 64 characters * 5 bits per Crockford character = 320 bits.
 - Persist the canonical form.
@@ -87,7 +87,7 @@ False-accept proof for lookalike folding:
 
 Alphabet import validation:
 
-- `solstone/apps/link/crockford32.py` imports no solstone modules. It defines
+- `solstone/apps/network/crockford32.py` imports no solstone modules. It defines
   `ALPHABET` at line 8 and depends only on local constants/functions, so importing
   the constant from `keys.py` cannot create a cycle.
 - The same think-to-apps edge already exists in

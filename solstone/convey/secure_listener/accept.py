@@ -24,7 +24,7 @@ from solstone.think.link.window import window_open
 from .identity import ConveyIdentity
 from .mux import Multiplexer, StreamWriter
 from .tls import TlsError, drive_tls, new_server
-from .wsgi import DispatchResult, dispatch_stream
+from .wsgi import CERTLESS_PAIR_ENDPOINTS, DispatchResult, dispatch_stream
 
 CallosumEmit = Callable[[str, dict[str, Any]], None]
 
@@ -398,7 +398,7 @@ class SecureListener:
         handle: CertlessConnection,
         result: DispatchResult,
     ) -> bool:
-        if result.endpoint != "app:link.pair":
+        if result.endpoint not in CERTLESS_PAIR_ENDPOINTS:
             return False
         if 200 <= result.status < 300:
             self._certless_pair_failures[handle.connection_id] = 0

@@ -59,7 +59,7 @@ def test_journal_link_routes_to_management_app_help(
 ) -> None:
     from typer.main import get_command
 
-    from solstone.apps.link import call as link_call
+    from solstone.apps.network import call as link_call
 
     monkeypatch.setattr(sys, "argv", ["journal link", "--help"])
 

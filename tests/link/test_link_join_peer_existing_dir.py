@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from cryptography.hazmat.primitives import serialization
 
-from solstone.apps.link.routes import _build_pair_link
+from solstone.apps.network.routes import _build_pair_link
 from solstone.think.link import join_cli
 from solstone.think.link.ca import generate_ca
 

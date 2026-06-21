@@ -46,7 +46,7 @@ def link_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 def test_local_endpoints_returns_empty_without_watcher(link_client) -> None:
-    response = link_client.get("/app/link/local-endpoints")
+    response = link_client.get("/app/network/local-endpoints")
 
     assert response.status_code == 200
     payload = response.get_json()
@@ -67,7 +67,7 @@ def test_local_endpoints_returns_watcher_snapshot(link_client) -> None:
         )
     )
 
-    response = link_client.get("/app/link/local-endpoints")
+    response = link_client.get("/app/network/local-endpoints")
 
     assert response.status_code == 200
     payload = response.get_json()
@@ -80,7 +80,7 @@ def test_local_endpoints_returns_watcher_snapshot(link_client) -> None:
 
 def test_local_endpoints_non_loopback_404(link_client) -> None:
     response = link_client.get(
-        "/app/link/local-endpoints",
+        "/app/network/local-endpoints",
         environ_base={"REMOTE_ADDR": "192.168.1.5"},
     )
 

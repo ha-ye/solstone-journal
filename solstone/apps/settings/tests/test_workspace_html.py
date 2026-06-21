@@ -184,7 +184,7 @@ def test_workspace_guide_copy_stays_in_bounds():
     )
     # three live signposts route to their own app pages
     assert '<a class="sapp" href="/app/thinking">' in guide
-    assert '<a class="sapp" href="/app/link">' in guide
+    assert '<a class="sapp" href="/app/network">' in guide
     assert '<a class="sapp" href="/app/backup">' in guide
     # verbatim founder copy
     assert "manage what AI models your journal uses" in guide
