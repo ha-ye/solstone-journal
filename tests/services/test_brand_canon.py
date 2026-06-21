@@ -25,4 +25,6 @@ def test_handoff_guidance_avoids_blocked_brand_terms() -> None:
     ]
 
     assert all(not BLOCKED_COPY_RE.search(value) for value in strings)
-    assert all("sol private link" not in value.lower() for value in strings)
+    # "private link" is retired (naming v2.1 → "private network"); the substring
+    # also covers the older "sol private link" form.
+    assert all("private link" not in value.lower() for value in strings)
