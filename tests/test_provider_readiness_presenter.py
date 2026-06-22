@@ -5,6 +5,9 @@ import ast
 from pathlib import Path
 
 from solstone.convey.provider_readiness import (
+    _ENTRIES,
+    _STARTUP_REASON_CODES,
+    backlog_reason_category,
     is_blocking_reason,
     mapped_reason_codes,
     present_for_reason,
@@ -66,6 +69,16 @@ def test_explicit_extra_codes_are_mapped():
     mapped = mapped_reason_codes()
     assert "chat_pipeline_unavailable" in mapped
     assert "no_output" in mapped
+
+
+def test_backlog_reason_category_derives_from_taxonomy():
+    for code, entry in _ENTRIES.items():
+        expected = "startup" if code in _STARTUP_REASON_CODES else entry.klass
+        assert backlog_reason_category(code) == expected
+    for code in _STARTUP_REASON_CODES:
+        assert code in _ENTRIES
+    for code in ("corrupt_raw", "catchup_backoff", "totally_made_up", None):
+        assert backlog_reason_category(code) == "generic"
 
 
 def test_semantic_key_composition_is_stable():

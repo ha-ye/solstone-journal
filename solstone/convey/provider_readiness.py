@@ -275,6 +275,14 @@ _ENTRIES: dict[str, _Entry] = {
     ),
 }
 
+_STARTUP_REASON_CODES = frozenset(
+    {
+        "local_model_installing",
+        "local_model_loading",
+        "local_model_not_ready",
+    }
+)
+
 _READY_ENTRY = _Entry(
     klass="generic",
     summary="{provider} is ready",
@@ -302,6 +310,20 @@ def mapped_reason_codes() -> frozenset[str]:
 def is_blocking_reason(reason_code: str) -> bool:
     entry = _ENTRIES.get(reason_code)
     return bool(entry and entry.klass in {"setup", "provider"})
+
+
+def backlog_reason_category(reason_code: str | None) -> str:
+    """Coarse category for the stuck-day backlog surface.
+
+    Orthogonal to `_Entry.klass`: the startup carve-out lets transient
+    local-model states map to a "try again" sentence instead of the
+    missing-setting one. Codes absent from the taxonomy (corrupt_raw,
+    catchup_backoff, unknown) fall through to "generic".
+    """
+    if reason_code in _STARTUP_REASON_CODES:
+        return "startup"
+    entry = _ENTRIES.get(reason_code)
+    return entry.klass if entry is not None else "generic"
 
 
 def semantic_key_for(reason_code: str, provider: str, model: str | None = None) -> str:

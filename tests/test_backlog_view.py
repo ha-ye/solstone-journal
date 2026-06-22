@@ -3,8 +3,55 @@
 
 from __future__ import annotations
 
+import pytest
+
 from solstone.convey import backlog_copy
 from solstone.convey.backlog_view import stuck_rows, verdict
+
+
+def _assert_single_stuck_reason(reason_code: str, expected: str) -> None:
+    rows = stuck_rows(
+        {
+            "days": [
+                {
+                    "day": "20260601",
+                    "state": "stuck",
+                    "segments": 1,
+                    "units": 0,
+                    "reason": "failing_step",
+                    "reason_code": reason_code,
+                }
+            ],
+            "errors": [],
+        }
+    )
+
+    assert rows[0]["reason"] == expected
+
+
+@pytest.mark.parametrize(
+    ("reason_code", "expected"),
+    [
+        ("local_model_installing", backlog_copy.BACKLOG_REASON_PROVIDER_DOWN),
+        ("local_model_loading", backlog_copy.BACKLOG_REASON_PROVIDER_DOWN),
+        ("local_model_not_ready", backlog_copy.BACKLOG_REASON_PROVIDER_DOWN),
+        ("provider_key_missing", backlog_copy.BACKLOG_REASON_MISSING_CONFIG),
+        ("local_model_missing", backlog_copy.BACKLOG_REASON_MISSING_CONFIG),
+        ("unsupported_platform", backlog_copy.BACKLOG_REASON_MISSING_CONFIG),
+        ("gpu_probe_failed", backlog_copy.BACKLOG_REASON_MISSING_CONFIG),
+        ("provider_unavailable", backlog_copy.BACKLOG_REASON_PROVIDER_DOWN),
+        ("local_server_unhealthy", backlog_copy.BACKLOG_REASON_PROVIDER_DOWN),
+        ("local_endpoint_unreachable", backlog_copy.BACKLOG_REASON_PROVIDER_DOWN),
+        ("provider_quota_exceeded", backlog_copy.BACKLOG_REASON_PROVIDER_DOWN),
+        ("provider_key_invalid", backlog_copy.BACKLOG_REASON_PROVIDER_DOWN),
+        ("catchup_backoff", backlog_copy.BACKLOG_REASON_FAILING_STEP),
+        ("totally_made_up_code", backlog_copy.BACKLOG_REASON_FAILING_STEP),
+    ],
+)
+def test_stuck_rows_maps_reason_categories_to_backlog_copy(
+    reason_code: str, expected: str
+):
+    _assert_single_stuck_reason(reason_code, expected)
 
 
 def test_stuck_rows_maps_readiness_reasons_and_carries_operator_fields():

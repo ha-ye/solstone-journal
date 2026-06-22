@@ -8,39 +8,12 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from solstone.convey import backlog_copy
+from solstone.convey import backlog_copy, provider_readiness
 
 __all__ = [
     "stuck_rows",
     "verdict",
 ]
-
-_MISSING_CONFIG_REASONS = {
-    "missing_config",
-    "setup_blocker",
-    "provider_key_missing",
-    "provider_key_invalid",
-    "ram_insufficient",
-    "gpu_unavailable",
-    "local_model_missing",
-    "model_missing",
-    "binary_missing",
-    "local_model_installing",
-    "local_model_loading",
-    "local_model_not_ready",
-    "unsupported_platform",
-    "unsupported_model",
-    "sha256_mismatch",
-    "archive_path_traversal",
-}
-_PROVIDER_DOWN_REASONS = {
-    "provider_down",
-    "provider_blocker",
-    "provider_quota_exceeded",
-    "provider_unavailable",
-    "local_server_unhealthy",
-    "local_endpoint_unreachable",
-}
 
 
 def _count(value: Any) -> int | float:
@@ -123,9 +96,14 @@ def _reason_copy(day: dict) -> str:
     marker = reason_code if isinstance(reason_code, str) and reason_code else reason
     if marker == "corrupt_raw":
         return backlog_copy.BACKLOG_REASON_CORRUPT_RAW
-    if marker in _MISSING_CONFIG_REASONS:
+    category = provider_readiness.backlog_reason_category(marker)
+    if category == "setup":
         return backlog_copy.BACKLOG_REASON_MISSING_CONFIG
-    if marker in _PROVIDER_DOWN_REASONS:
+    if category in {"provider", "startup"}:
+        # startup (transient local-model states) has no dedicated sentence;
+        # PROVIDER_DOWN ("...try again") is the closest honest existing copy.
+        # Follow-up: a future copy pass could add a "still starting up - try
+        # again shortly" sentence and split startup off from provider here.
         return backlog_copy.BACKLOG_REASON_PROVIDER_DOWN
     return backlog_copy.BACKLOG_REASON_FAILING_STEP
 
