@@ -3672,7 +3672,7 @@
     if (classifyLogLevel(record.stream, record.line) === 'error') {
       window.AppServices?.quietNotifs?.add({
         source: name,
-        message: stripLogPrefix(record.line).slice(0, 120),
+        message: stripLogPrefix(record.line),
         ts: record.ts
       });
       elements.logsAnnouncer.textContent = stripLogPrefix(record.line);
