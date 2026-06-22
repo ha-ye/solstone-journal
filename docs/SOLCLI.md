@@ -19,6 +19,8 @@ The CLI has two tiers with distinct purposes:
 
 **Interactive entry points** (`sol chat`, `sol help`, `journal engage`) are top-level for discoverability even though they're user-facing. Agents don't invoke these.
 
+Console scripts are split across distributions. The base `solstone` package ships `sol` and `solstone`, both pointing at `solstone.think.sol_cli:main`. The `solstone-journal-host` distribution, pulled in by `solstone[journal]` / `solstone[journal-cuda]`, ships the host-only `journal` and `mlx-vlm-server` console scripts. The dispatcher, including `journal_main()`, still lives in base `solstone.think.sol_cli`; only the console-script wrapper moved. A thin/bare install therefore has no `journal` executable on PATH.
+
 ## Top-Level Commands (`sol <cmd>`)
 
 ### How they work

@@ -65,12 +65,6 @@ SOL_SERVICE_CMD_REMOVED_ERROR = (
     "('sol' is the journal-access surface; 'journal' surfaces journal-service "
     "commands; see 'journal --help'.)"
 )
-JOURNAL_EXTRA_INSTALL_HINT = (
-    "Error: this command needs the journal host dependencies.\n"
-    "Install them with:\n"
-    "  pip install 'solstone[journal]'\n"
-    "  uv tool install 'solstone[journal]'"
-)
 
 SOL_HELP_GROUP_CONVERSATION = "Conversation"
 SOL_HELP_GROUP_YOUR_JOURNAL = "Your journal"
@@ -321,29 +315,11 @@ def resolve_command(name: str) -> tuple[str, list[str], str]:
     )
 
 
-def _missing_journal_host_dep(
-    exc: ImportError,
-    *,
-    surface: str,
-    binary: str,
-) -> bool:
-    if not isinstance(exc, ModuleNotFoundError):
-        return False
-    if surface != "service" and not (surface == "universal" and binary == "journal"):
-        return False
-    missing_name = exc.name
-    if not missing_name:
-        return False
-    return missing_name != "solstone" and not missing_name.startswith("solstone.")
-
-
-def run_command(module_path: str, *, surface: str, binary: str) -> int:
+def run_command(module_path: str) -> int:
     """Import and run a module's main() function.
 
     Args:
         module_path: Dotted module path (e.g., "solstone.think.importers.cli")
-        surface: Resolved command surface.
-        binary: CLI binary used for dispatch (`sol` or `journal`).
 
     Returns:
         Exit code (0 for success)
@@ -351,9 +327,6 @@ def run_command(module_path: str, *, surface: str, binary: str) -> int:
     try:
         module = importlib.import_module(module_path)
     except ImportError as e:
-        if _missing_journal_host_dep(e, surface=surface, binary=binary):
-            print(JOURNAL_EXTRA_INSTALL_HINT, file=sys.stderr)
-            return 1
         print(f"Error: Could not import module '{module_path}': {e}", file=sys.stderr)
         return 1
 
@@ -478,7 +451,7 @@ def _dispatch(binary: str, allowed_surfaces: frozenset[str] | None) -> None:
     sys.argv = [f"{binary} {cmd}"] + preset_args + rest
 
     # Run the command
-    exit_code = run_command(module_path, surface=surface, binary=binary)
+    exit_code = run_command(module_path)
     sys.exit(exit_code)
 
 

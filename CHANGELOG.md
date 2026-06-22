@@ -4,6 +4,12 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [Unreleased]
+
+### Changed
+- a plain `solstone` install now carries only the thin client commands, `sol` and `solstone`. it no longer puts journal-host commands on your PATH.
+- the `journal` and `mlx-vlm-server` host commands now come with `solstone[journal]` or `solstone[journal-cuda]`, through the new `solstone-journal-host` package. with `uv tool`, install with `uv tool install --with-executables-from solstone-journal-host 'solstone[journal]'`; with pipx, use `pipx install --include-deps 'solstone[journal]'`; with pip, `pip install 'solstone[journal]'` exposes them on its own.
+
 ## [0.6.10] - 2026-06-22
 
 ### Changed

@@ -14,7 +14,7 @@ export TMPDIR := /var/tmp
 PYTEST_BASETEMP_INIT := BASETEMP=$$(mktemp -d /var/tmp/solstone-pytest-XXXXXX); trap 'rm -rf "$$BASETEMP"' EXIT INT TERM;
 PYTEST_BASETEMP_FLAG := --basetemp "$$BASETEMP"
 
-.PHONY: install uninstall test test-cov test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills openapi check-openapi contract check-contract dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api update-api-baselines service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-call-http-only check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-thin-base-install check-cogitate-prompts smoke-cogitate release release-test FORCE
+.PHONY: install uninstall test test-cov test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging openapi check-openapi contract check-contract dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api update-api-baselines service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-call-http-only check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-thin-base-install check-cogitate-prompts smoke-cogitate release release-test FORCE
 
 # Default target - install package in editable mode
 all: install
@@ -54,7 +54,7 @@ EXTRAS_ARGS := --extra $(JOURNAL_EXTRA)
 # pre-step, so neither should abort at parse time when uv is absent — they
 # report uv-absence themselves. test/ci/etc. still abort early.
 UV := $(shell command -v uv 2>/dev/null)
-UV_OPTIONAL_GOALS := preflight install
+UV_OPTIONAL_GOALS := preflight install render-packaging
 ifndef UV
 ifneq ($(filter-out $(UV_OPTIONAL_GOALS),$(MAKECMDGOALS)),)
 $(error uv is not installed. Install it: curl -LsSf https://astral.sh/uv/install.sh | sh)
@@ -71,6 +71,7 @@ USER_BIN := $(HOME)/.local/bin
 
 # Marker file to track installation
 .installed: pyproject.toml uv.lock .python-version-hash
+	python3 scripts/render_packaging.py
 	$(MAKE) preflight
 	@echo "Installing package with uv..."
 	$(UV) sync --group dev $(EXTRAS_ARGS)
@@ -89,6 +90,7 @@ USER_BIN := $(HOME)/.local/bin
 
 # Generate lock file if missing
 uv.lock: pyproject.toml
+	python3 scripts/render_packaging.py
 	$(UV) lock
 
 # Install package in editable mode with isolated venv
@@ -129,6 +131,9 @@ install: .installed
 # blocker failure exits non-zero. Also wired as the first step of `.installed`.
 preflight:
 	python3 scripts/preflight.py
+
+render-packaging:
+	python3 scripts/render_packaging.py
 
 # Setup skill symlinks
 skills:
@@ -423,6 +428,9 @@ install-checks: .installed
 	@echo ""
 	@echo "=== Checking journal format contract ==="
 	@$(MAKE) check-contract
+	@echo ""
+	@echo "=== Checking packaging render ==="
+	@python3 scripts/render_packaging.py --check
 	@echo ""
 	@echo "=== Checking extras consistency ==="
 	@$(VENV_BIN)/python scripts/check_extras_consistency.py

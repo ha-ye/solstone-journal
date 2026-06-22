@@ -67,6 +67,11 @@ dependencies = [
 # and onnxruntime-gpu own the same `onnxruntime/` import dir and clobber each
 # other (see the Makefile note on --all-extras).
 #
+# [journal] and [journal-cuda] also pull in the solstone-journal-host shim
+# distribution, built as the uv workspace member under
+# packages/solstone-journal-host/. That shim owns the host-only `journal` and
+# `mlx-vlm-server` console scripts; base solstone keeps only `sol`/`solstone`.
+#
 # [pdf] / [whisper] / [parakeet-onnx-cpu|cuda] remain as internal building
 # blocks: they back the per-feature install hints (think/features.py,
 # observe/transcribe/parakeet_hints.py) and the lazy-import boundaries, and
@@ -167,7 +172,7 @@ journal-host = [
 
 # Run a journal here — the full host stack with CPU transcription (default).
 journal = [
-    "solstone[journal-host]",
+    "solstone-journal-host==0.6.10",
     # CPU ONNX runtime: covers VAD + the WeSpeaker embedder everywhere, and the
     # parakeet STT on Linux/x86_64. Floor raised on x86_64 for the parakeet
     # backend; !=1.24.1 across the board (known-bad wheel).
@@ -180,7 +185,7 @@ journal = [
 # GPU wheel supplies the `onnxruntime` namespace (incl. CPU providers) for
 # VAD/embedder. Install this instead of [journal], not alongside it.
 journal-cuda = [
-    "solstone[journal-host]",
+    "solstone-journal-host==0.6.10",
     "onnxruntime-gpu>=1.25.0",
     "nvidia-cuda-runtime-cu12",
     "nvidia-cudnn-cu12",
@@ -192,14 +197,15 @@ journal-cuda = [
 ]
 
 [project.scripts]
+# The base distribution ships only the thin `sol` access CLI. Host-only
+# console scripts (`journal`, `mlx-vlm-server`) live in the
+# `solstone-journal-host` distribution, pulled in by [journal]/[journal-cuda].
 sol = "solstone.think.sol_cli:main"
 # `solstone` is an alias for the `sol` access CLI so `uvx solstone` /
 # `uv tool run solstone` resolve to the thin client instead of erroring on a
 # missing console script. The thin base's small footprint makes the ephemeral
 # `uvx solstone ...` one-shot fast (CI, Docker, a second machine, agents).
 solstone = "solstone.think.sol_cli:main"
-journal = "solstone.think.sol_cli:journal_main"
-mlx-vlm-server = "solstone.think.providers.mlx_server:main"
 
 [project.urls]
 Homepage = "https://github.com/solpbc/solstone-journal"
@@ -222,6 +228,12 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 include = ["solstone*"]
+
+[tool.uv.workspace]
+members = ["packages/solstone-journal-host"]
+
+[tool.uv.sources]
+solstone-journal-host = {workspace = true}
 
 # Development tools configuration
 [tool.ruff]

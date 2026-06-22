@@ -14,7 +14,7 @@ Required everywhere:
 - ripgrep (`rg`)
 - ffmpeg for audio processing
 
-Linux is the primary development platform. macOS is supported. Source-checkout installs on Apple Silicon need Xcode command line tools to build the CoreML parakeet helper; packaged installs (`uv tool install 'solstone[journal]'`) on macOS 14 or newer ship the helper as a pre-built binary.
+Linux is the primary development platform. macOS is supported. Source-checkout installs on Apple Silicon need Xcode command line tools to build the CoreML parakeet helper; packaged host installs (`uv tool install --with-executables-from solstone-journal-host 'solstone[journal]'`) on macOS 14 or newer ship the helper as a pre-built binary.
 
 Fedora/RHEL:
 
@@ -96,7 +96,7 @@ Replace `your-key-here` with your Google AI API key. Optional provider keys can 
 
 ### Seeding a dev/test journal from public media
 
-If you want a journal seeded with public-domain audio and screen recordings instead of your own capture data — useful for contributors who shouldn't be exposed to a maintainer's personal journal, integration-test scenarios, or a clean dev environment — see [docs/FIELD_JOURNAL.md](docs/FIELD_JOURNAL.md). The `setup_field_journal.sh` script at the repo root populates `journal/chronicle/` from a local clone of [solpbc/field_journal](https://github.com/solpbc/field_journal). It is opt-in and deliberately not part of `make install` or `journal setup`.
+If you want a journal seeded with public-domain audio and screen media instead of your own journal material — useful for contributors who shouldn't be exposed to a maintainer's personal journal, integration-test scenarios, or a clean dev environment — see [docs/FIELD_JOURNAL.md](docs/FIELD_JOURNAL.md). The `setup_field_journal.sh` script at the repo root populates `journal/chronicle/` from a local clone of [solpbc/field_journal](https://github.com/solpbc/field_journal). It is opt-in and deliberately not part of `make install` or `journal setup`.
 
 ## Repo layout
 
@@ -166,7 +166,7 @@ That target first runs `sol skills build` to regenerate the checked-in reference
 
 ## Migrating from a source install to a packaged install
 
-The packaged install (`uv tool install 'solstone[journal]'`) installs `sol` and `journal` to `~/.local/bin/` directly. It does not use the source-checkout managed wrapper, and it does not use `.venv/bin/sol`.
+A packaged host install puts `sol`, `solstone`, `journal`, and `mlx-vlm-server` on PATH directly. With uv tool, use `uv tool install --with-executables-from solstone-journal-host 'solstone[journal]'` so the host scripts from the `solstone-journal-host` dependency are exposed. It does not use the source-checkout managed wrapper, and it does not use `.venv/bin/sol`.
 
 `make uninstall` is disabled by design. To migrate cleanly from a source checkout to a packaged install, remove user-runtime artifacts explicitly:
 
@@ -174,9 +174,12 @@ The packaged install (`uv tool install 'solstone[journal]'`) installs `sol` and 
 journal service uninstall
 sol skills uninstall
 python -m solstone.think.install_guard uninstall
-uv tool install 'solstone[journal]'
+uv tool install --with-executables-from solstone-journal-host 'solstone[journal]'
 journal setup
 ```
+
+For pip or pipx packaged installs, use `pip install 'solstone[journal]'` or
+`pipx install --include-deps 'solstone[journal]'` before `journal setup`.
 
 Your journal is preserved at `~/journal`; solstone does not remove it during install or uninstall. Do not add backwards-compatibility shims for the old source-checkout layout. This migration is a clean break.
 

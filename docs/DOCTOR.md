@@ -35,6 +35,8 @@ Use the diagnostic command that matches the question:
   `uv` exist?
 - `journal health` — what live supervisor status is being reported right now?
 
+`journal`-prefixed commands, including `journal doctor` and `journal setup`, require a journal-host install because the `journal` executable ships in the `solstone-journal-host` distribution (`solstone[journal]`), not in the thin `sol` client.
+
 `sol doctor` runs four checks:
 
 | Check | Severity | Notes |

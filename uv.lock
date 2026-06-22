@@ -16,6 +16,12 @@ resolution-markers = [
     "python_full_version < '3.13' and platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
 
+[manifest]
+members = [
+    "solstone",
+    "solstone-journal-host",
+]
+
 [[package]]
 name = "agent-client-protocol"
 version = "0.10.1"
@@ -4232,68 +4238,10 @@ dependencies = [
 
 [package.optional-dependencies]
 journal = [
-    { name = "anthropic" },
-    { name = "av" },
-    { name = "blessed" },
-    { name = "faster-whisper" },
-    { name = "flask", extra = ["async"] },
-    { name = "genai-prices" },
-    { name = "google-genai" },
-    { name = "h2" },
-    { name = "httpx" },
-    { name = "huggingface-hub" },
-    { name = "icalendar" },
-    { name = "jsonschema" },
-    { name = "kaldi-native-fbank" },
-    { name = "markdown" },
-    { name = "mistune" },
-    { name = "mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
-    { name = "mlx-vlm", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
-    { name = "numpy" },
-    { name = "onnx-asr", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "onnxruntime" },
-    { name = "openai" },
-    { name = "opencv-python-headless" },
-    { name = "openhands-sdk" },
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-exporter-otlp-proto-grpc" },
-    { name = "opentelemetry-exporter-otlp-proto-http" },
-    { name = "opentelemetry-instrumentation" },
-    { name = "opentelemetry-instrumentation-threading" },
-    { name = "opentelemetry-sdk" },
-    { name = "opentelemetry-semantic-conventions" },
-    { name = "packaging" },
-    { name = "pdf2image" },
-    { name = "pillow" },
-    { name = "pypdf" },
-    { name = "python-dotenv" },
-    { name = "python-frontmatter" },
-    { name = "python-slugify" },
-    { name = "rapidfuzz" },
-    { name = "scikit-learn" },
-    { name = "soundfile" },
-    { name = "tzlocal" },
-    { name = "weasyprint" },
+    { name = "solstone-journal-host" },
 ]
 journal-cuda = [
-    { name = "anthropic" },
-    { name = "av" },
-    { name = "blessed" },
-    { name = "faster-whisper" },
-    { name = "flask", extra = ["async"] },
-    { name = "genai-prices" },
-    { name = "google-genai" },
-    { name = "h2" },
-    { name = "httpx" },
-    { name = "huggingface-hub" },
-    { name = "icalendar" },
-    { name = "jsonschema" },
-    { name = "kaldi-native-fbank" },
-    { name = "markdown" },
-    { name = "mistune" },
-    { name = "mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
-    { name = "mlx-vlm", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
-    { name = "numpy" },
     { name = "nvidia-cublas-cu12" },
     { name = "nvidia-cuda-nvrtc-cu12" },
     { name = "nvidia-cuda-runtime-cu12" },
@@ -4301,30 +4249,8 @@ journal-cuda = [
     { name = "nvidia-cufft-cu12" },
     { name = "nvidia-curand-cu12" },
     { name = "nvidia-nvjitlink-cu12" },
-    { name = "onnx-asr", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "onnxruntime-gpu" },
-    { name = "openai" },
-    { name = "opencv-python-headless" },
-    { name = "openhands-sdk" },
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-exporter-otlp-proto-grpc" },
-    { name = "opentelemetry-exporter-otlp-proto-http" },
-    { name = "opentelemetry-instrumentation" },
-    { name = "opentelemetry-instrumentation-threading" },
-    { name = "opentelemetry-sdk" },
-    { name = "opentelemetry-semantic-conventions" },
-    { name = "packaging" },
-    { name = "pdf2image" },
-    { name = "pillow" },
-    { name = "pypdf" },
-    { name = "python-dotenv" },
-    { name = "python-frontmatter" },
-    { name = "python-slugify" },
-    { name = "rapidfuzz" },
-    { name = "scikit-learn" },
-    { name = "soundfile" },
-    { name = "tzlocal" },
-    { name = "weasyprint" },
+    { name = "solstone-journal-host" },
 ]
 journal-host = [
     { name = "anthropic" },
@@ -4475,10 +4401,10 @@ requires-dist = [
     { name = "requests" },
     { name = "scikit-learn", marker = "extra == 'journal-host'", specifier = ">=1.3" },
     { name = "setproctitle" },
-    { name = "solstone", extras = ["journal-host"], marker = "extra == 'journal'" },
-    { name = "solstone", extras = ["journal-host"], marker = "extra == 'journal-cuda'" },
     { name = "solstone", extras = ["pdf"], marker = "extra == 'journal-host'" },
     { name = "solstone", extras = ["whisper"], marker = "extra == 'journal-host'" },
+    { name = "solstone-journal-host", marker = "extra == 'journal'", editable = "packages/solstone-journal-host" },
+    { name = "solstone-journal-host", marker = "extra == 'journal-cuda'", editable = "packages/solstone-journal-host" },
     { name = "soundfile", marker = "extra == 'journal-host'" },
     { name = "timefhuman" },
     { name = "typer" },
@@ -4500,6 +4426,17 @@ dev = [
     { name = "pytest-xdist" },
     { name = "ruff" },
 ]
+
+[[package]]
+name = "solstone-journal-host"
+version = "0.6.10"
+source = { editable = "packages/solstone-journal-host" }
+dependencies = [
+    { name = "solstone", extra = ["journal-host"] },
+]
+
+[package.metadata]
+requires-dist = [{ name = "solstone", extras = ["journal-host"], editable = "." }]
 
 [[package]]
 name = "sortedcontainers"

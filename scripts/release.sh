@@ -4,9 +4,11 @@
 #
 # Multi-wheel solstone release.
 #
-# Builds and uploads three artifacts to PyPI:
+# Builds and uploads five artifacts to PyPI:
 #   - solstone-${VERSION}.tar.gz                                (sdist, Linux)
 #   - solstone-${VERSION}-py3-none-any.whl                      (Linux + Intel Mac + macOS<14)
+#   - solstone_journal_host-${VERSION}.tar.gz                   (host shim sdist)
+#   - solstone_journal_host-${VERSION}-py3-none-any.whl         (host shim wheel)
 #   - solstone-${VERSION}-py3-none-macosx_14_0_arm64.whl        (Apple Silicon macOS 14+)
 #
 # The Linux artifacts are built locally. The macOS arm64 wheel is built on
@@ -30,10 +32,12 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: scripts/release.sh [--test]
+Usage: scripts/release.sh [--test] [--no-publish]
 
 Options:
   --test                       Publish to TestPyPI.
+  --no-publish                 Build and check artifacts only; do not upload,
+                               tag, create a GitHub release, or run pro5e.
   -h, --help                   Show this help.
 
 Env overrides:
@@ -47,6 +51,7 @@ EOF
 TARGET="pypi"
 TOKEN_VAR="PYPI_TOKEN"
 REPOSITORY_ARGS=()
+PUBLISH="yes"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -54,6 +59,10 @@ while [[ $# -gt 0 ]]; do
             TARGET="testpypi"
             TOKEN_VAR="TESTPYPI_TOKEN"
             REPOSITORY_ARGS=(--repository-url https://test.pypi.org/legacy/)
+            shift
+            ;;
+        --no-publish)
+            PUBLISH="no"
             shift
             ;;
         -h|--help)
@@ -71,34 +80,58 @@ done
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-if [[ -z "${!TOKEN_VAR:-}" ]]; then
-    echo "set \$${TOKEN_VAR} before re-running" >&2
-    exit 1
+if [[ "$PUBLISH" == "yes" ]]; then
+    if [[ -z "${!TOKEN_VAR:-}" ]]; then
+        echo "set \$${TOKEN_VAR} before re-running" >&2
+        exit 1
+    fi
+    TOKEN="${!TOKEN_VAR}"
 fi
-
-TOKEN="${!TOKEN_VAR}"
 PRO5E_HOST="${PRO5E_HOST:-pro5e.local}"
 NOTARY_PROFILE="${NOTARY_KEYCHAIN_PROFILE:-sol-pbc-notary}"
 
 # Capture the git ref we're publishing from. pro5e checks out the same ref
-# so the macOS wheel's source matches the local sdist.
-if ! git diff --quiet HEAD; then
-    echo "working tree dirty; commit before releasing" >&2
-    exit 1
+# so the macOS wheel's source matches the local sdist. Reject ANY tracked or
+# untracked (non-ignored) change — untracked files would otherwise be built
+# locally but absent from the ref pro5e checks out.
+if [[ "$PUBLISH" == "yes" ]]; then
+    if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+        echo "working tree dirty (tracked or untracked changes); commit before releasing" >&2
+        exit 1
+    fi
+    GIT_REF=$(git rev-parse HEAD)
 fi
-GIT_REF=$(git rev-parse HEAD)
 
-# 1. Linux artifacts: sdist + py3-none-any.whl
-echo "==> [1/5] building Linux artifacts (sdist + py3-none-any.whl)"
+# 1. Linux artifacts: root + host sdists and py3-none-any wheels
+echo "==> [1/5] building Linux + host artifacts"
+python3 scripts/render_packaging.py --check
 rm -rf build/ dist/ *.egg-info/
-uv build
+uv build --all-packages
 
 # Pre-flight the CHANGELOG block now — before the expensive pro5e leg and the
 # irreversible PyPI upload. extract_changelog.sh exits non-zero if the
 # `## [VERSION]` block is missing, so a forgotten changelog fails fast instead
 # of after publish.
-VERSION=$(ls dist/solstone-*-py3-none-any.whl | head -1 | sed -E 's/.*solstone-([^-]+)-.*/\1/')
+VERSION=$(ls dist/solstone-[0-9]*-py3-none-any.whl | head -1 | sed -E 's/.*solstone-([^-]+)-.*/\1/')
 bash scripts/extract_changelog.sh "$VERSION" >/dev/null
+
+if [[ "$PUBLISH" == "no" ]]; then
+    echo
+    echo "release artifacts:"
+    ls -la dist/
+
+    echo
+    echo "==> twine check (no publish)"
+    uvx twine check dist/*
+
+    echo
+    echo "build/check complete (--no-publish); skipped pro5e, upload, git tag, git push, and GitHub release"
+    echo "  root sdist: dist/solstone-${VERSION}.tar.gz"
+    echo "  root any:   dist/solstone-${VERSION}-py3-none-any.whl"
+    echo "  host sdist: dist/solstone_journal_host-${VERSION}.tar.gz"
+    echo "  host any:   dist/solstone_journal_host-${VERSION}-py3-none-any.whl"
+    exit 0
+fi
 
 # 2. macOS arm64 wheel: build helper + sign + notarize + bundle on pro5e
 echo "==> [2/5] pro5e: building macosx_14_0_arm64 wheel from $GIT_REF"
@@ -136,9 +169,11 @@ TWINE_USERNAME=__token__ TWINE_PASSWORD="$TOKEN" \
 
 echo
 echo "published solstone ${VERSION} to ${TARGET}:"
-echo "  sdist: dist/solstone-${VERSION}.tar.gz"
-echo "  any:   dist/solstone-${VERSION}-py3-none-any.whl"
-echo "  macos: dist/solstone-${VERSION}-py3-none-macosx_14_0_arm64.whl"
+echo "  root sdist: dist/solstone-${VERSION}.tar.gz"
+echo "  root any:   dist/solstone-${VERSION}-py3-none-any.whl"
+echo "  host sdist: dist/solstone_journal_host-${VERSION}.tar.gz"
+echo "  host any:   dist/solstone_journal_host-${VERSION}-py3-none-any.whl"
+echo "  macos:      dist/solstone-${VERSION}-py3-none-macosx_14_0_arm64.whl"
 
 # 5. tag the commit + cut a GitHub Release. Production only — a TestPyPI dry-run
 #    should not leave a git tag or a public release behind. Mirrors the
@@ -157,7 +192,7 @@ git tag -a "$TAG" -m "solstone ${VERSION}"
 if ! git push origin "$TAG"; then
     echo "error: git push origin ${TAG} failed; the tag was created locally but not pushed." >&2
     echo "       PyPI is published and immutable. Resolve the push and create the release manually:" >&2
-    echo "       gh release create ${TAG} dist/solstone-${VERSION}.tar.gz dist/solstone-${VERSION}-*.whl --title 'solstone ${VERSION}' --notes-file <(scripts/extract_changelog.sh ${VERSION})" >&2
+    echo "       gh release create ${TAG} dist/solstone-${VERSION}.tar.gz dist/solstone-${VERSION}-*.whl dist/solstone_journal_host-${VERSION}.tar.gz dist/solstone_journal_host-${VERSION}-*.whl --title 'solstone ${VERSION}' --notes-file <(scripts/extract_changelog.sh ${VERSION})" >&2
     exit 1
 fi
 
@@ -168,12 +203,14 @@ scripts/extract_changelog.sh "$VERSION" > "$NOTES_FILE"
 if ! gh release create "$TAG" \
     "dist/solstone-${VERSION}.tar.gz" \
     dist/solstone-${VERSION}-*.whl \
+    "dist/solstone_journal_host-${VERSION}.tar.gz" \
+    dist/solstone_journal_host-${VERSION}-*.whl \
     --title "solstone ${VERSION}" \
     --notes-file "$NOTES_FILE"; then
     echo "error: gh release create failed." >&2
     echo "       PyPI is published and immutable; the git tag ${TAG} is pushed." >&2
     echo "       Re-run manually:" >&2
-    echo "       gh release create ${TAG} dist/solstone-${VERSION}.tar.gz dist/solstone-${VERSION}-*.whl --title 'solstone ${VERSION}' --notes-file <(scripts/extract_changelog.sh ${VERSION})" >&2
+    echo "       gh release create ${TAG} dist/solstone-${VERSION}.tar.gz dist/solstone-${VERSION}-*.whl dist/solstone_journal_host-${VERSION}.tar.gz dist/solstone_journal_host-${VERSION}-*.whl --title 'solstone ${VERSION}' --notes-file <(scripts/extract_changelog.sh ${VERSION})" >&2
     exit 1
 fi
 

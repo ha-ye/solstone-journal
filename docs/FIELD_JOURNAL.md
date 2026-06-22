@@ -1,14 +1,14 @@
 # Field Journal — Public-Domain Dev Mode
 
-`setup_field_journal.sh` (at the repo root) populates `journal/chronicle/` with content from [solpbc/field_journal](https://github.com/solpbc/field_journal) — a curated public-domain set of audio and screen recordings — so an instance of solstone runs against real, reproducible test material instead of personal capture data.
+`setup_field_journal.sh` (at the repo root) populates `journal/chronicle/` with content from [solpbc/field_journal](https://github.com/solpbc/field_journal) — a curated public-domain set of audio and screen media — so an instance of solstone runs against real, reproducible test material instead of personal journal material.
 
 This is an **opt-in dev/test primitive**. It is not part of the canonical install or setup paths (`make install` and `journal setup` do not invoke it, and the script is deliberately not wired into the Makefile). Reach for it when you want:
 
 - a contributor or contractor on solstone who shouldn't be exposed to a maintainer's personal journal,
 - an integration-test scenario seeded from stable, redistributable media,
-- a clean dev environment for exercising the full observe → think → convey pipeline against real media without recording your own day first.
+- a clean dev environment for exercising the full observe → think → convey pipeline against real media without using your own day first.
 
-It is **not** a path you'd use on a personal-capture journal — see [running against an existing personal journal](#running-against-an-existing-personal-journal) below if you need to switch.
+It is **not** a path you'd use on a personal journal — see [running against an existing personal journal](#running-against-an-existing-personal-journal) below if you need to switch.
 
 
 ## One-time setup
@@ -23,7 +23,7 @@ git clone https://github.com/solpbc/field_journal ~/Field_Journal
 
 ### 2. Scaffold the journal
 
-If you don't already have a configured `journal/` (identity, providers, convey secret, facets), bootstrap one the normal way first — `make install` (source checkout) or `uv tool install 'solstone[journal]'` (packaged) followed by `journal setup`, then whatever initial first-run wizard work brings the journal to a usable state. `setup_field_journal.sh` only populates `chronicle/`; it expects the rest of the journal scaffolding to already exist.
+If you don't already have a configured `journal/` (identity, providers, convey secret, facets), bootstrap one the normal way first — `make install` (source checkout) or `uv tool install --with-executables-from solstone-journal-host 'solstone[journal]'` (packaged) followed by `journal setup`, then whatever initial first-run wizard work brings the journal to a usable state. `setup_field_journal.sh` only populates `chronicle/`; it expects the rest of the journal scaffolding to already exist.
 
 ### 3. Populate chronicle from field_journal
 
@@ -43,7 +43,7 @@ After populating chronicle, the journal is ready for `journal setup` (if you hav
 
 ## Running against an existing personal journal
 
-If your `journal/` already holds personal capture data and you want to switch to the field_journal corpus, back it up first:
+If your `journal/` already holds personal journal material and you want to switch to the field_journal corpus, back it up first:
 
 ```sh
 mv journal journal.bak-$(date +%Y%m%d)

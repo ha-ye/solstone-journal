@@ -48,10 +48,8 @@ def service_alias_names() -> list[str]:
 def run_dispatch(monkeypatch, binary: str, name: str) -> dict[str, object]:
     result: dict[str, object] = {}
 
-    def fake_run_command(module_path: str, *, surface: str, binary: str) -> int:
+    def fake_run_command(module_path: str) -> int:
         result["module"] = module_path
-        result["surface"] = surface
-        result["binary"] = binary
         result["argv"] = sys.argv[:]
         return 0
 
@@ -148,9 +146,7 @@ class TestRunCommand:
         mock_module.main = MagicMock(return_value=None)
 
         with patch("importlib.import_module", return_value=mock_module):
-            exit_code = sol.run_command(
-                "test.module", surface="service", binary="journal"
-            )
+            exit_code = sol.run_command("test.module")
             assert exit_code == 0
             mock_module.main.assert_called_once()
 
@@ -160,9 +156,7 @@ class TestRunCommand:
         mock_module.main = MagicMock(side_effect=SystemExit(0))
 
         with patch("importlib.import_module", return_value=mock_module):
-            exit_code = sol.run_command(
-                "test.module", surface="service", binary="journal"
-            )
+            exit_code = sol.run_command("test.module")
             assert exit_code == 0
 
     def test_run_command_with_nonzero_exit(self):
@@ -171,9 +165,7 @@ class TestRunCommand:
         mock_module.main = MagicMock(side_effect=SystemExit(1))
 
         with patch("importlib.import_module", return_value=mock_module):
-            exit_code = sol.run_command(
-                "test.module", surface="service", binary="journal"
-            )
+            exit_code = sol.run_command("test.module")
             assert exit_code == 1
 
     def test_run_command_with_string_exit(self, capsys):
@@ -182,9 +174,7 @@ class TestRunCommand:
         mock_module.main = MagicMock(side_effect=SystemExit("Error: something failed"))
 
         with patch("importlib.import_module", return_value=mock_module):
-            exit_code = sol.run_command(
-                "test.module", surface="service", binary="journal"
-            )
+            exit_code = sol.run_command("test.module")
             assert exit_code == 1
 
         captured = capsys.readouterr()
@@ -195,32 +185,14 @@ class TestRunCommand:
         with patch(
             "importlib.import_module", side_effect=ImportError("No module named 'fake'")
         ):
-            exit_code = sol.run_command(
-                "fake.module", surface="service", binary="journal"
-            )
+            exit_code = sol.run_command("fake.module")
             assert exit_code == 1
 
-    def test_run_command_missing_journal_dependency_prints_hint(self, capsys):
-        """Service commands missing third-party deps get the journal-extra hint."""
-        missing = ModuleNotFoundError("No module named 'flask'", name="flask")
-        with patch("importlib.import_module", side_effect=missing):
-            exit_code = sol.run_command(
-                "solstone.convey.cli", surface="service", binary="journal"
-            )
-
-        captured = capsys.readouterr()
-        assert exit_code == 1
-        assert "this command needs the journal host dependencies" in captured.err
-        assert "pip install 'solstone[journal]'" in captured.err
-        assert "uv tool install 'solstone[journal]'" in captured.err
-
     def test_run_command_access_import_error_keeps_raw_error(self, capsys):
-        """Access command import errors do not get the journal-extra hint."""
+        """Import errors keep the canonical raw message."""
         missing = ModuleNotFoundError("No module named 'numpy'", name="numpy")
         with patch("importlib.import_module", side_effect=missing):
-            exit_code = sol.run_command(
-                "solstone.think.notify_cli", surface="access", binary="sol"
-            )
+            exit_code = sol.run_command("solstone.think.notify_cli")
 
         captured = capsys.readouterr()
         assert exit_code == 1
@@ -232,9 +204,7 @@ class TestRunCommand:
         mock_module = MagicMock(spec=[])  # No 'main' attribute
 
         with patch("importlib.import_module", return_value=mock_module):
-            exit_code = sol.run_command(
-                "test.module", surface="service", binary="journal"
-            )
+            exit_code = sol.run_command("test.module")
             assert exit_code == 1
 
     def test_main_propagates_integer_return_code_via_real_subprocess(self, tmp_path):
@@ -328,10 +298,8 @@ class TestMain:
         captured: dict[str, object] = {}
         calls = []
 
-        def fake_run_command(module_path: str, *, surface: str, binary: str) -> int:
+        def fake_run_command(module_path: str) -> int:
             captured["module"] = module_path
-            captured["surface"] = surface
-            captured["binary"] = binary
             captured["argv"] = sys.argv[:]
             return 0
 
@@ -354,8 +322,6 @@ class TestMain:
         rewritten_argv = captured["argv"]
         assert exc_info.value.code == 0
         assert captured["module"] == "solstone.think.import_client"
-        assert captured["surface"] == "access"
-        assert captured["binary"] == "sol"
         assert isinstance(rewritten_argv, list)
         assert rewritten_argv[0] == "sol import"
         assert "-v" not in rewritten_argv
@@ -488,17 +454,30 @@ class TestCommandRegistry:
         assert "services" not in sol.COMMANDS
         assert "services" not in sol.service_help_group().commands
 
-    def test_pyproject_declares_sol_and_journal_scripts(self):
-        """Project scripts expose both top-level CLI entry points."""
-        pyproject = tomllib.loads(
+    def test_pyproject_scripts_split_thin_base_and_host(self):
+        """Root ships only thin scripts; the host shim owns service scripts."""
+        root_pyproject = tomllib.loads(
             (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
         )
-        scripts = pyproject["project"]["scripts"]
+        host_pyproject = tomllib.loads(
+            (
+                REPO_ROOT / "packages" / "solstone-journal-host" / "pyproject.toml"
+            ).read_text(encoding="utf-8")
+        )
+        root_scripts = root_pyproject["project"]["scripts"]
+        host_scripts = host_pyproject["project"]["scripts"]
 
-        assert scripts["sol"] == "solstone.think.sol_cli:main"
-        assert scripts["journal"] == "solstone.think.sol_cli:journal_main"
-        assert scripts["sol"].startswith("solstone.think.sol_cli:")
-        assert scripts["journal"].startswith("solstone.think.sol_cli:")
+        assert set(root_scripts) == {"sol", "solstone"}
+        assert root_scripts["sol"] == "solstone.think.sol_cli:main"
+        assert root_scripts["solstone"] == "solstone.think.sol_cli:main"
+        assert "journal" not in root_scripts
+        assert "mlx-vlm-server" not in root_scripts
+
+        assert set(host_scripts) == {"journal", "mlx-vlm-server"}
+        assert host_scripts["journal"] == "solstone.think.sol_cli:journal_main"
+        assert (
+            host_scripts["mlx-vlm-server"] == "solstone.think.providers.mlx_server:main"
+        )
 
     def test_pyproject_declares_journal_parakeet_dependencies(self):
         """The default Parakeet/STT runtime ships in the journal-host extras,
