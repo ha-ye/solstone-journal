@@ -74,9 +74,9 @@ this runs the setup readiness doctor battery, confirms the journal directory at 
 
 let your human know: **open http://localhost:5015 in a browser**. the first-run wizard walks them through setting their identity and connecting a gemini API key.
 
-a `solstone[journal]` install bundles everything a journal host needs — PDF rendering, whisper, and the default CPU transcription stack are all included; `journal setup` downloads the transcription model. there are no separate à-la-carte extras to add. if the readiness doctor step (`sol doctor --readiness`) finds missing system libraries, it will tell you the exact install command to run for your platform.
+a `solstone[journal]` install bundles everything a journal host needs — PDF rendering, whisper, and the default CPU transcription stack are all included; `journal setup` downloads the transcription model. there are no separate à-la-carte extras to add. if the readiness doctor step (`journal doctor --readiness`) finds missing system libraries, it will tell you the exact install command to run for your platform.
 
-Pick one of `solstone[journal]` or `solstone[journal-cuda]` — the CPU and GPU ONNX runtimes share the same files and must not both be installed. `sol doctor` reports whether the transcription runtime and model are ready.
+Pick one of `solstone[journal]` or `solstone[journal-cuda]` — the CPU and GPU ONNX runtimes share the same files and must not both be installed. `journal doctor` reports whether the transcription runtime and model are ready.
 
 This CUDA extra is only for transcription. The Linux local model provider uses Vulkan for screen analysis, so a hardware Vulkan GPU from AMD, NVIDIA, or Intel can work; CPU/software Vulkan devices are rejected instead of falling back silently. On AMD, the local model path runs through Mesa/RADV Vulkan, while transcription stays on the bundled CPU runtime.
 
