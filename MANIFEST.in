@@ -1,0 +1,13 @@
+# Package data inclusion. Paired with `include-package-data = true` in
+# pyproject.toml ([tool.setuptools]). We graft the entire solstone/ tree so every
+# non-Python data file ships automatically — no hand-curated per-subdir globs to
+# forget. Curated globs repeatedly dropped files added in new subdirectories (the
+# installed wheel silently omitted them while source-tree CI stayed green); graft
+# removes that failure mode at the root. The wheel is model-dominated (~34 MB of
+# bundled .onnx), so the data-file tail is rounding error.
+graft solstone
+
+# Exclude only compiled/editor cruft.
+global-exclude *.py[cod]
+global-exclude .DS_Store
+global-exclude .gitignore

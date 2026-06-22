@@ -207,15 +207,21 @@ Repository = "https://github.com/solpbc/solstone-journal"
 Documentation = "https://github.com/solpbc/solstone-journal/blob/main/README.md"
 "Bug Tracker" = "https://github.com/solpbc/solstone-journal/issues"
 
+[tool.setuptools]
+# Package data is included wholesale via MANIFEST.in (`graft solstone`) plus the
+# include-package-data flag below. We deliberately do NOT hand-maintain per-subdir
+# package-data globs: that curated list repeatedly dropped data files added in new
+# subdirectories — the installed wheel would silently omit e.g.
+# solstone/think/contract/layout.json while source-tree `make ci` stayed green,
+# hard-500ing observer ingest. Including every non-.py file under solstone/ is the
+# correct default here: the wheel is model-dominated (~34 MB of bundled .onnx), so
+# the long tail of .json/.md/.html/.schema.json data files is rounding error. If a
+# file lives under solstone/ at build time, it ships. New data file → no pyproject
+# edit required.
+include-package-data = true
+
 [tool.setuptools.packages.find]
 include = ["solstone*"]
-
-[tool.setuptools.package-data]
-"solstone.apps" = ["*/app.json", "*/*.html", "*/guides/*.md", "*/talent/*.md", "*/talent/*.py", "*/talent/*.json", "*/talent/*.schema.json", "*/talent/*/SKILL.md", "*/static/*", "*/static/**/*"]
-"solstone.think" = ["*.md", "*.json", "templates/*.md", "policies/*.toml"]
-"solstone.talent" = ["*.md", "*.py", "*.schema.json", "*/SKILL.md", "*/references/*.md", "patterns/*.md", "routines/templates/*.md"]
-"solstone.observe" = ["*.md", "*.json", "*.schema.json", "assets/*.onnx", "categories/*.md", "categories/*.schema.json", "transcribe/*.md", "transcribe/*.json", "transcribe/assets/*.onnx", "transcribe/_fixtures/*.wav", "transcribe/parakeet_helper/Package.swift", "transcribe/parakeet_helper/README.md", "transcribe/parakeet_helper/Sources/parakeet-helper/main.swift", "transcribe/parakeet_helper/_bin/parakeet-helper"]
-"solstone.convey" = ["templates/*.html", "static/*", "static/**/*"]
 
 # Development tools configuration
 [tool.ruff]
