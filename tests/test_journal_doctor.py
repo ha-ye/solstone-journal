@@ -227,6 +227,7 @@ def test_role_skip_without_local_journal(doctor, monkeypatch, tmp_path, home_roo
     assert by_name["service_identity"].status == "skip"
     assert by_name["service_running"].status == "skip"
     assert by_name["skill_state"].status == "skip"
+    assert by_name["host_dependencies"].status == "ok"
     assert by_name["disk_space"].status in {"ok", "warn"}
     assert by_name["config_dir_readable"].status == "ok"
     assert by_name["feature:pdf"].status in {"ok", "warn"}

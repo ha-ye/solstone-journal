@@ -333,21 +333,184 @@ class TestDefaultSttReady:
         assert result.status == "skip"
         assert result.detail == "parakeet not supported on this platform"
 
-    def test_registered_for_journal_and_readiness_only(self, doctor):
+    def test_registered_for_journal_and_journal_readiness_only(self, doctor):
         journal_names = {check.name for check, _runner in doctor.JOURNAL_CHECKS}
         readiness_names = {check.name for check, _runner in doctor.READINESS_CHECKS}
+        journal_readiness_names = {
+            check.name for check, _runner in doctor.JOURNAL_READINESS_CHECKS
+        }
         universal_names = {check.name for check, _runner in doctor.UNIVERSAL_CHECKS}
 
         assert "default_stt_ready" in journal_names
-        assert "default_stt_ready" in readiness_names
+        assert "default_stt_ready" not in readiness_names
+        assert "default_stt_ready" in journal_readiness_names
         assert "default_stt_ready" not in universal_names
         assert doctor.DEFAULT_STT_READY_CHECK in {
             check for check, _runner in doctor.JOURNAL_CHECKS
         }
         assert doctor.DEFAULT_STT_READY_CHECK in {
+            check for check, _runner in doctor.JOURNAL_READINESS_CHECKS
+        }
+        assert doctor.DEFAULT_STT_READY_CHECK not in {
             check for check, _runner in doctor.READINESS_CHECKS
         }
         assert doctor.CHECK_MAP["default_stt_ready"].severity == "advisory"
+
+
+class TestHostDependencies:
+    def test_client_readiness_battery_is_host_free(self, doctor, monkeypatch):
+        expected = [
+            "python_version",
+            "sol_importable",
+            "local_bin_sol_reachable",
+            "stale_alias_symlink",
+            "disk_space",
+            "journal_dir_writable",
+        ]
+        readiness_names = [check.name for check, _runner in doctor.READINESS_CHECKS]
+
+        assert readiness_names == expected
+        for name in [
+            "host_dependencies",
+            "default_stt_ready",
+            "feature:pdf",
+            "feature:whisper",
+        ]:
+            assert name not in readiness_names
+
+        monkeypatch.setattr(doctor.sys, "argv", ["sol doctor"])
+        assert "host_dependencies" not in {
+            check.name for check, _runner in doctor.select_battery(args(doctor))
+        }
+        assert "host_dependencies" not in {
+            check.name
+            for check, _runner in doctor.select_battery(
+                doctor.parse_args(["--readiness"])
+            )
+        }
+
+    def test_journal_readiness_selects_host_stack_first(self, doctor, monkeypatch):
+        parsed = doctor.parse_args(["--readiness"])
+        monkeypatch.setattr(doctor.sys, "argv", ["journal doctor"])
+
+        selected = doctor.select_battery(parsed)
+
+        assert selected is doctor.JOURNAL_READINESS_CHECKS
+        assert selected[0][0] is doctor.HOST_DEPENDENCIES_CHECK
+        assert selected[0][0].name == "host_dependencies"
+        assert "default_stt_ready" in {check.name for check, _runner in selected}
+        assert "feature:pdf" in {check.name for check, _runner in selected}
+        assert "feature:whisper" in {check.name for check, _runner in selected}
+
+    def test_host_dependencies_registered_in_journal_and_check_map(self, doctor):
+        assert "host_dependencies" in {
+            check.name for check, _runner in doctor.JOURNAL_CHECKS
+        }
+        assert "host_dependencies" in {
+            check.name for check, _runner in doctor.JOURNAL_READINESS_CHECKS
+        }
+        assert "host_dependencies" not in {
+            check.name for check, _runner in doctor.READINESS_CHECKS
+        }
+        assert doctor.CHECK_MAP["host_dependencies"].severity == "blocker"
+
+    def test_host_dependencies_ok_when_present(self, doctor):
+        result = doctor.host_dependencies_check(args(doctor))
+
+        assert result.status == "ok"
+        assert result.detail == (
+            "journal host dependencies present: python-frontmatter, Flask, ONNX runtime"
+        )
+
+    @pytest.mark.parametrize(
+        ("missing_module", "label"),
+        [
+            ("frontmatter", "python-frontmatter"),
+            ("flask", "Flask"),
+            ("onnxruntime", "ONNX runtime"),
+        ],
+    )
+    def test_host_dependencies_fail_when_find_spec_returns_none(
+        self, doctor, monkeypatch, missing_module, label
+    ):
+        def fake_find_spec(module):
+            return None if module == missing_module else object()
+
+        monkeypatch.setattr(doctor.importlib.util, "find_spec", fake_find_spec)
+
+        result = doctor.host_dependencies_check(args(doctor))
+
+        assert result.status == "fail"
+        assert result.severity == "blocker"
+        assert label in result.detail
+        assert "journal host stack incomplete" in result.detail
+        assert result.fix == doctor.HOST_DEPENDENCY_REINSTALL_GUIDANCE
+
+    def test_host_dependencies_fail_when_find_spec_raises(self, doctor, monkeypatch):
+        def fake_find_spec(module):
+            if module == "frontmatter":
+                raise ModuleNotFoundError("No module named 'frontmatter'")
+            return object()
+
+        monkeypatch.setattr(doctor.importlib.util, "find_spec", fake_find_spec)
+
+        result = doctor.host_dependencies_check(args(doctor))
+
+        assert result.status == "fail"
+        assert "python-frontmatter" in result.detail
+        assert result.fix == doctor.HOST_DEPENDENCY_REINSTALL_GUIDANCE
+
+    def test_journal_readiness_json_fails_on_missing_host_dependency(
+        self, doctor, monkeypatch, capsys
+    ):
+        def fake_find_spec(module):
+            return None if module == "frontmatter" else object()
+
+        monkeypatch.setattr(doctor.importlib.util, "find_spec", fake_find_spec)
+        monkeypatch.setattr(doctor.sys, "argv", ["journal doctor"])
+
+        rc = doctor.main(["--readiness", "--json"])
+        payload = json.loads(capsys.readouterr().out)
+        host_check = next(
+            check for check in payload["checks"] if check["name"] == "host_dependencies"
+        )
+
+        assert rc == 1
+        assert host_check["severity"] == "blocker"
+        assert host_check["status"] == "fail"
+        assert "python-frontmatter" in host_check["detail"]
+        assert host_check["fix"] == doctor.HOST_DEPENDENCY_REINSTALL_GUIDANCE
+
+    def test_journal_readiness_jsonl_fails_on_missing_host_dependency(
+        self, doctor, monkeypatch, capsys
+    ):
+        def fake_find_spec(module):
+            return None if module == "flask" else object()
+
+        monkeypatch.setattr(doctor.importlib.util, "find_spec", fake_find_spec)
+        monkeypatch.setattr(doctor.sys, "argv", ["journal doctor"])
+
+        rc = doctor.main(["--readiness", "--jsonl"])
+        events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+        host_index, host_event = next(
+            (index, event)
+            for index, event in enumerate(events)
+            if event["event"] == "check.completed"
+            and event["name"] == "host_dependencies"
+        )
+        completed_index = next(
+            index
+            for index, event in enumerate(events)
+            if event["event"] == "doctor.completed"
+        )
+
+        assert rc == 1
+        assert host_index < completed_index
+        assert host_event["severity"] == "blocker"
+        assert host_event["status"] == "failed"
+        assert "Flask" in host_event["detail"]
+        assert host_event["fix"] == doctor.HOST_DEPENDENCY_REINSTALL_GUIDANCE
+        assert events[completed_index]["status"] == "failed"
 
 
 class TestPortCheckRemoved:
@@ -831,6 +994,40 @@ def test_readiness_battery_does_not_import_inference_or_installer_layers():
         "    for m in sys.modules\n"
         "    if m == 'solstone.think.install_models'\n"
         "    or m == 'solstone.observe.transcribe'\n"
+        "    or m.startswith('solstone.observe.transcribe.')\n"
+        ")\n"
+        "if bad:\n"
+        "    print('LEAKED:' + ','.join(bad))\n"
+        "    sys.exit(3)\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", snippet],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "SOLSTONE_JOURNAL": str(ROOT / "tests" / "fixtures" / "journal"),
+        },
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "LEAKED" not in result.stdout
+
+
+def test_journal_readiness_battery_does_not_import_host_or_inference_modules():
+    snippet = (
+        "import sys\n"
+        "sys.argv = ['journal doctor']\n"
+        "from solstone.think import doctor\n"
+        "doctor.run_checks(doctor.parse_args(['--readiness']))\n"
+        "bad = sorted(\n"
+        "    m\n"
+        "    for m in sys.modules\n"
+        "    if m in {'frontmatter', 'flask', 'onnxruntime', "
+        "'solstone.think.install_models', 'solstone.observe.transcribe'}\n"
         "    or m.startswith('solstone.observe.transcribe.')\n"
         ")\n"
         "if bad:\n"

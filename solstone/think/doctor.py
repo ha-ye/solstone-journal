@@ -95,6 +95,21 @@ SKILL_STATE_CHECK = Check("skill_state", "advisory", ("linux", "darwin"))
 JOURNAL_DIR_WRITABLE_CHECK = Check(
     "journal_dir_writable", "blocker", ("linux", "darwin")
 )
+HOST_DEPENDENCIES_CHECK = Check("host_dependencies", "blocker", ("linux", "darwin"))
+_HOST_DEPENDENCY_MODULES = (
+    ("frontmatter", "python-frontmatter"),
+    ("flask", "Flask"),
+    ("onnxruntime", "ONNX runtime"),
+)
+HOST_DEPENDENCY_REINSTALL_GUIDANCE = (
+    "Reinstall the journal host stack: "
+    "pip install --upgrade 'solstone[journal]'  |  "
+    "uv tool install --upgrade --with-executables-from solstone-journal-host "
+    "'solstone[journal]'  |  "
+    "pipx install --include-deps 'solstone[journal]'. "
+    "On an NVIDIA host use the 'solstone[journal-cuda]' extra instead of "
+    "'solstone[journal]'."
+)
 SERVICE_IDENTITY_CHECK = Check("service_identity", "blocker", ("linux", "darwin"))
 SERVICE_RUNNING_CHECK = Check("service_running", "blocker", ("linux", "darwin"))
 LAUNCHD_STALE_PLIST_CHECK = Check("launchd_stale_plist", "advisory", ("darwin",))
@@ -211,6 +226,39 @@ def sol_importable_check(args: Args) -> CheckResult:
         120,
     )
     return make_result(check, "fail", detail, fix)
+
+
+def _host_module_present(module: str) -> bool:
+    try:
+        return importlib.util.find_spec(module) is not None
+    except ModuleNotFoundError:
+        return False
+
+
+def host_dependencies_check(args: Args) -> CheckResult:
+    del args
+    check = HOST_DEPENDENCIES_CHECK
+    missing = [
+        label
+        for module, label in _HOST_DEPENDENCY_MODULES
+        if not _host_module_present(module)
+    ]
+    if missing:
+        names = ", ".join(missing)
+        return make_result(
+            check,
+            "fail",
+            (
+                f"journal host stack incomplete — missing {names}; "
+                "the journal host is not installed or is incomplete."
+            ),
+            HOST_DEPENDENCY_REINSTALL_GUIDANCE,
+        )
+    return make_result(
+        check,
+        "ok",
+        "journal host dependencies present: python-frontmatter, Flask, ONNX runtime",
+    )
 
 
 def _nearest_existing_ancestor(path: Path) -> Path:
@@ -710,6 +758,7 @@ UNIVERSAL_CHECKS: list[tuple[Check, Runner]] = [
 ]
 
 JOURNAL_CHECKS: list[tuple[Check, Runner]] = [
+    (HOST_DEPENDENCIES_CHECK, host_dependencies_check),
     (DISK_SPACE_CHECK, disk_space_check),
     (CONFIG_DIR_READABLE_CHECK, config_dir_readable_check),
     (JOURNAL_DIR_WRITABLE_CHECK, journal_dir_writable_journal),
@@ -732,11 +781,18 @@ READINESS_CHECKS: list[tuple[Check, Runner]] = [
     (STALE_ALIAS_CHECK, partial(stale_alias_symlink_check, binary="sol")),
     (DISK_SPACE_CHECK, disk_space_check),
     (JOURNAL_DIR_WRITABLE_CHECK, journal_dir_writable_readiness),
+]
+
+JOURNAL_READINESS_CHECKS: list[tuple[Check, Runner]] = [
+    (HOST_DEPENDENCIES_CHECK, host_dependencies_check),
+    *READINESS_CHECKS,
     (DEFAULT_STT_READY_CHECK, default_stt_ready_check),
     *FEATURE_CHECKS.values(),
 ]
 
-_ALL_CHECKS = UNIVERSAL_CHECKS + JOURNAL_CHECKS + READINESS_CHECKS
+_ALL_CHECKS = (
+    UNIVERSAL_CHECKS + JOURNAL_CHECKS + READINESS_CHECKS + JOURNAL_READINESS_CHECKS
+)
 CHECK_MAP: dict[str, Check] = {}
 for _check, _runner in _ALL_CHECKS:
     CHECK_MAP.setdefault(_check.name, _check)
@@ -790,6 +846,8 @@ def parse_args(argv: Sequence[str] | None = None) -> Args:
 
 def select_battery(args: Args) -> list[tuple[Check, Runner]]:
     if args.readiness:
+        if sys.argv[0] == "journal doctor":
+            return JOURNAL_READINESS_CHECKS
         return READINESS_CHECKS
     if sys.argv[0] == "journal doctor":
         return JOURNAL_CHECKS

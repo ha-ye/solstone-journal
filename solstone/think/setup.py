@@ -742,9 +742,7 @@ def emit_step_result(
 
 def doctor_command(ctx: SetupContext, *, jsonl: bool = False) -> list[str]:
     return [
-        sys.executable,
-        "-m",
-        "solstone.think.sol_cli",
+        *journal_console_command(),
         "doctor",
         "--readiness",
         "--jsonl" if jsonl else "--json",
@@ -987,6 +985,19 @@ def step_doctor(ctx: SetupContext, step_index: int) -> StepResult:
             text=True,
             check=False,
             timeout=DOCTOR_TIMEOUT_SECONDS,
+        )
+    except OSError as exc:
+        return step_result(
+            "doctor",
+            "failed",
+            [],
+            started_at,
+            {
+                "code": "doctor_failed",
+                "message": f"doctor failed to start: {exc}",
+                "details": "",
+                "exit_code": 1,
+            },
         )
     except subprocess.TimeoutExpired:
         return step_result(
