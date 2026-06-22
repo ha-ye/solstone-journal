@@ -2,16 +2,18 @@
 # Copyright (c) 2026 sol pbc
 
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
 
-from solstone.think.models import LOCAL_MODEL
+from solstone.think.models import LOCAL_MODEL, QWEN_35_9B
 from solstone.think.providers import (
     local_endpoint,
     local_install,
     local_server,
     local_vulkan,
+    mlx_install,
     state,
 )
 from solstone.think.providers.shared import (
@@ -57,6 +59,53 @@ def _readiness(
     if gpu_probe_ok is not None:
         payload["gpu_probe_ok"] = gpu_probe_ok
     return payload
+
+
+def _mlx_readiness(
+    *,
+    install_state: str = "installed",
+    model_installed: bool = True,
+    platform_supported: bool = True,
+    package_available: bool = True,
+) -> dict:
+    return {
+        "install_state": install_state,
+        "model_installed": model_installed,
+        "snapshot_installed": model_installed,
+        "variant_installed": True,
+        "ram_sufficient": True,
+        "platform_supported": platform_supported,
+        "package_available": package_available,
+        "model_id": QWEN_35_9B,
+        "snapshot_dir": "/tmp/snap",
+        "variant_dir": None,
+        "runtime_dir": "/tmp/snap",
+        "install_error": None,
+    }
+
+
+def _block_linux_local_path(monkeypatch) -> None:
+    monkeypatch.setattr(
+        local_vulkan,
+        "detect_gpus",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("linux path not expected")
+        ),
+    )
+    monkeypatch.setattr(
+        local_vulkan,
+        "gpu_probe_ok",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("linux path not expected")
+        ),
+    )
+    monkeypatch.setattr(
+        local_install,
+        "inspect_readiness",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("linux path not expected")
+        ),
+    )
 
 
 def _byo_endpoint() -> local_endpoint.LocalEndpoint:
@@ -543,6 +592,109 @@ def test_local_readiness_ready(monkeypatch):
     assert provider_state.source == "local_server"
 
 
+def test_local_readiness_darwin_ready(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    _block_linux_local_path(monkeypatch)
+    monkeypatch.setattr(
+        mlx_install, "inspect_readiness", lambda *a, **k: _mlx_readiness()
+    )
+    monkeypatch.setattr(
+        local_server,
+        "probe_state",
+        lambda: (local_server.STATE_READY, None),
+    )
+
+    provider_state = state.readiness_for_provider("local", "generate")
+
+    assert provider_state.status == "ready"
+    assert provider_state.reason_code is None
+    assert provider_state.source == "local_server"
+    assert provider_state.model == QWEN_35_9B
+
+
+def test_local_readiness_darwin_installing(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    _block_linux_local_path(monkeypatch)
+    monkeypatch.setattr(
+        mlx_install,
+        "inspect_readiness",
+        lambda *a, **k: _mlx_readiness(
+            install_state="downloading",
+            model_installed=False,
+        ),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "probe_state",
+        lambda: (_ for _ in ()).throw(AssertionError("server probe not expected")),
+    )
+
+    provider_state = state.readiness_for_provider("local", "generate")
+
+    assert provider_state.status == "blocked"
+    assert provider_state.reason_code == "local_model_installing"
+    assert provider_state.source == "local_install"
+
+
+def test_local_readiness_darwin_missing(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    _block_linux_local_path(monkeypatch)
+    monkeypatch.setattr(
+        mlx_install,
+        "inspect_readiness",
+        lambda *a, **k: _mlx_readiness(model_installed=False),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "probe_state",
+        lambda: (_ for _ in ()).throw(AssertionError("server probe not expected")),
+    )
+
+    provider_state = state.readiness_for_provider("local", "generate")
+
+    assert provider_state.status == "blocked"
+    assert provider_state.reason_code == "local_model_missing"
+    assert provider_state.source == "local_install"
+
+
+def test_local_readiness_darwin_loading(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    _block_linux_local_path(monkeypatch)
+    monkeypatch.setattr(
+        mlx_install, "inspect_readiness", lambda *a, **k: _mlx_readiness()
+    )
+    monkeypatch.setattr(
+        local_server,
+        "probe_state",
+        lambda: (local_server.STATE_LOADING, None),
+    )
+
+    provider_state = state.readiness_for_provider("local", "generate")
+
+    assert provider_state.status == "blocked"
+    assert provider_state.reason_code == "local_model_loading"
+    assert provider_state.source == "local_server"
+
+
+def test_local_readiness_darwin_unhealthy(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    _block_linux_local_path(monkeypatch)
+    monkeypatch.setattr(
+        mlx_install, "inspect_readiness", lambda *a, **k: _mlx_readiness()
+    )
+    monkeypatch.setattr(
+        local_server,
+        "probe_state",
+        lambda: (local_server.STATE_FAILED, "boom"),
+    )
+
+    provider_state = state.readiness_for_provider("local", "generate")
+
+    assert provider_state.status == "unhealthy"
+    assert provider_state.reason_code == "local_server_unhealthy"
+    assert provider_state.source == "local_server"
+
+
 def test_local_readiness_byo_reachable_skips_bundled_checks(monkeypatch):
     monkeypatch.setattr(local_endpoint, "resolve_local_endpoint", _byo_endpoint)
     monkeypatch.setattr(
@@ -626,6 +778,36 @@ def test_local_status_dict_byo(
         "cogitate_cli_found": False,
         "issues": expected_issues,
     }
+
+
+def test_local_status_dict_darwin(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    _block_linux_local_path(monkeypatch)
+    monkeypatch.setattr(
+        "solstone.think.models.is_local_provider_needed",
+        lambda *a, **k: True,
+    )
+    monkeypatch.setattr(
+        mlx_install, "inspect_readiness", lambda *a, **k: _mlx_readiness()
+    )
+    monkeypatch.setattr(local_server, "is_healthy", lambda: True)
+
+    status = state.local_status_dict()
+
+    assert set(status) == {
+        "configured",
+        "selected",
+        "generate_ready",
+        "cogitate_ready",
+        "cogitate_cli",
+        "cogitate_cli_found",
+        "issues",
+    }
+    assert status["generate_ready"] is True
+    assert status["cogitate_ready"] is True
+    assert status["cogitate_cli"] == "mlx-vlm"
+    assert status["cogitate_cli_found"] is True
+    assert status["issues"] == []
 
 
 def test_readiness_for_context_routes_to_resolved_local_provider(monkeypatch):

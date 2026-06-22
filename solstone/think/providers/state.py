@@ -9,6 +9,7 @@ import fcntl
 import json
 import logging
 import os
+import sys
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -266,6 +267,10 @@ def cloud_key_configured(env_key: str) -> bool:
         return False
 
 
+def _is_darwin() -> bool:
+    return sys.platform == "darwin"
+
+
 def local_status_dict() -> dict:
     """Build the legacy local provider status dict."""
     from solstone.think.models import is_local_provider_needed
@@ -286,6 +291,45 @@ def local_status_dict() -> dict:
             "cogitate_cli": None,
             "cogitate_cli_found": False,
             "issues": [] if reachable else ["local_endpoint_unreachable"],
+        }
+
+    if _is_darwin():
+        from solstone.think.providers import local_server, mlx_install
+
+        readiness = mlx_install.inspect_readiness()
+        runtime_available = bool(readiness["package_available"])
+        model_installed = bool(readiness["model_installed"])
+        configured = runtime_available and model_installed
+
+        if not selected:
+            return {
+                "configured": configured,
+                "selected": False,
+                "generate_ready": False,
+                "cogitate_ready": False,
+                "cogitate_cli": "mlx-vlm",
+                "cogitate_cli_found": runtime_available,
+                "issues": [],
+            }
+
+        issues: list[str] = []
+        server_healthy = local_server.is_healthy()
+        if not runtime_available:
+            issues.append("runtime_missing")
+        if not model_installed:
+            issues.append("model_missing")
+        if configured and not server_healthy:
+            issues.append("server_unhealthy")
+
+        ready = configured and server_healthy
+        return {
+            "configured": configured,
+            "selected": True,
+            "generate_ready": ready,
+            "cogitate_ready": ready,
+            "cogitate_cli": "mlx-vlm",
+            "cogitate_cli_found": runtime_available,
+            "issues": issues,
         }
 
     from solstone.think.providers import local_install, local_server
@@ -446,6 +490,67 @@ def _local_readiness_for_provider(
             model=endpoint.served_model_id,
             message=error,
             source="local_endpoint",
+        )
+
+    if _is_darwin():
+        from solstone.think.providers import local_server, mlx_install
+        from solstone.think.providers.install_state import IN_FLIGHT_STATES
+
+        readiness = mlx_install.inspect_readiness()
+        model_id = str(readiness["model_id"])
+
+        if readiness["install_state"] in IN_FLIGHT_STATES:
+            return _state(
+                provider,
+                interface,
+                "blocked",
+                "local_model_installing",
+                model=model_id,
+                message=str(readiness["install_state"]),
+                source="local_install",
+            )
+
+        if not (
+            readiness["platform_supported"]
+            and readiness["package_available"]
+            and readiness["model_installed"]
+        ):
+            return _state(
+                provider,
+                interface,
+                "blocked",
+                "local_model_missing",
+                model=model_id,
+                message=str(readiness.get("install_error") or "") or None,
+                source="local_install",
+            )
+
+        server_state, server_error = local_server.probe_state()
+        if server_state == local_server.STATE_LOADING:
+            return _state(
+                provider,
+                interface,
+                "blocked",
+                "local_model_loading",
+                model=model_id,
+                message=server_error,
+                source="local_server",
+            )
+        if server_state == local_server.STATE_READY:
+            return _ready_state(
+                provider,
+                interface,
+                model=model_id,
+                source="local_server",
+            )
+        return _state(
+            provider,
+            interface,
+            "unhealthy",
+            "local_server_unhealthy",
+            model=model_id,
+            message=server_error,
+            source="local_server",
         )
 
     from solstone.think.models import LOCAL_MODEL

@@ -346,7 +346,7 @@ def _provider_payload(config: dict[str, Any], local_model_id: str) -> dict[str, 
     local_status = local_bootstrap.get_state(local_model_id)
     ai_readiness = build_readiness_snapshot(
         local_model_id=local_model_id,
-        include_local=not local_bootstrap._is_mlx_backend(),
+        include_local=True,
     )
 
     return {
