@@ -2187,7 +2187,7 @@ button:focus:not(:focus-visible) {
       <div class="setup-section" id="setupSection" style="display:none">
         <h3>welcome to solstone</h3>
         <p>create your first facet to start organizing your journal.</p>
-        <button class="setup-btn" id="createPersonalBtn">create personal facet</button>
+        <button type="button" class="setup-btn" id="createPersonalBtn">create personal facet</button>
       </div>
 
       <div class="settings-field">
@@ -2518,7 +2518,7 @@ button:focus:not(:focus-visible) {
           <div class="redact-list" id="redactRulesList"></div>
           <div class="redact-add-row">
             <input type="text" class="redact-add-input" id="redactAddInput" placeholder="add a redaction rule..." maxlength="200">
-            <button class="redact-add-btn" id="redactAddBtn">+ add</button>
+            <button type="button" class="redact-add-btn" id="redactAddBtn">+ add</button>
           </div>
           <div class="redact-validation" id="redactValidation" style="display:none"></div>
         </div>
@@ -2877,7 +2877,7 @@ button:focus:not(:focus-visible) {
       </div>
 
       <div class="settings-field">
-        <button class="setup-btn" id="resetAgentName" style="background: #6c757d; font-size: 0.85em; padding: 0.4em 1em;">reset to default</button>
+        <button type="button" class="setup-btn" id="resetAgentName" style="background: #6c757d; font-size: 0.85em; padding: 0.4em 1em;">reset to default</button>
         <small>reset the name back to "sol"</small>
       </div>
       </form>
@@ -5805,6 +5805,13 @@ document.getElementById('saveCustomActivityBtn').addEventListener('click', async
 // Agent name reset
 const agentNameInput = document.getElementById('field-agent-name');
 if (agentNameInput) {
+  agentNameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      agentNameInput.blur();
+    }
+  });
+
   agentNameInput.addEventListener('change', async (e) => {
     const newName = e.target.value.trim() || 'sol';
     const today = new Date().toISOString().slice(0, 10);

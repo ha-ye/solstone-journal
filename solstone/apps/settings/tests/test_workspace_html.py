@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+from html.parser import HTMLParser
 from pathlib import Path
 
 WORKSPACE = Path(__file__).resolve().parents[1] / "workspace.html"
@@ -22,6 +23,38 @@ def _section_block(text: str, section_id: str) -> str:
     )
     assert match, f"section-{section_id} not found"
     return match.group(0)
+
+
+class _SettingsFormButtonParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._settings_form_depth = 0
+        self.non_button_buttons: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_map = dict(attrs)
+        classes = set((attr_map.get("class") or "").split())
+        starts_settings_form = tag == "form" and "settings-form" in classes
+        in_settings_form = self._settings_form_depth > 0 or starts_settings_form
+
+        if starts_settings_form:
+            self._settings_form_depth += 1
+
+        if tag == "button" and in_settings_form and attr_map.get("type") != "button":
+            self.non_button_buttons.append(
+                attr_map.get("id")
+                or attr_map.get("class")
+                or self.get_starttag_text()
+                or "<button>"
+            )
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "form" and self._settings_form_depth > 0:
+            self._settings_form_depth -= 1
 
 
 def test_apikeys_inputs_are_masked_by_default():
@@ -56,6 +89,44 @@ def test_password_toggle_does_not_steal_focus():
     block = text[idx : idx + 800]
     assert "mousedown" in block
     assert "preventDefault()" in block
+
+
+def test_settings_form_buttons_are_non_submit_buttons():
+    text = _workspace_text()
+    parser = _SettingsFormButtonParser()
+    parser.feed(text)
+
+    assert parser.non_button_buttons == []
+
+
+def test_redact_add_enter_handler_is_explicit():
+    text = _workspace_text()
+
+    button = re.search(r'<button[^>]*\bid="redactAddBtn"[^>]*>', text)
+    assert button, "redact add button not found"
+    assert 'type="button"' in button.group(0)
+
+    listener_idx = text.index("document.getElementById('redactAddInput')")
+    block = text[listener_idx : listener_idx + 260]
+    assert "keydown" in block
+    assert "e.key === 'Enter'" in block
+    assert "e.preventDefault()" in block
+    assert "addRedactRule()" in block
+
+
+def test_agent_name_enter_handler_blurs_instead_of_submitting():
+    text = _workspace_text()
+
+    button = re.search(r'<button[^>]*\bid="resetAgentName"[^>]*>', text)
+    assert button, "agent name reset button not found"
+    assert 'type="button"' in button.group(0)
+
+    listener_idx = text.index("const agentNameInput = document.getElementById")
+    block = text[listener_idx : listener_idx + 360]
+    assert "keydown" in block
+    assert "e.key === 'Enter'" in block
+    assert "e.preventDefault()" in block
+    assert "agentNameInput.blur()" in block
 
 
 def test_workspace_has_diagnostic_reports_toggle():
