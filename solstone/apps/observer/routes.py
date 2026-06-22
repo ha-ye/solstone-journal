@@ -23,7 +23,15 @@ import secrets
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, Response, g, jsonify, request, stream_with_context
+from flask import (
+    Blueprint,
+    Response,
+    current_app,
+    g,
+    jsonify,
+    request,
+    stream_with_context,
+)
 from werkzeug.utils import secure_filename
 
 import solstone.convey.bridge as convey_bridge
@@ -57,7 +65,6 @@ from solstone.observe.utils import (
 )
 from solstone.think.contract.journal import (
     ContractIssue,
-    build_bundle,
     schema_for_filename,
     validate_contract_file,
 )
@@ -127,9 +134,9 @@ def _validate_ingest_contract(
     day: str,
     stream: str,
     file_data: list[tuple[str, str, bytes, str]],
+    bundle: dict[str, Any],
     meta: dict[str, Any] | None = None,
 ) -> list[ContractIssue]:
-    bundle = build_bundle()
     schema_entries = bundle.get("schemas", {})
     ingest_entry = (
         schema_entries.get("observer-ingest-envelope", {})
@@ -726,6 +733,7 @@ def _process_ingest_files(
     stream: str,
     uploaded_files,
     *,
+    bundle: dict[str, Any],
     source: str | None = None,
     meta: dict[str, Any] | None = None,
 ) -> tuple[dict, int]:
@@ -745,6 +753,8 @@ def _process_ingest_files(
         Stream name (already resolved by caller).
     uploaded_files : list
         List of Flask FileStorage objects from request.files.getlist("files").
+    bundle : dict
+        Cached journal at-rest contract bundle from app startup.
     source : str or None
         If provided, added as "source" field to history record (e.g., "transfer").
     meta : dict or None
@@ -788,6 +798,7 @@ def _process_ingest_files(
         day=day,
         stream=stream,
         file_data=file_data,
+        bundle=bundle,
         meta=meta,
     )
     if contract_issues:
@@ -1045,8 +1056,16 @@ def ingest_upload() -> Any:
         else:
             stream = stream_name(observer=observer_name)
 
+    bundle = current_app.config["JOURNAL_CONTRACT_BUNDLE"]
     body, status = _process_ingest_files(
-        observer, key_prefix, segment, day, stream, files, meta=meta
+        observer,
+        key_prefix,
+        segment,
+        day,
+        stream,
+        files,
+        bundle=bundle,
+        meta=meta,
     )
     if status != 200 or body.get("status") == "duplicate":
         return jsonify(body), status

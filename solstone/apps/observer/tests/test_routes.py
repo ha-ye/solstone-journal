@@ -828,6 +828,50 @@ def test_ingest_success(observer_env):
     assert expected_file.read_bytes() == test_data
 
 
+def test_ingest_reuses_cached_contract_bundle(observer_env, monkeypatch):
+    from solstone.think.contract import journal as contract_journal
+
+    real = contract_journal.build_bundle
+    calls = {"count": 0}
+
+    def counting(*args, **kwargs):
+        calls["count"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(contract_journal, "build_bundle", counting)
+
+    env = observer_env()
+
+    resp = env.client.post(
+        "/app/observer/api/create",
+        json={"name": "contract-cache-test"},
+        content_type="application/json",
+    )
+    key = resp.get_json()["key"]
+
+    for index in range(2):
+        resp = env.client.post(
+            "/app/observer/ingest",
+            headers={"Authorization": f"Bearer {key}"},
+            data={
+                "day": "20250103",
+                "segment": f"12000{index}_300",
+                "files": (
+                    io.BytesIO(f"test audio content {index}".encode("utf-8")),
+                    f"test_audio_{index}.flac",
+                ),
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["status"] == "ok"
+
+    assert calls["count"] == 1
+    assert (
+        env.app.config["JOURNAL_CONTRACT_BUNDLE"]["contract"]
+        == "solstone-journal-at-rest"
+    )
+
+
 def test_ingest_updates_stats(observer_env):
     """Test that ingest updates observer stats."""
     env = observer_env()

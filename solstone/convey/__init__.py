@@ -57,6 +57,7 @@ def create_app(journal: str = "") -> Flask:
     from jinja2 import ChoiceLoader, FileSystemLoader
 
     from solstone.apps import AppRegistry
+    from solstone.think.contract.journal import build_bundle
     from solstone.think.link.runtime import start_link_runtime
     from solstone.think.push.runtime import start_push_runtime
     from solstone.think.voice.runtime import start_voice_runtime
@@ -102,6 +103,14 @@ def create_app(journal: str = "") -> Flask:
 
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = timedelta(seconds=300)
     app.config.setdefault("SECURE_LISTENER_ENABLED", False)
+    # Build once so observer ingest never masks a broken at-rest contract; a
+    # missing layout.json previously turned every ingest into a runtime 500.
+    try:
+        app.config["JOURNAL_CONTRACT_BUNDLE"] = build_bundle()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Journal at-rest contract failed to load at startup: {exc}"
+        ) from exc
     install_identity_stamper(app)
     install_request_id_stamper(app)
 
