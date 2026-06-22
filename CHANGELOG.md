@@ -4,6 +4,16 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.10] - 2026-06-22
+
+### Changed
+- the feature that connects all your devices to your journal is now called your private network, in the labels, the setup screens, and the toggle. it's the same encrypted connection among your devices it has always been, just named for what it does. you'll see "your private network" where it used to say "private link."
+- the journal backup feature is now called encrypted backup, and its setup copy reads the same way: only you can read your backup, not even sol pbc. nothing about how it works changed, just the name and the wording.
+- your health page now reads "all data stored locally on your device" wherever it shows where your journal lives, and notifications now show as built in rather than coming later. the trust details didn't change, the wording is just clearer and current.
+
+### Fixed
+- the "minimum requirements" help link now opens a live page. if you're on linux without a supported gpu, the link shown when local models can't run pointed at a page that no longer existed; it now goes to the right support article so you can see what you need.
+
 ## [0.6.9] - 2026-06-19
 
 ### Fixed
