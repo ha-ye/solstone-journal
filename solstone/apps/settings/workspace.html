@@ -5845,6 +5845,9 @@ if (agentNameInput) {
       showFieldStatus(agentNameInput, 'error', err.message);
     }
   });
+  agentNameInput.onkeydown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); agentNameInput.blur(); }
+  };
 }
 
 const resetAgentBtn = document.getElementById('resetAgentName');

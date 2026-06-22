@@ -332,3 +332,59 @@ def test_document_level_listeners_reference_defined_handlers():
             f"never declared in the settings script. A parse-time ReferenceError "
             f"would abort settings init and silently break all settings saving."
         )
+
+
+def test_agent_name_enter_commits_via_blur():
+    text = _workspace_text()
+    start = text.index("const agentNameInput = document.getElementById('field-agent-name');")
+    block = text[start : text.index("const resetAgentBtn", start)]
+    # Enter in the lone agent-name input commits via blur (reusing the
+    # change-save path); it must never fall through to implicit form submit.
+    assert "agentNameInput.onkeydown" in block
+    assert "e.key === 'Enter'" in block
+    assert "e.preventDefault()" in block
+    assert "agentNameInput.blur()" in block
+
+
+def test_settings_form_buttons_declare_explicit_type():
+    """Every <button> inside a <form class="settings-form"> must declare an
+    explicit `type`. A type-less button defaults to type="submit"; Enter in a
+    lone text input then implicitly submits the form and dispatches a click on
+    it -- the sol-identity reset-to-"sol" footgun. Guarding the whole form
+    class stops that bug class from re-appearing.
+
+    Every settings-form button now declares an explicit type: req_eenxsko7 has
+    landed and added `type` to its two buttons (createPersonalBtn, redactAddBtn),
+    so the allowlist is empty. Shrink-only and self-checking -- a re-introduced
+    type-less button turns this red.
+    """
+    text = _workspace_text()
+
+    # req_eenxsko7 has landed and reworked its two buttons' Enter-to-add
+    # behavior, giving each an explicit type; nothing left to allow. Never add.
+    allowlist = set()
+
+    forms = re.findall(r'<form class="settings-form".*?</form>', text, re.DOTALL)
+    assert forms, "no settings-form blocks found"
+
+    offenders = []
+    for form in forms:
+        for tag in re.findall(r"<button\b[^>]*>", form):
+            if re.search(r"\btype\s*=", tag):
+                continue
+            id_match = re.search(r'\bid="([^"]+)"', tag)
+            btn_id = id_match.group(1) if id_match else None
+            if btn_id in allowlist:
+                continue
+            offenders.append(btn_id or tag)
+    assert not offenders, f"settings-form buttons missing explicit type=: {offenders}"
+
+    # Self-check: the allowlist may only shrink. Each id must still exist AND
+    # still lack an explicit type -- otherwise drop it from the allowlist.
+    for btn_id in allowlist:
+        tag_match = re.search(rf'<button\b[^>]*\bid="{btn_id}"[^>]*>', text)
+        assert tag_match, f"allowlisted button id {btn_id} no longer exists"
+        assert not re.search(r"\btype\s*=", tag_match.group(0)), (
+            f"allowlisted button {btn_id} now declares type= -- remove it "
+            f"from the allowlist (req_eenxsko7)"
+        )
