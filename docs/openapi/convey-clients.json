@@ -218,6 +218,449 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/chat": {
+      "post": {
+        "description": "Accept an owner chat message and enqueue or start the chat turn.",
+        "operationId": "chat.postMessage",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "app": "today",
+                "facet": "work",
+                "message": "What changed this morning?",
+                "path": "/app/today",
+                "source": {
+                  "kind": "native"
+                }
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "app": {
+                    "type": "string"
+                  },
+                  "facet": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "message"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "queued": false,
+                  "use_id": "1781803200000"
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "queued": {
+                      "type": "boolean"
+                    },
+                    "use_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "use_id",
+                    "queued"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Chat message accepted."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Message text was missing.",
+            "x-reason-codes": [
+              "missing_required_field"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Chat queue was full.",
+            "x-reason-codes": [
+              "chat_queue_full"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Agent service was unavailable.",
+            "x-reason-codes": [
+              "agent_unavailable"
+            ]
+          }
+        },
+        "summary": "Post chat message",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/api/chat/offer/decline": {
+      "post": {
+        "description": "Record that the owner declined the pending support offer.",
+        "operationId": "chat.declineOffer",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "ok": true
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Support offer declined."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          }
+        },
+        "summary": "Decline support offer",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/api/chat/session": {
+      "get": {
+        "description": "Return the reduced state for today's chat stream.",
+        "operationId": "chat.session",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "active_talents": [],
+                  "chat_error": null,
+                  "completed_talents": [],
+                  "errored_talents": [],
+                  "latest_sol_message": null,
+                  "queue_depth": 0,
+                  "queued_talents": []
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "active_talents": {
+                      "items": {},
+                      "type": "array"
+                    },
+                    "chat_error": {
+                      "additionalProperties": true,
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "completed_talents": {
+                      "items": {},
+                      "type": "array"
+                    },
+                    "errored_talents": {
+                      "items": {},
+                      "type": "array"
+                    },
+                    "latest_sol_message": {
+                      "additionalProperties": true,
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "queue_depth": {
+                      "type": "integer"
+                    },
+                    "queued_talents": {
+                      "items": {},
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "latest_sol_message",
+                    "active_talents",
+                    "queued_talents",
+                    "completed_talents",
+                    "errored_talents",
+                    "chat_error",
+                    "queue_depth"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Current chat session state. Nested message and talent payloads remain open."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          }
+        },
+        "summary": "Get chat session",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/api/chat/support/draft/cancel": {
+      "post": {
+        "description": "Cancel a captured support draft without submitting it.",
+        "operationId": "chat.supportDraftCancel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "draft_id": "draft-1781803200000"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "draft_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "draft_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "ok": true,
+                  "outcome": "cancelled"
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "outcome": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "outcome"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Support draft cancellation result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Draft identifier was missing.",
+            "x-reason-codes": [
+              "missing_required_field"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          }
+        },
+        "summary": "Cancel support draft",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/api/chat/support/draft/confirm": {
+      "post": {
+        "description": "Submit a captured support draft.",
+        "operationId": "chat.supportDraftConfirm",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "draft_id": "draft-1781803200000"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "draft_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "draft_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "ok": true,
+                  "outcome": "submitted",
+                  "ticket_id": "12345"
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "outcome": {
+                      "type": "string"
+                    },
+                    "ticket_id": {}
+                  },
+                  "required": [
+                    "ok",
+                    "outcome"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Support draft confirmation result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Draft identifier was missing.",
+            "x-reason-codes": [
+              "missing_required_field"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          }
+        },
+        "summary": "Confirm support draft",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
     "/api/push/register": {
       "delete": {
         "description": "Remove the push token for the current paired device fingerprint.",
@@ -381,6 +824,660 @@
         "summary": "Register push device",
         "tags": [
           "push"
+        ]
+      }
+    },
+    "/api/voice/connect": {
+      "post": {
+        "description": "Connect the server-side voice sideband for an active call.",
+        "operationId": "voice.connect",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "call_id": "call_123"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "call_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "call_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": "connected"
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Voice sideband connection started."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "JSON body was malformed or call_id was missing.",
+            "x-reason-codes": [
+              "invalid_json_request",
+              "invalid_request_value"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Voice runtime was unavailable.",
+            "x-reason-codes": [
+              "voice_unavailable"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Voice provider key was not configured.",
+            "x-reason-codes": [
+              "provider_key_missing"
+            ]
+          }
+        },
+        "summary": "Connect voice sideband",
+        "tags": [
+          "voice"
+        ]
+      }
+    },
+    "/api/voice/nav-hints": {
+      "get": {
+        "description": "Drain queued navigation hints for the given voice call.",
+        "operationId": "voice.navHints",
+        "parameters": [
+          {
+            "description": "Voice call identifier.",
+            "in": "query",
+            "name": "call_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "consumed": true,
+                  "hints": []
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "consumed": {
+                      "type": "boolean"
+                    },
+                    "hints": {
+                      "items": {},
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "hints",
+                    "consumed"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Navigation hints drained."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Call identifier was missing.",
+            "x-reason-codes": [
+              "invalid_request_value"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          }
+        },
+        "summary": "Drain voice navigation hints",
+        "tags": [
+          "voice"
+        ]
+      }
+    },
+    "/api/voice/observer-actions": {
+      "get": {
+        "description": "Drain queued observer actions for the given voice call.",
+        "operationId": "voice.observerActions",
+        "parameters": [
+          {
+            "description": "Voice call identifier.",
+            "in": "query",
+            "name": "call_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "actions": [],
+                  "consumed": true
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "actions": {
+                      "items": {},
+                      "type": "array"
+                    },
+                    "consumed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "actions",
+                    "consumed"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Observer actions drained."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          }
+        },
+        "summary": "Drain voice observer actions",
+        "tags": [
+          "voice"
+        ]
+      }
+    },
+    "/api/voice/session": {
+      "post": {
+        "description": "Mint an ephemeral key for an OpenAI Realtime voice session.",
+        "operationId": "voice.session",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "ephemeral_key": "ek_..."
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "ephemeral_key": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "ephemeral_key"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Voice session key created."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Optional JSON body was malformed or not an object.",
+            "x-reason-codes": [
+              "invalid_json_request"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Voice runtime or session minting failed.",
+            "x-reason-codes": [
+              "voice_unavailable"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Voice provider configuration or brain readiness was unavailable.",
+            "x-reason-codes": [
+              "provider_key_missing",
+              "voice_unavailable"
+            ]
+          }
+        },
+        "summary": "Create voice session",
+        "tags": [
+          "voice"
+        ]
+      }
+    },
+    "/api/voice/status": {
+      "get": {
+        "description": "Return current voice readiness and session status.",
+        "operationId": "voice.status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "active_sessions": 1,
+                  "brain_age_seconds": 120,
+                  "brain_ready": true,
+                  "openai_configured": true
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "active_sessions": {
+                      "type": "integer"
+                    },
+                    "brain_age_seconds": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "brain_ready": {
+                      "type": "boolean"
+                    },
+                    "openai_configured": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "brain_ready",
+                    "brain_age_seconds",
+                    "openai_configured",
+                    "active_sessions"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Voice status."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          }
+        },
+        "summary": "Get voice status",
+        "tags": [
+          "voice"
+        ]
+      }
+    },
+    "/app/import/api/save": {
+      "post": {
+        "description": "Save an uploaded import file or pasted text into imports staging. Submit either file or text.",
+        "operationId": "import.save",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "facet": {
+                    "type": "string"
+                  },
+                  "file": {
+                    "format": "binary",
+                    "type": "string"
+                  },
+                  "imported_via": {
+                    "type": "string"
+                  },
+                  "observer_handle": {
+                    "type": "string"
+                  },
+                  "setting": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "description": "Multipart body with either file or text."
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "facet": null,
+                  "path": "/journal/imports/20260618_143022/source.txt",
+                  "setting": null,
+                  "timestamp": "20260618_143022"
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "facet": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "path": {
+                      "type": "string"
+                    },
+                    "setting": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "timestamp": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "timestamp",
+                    "facet",
+                    "setting"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Import source saved."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Neither file nor text was supplied.",
+            "x-reason-codes": [
+              "ingest_no_files"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          }
+        },
+        "summary": "Save import source",
+        "tags": [
+          "import"
+        ]
+      }
+    },
+    "/app/import/api/start": {
+      "post": {
+        "description": "Start processing a previously saved import source.",
+        "operationId": "import.start",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "force": false,
+                "path": "/journal/imports/20260618_143022/source.txt",
+                "source": "manual",
+                "timestamp": "20260618_143022"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "force": {
+                    "type": "boolean"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "timestamp": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path",
+                  "timestamp"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": "ok",
+                  "task_id": "1781803200000"
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    },
+                    "task_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "task_id"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Import task requested."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Path or timestamp was missing.",
+            "x-reason-codes": [
+              "missing_required_field"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Import metadata or directory was not found.",
+            "x-reason-codes": [
+              "import_not_found"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Import target timestamp already exists.",
+            "x-reason-codes": [
+              "import_conflict"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Import metadata could not be read or updated.",
+            "x-reason-codes": [
+              "import_metadata_failed"
+            ]
+          }
+        },
+        "summary": "Start import",
+        "tags": [
+          "import"
         ]
       }
     },
@@ -1961,6 +3058,184 @@
         "summary": "Register observer",
         "tags": [
           "observer"
+        ]
+      }
+    },
+    "/app/observer/source/{stream}": {
+      "delete": {
+        "description": "Delete an allowed observer-owned source stream from the journal.",
+        "operationId": "observer.deleteSource",
+        "parameters": [
+          {
+            "description": "Observer handle. Preferred over Authorization when present.",
+            "in": "header",
+            "name": "X-Solstone-Observer",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Bearer observer handle.",
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Source stream; only 'location' is deletable.",
+            "in": "path",
+            "name": "stream",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "backup_hosted": "not confirmed",
+                  "not_confirmed": [],
+                  "not_removed": [],
+                  "removed": {
+                    "days": 0,
+                    "history_rows": 0,
+                    "in_segment_derived": 0,
+                    "index_chunks": 0,
+                    "originals": 0,
+                    "segments": 0,
+                    "stream_identity": 0
+                  },
+                  "target": {
+                    "journal": "/journal",
+                    "stream": "location"
+                  }
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "backup_hosted": {
+                      "type": "string"
+                    },
+                    "not_confirmed": {
+                      "items": {},
+                      "type": "array"
+                    },
+                    "not_removed": {
+                      "items": {},
+                      "type": "array"
+                    },
+                    "removed": {
+                      "type": "object"
+                    },
+                    "target": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "target",
+                    "removed",
+                    "not_confirmed",
+                    "not_removed",
+                    "backup_hosted"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Source deletion receipt."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Only known source streams can be deleted.",
+            "x-reason-codes": [
+              "invalid_segment_or_stream"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Observer handle missing or invalid.",
+            "x-reason-codes": [
+              "auth_key_invalid",
+              "auth_required"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Observer is disabled or revoked.",
+            "x-reason-codes": [
+              "feature_unavailable",
+              "pl_revoked"
+            ]
+          }
+        },
+        "summary": "Delete observer source",
+        "tags": [
+          "observer"
+        ]
+      }
+    },
+    "/sse/events": {
+      "get": {
+        "description": "Open the root Server-Sent Events feed for Callosum events. Frames: heartbeat comments `: heartbeat\\n\\n`; data frames `data: {json}\\n\\n` carrying CallosumEvent JSON for all tracts, including chat. This stream emits no `event: error` frames.",
+        "operationId": "callosum.rootEvents",
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "example": {
+                  "event": "owner_message",
+                  "message": "What changed?",
+                  "tract": "chat",
+                  "ts": 1781803200000
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/CallosumEvent"
+                }
+              }
+            },
+            "description": "Callosum event stream. Heartbeat frames are comments `: heartbeat\\n\\n`; data frames are `data: {json}\\n\\n` and carry CallosumEvent JSON for all tracts, including chat."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity before stream open.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          }
+        },
+        "summary": "Stream root Callosum events",
+        "tags": [
+          "callosum"
         ]
       }
     }

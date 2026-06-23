@@ -19,6 +19,10 @@ FRAGMENT_MODULES = [
     "solstone.apps.network.contract",
     "solstone.apps.observer.contract",
     "solstone.convey.push_contract",
+    "solstone.convey.chat_contract",
+    "solstone.convey.root_contract",
+    "solstone.convey.voice_contract",
+    "solstone.apps.import.contract",
 ]
 
 CALLOSUM_REGISTRY: dict[str, list[str]] = {
