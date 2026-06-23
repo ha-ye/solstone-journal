@@ -476,11 +476,15 @@ def test_openhands_local_llm_kwargs(monkeypatch):
         "native_tool_calling": False,
         "timeout": openhands.LLM_TIMEOUT_S,
         "num_retries": openhands.LLM_NUM_RETRIES,
-        "max_input_tokens": local_server.LOCAL_SERVER_CONTEXT_TOKENS,
+        "max_input_tokens": local_server.LOCAL_MIN_CONTEXT_TOKENS,
         "input_cost_per_token": 0,
         "output_cost_per_token": 0,
         "litellm_extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
     }
+    capable_tier = local_server.select_server_tier(24576)
+    assert capable_tier.context_tokens == 32768
+    assert captured["max_input_tokens"] == 16384
+    assert captured["max_input_tokens"] != capable_tier.context_tokens
     assert "chat_template_kwargs" not in captured
     assert openhands._prefixed_model("local", LOCAL_MODEL) == f"openai/{LOCAL_MODEL}"
 
@@ -745,16 +749,153 @@ def test_openhands_local_byo_llm_kwargs(monkeypatch, credential, expected_key):
     assert "max_input_tokens" not in captured
 
 
-def test_local_context_window_single_source():
+def test_local_context_window_split_floor_vs_tier():
     import inspect
 
     from solstone.think import supervisor
+    from solstone.think.providers import local_server, openhands
+
+    assert local_server.LOCAL_MIN_CONTEXT_TOKENS == 16384
+    removed_name = "_".join(("LOCAL", "SERVER", "CONTEXT", "TOKENS"))
+    assert not hasattr(local_server, removed_name)
+    src = inspect.getsource(supervisor.start_local_server)
+    assert "select_server_tier" in src
+    assert "tier.context_tokens" in src
+    assert '"16384"' not in src
+    llm_src = inspect.getsource(openhands._build_llm)
+    assert "LOCAL_MIN_CONTEXT_TOKENS" in llm_src
+
+
+def test_select_server_tier_vram_thresholds():
     from solstone.think.providers import local_server
 
-    assert local_server.LOCAL_SERVER_CONTEXT_TOKENS == 16384
-    src = inspect.getsource(supervisor.start_local_server)
-    assert "local_server.LOCAL_SERVER_CONTEXT_TOKENS" in src
-    assert '"16384"' not in src
+    cases = [
+        (
+            0,
+            local_server.ServerTier(
+                name="floor",
+                context_tokens=16384,
+                parallel_slots=1,
+                prompt_cache_mib=0,
+            ),
+        ),
+        (
+            15999,
+            local_server.ServerTier(
+                name="floor",
+                context_tokens=16384,
+                parallel_slots=1,
+                prompt_cache_mib=0,
+            ),
+        ),
+        (
+            16000,
+            local_server.ServerTier(
+                name="capable",
+                context_tokens=32768,
+                parallel_slots=2,
+                prompt_cache_mib=2048,
+            ),
+        ),
+        (
+            24576,
+            local_server.ServerTier(
+                name="capable",
+                context_tokens=32768,
+                parallel_slots=2,
+                prompt_cache_mib=2048,
+            ),
+        ),
+    ]
+
+    for vram_mib, expected in cases:
+        tier = local_server.select_server_tier(vram_mib)
+        assert tier == expected
+        assert tier.context_tokens >= 16384
+        assert tier.context_tokens > 0
+
+
+@pytest.mark.parametrize(
+    ("props", "expected"),
+    [
+        ({"n_ctx": 32768}, 32768),
+        ({"default_generation_settings": {"n_ctx": 16384}}, 16384),
+        (
+            {"n_ctx": 32768, "default_generation_settings": {"n_ctx": 16384}},
+            32768,
+        ),
+        ({}, None),
+        ({"default_generation_settings": {}}, None),
+        ({"n_ctx": "abc"}, None),
+        ({"n_ctx": None}, None),
+        # Numeric strings are acceptable because _extract_n_ctx intentionally
+        # uses int() coercion on reported llama-server values.
+        ({"n_ctx": "32768"}, 32768),
+    ],
+)
+def test_extract_n_ctx_props_shapes(props, expected):
+    from solstone.think.providers import local_server
+
+    assert local_server._extract_n_ctx(props) == expected
+
+
+def test_read_server_context_window_fetch_props(monkeypatch):
+    import httpx
+
+    from solstone.think.providers import local_server
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, body=None, error: Exception | None = None):
+            self.body = body
+            self.error = error
+
+        def json(self):
+            if self.error is not None:
+                raise self.error
+            return self.body
+
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        lambda url, timeout: FakeResponse({"n_ctx": 32768, "total_slots": 2}),
+    )
+    assert local_server.read_server_context_window(2468) == 32768
+
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        lambda url, timeout: FakeResponse(error=ValueError("bad json")),
+    )
+    assert local_server.read_server_context_window(2468) is None
+
+    monkeypatch.setattr(httpx, "get", lambda url, timeout: FakeResponse(["n_ctx"]))
+    assert local_server.read_server_context_window(2468) is None
+
+    def raise_get(url, timeout):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(httpx, "get", raise_get)
+    assert local_server.read_server_context_window(2468) is None
+
+
+def test_context_window_tokens_fallback(monkeypatch):
+    from solstone.think import utils
+    from solstone.think.providers import local_budget, local_server
+
+    monkeypatch.setattr(utils, "read_service_port", lambda service: 2468)
+    monkeypatch.setattr(local_server, "read_server_context_window", lambda port: 32768)
+    monkeypatch.setattr(local_server, "read_local_context_window", lambda: None)
+    assert local_budget.context_window_tokens() == 32768
+
+    monkeypatch.setattr(local_server, "read_server_context_window", lambda port: None)
+    monkeypatch.setattr(local_server, "read_local_context_window", lambda: 32768)
+    assert local_budget.context_window_tokens() == 32768
+
+    monkeypatch.setattr(utils, "read_service_port", lambda service: None)
+    monkeypatch.setattr(local_server, "read_local_context_window", lambda: None)
+    assert local_budget.context_window_tokens() == local_server.LOCAL_MIN_CONTEXT_TOKENS
 
 
 def test_llama_server_pins_are_real_b9291_digests():

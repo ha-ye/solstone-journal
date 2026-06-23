@@ -2316,6 +2316,7 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
     gguf = model_artifact_dir / "model.gguf"
     mmproj = model_artifact_dir / "mmproj.gguf"
     written_ports = []
+    written_context_windows = []
     spawned = []
     spawned_envs = []
     managed = _TaskManagedStub(cmd=[])
@@ -2349,7 +2350,13 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
         "write_service_port",
         lambda service, port: written_ports.append((service, port)),
     )
+    monkeypatch.setattr(
+        local_server,
+        "write_local_context_window",
+        lambda tokens: written_context_windows.append(tokens),
+    )
     monkeypatch.setattr(local_server, "_probe_health", lambda port: ("ready", None))
+    monkeypatch.setattr(local_server, "fetch_props", lambda port: None)
 
     def fake_spawn(cmd, *, ref=None, callosum=None, day=None, env=None):
         spawned.append(cmd)
@@ -2364,6 +2371,7 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
 
     assert result is managed
     assert written_ports == [("local", 2468)]
+    assert written_context_windows == [local_server.LOCAL_MIN_CONTEXT_TOKENS]
     assert spawned == [
         [
             str(binary),
@@ -2379,7 +2387,13 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
             "--n-gpu-layers",
             "999",
             "-c",
-            str(local_server.LOCAL_SERVER_CONTEXT_TOKENS),
+            str(local_server.LOCAL_MIN_CONTEXT_TOKENS),
+            "--parallel",
+            "1",
+            "--kv-unified",
+            "--cache-ram",
+            "0",
+            "--no-context-shift",
             "--device",
             "Vulkan0",
             "--mmproj",
@@ -2390,6 +2404,40 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
     assert "0.0.0.0" not in spawned[0]
     assert mod._SERVICE_STATE["llama-server"]["restart"] is True
     assert mod.LOCAL_MODEL_WARMING_UP_COPY in capsys.readouterr().out
+
+
+def test_log_context_assertion(caplog):
+    mod = importlib.import_module("solstone.think.supervisor")
+    from solstone.think.providers import local_server
+
+    floor = local_server.ServerTier(
+        name="floor", context_tokens=16384, parallel_slots=1, prompt_cache_mib=0
+    )
+    capable = local_server.ServerTier(
+        name="capable", context_tokens=32768, parallel_slots=2, prompt_cache_mib=2048
+    )
+
+    with caplog.at_level(logging.INFO):
+        mod._log_context_assertion(floor, 16384, 1)
+    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        mod._log_context_assertion(capable, 65536, 2)
+    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        mod._log_context_assertion(capable, 12345, 2)
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        mod._log_context_assertion(capable, None, None)
+    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+    assert any(
+        "context assertion skipped" in record.message for record in caplog.records
+    )
 
 
 def test_start_local_server_skips_missing_artifacts(monkeypatch):
@@ -2452,7 +2500,11 @@ def _configure_linux_llama_start(
     monkeypatch.setattr(local_vulkan, "device_local_used_mib", lambda index: 512)
     monkeypatch.setattr(mod, "find_available_port", lambda: 2468)
     monkeypatch.setattr(mod, "write_service_port", lambda _service, _port: None)
+    monkeypatch.setattr(
+        local_server, "write_local_context_window", lambda _tokens: None
+    )
     monkeypatch.setattr(local_server, "_probe_health", lambda _port: ("ready", None))
+    monkeypatch.setattr(local_server, "fetch_props", lambda _port: None)
 
     def fake_spawn(cmd, *, ref=None, callosum=None, day=None, env=None):
         spawned.append(cmd)

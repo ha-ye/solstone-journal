@@ -1767,6 +1767,44 @@ def _gpu_unavailable_reason(devices: list[Any], override: int | None) -> str:
     return "only non-hardware or software Vulkan devices were enumerated"
 
 
+def _log_context_assertion(
+    tier: Any, n_ctx: int | None, total_slots: int | None
+) -> None:
+    if n_ctx is None:
+        logging.info(
+            "llama-server context assertion skipped: n_ctx unavailable from /props"
+        )
+    else:
+        expected = {tier.context_tokens, tier.context_tokens * tier.parallel_slots}
+        if n_ctx in expected:
+            logging.info(
+                "llama-server context OK: intended -c=%d parallel=%d actual n_ctx=%d",
+                tier.context_tokens,
+                tier.parallel_slots,
+                n_ctx,
+            )
+        else:
+            logging.warning(
+                "llama-server context MISMATCH: intended -c=%d parallel=%d "
+                "actual n_ctx=%d",
+                tier.context_tokens,
+                tier.parallel_slots,
+                n_ctx,
+            )
+
+    if isinstance(total_slots, int):
+        if total_slots == tier.parallel_slots:
+            logging.info("llama-server slots OK: %d", total_slots)
+        else:
+            logging.warning(
+                "llama-server slots MISMATCH: intended=%d actual=%d",
+                tier.parallel_slots,
+                total_slots,
+            )
+    else:
+        logging.info("llama-server slot count not reported; skipped")
+
+
 def start_local_server() -> RunnerManagedProcess | None:
     """Launch the supervisor-owned local llama-server when artifacts are present."""
     from solstone.think.providers.local_endpoint import resolve_local_endpoint
@@ -1820,6 +1858,16 @@ def start_local_server() -> RunnerManagedProcess | None:
 
     port = find_available_port()
     write_service_port("local", port)
+    tier = local_server.select_server_tier(selected.vram_mib)
+    local_server.write_local_context_window(tier.context_tokens)
+    logging.info(
+        "local server tier=%s context=%d parallel=%d cache=%d MiB (vram=%d MiB)",
+        tier.name,
+        tier.context_tokens,
+        tier.parallel_slots,
+        tier.prompt_cache_mib,
+        selected.vram_mib,
+    )
     cmd = [
         str(binary_path),
         "-m",
@@ -1834,7 +1882,13 @@ def start_local_server() -> RunnerManagedProcess | None:
         "--n-gpu-layers",
         "999",
         "-c",
-        str(local_server.LOCAL_SERVER_CONTEXT_TOKENS),
+        str(tier.context_tokens),
+        "--parallel",
+        str(tier.parallel_slots),
+        "--kv-unified",
+        "--cache-ram",
+        str(tier.prompt_cache_mib),
+        "--no-context-shift",
         "--device",
         "Vulkan0",
     ]
@@ -1884,6 +1938,10 @@ def start_local_server() -> RunnerManagedProcess | None:
                     "(VK_EXT_memory_budget not reported)",
                     selected.name,
                 )
+            props = local_server.fetch_props(port)
+            n_ctx = local_server._extract_n_ctx(props) if props is not None else None
+            total_slots = props.get("total_slots") if isinstance(props, dict) else None
+            _log_context_assertion(tier, n_ctx, total_slots)
             logging.info("llama-server ready on port %s", port)
             return managed
         if state == local_server.STATE_FAILED and error:

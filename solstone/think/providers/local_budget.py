@@ -25,8 +25,17 @@ TRUNCATION_MARKER = "[earlier input truncated to fit the on-device model's conte
 
 def context_window_tokens() -> int:
     from solstone.think.providers import local_server
+    from solstone.think.utils import read_service_port
 
-    return local_server.LOCAL_SERVER_CONTEXT_TOKENS
+    port = read_service_port("local")
+    if port is not None:
+        n_ctx = local_server.read_server_context_window(port)
+        if n_ctx is not None and n_ctx > 0:
+            return n_ctx
+    sidecar = local_server.read_local_context_window()
+    if sidecar is not None and sidecar > 0:
+        return sidecar
+    return local_server.LOCAL_MIN_CONTEXT_TOKENS
 
 
 def estimate_tokens(text: str) -> int:
