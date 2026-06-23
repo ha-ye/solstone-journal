@@ -262,11 +262,9 @@ def test_dispatch_surfaces_for_journal_spl_and_sol_link(
     result: dict[str, object] = {}
     titles: list[str] = []
 
-    def fake_run_command(module_path: str, *, surface: str, binary: str) -> int:
+    def fake_run_command(module_path: str) -> int:
         result["module"] = module_path
         result["argv"] = sys.argv[:]
-        result["surface"] = surface
-        result["binary"] = binary
         return 0
 
     monkeypatch.setattr(sol_cli, "run_command", fake_run_command)
@@ -280,8 +278,6 @@ def test_dispatch_surfaces_for_journal_spl_and_sol_link(
     assert result == {
         "module": "solstone.think.spl",
         "argv": ["journal spl"],
-        "surface": "service",
-        "binary": "journal",
     }
     assert titles == ["journal:spl"]
 

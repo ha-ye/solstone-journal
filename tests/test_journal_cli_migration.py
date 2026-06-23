@@ -44,7 +44,7 @@ ROOT_TEXT_FILES = {
 }
 ACCESS_POSITIVE_EXPECTATIONS = {
     Path("AGENTS.md"): re.compile(r"\bsol call\b"),
-    Path("INSTALL.md"): re.compile(r"\bsol doctor\b"),
+    Path("INSTALL.md"): re.compile(r"\bsol skills\b"),
     Path("Makefile"): re.compile(r"\$\(VENV_BIN\)/sol skills\b"),
     Path("README.md"): re.compile(r"\bsol chat\b"),
 }
