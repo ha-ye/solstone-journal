@@ -4,8 +4,14 @@
 """solstone namespace package."""
 
 import logging
+import os
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
+
+# HuggingFace Hub reads this at import time. Default telemetry off before any
+# optional provider path can import huggingface_hub.
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+os.environ.setdefault("DO_NOT_TRACK", "1")
 
 try:
     __version__ = _pkg_version("solstone")
