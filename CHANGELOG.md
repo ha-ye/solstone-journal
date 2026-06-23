@@ -4,11 +4,17 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
-## [Unreleased]
+## [0.6.11] - 2026-06-23
 
 ### Changed
-- a plain `solstone` install now carries only the thin client commands, `sol` and `solstone`. it no longer puts journal-host commands on your PATH.
-- the `journal` and `mlx-vlm-server` host commands now come with `solstone[journal]` or `solstone[journal-cuda]`, through the new `solstone-journal-host` package. with `uv tool`, install with `uv tool install --with-executables-from solstone-journal-host 'solstone[journal]'`; with pipx, use `pipx install --include-deps 'solstone[journal]'`; with pip, `pip install 'solstone[journal]'` exposes them on its own.
+- a plain `solstone` install now carries only the thin client commands, `sol` and `solstone`. it no longer puts journal-host commands on your PATH. the `journal` and `mlx-vlm-server` host commands now come with `solstone[journal]` or `solstone[journal-cuda]`, through the new `solstone-journal-host` package. with `uv tool`, install with `uv tool install --with-executables-from solstone-journal-host 'solstone[journal]'`; with pipx, use `pipx install --include-deps 'solstone[journal]'`; with pip, `pip install 'solstone[journal]'` exposes them on its own.
+- a couple of settings rough edges are smoothed. naming sol in the sol identity section now commits the name you typed when you press Enter, instead of quietly resetting it to "sol," and a quiet notification in the status-icon list now opens to its full text instead of clipping to a one-line snippet you couldn't expand.
+- a day waiting on a local model that's still loading or installing now reads "try again" rather than "a setting's missing," so the days-that-need-a-hand list points you at the right next step.
+
+### Fixed
+- observer uploads are being saved to your journal again. on a 0.6.10 install, everything your observers took in returned an error and nothing new landed in your journal; this restores it. if you upgraded to 0.6.10, please install this update.
+- on a Mac, your local "how sol thinks" choice sticks. on Apple Silicon it could silently fall back to "no provider chosen" even with a working on-device model; it now reads the actual model state on your Mac. linux is unchanged.
+- a partial journal-host install now tells you what to do instead of looping. if the host pieces aren't fully in place, setup stops with reinstall guidance up front rather than starting and failing over and over.
 
 ## [0.6.10] - 2026-06-22
 
