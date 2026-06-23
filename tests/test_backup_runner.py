@@ -98,13 +98,18 @@ def test_run_restic_threads_pass_fds(monkeypatch: pytest.MonkeyPatch):
 def test_run_restic_scrubs_success_output_and_json(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    secrets = ("repo-password", "backend-secret", "access-key")
+    secrets = ("repo-password", "backend-secret", "access-key", "SESS-TOKEN")
 
     def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         stdout = json.dumps(
-            {"message": ("repo-password backend-secret access-key should be hidden")}
+            {
+                "message": (
+                    "repo-password backend-secret access-key "
+                    "SESS-TOKEN should be hidden"
+                )
+            }
         )
-        stderr = "stderr has repo-password and backend-secret"
+        stderr = "stderr has repo-password backend-secret and SESS-TOKEN"
         return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr=stderr)
 
     monkeypatch.setattr(runner.subprocess, "run", fake_run)
@@ -117,6 +122,7 @@ def test_run_restic_scrubs_success_output_and_json(
         backend_env={
             "AWS_ACCESS_KEY_ID": "access-key",
             "AWS_SECRET_ACCESS_KEY": "backend-secret",
+            "AWS_SESSION_TOKEN": "SESS-TOKEN",
         },
         json=True,
     )
@@ -128,7 +134,7 @@ def test_run_restic_scrubs_success_output_and_json(
         assert secret not in json_text
         assert all(secret not in token for token in result.argv)
     assert result.json == {
-        "message": "[redacted] [redacted] [redacted] should be hidden"
+        "message": "[redacted] [redacted] [redacted] [redacted] should be hidden"
     }
 
 
@@ -223,8 +229,8 @@ def test_run_restic_timeout_returns_scrubbed_result(
         raise subprocess.TimeoutExpired(
             argv,
             timeout=1,
-            output=b"stdout repo-password backend-secret",
-            stderr=b"stderr repo-password backend-secret",
+            output=b"stdout repo-password backend-secret SESS-TOKEN",
+            stderr=b"stderr repo-password backend-secret SESS-TOKEN",
         )
 
     monkeypatch.setattr(runner.subprocess, "run", fake_run)
@@ -234,15 +240,20 @@ def test_run_restic_timeout_returns_scrubbed_result(
         repository="s3:safe-bucket/path",
         password="repo-password",
         restic_path=Path("/usr/bin/restic"),
-        backend_env={"AWS_SECRET_ACCESS_KEY": "backend-secret"},
+        backend_env={
+            "AWS_SECRET_ACCESS_KEY": "backend-secret",
+            "AWS_SESSION_TOKEN": "SESS-TOKEN",
+        },
         timeout=1,
     )
 
     assert result.returncode == 124
     assert "repo-password" not in result.stdout
     assert "backend-secret" not in result.stdout
+    assert "SESS-TOKEN" not in result.stdout
     assert "repo-password" not in result.stderr
     assert "backend-secret" not in result.stderr
+    assert "SESS-TOKEN" not in result.stderr
     assert result.json is None
 
 

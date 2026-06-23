@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from solstone.think.backup.destination import Destination
+from solstone.think.backup.hosted import load_hosted_binding
 from solstone.think.backup.keys import (
     format_recovery_key_display,
     generate_daily_key,
@@ -258,6 +259,7 @@ def status_view() -> dict[str, Any]:
         "schedule": config["schedule"],
         "last_backup": config["last_backup"],
         "last_prune": config["last_prune"],
+        "hosted": {"bound": load_hosted_binding() is not None},
     }
 
 

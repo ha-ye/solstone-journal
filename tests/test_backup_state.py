@@ -12,6 +12,7 @@ import pytest
 
 from solstone.think.backup import state
 from solstone.think.backup.destination import Destination
+from solstone.think.backup.hosted import HostedBinding, save_hosted_binding
 
 
 def _config_path(journal: Path) -> Path:
@@ -414,3 +415,35 @@ def test_status_view_redacts_all_secrets(
     assert view["recovery_key_set"] is True
     assert view["recovery_key_confirmed"] is True
     assert view["last_prune"] == state.BACKUP_DEFAULTS["last_prune"]
+
+
+def test_status_view_reports_hosted_binding_without_secrets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, {})
+
+    unbound = state.status_view()
+    unbound_serialized = json.dumps(unbound)
+
+    assert unbound["hosted"] == {"bound": False}
+    assert "broker_token" not in unbound_serialized
+
+    save_hosted_binding(
+        HostedBinding(
+            broker_endpoint="https://broker.example",
+            account_id="acct",
+            instance_id="inst",
+            bucket="bkt",
+            prefix="users/acct/inst/",
+            broker_token="BTOKEN",
+        )
+    )
+
+    bound = state.status_view()
+    bound_serialized = json.dumps(bound)
+
+    assert bound["hosted"] == {"bound": True}
+    assert "broker_token" not in bound_serialized
+    assert "BTOKEN" not in bound_serialized

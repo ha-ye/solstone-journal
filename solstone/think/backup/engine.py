@@ -15,6 +15,12 @@ from solstone.think.backup.destination import (
     Destination,
     assemble_backend_env,
 )
+from solstone.think.backup.hosted import (
+    HostedCredsUnavailable,
+    fetch_hosted_credentials,
+    load_hosted_binding,
+    operated_destination,
+)
 from solstone.think.backup.install import ensure_restic
 from solstone.think.backup.runner import (
     reason_for_returncode,
@@ -68,15 +74,25 @@ class _ResticUnavailable(RuntimeError):
     """Raised when the pinned restic binary cannot be acquired."""
 
 
-def _resolve_runtime() -> _Runtime | None:
+def _resolve_runtime(scope: str) -> _Runtime | None:
     config = get_backup_config()
     if config["enabled"] is not True:
         return None
 
-    destination = get_destination()
     keys = get_keys()
-    if destination is None or keys is None:
+    if keys is None:
         return None
+
+    if config["mode"] == "operated":
+        binding = load_hosted_binding()
+        if binding is None:
+            return None
+        creds = fetch_hosted_credentials(binding, scope=scope)
+        destination = operated_destination(binding, creds)
+    else:
+        destination = get_destination()
+        if destination is None:
+            return None
 
     try:
         restic_path = ensure_restic()
@@ -161,7 +177,14 @@ def _record_prune_error(*, reason: str) -> PruneResult:
 
 def run_backup() -> BackupResult:
     try:
-        runtime = _resolve_runtime()
+        runtime = _resolve_runtime(scope="backup")
+    except HostedCredsUnavailable as exc:
+        logger.warning(
+            "backup completed returncode=%s reason_code=%s",
+            None,
+            exc.reason_code,
+        )
+        return _record_backup_error(reason=exc.reason_code)
     except _ResticUnavailable:
         logger.warning(
             "backup completed returncode=%s reason_code=%s",
@@ -223,7 +246,14 @@ def run_backup() -> BackupResult:
 
 def run_prune() -> PruneResult:
     try:
-        runtime = _resolve_runtime()
+        runtime = _resolve_runtime(scope="maintenance")
+    except HostedCredsUnavailable as exc:
+        logger.warning(
+            "backup prune completed returncode=%s reason_code=%s",
+            None,
+            exc.reason_code,
+        )
+        return _record_prune_error(reason=exc.reason_code)
     except _ResticUnavailable:
         logger.warning(
             "backup prune completed returncode=%s reason_code=%s",

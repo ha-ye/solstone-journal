@@ -10,9 +10,21 @@ from dataclasses import dataclass
 from typing import Any
 
 from solstone.think.backup.destination import assemble_backend_env
+from solstone.think.backup.hosted import (
+    HostedCredsUnavailable,
+    delete_hosted_binding,
+    fetch_hosted_credentials,
+    load_hosted_binding,
+    operated_destination,
+)
 from solstone.think.backup.install import ensure_restic
 from solstone.think.backup.runner import reason_for_returncode, run_restic
-from solstone.think.backup.state import clear_backup_config, get_destination, get_keys
+from solstone.think.backup.state import (
+    clear_backup_config,
+    get_backup_config,
+    get_destination,
+    get_keys,
+)
 
 logger = logging.getLogger("solstone.backup.teardown")
 
@@ -53,10 +65,25 @@ def _snapshot_ids(parsed: Any) -> list[str] | None:
 
 
 def teardown_backup() -> TeardownResult:
-    destination = get_destination()
+    config = get_backup_config()
     keys = get_keys()
-    if destination is None or keys is None:
+    if keys is None:
         return TeardownResult(status="skipped", reason_code=None)
+
+    operated = config["mode"] == "operated"
+    if operated:
+        binding = load_hosted_binding()
+        if binding is None:
+            return TeardownResult(status="skipped", reason_code=None)
+        try:
+            creds = fetch_hosted_credentials(binding, scope="maintenance")
+        except HostedCredsUnavailable as exc:
+            return _teardown_error(exc.reason_code)
+        destination = operated_destination(binding, creds)
+    else:
+        destination = get_destination()
+        if destination is None:
+            return TeardownResult(status="skipped", reason_code=None)
 
     try:
         backend_env = assemble_backend_env(destination)
@@ -103,6 +130,8 @@ def teardown_backup() -> TeardownResult:
             )
 
     clear_backup_config()
+    if operated:
+        delete_hosted_binding()
     logger.info("backup teardown completed returncode=%s reason_code=ok", 0)
     return TeardownResult(status="ok", reason_code=None)
 

@@ -15,6 +15,7 @@ from typer.testing import CliRunner
 from solstone.think import backup_cli, sol_cli
 from solstone.think.backup.destination import Destination, DestinationStatus
 from solstone.think.backup.engine import BackupResult, PruneResult
+from solstone.think.backup.hosted import hosted_binding_path, load_hosted_binding
 from solstone.think.backup.keys import format_recovery_key_display
 from solstone.think.backup.restore import RestoreResult
 from solstone.think.backup.rotation import RotationResult
@@ -184,6 +185,56 @@ def test_destination_set_reads_stdin_and_keeps_secrets_off_argv(
     assert "AKIASECRET" not in " ".join(captured["argv"])
     assert "TOPSECRET" not in result.output
     assert "AKIASECRET" not in result.output
+
+
+def test_destination_set_hosted_writes_binding_0600_without_leaking_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    payload = {
+        "broker_endpoint": "https://broker.example",
+        "account_id": "acct",
+        "instance_id": "inst",
+        "bucket": "bkt",
+        "prefix": "users/acct/inst/",
+        "broker_token": "BTOKEN",
+    }
+
+    result = CliRunner().invoke(
+        backup_cli.app,
+        ["destination", "set-hosted"],
+        input=json.dumps(payload),
+    )
+
+    assert result.exit_code == 0
+    assert "BTOKEN" not in result.stdout
+    binding = load_hosted_binding()
+    assert binding is not None
+    assert binding.prefix == "users/acct/inst/"
+    assert hosted_binding_path().stat().st_mode & 0o777 == 0o600
+
+
+def test_destination_set_hosted_rejects_missing_field(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    payload = {
+        "broker_endpoint": "https://broker.example",
+        "account_id": "acct",
+        "instance_id": "inst",
+        "bucket": "bkt",
+        "prefix": "users/acct/inst/",
+    }
+
+    result = CliRunner().invoke(
+        backup_cli.app,
+        ["destination", "set-hosted"],
+        input=json.dumps(payload),
+    )
+
+    assert result.exit_code != 0
 
 
 def test_status_and_destination_show_are_redacted(

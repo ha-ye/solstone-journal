@@ -7,10 +7,18 @@ import json
 import logging
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
 from solstone.think.backup import state, teardown
+from solstone.think.backup.hosted import (
+    HostedBinding,
+    HostedCredentials,
+    HostedCredsUnavailable,
+    load_hosted_binding,
+    save_hosted_binding,
+)
 from solstone.think.backup.runner import ResticResult
 
 
@@ -212,3 +220,104 @@ def test_teardown_restic_unavailable_leaves_config_intact(
         reason_code="restic_unavailable",
     )
     assert _read_config(tmp_path) == original_config
+
+
+def test_operated_teardown_deletes_binding_on_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(
+        tmp_path,
+        {
+            "backup": {
+                "enabled": True,
+                "mode": "operated",
+                "daily_key": "dk",
+                "recovery_key": "R" * 64,
+            }
+        },
+    )
+    save_hosted_binding(
+        HostedBinding(
+            broker_endpoint="https://broker.example",
+            account_id="acct",
+            instance_id="inst",
+            bucket="bkt",
+            prefix="users/acct/inst",
+            broker_token="BTOKEN",
+        )
+    )
+    captured: dict[str, str] = {}
+
+    def fake_fetch(
+        binding: HostedBinding,
+        *,
+        scope: str,
+    ) -> HostedCredentials:
+        assert binding.bucket == "bkt"
+        captured["scope"] = scope
+        return HostedCredentials(
+            access_key_id="AKID",
+            secret_access_key="SAK",
+            session_token="SESS",
+            endpoint="https://acct.r2.cloudflarestorage.com",
+        )
+
+    def fake_run_restic(args: list[str], **_kwargs: Any) -> ResticResult:
+        assert args == ["snapshots"]
+        return _result(0, [])
+
+    monkeypatch.setattr(teardown, "fetch_hosted_credentials", fake_fetch)
+    monkeypatch.setattr(teardown, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(teardown, "run_restic", fake_run_restic)
+
+    result = teardown.teardown_backup()
+    backup_config = _read_config(tmp_path)["backup"]
+
+    assert result.status == "ok"
+    assert captured["scope"] == "maintenance"
+    assert load_hosted_binding() is None
+    assert backup_config["enabled"] is False
+    assert backup_config["mode"] == "byo"
+
+
+def test_operated_teardown_degrade_preserves_everything(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(
+        tmp_path,
+        {
+            "backup": {
+                "enabled": True,
+                "mode": "operated",
+                "daily_key": "dk",
+                "recovery_key": "R" * 64,
+            }
+        },
+    )
+    save_hosted_binding(
+        HostedBinding(
+            broker_endpoint="https://broker.example",
+            account_id="acct",
+            instance_id="inst",
+            bucket="bkt",
+            prefix="users/acct/inst",
+            broker_token="BTOKEN",
+        )
+    )
+    monkeypatch.setattr(
+        teardown,
+        "fetch_hosted_credentials",
+        Mock(side_effect=HostedCredsUnavailable("broker_unreachable")),
+    )
+
+    result = teardown.teardown_backup()
+    backup_config = _read_config(tmp_path)["backup"]
+
+    assert result.status == "error"
+    assert result.reason_code == "broker_unreachable"
+    assert load_hosted_binding() is not None
+    assert backup_config["daily_key"] == "dk"
