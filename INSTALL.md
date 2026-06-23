@@ -124,15 +124,16 @@ journal observer create tmux-laptop
 
 ```bash
 pip install --upgrade 'solstone[journal]' && journal setup
-uv tool upgrade solstone && journal setup
-pipx upgrade solstone && journal setup
+uv tool install --upgrade --with-executables-from solstone-journal-host 'solstone[journal]' && journal setup
+pipx install --force --include-deps 'solstone[journal]' && journal setup
 ```
 
-Use the same installer family you used for install. `uv tool` and `pipx` retain
-the host-script exposure options from the original host install. For GPU
-transcription with pip, upgrade `solstone[journal-cuda]` instead. The
-`journal setup` step refreshes runtime artifacts and reconciles the service unit
-if anything has changed.
+Use the same installer family you used for install. The `uv tool` form must
+keep `--with-executables-from solstone-journal-host`, and the pipx form must
+keep `--include-deps`, so the `journal` and `mlx-vlm-server` host scripts stay
+on PATH after the upgrade. For GPU transcription, replace `[journal]` with
+`[journal-cuda]`. The `journal setup` step refreshes runtime artifacts and
+reconciles the service unit if anything has changed.
 
 ## uninstall
 

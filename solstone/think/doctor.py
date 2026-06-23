@@ -106,7 +106,7 @@ HOST_DEPENDENCY_REINSTALL_GUIDANCE = (
     "pip install --upgrade 'solstone[journal]'  |  "
     "uv tool install --upgrade --with-executables-from solstone-journal-host "
     "'solstone[journal]'  |  "
-    "pipx install --include-deps 'solstone[journal]'. "
+    "pipx install --force --include-deps 'solstone[journal]'. "
     "On an NVIDIA host use the 'solstone[journal-cuda]' extra instead of "
     "'solstone[journal]'."
 )

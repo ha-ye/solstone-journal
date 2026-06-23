@@ -281,7 +281,7 @@ instead of false failures. Its battery is:
   command when missing.
 
 `host_dependencies` fix guidance is: Reinstall the journal host stack:
-`pip install --upgrade 'solstone[journal]'`  |  `uv tool install --upgrade --with-executables-from solstone-journal-host 'solstone[journal]'`  |  `pipx install --include-deps 'solstone[journal]'`. On an NVIDIA host use the 'solstone[journal-cuda]' extra instead of 'solstone[journal]'.
+`pip install --upgrade 'solstone[journal]'`  |  `uv tool install --upgrade --with-executables-from solstone-journal-host 'solstone[journal]'`  |  `pipx install --force --include-deps 'solstone[journal]'`. On an NVIDIA host use the 'solstone[journal-cuda]' extra instead of 'solstone[journal]'.
 
 Journal-host blocker failures include invalid service config, service identity
 mismatch, crash loops, systemd failed state, and journal-sync conflicts. An
