@@ -171,6 +171,7 @@ _CLI_AUTH_PATTERNS = (
 )
 _CONTEXT_WINDOW_PATTERNS = (
     "exceeds the available context size",
+    "context size has been exceeded",
     "exceeds the context window",
     "maximum context length",
     "context length exceeded",

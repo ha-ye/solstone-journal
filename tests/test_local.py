@@ -409,6 +409,42 @@ def test_run_generate_bundled_context_rejection_backstop(monkeypatch):
     assert exc.value.reason_code == "context_budget_exceeded"
 
 
+def test_run_generate_bundled_context_rejection_backstop_alt_phrasing(monkeypatch):
+    # llama-server emits a second context-overflow phrasing observed in the
+    # field ("Context size has been exceeded.") distinct from the token-count
+    # form; the backstop must convert both to a clean ContextBudgetExceeded.
+    provider = _provider()
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.connect",
+        lambda: SimpleNamespace(
+            port=4321,
+            base_url="http://127.0.0.1:4321",
+            served_model_id=LOCAL_MODEL,
+        ),
+    )
+    from solstone.think.providers import local_budget
+
+    monkeypatch.setattr(local_budget, "count_tokens", lambda text, _base_url: len(text))
+
+    def fake_post(url, json, timeout):
+        del json, timeout
+        request = httpx.Request("POST", url)
+        return httpx.Response(
+            400,
+            request=request,
+            text='{"error":{"message":"Context size has been exceeded."}}',
+        )
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    with pytest.raises(provider.ContextBudgetExceeded) as exc:
+        provider.run_generate("hello", model=LOCAL_MODEL, max_output_tokens=16)
+
+    assert exc.value.reason_code == "context_budget_exceeded"
+
+
 def test_openhands_local_llm_kwargs(monkeypatch):
     from solstone.think.providers import local_server, openhands
 
