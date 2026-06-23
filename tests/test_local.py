@@ -9,6 +9,7 @@ import importlib
 import json
 import sys
 import types
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +25,10 @@ from solstone.think.models import (
 
 
 def _provider():
+    providers_pkg = importlib.import_module("solstone.think.providers")
+    if hasattr(providers_pkg, "local_budget"):
+        delattr(providers_pkg, "local_budget")
+    sys.modules.pop("solstone.think.providers.local_budget", None)
     return importlib.reload(importlib.import_module("solstone.think.providers.local"))
 
 
@@ -63,6 +68,30 @@ def test_local_provider_defaults_and_registry():
         "label": "Local (on-device)",
         "env_key": "",
     }
+
+
+def test_context_budget_exceeded_classifies_by_reason_code():
+    provider = _provider()
+
+    assert (
+        provider.classify_provider_error(
+            provider.ContextBudgetExceeded("too large"), "local"
+        )
+        == "context_budget_exceeded"
+    )
+
+
+def test_cloud_generate_providers_do_not_reference_local_budget():
+    root = Path(__file__).resolve().parents[1]
+
+    for rel_path in (
+        "solstone/think/providers/anthropic.py",
+        "solstone/think/providers/google.py",
+        "solstone/think/providers/openai.py",
+    ):
+        text = (root / rel_path).read_text(encoding="utf-8")
+        assert "local_budget" not in text
+        assert "fit_contents" not in text
 
 
 def test_list_models_returns_specs():
@@ -203,6 +232,183 @@ def test_run_generate_emits_chat_completions_image_url(monkeypatch):
     ]
 
 
+def test_run_generate_bundled_clips_oversized_text_block(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.connect",
+        lambda: SimpleNamespace(
+            port=4321,
+            base_url="http://127.0.0.1:4321",
+            served_model_id=LOCAL_MODEL,
+        ),
+    )
+    from solstone.think.providers import local_budget
+
+    monkeypatch.setattr(local_budget, "count_tokens", lambda text, _base_url: len(text))
+    chunks = [
+        "## 2026-06-23 09:00:00 - 09:05:00\n",
+        "### Transcript\noldest " + ("o" * 5000) + "\n",
+        "### Screen Activity\nmiddle " + ("m" * 5000) + "\n",
+        "## 2026-06-23 09:05:00 - 09:10:00\n",
+        "### Transcript\nrecent " + ("r" * 5000) + "\n",
+        "### Screen Activity\nlatest " + ("l" * 5000) + "\n",
+    ]
+    big_block = "".join(chunks)
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "model": LOCAL_MODEL,
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            }
+
+    def fake_post(url, json, timeout):
+        captured.update({"url": url, "json": json, "timeout": timeout})
+        return Response()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    schema = {"type": "object"}
+    result = provider.run_generate(
+        [big_block, "talent prompt"],
+        model=LOCAL_MODEL,
+        max_output_tokens=8192 * 6,
+        system_instruction="system",
+        json_schema=schema,
+    )
+
+    assert captured["json"]["messages"][0] == {"role": "system", "content": "system"}
+    user_message = captured["json"]["messages"][1]["content"]
+    assert local_budget.TRUNCATION_MARKER in user_message
+    assert "oldest " not in user_message
+    assert "latest " in user_message
+    assert "talent prompt" in user_message
+    assert len(user_message) < len(big_block)
+    assert captured["json"]["response_format"]["json_schema"]["schema"] is schema
+    assert result["input_budget"]["clipped"] is True
+
+
+def test_run_generate_bundled_non_overflow_keeps_body_unmarked(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.connect",
+        lambda: SimpleNamespace(
+            port=4321,
+            base_url="http://127.0.0.1:4321",
+            served_model_id=LOCAL_MODEL,
+        ),
+    )
+    from solstone.think.providers import local_budget
+
+    monkeypatch.setattr(local_budget, "count_tokens", lambda text, _base_url: len(text))
+    small_block = "## Segment\n### Transcript\nsmall\n"
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "model": LOCAL_MODEL,
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            }
+
+    def fake_post(url, json, timeout):
+        captured.update({"url": url, "json": json, "timeout": timeout})
+        return Response()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    result = provider.run_generate(
+        [small_block, "talent prompt"],
+        model=LOCAL_MODEL,
+        max_output_tokens=1024,
+        system_instruction="system",
+    )
+
+    assert captured["json"]["messages"][1]["content"] == (
+        small_block + "\ntalent prompt"
+    )
+    assert (
+        local_budget.TRUNCATION_MARKER not in captured["json"]["messages"][1]["content"]
+    )
+    assert "input_budget" not in result
+
+
+def test_run_generate_bundled_preserved_exceeds_budget_skips_post(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.connect",
+        lambda: SimpleNamespace(
+            port=4321,
+            base_url="http://127.0.0.1:4321",
+            served_model_id=LOCAL_MODEL,
+        ),
+    )
+    from solstone.think.providers import local_budget
+
+    monkeypatch.setattr(local_budget, "count_tokens", lambda text, _base_url: len(text))
+
+    def fake_post(*_args, **_kwargs):
+        raise AssertionError("httpx.post not expected")
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    with pytest.raises(provider.ContextBudgetExceeded) as exc:
+        provider.run_generate(
+            "## Segment\n### Transcript\nsmall\n",
+            model=LOCAL_MODEL,
+            max_output_tokens=8192 * 6,
+            system_instruction="s" * 13000,
+        )
+
+    assert exc.value.reason_code == "context_budget_exceeded"
+
+
+def test_run_generate_bundled_context_rejection_backstop(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.connect",
+        lambda: SimpleNamespace(
+            port=4321,
+            base_url="http://127.0.0.1:4321",
+            served_model_id=LOCAL_MODEL,
+        ),
+    )
+    from solstone.think.providers import local_budget
+
+    monkeypatch.setattr(local_budget, "count_tokens", lambda text, _base_url: len(text))
+
+    def fake_post(url, json, timeout):
+        del json, timeout
+        request = httpx.Request("POST", url)
+        return httpx.Response(
+            400,
+            request=request,
+            text='{"error":{"message":"the request exceeds the available context size"}}',
+        )
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    with pytest.raises(provider.ContextBudgetExceeded) as exc:
+        provider.run_generate("hello", model=LOCAL_MODEL, max_output_tokens=16)
+
+    assert exc.value.reason_code == "context_budget_exceeded"
+
+
 def test_openhands_local_llm_kwargs(monkeypatch):
     from solstone.think.providers import local_server, openhands
 
@@ -260,6 +466,12 @@ def _byo_endpoint(credential: str | None = "test-token-PLACEHOLDER"):
 def test_run_generate_byo_posts_to_normalized_endpoint_and_skips_connect(monkeypatch):
     provider = _provider()
     monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
+    from solstone.think.providers import local_budget
+
+    def fail_count(*_args, **_kwargs):
+        raise AssertionError("count_tokens not expected")
+
+    monkeypatch.setattr(local_budget, "count_tokens", fail_count)
     monkeypatch.setattr(
         "solstone.think.providers.local_server.connect",
         lambda: (_ for _ in ()).throw(AssertionError("connect not expected")),
@@ -293,6 +505,7 @@ def test_run_generate_byo_posts_to_normalized_endpoint_and_skips_connect(monkeyp
     assert captured["url"] == "http://byo.example/openai/v1/chat/completions"
     assert captured["json"]["model"] == "served-model"
     assert captured["headers"] == {"Authorization": "Bearer test-token-PLACEHOLDER"}
+    assert local_budget.TRUNCATION_MARKER not in str(captured["json"])
     assert result["text"] == "hello"
 
 

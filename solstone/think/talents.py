@@ -1438,6 +1438,8 @@ async def _execute_generate(
         finish_event["usage"] = usage_data
     if "schema_validation" in gen_result:
         finish_event["schema_validation"] = gen_result["schema_validation"]
+    if "input_budget" in gen_result:
+        finish_event["input_budget"] = gen_result["input_budget"]
     if degraded:
         finish_event["degraded"] = degraded
     emit_event(finish_event)

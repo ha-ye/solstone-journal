@@ -27,7 +27,9 @@ from solstone.think.providers.local_endpoint import (
     resolve_local_endpoint,
 )
 from solstone.think.providers.shared import (
+    _CONTEXT_WINDOW_PATTERNS,
     GenerateResult,
+    _contains_any,
     classify_provider_error,
     safe_raw,
 )
@@ -74,6 +76,13 @@ class LocalProviderError(RuntimeError):
     def __init__(self, reason_code: str, message: str) -> None:
         super().__init__(message)
         self.reason_code = reason_code
+
+
+class ContextBudgetExceeded(LocalProviderError):
+    """Assembled request cannot fit the bundled local context window."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__("context_budget_exceeded", message)
 
 
 def normalize_model_id(model: str | None) -> str:
@@ -263,6 +272,18 @@ def run_generate(
         from solstone.think.providers import local_server
 
         server = local_server.connect()
+        from solstone.think.providers import local_budget
+
+        def counter(text: str) -> int:
+            return local_budget.count_tokens(text, server.base_url)
+
+        contents, input_budget = local_budget.fit_contents(
+            contents,
+            system_instruction,
+            max_output_tokens,
+            count=counter,
+        )
+        messages = _build_messages(contents, system_instruction)
         body = _build_request_body(
             server.served_model_id,
             messages,
@@ -279,8 +300,18 @@ def run_generate(
             json=body,
             timeout=timeout_s or _DEFAULT_TIMEOUT,
         )
-        response.raise_for_status()
-        return _parse_response(response.json())
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if _contains_any(response.text.lower(), _CONTEXT_WINDOW_PATTERNS):
+                raise ContextBudgetExceeded(
+                    "Local request exceeded the model context window after fitting."
+                ) from exc
+            raise
+        result = _parse_response(response.json())
+        if input_budget is not None:
+            result["input_budget"] = input_budget
+        return result
 
     body = _build_request_body(
         endpoint.served_model_id,
@@ -425,6 +456,7 @@ def validate_key(provider: str = "local", api_key: str = "") -> dict[str, Any]:
 
 __all__ = [
     "LOCAL_MODEL_SPECS",
+    "ContextBudgetExceeded",
     "LocalModelSpec",
     "LocalProviderError",
     "normalize_model_id",
