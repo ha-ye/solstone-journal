@@ -20,6 +20,7 @@ from solstone.think.backup.hosted import (
     save_hosted_binding,
 )
 from solstone.think.backup.runner import ResticResult
+from solstone.think.backup.s3_wipe import WipeResult
 
 
 def _config_path(journal: Path) -> Path:
@@ -222,7 +223,7 @@ def test_teardown_restic_unavailable_leaves_config_intact(
     assert _read_config(tmp_path) == original_config
 
 
-def test_operated_teardown_deletes_binding_on_success(
+def test_operated_teardown_wipes_prefix_and_deletes_binding_on_success_without_keys(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -233,8 +234,6 @@ def test_operated_teardown_deletes_binding_on_success(
             "backup": {
                 "enabled": True,
                 "mode": "operated",
-                "daily_key": "dk",
-                "recovery_key": "R" * 64,
             }
         },
     )
@@ -264,19 +263,34 @@ def test_operated_teardown_deletes_binding_on_success(
             endpoint="https://acct.r2.cloudflarestorage.com",
         )
 
-    def fake_run_restic(args: list[str], **_kwargs: Any) -> ResticResult:
-        assert args == ["snapshots"]
-        return _result(0, [])
+    def fail_run_restic(*_args: Any, **_kwargs: Any) -> ResticResult:
+        raise AssertionError("restic should not run for operated teardown")
+
+    def fake_wipe_prefix(**kwargs: str) -> WipeResult:
+        captured.update(kwargs)
+        return WipeResult("ok", None)
 
     monkeypatch.setattr(teardown, "fetch_hosted_credentials", fake_fetch)
-    monkeypatch.setattr(teardown, "ensure_restic", Mock(return_value=Path("/restic")))
-    monkeypatch.setattr(teardown, "run_restic", fake_run_restic)
+    monkeypatch.setattr(
+        teardown,
+        "ensure_restic",
+        Mock(side_effect=AssertionError("restic should not be resolved")),
+    )
+    monkeypatch.setattr(teardown, "run_restic", fail_run_restic)
+    monkeypatch.setattr(teardown, "wipe_prefix", fake_wipe_prefix)
 
     result = teardown.teardown_backup()
     backup_config = _read_config(tmp_path)["backup"]
 
     assert result.status == "ok"
     assert captured["scope"] == "maintenance"
+    assert captured["endpoint"] == "https://acct.r2.cloudflarestorage.com"
+    assert captured["bucket"] == "bkt"
+    assert captured["prefix"] == "users/acct/inst"
+    assert captured["access_key_id"] == "AKID"
+    assert captured["secret_access_key"] == "SAK"
+    assert captured["session_token"] == "SESS"
+    assert captured["region"] == "auto"
     assert load_hosted_binding() is None
     assert backup_config["enabled"] is False
     assert backup_config["mode"] == "byo"
@@ -321,3 +335,57 @@ def test_operated_teardown_degrade_preserves_everything(
     assert result.reason_code == "broker_unreachable"
     assert load_hosted_binding() is not None
     assert backup_config["daily_key"] == "dk"
+
+
+def test_operated_teardown_wipe_failure_preserves_binding_and_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    original_config = {
+        "backup": {
+            "enabled": True,
+            "mode": "operated",
+            "daily_key": "dk",
+            "recovery_key": "R" * 64,
+        }
+    }
+    _write_config(tmp_path, original_config)
+    save_hosted_binding(
+        HostedBinding(
+            broker_endpoint="https://broker.example",
+            account_id="acct",
+            instance_id="inst",
+            bucket="bkt",
+            prefix="users/acct/inst",
+            broker_token="BTOKEN",
+        )
+    )
+    monkeypatch.setattr(
+        teardown,
+        "fetch_hosted_credentials",
+        Mock(
+            return_value=HostedCredentials(
+                access_key_id="AKID",
+                secret_access_key="SAK",
+                session_token="SESS",
+                endpoint="https://acct.r2.cloudflarestorage.com",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        teardown, "wipe_prefix", Mock(return_value=WipeResult("error", "timeout"))
+    )
+    monkeypatch.setattr(
+        teardown,
+        "run_restic",
+        lambda *_args, **_kwargs: pytest.fail(
+            "restic should not run for operated teardown"
+        ),
+    )
+
+    result = teardown.teardown_backup()
+
+    assert result == teardown.TeardownResult(status="error", reason_code="timeout")
+    assert load_hosted_binding() is not None
+    assert _read_config(tmp_path) == original_config

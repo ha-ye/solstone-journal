@@ -16,7 +16,8 @@
   const operationLabels = copy.operation_reason_labels || {};
   const statusLabels =
     (copy.management && copy.management.status_labels) || {};
-  const terminalPhases = new Set(['done', 'error']);
+  const hostedCopy = copy.hosted || {};
+  const terminalPhases = new Set(['done', 'error', 'needs_subscription']);
 
   function panel(name) {
     return root.querySelector(`[data-backup-panel="${name}"]`);
@@ -37,12 +38,47 @@
     return operation && !terminalPhases.has(operation.phase);
   }
 
+  function managedMode() {
+    return state.enabled || state.mode === 'operated';
+  }
+
   function labelForPhase(phase) {
     return phaseLabels[phase] || phase || '';
   }
 
   function reasonLabel(reason) {
     return operationLabels[reason] || destinationLabels[reason] || copy.error_intro || '';
+  }
+
+  function maybeOpenPortal(payload) {
+    const operation = payload && payload.operation;
+    if (operation && operation.portal_url) {
+      window.open(operation.portal_url, '_blank', 'noopener');
+    }
+  }
+
+  function renderHostedSubscription() {
+    const operation = state.operation;
+    const section = root.querySelector('[data-hosted-subscription]');
+    if (!section) return;
+    const show = !!(operation && operation.phase === 'needs_subscription');
+    section.hidden = !show;
+    const link = root.querySelector('[data-hosted-subscription-link]');
+    if (link) {
+      link.href = show && operation.subscribe_url ? operation.subscribe_url : '#';
+      if (!link.textContent) link.textContent = hostedCopy.open_plan || '';
+    }
+  }
+
+  function renderHostedLocation() {
+    const section = root.querySelector('[data-hosted-location-section]');
+    if (!section) return;
+    const hosted = state.hosted || {};
+    const operated = state.mode === 'operated' && hosted.bound;
+    section.hidden = !operated;
+    if (operated) {
+      setText('[data-hosted-location]', `${hosted.bucket || ''}/${hosted.prefix || ''}`);
+    }
   }
 
   function formatTime(value) {
@@ -72,7 +108,7 @@
   function renderStatus() {
     root.setAttribute(
       'data-state',
-      operationActive(state.operation) ? state.operation.phase : state.enabled ? 'done' : 'empty',
+      operationActive(state.operation) ? state.operation.phase : managedMode() ? 'done' : 'empty',
     );
     setText('[data-last-backup]', formatTime(state.last_backup && state.last_backup.time));
     setText('[data-last-prune]', formatTime(state.last_prune && state.last_prune.time));
@@ -82,6 +118,8 @@
       if (key && retention[key] != null) input.value = retention[key];
     }
     renderOperation();
+    renderHostedSubscription();
+    renderHostedLocation();
   }
 
   function applyPayload(payload) {
@@ -199,6 +237,12 @@
           pollUntilTerminal();
         } else if (
           payload.operation &&
+          (payload.operation.kind === 'enable_hosted' || payload.operation.kind === 'restore_hosted') &&
+          payload.operation.phase === 'done'
+        ) {
+          showPanel('management');
+        } else if (
+          payload.operation &&
           payload.operation.kind === 'rotate' &&
           payload.operation.phase === 'done' &&
           payload.recovery_key_confirmed === false
@@ -257,6 +301,11 @@
           await startOperation('/app/backup/enable');
           showPanel('management');
         }
+        if (action === 'enable-hosted') {
+          const payload = await startOperation('/app/backup/enable-hosted');
+          maybeOpenPortal(payload);
+          showPanel('hosted-progress');
+        }
         if (action === 'backup-now') {
           applyPayload(await postJson('/app/backup/backup-now'));
         }
@@ -270,7 +319,14 @@
             await startOperation('/app/backup/teardown');
           }
         }
-        if (action === 'cancel-restore') showPanel(state.enabled ? 'management' : 'intro');
+        if (action === 'cancel-restore') showPanel(managedMode() ? 'management' : 'intro');
+        if (action === 'restore-hosted') {
+          const field = root.querySelector('[data-restore-hosted-input]') || {};
+          const entered = field.value || '';
+          const payload = await startOperation('/app/backup/restore-hosted', { recovery_key: entered });
+          maybeOpenPortal(payload);
+          showPanel('hosted-progress');
+        }
         if (action === 'use-byo') setMode('byo');
       } catch (err) {
         showError('[data-operation-error]', err);
@@ -385,9 +441,9 @@
   function initialPanel() {
     if (operationActive(state.operation)) {
       pollUntilTerminal();
-      return state.enabled ? 'management' : 'destination';
+      return managedMode() ? 'management' : 'destination';
     }
-    if (state.enabled) return 'management';
+    if (managedMode()) return 'management';
     return 'intro';
   }
 

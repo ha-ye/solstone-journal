@@ -40,6 +40,18 @@ def _destination() -> Destination:
     )
 
 
+def _operated_destination() -> Destination:
+    return Destination(
+        repository="s3:https://r2.example/journal-backups/users/acct/inst/",
+        backend="s3",
+        credentials={
+            "access_key_id": "AKID-OPERATED",
+            "secret_access_key": "SAK-OPERATED",
+            "session_token": "SESSION-OPERATED",
+        },
+    )
+
+
 def _result(returncode: int, parsed_json: Any | None = None) -> ResticResult:
     return ResticResult(
         returncode=returncode,
@@ -343,3 +355,171 @@ def test_restore_missing_daily_key_is_not_resumable(
 
     assert result.status == "ok"
     assert result.resumable is False
+
+
+def test_restore_operated_success_persists_mode_and_key_without_destination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, {"backup": {"daily_key": "daily-secret"}})
+    canonical = ("0" * 32) + ("1" * 32)
+    entered = ("O" * 32) + ("I" * 32)
+    destination = _operated_destination()
+    responses = iter(
+        [
+            _result(0, [{"paths": ["/old/journal"]}]),
+            _result(0, {"message_type": "summary", "bytes_restored": 456}),
+            _result(0),
+        ]
+    )
+    order: list[str] = []
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+    real_set_mode = restore.set_mode
+    real_set_recovery_key = restore.set_recovery_key
+    real_set_recovery_key_confirmed = restore.set_recovery_key_confirmed
+
+    def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
+        order.append(args[0])
+        calls.append((args, kwargs))
+        return next(responses)
+
+    def fake_set_mode(mode: str) -> None:
+        order.append("set_mode")
+        assert mode == "operated"
+        real_set_mode(mode)
+
+    def fake_set_recovery_key(value: str) -> None:
+        order.append("set_recovery_key")
+        assert value == canonical
+        real_set_recovery_key(value)
+
+    def fake_set_recovery_key_confirmed(value: bool) -> None:
+        order.append("set_recovery_key_confirmed")
+        assert value is True
+        real_set_recovery_key_confirmed(value)
+
+    def fake_scan_journal(journal: str, **kwargs: Any) -> bool:
+        order.append("scan_journal")
+        assert journal == str(tmp_path)
+        assert kwargs == {"full": True}
+        return True
+
+    monkeypatch.setattr(restore, "ensure_restic", lambda: Path("/restic"))
+    monkeypatch.setattr(restore, "run_restic", fake_run_restic)
+    monkeypatch.setattr(
+        restore,
+        "set_destination",
+        lambda destination: pytest.fail(
+            "operated restore must not persist destination"
+        ),
+    )
+    monkeypatch.setattr(restore, "set_mode", fake_set_mode)
+    monkeypatch.setattr(restore, "set_recovery_key", fake_set_recovery_key)
+    monkeypatch.setattr(
+        restore,
+        "set_recovery_key_confirmed",
+        fake_set_recovery_key_confirmed,
+    )
+    monkeypatch.setattr(restore, "scan_journal", fake_scan_journal)
+
+    result = restore.restore_journal_operated(destination, entered)
+
+    assert result == restore.RestoreResult(
+        status="ok",
+        reason_code=None,
+        integrity_ok=True,
+        resumable=True,
+        bytes_restored=456,
+    )
+    assert order == [
+        "snapshots",
+        "restore",
+        "check",
+        "set_mode",
+        "set_recovery_key",
+        "set_recovery_key_confirmed",
+        "scan_journal",
+    ]
+    assert calls[0][1]["backend_env"] == {
+        "AWS_ACCESS_KEY_ID": "AKID-OPERATED",
+        "AWS_SECRET_ACCESS_KEY": "SAK-OPERATED",
+        "AWS_SESSION_TOKEN": "SESSION-OPERATED",
+    }
+    config = _read_config(tmp_path)
+    serialized = json.dumps(config)
+    assert config["backup"]["mode"] == "operated"
+    assert config["backup"]["recovery_key"] == canonical
+    assert config["backup"]["confirmed_recovery_key"] is True
+    assert "destination" not in config["backup"]
+    for secret in (
+        "AKID-OPERATED",
+        "SAK-OPERATED",
+        "SESSION-OPERATED",
+        destination.repository,
+    ):
+        assert secret not in serialized
+
+
+def test_restore_operated_invalid_key_persists_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    original_config = {"backup": {"daily_key": "daily-secret"}}
+    _write_config(tmp_path, original_config)
+    monkeypatch.setattr(
+        restore,
+        "ensure_restic",
+        lambda: pytest.fail("restic should not be resolved"),
+    )
+    monkeypatch.setattr(
+        restore,
+        "set_mode",
+        lambda mode: pytest.fail("must not persist operated mode"),
+    )
+    monkeypatch.setattr(
+        restore,
+        "set_destination",
+        lambda destination: pytest.fail("must not persist destination"),
+    )
+
+    result = restore.restore_journal_operated(_operated_destination(), "too-short")
+
+    assert result.reason_code == "invalid_key"
+    assert _read_config(tmp_path) == original_config
+
+
+def test_restore_operated_restic_failure_persists_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    original_config = {"backup": {"daily_key": "daily-secret"}}
+    _write_config(tmp_path, original_config)
+    monkeypatch.setattr(restore, "ensure_restic", lambda: Path("/restic"))
+    monkeypatch.setattr(restore, "run_restic", lambda args, **kwargs: _result(12))
+    monkeypatch.setattr(
+        restore,
+        "set_mode",
+        lambda mode: pytest.fail("must not persist operated mode"),
+    )
+    monkeypatch.setattr(
+        restore,
+        "set_destination",
+        lambda destination: pytest.fail("must not persist destination"),
+    )
+    monkeypatch.setattr(
+        restore,
+        "set_recovery_key",
+        lambda key: pytest.fail("must not persist key"),
+    )
+
+    result = restore.restore_journal_operated(_operated_destination(), "A" * 64)
+
+    assert result.reason_code == "auth_failed"
+    assert _read_config(tmp_path) == original_config
+
+
+def test_restore_exports_operated_entrypoint() -> None:
+    assert "restore_journal_operated" in restore.__all__

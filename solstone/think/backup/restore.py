@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -20,6 +21,7 @@ from solstone.think.backup.runner import (
 from solstone.think.backup.state import (
     get_backup_config,
     set_destination,
+    set_mode,
     set_recovery_key,
     set_recovery_key_confirmed,
 )
@@ -82,9 +84,10 @@ def _bytes_restored(parsed: Any) -> int | None:
     return value if type(value) is int else None
 
 
-def restore_journal(
+def _run_restore(
     destination: Destination,
     entered_recovery_key: str,
+    persist: Callable[[str], None],
 ) -> RestoreResult:
     try:
         canonical = parse_recovery_key(entered_recovery_key)
@@ -153,9 +156,7 @@ def restore_journal(
             reason_for_returncode(check.returncode),
         )
 
-    set_destination(destination)
-    set_recovery_key(canonical)
-    set_recovery_key_confirmed(True)
+    persist(canonical)
     daily_key = get_backup_config()["daily_key"]
     resumable = isinstance(daily_key, str) and bool(daily_key)
 
@@ -174,10 +175,35 @@ def restore_journal(
     )
 
 
+def restore_journal(
+    destination: Destination,
+    entered_recovery_key: str,
+) -> RestoreResult:
+    def persist(canonical: str) -> None:
+        set_destination(destination)
+        set_recovery_key(canonical)
+        set_recovery_key_confirmed(True)
+
+    return _run_restore(destination, entered_recovery_key, persist)
+
+
+def restore_journal_operated(
+    destination: Destination,
+    entered_recovery_key: str,
+) -> RestoreResult:
+    def persist(canonical: str) -> None:
+        set_mode("operated")
+        set_recovery_key(canonical)
+        set_recovery_key_confirmed(True)
+
+    return _run_restore(destination, entered_recovery_key, persist)
+
+
 __all__ = [
     "RESTORE_CHECK_TIMEOUT_SECONDS",
     "RESTORE_LIST_TIMEOUT_SECONDS",
     "RESTORE_TIMEOUT_SECONDS",
     "RestoreResult",
     "restore_journal",
+    "restore_journal_operated",
 ]

@@ -216,16 +216,6 @@
   font-weight: 600;
 }
 
-.backup-mode-tag {
-  font-style: normal;
-  font-size: 0.72rem;
-  font-weight: 500;
-  color: var(--text-muted, #777);
-  padding: 0.05rem 0.45rem;
-  border: 1px solid var(--border-color, #ddd);
-  border-radius: 999px;
-}
-
 .backup-mode-desc {
   color: var(--text-muted, #555);
   font-size: 0.9rem;
@@ -237,14 +227,6 @@
   gap: 0.4rem;
   color: #b06a1a;
   font-size: 0.85rem;
-}
-
-.backup-mode.is-soon {
-  opacity: 0.72;
-}
-
-.backup-mode.is-soon .backup-mode-note {
-  color: var(--text-muted, #777);
 }
 
 .backup-panel-actions {

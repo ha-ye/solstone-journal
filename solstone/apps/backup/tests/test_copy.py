@@ -56,6 +56,11 @@ def test_backup_copy_verbatim_strings() -> None:
     assert payload["destination"]["modes"]["byo"]["title"] == "your own"
     assert payload["destination"]["modes"]["hosted"]["title"] == "hosted by sol pbc"
     assert payload["destination"]["modes"]["hosted"]["note"] == "operated by sol pbc"
+    assert payload["destination"]["modes"]["hosted"]["cta"] == "continue to hosting"
+    assert (
+        payload["hosted"]["needs_plan"]
+        == "hosting needs an active plan. your consent is saved — set one up, then turn on hosting again."
+    )
     assert (
         payload["destination"]["object_lock_warning"]
         == "don't enable Compliance-mode Object Lock on the bucket — it conflicts with backup pruning and lock cleanup. if you need immutability, use Governance mode."
@@ -135,6 +140,7 @@ def test_all_copy_constants_referenced_by_render_surface() -> None:
             "key",
             "confirm",
             "destination",
+            "hosted",
             "management",
             "restore",
             "phase_labels",

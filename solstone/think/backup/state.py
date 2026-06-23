@@ -164,6 +164,17 @@ def set_enabled(enabled: bool) -> None:
         write_journal_config(config)
 
 
+def set_mode(mode: str) -> None:
+    if mode not in {"byo", "operated"}:
+        raise ValueError("backup mode must be byo or operated")
+
+    with hold_config_lock():
+        config = read_journal_config()
+        backup = _writable_backup_section(config)
+        backup["mode"] = mode
+        write_journal_config(config)
+
+
 def set_recovery_key_confirmed(confirmed: bool = True) -> None:
     with hold_config_lock():
         config = read_journal_config()
@@ -244,6 +255,14 @@ def status_view() -> dict[str, Any]:
     config = get_backup_config()
     destination = config["destination"]
     credentials = destination.get("credentials")
+    binding = load_hosted_binding()
+    hosted = {"bound": False}
+    if binding is not None:
+        hosted = {
+            "bound": True,
+            "bucket": binding.bucket,
+            "prefix": binding.prefix,
+        }
     return {
         "enabled": config["enabled"],
         "mode": config["mode"],
@@ -259,7 +278,7 @@ def status_view() -> dict[str, Any]:
         "schedule": config["schedule"],
         "last_backup": config["last_backup"],
         "last_prune": config["last_prune"],
-        "hosted": {"bound": load_hosted_binding() is not None},
+        "hosted": hosted,
     }
 
 
@@ -275,6 +294,7 @@ __all__ = [
     "record_prune_result",
     "set_destination",
     "set_enabled",
+    "set_mode",
     "set_recovery_key",
     "set_recovery_key_confirmed",
     "set_retention",

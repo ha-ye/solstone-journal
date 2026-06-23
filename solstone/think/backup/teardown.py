@@ -15,10 +15,10 @@ from solstone.think.backup.hosted import (
     delete_hosted_binding,
     fetch_hosted_credentials,
     load_hosted_binding,
-    operated_destination,
 )
 from solstone.think.backup.install import ensure_restic
 from solstone.think.backup.runner import reason_for_returncode, run_restic
+from solstone.think.backup.s3_wipe import wipe_prefix
 from solstone.think.backup.state import (
     clear_backup_config,
     get_backup_config,
@@ -66,10 +66,6 @@ def _snapshot_ids(parsed: Any) -> list[str] | None:
 
 def teardown_backup() -> TeardownResult:
     config = get_backup_config()
-    keys = get_keys()
-    if keys is None:
-        return TeardownResult(status="skipped", reason_code=None)
-
     operated = config["mode"] == "operated"
     if operated:
         binding = load_hosted_binding()
@@ -79,11 +75,29 @@ def teardown_backup() -> TeardownResult:
             creds = fetch_hosted_credentials(binding, scope="maintenance")
         except HostedCredsUnavailable as exc:
             return _teardown_error(exc.reason_code)
-        destination = operated_destination(binding, creds)
-    else:
-        destination = get_destination()
-        if destination is None:
-            return TeardownResult(status="skipped", reason_code=None)
+        result = wipe_prefix(
+            endpoint=creds.endpoint,
+            bucket=binding.bucket,
+            prefix=binding.prefix,
+            access_key_id=creds.access_key_id,
+            secret_access_key=creds.secret_access_key,
+            session_token=creds.session_token,
+            region="auto",
+        )
+        if result.status != "ok":
+            return _teardown_error(result.reason_code or "failed")
+        clear_backup_config()
+        delete_hosted_binding()
+        logger.info("backup teardown completed returncode=%s reason_code=ok", 0)
+        return TeardownResult(status="ok", reason_code=None)
+
+    keys = get_keys()
+    if keys is None:
+        return TeardownResult(status="skipped", reason_code=None)
+
+    destination = get_destination()
+    if destination is None:
+        return TeardownResult(status="skipped", reason_code=None)
 
     try:
         backend_env = assemble_backend_env(destination)
@@ -130,8 +144,6 @@ def teardown_backup() -> TeardownResult:
             )
 
     clear_backup_config()
-    if operated:
-        delete_hosted_binding()
     logger.info("backup teardown completed returncode=%s reason_code=ok", 0)
     return TeardownResult(status="ok", reason_code=None)
 

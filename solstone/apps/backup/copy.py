@@ -21,20 +21,22 @@ INTRO_BULLETS = [
     "delete anytime",
 ]
 INTRO_STEPS = "you'll save a recovery key, then choose where your backup lives."
-# The byo ⟷ hosted-by-sol-pbc mode selector (destination step). v1 is byo-only;
-# the hosted lane is shown as an honest "coming later" state — never a dead
-# "set up hosting" control, since the hosted service does not exist yet.
+# The byo ⟷ hosted-by-sol-pbc mode selector (destination step).
 MODE_BYO_TITLE = "your own"
 MODE_BYO_DESC = "your bucket, your credentials. the default."
 # the byo covenant beat — load-bearing ("sol pbc is never in the path").
 MODE_BYO_NOTE = "sol pbc is never in the path."
 MODE_HOSTED_TITLE = "hosted by sol pbc"
-MODE_HOSTED_TAG = "coming later"
 MODE_HOSTED_DESC = "sol pbc runs the off-device part for you."
 MODE_HOSTED_NOTE = "operated by sol pbc"
-MODE_HOSTED_COMING = (
-    "this isn't available yet. for now, encrypted backup uses your own bucket "
-    "— sol pbc is never in the path."
+MODE_HOSTED_CTA = "continue to hosting"
+HOSTED_SETUP_HINT = (
+    "approve hosting on the sol pbc page that opens, then come back here."
+)
+HOSTED_NEEDS_PLAN = "hosting needs an active plan. your consent is saved — set one up, then turn on hosting again."
+HOSTED_OPEN_PLAN = "open plan page"
+HOSTED_RESTORE_HINT = (
+    "restore from hosting: enter your recovery key, then approve at sol pbc."
 )
 EDUCATE_STAKES = (
     "if you lose your recovery key, no one can recover your journal — not even sol pbc."
@@ -99,6 +101,12 @@ OPERATION_REASON_LABELS = {
     "incomplete": "the backup action didn't finish. you can try again.",
     "missing_required_field": "fill in the required fields, then try again.",
     "recovery_key_mismatch": "that didn't match your recovery key. re-enter the key from your saved copy.",
+    "expired": "the hosting approval took too long. try again.",
+    "malformed": "the hosting response couldn't be read. update solstone, then try again.",
+    "network_error": "the hosting page couldn't be reached. check your connection, then try again.",
+    "broker_unreachable": "hosted backup couldn't be reached. check your connection, then try again.",
+    "broker_error": "hosted backup didn't return usable settings. try again shortly.",
+    "hosted_entitlement_inactive": "hosting needs an active plan. set one up, then try again.",
 }
 
 ACTION_LABELS = {
@@ -199,12 +207,17 @@ def backup_copy_payload() -> dict[str, Any]:
                 },
                 "hosted": {
                     "title": MODE_HOSTED_TITLE,
-                    "tag": MODE_HOSTED_TAG,
                     "desc": MODE_HOSTED_DESC,
                     "note": MODE_HOSTED_NOTE,
-                    "coming": MODE_HOSTED_COMING,
+                    "cta": MODE_HOSTED_CTA,
                 },
             },
+        },
+        "hosted": {
+            "setup_hint": HOSTED_SETUP_HINT,
+            "needs_plan": HOSTED_NEEDS_PLAN,
+            "open_plan": HOSTED_OPEN_PLAN,
+            "restore_hint": HOSTED_RESTORE_HINT,
         },
         "management": {
             "destructive_action": DESTRUCTIVE_ACTION,

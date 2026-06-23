@@ -44,9 +44,26 @@ def test_spl_browser_url_includes_instance_when_provided() -> None:
     )
 
 
+def test_spb_browser_url_includes_instance_when_provided() -> None:
+    instance = "00000000-0000-4000-8000-000000000000"
+
+    assert (
+        portal_client.browser_url(
+            "https://services.test",
+            "NONCE",
+            service="spb",
+            instance=instance,
+        )
+        == f"https://services.test/enable/spb?nonce=NONCE&instance={instance}"
+    )
+
+
 def test_browser_url_omits_instance_when_not_provided() -> None:
     assert "instance=" not in portal_client.browser_url(
         "https://services.test", "NONCE", service="spl"
+    )
+    assert "instance=" not in portal_client.browser_url(
+        "https://services.test", "NONCE", service="spb"
     )
     assert "instance=" not in portal_client.browser_url(
         "https://services.test",
@@ -55,15 +72,17 @@ def test_browser_url_omits_instance_when_not_provided() -> None:
     )
 
 
-def test_scout_browser_url_ignores_instance() -> None:
+def test_scout_browser_url_includes_instance_when_explicitly_provided() -> None:
+    instance = "00000000-0000-4000-8000-000000000000"
+
     assert (
         portal_client.browser_url(
             "https://services.test",
             "NONCE",
             service="scout",
-            instance="00000000-0000-4000-8000-000000000000",
+            instance=instance,
         )
-        == "https://services.test/enable/scout?nonce=NONCE"
+        == f"https://services.test/enable/scout?nonce=NONCE&instance={instance}"
     )
 
 

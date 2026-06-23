@@ -189,6 +189,56 @@ def test_set_enabled_round_trips_under_config_lock(
     assert stat.S_IMODE(_config_path(tmp_path).stat().st_mode) == 0o600
 
 
+def test_set_mode_round_trips_under_config_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, {})
+    entries = 0
+
+    @contextmanager
+    def fake_lock():
+        nonlocal entries
+        entries += 1
+        yield
+
+    monkeypatch.setattr(state, "hold_config_lock", fake_lock)
+
+    state.set_mode("operated")
+    state.set_mode("byo")
+
+    assert entries == 2
+    assert _read_config(tmp_path)["backup"]["mode"] == "byo"
+    assert state.get_backup_config()["mode"] == "byo"
+    assert stat.S_IMODE(_config_path(tmp_path).stat().st_mode) == 0o600
+
+
+def test_set_mode_rejects_invalid_value_without_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    original = {"backup": {"mode": "byo"}}
+    _write_config(tmp_path, original)
+    before = _read_config(tmp_path)
+    entries = 0
+
+    @contextmanager
+    def fake_lock():
+        nonlocal entries
+        entries += 1
+        yield
+
+    monkeypatch.setattr(state, "hold_config_lock", fake_lock)
+
+    with pytest.raises(ValueError):
+        state.set_mode("invalid")
+
+    assert entries == 0
+    assert _read_config(tmp_path) == before
+
+
 def test_set_retention_round_trips_under_config_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -444,6 +494,17 @@ def test_status_view_reports_hosted_binding_without_secrets(
     bound = state.status_view()
     bound_serialized = json.dumps(bound)
 
-    assert bound["hosted"] == {"bound": True}
     assert "broker_token" not in bound_serialized
+    assert "broker_endpoint" not in bound_serialized
+    assert "account_id" not in bound_serialized
+    assert "instance_id" not in bound_serialized
     assert "BTOKEN" not in bound_serialized
+    assert bound["hosted"] == {
+        "bound": True,
+        "bucket": "bkt",
+        "prefix": "users/acct/inst/",
+    }
+
+
+def test_state_exports_set_mode() -> None:
+    assert "set_mode" in state.__all__

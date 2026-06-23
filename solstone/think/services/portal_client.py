@@ -21,7 +21,6 @@ from solstone.think.services.constants import (
     NONCE_ALPHABET,
     NONCE_LENGTH_CHARS,
     SERVICE_SCOUT,
-    SERVICE_SPL,
     SUPPORTED_SERVICES,
 )
 
@@ -89,7 +88,7 @@ def browser_url(
     if service not in SUPPORTED_SERVICES:
         raise ValueError(f"unsupported handoff service: {service!r}")
     url = f"{base_url}/enable/{service}?nonce={nonce}"
-    if service == SERVICE_SPL and instance:
+    if instance:
         url = f"{url}&instance={urllib.parse.quote(instance, safe='')}"
     return url
 
