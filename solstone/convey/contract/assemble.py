@@ -18,6 +18,7 @@ from .spec import FieldSpec, OperationSpec, ParamSpec, RequestSpec, ResponseSpec
 FRAGMENT_MODULES = [
     "solstone.apps.network.contract",
     "solstone.apps.observer.contract",
+    "solstone.apps.home.contract",
     "solstone.convey.push_contract",
     "solstone.convey.chat_contract",
     "solstone.convey.root_contract",

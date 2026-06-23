@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from solstone.apps.home.contract import OPERATIONS as HOME_OPERATIONS
 from solstone.apps.network.contract import OPERATIONS as LINK_OPERATIONS
 from solstone.apps.observer.contract import OPERATIONS as OBSERVER_OPERATIONS
 from solstone.convey import create_app
@@ -44,6 +45,7 @@ CONTRACTED_PATHS = {
     "/api/voice/observer-actions",
     "/api/voice/session",
     "/api/voice/status",
+    "/app/home/api/pulse",
     "/app/import/api/save",
     "/app/import/api/start",
     "/app/network/api/status",
@@ -74,6 +76,7 @@ CONTRACTED_INVENTORY_TRIPLES = {
     ("GET", "/api/voice/nav-hints", "voice.navHints"),
     ("GET", "/api/voice/observer-actions", "voice.observerActions"),
     ("GET", "/api/voice/status", "voice.status"),
+    ("GET", "/app/home/api/pulse", "home.pulse"),
     ("POST", "/app/import/api/save", "import.save"),
     ("POST", "/app/import/api/start", "import.start"),
     ("DELETE", "/app/observer/source/{stream}", "observer.deleteSource"),
@@ -103,6 +106,7 @@ def _all_operations():
     return [
         *LINK_OPERATIONS,
         *OBSERVER_OPERATIONS,
+        *HOME_OPERATIONS,
         *PUSH_OPERATIONS,
         *CHAT_OPERATIONS,
         *ROOT_OPERATIONS,
@@ -305,7 +309,26 @@ def test_no_r0_routes_in_artifact():
     assert "/api/config/convey" not in document["paths"]
     assert "/api/system/status" not in document["paths"]
     assert set(document["paths"]) == CONTRACTED_PATHS
-    assert len(document["paths"]) == 27
+    assert len(document["paths"]) == 28
+
+
+def test_home_pulse_named_fields_present(contract_app):
+    _app, client, _journal = contract_app
+    document = build_document()
+
+    response = client.get("/app/home/api/pulse")
+    assert response.status_code == 200, response.get_data(as_text=True)
+    body = response.get_json()
+    assert isinstance(body, dict)
+    named = {"journal_age_days", "home_state", "welcome_framing"}
+    assert named <= set(body)
+
+    schema = _response_schema(document, "home.pulse", 200)
+    properties = schema["properties"]
+    assert named <= set(properties)
+    for field in named:
+        assert properties[field].get("description")
+    assert schema.get("additionalProperties") is True
 
 
 def test_contracted_inventory_triples():

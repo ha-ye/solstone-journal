@@ -1229,6 +1229,60 @@
         ]
       }
     },
+    "/app/home/api/pulse": {
+      "get": {
+        "description": "Return the home Pulse: a snapshot recomputed per request from journal state. Only the new-owner onboarding signals are named in this contract \u2014 journal_age_days, home_state, and welcome_framing; the rest of the payload is intentionally open and may change without a contract bump.",
+        "operationId": "home.pulse",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "home_state": "welcome",
+                  "journal_age_days": 0,
+                  "welcome_framing": "Most of what I learn becomes useful in the third or fourth week, when I've seen enough patterns to surface them. For now, here's what's already happening:"
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "home_state": {
+                      "description": "Home onboarding posture: 'welcome' until the home surface has any narrative, activity, anticipated item, briefing, attention item, pulse need, or weekly reflection; 'active' once any exists.",
+                      "enum": [
+                        "welcome",
+                        "active"
+                      ],
+                      "type": "string"
+                    },
+                    "journal_age_days": {
+                      "description": "Whole days from the earliest chronicle day to today; 0 when no chronicle day exists yet.",
+                      "type": "integer"
+                    },
+                    "welcome_framing": {
+                      "description": "First-week framing line for new owners: the framing text when home_state is 'welcome' and journal_age_days <= 7, otherwise null.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "journal_age_days",
+                    "home_state",
+                    "welcome_framing"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Home Pulse snapshot. Fields beyond the three named here are present but not contracted."
+          }
+        },
+        "summary": "Read the home Pulse snapshot",
+        "tags": [
+          "home"
+        ]
+      }
+    },
     "/app/import/api/save": {
       "post": {
         "description": "Save an uploaded import file or pasted text into imports staging. Submit either file or text.",
