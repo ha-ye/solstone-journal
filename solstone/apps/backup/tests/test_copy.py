@@ -54,13 +54,12 @@ def test_backup_copy_verbatim_strings() -> None:
         == "sol pbc is never in the path."
     )
     assert payload["destination"]["modes"]["byo"]["title"] == "your own"
-    assert payload["destination"]["modes"]["hosted"]["title"] == "hosted by sol pbc"
-    assert payload["destination"]["modes"]["hosted"]["note"] == "operated by sol pbc"
-    assert payload["destination"]["modes"]["hosted"]["cta"] == "continue to hosting"
+    assert payload["destination"]["modes"]["hosted"]["title"] == "operated by sol pbc"
     assert (
-        payload["hosted"]["needs_plan"]
-        == "hosting needs an active plan. your consent is saved — set one up, then turn on hosting again."
+        payload["destination"]["modes"]["hosted"]["note"]
+        == "sol pbc only ever holds an encrypted copy it can't read."
     )
+    assert payload["destination"]["modes"]["hosted"]["cta"] == "set up backup →"
     assert (
         payload["destination"]["object_lock_warning"]
         == "don't enable Compliance-mode Object Lock on the bucket — it conflicts with backup pruning and lock cleanup. if you need immutability, use Governance mode."
@@ -77,6 +76,15 @@ def test_backup_copy_verbatim_strings() -> None:
         payload["destination"]["field_labels"]["b2_application_key"]
         == "application key"
     )
+
+
+def test_operated_lane_copy_neutralizes_hosting_terms() -> None:
+    banned = re.compile(
+        r"hosting|hosted|operated backup|\bsign in\b|\bsubscribe\b",
+        re.IGNORECASE,
+    )
+    offenders = [value for value in backup_copy_values() if banned.search(value)]
+    assert offenders == []
 
 
 def test_no_literal_copy_in_templates_or_static() -> None:

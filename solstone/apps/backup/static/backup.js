@@ -57,19 +57,6 @@
     }
   }
 
-  function renderHostedSubscription() {
-    const operation = state.operation;
-    const section = root.querySelector('[data-hosted-subscription]');
-    if (!section) return;
-    const show = !!(operation && operation.phase === 'needs_subscription');
-    section.hidden = !show;
-    const link = root.querySelector('[data-hosted-subscription-link]');
-    if (link) {
-      link.href = show && operation.subscribe_url ? operation.subscribe_url : '#';
-      if (!link.textContent) link.textContent = hostedCopy.open_plan || '';
-    }
-  }
-
   function renderHostedLocation() {
     const section = root.querySelector('[data-hosted-location-section]');
     if (!section) return;
@@ -77,7 +64,7 @@
     const operated = state.mode === 'operated' && hosted.bound;
     section.hidden = !operated;
     if (operated) {
-      setText('[data-hosted-location]', `${hosted.bucket || ''}/${hosted.prefix || ''}`);
+      setText('[data-hosted-location]', hostedCopy.location_label || '');
     }
   }
 
@@ -96,7 +83,7 @@
     const operation = state.operation;
     const banner = root.querySelector('[data-operation-banner]');
     if (!banner) return;
-    if (!operation) {
+    if (!operation || operation.phase === 'needs_subscription') {
       banner.hidden = true;
       return;
     }
@@ -118,7 +105,6 @@
       if (key && retention[key] != null) input.value = retention[key];
     }
     renderOperation();
-    renderHostedSubscription();
     renderHostedLocation();
   }
 
@@ -304,7 +290,6 @@
         if (action === 'enable-hosted') {
           const payload = await startOperation('/app/backup/enable-hosted');
           maybeOpenPortal(payload);
-          showPanel('hosted-progress');
         }
         if (action === 'backup-now') {
           applyPayload(await postJson('/app/backup/backup-now'));
@@ -314,20 +299,13 @@
           showPanel('display');
         }
         if (action === 'rotate-key') await startOperation('/app/backup/recovery-key/rotate');
-        if (action === 'teardown') {
-          if (window.confirm((copy.management && copy.management.destructive_caption) || '')) {
-            await startOperation('/app/backup/teardown');
-          }
-        }
         if (action === 'cancel-restore') showPanel(managedMode() ? 'management' : 'intro');
         if (action === 'restore-hosted') {
           const field = root.querySelector('[data-restore-hosted-input]') || {};
           const entered = field.value || '';
           const payload = await startOperation('/app/backup/restore-hosted', { recovery_key: entered });
           maybeOpenPortal(payload);
-          showPanel('hosted-progress');
         }
-        if (action === 'use-byo') setMode('byo');
       } catch (err) {
         showError('[data-operation-error]', err);
       }

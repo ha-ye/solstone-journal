@@ -26,18 +26,15 @@ MODE_BYO_TITLE = "your own"
 MODE_BYO_DESC = "your bucket, your credentials. the default."
 # the byo covenant beat — load-bearing ("sol pbc is never in the path").
 MODE_BYO_NOTE = "sol pbc is never in the path."
-MODE_HOSTED_TITLE = "hosted by sol pbc"
+MODE_HOSTED_TITLE = "operated by sol pbc"
 MODE_HOSTED_DESC = "sol pbc runs the off-device part for you."
-MODE_HOSTED_NOTE = "operated by sol pbc"
-MODE_HOSTED_CTA = "continue to hosting"
-HOSTED_SETUP_HINT = (
-    "approve hosting on the sol pbc page that opens, then come back here."
-)
-HOSTED_NEEDS_PLAN = "hosting needs an active plan. your consent is saved — set one up, then turn on hosting again."
-HOSTED_OPEN_PLAN = "open plan page"
-HOSTED_RESTORE_HINT = (
-    "restore from hosting: enter your recovery key, then approve at sol pbc."
-)
+MODE_HOSTED_NOTE = "sol pbc only ever holds an encrypted copy it can't read."
+MODE_HOSTED_CTA = "set up backup →"
+HOSTED_SETUP_HINT = "turning this on sets up encrypted backup, operated by sol pbc — you turn it on on the services page that opens, then come back here. your journal stays on your device; only the encrypted copy goes to storage sol pbc operates, and sol pbc can never read it."
+HOSTED_RESTORE_HINT = "restore the encrypted copy sol pbc keeps for you — enter your recovery key, then turn it on on the services page."
+HOSTED_LOCATION_LABEL = "operated by sol pbc"
+HOSTED_MANAGE_LABEL = "manage in your services →"
+HOSTED_MANAGE_URL = "https://services.solstone.app/services/spb"
 EDUCATE_STAKES = (
     "if you lose your recovery key, no one can recover your journal — not even sol pbc."
 )
@@ -101,12 +98,12 @@ OPERATION_REASON_LABELS = {
     "incomplete": "the backup action didn't finish. you can try again.",
     "missing_required_field": "fill in the required fields, then try again.",
     "recovery_key_mismatch": "that didn't match your recovery key. re-enter the key from your saved copy.",
-    "expired": "the hosting approval took too long. try again.",
-    "malformed": "the hosting response couldn't be read. update solstone, then try again.",
-    "network_error": "the hosting page couldn't be reached. check your connection, then try again.",
-    "broker_unreachable": "hosted backup couldn't be reached. check your connection, then try again.",
-    "broker_error": "hosted backup didn't return usable settings. try again shortly.",
-    "hosted_entitlement_inactive": "hosting needs an active plan. set one up, then try again.",
+    "expired": "the approval took too long. try again.",
+    "malformed": "the response couldn't be read. update solstone, then try again.",
+    "network_error": "the services page couldn't be reached. check your connection, then try again.",
+    "broker_unreachable": "encrypted backup couldn't be reached. check your connection, then try again.",
+    "broker_error": "encrypted backup didn't return usable settings. try again shortly.",
+    "hosted_entitlement_inactive": "set up backup on the services page that opens, then try again.",
 }
 
 ACTION_LABELS = {
@@ -122,7 +119,6 @@ ACTION_LABELS = {
     "restore": "restore",
     "try_again": "try again",
     "cancel": "cancel",
-    "use_byo": "use your own bucket",
 }
 
 DESTINATION_FIELD_LABELS = {
@@ -215,9 +211,10 @@ def backup_copy_payload() -> dict[str, Any]:
         },
         "hosted": {
             "setup_hint": HOSTED_SETUP_HINT,
-            "needs_plan": HOSTED_NEEDS_PLAN,
-            "open_plan": HOSTED_OPEN_PLAN,
             "restore_hint": HOSTED_RESTORE_HINT,
+            "location_label": HOSTED_LOCATION_LABEL,
+            "manage_label": HOSTED_MANAGE_LABEL,
+            "manage_url": HOSTED_MANAGE_URL,
         },
         "management": {
             "destructive_action": DESTRUCTIVE_ACTION,

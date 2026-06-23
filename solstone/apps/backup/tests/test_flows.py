@@ -211,13 +211,14 @@ def test_hosted_lane_renders_live_controls_and_copy(backup_env) -> None:
 
     assert payload["destination"]["modes"]["hosted"]["cta"] in html
     assert payload["hosted"]["setup_hint"] in html
-    assert payload["hosted"]["needs_plan"] in html
-    assert payload["hosted"]["open_plan"] in html
     assert payload["hosted"]["restore_hint"] in html
+    assert payload["hosted"]["manage_label"] in html
+    assert payload["hosted"]["manage_url"] in html
     assert 'data-action="enable-hosted"' in html
     assert 'data-action="restore-hosted"' in html
     assert "data-restore-hosted-input" in html
     assert "data-hosted-location-section" in html
+    assert "data-hosted-location" in html
     assert ("coming" + " later") not in html
     assert ("is" + "-soon") not in html
     assert ("backup-mode" + "-tag") not in html
