@@ -336,7 +336,9 @@ def test_document_level_listeners_reference_defined_handlers():
 
 def test_agent_name_enter_commits_via_blur():
     text = _workspace_text()
-    start = text.index("const agentNameInput = document.getElementById('field-agent-name');")
+    start = text.index(
+        "const agentNameInput = document.getElementById('field-agent-name');"
+    )
     block = text[start : text.index("const resetAgentBtn", start)]
     # Enter in the lone agent-name input commits via blur (reusing the
     # change-save path); it must never fall through to implicit form submit.
