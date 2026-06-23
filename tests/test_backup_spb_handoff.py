@@ -170,7 +170,7 @@ def test_poll_continue_keeps_polling_then_succeeds() -> None:
     assert result.binding is not None
     assert len(calls) == 2
     assert calls[0]["component"] == "switchboard"
-    assert calls[0]["service"] == "spb"
+    assert calls[0]["service"] == "backup"
 
 
 @pytest.mark.parametrize(
@@ -262,7 +262,11 @@ def test_build_spb_handoff_url_uses_link_instance_id(monkeypatch) -> None:
     ) -> tuple[str, str, str]:
         captured["service"] = service
         captured["instance"] = instance
-        return ("https://services.test/enable/spb?nonce=NONCE", "NONCE", TEST_BASE_URL)
+        return (
+            "https://services.test/enable/backup?nonce=NONCE",
+            "NONCE",
+            TEST_BASE_URL,
+        )
 
     monkeypatch.setattr(
         spb_handoff.portal_client,
@@ -271,8 +275,8 @@ def test_build_spb_handoff_url_uses_link_instance_id(monkeypatch) -> None:
     )
 
     assert spb_handoff.build_spb_handoff_url() == (
-        "https://services.test/enable/spb?nonce=NONCE",
+        "https://services.test/enable/backup?nonce=NONCE",
         "NONCE",
         TEST_BASE_URL,
     )
-    assert captured == {"service": "spb", "instance": TEST_INSTANCE_ID}
+    assert captured == {"service": "backup", "instance": TEST_INSTANCE_ID}

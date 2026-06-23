@@ -51,10 +51,10 @@ def test_spb_browser_url_includes_instance_when_provided() -> None:
         portal_client.browser_url(
             "https://services.test",
             "NONCE",
-            service="spb",
+            service="backup",
             instance=instance,
         )
-        == f"https://services.test/enable/spb?nonce=NONCE&instance={instance}"
+        == f"https://services.test/enable/backup?nonce=NONCE&instance={instance}"
     )
 
 
@@ -63,7 +63,7 @@ def test_browser_url_omits_instance_when_not_provided() -> None:
         "https://services.test", "NONCE", service="spl"
     )
     assert "instance=" not in portal_client.browser_url(
-        "https://services.test", "NONCE", service="spb"
+        "https://services.test", "NONCE", service="backup"
     )
     assert "instance=" not in portal_client.browser_url(
         "https://services.test",

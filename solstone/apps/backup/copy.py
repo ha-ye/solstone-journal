@@ -34,7 +34,7 @@ HOSTED_SETUP_HINT = "turning this on sets up encrypted backup, operated by sol p
 HOSTED_RESTORE_HINT = "restore the encrypted copy sol pbc keeps for you — enter your recovery key, then turn it on on the services page."
 HOSTED_LOCATION_LABEL = "operated by sol pbc"
 HOSTED_MANAGE_LABEL = "manage in your services →"
-HOSTED_MANAGE_URL = "https://services.solstone.app/services/spb"
+HOSTED_MANAGE_URL = "https://services.solstone.app/services/backup"
 EDUCATE_STAKES = (
     "if you lose your recovery key, no one can recover your journal — not even sol pbc."
 )

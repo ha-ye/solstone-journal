@@ -22,7 +22,7 @@ from solstone.think.backup.hosted import (
     HostedCredsUnavailable,
 )
 
-CONSENT_URL = "https://services.test/enable/spb?nonce=NONCE"
+CONSENT_URL = "https://services.test/enable/backup?nonce=NONCE"
 SUBSCRIBE_URL = "https://services.test/plan"
 
 

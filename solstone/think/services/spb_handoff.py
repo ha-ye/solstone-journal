@@ -13,7 +13,7 @@ from typing import Any
 from solstone.think.backup.hosted import HostedBinding
 from solstone.think.link.paths import LinkState
 from solstone.think.services import outcomes, portal_client
-from solstone.think.services.constants import SERVICE_SPB
+from solstone.think.services.constants import SERVICE_BACKUP
 
 _BINDING_FIELDS = (
     "broker_endpoint",
@@ -44,7 +44,7 @@ def build_spb_handoff_url() -> tuple[str, str, str]:
     """
 
     instance_id = LinkState.load_or_create().instance_id
-    return portal_client.build_consent_url(SERVICE_SPB, instance=instance_id)
+    return portal_client.build_consent_url(SERVICE_BACKUP, instance=instance_id)
 
 
 def _non_blank_string(payload: dict[str, Any], key: str) -> str | None:
@@ -123,7 +123,7 @@ def enable_spb_via_consent(
             nonce,
             timeout=timeout,
             component="switchboard",
-            service=SERVICE_SPB,
+            service=SERVICE_BACKUP,
         )
         if outcome.kind == "continue":
             continue
