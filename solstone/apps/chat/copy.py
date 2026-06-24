@@ -62,6 +62,11 @@ CHAT_SUPPORT_ATTACH_FILED_FORMAT = "I added that to solstone support ticket #{ti
 CHAT_SUPPORT_SUBMIT_FAILED = "I couldn't finish reaching solstone support, so nothing was sent. Want me to try again?"
 CHAT_SUPPORT_SUBMIT_AMBIGUOUS = "I couldn't confirm whether solstone support received that. Check with solstone support before resending so we don't file it twice."
 CHAT_SUPPORT_DRAFT_CANCELLED = "Okay — nothing was sent to solstone support."
+# Deterministic deferred-mode honest-degradation message (backend-emitted; rides
+# the sol_message/finish text when an otherwise-empty answer is really "captured
+# but not yet analyzed"). Backend-only — no chat_copy.js twin. Substance locked
+# (wording VPX-refinable). Copy-canon compliant: no surveillance verbs.
+CHAT_DEFERRED_NOT_ANALYZED = "Today's segments aren't analyzed yet — they'll process during your deferred window."
 # fmt: on
 
 from typing import Literal
