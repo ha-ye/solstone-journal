@@ -19,8 +19,8 @@ from solstone.think.cogitate_contract import (
 MAX_TURNS = 60
 DEFAULT_RUN_COST_CAP_USD = 1.00
 COST_WARN_FRAC = 0.70
-CONTEXT_WARN_FRAC = 0.80
-CONTEXT_FINAL_FRAC = 0.88
+CONTEXT_WARN_FRAC = 0.70
+CONTEXT_FINAL_FRAC = 0.78
 TURN_WARN_FRACS = (0.50, 0.75, 0.90)
 # Normal tool-turn progression arms at observed turn N-1 and force-stops at
 # observed turn N. The SDK iteration counter can also advance on

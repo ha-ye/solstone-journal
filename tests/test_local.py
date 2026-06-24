@@ -477,6 +477,7 @@ def test_openhands_local_llm_kwargs(monkeypatch):
         "timeout": openhands.LLM_TIMEOUT_S,
         "num_retries": openhands.LLM_NUM_RETRIES,
         "max_input_tokens": local_server.LOCAL_MIN_CONTEXT_TOKENS,
+        "max_output_tokens": openhands._LOCAL_OUTPUT_RESERVE_TOKENS,
         "input_cost_per_token": 0,
         "output_cost_per_token": 0,
         "litellm_extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
