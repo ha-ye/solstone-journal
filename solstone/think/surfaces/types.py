@@ -129,6 +129,7 @@ class SegmentBacklogHealth:
     awaiting_analysis_text: str | None = None
     last_drained_at: int | None = None
     drain_state: str = DRAIN_STATE_REALTIME
+    display_powersave_detectable: bool = False
 
 
 @dataclass(frozen=True)

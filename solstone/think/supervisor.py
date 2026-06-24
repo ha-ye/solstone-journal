@@ -39,9 +39,17 @@ from solstone.think.catchup_state import (
     record_attempt,
     record_outcome,
 )
+from solstone.think.display_powersave import (
+    poll_display_powersave,
+    reset_display_powersave_monitor,
+)
 from solstone.think.maint import run_pending_tasks
 from solstone.think.models import LOCAL_MODEL, is_local_provider_needed
-from solstone.think.processing import evaluate_drain_gate, load_processing_settings
+from solstone.think.processing import (
+    DISPLAY_POWERSAVE_UNAVAILABLE,
+    evaluate_drain_gate,
+    load_processing_settings,
+)
 from solstone.think.providers.mlx_server import MLX_SERVER_PROCESS_NAME
 from solstone.think.readiness import START_TIME_TOLERANCE_S, clear_ready, signal_ready
 from solstone.think.runner import ManagedProcess as RunnerManagedProcess
@@ -2592,7 +2600,12 @@ def _run_gate_tick(now: float) -> None:
     settings = load_processing_settings()
     if settings.mode != "deferred":
         return
-    gate = evaluate_drain_gate(settings, datetime.now())
+    reading = (
+        poll_display_powersave(time.monotonic())
+        if settings.gate.display_powersave.enabled
+        else DISPLAY_POWERSAVE_UNAVAILABLE
+    )
+    gate = evaluate_drain_gate(settings, datetime.now(), reading)
     if not gate.open:
         return
     run_catchup_drain()
@@ -2614,6 +2627,7 @@ async def supervise(
 
     last_status_emit = 0.0
     _last_gate_tick = 0.0
+    reset_display_powersave_monitor()
     _last_sync_tick = 0.0
     _last_sync_snapshot = None
     _sync_conflict_shutdown = False

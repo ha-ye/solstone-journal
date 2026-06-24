@@ -21,6 +21,8 @@ import psutil
 import pytest
 
 from solstone.think.processing import (
+    DISPLAY_POWERSAVE_UNAVAILABLE,
+    DisplayPowersaveReading,
     DisplayPowersaveSettings,
     GateSettings,
     ProcessingSettings,
@@ -626,7 +628,11 @@ class _CaptureTaskQueue:
         self.submissions.append({"cmd": cmd, "day": day})
 
 
-def _supervisor_processing_settings(mode: str) -> ProcessingSettings:
+def _supervisor_processing_settings(
+    mode: str,
+    *,
+    display_powersave_enabled: bool = False,
+) -> ProcessingSettings:
     return ProcessingSettings(
         mode=mode,
         gate=GateSettings(
@@ -635,7 +641,9 @@ def _supervisor_processing_settings(mode: str) -> ProcessingSettings:
                 start="02:00",
                 end="06:00",
             ),
-            display_powersave=DisplayPowersaveSettings(enabled=False),
+            display_powersave=DisplayPowersaveSettings(
+                enabled=display_powersave_enabled
+            ),
         ),
     )
 
@@ -1937,7 +1945,7 @@ def test_run_gate_tick_deferred_open_runs_catchup_drain(monkeypatch):
     monkeypatch.setattr(
         mod,
         "evaluate_drain_gate",
-        lambda settings, now: SimpleNamespace(open=True),
+        lambda settings, now, reading: SimpleNamespace(open=True),
     )
     monkeypatch.setattr(mod, "run_catchup_drain", drain)
     mod._last_gate_tick = 0.0
@@ -1958,7 +1966,7 @@ def test_run_gate_tick_deferred_closed_skips_catchup_drain(monkeypatch):
     monkeypatch.setattr(
         mod,
         "evaluate_drain_gate",
-        lambda settings, now: SimpleNamespace(open=False),
+        lambda settings, now, reading: SimpleNamespace(open=False),
     )
     monkeypatch.setattr(mod, "run_catchup_drain", drain)
     mod._last_gate_tick = 0.0
@@ -1998,7 +2006,7 @@ def test_run_gate_tick_throttles_catchup_drain(monkeypatch):
     monkeypatch.setattr(
         mod,
         "evaluate_drain_gate",
-        lambda settings, now: SimpleNamespace(open=True),
+        lambda settings, now, reading: SimpleNamespace(open=True),
     )
     monkeypatch.setattr(mod, "run_catchup_drain", drain)
     mod._last_gate_tick = 0.0
@@ -2008,6 +2016,74 @@ def test_run_gate_tick_throttles_catchup_drain(monkeypatch):
     mod._run_gate_tick(121.0)
 
     assert drain.call_count == 2
+
+
+def test_run_gate_tick_disabled_display_powersave_does_not_poll(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    drain = MagicMock()
+    poll = MagicMock(side_effect=AssertionError("poll should not be called"))
+
+    def evaluate(settings, now, reading):
+        assert reading == DISPLAY_POWERSAVE_UNAVAILABLE
+        return SimpleNamespace(open=True)
+
+    monkeypatch.setattr(mod, "_is_remote_mode", False)
+    monkeypatch.setattr(
+        mod,
+        "load_processing_settings",
+        lambda: _supervisor_processing_settings("deferred"),
+    )
+    monkeypatch.setattr(mod, "poll_display_powersave", poll)
+    monkeypatch.setattr(mod, "evaluate_drain_gate", evaluate)
+    monkeypatch.setattr(mod, "run_catchup_drain", drain)
+    mod._last_gate_tick = 0.0
+
+    mod._run_gate_tick(60.0)
+
+    poll.assert_not_called()
+    drain.assert_called_once_with()
+
+
+def test_run_gate_tick_enabled_display_powersave_polls(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    reading = DisplayPowersaveReading(available=True, asleep=True, debounced=True)
+    poll = MagicMock(return_value=reading)
+    captured = {}
+
+    def evaluate(settings, now, display_reading):
+        captured["reading"] = display_reading
+        return SimpleNamespace(open=False)
+
+    monkeypatch.setattr(mod, "_is_remote_mode", False)
+    monkeypatch.setattr(
+        mod,
+        "load_processing_settings",
+        lambda: _supervisor_processing_settings(
+            "deferred",
+            display_powersave_enabled=True,
+        ),
+    )
+    monkeypatch.setattr(mod, "poll_display_powersave", poll)
+    monkeypatch.setattr(mod, "evaluate_drain_gate", evaluate)
+    monkeypatch.setattr(mod, "run_catchup_drain", MagicMock())
+    mod._last_gate_tick = 0.0
+
+    mod._run_gate_tick(60.0)
+
+    poll.assert_called_once()
+    assert isinstance(poll.call_args.args[0], float)
+    assert captured["reading"] == reading
+
+
+def test_supervise_resets_display_powersave_monitor_on_entry(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    reset = MagicMock()
+    monkeypatch.setattr(mod, "reset_display_powersave_monitor", reset)
+    monkeypatch.setattr(mod, "shutdown_requested", True)
+
+    asyncio.run(mod.supervise(daily=False, schedule=False, procs=[]))
+
+    reset.assert_called_once_with()
 
 
 def test_record_scheduler_completion_serializes_concurrent_writes(

@@ -95,6 +95,7 @@ def _report() -> dict[str, object]:
             "awaiting_analysis_text": None,
             "last_drained_at": None,
             "drain_state": DRAIN_STATE_REALTIME,
+            "display_powersave_detectable": False,
         },
         "notes": [],
         "provider_readiness": {

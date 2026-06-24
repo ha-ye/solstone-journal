@@ -22,6 +22,10 @@ from solstone.convey.readiness_snapshot import (
     unavailable_snapshot,
 )
 from solstone.think.activities import load_activity_records
+from solstone.think.display_powersave import (
+    display_powersave_detectable,
+    last_display_powersave,
+)
 from solstone.think.entities.journal import load_all_journal_entities
 from solstone.think.facets import get_facets
 from solstone.think.pipeline_health import read_segment_backlog
@@ -507,7 +511,8 @@ def _build_segment_backlog_health() -> SegmentBacklogHealth:
         1 for completion in backlog.per_day.values() if completion.not_thought > 0
     )
     settings = load_processing_settings()
-    gate = evaluate_drain_gate(settings, datetime.now())
+    reading = last_display_powersave()
+    gate = evaluate_drain_gate(settings, datetime.now(), reading)
     drain_state = derive_drain_state(settings, gate)
     awaiting_total = backlog.not_sensed + backlog.not_thought
     awaiting_text = (
@@ -523,6 +528,7 @@ def _build_segment_backlog_health() -> SegmentBacklogHealth:
         awaiting_analysis_text=awaiting_text,
         last_drained_at=read_last_drained_at(),
         drain_state=drain_state,
+        display_powersave_detectable=display_powersave_detectable(),
     )
 
 

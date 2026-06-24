@@ -12,11 +12,13 @@ import pytest
 from solstone.think.processing import (
     AWAITING_ANALYSIS_TEMPLATE,
     DEFAULT_PROCESSING,
+    DISPLAY_POWERSAVE_UNAVAILABLE,
     DRAIN_STATE_NO_CONDITION,
     DRAIN_STATE_REALTIME,
     DRAIN_STATE_WAITING,
     DRAIN_STATE_WINDOW_OPEN,
     ConditionState,
+    DisplayPowersaveReading,
     DisplayPowersaveSettings,
     GateSettings,
     GateState,
@@ -205,6 +207,7 @@ def test_evaluate_drain_gate_uses_or_composition() -> None:
                 display_powersave=DisplayPowersaveSettings(enabled=True),
             ),
             datetime(2026, 1, 1, 3, 0),
+            DISPLAY_POWERSAVE_UNAVAILABLE,
         ).open
         is True
     )
@@ -216,17 +219,68 @@ def test_evaluate_drain_gate_uses_or_composition() -> None:
                 display_powersave=DisplayPowersaveSettings(enabled=True),
             ),
             datetime(2026, 1, 1, 3, 0),
+            DISPLAY_POWERSAVE_UNAVAILABLE,
         ).open
         is False
     )
 
 
-def test_evaluate_display_powersave_is_inert() -> None:
-    state = evaluate_display_powersave(DisplayPowersaveSettings(enabled=True))
+def test_evaluate_display_powersave_disabled_ignores_reading() -> None:
+    state = evaluate_display_powersave(
+        DisplayPowersaveSettings(enabled=False),
+        DisplayPowersaveReading(available=True, asleep=True, debounced=True),
+    )
 
-    assert state.enabled is True
+    assert state.enabled is False
     assert state.available is False
     assert state.open is False
+
+
+def test_evaluate_display_powersave_enabled_uses_reading() -> None:
+    asleep = evaluate_display_powersave(
+        DisplayPowersaveSettings(enabled=True),
+        DisplayPowersaveReading(available=True, asleep=True, debounced=True),
+    )
+    awake = evaluate_display_powersave(
+        DisplayPowersaveSettings(enabled=True),
+        DisplayPowersaveReading(available=True, asleep=False, debounced=False),
+    )
+    undetectable = evaluate_display_powersave(
+        DisplayPowersaveSettings(enabled=True),
+        DISPLAY_POWERSAVE_UNAVAILABLE,
+    )
+
+    assert asleep == ConditionState(enabled=True, available=True, open=True)
+    assert awake == ConditionState(enabled=True, available=True, open=False)
+    assert undetectable == ConditionState(enabled=True, available=False, open=False)
+
+
+def test_evaluate_drain_gate_opens_on_debounced_display_powersave() -> None:
+    gate = evaluate_drain_gate(
+        _settings(
+            time_window=_time_window(enabled=False),
+            display_powersave=DisplayPowersaveSettings(enabled=True),
+        ),
+        datetime(2026, 1, 1, 12, 0),
+        DisplayPowersaveReading(available=True, asleep=True, debounced=True),
+    )
+
+    assert gate.open is True
+
+
+def test_display_powersave_undetectable_has_no_active_condition() -> None:
+    settings = _settings(
+        time_window=_time_window(enabled=False),
+        display_powersave=DisplayPowersaveSettings(enabled=True),
+    )
+    gate = evaluate_drain_gate(
+        settings,
+        datetime(2026, 1, 1, 12, 0),
+        DISPLAY_POWERSAVE_UNAVAILABLE,
+    )
+
+    assert gate.open is False
+    assert derive_drain_state(settings, gate) == DRAIN_STATE_NO_CONDITION
 
 
 def test_derive_drain_state_tokens() -> None:

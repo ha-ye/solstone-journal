@@ -69,6 +69,16 @@ class ProcessingSettings:
 
 
 @dataclass(frozen=True)
+class DisplayPowersaveReading:
+    available: bool
+    asleep: bool
+    debounced: bool
+
+
+DISPLAY_POWERSAVE_UNAVAILABLE = DisplayPowersaveReading(False, False, False)
+
+
+@dataclass(frozen=True)
 class ConditionState:
     enabled: bool
     available: bool
@@ -203,17 +213,31 @@ def evaluate_time_window(window: TimeWindowSettings, now: datetime) -> Condition
     return ConditionState(enabled=window.enabled, available=True, open=is_open)
 
 
-def evaluate_display_powersave(ps: DisplayPowersaveSettings) -> ConditionState:
-    """Evaluate the display-powersave forward seam, currently unavailable."""
-    return ConditionState(enabled=ps.enabled, available=False, open=False)
+def evaluate_display_powersave(
+    ps: DisplayPowersaveSettings,
+    reading: DisplayPowersaveReading,
+) -> ConditionState:
+    """Evaluate the display-powersave condition from a debounced reading."""
+    if not ps.enabled:
+        return ConditionState(enabled=False, available=False, open=False)
+    return ConditionState(
+        enabled=True,
+        available=reading.available,
+        open=reading.asleep and reading.debounced,
+    )
 
 
-def evaluate_drain_gate(settings: ProcessingSettings, now: datetime) -> GateState:
+def evaluate_drain_gate(
+    settings: ProcessingSettings,
+    now: datetime,
+    display_reading: DisplayPowersaveReading,
+) -> GateState:
     """Evaluate all drain gate conditions with OR composition."""
     conditions = {
         "time_window": evaluate_time_window(settings.gate.time_window, now),
         "display_powersave": evaluate_display_powersave(
-            settings.gate.display_powersave
+            settings.gate.display_powersave,
+            display_reading,
         ),
     }
     return GateState(
@@ -345,6 +369,8 @@ __all__ = [
     "DRAIN_STATE_WINDOW_OPEN",
     "DEFAULT_PROCESSING",
     "ConditionState",
+    "DISPLAY_POWERSAVE_UNAVAILABLE",
+    "DisplayPowersaveReading",
     "DisplayPowersaveSettings",
     "GateSettings",
     "GateState",

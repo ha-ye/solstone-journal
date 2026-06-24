@@ -8,6 +8,7 @@ import os
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from click.testing import Result
@@ -17,11 +18,13 @@ from solstone.convey.readiness_snapshot import unavailable_snapshot
 from solstone.think.convey_client import ConveyClient
 from solstone.think.pipeline_health import SegmentBacklog, SegmentCompletion
 from solstone.think.processing import (
+    DISPLAY_POWERSAVE_UNAVAILABLE,
     DRAIN_STATE_NO_CONDITION,
     DRAIN_STATE_REALTIME,
     DRAIN_STATE_WAITING,
     DRAIN_STATE_WINDOW_OPEN,
     ConditionState,
+    DisplayPowersaveReading,
     DisplayPowersaveSettings,
     GateSettings,
     GateState,
@@ -240,6 +243,20 @@ def _processing_settings(mode: str) -> ProcessingSettings:
             ),
             display_powersave=DisplayPowersaveSettings(enabled=False),
         ),
+    )
+
+
+def _stub_display_powersave(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    reading=DISPLAY_POWERSAVE_UNAVAILABLE,
+    detectable: bool = False,
+) -> None:
+    monkeypatch.setattr(health_surface, "last_display_powersave", lambda: reading)
+    monkeypatch.setattr(
+        health_surface,
+        "display_powersave_detectable",
+        lambda: detectable,
     )
 
 
@@ -586,9 +603,10 @@ def test_segment_backlog_deferred_awaiting_analysis_uses_unsensed(
     monkeypatch.setattr(
         health_surface,
         "evaluate_drain_gate",
-        lambda settings, now: GateState(open=False, conditions={}),
+        lambda settings, now, reading: GateState(open=False, conditions={}),
     )
     monkeypatch.setattr(health_surface, "read_last_drained_at", lambda: None)
+    _stub_display_powersave(monkeypatch)
 
     backlog = health_surface._build_segment_backlog_health()
 
@@ -611,9 +629,10 @@ def test_segment_backlog_realtime_omits_awaiting_analysis_text(monkeypatch) -> N
     monkeypatch.setattr(
         health_surface,
         "evaluate_drain_gate",
-        lambda settings, now: GateState(open=True, conditions={}),
+        lambda settings, now, reading: GateState(open=True, conditions={}),
     )
     monkeypatch.setattr(health_surface, "read_last_drained_at", lambda: None)
+    _stub_display_powersave(monkeypatch)
 
     backlog = health_surface._build_segment_backlog_health()
 
@@ -664,9 +683,10 @@ def test_segment_backlog_drain_state_tokens(monkeypatch, gate, expected_state) -
     monkeypatch.setattr(
         health_surface,
         "evaluate_drain_gate",
-        lambda settings, now: gate,
+        lambda settings, now, reading: gate,
     )
     monkeypatch.setattr(health_surface, "read_last_drained_at", lambda: None)
+    _stub_display_powersave(monkeypatch)
 
     backlog = health_surface._build_segment_backlog_health()
 
@@ -687,17 +707,97 @@ def test_segment_backlog_last_drained_at_passes_through(monkeypatch) -> None:
     monkeypatch.setattr(
         health_surface,
         "evaluate_drain_gate",
-        lambda settings, now: GateState(open=False, conditions={}),
+        lambda settings, now, reading: GateState(open=False, conditions={}),
     )
     monkeypatch.setattr(
         health_surface,
         "read_last_drained_at",
         lambda: 1_700_000_000_000,
     )
+    _stub_display_powersave(monkeypatch)
 
     backlog = health_surface._build_segment_backlog_health()
 
     assert backlog.last_drained_at == 1_700_000_000_000
+
+
+def test_segment_backlog_uses_last_display_powersave_snapshot(monkeypatch) -> None:
+    expected = DisplayPowersaveReading(available=True, asleep=True, debounced=True)
+    captured = {}
+    monkeypatch.setattr(
+        health_surface,
+        "read_segment_backlog",
+        lambda: _segment_backlog({}),
+    )
+    monkeypatch.setattr(
+        health_surface,
+        "load_processing_settings",
+        lambda: _processing_settings("deferred"),
+    )
+
+    def evaluate(settings, now, reading):
+        captured["reading"] = reading
+        return GateState(open=True, conditions={})
+
+    monkeypatch.setattr(health_surface, "evaluate_drain_gate", evaluate)
+    monkeypatch.setattr(health_surface, "read_last_drained_at", lambda: None)
+    _stub_display_powersave(monkeypatch, reading=expected)
+
+    health_surface._build_segment_backlog_health()
+
+    assert captured["reading"] == expected
+
+
+def test_segment_backlog_exposes_display_powersave_detectable(monkeypatch) -> None:
+    monkeypatch.setattr(
+        health_surface,
+        "read_segment_backlog",
+        lambda: _segment_backlog({}),
+    )
+    monkeypatch.setattr(
+        health_surface,
+        "load_processing_settings",
+        lambda: _processing_settings("deferred"),
+    )
+    monkeypatch.setattr(
+        health_surface,
+        "evaluate_drain_gate",
+        lambda settings, now, reading: GateState(open=False, conditions={}),
+    )
+    monkeypatch.setattr(health_surface, "read_last_drained_at", lambda: None)
+    _stub_display_powersave(monkeypatch, detectable=True)
+
+    backlog = health_surface._build_segment_backlog_health()
+
+    assert backlog.display_powersave_detectable is True
+
+
+def test_segment_backlog_health_never_polls_display(monkeypatch) -> None:
+    from solstone.think import display_powersave
+
+    poll = MagicMock()
+    monkeypatch.setattr(display_powersave, "poll_display_powersave", poll)
+    monkeypatch.setattr(
+        health_surface,
+        "read_segment_backlog",
+        lambda: _segment_backlog({}),
+    )
+    monkeypatch.setattr(
+        health_surface,
+        "load_processing_settings",
+        lambda: _processing_settings("deferred"),
+    )
+    monkeypatch.setattr(
+        health_surface,
+        "evaluate_drain_gate",
+        lambda settings, now, reading: GateState(open=False, conditions={}),
+    )
+    monkeypatch.setattr(health_surface, "read_last_drained_at", lambda: None)
+    _stub_display_powersave(monkeypatch)
+
+    health_surface._build_segment_backlog_health()
+
+    poll.assert_not_called()
 
 
 def test_silent_facet_note_ladder_thresholds(tmp_path, monkeypatch):
