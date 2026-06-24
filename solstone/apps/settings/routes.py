@@ -57,6 +57,10 @@ from solstone.think.journal_config import (
     hold_config_lock,
     write_journal_config,
 )
+from solstone.think.processing import (
+    load_processing_settings,
+    validate_processing_update,
+)
 from solstone.think.retention import (
     _human_bytes,
     check_storage_health,
@@ -267,6 +271,7 @@ def update_config() -> Any:
             "support": ["enabled", "proactive", "anonymous_feedback", "portal_url"],
             "agent": ["name", "name_status", "named_date"],
             "env": API_KEY_ENV_VARS,
+            "processing": [],
         }
 
         # Nested config schemas for transcribe backends - built from BACKEND_METADATA
@@ -309,6 +314,19 @@ def update_config() -> Any:
                             os.environ[key] = new_value
                         else:
                             os.environ.pop(key, None)
+
+            if section == "processing":
+                try:
+                    validated = validate_processing_update(old_section, data)
+                except ValueError as exc:
+                    return error_response(INVALID_CONFIG_VALUE, detail=str(exc))
+                new_section = validated.to_dict()
+                if old_section != new_section:
+                    changed_fields["processing"] = {
+                        "old": old_section,
+                        "new": new_section,
+                    }
+                config["processing"] = new_section
 
             # Handle nested backend configs for transcribe section
             if section == "transcribe":
@@ -524,6 +542,19 @@ def get_transcribe() -> Any:
     except Exception:
         logger.exception("error loading transcribe config")
         return _settings_operation_failed()
+
+
+@settings_bp.route("/api/processing")
+def get_processing() -> Any:
+    """Return effective deferred-processing settings."""
+    try:
+        return jsonify(load_processing_settings().to_dict())
+    except Exception:
+        logger.exception("error loading processing settings")
+        return error_response(
+            SETTINGS_OPERATION_FAILED,
+            detail="unable to load processing settings",
+        )
 
 
 # ---------------------------------------------------------------------------

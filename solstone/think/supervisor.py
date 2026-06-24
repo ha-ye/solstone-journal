@@ -41,6 +41,7 @@ from solstone.think.catchup_state import (
 )
 from solstone.think.maint import run_pending_tasks
 from solstone.think.models import LOCAL_MODEL, is_local_provider_needed
+from solstone.think.processing import evaluate_drain_gate, load_processing_settings
 from solstone.think.providers.mlx_server import MLX_SERVER_PROCESS_NAME
 from solstone.think.readiness import START_TIME_TOLERANCE_S, clear_ready, signal_ready
 from solstone.think.runner import ManagedProcess as RunnerManagedProcess
@@ -82,6 +83,7 @@ REACTIVE_TASK_CAPS = {
 }
 DEFAULT_THRESHOLD = 60
 CHECK_INTERVAL = 30
+GATE_TICK_INTERVAL_S = 60
 MAX_UPDATED_CATCHUP = 4
 TEMPFAIL_DELAY = 15  # seconds to wait before retrying a tempfail exit
 CONVEY_READY_WINDOW_SECONDS = 60.0
@@ -176,6 +178,7 @@ _SERVICE_LIFECYCLE_VERBS = {
 # Global shutdown flag
 shutdown_requested = False
 _last_sync_tick: float = 0.0
+_last_gate_tick: float = 0.0
 _last_sync_snapshot: "SyncCheckSnapshot | None" = None
 _sync_conflict_shutdown: bool = False
 # Supervisor identity (set in main() once ref is assigned)
@@ -2335,6 +2338,14 @@ def _handle_segment_observed(message: dict) -> None:
         )
         return
 
+    if load_processing_settings().mode == "deferred":
+        logging.info(
+            "Deferred mode: live segment %s/%s held for catchup drain; no live think",
+            day,
+            segment,
+        )
+        return
+
     stream = message.get("stream")
 
     # Update flush state — new segment resets the flush timer
@@ -2378,6 +2389,9 @@ def _check_segment_flush(force: bool = False) -> None:
 
     last_ts = _flush_state["last_segment_ts"]
     if not last_ts or _flush_state["flushed"]:
+        return
+
+    if load_processing_settings().mode == "deferred":
         return
 
     if not force and time.time() - last_ts < FLUSH_TIMEOUT:
@@ -2567,6 +2581,23 @@ def _run_sync_tick(now: float) -> bool:
         return True
 
 
+def _run_gate_tick(now: float) -> None:
+    global _last_gate_tick
+
+    if now - _last_gate_tick < GATE_TICK_INTERVAL_S:
+        return
+    _last_gate_tick = now
+    if _is_remote_mode:
+        return
+    settings = load_processing_settings()
+    if settings.mode != "deferred":
+        return
+    gate = evaluate_drain_gate(settings, datetime.now())
+    if not gate.open:
+        return
+    run_catchup_drain()
+
+
 async def supervise(
     *,
     daily: bool = True,
@@ -2578,9 +2609,11 @@ async def supervise(
     Monitors runner health, emits status, triggers daily processing,
     and checks scheduled agents.
     """
-    global _last_sync_tick, _last_sync_snapshot, _sync_conflict_shutdown
+    global _last_gate_tick, _last_sync_tick
+    global _last_sync_snapshot, _sync_conflict_shutdown
 
     last_status_emit = 0.0
+    _last_gate_tick = 0.0
     _last_sync_tick = 0.0
     _last_sync_snapshot = None
     _sync_conflict_shutdown = False
@@ -2618,6 +2651,7 @@ async def supervise(
             # Check for daily processing (non-blocking, submits via task queue)
             if daily:
                 handle_daily_tasks()
+                _run_gate_tick(now)
 
             # Check periodic task schedules (non-blocking, submits via callosum)
             if schedule:

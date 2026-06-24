@@ -11,6 +11,7 @@ import requests
 from typer.testing import CliRunner
 
 from solstone.think.convey_client import ConveyClient
+from solstone.think.processing import DRAIN_STATE_REALTIME
 from solstone.think.surfaces import health as health_surface
 from solstone.think.tools.health import app
 from tests._baseline_harness import make_test_client, mark_setup_complete
@@ -86,7 +87,15 @@ def _report() -> dict[str, object]:
             "ledger_stale_items_count": 0,
             "profile_entities_total": 0,
         },
-        "segment_backlog": {"not_thought": 0, "days_with_backlog": 0, "errors": []},
+        "segment_backlog": {
+            "not_thought": 0,
+            "days_with_backlog": 0,
+            "errors": [],
+            "not_sensed": 0,
+            "awaiting_analysis_text": None,
+            "last_drained_at": None,
+            "drain_state": DRAIN_STATE_REALTIME,
+        },
         "notes": [],
         "provider_readiness": {
             "summary": {

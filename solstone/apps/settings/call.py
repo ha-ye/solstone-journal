@@ -53,6 +53,8 @@ observer_app = typer.Typer(help="Observer capture settings.")
 app.add_typer(observer_app, name="observer")
 convey_app = typer.Typer(help="Convey access configuration.")
 app.add_typer(convey_app, name="convey")
+processing_app = typer.Typer(help="Deferred-processing mode and drain window.")
+app.add_typer(processing_app, name="processing")
 
 
 def _request(
@@ -110,6 +112,71 @@ def _validate_env_var_or_exit(env_var: str) -> None:
 def _moved_stub(command: str) -> None:
     typer.echo(f"Moved to `sol call thinking {command}` — run that instead.", err=True)
     raise typer.Exit(2)
+
+
+@processing_app.command("show")
+@convey_cli
+def processing_show() -> None:
+    """Show effective deferred-processing settings."""
+    result = _request("GET", "/app/settings/api/processing")
+    _echo_json(result)
+
+
+@processing_app.command("set")
+@convey_cli
+def processing_set(
+    mode: str | None = typer.Option(None, "--mode", help="realtime or deferred."),
+    window_start: str | None = typer.Option(
+        None,
+        "--window-start",
+        help="HH:MM drain window start.",
+    ),
+    window_end: str | None = typer.Option(
+        None,
+        "--window-end",
+        help="HH:MM drain window end.",
+    ),
+    time_window: bool | None = typer.Option(
+        None,
+        "--time-window/--no-time-window",
+        help="Enable the time-window drain condition.",
+    ),
+    display_powersave: bool | None = typer.Option(
+        None,
+        "--display-powersave/--no-display-powersave",
+        help="Enable the display-powersave drain condition.",
+    ),
+) -> None:
+    """Set deferred-processing mode and drain window."""
+    data: dict[str, Any] = {}
+    if mode is not None:
+        data["mode"] = mode
+    tw: dict[str, Any] = {}
+    if window_start is not None:
+        tw["start"] = window_start
+    if window_end is not None:
+        tw["end"] = window_end
+    if time_window is not None:
+        tw["enabled"] = time_window
+    gate: dict[str, Any] = {}
+    if tw:
+        gate["time_window"] = tw
+    if display_powersave is not None:
+        gate["display_powersave"] = {"enabled": display_powersave}
+    if gate:
+        data["gate"] = gate
+    if not data:
+        _exit_with(
+            "error: provide at least one of "
+            "--mode/--window-start/--window-end/--time-window/--display-powersave"
+        )
+    try:
+        response = _post_config("processing", data)
+    except ConveyClientError as err:
+        if err.reason_code == INVALID_CONFIG_VALUE.code and err.detail:
+            _exit_with(err.detail)
+        raise
+    _echo_json(response.get("config", {}).get("processing", {}))
 
 
 @convey_app.command("host-url")

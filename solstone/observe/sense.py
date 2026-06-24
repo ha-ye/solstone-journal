@@ -31,6 +31,7 @@ from solstone.observe.utils import (
     VIDEO_EXTENSIONS,
 )
 from solstone.think.callosum import CallosumConnection
+from solstone.think.processing import load_processing_settings
 from solstone.think.runner import KILL_REAP_GRACE_S
 from solstone.think.runner import ManagedProcess as RunnerManagedProcess
 from solstone.think.utils import (
@@ -720,6 +721,10 @@ class FileSensor:
                 meta = {}
             meta["stream"] = stream
 
+        deferred_live = (
+            not message.get("batch") and load_processing_settings().mode == "deferred"
+        )
+
         # Build full paths for all files in this segment.
         rel_segment = f"{day}/{stream}/{segment}" if stream else f"{day}/{segment}"
         segment_dir = resolve_journal_path(self.journal_dir, rel_segment)
@@ -737,20 +742,25 @@ class FileSensor:
                     self.segment_batch[segment] = True
                 if observer:
                     self.segment_observer[segment] = observer
-            for file_path in file_paths:
-                # Only track files that will be processed (match a pattern)
-                if self._match_pattern(file_path):
-                    self.segment_files[segment].add(file_path)
+            if not deferred_live:
+                for file_path in file_paths:
+                    # Only track files that will be processed (match a pattern)
+                    if self._match_pattern(file_path):
+                        self.segment_files[segment].add(file_path)
 
         # Process each file (pass segment context for env vars)
-        for file_path in file_paths:
-            self._handle_file(file_path, segment=segment, observer=observer, meta=meta)
+        if not deferred_live:
+            for file_path in file_paths:
+                self._handle_file(
+                    file_path, segment=segment, observer=observer, meta=meta
+                )
 
         # If no files matched any handler patterns, emit observed immediately
         # (e.g., tmux-only segments with just .jsonl files)
         with self.lock:
             if segment in self.segment_files and not self.segment_files[segment]:
-                self._emit_segment_observed(segment, note="no handlers")
+                emit_note = "deferred" if deferred_live else "no handlers"
+                self._emit_segment_observed(segment, note=emit_note)
 
     def _emit_status(self):
         """Emit observe.status event with current processing state (only when active)."""

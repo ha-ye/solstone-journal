@@ -65,6 +65,13 @@
     },
     "debug_show_throttled": false
   },
+  "processing": {
+    "mode": "realtime",
+    "gate": {
+      "time_window":       { "enabled": true,  "start": "02:00", "end": "06:00" },
+      "display_powersave": { "enabled": false }
+    }
+  },
   "pairing": {
     "host_url": null
   },

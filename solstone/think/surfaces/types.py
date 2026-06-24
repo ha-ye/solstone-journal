@@ -4,6 +4,8 @@
 from dataclasses import dataclass
 from typing import Any
 
+from solstone.think.processing import DRAIN_STATE_REALTIME
+
 
 @dataclass(frozen=True)
 class ActivitySourceRef:
@@ -123,6 +125,10 @@ class SegmentBacklogHealth:
     not_thought: int
     days_with_backlog: int
     errors: tuple[str, ...]
+    not_sensed: int = 0
+    awaiting_analysis_text: str | None = None
+    last_drained_at: int | None = None
+    drain_state: str = DRAIN_STATE_REALTIME
 
 
 @dataclass(frozen=True)
