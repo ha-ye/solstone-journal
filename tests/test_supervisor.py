@@ -20,6 +20,15 @@ from unittest.mock import MagicMock
 import psutil
 import pytest
 
+from solstone.think.processing import (
+    DISPLAY_POWERSAVE_UNAVAILABLE,
+    DisplayPowersaveReading,
+    DisplayPowersaveSettings,
+    GateSettings,
+    ProcessingSettings,
+    TimeWindowSettings,
+)
+
 
 def test_sd_notify_no_socket_is_noop(monkeypatch):
     from solstone.think.supervisor import _sd_notify
@@ -619,6 +628,26 @@ class _CaptureTaskQueue:
         self.submissions.append({"cmd": cmd, "day": day})
 
 
+def _supervisor_processing_settings(
+    mode: str,
+    *,
+    display_powersave_enabled: bool = False,
+) -> ProcessingSettings:
+    return ProcessingSettings(
+        mode=mode,
+        gate=GateSettings(
+            time_window=TimeWindowSettings(
+                enabled=True,
+                start="02:00",
+                end="06:00",
+            ),
+            display_powersave=DisplayPowersaveSettings(
+                enabled=display_powersave_enabled
+            ),
+        ),
+    )
+
+
 def test_handle_segment_observed_live_command_marks_live(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     capture = _CaptureTaskQueue()
@@ -724,6 +753,125 @@ def test_handle_segment_observed_live_stream_command(monkeypatch):
     assert "--live" in cmd
     stream_index = cmd.index("--stream")
     assert cmd[stream_index + 1] == "archon"
+
+
+def test_handle_segment_observed_deferred_live_submits_nothing(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    capture = _CaptureTaskQueue()
+    monkeypatch.setattr(mod, "_task_queue", capture)
+    monkeypatch.setattr(
+        mod,
+        "load_processing_settings",
+        lambda: _supervisor_processing_settings("deferred"),
+    )
+    mod._flush_state.update(
+        {
+            "last_segment_ts": 123.0,
+            "day": "20260526",
+            "segment": "110000_300",
+            "stream": "archon",
+            "flushed": True,
+        }
+    )
+    before = dict(mod._flush_state)
+
+    mod._handle_segment_observed(
+        {
+            "tract": "observe",
+            "event": "observed",
+            "day": "20260527",
+            "segment": "120000_300",
+        }
+    )
+
+    assert capture.submissions == []
+    assert dict(mod._flush_state) == before
+
+
+def test_handle_segment_observed_reads_processing_mode_fresh(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    capture = _CaptureTaskQueue()
+    monkeypatch.setattr(mod, "_task_queue", capture)
+    modes = ["realtime", "deferred"]
+
+    def load_settings():
+        return _supervisor_processing_settings(modes.pop(0))
+
+    monkeypatch.setattr(mod, "load_processing_settings", load_settings)
+
+    mod._handle_segment_observed(
+        {
+            "tract": "observe",
+            "event": "observed",
+            "day": "20260527",
+            "segment": "120000_300",
+        }
+    )
+    after_realtime = dict(mod._flush_state)
+    mod._handle_segment_observed(
+        {
+            "tract": "observe",
+            "event": "observed",
+            "day": "20260527",
+            "segment": "120500_300",
+        }
+    )
+
+    assert len(capture.submissions) == 1
+    assert capture.submissions[0]["cmd"][-1] == "--live"
+    assert dict(mod._flush_state) == after_realtime
+
+
+def test_check_segment_flush_deferred_guard_submits_nothing(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    capture = _CaptureTaskQueue()
+    monkeypatch.setattr(mod, "_task_queue", capture)
+    monkeypatch.setattr(
+        mod,
+        "load_processing_settings",
+        lambda: _supervisor_processing_settings("deferred"),
+    )
+    mod._flush_state.update(
+        {
+            "last_segment_ts": 1.0,
+            "day": "20260527",
+            "segment": "120000_300",
+            "stream": None,
+            "flushed": False,
+        }
+    )
+
+    mod._check_segment_flush()
+
+    assert capture.submissions == []
+    assert mod._flush_state["flushed"] is False
+
+
+def test_check_segment_flush_realtime_submits(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    capture = _CaptureTaskQueue()
+    monkeypatch.setattr(mod, "_task_queue", capture)
+    monkeypatch.setattr(
+        mod,
+        "load_processing_settings",
+        lambda: _supervisor_processing_settings("realtime"),
+    )
+    monkeypatch.setattr(mod.time, "time", lambda: 10_000.0)
+    mod._flush_state.update(
+        {
+            "last_segment_ts": 1.0,
+            "day": "20260527",
+            "segment": "120000_300",
+            "stream": None,
+            "flushed": False,
+        }
+    )
+
+    mod._check_segment_flush()
+
+    assert len(capture.submissions) == 1
+    assert "--flush" in capture.submissions[0]["cmd"]
+    assert mod._flush_state["flushed"] is True
 
 
 def test_task_queue_daily_and_segment_run_independently(monkeypatch):
@@ -1786,6 +1934,158 @@ def test_startup_catchup_drain_reconciles_before_drain(monkeypatch):
     assert order == ["reconcile", "drain"]
 
 
+def test_run_gate_tick_deferred_open_runs_catchup_drain(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    drain = MagicMock()
+    monkeypatch.setattr(
+        mod,
+        "load_processing_settings",
+        lambda: _supervisor_processing_settings("deferred"),
+    )
+    monkeypatch.setattr(
+        mod,
+        "evaluate_drain_gate",
+        lambda settings, now, reading: SimpleNamespace(open=True),
+    )
+    monkeypatch.setattr(mod, "run_catchup_drain", drain)
+    mod._last_gate_tick = 0.0
+
+    mod._run_gate_tick(60.0)
+
+    drain.assert_called_once_with()
+
+
+def test_run_gate_tick_deferred_closed_skips_catchup_drain(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    drain = MagicMock()
+    monkeypatch.setattr(
+        mod,
+        "load_processing_settings",
+        lambda: _supervisor_processing_settings("deferred"),
+    )
+    monkeypatch.setattr(
+        mod,
+        "evaluate_drain_gate",
+        lambda settings, now, reading: SimpleNamespace(open=False),
+    )
+    monkeypatch.setattr(mod, "run_catchup_drain", drain)
+    mod._last_gate_tick = 0.0
+
+    mod._run_gate_tick(60.0)
+
+    drain.assert_not_called()
+
+
+def test_run_gate_tick_realtime_skips_catchup_drain(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    drain = MagicMock()
+    evaluate = MagicMock(return_value=SimpleNamespace(open=True))
+    monkeypatch.setattr(
+        mod,
+        "load_processing_settings",
+        lambda: _supervisor_processing_settings("realtime"),
+    )
+    monkeypatch.setattr(mod, "evaluate_drain_gate", evaluate)
+    monkeypatch.setattr(mod, "run_catchup_drain", drain)
+    mod._last_gate_tick = 0.0
+
+    mod._run_gate_tick(60.0)
+
+    evaluate.assert_not_called()
+    drain.assert_not_called()
+
+
+def test_run_gate_tick_throttles_catchup_drain(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    drain = MagicMock()
+    monkeypatch.setattr(
+        mod,
+        "load_processing_settings",
+        lambda: _supervisor_processing_settings("deferred"),
+    )
+    monkeypatch.setattr(
+        mod,
+        "evaluate_drain_gate",
+        lambda settings, now, reading: SimpleNamespace(open=True),
+    )
+    monkeypatch.setattr(mod, "run_catchup_drain", drain)
+    mod._last_gate_tick = 0.0
+
+    mod._run_gate_tick(60.0)
+    mod._run_gate_tick(119.0)
+    mod._run_gate_tick(121.0)
+
+    assert drain.call_count == 2
+
+
+def test_run_gate_tick_disabled_display_powersave_does_not_poll(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    drain = MagicMock()
+    poll = MagicMock(side_effect=AssertionError("poll should not be called"))
+
+    def evaluate(settings, now, reading):
+        assert reading == DISPLAY_POWERSAVE_UNAVAILABLE
+        return SimpleNamespace(open=True)
+
+    monkeypatch.setattr(mod, "_is_remote_mode", False)
+    monkeypatch.setattr(
+        mod,
+        "load_processing_settings",
+        lambda: _supervisor_processing_settings("deferred"),
+    )
+    monkeypatch.setattr(mod, "poll_display_powersave", poll)
+    monkeypatch.setattr(mod, "evaluate_drain_gate", evaluate)
+    monkeypatch.setattr(mod, "run_catchup_drain", drain)
+    mod._last_gate_tick = 0.0
+
+    mod._run_gate_tick(60.0)
+
+    poll.assert_not_called()
+    drain.assert_called_once_with()
+
+
+def test_run_gate_tick_enabled_display_powersave_polls(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    reading = DisplayPowersaveReading(available=True, asleep=True, debounced=True)
+    poll = MagicMock(return_value=reading)
+    captured = {}
+
+    def evaluate(settings, now, display_reading):
+        captured["reading"] = display_reading
+        return SimpleNamespace(open=False)
+
+    monkeypatch.setattr(mod, "_is_remote_mode", False)
+    monkeypatch.setattr(
+        mod,
+        "load_processing_settings",
+        lambda: _supervisor_processing_settings(
+            "deferred",
+            display_powersave_enabled=True,
+        ),
+    )
+    monkeypatch.setattr(mod, "poll_display_powersave", poll)
+    monkeypatch.setattr(mod, "evaluate_drain_gate", evaluate)
+    monkeypatch.setattr(mod, "run_catchup_drain", MagicMock())
+    mod._last_gate_tick = 0.0
+
+    mod._run_gate_tick(60.0)
+
+    poll.assert_called_once()
+    assert isinstance(poll.call_args.args[0], float)
+    assert captured["reading"] == reading
+
+
+def test_supervise_resets_display_powersave_monitor_on_entry(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    reset = MagicMock()
+    monkeypatch.setattr(mod, "reset_display_powersave_monitor", reset)
+    monkeypatch.setattr(mod, "shutdown_requested", True)
+
+    asyncio.run(mod.supervise(daily=False, schedule=False, procs=[]))
+
+    reset.assert_called_once_with()
+
+
 def test_record_scheduler_completion_serializes_concurrent_writes(
     tmp_path, monkeypatch
 ):
@@ -2316,6 +2616,7 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
     gguf = model_artifact_dir / "model.gguf"
     mmproj = model_artifact_dir / "mmproj.gguf"
     written_ports = []
+    written_context_windows = []
     spawned = []
     spawned_envs = []
     managed = _TaskManagedStub(cmd=[])
@@ -2349,7 +2650,13 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
         "write_service_port",
         lambda service, port: written_ports.append((service, port)),
     )
+    monkeypatch.setattr(
+        local_server,
+        "write_local_context_window",
+        lambda tokens: written_context_windows.append(tokens),
+    )
     monkeypatch.setattr(local_server, "_probe_health", lambda port: ("ready", None))
+    monkeypatch.setattr(local_server, "fetch_props", lambda port: None)
 
     def fake_spawn(cmd, *, ref=None, callosum=None, day=None, env=None):
         spawned.append(cmd)
@@ -2364,6 +2671,7 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
 
     assert result is managed
     assert written_ports == [("local", 2468)]
+    assert written_context_windows == [local_server.LOCAL_MIN_CONTEXT_TOKENS]
     assert spawned == [
         [
             str(binary),
@@ -2379,7 +2687,13 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
             "--n-gpu-layers",
             "999",
             "-c",
-            str(local_server.LOCAL_SERVER_CONTEXT_TOKENS),
+            str(local_server.LOCAL_MIN_CONTEXT_TOKENS),
+            "--parallel",
+            "1",
+            "--kv-unified",
+            "--cache-ram",
+            "0",
+            "--no-context-shift",
             "--device",
             "Vulkan0",
             "--mmproj",
@@ -2390,6 +2704,40 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
     assert "0.0.0.0" not in spawned[0]
     assert mod._SERVICE_STATE["llama-server"]["restart"] is True
     assert mod.LOCAL_MODEL_WARMING_UP_COPY in capsys.readouterr().out
+
+
+def test_log_context_assertion(caplog):
+    mod = importlib.import_module("solstone.think.supervisor")
+    from solstone.think.providers import local_server
+
+    floor = local_server.ServerTier(
+        name="floor", context_tokens=16384, parallel_slots=1, prompt_cache_mib=0
+    )
+    capable = local_server.ServerTier(
+        name="capable", context_tokens=32768, parallel_slots=2, prompt_cache_mib=2048
+    )
+
+    with caplog.at_level(logging.INFO):
+        mod._log_context_assertion(floor, 16384, 1)
+    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        mod._log_context_assertion(capable, 65536, 2)
+    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        mod._log_context_assertion(capable, 12345, 2)
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        mod._log_context_assertion(capable, None, None)
+    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+    assert any(
+        "context assertion skipped" in record.message for record in caplog.records
+    )
 
 
 def test_start_local_server_skips_missing_artifacts(monkeypatch):
@@ -2452,7 +2800,11 @@ def _configure_linux_llama_start(
     monkeypatch.setattr(local_vulkan, "device_local_used_mib", lambda index: 512)
     monkeypatch.setattr(mod, "find_available_port", lambda: 2468)
     monkeypatch.setattr(mod, "write_service_port", lambda _service, _port: None)
+    monkeypatch.setattr(
+        local_server, "write_local_context_window", lambda _tokens: None
+    )
     monkeypatch.setattr(local_server, "_probe_health", lambda _port: ("ready", None))
+    monkeypatch.setattr(local_server, "fetch_props", lambda _port: None)
 
     def fake_spawn(cmd, *, ref=None, callosum=None, day=None, env=None):
         spawned.append(cmd)

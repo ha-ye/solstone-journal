@@ -170,8 +170,14 @@ class ActivityStateMachine:
 
         facet_map = {}
         for facet in raw_facets:
-            if isinstance(facet, dict) and facet.get("facet"):
-                facet_map[facet["facet"]] = facet
+            if not (isinstance(facet, dict) and facet.get("facet")):
+                continue
+            # An explicit level:"low" facet is treated exactly like an absent
+            # facet: it never creates/continues an activity and any prior active
+            # activity winds down through the facet-gone hysteresis loop below.
+            if facet.get("level") == "low":
+                continue
+            facet_map[facet["facet"]] = facet
         current_facets = set(facet_map.keys())
 
         # Hysteresis invariant: pending segments bridge into the prior activity's segments[];
@@ -207,6 +213,7 @@ class ActivityStateMachine:
             level = facet_data.get("level", "medium")
             if level not in ("high", "medium", "low"):
                 level = "medium"
+            description = facet_data.get("activity") or activity_summary
 
             if facet in self.state:
                 prior = self.state[facet]
@@ -238,7 +245,7 @@ class ActivityStateMachine:
                             "activity": content_type,
                             "state": "active",
                             "since": segment_key,
-                            "description": activity_summary,
+                            "description": description,
                             "level": level,
                             "active_entities": entity_names,
                             "_change": "new",
@@ -260,7 +267,7 @@ class ActivityStateMachine:
                             prior["segments"].append(segment_key)
                         changes.append(dict(prior))
                 else:
-                    prior["description"] = activity_summary
+                    prior["description"] = description
                     prior["level"] = level
                     prior["active_entities"] = entity_names
                     prior["_pending_facet_misses"] = 0
@@ -278,7 +285,7 @@ class ActivityStateMachine:
                     "activity": content_type,
                     "state": "active",
                     "since": segment_key,
-                    "description": activity_summary,
+                    "description": description,
                     "level": level,
                     "active_entities": entity_names,
                     "_change": "new",

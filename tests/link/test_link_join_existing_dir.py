@@ -7,7 +7,7 @@ import argparse
 
 import pytest
 
-from solstone.apps.link.routes import _build_pair_link
+from solstone.apps.network.routes import _build_pair_link
 from solstone.think.link import join_cli
 
 PAIR_LINK = _build_pair_link("192.0.2.42", 7657, "a" * 32, "b" * 64)

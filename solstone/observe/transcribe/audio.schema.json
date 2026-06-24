@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "solstone-journal-format:audio-jsonl",
+  "title": "Audio transcript JSONL",
+  "type": "object",
+  "additionalProperties": true,
+  "$defs": {
+    "header": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["raw"],
+      "properties": {
+        "raw": {"type": "string"},
+        "observer": {"type": "string"},
+        "backend": {"type": "string"},
+        "model": {"type": "string"},
+        "duration": {"type": "number"},
+        "noisy": {"type": "boolean"},
+        "topics": {"type": "array"},
+        "setting": {"type": "string"},
+        "warning": {"type": "string"},
+        "imported": {"type": "object", "additionalProperties": true},
+        "facet": {"type": "string"},
+        "id": {"type": "string"}
+      }
+    },
+    "record": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["start", "text"],
+      "properties": {
+        "start": {"type": "string"},
+        "text": {"type": "string"},
+        "source": {"type": "string"},
+        "speaker": {"type": ["string", "integer"]},
+        "corrected": {"type": "string"},
+        "emotion": {"type": "string"}
+      }
+    }
+  },
+  "x-journal-contract": {
+    "format_id": "audio-jsonl",
+    "schema_owner": "observe.transcribe",
+    "reference_writer": "solstone.observe.transcribe.main",
+    "allowed_producers": ["journal transcriber", "native observers via ingest"],
+    "write_discipline": "headered_jsonl atomic whole-file replace",
+    "file_kind": "headered_jsonl",
+    "key_fields": ["header.raw", "record.start", "record.text", "record.corrected", "record.source", "record.speaker", "record.emotion"],
+    "producer_write_paths": ["chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/audio.jsonl"],
+    "legacy_read_paths": ["chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/{source}_audio.jsonl"]
+  }
+}

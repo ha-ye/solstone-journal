@@ -24,7 +24,8 @@ the DL web port and the PL secure-listener port 7657.
 
 ## naming
 
-- **link** — user-facing and architecturally-visible names: convey app, `sol link`, `sol call link`, `journal/link/`, `/link` route.
+- **link** — user-facing and architecturally-visible names: `sol link`, `sol call link`, `journal/link/`.
+- **network** — Convey app identity: blueprint `app:network`, route prefix `/app/network`; the legacy `/app/link` alias remains for shipped pairing clients.
 - **spl** — the home-side relay daemon (`journal spl`) and protocol-level constructs such as wire-format frames, JWT claim schemas, and reset reason codes. These reference the external stable spl protocol and keep that name.
 
 The home-side daemon still emits Callosum relay-status events on the internal `link` tract so the existing dashboard cache key (`link_connection`) remains stable.

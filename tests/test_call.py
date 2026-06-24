@@ -175,6 +175,12 @@ class TestDiscovery:
         result = runner.invoke(call_app, ["nonexistent"])
         assert result.exit_code != 0
 
+    def test_network_app_keeps_link_call_name(self):
+        names = {group.name for group in call_app.registered_groups}
+
+        assert "link" in names
+        assert "network" not in names
+
 
 class TestJournal:
     """Tests for 'sol call journal' commands."""

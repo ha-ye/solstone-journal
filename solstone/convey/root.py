@@ -44,6 +44,7 @@ from .config import (
 )
 from .reasons import INVALID_CONFIG_VALUE, PL_REVOKED
 from .secure_listener import get_authorized_clients
+from .secure_listener.wsgi import CERTLESS_PAIR_ENDPOINTS
 from .utils import error_response, error_response_with_reason
 
 logger = logging.getLogger(__name__)
@@ -99,7 +100,7 @@ def require_access() -> Any:
 
     identity = getattr(g, "identity", None)
     if (
-        request.endpoint == "app:link.pair"
+        request.endpoint in CERTLESS_PAIR_ENDPOINTS
         and identity is not None
         and identity.mode in {"pl-via-spl", "pl-direct"}
         and identity.fingerprint is None

@@ -255,6 +255,11 @@ OPERATIONS: list[OperationSpec] = [
                 "Upload request failed validation.",
             ),
             _json_error(
+                422,
+                ("ingest_contract_invalid",),
+                "Uploaded contract-covered file failed journal contract validation.",
+            ),
+            _json_error(
                 500,
                 ("ingest_storage_failed",),
                 "Uploaded file could not be stored.",
@@ -493,6 +498,59 @@ OPERATIONS: list[OperationSpec] = [
                     "403 outcomes."
                 ),
             ),
+        ),
+    ),
+    OperationSpec(
+        operation_id="observer.deleteSource",
+        method="DELETE",
+        rule="/app/observer/source/<stream>",
+        summary="Delete observer source",
+        description="Delete an allowed observer-owned source stream from the journal.",
+        parameters=(
+            *_OBSERVER_AUTH_PARAMS,
+            ParamSpec(
+                "stream",
+                "path",
+                required=True,
+                description="Source stream; only 'location' is deletable.",
+            ),
+        ),
+        responses=(
+            ResponseSpec(
+                status=200,
+                description="Source deletion receipt.",
+                named_fields=(
+                    FieldSpec("target", "object", required=True),
+                    FieldSpec("removed", "object", required=True),
+                    FieldSpec("not_confirmed", "array", required=True),
+                    FieldSpec("not_removed", "array", required=True),
+                    FieldSpec("backup_hosted", "string", required=True),
+                ),
+                example={
+                    "target": {
+                        "stream": "location",
+                        "journal": "/journal",
+                    },
+                    "removed": {
+                        "originals": 0,
+                        "segments": 0,
+                        "in_segment_derived": 0,
+                        "index_chunks": 0,
+                        "stream_identity": 0,
+                        "history_rows": 0,
+                        "days": 0,
+                    },
+                    "not_confirmed": [],
+                    "not_removed": [],
+                    "backup_hosted": "not confirmed",
+                },
+            ),
+            _json_error(
+                400,
+                ("invalid_segment_or_stream",),
+                "Only known source streams can be deleted.",
+            ),
+            *_observer_auth_errors(),
         ),
     ),
 ]

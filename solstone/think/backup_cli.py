@@ -17,6 +17,7 @@ from solstone.think.backup.destination import (
     validate_destination,
 )
 from solstone.think.backup.engine import run_backup, run_prune
+from solstone.think.backup.hosted import HostedBinding, save_hosted_binding
 from solstone.think.backup.install import ensure_restic
 from solstone.think.backup.keys import (
     confirm_recovery_key,
@@ -117,6 +118,41 @@ def _destination_from_payload(payload: dict[str, object]) -> Destination:
     )
 
 
+def _hosted_binding_from_payload(payload: dict[str, object]) -> HostedBinding:
+    broker_endpoint = payload.get("broker_endpoint")
+    if not isinstance(broker_endpoint, str) or not broker_endpoint.strip():
+        _die("Missing broker_endpoint.")
+
+    account_id = payload.get("account_id")
+    if not isinstance(account_id, str) or not account_id.strip():
+        _die("Missing account_id.")
+
+    instance_id = payload.get("instance_id")
+    if not isinstance(instance_id, str) or not instance_id.strip():
+        _die("Missing instance_id.")
+
+    bucket = payload.get("bucket")
+    if not isinstance(bucket, str) or not bucket.strip():
+        _die("Missing bucket.")
+
+    prefix = payload.get("prefix")
+    if not isinstance(prefix, str) or not prefix.strip():
+        _die("Missing prefix.")
+
+    broker_token = payload.get("broker_token")
+    if not isinstance(broker_token, str) or not broker_token.strip():
+        _die("Missing broker_token.")
+
+    return HostedBinding(
+        broker_endpoint=broker_endpoint.strip(),
+        account_id=account_id.strip(),
+        instance_id=instance_id.strip(),
+        bucket=bucket.strip(),
+        prefix=prefix,
+        broker_token=broker_token.strip(),
+    )
+
+
 def _destination_status_payload(dest_status: DestinationStatus) -> dict[str, object]:
     return {
         "reachable": dest_status.reachable,
@@ -161,6 +197,24 @@ def destination_set() -> None:
     _echo_json(_destination_status_payload(dest_status))
     if dest_status.reason_code in {"auth_failed", "timeout", "unreachable"}:
         raise typer.Exit(1)
+
+
+@destination_app.command("set-hosted")
+def destination_set_hosted() -> None:
+    """Set the hosted-tier broker binding from a JSON object on stdin."""
+    payload = _read_stdin_json()
+    binding = _hosted_binding_from_payload(payload)
+    save_hosted_binding(binding)
+    _echo_json(
+        {
+            "broker_endpoint": binding.broker_endpoint,
+            "account_id": binding.account_id,
+            "instance_id": binding.instance_id,
+            "bucket": binding.bucket,
+            "prefix": binding.prefix,
+            "bound": True,
+        }
+    )
 
 
 @app.command("enable")

@@ -198,6 +198,7 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Config (`config/journal.json`) | `solstone/think/journal_config.py` |
 | Schedules (`config/schedules.json`) | `solstone/think/schedule_config.py` |
 | Push devices (`config/push_devices.json`) | `solstone/think/push/devices.py` |
+| Hosted backup binding (`backup/hosted/binding.json`) | `solstone/think/backup/hosted.py` |
 | Convey config (`config/convey.json`) | `solstone/convey/config.py` + `solstone/think/facets.py` |
 | Chat config (`config/chat.json`) | `solstone/apps/chat/config.py` |
 | Vertex credentials (`.config/vertex-credentials.json`) | `solstone/apps/thinking/vertex_credentials.py` |

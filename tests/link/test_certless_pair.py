@@ -21,10 +21,12 @@ from tests.link.certless_helpers import (
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["pl-via-spl", "pl-direct"])
+@pytest.mark.parametrize("pair_path", ["/app/network/pair", "/app/link/pair"])
 async def test_certless_pair_request_executes_handler_and_authorizes_client(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
+    pair_path: str,
 ) -> None:
     app, _journal = make_convey_app(tmp_path, monkeypatch, link={"posture": "spl"})
     nonce = "0123456789abcdef"
@@ -43,7 +45,7 @@ async def test_certless_pair_request_executes_handler_and_authorizes_client(
         app,
         certless_identity(mode),
         "POST",
-        "/app/link/pair",
+        pair_path,
         body=body,
         headers={"content-type": "application/json"},
     )
@@ -58,10 +60,21 @@ async def test_certless_pair_request_executes_handler_and_authorizes_client(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["pl-via-spl", "pl-direct"])
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/app/network/api/status"),
+        ("GET", "/app/link/api/status"),
+        ("POST", "/app/network/pair-start"),
+        ("POST", "/app/link/pair-start"),
+    ],
+)
 async def test_certless_identity_is_refused_at_non_pair_route(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
+    method: str,
+    path: str,
 ) -> None:
     app, _journal = make_convey_app(tmp_path, monkeypatch, link={"posture": "spl"})
     NonceStore(nonces_path()).add("fedcba9876543210", "phone")
@@ -69,9 +82,9 @@ async def test_certless_identity_is_refused_at_non_pair_route(
     response = await dispatch_request(
         app,
         certless_identity(mode),
-        "GET",
-        "/app/link/api/status",
+        method,
+        path,
     )
 
     assert response.status == 403
-    assert b"pairing tunnel may only use /app/link/pair" in response.body
+    assert b"pairing tunnel may only use /app/network/pair" in response.body

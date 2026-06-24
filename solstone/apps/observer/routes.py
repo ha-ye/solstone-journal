@@ -23,7 +23,15 @@ import secrets
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, Response, g, jsonify, request, stream_with_context
+from flask import (
+    Blueprint,
+    Response,
+    current_app,
+    g,
+    jsonify,
+    request,
+    stream_with_context,
+)
 from werkzeug.utils import secure_filename
 
 import solstone.convey.bridge as convey_bridge
@@ -35,6 +43,7 @@ from solstone.convey.reasons import (
     AUTH_REQUIRED,
     FEATURE_UNAVAILABLE,
     FILE_READ_FAILED,
+    INGEST_CONTRACT_INVALID,
     INGEST_NO_FILES,
     INGEST_STORAGE_FAILED,
     INVALID_DAY,
@@ -53,6 +62,11 @@ from solstone.observe.utils import (
     compute_bytes_sha256,
     compute_file_sha256,
     find_available_segment,
+)
+from solstone.think.contract.journal import (
+    ContractIssue,
+    schema_for_filename,
+    validate_contract_file,
 )
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.paths import authorized_clients_path
@@ -110,6 +124,64 @@ def _error_body(reason: Reason, *, detail: str | None = None) -> dict[str, str]:
 
 def _sse_error_event(reason: Reason, *, detail: str) -> str:
     return f"event: error\ndata: {json.dumps(_error_body(reason, detail=detail))}\n\n"
+
+
+def _validate_ingest_contract(
+    *,
+    observer: dict,
+    key_prefix: str,
+    segment: str,
+    day: str,
+    stream: str,
+    file_data: list[tuple[str, str, bytes, str]],
+    bundle: dict[str, Any],
+    meta: dict[str, Any] | None = None,
+) -> list[ContractIssue]:
+    schema_entries = bundle.get("schemas", {})
+    ingest_entry = (
+        schema_entries.get("observer-ingest-envelope", {})
+        if isinstance(schema_entries, dict)
+        else {}
+    )
+    ingest_schema = (
+        ingest_entry.get("schema") if isinstance(ingest_entry, dict) else None
+    )
+    issues: list[ContractIssue] = []
+    if isinstance(ingest_schema, dict):
+        envelope = {
+            "day": day,
+            "segment": segment,
+            "stream": stream,
+            "observer": str(observer.get("name") or key_prefix),
+            "files": [
+                {
+                    "submitted": submitted,
+                    "written": written,
+                    "size": len(content),
+                    "sha256": sha256,
+                }
+                for submitted, written, content, sha256 in file_data
+            ],
+        }
+        if isinstance(meta, dict):
+            for key in ("host", "platform"):
+                if isinstance(meta.get(key), str):
+                    envelope[key] = meta[key]
+            envelope["meta"] = meta
+        issues.extend(
+            validate_contract_file(
+                "observer-ingest-envelope",
+                json.dumps(envelope).encode("utf-8"),
+                ingest_schema,
+            )
+        )
+
+    for _submitted, simple_filename, content, _sha256 in file_data:
+        file_schema = schema_for_filename(simple_filename, bundle)
+        if file_schema is None:
+            continue
+        issues.extend(validate_contract_file(simple_filename, content, file_schema))
+    return issues
 
 
 def _generate_key() -> str:
@@ -661,7 +733,9 @@ def _process_ingest_files(
     stream: str,
     uploaded_files,
     *,
+    bundle: dict[str, Any],
     source: str | None = None,
+    meta: dict[str, Any] | None = None,
 ) -> tuple[dict, int]:
     """Shared ingest pipeline: read/hash files, dedup, deconflict, save, record history, update stats.
 
@@ -679,8 +753,12 @@ def _process_ingest_files(
         Stream name (already resolved by caller).
     uploaded_files : list
         List of Flask FileStorage objects from request.files.getlist("files").
+    bundle : dict
+        Cached journal at-rest contract bundle from app startup.
     source : str or None
         If provided, added as "source" field to history record (e.g., "transfer").
+    meta : dict or None
+        Client metadata used to validate the ingest envelope.
 
     Returns
     -------
@@ -712,6 +790,33 @@ def _process_ingest_files(
 
     if not file_data:
         return _error_body(INGEST_NO_FILES, detail="No valid files uploaded"), 400
+
+    contract_issues = _validate_ingest_contract(
+        observer=observer,
+        key_prefix=key_prefix,
+        segment=segment,
+        day=day,
+        stream=stream,
+        file_data=file_data,
+        bundle=bundle,
+        meta=meta,
+    )
+    if contract_issues:
+        day_dir = day_path(day)
+        day_dir.mkdir(parents=True, exist_ok=True)
+        failed_dir = _save_to_failed(day_dir, file_data, segment)
+        return (
+            {
+                "status": "failed",
+                **_error_body(
+                    INGEST_CONTRACT_INVALID,
+                    detail="Uploaded file did not match the journal contract",
+                ),
+                "failed_path": str(failed_dir.relative_to(day_dir.parent)),
+                "invalid_files": [str(issue) for issue in contract_issues],
+            },
+            INGEST_CONTRACT_INVALID.status,
+        )
 
     # Check for duplicate submission by SHA256
     incoming_sha256s = {fd[3] for fd in file_data}
@@ -951,8 +1056,16 @@ def ingest_upload() -> Any:
         else:
             stream = stream_name(observer=observer_name)
 
+    bundle = current_app.config["JOURNAL_CONTRACT_BUNDLE"]
     body, status = _process_ingest_files(
-        observer, key_prefix, segment, day, stream, files
+        observer,
+        key_prefix,
+        segment,
+        day,
+        stream,
+        files,
+        bundle=bundle,
+        meta=meta,
     )
     if status != 200 or body.get("status") == "duplicate":
         return jsonify(body), status

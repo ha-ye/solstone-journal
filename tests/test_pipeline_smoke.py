@@ -136,7 +136,7 @@ SEGMENTS = [
             "density": "active",
             "content_type": "coding",
             "activity_summary": "Reviewing PR feedback",
-            "facets": [{"facet": "work", "activity": "coding", "level": "low"}],
+            "facets": [{"facet": "work", "activity": "coding", "level": "medium"}],
             "meeting_detected": False,
             "speakers": [],
             "recommend": {

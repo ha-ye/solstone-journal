@@ -48,8 +48,8 @@ GUIDANCE: dict[str, str | None] = {
         "Check journal permissions and try again."
     ),
     NEEDS_SUBSCRIPTION: (
-        "private link needs an active subscription before it can turn on. "
-        "your consent is saved; set one up, then enable private link again."
+        "private network needs an active subscription before it can turn on. "
+        "your consent is saved; set one up, then enable private network again."
     ),
 }
 

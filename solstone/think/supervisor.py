@@ -39,8 +39,17 @@ from solstone.think.catchup_state import (
     record_attempt,
     record_outcome,
 )
+from solstone.think.display_powersave import (
+    poll_display_powersave,
+    reset_display_powersave_monitor,
+)
 from solstone.think.maint import run_pending_tasks
 from solstone.think.models import LOCAL_MODEL, is_local_provider_needed
+from solstone.think.processing import (
+    DISPLAY_POWERSAVE_UNAVAILABLE,
+    evaluate_drain_gate,
+    load_processing_settings,
+)
 from solstone.think.providers.mlx_server import MLX_SERVER_PROCESS_NAME
 from solstone.think.readiness import START_TIME_TOLERANCE_S, clear_ready, signal_ready
 from solstone.think.runner import ManagedProcess as RunnerManagedProcess
@@ -82,6 +91,7 @@ REACTIVE_TASK_CAPS = {
 }
 DEFAULT_THRESHOLD = 60
 CHECK_INTERVAL = 30
+GATE_TICK_INTERVAL_S = 60
 MAX_UPDATED_CATCHUP = 4
 TEMPFAIL_DELAY = 15  # seconds to wait before retrying a tempfail exit
 CONVEY_READY_WINDOW_SECONDS = 60.0
@@ -176,6 +186,7 @@ _SERVICE_LIFECYCLE_VERBS = {
 # Global shutdown flag
 shutdown_requested = False
 _last_sync_tick: float = 0.0
+_last_gate_tick: float = 0.0
 _last_sync_snapshot: "SyncCheckSnapshot | None" = None
 _sync_conflict_shutdown: bool = False
 # Supervisor identity (set in main() once ref is assigned)
@@ -1767,6 +1778,44 @@ def _gpu_unavailable_reason(devices: list[Any], override: int | None) -> str:
     return "only non-hardware or software Vulkan devices were enumerated"
 
 
+def _log_context_assertion(
+    tier: Any, n_ctx: int | None, total_slots: int | None
+) -> None:
+    if n_ctx is None:
+        logging.info(
+            "llama-server context assertion skipped: n_ctx unavailable from /props"
+        )
+    else:
+        expected = {tier.context_tokens, tier.context_tokens * tier.parallel_slots}
+        if n_ctx in expected:
+            logging.info(
+                "llama-server context OK: intended -c=%d parallel=%d actual n_ctx=%d",
+                tier.context_tokens,
+                tier.parallel_slots,
+                n_ctx,
+            )
+        else:
+            logging.warning(
+                "llama-server context MISMATCH: intended -c=%d parallel=%d "
+                "actual n_ctx=%d",
+                tier.context_tokens,
+                tier.parallel_slots,
+                n_ctx,
+            )
+
+    if isinstance(total_slots, int):
+        if total_slots == tier.parallel_slots:
+            logging.info("llama-server slots OK: %d", total_slots)
+        else:
+            logging.warning(
+                "llama-server slots MISMATCH: intended=%d actual=%d",
+                tier.parallel_slots,
+                total_slots,
+            )
+    else:
+        logging.info("llama-server slot count not reported; skipped")
+
+
 def start_local_server() -> RunnerManagedProcess | None:
     """Launch the supervisor-owned local llama-server when artifacts are present."""
     from solstone.think.providers.local_endpoint import resolve_local_endpoint
@@ -1820,6 +1869,16 @@ def start_local_server() -> RunnerManagedProcess | None:
 
     port = find_available_port()
     write_service_port("local", port)
+    tier = local_server.select_server_tier(selected.vram_mib)
+    local_server.write_local_context_window(tier.context_tokens)
+    logging.info(
+        "local server tier=%s context=%d parallel=%d cache=%d MiB (vram=%d MiB)",
+        tier.name,
+        tier.context_tokens,
+        tier.parallel_slots,
+        tier.prompt_cache_mib,
+        selected.vram_mib,
+    )
     cmd = [
         str(binary_path),
         "-m",
@@ -1834,7 +1893,13 @@ def start_local_server() -> RunnerManagedProcess | None:
         "--n-gpu-layers",
         "999",
         "-c",
-        str(local_server.LOCAL_SERVER_CONTEXT_TOKENS),
+        str(tier.context_tokens),
+        "--parallel",
+        str(tier.parallel_slots),
+        "--kv-unified",
+        "--cache-ram",
+        str(tier.prompt_cache_mib),
+        "--no-context-shift",
         "--device",
         "Vulkan0",
     ]
@@ -1884,6 +1949,10 @@ def start_local_server() -> RunnerManagedProcess | None:
                     "(VK_EXT_memory_budget not reported)",
                     selected.name,
                 )
+            props = local_server.fetch_props(port)
+            n_ctx = local_server._extract_n_ctx(props) if props is not None else None
+            total_slots = props.get("total_slots") if isinstance(props, dict) else None
+            _log_context_assertion(tier, n_ctx, total_slots)
             logging.info("llama-server ready on port %s", port)
             return managed
         if state == local_server.STATE_FAILED and error:
@@ -2277,6 +2346,14 @@ def _handle_segment_observed(message: dict) -> None:
         )
         return
 
+    if load_processing_settings().mode == "deferred":
+        logging.info(
+            "Deferred mode: live segment %s/%s held for catchup drain; no live think",
+            day,
+            segment,
+        )
+        return
+
     stream = message.get("stream")
 
     # Update flush state — new segment resets the flush timer
@@ -2320,6 +2397,9 @@ def _check_segment_flush(force: bool = False) -> None:
 
     last_ts = _flush_state["last_segment_ts"]
     if not last_ts or _flush_state["flushed"]:
+        return
+
+    if load_processing_settings().mode == "deferred":
         return
 
     if not force and time.time() - last_ts < FLUSH_TIMEOUT:
@@ -2509,6 +2589,28 @@ def _run_sync_tick(now: float) -> bool:
         return True
 
 
+def _run_gate_tick(now: float) -> None:
+    global _last_gate_tick
+
+    if now - _last_gate_tick < GATE_TICK_INTERVAL_S:
+        return
+    _last_gate_tick = now
+    if _is_remote_mode:
+        return
+    settings = load_processing_settings()
+    if settings.mode != "deferred":
+        return
+    reading = (
+        poll_display_powersave(time.monotonic())
+        if settings.gate.display_powersave.enabled
+        else DISPLAY_POWERSAVE_UNAVAILABLE
+    )
+    gate = evaluate_drain_gate(settings, datetime.now(), reading)
+    if not gate.open:
+        return
+    run_catchup_drain()
+
+
 async def supervise(
     *,
     daily: bool = True,
@@ -2520,9 +2622,12 @@ async def supervise(
     Monitors runner health, emits status, triggers daily processing,
     and checks scheduled agents.
     """
-    global _last_sync_tick, _last_sync_snapshot, _sync_conflict_shutdown
+    global _last_gate_tick, _last_sync_tick
+    global _last_sync_snapshot, _sync_conflict_shutdown
 
     last_status_emit = 0.0
+    _last_gate_tick = 0.0
+    reset_display_powersave_monitor()
     _last_sync_tick = 0.0
     _last_sync_snapshot = None
     _sync_conflict_shutdown = False
@@ -2560,6 +2665,7 @@ async def supervise(
             # Check for daily processing (non-blocking, submits via task queue)
             if daily:
                 handle_daily_tasks()
+                _run_gate_tick(now)
 
             # Check periodic task schedules (non-blocking, submits via callosum)
             if schedule:

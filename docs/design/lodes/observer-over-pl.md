@@ -66,7 +66,7 @@ pre-dial credential-file errors.
 
 Superseded by link-mess step 2: link pairing no longer mints observer records.
 
-Chosen: `solstone/apps/link/routes.py:_complete_pairing()` will call
+Chosen: `solstone/apps/network/routes.py:_complete_pairing()` will call
 `solstone.apps.observer.utils.mint_pl_observer_record()` only when
 `consumed.role == "observer"`.
 
@@ -104,7 +104,7 @@ Chosen: generate all cryptographic response material first, then perform the
 two durable writes in order: observer record first, authorized client second.
 
 Rationale: `/pair` consumes its nonce before `_complete_pairing()` at
-`solstone/apps/link/routes.py:384-398`. `NonceStore.consume()` writes the used
+`solstone/apps/network/routes.py:384-398`. `NonceStore.consume()` writes the used
 state immediately (`solstone/think/link/nonces.py:72-93`), so pairing is
 single-use regardless of downstream failures.
 
@@ -120,7 +120,7 @@ Failure state machine:
 
 `AuthorizedClients.add()` currently owns the paired-device ledger write at
 `solstone/think/link/auth.py:84-107`. `_complete_pairing()` currently adds before
-minting the attestation (`solstone/apps/link/routes.py:311-321`); move in-memory
+minting the attestation (`solstone/apps/network/routes.py:311-321`); move in-memory
 attestation/response construction before durable writes so no expected code path
 fails after the ledger write.
 
@@ -391,8 +391,8 @@ Chosen: only `role == "observer"` mints an observer record. Default phone role
 does not.
 
 Rationale: `pair_start()` defaults role to `"phone"` and accepts `phone`,
-`observer`, or `peer` (`solstone/apps/link/routes.py:266-289`). `_complete_pairing`
-receives the consumed nonce with role at `solstone/apps/link/routes.py:303-319`.
+`observer`, or `peer` (`solstone/apps/network/routes.py:266-289`). `_complete_pairing`
+receives the consumed nonce with role at `solstone/apps/network/routes.py:303-319`.
 Phone-paired clients may be valid paired devices, but they are not observers.
 
 Expected route result: a phone-paired client POSTing to `/app/observer/ingest`
@@ -428,7 +428,7 @@ Modified:
 | `solstone/apps/observer/utils.py` | ObserverRegistry, PL writer, identity resolver, prefix helpers. |
 | `solstone/apps/observer/routes.py` | Replace per-route auth/load/check blocks with identity resolver. |
 | `solstone/apps/observer/events.py` | Use derived prefix for PL-safe history/stats. |
-| `solstone/apps/link/routes.py` | Mint observer records for observer-role pair completion. |
+| `solstone/apps/network/routes.py` | Mint observer records for observer-role pair completion. |
 | `solstone/observe/observer_client.py` | Config validation, PL bundle loading, PL tunnel requests. |
 | `solstone/observe/observer_cli.py` | Mode column/field and PL-safe prefix display. |
 | `solstone/apps/observer/tests/*.py` | Schema, helper, route, pair, list/status tests. |
@@ -547,7 +547,7 @@ fallback in this lode.
    usages in `routes.py` and SSE heartbeat reload logic.
 7. Update `solstone/apps/observer/events.py` to derive history/stat prefix from
    returned observer records.
-8. Wire `solstone/apps/link/routes.py:_complete_pairing()` to mint observer
+8. Wire `solstone/apps/network/routes.py:_complete_pairing()` to mint observer
    records for observer-role nonces with rollback on `AuthorizedClients.add()`
    failure. Add observer-role, phone-role, rollback, and re-pair tombstone tests.
 9. Update `solstone/observe/observer_cli.py` list/status output to include mode

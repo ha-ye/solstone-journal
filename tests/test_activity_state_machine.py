@@ -9,13 +9,14 @@ def _sense(
     density="active",
     facets=None,
     summary="Working on code.",
+    facet_activity="Reviewing the open diff.",
     entities=None,
     meeting=False,
     speakers=None,
 ):
     """Build a Sense output payload for testing."""
     if facets is None:
-        facets = [{"facet": "work", "activity": content_type, "level": "high"}]
+        facets = [{"facet": "work", "activity": facet_activity, "level": "high"}]
     return {
         "density": density,
         "content_type": content_type,
@@ -49,12 +50,16 @@ class TestContinuation:
 
         sm = ActivityStateMachine()
         sm.update(_sense(), "090000_300", "20260304")
-        changes = sm.update(_sense(summary="Still coding."), "090500_300", "20260304")
+        changes = sm.update(
+            _sense(facet_activity="Still reviewing the diff."),
+            "090500_300",
+            "20260304",
+        )
 
         assert len(changes) == 1
         assert changes[0]["_change"] == "continuing"
         assert changes[0]["since"] == "090000_300"
-        assert changes[0]["description"] == "Still coding."
+        assert changes[0]["description"] == "Still reviewing the diff."
 
 
 class TestContentTypeChange:
@@ -135,13 +140,196 @@ class TestMultiFacet:
         sm = ActivityStateMachine()
         facets = [
             {"facet": "work", "activity": "coding", "level": "high"},
-            {"facet": "personal", "activity": "browsing", "level": "low"},
+            {"facet": "personal", "activity": "browsing", "level": "medium"},
         ]
         changes = sm.update(_sense(facets=facets), "090000_300", "20260304")
 
         assert len(changes) == 2
         facet_names = {c["facet"] for c in changes}
         assert facet_names == {"work", "personal"}
+
+
+class TestLevelGate:
+    def test_explicit_low_facets_are_excluded_from_active_set(self):
+        from solstone.think.activity_state_machine import ActivityStateMachine
+
+        sm = ActivityStateMachine()
+        facets = [
+            {"facet": "solpbc", "activity": "Planning launch work.", "level": "high"},
+            {
+                "facet": "personal",
+                "activity": "Coordinating a personal errand.",
+                "level": "medium",
+            },
+            {
+                "facet": "bluesky",
+                "activity": "Checking a social thread.",
+                "level": "low",
+            },
+            {
+                "facet": "kognova",
+                "activity": "Skimming background notes.",
+                "level": "low",
+            },
+        ]
+
+        changes = sm.update(
+            _sense(facets=facets, summary="Mixed activity summary."),
+            "090000_300",
+            "20260304",
+        )
+
+        assert {change["facet"] for change in changes} == {"solpbc", "personal"}
+        assert set(sm.state) == {"solpbc", "personal"}
+        assert not any(
+            change.get("facet") in {"bluesky", "kognova"} for change in changes
+        )
+
+    def test_description_uses_each_engaged_facets_activity(self):
+        from solstone.think.activity_state_machine import ActivityStateMachine
+
+        sm = ActivityStateMachine()
+        summary = "Segment-level summary for multiple domains."
+        facets = [
+            {
+                "facet": "solpbc",
+                "activity": "Reviewing release blockers.",
+                "level": "high",
+            },
+            {
+                "facet": "personal",
+                "activity": "Sorting out afternoon plans.",
+                "level": "medium",
+            },
+        ]
+
+        changes = sm.update(
+            _sense(facets=facets, summary=summary),
+            "090000_300",
+            "20260304",
+        )
+
+        by_facet = {change["facet"]: change for change in changes}
+        assert by_facet["solpbc"]["description"] == "Reviewing release blockers."
+        assert by_facet["personal"]["description"] == "Sorting out afternoon plans."
+        assert all(change["description"] != summary for change in changes)
+
+    def test_description_falls_back_to_summary_when_facet_activity_missing(self):
+        from solstone.think.activity_state_machine import ActivityStateMachine
+
+        sm = ActivityStateMachine()
+        summary = "Segment summary fills missing facet activity."
+        facets = [
+            {"facet": "work", "activity": "", "level": "high"},
+            {"facet": "personal", "level": "medium"},
+        ]
+
+        changes = sm.update(
+            _sense(facets=facets, summary=summary),
+            "090000_300",
+            "20260304",
+        )
+
+        assert {change["facet"] for change in changes} == {"work", "personal"}
+        assert all(change["description"] == summary for change in changes)
+        assert all(change["description"] for change in changes)
+
+    def test_one_low_segment_does_not_end_prior_high_facet(self):
+        from solstone.think.activity_state_machine import ActivityStateMachine
+
+        sm = ActivityStateMachine()
+        high = [{"facet": "work", "activity": "Writing the parser.", "level": "high"}]
+        low = [{"facet": "work", "activity": "Barely checking parser.", "level": "low"}]
+
+        sm.update(_sense(facets=high), "090000_300", "20260304")
+        pending = sm.update(_sense(facets=low), "090500_300", "20260304")
+
+        assert len(pending) == 1
+        assert pending[0]["_change"] == "facet_gone_pending"
+        assert pending[0]["facet"] == "work"
+        assert sm.state["work"]["_pending_facet_misses"] == 1
+        assert not any(
+            change.get("_change") == "ended_facet_gone" for change in pending
+        )
+
+        returned = sm.update(_sense(facets=high), "091000_300", "20260304")
+
+        assert len(returned) == 1
+        assert returned[0]["_change"] == "continuing"
+        assert returned[0]["since"] == "090000_300"
+        assert sm.state["work"]["_pending_facet_misses"] == 0
+        assert sm.get_completed_activities() == []
+
+    def test_two_low_segments_end_prior_high_facet(self):
+        from solstone.think.activity_state_machine import ActivityStateMachine
+
+        sm = ActivityStateMachine()
+        high = [{"facet": "work", "activity": "Writing the parser.", "level": "high"}]
+        low = [{"facet": "work", "activity": "Barely checking parser.", "level": "low"}]
+
+        sm.update(_sense(facets=high), "090000_300", "20260304")
+        sm.update(_sense(facets=low), "090500_300", "20260304")
+        changes = sm.update(_sense(facets=low), "091000_300", "20260304")
+
+        ended = [
+            change for change in changes if change.get("_change") == "ended_facet_gone"
+        ]
+        assert len(ended) == 1
+        assert ended[0]["state"] == "ended"
+        assert ended[0]["facet"] == "work"
+        assert sm.state == {}
+        assert len(sm.get_completed_activities()) == 1
+
+    def test_all_low_fresh_segment_creates_no_activity(self):
+        from solstone.think.activity_state_machine import ActivityStateMachine
+
+        sm = ActivityStateMachine()
+        facets = [
+            {"facet": "work", "activity": "Light inbox scan.", "level": "low"},
+            {"facet": "personal", "activity": "Background reading.", "level": "low"},
+        ]
+
+        changes = sm.update(
+            _sense(facets=facets, summary="Low-attention activity."),
+            "090000_300",
+            "20260304",
+        )
+
+        assert changes == []
+        assert sm.state == {}
+        assert sm.get_completed_activities() == []
+
+    def test_all_low_segments_wind_down_prior_active_facet(self):
+        from solstone.think.activity_state_machine import ActivityStateMachine
+
+        sm = ActivityStateMachine()
+        high = [
+            {"facet": "work", "activity": "Implementing the parser.", "level": "high"}
+        ]
+        all_low = [
+            {"facet": "work", "activity": "Glancing at parser logs.", "level": "low"},
+            {
+                "facet": "personal",
+                "activity": "Skimming personal email.",
+                "level": "low",
+            },
+        ]
+
+        sm.update(_sense(facets=high), "090000_300", "20260304")
+        pending = sm.update(_sense(facets=all_low), "090500_300", "20260304")
+        ended_changes = sm.update(_sense(facets=all_low), "091000_300", "20260304")
+
+        assert len(pending) == 1
+        assert pending[0]["_change"] == "facet_gone_pending"
+        assert pending[0]["_pending_facet_misses"] == 1
+        ended = [
+            change
+            for change in ended_changes
+            if change.get("_change") == "ended_facet_gone"
+        ]
+        assert len(ended) == 1
+        assert ended[0]["facet"] == "work"
+        assert sm.state == {}
 
 
 class TestFacetDisappearing:
@@ -151,7 +339,7 @@ class TestFacetDisappearing:
         sm = ActivityStateMachine()
         two_facets = [
             {"facet": "work", "activity": "coding", "level": "high"},
-            {"facet": "personal", "activity": "browsing", "level": "low"},
+            {"facet": "personal", "activity": "browsing", "level": "medium"},
         ]
         sm.update(_sense(facets=two_facets), "090000_300", "20260304")
         one_facet = [{"facet": "work", "activity": "coding", "level": "high"}]
@@ -317,7 +505,7 @@ class TestSegmentAccumulationEdgeCases:
         sm = ActivityStateMachine()
         two = [
             {"facet": "work", "activity": "coding", "level": "high"},
-            {"facet": "personal", "activity": "browsing", "level": "low"},
+            {"facet": "personal", "activity": "browsing", "level": "medium"},
         ]
         one = [{"facet": "work", "activity": "coding", "level": "high"}]
         sm.update(_sense(facets=two), "090000_300", "20260304")
@@ -408,7 +596,7 @@ class TestSegmentAccumulationEdgeCases:
         sm = ActivityStateMachine()
         two = [
             {"facet": "work", "activity": "coding", "level": "high"},
-            {"facet": "personal", "activity": "browsing", "level": "low"},
+            {"facet": "personal", "activity": "browsing", "level": "medium"},
         ]
         sm.update(_sense(facets=two), "090000_300", "20260304")
         sm.update(_sense(facets=two), "090500_300", "20260304")

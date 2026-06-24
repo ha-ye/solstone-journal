@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "solstone"
-version = "0.6.8"
+version = "0.6.12"
 description = "Navigate Life Intelligently"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -66,6 +66,11 @@ dependencies = [
 # heavy core minus the runtime). Install ONE of them, never both — onnxruntime
 # and onnxruntime-gpu own the same `onnxruntime/` import dir and clobber each
 # other (see the Makefile note on --all-extras).
+#
+# [journal] and [journal-cuda] also pull in the solstone-journal-host shim
+# distribution, built as the uv workspace member under
+# packages/solstone-journal-host/. That shim owns the host-only `journal` and
+# `mlx-vlm-server` console scripts; base solstone keeps only `sol`/`solstone`.
 #
 # [pdf] / [whisper] / [parakeet-onnx-cpu|cuda] remain as internal building
 # blocks: they back the per-feature install hints (think/features.py,
@@ -167,7 +172,7 @@ journal-host = [
 
 # Run a journal here — the full host stack with CPU transcription (default).
 journal = [
-    "solstone[journal-host]",
+    "solstone-journal-host==0.6.12",
     # CPU ONNX runtime: covers VAD + the WeSpeaker embedder everywhere, and the
     # parakeet STT on Linux/x86_64. Floor raised on x86_64 for the parakeet
     # backend; !=1.24.1 across the board (known-bad wheel).
@@ -180,7 +185,7 @@ journal = [
 # GPU wheel supplies the `onnxruntime` namespace (incl. CPU providers) for
 # VAD/embedder. Install this instead of [journal], not alongside it.
 journal-cuda = [
-    "solstone[journal-host]",
+    "solstone-journal-host==0.6.12",
     "onnxruntime-gpu>=1.25.0",
     "nvidia-cuda-runtime-cu12",
     "nvidia-cudnn-cu12",
@@ -192,14 +197,15 @@ journal-cuda = [
 ]
 
 [project.scripts]
+# The base distribution ships only the thin `sol` access CLI. Host-only
+# console scripts (`journal`, `mlx-vlm-server`) live in the
+# `solstone-journal-host` distribution, pulled in by [journal]/[journal-cuda].
 sol = "solstone.think.sol_cli:main"
 # `solstone` is an alias for the `sol` access CLI so `uvx solstone` /
 # `uv tool run solstone` resolve to the thin client instead of erroring on a
 # missing console script. The thin base's small footprint makes the ephemeral
 # `uvx solstone ...` one-shot fast (CI, Docker, a second machine, agents).
 solstone = "solstone.think.sol_cli:main"
-journal = "solstone.think.sol_cli:journal_main"
-mlx-vlm-server = "solstone.think.providers.mlx_server:main"
 
 [project.urls]
 Homepage = "https://github.com/solpbc/solstone-journal"
@@ -207,15 +213,27 @@ Repository = "https://github.com/solpbc/solstone-journal"
 Documentation = "https://github.com/solpbc/solstone-journal/blob/main/README.md"
 "Bug Tracker" = "https://github.com/solpbc/solstone-journal/issues"
 
+[tool.setuptools]
+# Package data is included wholesale via MANIFEST.in (`graft solstone`) plus the
+# include-package-data flag below. We deliberately do NOT hand-maintain per-subdir
+# package-data globs: that curated list repeatedly dropped data files added in new
+# subdirectories — the installed wheel would silently omit e.g.
+# solstone/think/contract/layout.json while source-tree `make ci` stayed green,
+# hard-500ing observer ingest. Including every non-.py file under solstone/ is the
+# correct default here: the wheel is model-dominated (~34 MB of bundled .onnx), so
+# the long tail of .json/.md/.html/.schema.json data files is rounding error. If a
+# file lives under solstone/ at build time, it ships. New data file → no pyproject
+# edit required.
+include-package-data = true
+
 [tool.setuptools.packages.find]
 include = ["solstone*"]
 
-[tool.setuptools.package-data]
-"solstone.apps" = ["*/app.json", "*/*.html", "*/guides/*.md", "*/talent/*.md", "*/talent/*.py", "*/talent/*.json", "*/talent/*.schema.json", "*/talent/*/SKILL.md", "*/static/*", "*/static/**/*"]
-"solstone.think" = ["*.md", "*.json", "templates/*.md", "policies/*.toml"]
-"solstone.talent" = ["*.md", "*.py", "*.schema.json", "*/SKILL.md", "*/references/*.md", "patterns/*.md", "routines/templates/*.md"]
-"solstone.observe" = ["*.md", "*.json", "*.schema.json", "assets/*.onnx", "categories/*.md", "categories/*.schema.json", "transcribe/*.md", "transcribe/*.json", "transcribe/assets/*.onnx", "transcribe/_fixtures/*.wav", "transcribe/parakeet_helper/Package.swift", "transcribe/parakeet_helper/README.md", "transcribe/parakeet_helper/Sources/parakeet-helper/main.swift", "transcribe/parakeet_helper/_bin/parakeet-helper"]
-"solstone.convey" = ["templates/*.html", "static/*", "static/**/*"]
+[tool.uv.workspace]
+members = ["packages/solstone-journal-host"]
+
+[tool.uv.sources]
+solstone-journal-host = {workspace = true}
 
 # Development tools configuration
 [tool.ruff]

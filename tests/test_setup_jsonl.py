@@ -13,7 +13,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from solstone.think import install_guard, setup
+from solstone.think import doctor, install_guard, setup
 from solstone.think.setup_events import (
     ERROR_CODES,
     EVENT_TYPES,
@@ -114,6 +114,31 @@ def stale_alias_warning_lines() -> list[dict]:
             "status": "warning",
             "duration_ms": 1,
             "summary": {"total": 1, "failed": 0, "warnings": 1, "skipped": 0},
+        },
+    ]
+
+
+def host_dependency_failed_lines() -> list[dict]:
+    return [
+        doctor_ok_lines()[0],
+        {
+            "event": "check.completed",
+            "ts": "2026-05-11T00:00:00Z",
+            "name": "host_dependencies",
+            "severity": "blocker",
+            "status": "failed",
+            "detail": (
+                "journal host stack incomplete — missing Flask; "
+                "the journal host is not installed or is incomplete."
+            ),
+            "fix": doctor.HOST_DEPENDENCY_REINSTALL_GUIDANCE,
+        },
+        {
+            "event": "doctor.completed",
+            "ts": "2026-05-11T00:00:00Z",
+            "status": "failed",
+            "duration_ms": 1,
+            "summary": {"total": 1, "failed": 1, "warnings": 0, "skipped": 0},
         },
     ]
 
@@ -228,6 +253,40 @@ def test_setup_jsonl_forwards_doctor_events_byte_for_byte(
     output_lines = out.splitlines()
     for line in expected_lines:
         assert line in output_lines
+
+
+def test_setup_jsonl_host_dependency_blocker_fails_doctor_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    doctor_lines = host_dependency_failed_lines()
+    expected_failed_check = json.dumps(doctor_lines[1])
+
+    rc, events, out = run_setup_jsonl(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        ["--skip-models", "--skip-skills", "--skip-service"],
+        doctor_lines=doctor_lines,
+    )
+
+    for line in out.splitlines():
+        json.loads(line)
+    failed = [event for event in events if event["event"] == "step.failed"][-1]
+    completed = [event for event in events if event["event"] == "setup.completed"][-1]
+    started_steps = [
+        event["step"] for event in events if event["event"] == "step.started"
+    ]
+
+    assert rc == 1
+    assert expected_failed_check in out.splitlines()
+    assert failed["step"] == "doctor"
+    assert failed["error"]["code"] == "doctor_failed"
+    assert completed["status"] == "failed"
+    assert completed["failed_step"] == "doctor"
+    assert started_steps == ["doctor"]
+    assert "Traceback" not in out
 
 
 def test_setup_jsonl_translates_doctor_advisories_to_step_warning(

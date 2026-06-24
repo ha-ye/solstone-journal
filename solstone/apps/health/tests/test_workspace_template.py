@@ -218,6 +218,28 @@ def test_agent_error_seed_live_metric_and_grouping_share_recent_errors(health_en
     ) in rendered
 
 
+def test_recent_errors_glance_click_focus_is_wired(health_env):
+    rendered = _render_health_workspace(health_env)
+
+    assert "function runRecentErrorsFocus(day, talent)" in rendered
+    assert "getElementById('glanceErrors')?.addEventListener('click'" in rendered
+    assert "runRecentErrorsFocus('today', '')" in rendered
+    assert "window.addEventListener('hashchange', focusRecentErrors)" in rendered
+
+
+def test_recent_error_rows_expand_with_button_panel(health_env):
+    rendered = _render_health_workspace(health_env)
+    workspace = WORKSPACE_PATH.read_text(encoding="utf-8")
+
+    assert "setAttribute('data-action', 'toggle-error')" in rendered
+    assert "setAttribute('aria-expanded', 'false')" in rendered
+    assert "setAttribute('aria-controls', panelId)" in rendered
+    assert "if (action === 'toggle-error')" in rendered
+    assert "onclick" not in workspace
+    assert "panel.id = panelId;" in rendered
+    assert "let recentErrorPanelSeq = 0;" in rendered
+
+
 def test_select_glance_sentence_exists(health_env):
     rendered = _render_health_workspace(health_env)
 

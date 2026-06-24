@@ -1011,7 +1011,7 @@ class TestActivityPersistenceRoundTrip:
 
             two = [
                 {"facet": "work", "activity": "coding", "level": "high"},
-                {"facet": "personal", "activity": "browsing", "level": "low"},
+                {"facet": "personal", "activity": "browsing", "level": "medium"},
             ]
             sm = ActivityStateMachine()
             sm.update(self._sense(facets=two), "090000_300", "20260304")

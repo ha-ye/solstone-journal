@@ -10,9 +10,21 @@ from dataclasses import dataclass
 from typing import Any
 
 from solstone.think.backup.destination import assemble_backend_env
+from solstone.think.backup.hosted import (
+    HostedCredsUnavailable,
+    delete_hosted_binding,
+    fetch_hosted_credentials,
+    load_hosted_binding,
+)
 from solstone.think.backup.install import ensure_restic
 from solstone.think.backup.runner import reason_for_returncode, run_restic
-from solstone.think.backup.state import clear_backup_config, get_destination, get_keys
+from solstone.think.backup.s3_wipe import wipe_prefix
+from solstone.think.backup.state import (
+    clear_backup_config,
+    get_backup_config,
+    get_destination,
+    get_keys,
+)
 
 logger = logging.getLogger("solstone.backup.teardown")
 
@@ -53,9 +65,38 @@ def _snapshot_ids(parsed: Any) -> list[str] | None:
 
 
 def teardown_backup() -> TeardownResult:
-    destination = get_destination()
+    config = get_backup_config()
+    operated = config["mode"] == "operated"
+    if operated:
+        binding = load_hosted_binding()
+        if binding is None:
+            return TeardownResult(status="skipped", reason_code=None)
+        try:
+            creds = fetch_hosted_credentials(binding, scope="maintenance")
+        except HostedCredsUnavailable as exc:
+            return _teardown_error(exc.reason_code)
+        result = wipe_prefix(
+            endpoint=creds.endpoint,
+            bucket=binding.bucket,
+            prefix=binding.prefix,
+            access_key_id=creds.access_key_id,
+            secret_access_key=creds.secret_access_key,
+            session_token=creds.session_token,
+            region="auto",
+        )
+        if result.status != "ok":
+            return _teardown_error(result.reason_code or "failed")
+        clear_backup_config()
+        delete_hosted_binding()
+        logger.info("backup teardown completed returncode=%s reason_code=ok", 0)
+        return TeardownResult(status="ok", reason_code=None)
+
     keys = get_keys()
-    if destination is None or keys is None:
+    if keys is None:
+        return TeardownResult(status="skipped", reason_code=None)
+
+    destination = get_destination()
+    if destination is None:
         return TeardownResult(status="skipped", reason_code=None)
 
     try:

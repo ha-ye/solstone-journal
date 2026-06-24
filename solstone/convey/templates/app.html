@@ -743,6 +743,11 @@
     renderTalentTray();
   }
 
+  function removeTalent(useId) {
+    talentState.delete(useId);
+    renderTalentTray();
+  }
+
   function renderTalentChip(entry) {
     var button = document.createElement('button');
     var talentLabel = window.solChatCopy.talentLabel(entry.name, entry.status);
@@ -1406,12 +1411,7 @@
       return;
     }
     if (eventName === 'talent_finished') {
-      upsertTalent({
-        useId: String(msg.use_id || ''),
-        name: msg.name || '',
-        status: 'finished',
-        updatedAt: msg.ts || Date.now()
-      });
+      removeTalent(String(msg.use_id || ''));
       queuedJobs.delete(String(msg.use_id || ''));
       renderJobsIndicator();
       if (modalUseId && modalUseId === String(msg.use_id || '')) {
@@ -1424,12 +1424,7 @@
       return;
     }
     if (eventName === 'talent_errored') {
-      upsertTalent({
-        useId: String(msg.use_id || ''),
-        name: msg.name || '',
-        status: 'errored',
-        updatedAt: msg.ts || Date.now()
-      });
+      removeTalent(String(msg.use_id || ''));
       queuedJobs.delete(String(msg.use_id || ''));
       renderJobsIndicator();
       if (modalUseId && modalUseId === String(msg.use_id || '')) {
@@ -1492,15 +1487,6 @@
           task: talent.task || '',
           status: 'running',
           updatedAt: talent.started_at || Date.now()
-        });
-      });
-      (data.completed_talents || []).forEach(function(talent) {
-        upsertTalent({
-          useId: String(talent.use_id || ''),
-          name: talent.name || '',
-          task: talent.task || '',
-          status: 'finished',
-          updatedAt: talent.finished_at
         });
       });
       (data.queued_talents || []).forEach(function(talent) {

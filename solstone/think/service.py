@@ -557,7 +557,7 @@ def _generate_systemd_unit(
         f"TimeoutStopSec=30\n"
         f"LimitNOFILE={SERVICE_FILE_DESCRIPTOR_LIMIT}\n"
         f"StandardOutput=append:{service_log}\n"
-        f"StandardError=inherit\n"
+        f"StandardError=append:{service_log}\n"
         f"{env_lines}\n"
         f"\n"
         f"[Install]\n"

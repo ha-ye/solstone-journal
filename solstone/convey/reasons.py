@@ -317,6 +317,11 @@ INGEST_STORAGE_FAILED = Reason(
     "I couldn't store those files.",
     500,
 )
+INGEST_CONTRACT_INVALID = Reason(
+    "ingest_contract_invalid",
+    "I couldn't use those observer files because they don't match the journal contract.",
+    422,
+)
 
 # speakers
 SPEAKER_OWNER_VOICE_TOO_CLOSE = Reason(

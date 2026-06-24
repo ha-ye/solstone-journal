@@ -166,7 +166,7 @@
   color: var(--text-muted, #555);
 }
 
-/* the byo ⟷ solstone hosted mode selector (§2b) */
+/* the byo ⟷ hosted-by-sol-pbc mode selector (§2b) */
 .backup-modes {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -216,16 +216,6 @@
   font-weight: 600;
 }
 
-.backup-mode-tag {
-  font-style: normal;
-  font-size: 0.72rem;
-  font-weight: 500;
-  color: var(--text-muted, #777);
-  padding: 0.05rem 0.45rem;
-  border: 1px solid var(--border-color, #ddd);
-  border-radius: 999px;
-}
-
 .backup-mode-desc {
   color: var(--text-muted, #555);
   font-size: 0.9rem;
@@ -237,14 +227,6 @@
   gap: 0.4rem;
   color: #b06a1a;
   font-size: 0.85rem;
-}
-
-.backup-mode.is-soon {
-  opacity: 0.72;
-}
-
-.backup-mode.is-soon .backup-mode-note {
-  color: var(--text-muted, #777);
 }
 
 .backup-panel-actions {
@@ -367,20 +349,6 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.4rem 0.75rem;
-}
-
-/* destructive actions live in their own zone, set apart from routine ones */
-.backup-danger {
-  margin-top: 1.1rem;
-  padding: 0.85rem 1rem;
-  border: 1px solid #e7c9c9;
-  border-radius: 8px;
-  background: #fcf4f4;
-}
-
-.backup-danger .backup-warning {
-  color: #9b1c1c;
-  margin: 0 0 0.6rem;
 }
 
 @media (max-width: 768px) {

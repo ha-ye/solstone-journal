@@ -19,6 +19,8 @@ The CLI has two tiers with distinct purposes:
 
 **Interactive entry points** (`sol chat`, `sol help`, `journal engage`) are top-level for discoverability even though they're user-facing. Agents don't invoke these.
 
+Console scripts are split across distributions. The base `solstone` package ships `sol` and `solstone`, both pointing at `solstone.think.sol_cli:main`. The `solstone-journal-host` distribution, pulled in by `solstone[journal]` / `solstone[journal-cuda]`, ships the host-only `journal` and `mlx-vlm-server` console scripts. The dispatcher, including `journal_main()`, still lives in base `solstone.think.sol_cli`; only the console-script wrapper moved. A thin/bare install therefore has no `journal` executable on PATH.
+
 ## Top-Level Commands (`sol <cmd>`)
 
 ### How they work
@@ -270,12 +272,16 @@ service checks emit `skip` (`no local journal` / `no local journal service`)
 instead of false failures. Its battery is:
 
 - `disk_space` — advisory.
-- `config_dir_readable`, `journal_dir_writable`, `service_identity`,
-  `service_running`, `journal_sync`, `stale_alias_symlink` — blockers.
+- `host_dependencies`, `config_dir_readable`, `journal_dir_writable`,
+  `service_identity`, `service_running`, `journal_sync`,
+  `stale_alias_symlink` — blockers.
   Stale `journal` aliases warn, never block, and `journal setup` repairs them.
 - `launchd_stale_plist` — advisory on macOS; skipped on Linux.
 - `feature:pdf`, `feature:whisper` — advisories with the exact extra-install
   command when missing.
+
+`host_dependencies` fix guidance is: Reinstall the journal host stack:
+`pip install --upgrade 'solstone[journal]'`  |  `uv tool install --upgrade --with-executables-from solstone-journal-host 'solstone[journal]'`  |  `pipx install --force --include-deps 'solstone[journal]'`. On an NVIDIA host use the 'solstone[journal-cuda]' extra instead of 'solstone[journal]'.
 
 Journal-host blocker failures include invalid service config, service identity
 mismatch, crash loops, systemd failed state, and journal-sync conflicts. An
@@ -325,7 +331,7 @@ successfully so the next run can repair the wrappers.
 
 ### Doctor pass-through
 
-`journal setup --jsonl` runs `sol doctor --readiness --jsonl` for the doctor step and forwards `doctor.started`, `check.completed`, and `doctor.completed` lines verbatim. The readiness battery is the four universal checks plus `disk_space`, `journal_dir_writable`, `feature:pdf`, and `feature:whisper`; it does not run runtime service, sync, config-dir, or launchd checks. Advisory doctor checks are also translated into setup-level `step.warning` events so consumers can handle setup warnings uniformly.
+`journal setup --jsonl` runs `journal doctor --readiness --jsonl` for the doctor step and forwards `doctor.started`, `check.completed`, and `doctor.completed` lines verbatim. The readiness battery is the client readiness checks (`python_version`, `sol_importable`, `local_bin_sol_reachable`, `stale_alias_symlink`, `disk_space`, `journal_dir_writable`) plus `host_dependencies`, `default_stt_ready`, `feature:pdf`, and `feature:whisper`; it does not run runtime service, sync, config-dir, or launchd checks. Advisory doctor checks are also translated into setup-level `step.warning` events so consumers can handle setup warnings uniformly.
 
 Example stream excerpt for setup readiness:
 
@@ -334,7 +340,7 @@ Example stream excerpt for setup readiness:
 {"event":"step.started","ts":"2026-05-11T20:00:00Z","step":"doctor","index":1,"total":7}
 {"event":"doctor.started","ts":"2026-05-11T20:00:00Z","version":"0.0.0+source","port":5015,"feature":""}
 {"event":"check.completed","ts":"2026-05-11T20:00:01Z","name":"python_version","severity":"blocker","status":"ok","detail":"Python version ok","fix":""}
-{"event":"doctor.completed","ts":"2026-05-11T20:00:01Z","status":"ok","duration_ms":120,"summary":{"total":8,"failed":0,"warnings":0,"skipped":0}}
+{"event":"doctor.completed","ts":"2026-05-11T20:00:01Z","status":"ok","duration_ms":120,"summary":{"total":10,"failed":0,"warnings":0,"skipped":0}}
 {"event":"step.completed","ts":"2026-05-11T20:00:01Z","step":"doctor","outcome":"ok","duration_ms":121}
 {"event":"step.completed","ts":"2026-05-11T20:00:04Z","step":"service","outcome":"ok","duration_ms":900}
 {"event":"setup.completed","ts":"2026-05-11T20:00:04Z","status":"ok","duration_ms":4000}

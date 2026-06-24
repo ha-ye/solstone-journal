@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import pytest
 
-from solstone.apps.link.copy import PAIR_LINK_HOST, PAIR_LINK_PATH
-from solstone.apps.link.routes import _build_pair_link
+from solstone.apps.network.copy import PAIR_LINK_HOST, PAIR_LINK_PATH
+from solstone.apps.network.routes import _build_pair_link
 from solstone.think.link import join_cli
 
 
@@ -21,7 +21,7 @@ def test_pair_link_without_home_derives_https_target_url() -> None:
 
     request = join_cli._parse_pair_link(pair_link, None)
 
-    assert request.url == f"https://192.0.2.42:7657/app/link/pair?token={nonce}"
+    assert request.url == f"https://192.0.2.42:7657/app/network/pair?token={nonce}"
     assert request.body_base == {}
 
 

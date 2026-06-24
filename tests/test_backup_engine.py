@@ -12,6 +12,13 @@ from unittest.mock import Mock
 import pytest
 
 from solstone.think.backup import engine
+from solstone.think.backup.hosted import (
+    HostedBinding,
+    HostedCredentials,
+    HostedCredsUnavailable,
+    load_hosted_binding,
+    save_hosted_binding,
+)
 from solstone.think.backup.runner import ResticResult
 
 
@@ -590,3 +597,334 @@ def test_backup_and_prune_failures_do_not_persist_or_log_secrets(
         assert secret not in caplog.text
     assert backup_result.error_reason == "auth_failed"
     assert prune_result.error_reason == "auth_failed"
+
+
+def test_operated_backup_fetches_creds_and_builds_repo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(
+        tmp_path,
+        {
+            "backup": {
+                "enabled": True,
+                "mode": "operated",
+                "daily_key": "dk",
+                "recovery_key": "R" * 64,
+            }
+        },
+    )
+    save_hosted_binding(
+        HostedBinding(
+            broker_endpoint="https://broker.example",
+            account_id="acct",
+            instance_id="inst",
+            bucket="bkt",
+            prefix="users/acct/inst",
+            broker_token="BTOKEN",
+        )
+    )
+    captured: dict[str, str] = {}
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def fake_fetch(
+        _binding: HostedBinding,
+        *,
+        scope: str,
+    ) -> HostedCredentials:
+        captured["scope"] = scope
+        return HostedCredentials(
+            access_key_id="AKID",
+            secret_access_key="SAK",
+            session_token="SESS",
+            endpoint="https://acct.r2.cloudflarestorage.com",
+        )
+
+    def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
+        calls.append((args, kwargs))
+        if args == ["unlock"]:
+            return _restic_result(0, args=args)
+        return _restic_result(
+            0,
+            parsed_json={"message_type": "summary", "snapshot_id": "snap1"},
+            args=args,
+        )
+
+    monkeypatch.setattr(engine, "fetch_hosted_credentials", fake_fetch)
+    monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(engine, "run_restic", fake_run_restic)
+
+    result = engine.run_backup()
+
+    assert result.status == "ok"
+    backup_call = next(call for call in calls if call[0][0] == "backup")
+    backup_kwargs = backup_call[1]
+    assert backup_kwargs["backend_env"] == {
+        "AWS_ACCESS_KEY_ID": "AKID",
+        "AWS_SECRET_ACCESS_KEY": "SAK",
+        "AWS_SESSION_TOKEN": "SESS",
+    }
+    assert (
+        backup_kwargs["repository"]
+        == "s3:https://acct.r2.cloudflarestorage.com/bkt/users/acct/inst"
+    )
+    for secret in ("AKID", "SAK", "SESS"):
+        assert secret not in backup_kwargs["repository"]
+    assert captured["scope"] == "backup"
+
+
+def test_operated_prune_requests_maintenance_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(
+        tmp_path,
+        {
+            "backup": {
+                "enabled": True,
+                "mode": "operated",
+                "daily_key": "dk",
+                "recovery_key": "R" * 64,
+            }
+        },
+    )
+    save_hosted_binding(
+        HostedBinding(
+            broker_endpoint="https://broker.example",
+            account_id="acct",
+            instance_id="inst",
+            bucket="bkt",
+            prefix="users/acct/inst",
+            broker_token="BTOKEN",
+        )
+    )
+    captured: dict[str, str] = {}
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def fake_fetch(
+        _binding: HostedBinding,
+        *,
+        scope: str,
+    ) -> HostedCredentials:
+        captured["scope"] = scope
+        return HostedCredentials(
+            access_key_id="AKID",
+            secret_access_key="SAK",
+            session_token="SESS",
+            endpoint="https://acct.r2.cloudflarestorage.com",
+        )
+
+    def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
+        calls.append((args, kwargs))
+        return _restic_result(0, args=args)
+
+    monkeypatch.setattr(engine, "fetch_hosted_credentials", fake_fetch)
+    monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(engine, "run_restic", fake_run_restic)
+
+    result = engine.run_prune()
+
+    assert result.status == "ok"
+    forget_call = next(call for call in calls if call[0][0] == "forget")
+    assert captured["scope"] == "maintenance"
+    assert forget_call[1]["backend_env"]["AWS_SESSION_TOKEN"] == "SESS"
+
+
+def _assert_operated_backup_degrades_on_hosted_credential_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reason_code: str,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(
+        tmp_path,
+        {
+            "backup": {
+                "enabled": True,
+                "mode": "operated",
+                "daily_key": "dk",
+                "recovery_key": "R" * 64,
+            }
+        },
+    )
+    save_hosted_binding(
+        HostedBinding(
+            broker_endpoint="https://broker.example",
+            account_id="acct",
+            instance_id="inst",
+            bucket="bkt",
+            prefix="users/acct/inst",
+            broker_token="BTOKEN",
+        )
+    )
+    run_restic = Mock()
+    record_backup_result = Mock()
+    monkeypatch.setattr(
+        engine,
+        "fetch_hosted_credentials",
+        Mock(side_effect=HostedCredsUnavailable(reason_code)),
+    )
+    monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(engine, "run_restic", run_restic)
+    monkeypatch.setattr(engine, "record_backup_result", record_backup_result)
+
+    result = engine.run_backup()
+
+    assert result.status == "error"
+    assert result.error_reason == reason_code
+    run_restic.assert_not_called()
+    assert record_backup_result.call_args.kwargs["error_reason"] == reason_code
+
+
+def test_operated_backup_degrades_on_entitlement_inactive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _assert_operated_backup_degrades_on_hosted_credential_error(
+        tmp_path,
+        monkeypatch,
+        "hosted_entitlement_inactive",
+    )
+
+
+def test_operated_backup_degrades_on_broker_unreachable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _assert_operated_backup_degrades_on_hosted_credential_error(
+        tmp_path,
+        monkeypatch,
+        "broker_unreachable",
+    )
+
+
+def test_operated_degrade_is_non_destructive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    byo_destination = {
+        "repository": "s3:byo/path",
+        "backend": "s3",
+        "credentials": {"access_key_id": "a", "secret_access_key": "b"},
+    }
+    _write_config(
+        tmp_path,
+        {
+            "backup": {
+                "enabled": True,
+                "mode": "operated",
+                "daily_key": "dk",
+                "recovery_key": "R" * 64,
+                "destination": byo_destination,
+            }
+        },
+    )
+    save_hosted_binding(
+        HostedBinding(
+            broker_endpoint="https://broker.example",
+            account_id="acct",
+            instance_id="inst",
+            bucket="bkt",
+            prefix="users/acct/inst",
+            broker_token="BTOKEN",
+        )
+    )
+    monkeypatch.setattr(
+        engine,
+        "fetch_hosted_credentials",
+        Mock(side_effect=HostedCredsUnavailable("broker_unreachable")),
+    )
+
+    result = engine.run_backup()
+
+    backup = _read_config(tmp_path)["backup"]
+    assert result.error_reason == "broker_unreachable"
+    assert backup["daily_key"] == "dk"
+    assert backup["recovery_key"] == "R" * 64
+    assert backup["destination"] == byo_destination
+    assert backup["last_backup"]["status"] == "error"
+    assert load_hosted_binding() is not None
+
+
+def test_operated_does_not_persist_or_log_secrets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secrets = (
+        "dk-secret",
+        "AKID-SECRET",
+        "SAK-SECRET",
+        "SESS-SECRET",
+        "BTOKEN-SECRET",
+    )
+    secret_text = " ".join(secrets)
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(
+        tmp_path,
+        {
+            "backup": {
+                "enabled": True,
+                "mode": "operated",
+                "daily_key": "dk-secret",
+                "recovery_key": "R" * 64,
+            }
+        },
+    )
+    save_hosted_binding(
+        HostedBinding(
+            broker_endpoint="https://broker.example",
+            account_id="acct",
+            instance_id="inst",
+            bucket="bkt",
+            prefix="users/acct/inst",
+            broker_token="BTOKEN-SECRET",
+        )
+    )
+
+    def fake_fetch(
+        _binding: HostedBinding,
+        *,
+        scope: str,
+    ) -> HostedCredentials:
+        assert scope in {"backup", "maintenance"}
+        return HostedCredentials(
+            access_key_id="AKID-SECRET",
+            secret_access_key="SAK-SECRET",
+            session_token="SESS-SECRET",
+            endpoint="https://acct.r2.cloudflarestorage.com",
+        )
+
+    def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
+        if args == ["unlock"]:
+            return _restic_result(0, args=args, text=secret_text)
+        if args and args[0] == "backup":
+            return _restic_result(
+                0,
+                parsed_json={"message_type": "summary", "snapshot_id": "snap1"},
+                args=args,
+                text=secret_text,
+            )
+        return _restic_result(12, args=args, text=secret_text)
+
+    monkeypatch.setattr(engine, "fetch_hosted_credentials", fake_fetch)
+    monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(engine, "run_restic", fake_run_restic)
+    caplog.set_level(logging.WARNING, logger="solstone.backup.engine")
+
+    engine.run_backup()
+    engine.run_prune()
+
+    config = _read_config(tmp_path)
+    serialized = json.dumps(
+        {
+            "last_backup": config["backup"]["last_backup"],
+            "last_prune": config["backup"]["last_prune"],
+        }
+    )
+    for secret in secrets:
+        assert secret not in serialized
+        assert secret not in caplog.text

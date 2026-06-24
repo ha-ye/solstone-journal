@@ -64,9 +64,6 @@ ACCESS_CASES: tuple[tuple[str, list[str]], ...] = (
     ("sol doctor --help", ["sol", "doctor", "--help"]),
     ("journal transcribe --help", ["journal", "transcribe", "--help"]),
 )
-HINT_CASES: tuple[tuple[str, list[str]], ...] = (
-    ("journal convey --help", ["journal", "convey", "--help"]),
-)
 ROUTING_CASES: tuple[tuple[str, list[str], str], ...] = (
     (
         "service-routing help case",
@@ -79,6 +76,9 @@ ROUTING_CASES: tuple[tuple[str, list[str], str], ...] = (
         "is a journal-access command",
     ),
 )
+# Keep in lockstep with solstone.think.call.CALL_NAME_OVERRIDES. The network app
+# intentionally keeps its shipped public command name `sol call link`.
+CALL_NAME_OVERRIDES = {"network": "link"}
 
 CHILD = r"""
 import importlib
@@ -136,7 +136,7 @@ def _call_app_names(root: Path) -> list[str]:
     if not apps_dir.is_dir():
         return []
     return sorted(
-        app_dir.name
+        CALL_NAME_OVERRIDES.get(app_dir.name, app_dir.name)
         for app_dir in apps_dir.iterdir()
         if app_dir.is_dir()
         and not app_dir.name.startswith("_")
@@ -228,28 +228,6 @@ def _check_access_case(
     return failures
 
 
-def _check_hint_case(
-    root: Path, label: str, argv: list[str], *, python: str | None = None
-) -> list[str]:
-    result = _run_case(root, label, argv, python=python)
-    output = result.stdout + result.stderr
-    failures: list[str] = []
-    if result.returncode == 0:
-        failures.append(_format_failure(label, result))
-    for expected in (
-        "this command needs the journal host dependencies",
-        "pip install 'solstone[journal]'",
-        "uv tool install 'solstone[journal]'",
-    ):
-        if expected not in output:
-            failures.append(
-                f"access-imports-clean: FAIL {label} missing hint: {expected}"
-            )
-    if _has_traceback(result):
-        failures.append(f"access-imports-clean: FAIL {label} printed a traceback")
-    return failures
-
-
 def _check_routing_case(
     root: Path,
     label: str,
@@ -283,8 +261,6 @@ def run_checks(
         failures.extend(
             _check_access_case(root, label, argv, extra_env=extra_env, python=python)
         )
-    for label, argv in HINT_CASES:
-        failures.extend(_check_hint_case(root, label, argv, python=python))
     for label, argv, expected in ROUTING_CASES:
         failures.extend(_check_routing_case(root, label, argv, expected, python=python))
     return failures

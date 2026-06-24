@@ -8,9 +8,9 @@ import pytest
 import requests
 from typer.testing import CliRunner
 
-from solstone.apps.link import call as link_call
-from solstone.apps.link import routes as link_routes
-from solstone.apps.link.tests.conftest import _StubWatcher
+from solstone.apps.network import call as link_call
+from solstone.apps.network import routes as link_routes
+from solstone.apps.network.tests.conftest import _StubWatcher
 from solstone.think.convey_client import ConveyClient
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.local_endpoints import LocalEndpoint
@@ -47,7 +47,7 @@ def journal(tmp_path, monkeypatch):
 @pytest.fixture
 def runner(journal, monkeypatch):
     client = ConveyClient(session=make_test_client(journal), base_url="")
-    monkeypatch.setattr("solstone.apps.link.call.get_client", lambda: client)
+    monkeypatch.setattr("solstone.apps.network.call.get_client", lambda: client)
     return CliRunner()
 
 
@@ -496,9 +496,9 @@ def test_status_provisioned_and_not_provisioned(journal, runner):
         "Relay URL:     https://link.solstone.app\n"
         "Enrolled:      no\n"
         "Reach posture: direct\n"
-        "Private link:  not enabled\n"
+        "Private network: not enabled\n"
         "Paired devices: 1\n"
-        "Listen-WS state: (query convey /app/link/api/status for live state)\n"
+        "Listen-WS state: (query convey /app/network/api/status for live state)\n"
     )
 
 
@@ -517,9 +517,9 @@ def test_status_unprovisioned_does_not_write_state(journal, runner, monkeypatch)
         "Relay URL:     https://link.solstone.app\n"
         "Enrolled:      no\n"
         "Reach posture: direct\n"
-        "Private link:  not enabled\n"
+        "Private network: not enabled\n"
         "Paired devices: 0\n"
-        "Listen-WS state: (query convey /app/link/api/status for live state)\n"
+        "Listen-WS state: (query convey /app/network/api/status for live state)\n"
     )
     assert not (journal / "link" / "state.json").exists()
 
@@ -533,7 +533,7 @@ def test_convey_down_prints_require_solstone_message(journal, monkeypatch):
             raise requests.exceptions.ConnectionError()
 
     client = ConveyClient(session=DownSession(), base_url="http://localhost:5015")
-    monkeypatch.setattr("solstone.apps.link.call.get_client", lambda: client)
+    monkeypatch.setattr("solstone.apps.network.call.get_client", lambda: client)
     monkeypatch.delenv("SOL_SKIP_SUPERVISOR_CHECK", raising=False)
     monkeypatch.delenv("SOL_SUPERVISOR_SPAWNED", raising=False)
 

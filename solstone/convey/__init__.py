@@ -57,6 +57,7 @@ def create_app(journal: str = "") -> Flask:
     from jinja2 import ChoiceLoader, FileSystemLoader
 
     from solstone.apps import AppRegistry
+    from solstone.think.contract.journal import build_bundle
     from solstone.think.link.runtime import start_link_runtime
     from solstone.think.push.runtime import start_push_runtime
     from solstone.think.voice.runtime import start_voice_runtime
@@ -102,6 +103,14 @@ def create_app(journal: str = "") -> Flask:
 
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = timedelta(seconds=300)
     app.config.setdefault("SECURE_LISTENER_ENABLED", False)
+    # Build once so observer ingest never masks a broken at-rest contract; a
+    # missing layout.json previously turned every ingest into a runtime 500.
+    try:
+        app.config["JOURNAL_CONTRACT_BUNDLE"] = build_bundle()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Journal at-rest contract failed to load at startup: {exc}"
+        ) from exc
     install_identity_stamper(app)
     install_request_id_stamper(app)
 
@@ -135,6 +144,12 @@ def create_app(journal: str = "") -> Flask:
     registry = AppRegistry()
     registry.discover()
     registry.register_blueprints(app)
+    # One deliberate legacy alias: shipped iOS clients pair against /app/link/*.
+    # Serve the SAME view objects at the legacy prefix under endpoint names
+    # app:link.* so the cert-less gate's app:link.pair references keep resolving.
+    # Single-app special case — NOT a generic per-app alias framework.
+    network_bp = registry.apps["network"].blueprint
+    app.register_blueprint(network_bp, name="app:link", url_prefix="/app/link")
 
     # Register app system context processors
     register_app_context(app, registry)

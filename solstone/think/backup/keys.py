@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import secrets
 
-from solstone.apps.link.crockford32 import ALPHABET
+from solstone.apps.network.crockford32 import ALPHABET
 
 RECOVERY_KEY_LENGTH = 64
 _RECOVERY_GROUP_SIZE = 4

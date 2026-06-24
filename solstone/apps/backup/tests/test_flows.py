@@ -13,7 +13,9 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from solstone.apps.backup import routes as backup_routes
+from solstone.apps.backup.copy import backup_copy_payload
 from solstone.think.backup.destination import DestinationStatus
+from solstone.think.backup.hosted import HostedBinding, save_hosted_binding
 
 
 def _config_path(env) -> Path:
@@ -199,3 +201,66 @@ def test_status_management_errors_and_initial_seed_scrub_secrets(
 
     reveal = env.client.post("/app/backup/recovery-key/reveal").get_json()
     assert "daily-secret" not in json.dumps(reveal)
+
+
+def test_hosted_lane_renders_live_controls_and_copy(backup_env) -> None:
+    env = backup_env()
+    payload = backup_copy_payload()
+
+    html = env.client.get("/app/backup/").get_data(as_text=True)
+
+    assert payload["destination"]["modes"]["hosted"]["cta"] in html
+    assert payload["hosted"]["setup_hint"] in html
+    assert payload["hosted"]["restore_hint"] in html
+    assert payload["hosted"]["manage_label"] in html
+    assert payload["hosted"]["manage_url"] in html
+    assert 'data-action="enable-hosted"' in html
+    assert 'data-action="restore-hosted"' in html
+    assert "data-restore-hosted-input" in html
+    assert "data-hosted-location-section" in html
+    assert "data-hosted-location" in html
+    assert ("coming" + " later") not in html
+    assert ("is" + "-soon") not in html
+    assert ("backup-mode" + "-tag") not in html
+
+
+def test_operated_status_seed_exposes_hosted_location_without_secrets(
+    backup_env,
+) -> None:
+    env = backup_env()
+    _write_config(env, {"backup": {"mode": "operated"}})
+    save_hosted_binding(
+        HostedBinding(
+            broker_endpoint="https://broker-secret.test",
+            account_id="acct-secret",
+            instance_id="inst-secret",
+            bucket="hosted-bucket",
+            prefix="hosted-prefix/",
+            broker_token="BTOKEN-SECRET",
+        )
+    )
+
+    status = env.client.get("/app/backup/status").get_json()
+    html = env.client.get("/app/backup/").get_data(as_text=True)
+    match = re.search(r"const BACKUP_INITIAL = (\{.*\});", html)
+    assert match, "BACKUP_INITIAL assignment not found"
+    initial = json.loads(match.group(1))
+
+    assert status["mode"] == "operated"
+    assert status["hosted"] == {
+        "bound": True,
+        "bucket": "hosted-bucket",
+        "prefix": "hosted-prefix/",
+    }
+    assert initial["hosted"] == status["hosted"]
+    serialized = json.dumps([status, initial])
+    for secret in (
+        "BTOKEN-SECRET",
+        "https://broker-secret.test",
+        "acct-secret",
+        "inst-secret",
+        "SESSION",
+        "AKID",
+        "SAK",
+    ):
+        assert secret not in serialized

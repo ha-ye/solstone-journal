@@ -310,21 +310,96 @@
     section.style.display = notifs.length > 0 ? '' : 'none';
 
     if (notifs.length === 0) {
-      list.innerHTML = '<span style="color: #9ca3af;">no quiet notifications</span>';
+      list.textContent = '';
+      const empty = document.createElement('span');
+      empty.style.color = '#9ca3af';
+      empty.textContent = 'no quiet notifications';
+      list.appendChild(empty);
       return;
     }
 
-    const escape = window.AppServices.escapeHtml;
-    list.innerHTML = notifs.map(n => {
+    const newIds = new Set(notifs.map(n => String(n.id)));
+    const existingById = new Map();
+    for (const child of Array.from(list.children)) {
+      const k = child.getAttribute('data-id');
+      if (k) existingById.set(k, child);
+    }
+    // drop stale rows AND any non-keyed node (e.g. a prior "no quiet notifications" span)
+    for (const child of Array.from(list.children)) {
+      const k = child.getAttribute('data-id');
+      if (!k || !newIds.has(k)) list.removeChild(child);
+    }
+
+    for (const n of notifs) {
+      const key = String(n.id);
+      let row = existingById.get(key);
+      let btn, panel;
+      if (!row) {
+        row = document.createElement('div');
+        row.setAttribute('data-id', key);
+        row.style.cssText = 'padding: 4px 0;';
+
+        const panelId = 'quiet-notif-panel-' + key;
+        btn = document.createElement('button');
+        btn.type = 'button';
+        btn.setAttribute('data-action', 'toggle-quiet-notif');
+        btn.setAttribute('aria-expanded', 'false');
+        btn.setAttribute('aria-controls', panelId);
+        btn.style.cssText = 'display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: none; border: none; padding: 0; margin: 0; font: inherit; color: inherit; cursor: pointer;';
+        row.appendChild(btn);
+
+        panel = document.createElement('div');
+        panel.id = panelId;
+        panel.hidden = true;
+        panel.setAttribute('data-quiet-notif-panel', 'true');
+        panel.style.cssText = 'padding: 4px 0 2px; color: #fca5a5; font-size: 13px; white-space: pre-wrap; word-break: break-word;';
+        row.appendChild(panel);
+      } else {
+        btn = row.querySelector('[data-action="toggle-quiet-notif"]');
+        panel = row.querySelector('[data-quiet-notif-panel]');
+      }
+
       const relativeAge = window.AppServices.notifications._getRelativeTime(n.ts);
-      const src = escape(n.source || '');
-      const msg = escape((n.message || '').slice(0, 120));
-      return `<div style="display: flex; align-items: center; gap: 8px; padding: 4px 0;">
-        <span style="color: #9ca3af; font-size: 11px; flex-shrink: 0;">${relativeAge}</span>
-        <code style="flex-shrink: 0; font-size: 11px;">${src}</code>
-        <span style="color: #fca5a5; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${msg}</span>
-      </div>`;
-    }).join('');
+      btn.textContent = '';
+      const ageSpan = document.createElement('span');
+      ageSpan.style.cssText = 'color: #9ca3af; font-size: 11px; flex-shrink: 0;';
+      ageSpan.textContent = relativeAge;
+      btn.appendChild(ageSpan);
+
+      const srcCode = document.createElement('code');
+      srcCode.style.cssText = 'flex-shrink: 0; font-size: 11px;';
+      srcCode.textContent = n.source || '';
+      btn.appendChild(srcCode);
+
+      const snippet = document.createElement('span');
+      snippet.style.cssText = 'color: #fca5a5; font-size: 13px; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;';
+      snippet.textContent = n.message || '';
+      btn.appendChild(snippet);
+
+      const hint = document.createElement('span');
+      hint.setAttribute('data-quiet-notif-hint', 'true');
+      hint.style.cssText = 'flex-shrink: 0; color: #9ca3af; font-size: 11px;';
+      hint.textContent = btn.getAttribute('aria-expanded') === 'true' ? 'hide details' : 'show details';
+      btn.appendChild(hint);
+
+      panel.textContent = n.message || '';
+
+      list.appendChild(row);
+    }
+  }
+
+  const quietNotifsList = document.getElementById('quiet-notifs-list');
+  if (quietNotifsList) {
+    quietNotifsList.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-action="toggle-quiet-notif"]');
+      if (!btn) return;
+      const expanded = btn.getAttribute('aria-expanded') === 'true';
+      btn.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+      const panel = document.getElementById(btn.getAttribute('aria-controls'));
+      if (panel) panel.hidden = expanded;
+      const hint = btn.querySelector('[data-quiet-notif-hint]');
+      if (hint) hint.textContent = expanded ? 'show details' : 'hide details';
+    });
   }
 
   function updateNotificationHistory() {

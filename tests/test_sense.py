@@ -17,6 +17,12 @@ import pytest
 
 from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED, WATCHDOG_TIMEOUT
 from solstone.observe.sense import FileSensor, HandlerProcess, QueuedItem
+from solstone.think.processing import (
+    DisplayPowersaveSettings,
+    GateSettings,
+    ProcessingSettings,
+    TimeWindowSettings,
+)
 from solstone.think.runner import DailyLogWriter as ProcessLogWriter
 from solstone.think.runner import _format_log_line
 
@@ -80,6 +86,20 @@ def make_segment_file(
     file_path = segment_dir / filename
     file_path.write_text("content")
     return file_path
+
+
+def _processing_settings(mode: str) -> ProcessingSettings:
+    return ProcessingSettings(
+        mode=mode,
+        gate=GateSettings(
+            time_window=TimeWindowSettings(
+                enabled=True,
+                start="02:00",
+                end="06:00",
+            ),
+            display_powersave=DisplayPowersaveSettings(enabled=False),
+        ),
+    )
 
 
 # --- QueuedItem Tests ---
@@ -967,6 +987,122 @@ def test_file_sensor_handle_callosum_message_invalid_event(tmp_path):
 
         # Should not call _handle_file
         mock_handle.assert_not_called()
+
+
+def test_file_sensor_deferred_live_observing_suppresses_handlers(
+    tmp_path, monkeypatch, mock_callosum
+):
+    import solstone.observe.sense as sense_module
+    from solstone.think.callosum import CallosumConnection
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(
+        sense_module,
+        "load_processing_settings",
+        lambda: _processing_settings("deferred"),
+    )
+
+    segment_dir = tmp_path / "chronicle" / "20250101" / "default" / "143022_300"
+    segment_dir.mkdir(parents=True)
+    audio_file = segment_dir / "audio.flac"
+    audio_file.write_text("audio content")
+
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.flac", "transcribe", ["echo", "{file}"])
+    emitted_events = []
+    sensor.callosum = CallosumConnection()
+    sensor.callosum.start(callback=lambda msg: emitted_events.append(msg))
+
+    with patch.object(sensor, "_handle_file") as mock_handle:
+        sensor._handle_callosum_message(
+            {
+                "tract": "observe",
+                "event": "observing",
+                "day": "20250101",
+                "stream": "default",
+                "segment": "143022_300",
+                "files": ["audio.flac"],
+            }
+        )
+
+    mock_handle.assert_not_called()
+    observed_events = [
+        event
+        for event in emitted_events
+        if event.get("tract") == "observe" and event.get("event") == "observed"
+    ]
+    assert len(observed_events) == 1
+    assert observed_events[0].get("day") == "20250101"
+    assert observed_events[0].get("segment") == "143022_300"
+    assert (tmp_path / "chronicle" / "20250101" / "health" / "stream.updated").exists()
+    assert audio_file.exists()
+
+
+def test_file_sensor_realtime_live_observing_dispatches_handler(tmp_path, monkeypatch):
+    import solstone.observe.sense as sense_module
+
+    monkeypatch.setattr(
+        sense_module,
+        "load_processing_settings",
+        lambda: _processing_settings("realtime"),
+    )
+
+    segment_dir = tmp_path / "chronicle" / "20250101" / "default" / "143022_300"
+    segment_dir.mkdir(parents=True)
+    audio_file = segment_dir / "audio.flac"
+    audio_file.write_text("audio content")
+
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.flac", "transcribe", ["echo", "{file}"])
+
+    with patch.object(sensor, "_handle_file") as mock_handle:
+        sensor._handle_callosum_message(
+            {
+                "tract": "observe",
+                "event": "observing",
+                "day": "20250101",
+                "stream": "default",
+                "segment": "143022_300",
+                "files": ["audio.flac"],
+            }
+        )
+
+    mock_handle.assert_called_once()
+    assert mock_handle.call_args.args[0] == audio_file
+
+
+def test_file_sensor_deferred_batch_observing_dispatches_handler(tmp_path, monkeypatch):
+    import solstone.observe.sense as sense_module
+
+    monkeypatch.setattr(
+        sense_module,
+        "load_processing_settings",
+        lambda: _processing_settings("deferred"),
+    )
+
+    segment_dir = tmp_path / "chronicle" / "20250101" / "default" / "143022_300"
+    segment_dir.mkdir(parents=True)
+    audio_file = segment_dir / "audio.flac"
+    audio_file.write_text("audio content")
+
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.flac", "transcribe", ["echo", "{file}"])
+
+    with patch.object(sensor, "_handle_file") as mock_handle:
+        sensor._handle_callosum_message(
+            {
+                "tract": "observe",
+                "event": "observing",
+                "day": "20250101",
+                "stream": "default",
+                "segment": "143022_300",
+                "files": ["audio.flac"],
+                "batch": True,
+            }
+        )
+
+    mock_handle.assert_called_once()
+    assert mock_handle.call_args.args[0] == audio_file
 
 
 @patch("solstone.think.runner._current_day")

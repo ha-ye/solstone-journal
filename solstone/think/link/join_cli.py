@@ -4,7 +4,7 @@
 """Caller-side `sol link join` implementation.
 
 The pair-link URL form decodes the embedded nonce and posts to
-`/app/link/pair?token=<nonce>` over the framed mTLS listener.
+`/app/network/pair?token=<nonce>` over the framed mTLS listener.
 
 Role-less linked-system credentials are written under
 `$XDG_CONFIG_HOME/solstone-observer/spl/<label>/` when XDG_CONFIG_HOME is set,
@@ -49,7 +49,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
-from solstone.apps.link.crockford32 import decode as crockford_decode
+from solstone.apps.network.crockford32 import decode as crockford_decode
 from solstone.think.link.auth import is_peer
 from solstone.think.link.ca import ca_pin_matches
 from solstone.think.link.client import (
@@ -194,7 +194,7 @@ def main(args: argparse.Namespace) -> int:
 
 
 def _parse_pair_request(code: str, home: str | None) -> PairRequest:
-    from solstone.apps.link.copy import PAIR_LINK_HOST, PAIR_LINK_PATH
+    from solstone.apps.network.copy import PAIR_LINK_HOST, PAIR_LINK_PATH
 
     if code.startswith(f"https://{PAIR_LINK_HOST}{PAIR_LINK_PATH}#"):
         return _parse_pair_link(code, home)
@@ -205,7 +205,7 @@ def _parse_pair_request(code: str, home: str | None) -> PairRequest:
 
 
 def _parse_pair_link(pair_link: str, home: str | None) -> PairRequest:
-    from solstone.apps.link.copy import PAIR_LINK_HOST, PAIR_LINK_PATH
+    from solstone.apps.network.copy import PAIR_LINK_HOST, PAIR_LINK_PATH
 
     parsed = urllib.parse.urlparse(pair_link)
     fragment = parsed.fragment
@@ -232,7 +232,7 @@ def _parse_pair_link(pair_link: str, home: str | None) -> PairRequest:
     ca_fingerprint_pin = blob[24:40].hex()
     base_url = home.rstrip("/") if home else f"https://{ipv4}:{port}"
     return PairRequest(
-        url=f"{base_url}/app/link/pair?token={nonce_hex}",
+        url=f"{base_url}/app/network/pair?token={nonce_hex}",
         body_base={},
         ca_fingerprint_pin=ca_fingerprint_pin,
     )

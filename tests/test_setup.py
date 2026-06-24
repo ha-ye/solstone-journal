@@ -180,9 +180,7 @@ STEP_NAMES = [
 
 def expected_doctor_command(port: int = 5015) -> list[str]:
     return [
-        sys.executable,
-        "-m",
-        "solstone.think.sol_cli",
+        str(Path(sys.executable).parent / "journal"),
         "doctor",
         "--readiness",
         "--json",
@@ -293,6 +291,24 @@ def assert_setup_wrapper(
         "sol_bin": str(bin_dir / binary),
         "version": 7,
     }
+
+
+def test_doctor_command_uses_journal_console(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    journal = tmp_path / "journal"
+    argv = ["--yes", "--journal", str(journal)]
+    ctx = setup.resolve_context(setup.build_parser().parse_args(argv), argv)
+
+    command = setup.doctor_command(ctx)
+
+    assert command == expected_doctor_command()
+    assert command[:1] == setup.journal_console_command()
+    assert command[:3] != [sys.executable, "-m", "solstone.think.sol_cli"]
 
 
 def write_owned_wrapper(home: Path, repo: Path, journal: Path) -> Path:
@@ -1019,6 +1035,33 @@ def test_doctor_timeout_records_failure(
     assert step["status"] == "failed"
     assert "timed out after 30s" in step["error"]["message"]
     assert step["error"]["exit_code"] == 1
+
+
+def test_step_doctor_missing_journal_binary_records_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    journal = tmp_path / "journal"
+    argv = ["--yes", "--journal", str(journal)]
+    ctx = setup.resolve_context(setup.build_parser().parse_args(argv), argv)
+
+    def fail_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("journal binary missing")
+
+    monkeypatch.setattr(setup.subprocess, "run", fail_run)
+
+    result = setup.step_doctor(ctx, 1)
+
+    assert result.name == "doctor"
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error["code"] == "doctor_failed"
+    assert "doctor failed to start" in str(result.error["message"])
+    assert "journal binary missing" in str(result.error["message"])
+    assert result.error["exit_code"] == 1
 
 
 def test_install_models_timeout_records_failure(

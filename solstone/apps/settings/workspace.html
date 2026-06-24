@@ -188,14 +188,14 @@
   font-weight: 600;
   flex: none;
 }
-/* Parked app (notifications) — non-interactive, never a dead link */
+/* Notifications status tag — non-interactive, never a dead link */
 .sapp-muted {
   cursor: default;
 }
 .sapp-muted:hover .sapp-title {
   color: #333;
 }
-.sapp-soon {
+.sapp-tag {
   font-size: 0.82rem;
   color: #999;
   font-weight: 600;
@@ -2148,10 +2148,10 @@ button:focus:not(:focus-visible) {
         <span class="sapp-open">open ›</span>
       </a>
 
-      <a class="sapp" href="/app/link">
+      <a class="sapp" href="/app/network">
         <span class="sapp-ic">⇄</span>
         <span class="sapp-b">
-          <span class="sapp-title">link</span>
+          <span class="sapp-title">network</span>
           <span class="sapp-desc">reach your journal from your other devices</span>
         </span>
         <span class="sapp-open">open ›</span>
@@ -2172,7 +2172,7 @@ button:focus:not(:focus-visible) {
           <span class="sapp-title">notifications</span>
           <span class="sapp-desc">how and when sol reaches you on any device</span>
         </span>
-        <span class="sapp-soon">coming later</span>
+        <span class="sapp-tag">built in</span>
       </div>
     </section>
 
@@ -2187,7 +2187,7 @@ button:focus:not(:focus-visible) {
       <div class="setup-section" id="setupSection" style="display:none">
         <h3>welcome to solstone</h3>
         <p>create your first facet to start organizing your journal.</p>
-        <button class="setup-btn" id="createPersonalBtn">create personal facet</button>
+        <button type="button" class="setup-btn" id="createPersonalBtn">create personal facet</button>
       </div>
 
       <div class="settings-field">
@@ -2518,7 +2518,7 @@ button:focus:not(:focus-visible) {
           <div class="redact-list" id="redactRulesList"></div>
           <div class="redact-add-row">
             <input type="text" class="redact-add-input" id="redactAddInput" placeholder="add a redaction rule..." maxlength="200">
-            <button class="redact-add-btn" id="redactAddBtn">+ add</button>
+            <button type="button" class="redact-add-btn" id="redactAddBtn">+ add</button>
           </div>
           <div class="redact-validation" id="redactValidation" style="display:none"></div>
         </div>
@@ -2672,7 +2672,7 @@ button:focus:not(:focus-visible) {
         </div>
 
         <p id="plaudSyncTokenNote" style="display: none; color: #888; font-size: 0.85em; margin-top: 1em; padding: 0.75em; background: #f8f9fa; border-radius: 4px;">
-          configure your Plaud token in <a href="#apikeys" style="color: #667eea;">API keys</a> to enable sync.
+          configure your Plaud token in <a href="#apikeys" id="plaudApiKeysLink" style="color: #667eea;">API keys</a> to enable sync.
         </p>
       </div>
 
@@ -2877,7 +2877,7 @@ button:focus:not(:focus-visible) {
       </div>
 
       <div class="settings-field">
-        <button class="setup-btn" id="resetAgentName" style="background: #6c757d; font-size: 0.85em; padding: 0.4em 1em;">reset to default</button>
+        <button type="button" class="setup-btn" id="resetAgentName" style="background: #6c757d; font-size: 0.85em; padding: 0.4em 1em;">reset to default</button>
         <small>reset the name back to "sol"</small>
       </div>
       </form>
@@ -4791,6 +4791,12 @@ document.getElementById('backendKeyLink')?.addEventListener('click', (e) => {
   switchSection('apikeys');
 });
 
+// Plaud sync token note → API keys section
+document.getElementById('plaudApiKeysLink')?.addEventListener('click', (e) => {
+  e.preventDefault();
+  switchSection('apikeys');
+});
+
 // Whisper settings change handlers
 ['field-whisper-device', 'field-whisper-model', 'field-whisper-compute'].forEach(id => {
   document.getElementById(id)?.addEventListener('change', async (e) => {
@@ -5799,6 +5805,13 @@ document.getElementById('saveCustomActivityBtn').addEventListener('click', async
 // Agent name reset
 const agentNameInput = document.getElementById('field-agent-name');
 if (agentNameInput) {
+  agentNameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      agentNameInput.blur();
+    }
+  });
+
   agentNameInput.addEventListener('change', async (e) => {
     const newName = e.target.value.trim() || 'sol';
     const today = new Date().toISOString().slice(0, 10);
@@ -5832,6 +5845,9 @@ if (agentNameInput) {
       showFieldStatus(agentNameInput, 'error', err.message);
     }
   });
+  agentNameInput.onkeydown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); agentNameInput.blur(); }
+  };
 }
 
 const resetAgentBtn = document.getElementById('resetAgentName');

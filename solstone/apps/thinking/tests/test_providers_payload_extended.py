@@ -631,12 +631,11 @@ def test_get_providers_ai_readiness_degrades_without_changing_status_payload(
     }
 
 
-def test_get_providers_ai_readiness_omits_local_on_mlx(settings_client, monkeypatch):
+def test_get_providers_ai_readiness_includes_local_on_mlx(settings_client, monkeypatch):
     _patch_selected_providers(monkeypatch)
     monkeypatch.setattr(routes.local_bootstrap, "_is_mlx_backend", lambda: True)
 
     def fake_readiness(provider: str, interface: str, model: str):
-        assert provider != "local"
         return ProviderState(
             provider=provider,
             interface=interface,
@@ -654,7 +653,8 @@ def test_get_providers_ai_readiness_omits_local_on_mlx(settings_client, monkeypa
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["local_backend"] == "mlx"
-    assert "local" not in payload["ai_readiness"]
+    assert "local" in payload["ai_readiness"]
+    assert payload["ai_readiness"]["local"]["status"] == "ready"
 
 
 def test_put_providers_imports_and_clears_vertex_credentials(

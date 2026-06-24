@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib
 import io
 from copy import deepcopy
 from pathlib import Path
@@ -10,29 +11,48 @@ from typing import Any
 
 import pytest
 
-from solstone.apps.link.contract import OPERATIONS as LINK_OPERATIONS
+from solstone.apps.home.contract import OPERATIONS as HOME_OPERATIONS
+from solstone.apps.network.contract import OPERATIONS as LINK_OPERATIONS
 from solstone.apps.observer.contract import OPERATIONS as OBSERVER_OPERATIONS
 from solstone.convey import create_app
+from solstone.convey.chat_contract import OPERATIONS as CHAT_OPERATIONS
 from solstone.convey.contract.assemble import build_document
 from solstone.convey.contract.diff import (
     classify_changes,
     undeclared_top_level_fields,
 )
 from solstone.convey.push_contract import OPERATIONS as PUSH_OPERATIONS
+from solstone.convey.root_contract import OPERATIONS as ROOT_OPERATIONS
 from solstone.convey.secure_listener.identity import ConveyIdentity
+from solstone.convey.voice_contract import OPERATIONS as VOICE_OPERATIONS
 from tests._baseline_harness import (
     isolated_app_env,
     mark_setup_complete,
     prepare_isolated_journal,
 )
 
+IMPORT_OPERATIONS = importlib.import_module("solstone.apps.import.contract").OPERATIONS
+
 CONTRACTED_PATHS = {
+    "/api/chat",
+    "/api/chat/offer/decline",
+    "/api/chat/session",
+    "/api/chat/support/draft/cancel",
+    "/api/chat/support/draft/confirm",
     "/api/push/register",
-    "/app/link/api/status",
-    "/app/link/local-endpoints",
-    "/app/link/pair",
-    "/app/link/pair-start",
-    "/app/link/unpair",
+    "/api/voice/connect",
+    "/api/voice/nav-hints",
+    "/api/voice/observer-actions",
+    "/api/voice/session",
+    "/api/voice/status",
+    "/app/home/api/pulse",
+    "/app/import/api/save",
+    "/app/import/api/start",
+    "/app/network/api/status",
+    "/app/network/local-endpoints",
+    "/app/network/pair",
+    "/app/network/pair-start",
+    "/app/network/unpair",
     "/app/observer/callosum",
     "/app/observer/ingest",
     "/app/observer/ingest/event",
@@ -40,6 +60,26 @@ CONTRACTED_PATHS = {
     "/app/observer/ingest/manifest/{day}",
     "/app/observer/ingest/segments/{day}",
     "/app/observer/register",
+    "/app/observer/source/{stream}",
+    "/sse/events",
+}
+
+CONTRACTED_INVENTORY_TRIPLES = {
+    ("POST", "/api/chat", "chat.postMessage"),
+    ("GET", "/api/chat/session", "chat.session"),
+    ("POST", "/api/chat/offer/decline", "chat.declineOffer"),
+    ("POST", "/api/chat/support/draft/confirm", "chat.supportDraftConfirm"),
+    ("POST", "/api/chat/support/draft/cancel", "chat.supportDraftCancel"),
+    ("GET", "/sse/events", "callosum.rootEvents"),
+    ("POST", "/api/voice/session", "voice.session"),
+    ("POST", "/api/voice/connect", "voice.connect"),
+    ("GET", "/api/voice/nav-hints", "voice.navHints"),
+    ("GET", "/api/voice/observer-actions", "voice.observerActions"),
+    ("GET", "/api/voice/status", "voice.status"),
+    ("GET", "/app/home/api/pulse", "home.pulse"),
+    ("POST", "/app/import/api/save", "import.save"),
+    ("POST", "/app/import/api/start", "import.start"),
+    ("DELETE", "/app/observer/source/{stream}", "observer.deleteSource"),
 }
 
 REGISTER_OBSERVER_PAYLOAD = {
@@ -63,7 +103,16 @@ def contract_app(tmp_path: Path):
 
 
 def _all_operations():
-    return [*LINK_OPERATIONS, *OBSERVER_OPERATIONS, *PUSH_OPERATIONS]
+    return [
+        *LINK_OPERATIONS,
+        *OBSERVER_OPERATIONS,
+        *HOME_OPERATIONS,
+        *PUSH_OPERATIONS,
+        *CHAT_OPERATIONS,
+        *ROOT_OPERATIONS,
+        *VOICE_OPERATIONS,
+        *IMPORT_OPERATIONS,
+    ]
 
 
 def _operation(document: dict[str, Any], operation_id: str) -> dict[str, Any]:
@@ -245,7 +294,7 @@ def test_named_response_no_drift(contract_app):
     document = build_document()
     allowed = _declared_response_fields(document, "link.status")
 
-    response = client.get("/app/link/api/status")
+    response = client.get("/app/network/api/status")
 
     assert response.status_code == 200
     body = response.get_json()
@@ -259,9 +308,58 @@ def test_no_r0_routes_in_artifact():
 
     assert "/api/config/convey" not in document["paths"]
     assert "/api/system/status" not in document["paths"]
-    assert "/api/chat/session" not in document["paths"]
     assert set(document["paths"]) == CONTRACTED_PATHS
-    assert len(document["paths"]) == 13
+    assert len(document["paths"]) == 28
+
+
+def test_home_pulse_named_fields_present(contract_app):
+    _app, client, _journal = contract_app
+    document = build_document()
+
+    response = client.get("/app/home/api/pulse")
+    assert response.status_code == 200, response.get_data(as_text=True)
+    body = response.get_json()
+    assert isinstance(body, dict)
+    named = {"journal_age_days", "home_state", "welcome_framing"}
+    assert named <= set(body)
+
+    schema = _response_schema(document, "home.pulse", 200)
+    properties = schema["properties"]
+    assert named <= set(properties)
+    for field in named:
+        assert properties[field].get("description")
+    assert schema.get("additionalProperties") is True
+
+
+def test_contracted_inventory_triples():
+    document = build_document()
+    expected_operation_ids = {
+        operation_id for _method, _path, operation_id in CONTRACTED_INVENTORY_TRIPLES
+    }
+
+    for method, path, operation_id in CONTRACTED_INVENTORY_TRIPLES:
+        assert document["paths"][path][method.lower()]["operationId"] == operation_id
+
+    actual = {
+        (method.upper(), path, operation["operationId"])
+        for path, methods in document["paths"].items()
+        for method, operation in methods.items()
+        if operation.get("operationId") in expected_operation_ids
+    }
+    assert actual == CONTRACTED_INVENTORY_TRIPLES
+
+
+def test_root_sse_event_stream():
+    document = build_document()
+
+    response = document["paths"]["/sse/events"]["get"]["responses"]["200"]
+    content = response["content"]
+
+    assert "text/event-stream" in content
+    assert content["text/event-stream"]["schema"] == {
+        "$ref": "#/components/schemas/CallosumEvent"
+    }
+    assert "x-sse-error-frame" not in response
 
 
 def test_all_referenced_reason_codes_are_global():

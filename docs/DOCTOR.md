@@ -35,6 +35,8 @@ Use the diagnostic command that matches the question:
   `uv` exist?
 - `journal health` — what live supervisor status is being reported right now?
 
+`journal`-prefixed commands, including `journal doctor` and `journal setup`, require a journal-host install because the `journal` executable ships in the `solstone-journal-host` distribution (`solstone[journal]`), not in the thin `sol` client.
+
 `sol doctor` runs four checks:
 
 | Check | Severity | Notes |
@@ -48,6 +50,7 @@ Use the diagnostic command that matches the question:
 
 | Check | Severity | Notes |
 |-------|----------|-------|
+| `host_dependencies` | blocker | Journal-host Python dependencies are installed. |
 | `disk_space` | advisory | Free-space warning. |
 | `config_dir_readable` | blocker | Home and service config directory permissions. |
 | `journal_dir_writable` | blocker | Journal directory writability when the local journal exists. |
@@ -58,15 +61,21 @@ Use the diagnostic command that matches the question:
 | `launchd_stale_plist` | advisory | macOS only; Linux skips it. |
 | `feature:pdf`, `feature:whisper` | advisory | Optional extras with exact install commands. |
 
+`host_dependencies` fix guidance is: Reinstall the journal host stack:
+`pip install --upgrade 'solstone[journal]'`  |  `uv tool install --upgrade --with-executables-from solstone-journal-host 'solstone[journal]'`  |  `pipx install --force --include-deps 'solstone[journal]'`. On an NVIDIA host use the 'solstone[journal-cuda]' extra instead of 'solstone[journal]'.
+
 `journal doctor` is role-aware. If there is no local journal directory or no
 installed service, folder and service checks emit `skip` (`no local journal` or
 `no local journal service`) rather than failing. Invalid service config, service
 identity mismatch, crash loops, systemd failed state, and journal-sync conflicts
 are blocker failures. An installed service with no supervisor socket is a
-warning when the OS unit is not failed. Feature checks are advisory.
+warning when the OS unit is not failed. Host dependency and feature checks report
+missing journal-host packaging pieces directly.
 
-`journal setup` step 1 runs `sol doctor --readiness`: the four universal checks
-plus `disk_space`, `journal_dir_writable`, `feature:pdf`, and `feature:whisper`.
+`journal setup` step 1 runs `journal doctor --readiness`: the client readiness
+checks (`python_version`, `sol_importable`, `local_bin_sol_reachable`,
+`stale_alias_symlink`, `disk_space`, `journal_dir_writable`) plus
+`host_dependencies`, `default_stt_ready`, `feature:pdf`, and `feature:whisper`.
 It does not run runtime service, sync, config-dir, or launchd checks. A blocker
 failure still stops setup early; feature advisories stay advisory and include
 the exact extra-install command.

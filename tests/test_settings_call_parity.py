@@ -7,6 +7,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 from typer.testing import CliRunner
@@ -32,6 +33,27 @@ class _FixedDateTime:
     @classmethod
     def now(cls, tz=None):
         return datetime(2026, 4, 17, 12, 0, tzinfo=tz or timezone.utc)
+
+
+class _CaptureSession:
+    def __init__(self, inner):
+        self.inner = inner
+        self.gets: list[str] = []
+        self.posts: list[tuple[str, dict[str, Any] | None]] = []
+
+    def get(self, url: str):
+        self.gets.append(urlsplit(url).path)
+        return self.inner.get(url)
+
+    def post(self, url: str, json=None):
+        self.posts.append((urlsplit(url).path, json))
+        return self.inner.post(url, json=json)
+
+    def put(self, url: str, json=None):
+        return self.inner.put(url, json=json)
+
+    def delete(self, url: str):
+        return self.inner.delete(url)
 
 
 @pytest.fixture(autouse=True)
@@ -257,6 +279,67 @@ def test_transcribe_setters(journal_copy: Path) -> None:
     assert payload["noise_upgrade"] is False
 
 
+def test_processing_show_uses_effective_settings_endpoint(
+    journal_copy: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _CaptureSession(make_test_client(journal_copy))
+    client = ConveyClient(session=session, base_url="")
+    monkeypatch.setattr(settings_call, "get_client", lambda: client)
+
+    result = runner.invoke(settings_call.app, ["processing", "show"])
+
+    assert result.exit_code == 0
+    assert session.gets == ["/app/settings/api/processing"]
+    payload = json.loads(result.stdout)
+    assert payload["mode"] == "realtime"
+    assert payload["gate"]["time_window"]["start"] == "02:00"
+    assert result.stderr == ""
+
+
+def test_processing_set_posts_only_supplied_fields(
+    journal_copy: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _CaptureSession(make_test_client(journal_copy))
+    client = ConveyClient(session=session, base_url="")
+    monkeypatch.setattr(settings_call, "get_client", lambda: client)
+
+    result = runner.invoke(
+        settings_call.app,
+        ["processing", "set", "--mode", "deferred", "--window-start", "03:00"],
+    )
+
+    assert result.exit_code == 0
+    assert session.posts == [
+        (
+            "/app/settings/api/config",
+            {
+                "section": "processing",
+                "data": {
+                    "mode": "deferred",
+                    "gate": {"time_window": {"start": "03:00"}},
+                },
+            },
+        )
+    ]
+    payload = json.loads(result.stdout)
+    assert payload["mode"] == "deferred"
+    assert payload["gate"]["time_window"]["start"] == "03:00"
+    assert result.stderr == ""
+
+
+def test_processing_set_surfaces_invalid_config_detail() -> None:
+    result = runner.invoke(
+        settings_call.app,
+        ["processing", "set", "--mode", "bogus"],
+    )
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr == "processing mode must be realtime or deferred\n"
+
+
 def test_identity_and_observer_setters(journal_copy: Path) -> None:
     bad_pronouns = runner.invoke(
         settings_call.app,
@@ -360,5 +443,5 @@ def test_convey_status_host_url(
     assert bad_host.exit_code == 1
     assert bad_host.stderr == (
         "this needs an ip address — to reach home by name from anywhere, "
-        "set up solstone private link\n"
+        "turn on your private network\n"
     )

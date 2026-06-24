@@ -80,13 +80,13 @@
           <span class="backup-mode-desc">{{ backup_copy.destination.modes.byo.desc }}</span>
           <span class="backup-mode-note"><span class="backup-dot" aria-hidden="true"></span>{{ backup_copy.destination.modes.byo.note }}</span>
         </button>
-        <button type="button" class="backup-mode is-soon" data-mode="hosted" role="radio" aria-checked="false">
+        <button type="button" class="backup-mode" data-mode="hosted" role="radio" aria-checked="false">
           <span class="backup-mode-head">
             <span class="backup-mode-radio" aria-hidden="true"></span>
-            <span class="backup-mode-title">{{ backup_copy.destination.modes.hosted.title }} <em class="backup-mode-tag">{{ backup_copy.destination.modes.hosted.tag }}</em></span>
+            <span class="backup-mode-title">{{ backup_copy.destination.modes.hosted.title }}</span>
           </span>
           <span class="backup-mode-desc">{{ backup_copy.destination.modes.hosted.desc }}</span>
-          <span class="backup-mode-note">{{ backup_copy.destination.modes.hosted.note }}</span>
+          <span class="backup-mode-note"><span class="backup-dot" aria-hidden="true"></span>{{ backup_copy.destination.modes.hosted.note }}</span>
         </button>
       </div>
 
@@ -137,14 +137,20 @@
       </div>
 
       <div data-mode-panel="hosted" hidden>
-        <p class="backup-note">{{ backup_copy.destination.modes.hosted.coming }}</p>
+        <p class="backup-note">{{ backup_copy.hosted.setup_hint }}</p>
         <div class="backup-panel-actions">
-          <button type="button" data-action="use-byo">{{ backup_copy.action_labels.use_byo }}</button>
+          <button type="button" class="primary" data-action="enable-hosted">{{ backup_copy.destination.modes.hosted.cta }}</button>
         </div>
       </div>
     </article>
 
     <article class="backup-panel" data-backup-panel="management" hidden>
+      <section data-hosted-location-section hidden>
+        <h2>{{ backup_copy.management.status_labels.destination }}</h2>
+        <p data-hosted-location></p>
+        <a href="{{ backup_copy.hosted.manage_url }}" target="_blank" rel="noopener">{{ backup_copy.hosted.manage_label }}</a>
+      </section>
+
       <div class="backup-management-grid">
         <section>
           <h2>{{ backup_copy.management.status_labels.last_backup }}</h2>
@@ -184,14 +190,20 @@
         <p class="backup-status-message" data-retention-status></p>
         <button type="submit">{{ backup_copy.action_labels.save_retention }}</button>
       </form>
-
-      <div class="backup-danger">
-        <p class="backup-warning">{{ backup_copy.management.destructive_caption }}</p>
-        <button type="button" class="danger" data-action="teardown">{{ backup_copy.action_labels.teardown }}</button>
-      </div>
     </article>
 
     <article class="backup-panel" data-backup-panel="restore" hidden>
+      <div class="backup-hosted-restore">
+        <p class="backup-note">{{ backup_copy.hosted.restore_hint }}</p>
+        <label>
+          <span>{{ backup_copy.confirm.prompt }}</span>
+          <textarea data-restore-hosted-input name="recovery_key" autocomplete="off" spellcheck="false"></textarea>
+        </label>
+        <div class="backup-panel-actions">
+          <button type="button" class="primary" data-action="restore-hosted">{{ backup_copy.destination.modes.hosted.cta }}</button>
+        </div>
+      </div>
+
       <form data-restore-form>
         <h2>{{ backup_copy.action_labels.restore }}</h2>
         <p class="backup-note">{{ backup_copy.restore.expectation }}</p>

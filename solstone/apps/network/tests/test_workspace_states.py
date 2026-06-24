@@ -1,0 +1,216 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+"""Regression tests for U4 rendered link workspace states."""
+
+from __future__ import annotations
+
+import html
+import re
+
+from solstone.apps.network import copy
+
+
+def _normalized_body(body: str) -> str:
+    return (
+        html.unescape(body)
+        .replace('\\"', '"')
+        .replace("\\u0027", "'")
+        .replace("\\u00b7", "·")
+        .replace("\\u2014", "—")
+        .replace("\\u2192", "→")
+    )
+
+
+def test_first_run_hero_present_and_zero_clients(link_env) -> None:
+    env = link_env()
+    response = env.client.get("/app/network/")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    body_text = _normalized_body(body)
+
+    assert 'id="link-first-run-hero"' in body
+    assert re.search(r'<section id="link-first-run-hero"[^>]{0,200}\bhidden\b', body)
+    assert copy.HERO_TITLE in body_text
+    assert copy.HERO_BODY in body_text
+    assert copy.HERO_HOW_REACH_LABEL in body_text
+    assert "isFirstRun" in body
+    assert "applyFirstRunGate" in body
+    assert "latestDevices.length === 0" in body
+    assert "pairedSection.hidden = isFirstRun" in body
+
+    devices_response = env.client.get("/app/network/api/devices")
+    assert devices_response.status_code == 200
+    assert devices_response.get_json() == {"devices": []}
+
+
+def test_loading_skeletons_present(link_env) -> None:
+    env = link_env()
+    response = env.client.get("/app/network/")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+
+    assert 'id="link-status-skeleton"' in body
+    assert re.search(r'<span id="link-status-text"[^>]{0,80}\bhidden\b', body)
+    assert body.count("link-skeleton-row") >= 2
+    assert "@keyframes skeleton-pulse" in body
+    assert ".skeleton-line" in body
+    assert ".skeleton-block" in body
+    assert 'class="surface-loading"' not in body
+
+
+def test_lan_banner_removed_and_pair_blocking_stays(link_env) -> None:
+    env = link_env()
+    response = env.client.get("/app/network/")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+
+    assert 'id="link-lan-banner"' not in body
+    old_nudge_id = "link-lan-" + "nudge"
+    old_nudge_class = ".link-lan-" + "nudge"
+    assert f'id="{old_nudge_id}"' not in body
+    assert old_nudge_class not in body
+    assert 'id="link-lan-diy"' not in body
+
+    assert "function pairBlocked()" in body
+    assert "latestStatus?.reachability === 'lan-unreachable'" in body
+    assert "button.disabled = pairBlocked()" in body
+    assert "button.setAttribute('aria-disabled', String(pairBlocked()))" in body
+    assert "function openPairModal()" in body
+    assert "revealLanBanner" not in body
+    assert "'/app/network/network-access'" not in body
+
+
+def test_qr_expired_overlay_renders(link_env) -> None:
+    env = link_env()
+    response = env.client.get("/app/network/")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    body_text = _normalized_body(body)
+
+    assert 'id="link-qr-expired"' in body
+    assert re.search(r'<div id="link-qr-expired"[^>]{0,200}\bhidden\b', body)
+    assert copy.EXPIRED_BUTTON in body_text
+    assert ".is-expired" in body
+    assert "qrContainer.classList.add('is-expired')" in body
+
+
+def test_success_card_structure(link_env) -> None:
+    env = link_env()
+    response = env.client.get("/app/network/")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    body_text = _normalized_body(body)
+
+    for element_id in (
+        "link-pair-success",
+        "link-pair-success-heading",
+        "link-pair-success-subhead",
+        "link-pair-remove",
+        "link-pair-done",
+    ):
+        assert f'id="{element_id}"' in body
+    assert copy.SUCCESS_VERIFY_NOTE in body_text
+    assert copy.SUCCESS_REMOVE_LABEL in body_text
+    assert copy.SUCCESS_DONE in body_text
+
+    remove_start = body.index("pairRemove.addEventListener")
+    remove_end = body.index("pairModal.addEventListener", remove_start)
+    remove_body = body[remove_start:remove_end]
+    assert "'/app/network/unpair'" in remove_body
+    assert "lastPairedFingerprint" in remove_body
+    assert "fingerprint:" in remove_body
+    assert "openUnpair" not in remove_body
+
+    assert (
+        "RECENT_NETWORK_LABEL"
+        in body[
+            body.index("function handlePairComplete") : body.index(
+                "function showPairError"
+            )
+        ]
+    )
+
+
+def test_pair_complete_single_refresh(link_env) -> None:
+    env = link_env()
+    response = env.client.get("/app/network/")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+
+    pair_complete_start = body.index("function handlePairComplete")
+    pair_complete_end = body.index("function showPairError", pair_complete_start)
+    pair_complete_body = body[pair_complete_start:pair_complete_end]
+    assert "refreshDevices" not in pair_complete_body
+
+    init_start = body.index("function initLink()")
+    init_end = body.index("if (document.readyState", init_start)
+    init_body = body[init_start:init_end]
+    assert "pair_complete" in init_body
+    assert "refreshDevices" in init_body
+
+
+def test_workspace_uses_server_display_label_for_device_titles(link_env) -> None:
+    env = link_env()
+    response = env.client.get("/app/network/")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+
+    assert "label.textContent = device.display_label || '';" in body
+    assert "label.textContent = `${device.display_label || ''}${suffix}`;" in body
+    assert (
+        ".replace('{label}', device.display_label || device.device_label || '')" in body
+    )
+    assert "const previous = device.device_label || '';" in body
+    assert "String(device.device_label || '').toLowerCase().includes(needle)" in body
+
+    commit_start = body.index("async function commit()")
+    commit_end = body.index("function cancel()", commit_start)
+    commit_body = body[commit_start:commit_end]
+    assert "device.device_label = persisted;" in commit_body
+    assert "replaceRenameInput(input, persisted);" in commit_body
+    assert "refreshDevices();" in commit_body
+    assert "renderRecentlyPaired(latestDevices);" not in commit_body
+
+
+def test_pair_modal_error_state_present(link_env) -> None:
+    env = link_env()
+    response = env.client.get("/app/network/")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    body_text = _normalized_body(body)
+
+    assert 'id="link-pair-error"' in body
+    assert re.search(r'<div id="link-pair-error"[^>]{0,200}\bhidden\b', body)
+    assert copy.PAIR_ERROR_BODY in body_text
+    assert "function showPairError" in body
+    assert body.count("showPairError(") >= 2
+
+
+def test_private_link_consent_link_rendering(link_env) -> None:
+    env = link_env()
+    response = env.client.get("/app/network/")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    body_text = _normalized_body(body)
+
+    assert "browser_open_" + "succeeded" not in body
+    assert "PRIVATE_LINK_TERMINAL_PHASES.has(operation.phase)" in body
+    assert "privateLinkSetup.hidden = !!operation &&" in body
+    assert "typeof operation.portal_url === 'string'" in body
+    assert "PRIVATE_LINK_PORTAL_CTA" in body
+    assert copy.PRIVATE_LINK_PORTAL_CTA in body_text
+
+    setup_start = body.index("async function startPrivateLinkSetup")
+    setup_end = body.index("async function disablePrivateLink", setup_start)
+    setup_body = body[setup_start:setup_end]
+    assert "window.open(consentUrl, '_blank', 'noopener')" in setup_body

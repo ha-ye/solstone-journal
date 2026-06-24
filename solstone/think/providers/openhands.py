@@ -27,6 +27,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
+from solstone.log_policy import apply_http_logging_policy, snapshot_root_logging
 from solstone.think.cogitate_contract import (
     capabilities_for_access_tier,
     expects_emit_final,
@@ -45,6 +46,7 @@ from solstone.think.cogitate_policy import (
     resolve_read_scope,
 )
 from solstone.think.providers.cli import QuotaExhaustedError, assemble_prompt
+from solstone.think.providers.local_server import LOCAL_MIN_CONTEXT_TOKENS
 from solstone.think.providers.shared import (
     USAGE_KEYS,
     JSONEventCallback,
@@ -76,6 +78,9 @@ _SHELL_STDOUT_CAP = 6000
 _SHELL_STDERR_CAP = 6000
 _SHELL_TIMEOUT_SECONDS = 30
 _COST_WARNING_TEXT = "Cost calculation failed"
+_LOCAL_OUTPUT_RESERVE_TOKENS = LOCAL_MIN_CONTEXT_TOKENS // 4
+_LOCAL_CONDENSER_MAX_TOKENS = LOCAL_MIN_CONTEXT_TOKENS * 11 // 16
+_LOCAL_CONDENSER_KEEP_FIRST = 4
 
 
 def _prefixed_model(provider: str, model: str) -> str:
@@ -153,7 +158,8 @@ def _build_llm(provider: str, model: str) -> Any:
             native_tool_calling=False,
             timeout=LLM_TIMEOUT_S,
             num_retries=LLM_NUM_RETRIES,
-            max_input_tokens=local_server.LOCAL_SERVER_CONTEXT_TOKENS,
+            max_input_tokens=local_server.LOCAL_MIN_CONTEXT_TOKENS,
+            max_output_tokens=_LOCAL_OUTPUT_RESERVE_TOKENS,
             input_cost_per_token=0,
             output_cost_per_token=0,
             litellm_extra_body={"chat_template_kwargs": {"enable_thinking": False}},
@@ -173,6 +179,41 @@ def _build_llm(provider: str, model: str) -> Any:
         llm_kwargs["reasoning_summary"] = "auto"
         llm_kwargs["enable_encrypted_reasoning"] = True
     return LLM(**llm_kwargs)
+
+
+def _build_local_condenser(llm: Any) -> Any:
+    """LLM-summarizing condenser for the bundled-local floor window.
+
+    Reuses the agent's own LLM (shared usage_id is accepted in
+    openhands-sdk 1.27.1) so there is no separate summarization endpoint.
+    """
+    from openhands.sdk.context.condenser import LLMSummarizingCondenser
+
+    return LLMSummarizingCondenser(
+        llm=llm,
+        max_tokens=_LOCAL_CONDENSER_MAX_TOKENS,
+        keep_first=_LOCAL_CONDENSER_KEEP_FIRST,
+    )
+
+
+def _build_cogitate_agent(
+    *,
+    llm: Any,
+    is_bundled_local: bool,
+    tool_specs: list[Any],
+    include_default_tools: list[Any],
+    system_prompt: str,
+) -> Any:
+    from openhands.sdk import Agent
+
+    condenser = _build_local_condenser(llm) if is_bundled_local else None
+    return Agent(
+        llm=llm,
+        tools=tool_specs,
+        include_default_tools=include_default_tools,
+        system_prompt=system_prompt,
+        condenser=condenser,
+    )
 
 
 # Lazy cache for the openhands-derived Sol* classes. The classes have to
@@ -1004,10 +1045,12 @@ async def run_cogitate(
     llm: Any | None = None
     usage_start: dict[str, int] | None = None
     try:
-        from openhands.sdk import Agent, Conversation
+        root_baseline = snapshot_root_logging()
+        from openhands.sdk import Conversation
         from openhands.sdk.tool.registry import register_tool
         from openhands.sdk.tool.spec import Tool
 
+        apply_http_logging_policy(root_baseline)
         wants_emit_final = expects_emit_final(config)
         max_turns = int(config.get("max_turns", MAX_TURNS) or MAX_TURNS)
         cost_cap = float(
@@ -1067,9 +1110,13 @@ async def run_cogitate(
             tool_specs.append(Tool(name="emit_final"))
             default_tools = []
 
-        agent = Agent(
+        from solstone.think.providers.local_endpoint import resolve_local_endpoint
+
+        is_bundled_local = provider == "local" and resolve_local_endpoint().is_bundled
+        agent = _build_cogitate_agent(
             llm=llm,
-            tools=tool_specs,
+            is_bundled_local=is_bundled_local,
+            tool_specs=tool_specs,
             include_default_tools=default_tools,
             system_prompt=system_instruction,
         )

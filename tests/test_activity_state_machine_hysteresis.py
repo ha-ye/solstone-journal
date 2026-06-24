@@ -17,10 +17,11 @@ def _sense(
     density: str = "active",
     facets: list[dict] | None = None,
     summary: str = "Working on code.",
+    facet_activity: str = "Reviewing the open diff.",
     entities: list[dict] | None = None,
 ) -> dict:
     if facets is None:
-        facets = [{"facet": "work", "activity": content_type, "level": "high"}]
+        facets = [{"facet": "work", "activity": facet_activity, "level": "high"}]
     return {
         "density": density,
         "content_type": content_type,
@@ -86,21 +87,21 @@ def test_two_segment_facet_gone_ends_at_k():
 
 def test_single_segment_type_wobble_does_not_end():
     sm = ActivityStateMachine()
-    sm.update(_sense(summary="Writing code."), "090000_300", DAY)
+    sm.update(_sense(facet_activity="Drafting the parser."), "090000_300", DAY)
 
-    wobble = sm.update(
-        _sense(content_type="meeting", summary="Stand-up."), "090500_300", DAY
-    )
+    wobble = sm.update(_sense(content_type="meeting"), "090500_300", DAY)
     assert not any(change.get("_change") == "ended_type_change" for change in wobble)
     assert wobble[0]["_change"] == "type_change_pending"
-    assert sm.state["work"]["description"] == "Writing code."
+    assert sm.state["work"]["description"] == "Drafting the parser."
     assert sm.state["work"]["segments"] == ["090000_300", "090500_300"]
 
-    returned = sm.update(_sense(summary="Still coding."), "091000_300", DAY)
+    returned = sm.update(
+        _sense(facet_activity="Refining the parser."), "091000_300", DAY
+    )
     assert not any(change.get("_change") == "ended_type_change" for change in returned)
     assert sm.get_completed_activities() == []
     assert sm.state["work"]["activity"] == "coding"
-    assert sm.state["work"]["description"] == "Still coding."
+    assert sm.state["work"]["description"] == "Refining the parser."
     assert sm.state["work"]["_pending_type"] is None
     assert sm.state["work"]["_pending_type_count"] == 0
     assert sm.state["work"]["segments"] == [

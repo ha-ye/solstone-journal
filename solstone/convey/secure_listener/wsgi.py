@@ -24,6 +24,10 @@ from .mux import StreamWriter
 _HEAD_LIMIT = 64 * 1024
 _BODY_METHODS = {"POST", "PUT", "PATCH"}
 _NO_BODY_STATUSES = {204, 304}
+# The cert-less pairing tunnel admits EXACTLY these endpoints (canonical +
+# the /app/link legacy alias). Never relax to a suffix/substring match — that
+# would admit pair_start and widen the tunnel.
+CERTLESS_PAIR_ENDPOINTS = frozenset({"app:network.pair", "app:link.pair"})
 
 
 class HttpBadRequest(ValueError): ...
@@ -217,16 +221,16 @@ async def dispatch_stream(
                 stream_writer,
                 403,
                 "Forbidden",
-                "pairing tunnel may only use /app/link/pair",
+                "pairing tunnel may only use /app/network/pair",
             )
             return DispatchResult(endpoint=None, status=403)
         endpoint = _match_endpoint(app, path_info, request.method)
-        if endpoint != "app:link.pair":
+        if endpoint not in CERTLESS_PAIR_ENDPOINTS:
             await write_simple_response(
                 stream_writer,
                 403,
                 "Forbidden",
-                "pairing tunnel may only use /app/link/pair",
+                "pairing tunnel may only use /app/network/pair",
             )
             return DispatchResult(endpoint=endpoint, status=403)
 
@@ -259,7 +263,7 @@ async def dispatch_stream(
 
 
 def certless_target_allowed(app: Any, path_info: str, method: str) -> bool:
-    return _match_endpoint(app, path_info, method) == "app:link.pair"
+    return _match_endpoint(app, path_info, method) in CERTLESS_PAIR_ENDPOINTS
 
 
 def _match_endpoint(app: Any, path_info: str, method: str) -> str | None:

@@ -14,7 +14,7 @@ Python 3.11+, Linux + macOS, AGPL-3.0-only, maintained by [sol pbc](https://solp
 
 ## what you get
 
-**a system of intelligence, not just a system of record.**
+**a system of intelligence, not just storage.**
 
 - **automatic transcription** — standalone observers take in audio continuously with speaker identification. every conversation, transcribed and searchable.
 - **people and projects** — extracted from your conversations and remembered across time.
@@ -40,7 +40,7 @@ Python 3.11+, Linux + macOS, AGPL-3.0-only, maintained by [sol pbc](https://solp
 ```text
   +---------+       +----------------+       +---------+
   | observe | ----> |    journal     | ----> |  think  |
-  | capture |       | YYYYMMDD/ dirs |       | process |
+  | inputs  |       | YYYYMMDD/ dirs |       | process |
   +---------+       | media, jsonl,  |       | index   |
                     | entities       |       +----+----+
                     +-------+--------+            |
@@ -71,11 +71,18 @@ Python 3.11+, Linux + macOS, AGPL-3.0-only, maintained by [sol pbc](https://solp
 run a journal here — the full host:
 
 ```bash
-uv tool install 'solstone[journal]'
+uv tool install --with-executables-from solstone-journal-host 'solstone[journal]'
 journal setup
 ```
 
-(or `pipx install 'solstone[journal]' && journal setup`.)
+pip and pipx equivalents, followed by `journal setup`:
+
+```bash
+pip install 'solstone[journal]'
+pipx install --include-deps 'solstone[journal]'
+```
+
+The `journal` and `mlx-vlm-server` commands live in the `solstone-journal-host` package that `[journal]` pulls in. `pip` exposes them natively; `uv tool` and `pipx` need the flag shown above. For GPU transcription, replace `[journal]` with `[journal-cuda]`.
 
 want only the thin `sol` client — to talk to a journal running elsewhere? `uv tool install solstone` (no extras), or `uvx solstone` for an ephemeral one-shot.
 
@@ -89,7 +96,7 @@ solstone is operated through `sol` for day-to-day journal access and `journal` f
 
 ```bash
 sol                    # Status overview and command list
-journal supervisor         # Start the full stack (capture + processing + web)
+journal supervisor         # Start the full stack (observe + processing + web)
 sol chat               # Interactive AI chat from the terminal
 journal transcribe <file>  # Transcribe an audio file
 journal indexer            # Rebuild the search index
@@ -104,7 +111,7 @@ Run `sol help` for the full command reference.
 | Installation and setup | [INSTALL.md](INSTALL.md) |
 | Developing from source | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Journal structure and data model | [solstone/talent/journal/SKILL.md](solstone/talent/journal/SKILL.md) |
-| Capture pipeline | [docs/OBSERVE.md](docs/OBSERVE.md) |
+| Observe pipeline | [docs/OBSERVE.md](docs/OBSERVE.md) |
 | Processing and agents | [docs/THINK.md](docs/THINK.md) |
 | Web interface | [docs/CONVEY.md](docs/CONVEY.md) |
 | App development | [docs/APPS.md](docs/APPS.md) |

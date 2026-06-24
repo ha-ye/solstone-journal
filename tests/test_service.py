@@ -112,7 +112,8 @@ class TestSystemdUnit:
         assert "TimeoutStopSec=30" in unit
         assert "LimitNOFILE=4096" in unit
         assert f"StandardOutput=append:{service_log}" in unit
-        assert "StandardError=inherit" in unit
+        assert f"StandardError=append:{service_log}" in unit
+        assert "StandardError=inherit" not in unit
         assert (
             f"ExecStart={Path.home() / '.local' / 'bin' / 'journal'} start 5015" in unit
         )
@@ -134,7 +135,8 @@ class TestSystemdUnit:
         unit = service._generate_systemd_unit(env, journal_path=journal_path)
 
         assert f"StandardOutput=append:{service_log}" in unit
-        assert "StandardError=inherit" in unit
+        assert f"StandardError=append:{service_log}" in unit
+        assert "StandardError=inherit" not in unit
 
     def test_invalid_journal_path_rejected(self):
         with pytest.raises(ValueError, match="shell-active character"):

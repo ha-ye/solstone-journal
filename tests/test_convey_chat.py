@@ -1442,50 +1442,81 @@ def test_support_draft_confirm_attach_failure_copy_is_honest(
 
 
 def test_support_draft_confirm_claim_is_race_safe(chat_client, monkeypatch):
+    import queue
+
     import solstone.convey.chat as chat
 
     app = chat_client.application
+    submit_started = threading.Event()
+    release_submit = threading.Event()
     submit_lock = threading.Lock()
     submit_count = 0
 
-    def sleepy_support_create(**_kwargs):
+    def blocking_support_create(**_kwargs):
         nonlocal submit_count
         with submit_lock:
             submit_count += 1
-        time.sleep(0.03)
+        submit_started.set()
+        assert release_submit.wait(timeout=5), "support_create release was not signaled"
         return {"id": 123}
 
-    monkeypatch.setattr(chat, "support_create", sleepy_support_create)
+    monkeypatch.setattr(chat, "support_create", blocking_support_create)
 
-    for idx in range(50):
-        diagnostics = {"iteration": idx}
-        draft_id = f"draft-race-{idx}"
-        _append_support_draft(
-            draft_id,
-            payload=_support_create_payload(diagnostics),
-            diagnostics_snapshot=diagnostics,
-        )
-        responses: list[tuple[int, dict]] = []
+    diagnostics = {"iteration": "deterministic"}
+    draft_id = "draft-race"
+    _append_support_draft(
+        draft_id,
+        payload=_support_create_payload(diagnostics),
+        diagnostics_snapshot=diagnostics,
+    )
+    responses: queue.Queue[tuple[int, dict]] = queue.Queue()
+    errors: queue.Queue[BaseException] = queue.Queue()
 
-        def post_confirm() -> None:
+    def post_confirm() -> None:
+        try:
             with app.test_client() as client:
                 response = client.post(
                     "/api/chat/support/draft/confirm",
                     json={"draft_id": draft_id},
                 )
-                responses.append((response.status_code, response.get_json()))
+                responses.put((response.status_code, response.get_json()))
+        except BaseException as exc:
+            errors.put(exc)
 
-        threads = [threading.Thread(target=post_confirm) for _ in range(2)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
+    first = threading.Thread(target=post_confirm)
+    first.start()
+    assert submit_started.wait(timeout=3), "first confirm did not reach support_create"
 
-        assert [status for status, _payload in responses] == [200, 200]
-        outcomes = [payload["outcome"] for _status, payload in responses]
-        assert sorted(outcomes) == ["already_submitted", "submitted"]
-        with submit_lock:
-            assert submit_count == idx + 1
+    second = threading.Thread(target=post_confirm)
+    already_submitted_response = None
+    try:
+        second.start()
+        second.join(timeout=3)
+        second_finished_while_first_in_flight = not second.is_alive()
+        if second_finished_while_first_in_flight and errors.empty():
+            already_submitted_response = responses.get(timeout=1)
+    finally:
+        release_submit.set()
+    first.join(timeout=3)
+    second.join(timeout=3)
+
+    assert second_finished_while_first_in_flight
+    assert not first.is_alive()
+    assert not second.is_alive()
+    if not errors.empty():
+        raise errors.get()
+
+    submitted_response = responses.get(timeout=1)
+    assert already_submitted_response == (
+        200,
+        {"ok": False, "outcome": "already_submitted"},
+    )
+    assert submitted_response == (
+        200,
+        {"ok": True, "outcome": "submitted", "ticket_id": 123},
+    )
+    with submit_lock:
+        assert submit_count == 1
 
 
 def test_support_draft_confirm_transitions_state_and_suppresses_marker(

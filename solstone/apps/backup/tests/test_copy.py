@@ -15,13 +15,13 @@ from solstone.apps.backup.copy import backup_copy_payload, backup_copy_values
 def test_backup_copy_verbatim_strings() -> None:
     payload = backup_copy_payload()
 
-    assert payload["service_name"] == "solstone backup"
-    assert payload["intro"]["title"] == "solstone backup"
+    assert payload["service_name"] == "encrypted backup"
+    assert payload["intro"]["title"] == "encrypted backup"
     # the journal-bound brand-lock — load-bearing trust beat (CSO-required)
     assert payload["brand_lock"] == "your journal is always private, only yours."
     assert (
         payload["intro"]["subtitle"]
-        == "Make an encrypted copy of your journal somewhere safe — only you can read it."
+        == "make an encrypted copy of your journal somewhere safe — only you can read it."
     )
     assert payload["intro"]["bullets"] == [
         "end-to-end encrypted",
@@ -31,22 +31,22 @@ def test_backup_copy_verbatim_strings() -> None:
     # load-bearing honesty beats — must survive verbatim (CSO-required)
     assert (
         payload["educate"]["stakes"]
-        == "If you lose your recovery key, no one can recover your journal — not even sol pbc."
+        == "if you lose your recovery key, no one can recover your journal — not even sol pbc."
     )
     assert (
         payload["key"]["theft_honesty"]
-        == "Anyone with your recovery key can read everything in your backup — store it like a master password."
+        == "anyone with your recovery key can read everything in your backup — store it like a master password."
     )
-    assert payload["confirm"]["prompt"] == "Enter the recovery key you just recorded."
+    assert payload["confirm"]["prompt"] == "enter the recovery key you just recorded."
     assert payload["confirm"]["escape"] == "see key again"
     assert (
         payload["key"]["pm_caution"]
-        == "Only store your recovery key in a password manager you trust. sol pbc doesn't recommend a specific one."
+        == "only store your recovery key in a password manager you trust. sol pbc doesn't recommend a specific one."
     )
     assert payload["management"]["destructive_action"] == "turn off & delete backup"
     assert (
         payload["management"]["destructive_caption"]
-        == "This deletes all your backup data. No new backups will be created."
+        == "this deletes all your backup data. no new backups will be created."
     )
     # the byo covenant beat — "sol pbc is never in the path" (mode selector)
     assert (
@@ -54,15 +54,19 @@ def test_backup_copy_verbatim_strings() -> None:
         == "sol pbc is never in the path."
     )
     assert payload["destination"]["modes"]["byo"]["title"] == "your own"
-    assert payload["destination"]["modes"]["hosted"]["title"] == "solstone hosted"
-    assert payload["destination"]["modes"]["hosted"]["note"] == "operated by sol pbc"
+    assert payload["destination"]["modes"]["hosted"]["title"] == "operated by sol pbc"
+    assert (
+        payload["destination"]["modes"]["hosted"]["note"]
+        == "sol pbc only ever holds an encrypted copy it can't read."
+    )
+    assert payload["destination"]["modes"]["hosted"]["cta"] == "set up backup →"
     assert (
         payload["destination"]["object_lock_warning"]
-        == "Don't enable Compliance-mode Object Lock on the bucket — it conflicts with backup pruning and lock cleanup. If you need immutability, use Governance mode."
+        == "don't enable Compliance-mode Object Lock on the bucket — it conflicts with backup pruning and lock cleanup. if you need immutability, use Governance mode."
     )
     assert (
         payload["intro"]["optional"]
-        == "solstone runs on your machine; this is optional."
+        == "solstone runs on your device; this is optional."
     )
     assert payload["key"]["save_password_manager"] == "save to my password manager"
     assert payload["key"]["copy_label"] == "copy"
@@ -72,6 +76,15 @@ def test_backup_copy_verbatim_strings() -> None:
         payload["destination"]["field_labels"]["b2_application_key"]
         == "application key"
     )
+
+
+def test_operated_lane_copy_neutralizes_hosting_terms() -> None:
+    banned = re.compile(
+        r"hosting|hosted|operated backup|\bsign in\b|\bsubscribe\b",
+        re.IGNORECASE,
+    )
+    offenders = [value for value in backup_copy_values() if banned.search(value)]
+    assert offenders == []
 
 
 def test_no_literal_copy_in_templates_or_static() -> None:
@@ -135,6 +148,7 @@ def test_all_copy_constants_referenced_by_render_surface() -> None:
             "key",
             "confirm",
             "destination",
+            "hosted",
             "management",
             "restore",
             "phase_labels",

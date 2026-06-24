@@ -1069,6 +1069,11 @@ def _build_pulse_context() -> dict[str, Any]:
         "latest_weekly_reflection": latest_weekly_reflection,
         "yesterday_processing": yesterday_processing,
         "show_welcome": show_welcome,
+        "journal_age_days": journal_age_days,
+        "home_state": "welcome" if show_welcome else "active",
+        "welcome_framing": (
+            _FIRST_WEEK_FRAMING if (show_welcome and journal_age_days <= 7) else None
+        ),
         "narrative_summary": narrative_summary,
         "today_summary": today_summary,
         "needs_summary": needs_summary,

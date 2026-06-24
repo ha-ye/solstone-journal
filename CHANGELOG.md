@@ -4,6 +4,46 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.12] - 2026-06-23
+
+### Added
+- a new way to run sol on a box that can't keep up with heavy local analysis in real time. pick "deferred" in your processing settings and solstone takes in your day exactly as before, in real time, nothing dropped, while the heavier analysis waits and runs in a window you choose (overnight by default) or while your display is asleep. your journal's health view shows how many segments are waiting and when they last caught up. built for owners running sol on their own hardware, like a single GPU, who want to observe all day and let the deep work happen while the machine is idle.
+- while you're in deferred mode, if you ask sol about today and the answer would come up empty, sol now tells you it has taken your day in but hasn't analyzed it yet and will during your chosen window, instead of just coming back with nothing.
+
+### Changed
+- your journal's activity records read cleaner. a single moment used to spawn several near-duplicate entries that all shared one summary, including minor ones that didn't warrant their own; now only the ones worth their own entry get one, each described in its own words. existing records are untouched.
+
+### Fixed
+- running sol on a local model no longer stalls or comes back empty on a dense, busy day. on constrained hardware a packed day could overflow the local model and produce nothing for that stretch with an opaque error; the local model now sizes itself to your graphics card and fits each request to what it can hold, so a long day finishes cleanly. surfaced by an owner running this on an AMD card.
+- the row of active-work dots next to the chat bar reflects what's actually running again. it had been collecting grey "finished" dots and replaying them every time you reloaded or restarted; now it shows only work in flight and clears each item as it finishes.
+
+## [0.6.11] - 2026-06-23
+
+### Changed
+- a plain `solstone` install now carries only the thin client commands, `sol` and `solstone`. it no longer puts journal-host commands on your PATH. the `journal` and `mlx-vlm-server` host commands now come with `solstone[journal]` or `solstone[journal-cuda]`, through the new `solstone-journal-host` package. with `uv tool`, install with `uv tool install --with-executables-from solstone-journal-host 'solstone[journal]'`; with pipx, use `pipx install --include-deps 'solstone[journal]'`; with pip, `pip install 'solstone[journal]'` exposes them on its own.
+- a couple of settings rough edges are smoothed. naming sol in the sol identity section now commits the name you typed when you press Enter, instead of quietly resetting it to "sol," and a quiet notification in the status-icon list now opens to its full text instead of clipping to a one-line snippet you couldn't expand.
+- a day waiting on a local model that's still loading or installing now reads "try again" rather than "a setting's missing," so the days-that-need-a-hand list points you at the right next step.
+
+### Fixed
+- observer uploads are being saved to your journal again. on a 0.6.10 install, everything your observers took in returned an error and nothing new landed in your journal; this restores it. if you upgraded to 0.6.10, please install this update.
+- on a Mac, your local "how sol thinks" choice sticks. on Apple Silicon it could silently fall back to "no provider chosen" even with a working on-device model; it now reads the actual model state on your Mac. linux is unchanged.
+- a partial journal-host install now tells you what to do instead of looping. if the host pieces aren't fully in place, setup stops with reinstall guidance up front rather than starting and failing over and over.
+
+## [0.6.10] - 2026-06-22
+
+### Changed
+- the feature that connects all your devices to your journal is now called your private network, in the labels, the setup screens, and the toggle. it's the same encrypted connection among your devices it has always been, just named for what it does. you'll see "your private network" where it used to say "private link."
+- the journal backup feature is now called encrypted backup, and its setup copy reads the same way: only you can read your backup, not even sol pbc. nothing about how it works changed, just the name and the wording.
+- your health page now reads "all data stored locally on your device" wherever it shows where your journal lives, and notifications now show as built in rather than coming later. the trust details didn't change, the wording is just clearer and current.
+
+### Fixed
+- the "minimum requirements" help link now opens a live page. if you're on linux without a supported gpu, the link shown when local models can't run pointed at a page that no longer existed; it now goes to the right support article so you can see what you need.
+
+## [0.6.9] - 2026-06-19
+
+### Fixed
+- the error view on your health page now opens the way you'd expect. the "errors today" count jumps you to recent errors every time you click it, not just the first time, and each error row opens in place to show the full plain-language message (and the technical detail when there is one). before, some rows wouldn't open at all. the "api keys" link in settings also now jumps you to the right section on a repeat click.
+
 ## [0.6.8] - 2026-06-18
 
 ### Added

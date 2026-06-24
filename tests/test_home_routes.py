@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
+
 from solstone.convey import create_app
 from solstone.think.day_accumulator import append_record
 
@@ -44,6 +46,43 @@ def test_api_pulse_includes_needs_you_items_json_shape(journal_copy, monkeypatch
         "reason",
         "text",
     ]
+
+
+@pytest.mark.parametrize(
+    "age, curate_active, expected_state, expect_framing",
+    [
+        (0, False, "welcome", True),
+        (7, False, "welcome", True),
+        (8, False, "welcome", False),
+        (3, True, "active", False),
+        (30, False, "welcome", False),
+    ],
+)
+def test_pulse_welcome_signal_matrix(
+    monkeypatch, tmp_path, age, curate_active, expected_state, expect_framing
+):
+    import solstone.apps.home.routes as home_routes
+
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    monkeypatch.setattr(home_routes, "_count_journal_age_days", lambda today: age)
+    if curate_active:
+        monkeypatch.setattr(
+            home_routes,
+            "_collect_activities",
+            lambda today: [
+                {"description": "curated activity", "display_time": "09:00"}
+            ],
+        )
+
+    ctx = home_routes._build_pulse_context()
+
+    assert ctx["journal_age_days"] == age
+    assert ctx["home_state"] == expected_state
+    if expect_framing:
+        assert ctx["welcome_framing"] is home_routes._FIRST_WEEK_FRAMING
+    else:
+        assert ctx["welcome_framing"] is None
 
 
 def test_load_pulse_narrative_reads_today_record_strictly(monkeypatch, tmp_path):

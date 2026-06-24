@@ -33,10 +33,16 @@ from solstone.think.backup.destination import (
     validate_destination,
 )
 from solstone.think.backup.engine import request_backup_now
+from solstone.think.backup.hosted import (
+    HostedCredsUnavailable,
+    fetch_hosted_credentials,
+    operated_destination,
+    save_hosted_binding,
+)
 from solstone.think.backup.install import ensure_restic
 from solstone.think.backup.keys import confirm_recovery_key, generate_daily_key
 from solstone.think.backup.repo import ResticKeyError, init_repository
-from solstone.think.backup.restore import restore_journal
+from solstone.think.backup.restore import restore_journal, restore_journal_operated
 from solstone.think.backup.rotation import rotate_recovery_key
 from solstone.think.backup.runner import reason_for_returncode
 from solstone.think.backup.state import (
@@ -45,11 +51,16 @@ from solstone.think.backup.state import (
     get_keys,
     set_destination,
     set_enabled,
+    set_mode,
     set_recovery_key_confirmed,
     set_retention,
     status_view,
 )
 from solstone.think.backup.teardown import teardown_backup
+from solstone.think.services.spb_handoff import (
+    build_spb_handoff_url,
+    run_spb_handoff,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +79,7 @@ DESTINATION_PROBE_TIMEOUT = 30.0
 RETENTION_KEYS = ("hourly", "daily", "weekly", "monthly")
 S3_REQUIRED = ("access_key_id", "secret_access_key")
 B2_REQUIRED = ("account_id", "account_key")
+TERMINAL_PHASES = frozenset({"done", "needs_subscription", "error"})
 
 
 @dataclass
@@ -77,12 +89,16 @@ class OperationEntry:
     reason_code: str | None
     started_monotonic: float
     ended_monotonic: float | None = None
+    portal_url: str | None = None
+    subscribe_url: str | None = None
 
 
 @dataclass(frozen=True)
 class OpOutcome:
     status: str
     reason_code: str | None
+    phase: str | None = None
+    subscribe_url: str | None = None
 
 
 _REGISTRY_LOCK = threading.Lock()
@@ -123,6 +139,10 @@ def _operation_payload(
         "phase": entry.phase,
         "reason_code": entry.reason_code,
         "elapsed_ms": int(max(0.0, ts - entry.started_monotonic) * 1000),
+        "portal_url": entry.portal_url if entry.phase not in TERMINAL_PHASES else None,
+        "subscribe_url": entry.subscribe_url
+        if entry.phase == "needs_subscription"
+        else None,
     }
 
 
@@ -149,7 +169,11 @@ def _run_long_op(entry: OperationEntry, thunk: Callable[[], OpOutcome]) -> None:
         current = _REGISTRY.get(OPERATION_KEY)
         if current is not entry:
             return
-        if outcome.status in {"ok", "done", "skipped"}:
+        if outcome.phase is not None:
+            entry.phase = outcome.phase
+            entry.reason_code = outcome.reason_code
+            entry.subscribe_url = outcome.subscribe_url
+        elif outcome.status in {"ok", "done", "skipped"}:
             entry.phase = "done"
             entry.reason_code = None
         else:
@@ -162,6 +186,8 @@ def _start_long_op(
     kind: str,
     phase: str,
     thunk: Callable[[], OpOutcome],
+    *,
+    portal_url: str | None = None,
 ) -> tuple[dict[str, Any], int] | tuple[Response, int]:
     with _REGISTRY_LOCK:
         now = time.monotonic()
@@ -173,6 +199,7 @@ def _start_long_op(
             phase=phase,
             reason_code=None,
             started_monotonic=now,
+            portal_url=portal_url,
         )
         _REGISTRY[OPERATION_KEY] = entry
         operation = _operation_payload(entry, now)
@@ -282,6 +309,96 @@ def _enable_thunk() -> OpOutcome:
     return OpOutcome("ok", None)
 
 
+def _enable_hosted_thunk(nonce: str, base_url: str) -> OpOutcome:
+    result = run_spb_handoff(nonce=nonce, base_url=base_url)
+    if result.state == "needs_subscription":
+        return OpOutcome(
+            "ok",
+            None,
+            phase="needs_subscription",
+            subscribe_url=result.subscribe_url,
+        )
+    if result.state != "approved":
+        return OpOutcome("error", result.reason_code)
+
+    binding = result.binding
+    if binding is None:
+        return OpOutcome("error", "failed")
+    keys = get_keys()
+    if keys is None:
+        return OpOutcome("error", "failed")
+
+    try:
+        creds = fetch_hosted_credentials(binding, scope="backup")
+    except HostedCredsUnavailable as exc:
+        return OpOutcome("error", exc.reason_code)
+
+    try:
+        restic_path = ensure_restic()
+    except Exception:
+        logger.exception("backup restic setup failed")
+        return OpOutcome("error", "restic_unavailable")
+
+    destination = operated_destination(binding, creds)
+    try:
+        init_repository(
+            destination,
+            daily_key=keys.daily_key,
+            recovery_key=keys.recovery_key,
+            restic_path=restic_path,
+            timeout=ENABLE_TIMEOUT,
+        )
+    except ResticKeyError as exc:
+        return OpOutcome("error", reason_for_returncode(exc.returncode))
+    except RuntimeError:
+        logger.exception("backup repository setup failed")
+        return OpOutcome("error", "failed")
+
+    try:
+        save_hosted_binding(binding)
+        set_mode("operated")
+    except Exception:
+        logger.exception("backup hosted state update failed")
+        return OpOutcome("error", "failed")
+
+    if not request_backup_now():
+        logger.warning("backup request could not be queued after setup")
+    return OpOutcome("ok", None)
+
+
+def _restore_hosted_thunk(
+    nonce: str,
+    base_url: str,
+    recovery_key: str,
+) -> OpOutcome:
+    result = run_spb_handoff(nonce=nonce, base_url=base_url)
+    if result.state == "needs_subscription":
+        return OpOutcome(
+            "ok",
+            None,
+            phase="needs_subscription",
+            subscribe_url=result.subscribe_url,
+        )
+    if result.state != "approved":
+        return OpOutcome("error", result.reason_code)
+
+    binding = result.binding
+    if binding is None:
+        return OpOutcome("error", "failed")
+    try:
+        creds = fetch_hosted_credentials(binding, scope="backup")
+    except HostedCredsUnavailable as exc:
+        return OpOutcome("error", exc.reason_code)
+
+    destination = operated_destination(binding, creds)
+    save_hosted_binding(binding)
+    restore_result = restore_journal_operated(destination, recovery_key)
+    return OpOutcome(
+        status=restore_result.status,
+        reason_code=restore_result.reason_code,
+    )
+
+
 @backup_bp.route("/")
 def index() -> str:
     return render_template(
@@ -351,6 +468,30 @@ def enable() -> tuple[dict[str, Any], int] | tuple[Response, int]:
         )
 
     return _start_long_op("enable", "setting_up", _enable_thunk)
+
+
+@backup_bp.route("/enable-hosted", methods=["POST"])
+def enable_hosted() -> tuple[dict[str, Any], int] | tuple[Response, int]:
+    if not status_view()["recovery_key_confirmed"]:
+        return error_response(BACKUP_NOT_CONFIRMED)
+    if get_keys() is None:
+        return error_response(
+            INVALID_OPERATION_FOR_STATE,
+            detail="no recovery key yet",
+        )
+
+    try:
+        consent_url, nonce, base_url = build_spb_handoff_url()
+    except OSError:
+        logger.exception("backup hosted handoff setup failed")
+        return error_response(BACKUP_OPERATION_FAILED)
+
+    return _start_long_op(
+        "enable_hosted",
+        "setting_up",
+        lambda: _enable_hosted_thunk(nonce, base_url),
+        portal_url=consent_url,
+    )
 
 
 @backup_bp.route("/destination", methods=["POST"])
@@ -436,4 +577,28 @@ def restore() -> tuple[dict[str, Any], int] | tuple[Response, int]:
         "restore",
         "restoring",
         lambda: _result_outcome(restore_journal(destination_result, recovery_key)),
+    )
+
+
+@backup_bp.route("/restore-hosted", methods=["POST"])
+def restore_hosted() -> tuple[dict[str, Any], int] | tuple[Response, int]:
+    payload = _json_body()
+    if payload is None:
+        return error_response(MISSING_REQUIRED_FIELD, detail="missing request body")
+    entered = payload.get("recovery_key")
+    if not isinstance(entered, str) or not entered.strip():
+        return error_response(MISSING_REQUIRED_FIELD, detail="missing recovery_key")
+    recovery_key = entered.strip()
+
+    try:
+        consent_url, nonce, base_url = build_spb_handoff_url()
+    except OSError:
+        logger.exception("backup hosted handoff setup failed")
+        return error_response(BACKUP_OPERATION_FAILED)
+
+    return _start_long_op(
+        "restore_hosted",
+        "restoring",
+        lambda: _restore_hosted_thunk(nonce, base_url, recovery_key),
+        portal_url=consent_url,
     )

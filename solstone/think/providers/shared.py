@@ -171,6 +171,7 @@ _CLI_AUTH_PATTERNS = (
 )
 _CONTEXT_WINDOW_PATTERNS = (
     "exceeds the available context size",
+    "context size has been exceeded",
     "exceeds the context window",
     "maximum context length",
     "context length exceeded",
@@ -425,6 +426,9 @@ class GenerateResult(TypedDict, total=False):
     finish_reason: Optional[str]  # Normalized: "stop", "max_tokens", "safety", etc.
     thinking: Optional[list]  # List of thinking block dicts
     schema_validation: Optional[dict]  # Validation result when json_schema is supplied
+    input_budget: Optional[
+        dict
+    ]  # Out-of-band truncation metadata when the bundled-local input was clipped
 
 
 # ---------------------------------------------------------------------------

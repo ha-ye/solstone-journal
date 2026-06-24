@@ -29,6 +29,7 @@ from solstone.apps.chat.copy import (
     CHAT_CLOSER_SUPPORT_SEND_FAILED,
     CHAT_CLOSER_TALENT_ERRORED_FORMAT,
     CHAT_CLOSER_TALENT_ERRORED_GENERIC,
+    CHAT_DEFERRED_NOT_ANALYZED,
     CHAT_LIVENESS_TASK_FORMAT,
     CHAT_OFFER_SUPPORT_DECLINE,
     CHAT_OFFER_SUPPORT_PROMPT,
@@ -64,6 +65,12 @@ from solstone.convey.utils import error_response
 from solstone.think.callosum import CallosumConnection, callosum_send
 from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_REASON_CODES
 from solstone.think.cortex_client import CortexSpawnUnavailable
+from solstone.think.pipeline_health import SegmentBacklog, read_segment_backlog
+from solstone.think.processing import (
+    ProcessingSettings,
+    format_awaiting_analysis,
+    load_processing_settings,
+)
 from solstone.think.utils import get_journal, now_ms
 
 logger = logging.getLogger(__name__)
@@ -541,6 +548,50 @@ def _proxy_progress(message: dict[str, Any]) -> None:
     _emit_cortex_event(message["event"], **fields)
 
 
+def compose_honest_degradation(
+    settings: ProcessingSettings,
+    backlog: SegmentBacklog,
+    *,
+    queried_day: str | None = None,
+) -> str | None:
+    """Return the honest deferred-mode message when an otherwise-empty answer is
+    really 'captured but not yet analyzed', else None.
+
+    Pure: operates only on already-read inputs. Fires only in deferred mode when
+    the anchor day (the queried day if supplied, else today) has pending backlog
+    (not_sensed + not_thought > 0). Any per-day fold error makes the whole read
+    indeterminate -> None (fail-safe). The count is always rendered on fire since
+    fire requires pending > 0; it is derived from the real backlog read, never
+    fabricated.
+    """
+    if settings.mode != "deferred":
+        return None
+    if backlog.errors:
+        return None
+    anchor_day = queried_day if queried_day is not None else _today_day()
+    completion = backlog.per_day.get(anchor_day)
+    if completion is None:
+        return None
+    pending = completion.not_sensed + completion.not_thought
+    if pending <= 0:
+        return None
+    return f"{CHAT_DEFERRED_NOT_ANALYZED} {format_awaiting_analysis(pending)}"
+
+
+def _honest_degradation_message(queried_day: str | None = None) -> str | None:
+    """Fail-safe wrapper: read mode + backlog, return honest message or None.
+
+    On ANY read error, return None so the caller keeps the unchanged empty path.
+    """
+    try:
+        settings = load_processing_settings()
+        backlog = read_segment_backlog()
+    except Exception:
+        logger.warning("honest-degradation read failed", exc_info=True)
+        return None
+    return compose_honest_degradation(settings, backlog, queried_day=queried_day)
+
+
 def _on_cortex_finish(message: dict[str, Any]) -> None:
     use_id = str(message.get("use_id") or "")
     if not use_id:
@@ -664,6 +715,10 @@ def _on_cortex_finish(message: dict[str, Any]) -> None:
                         requested_task,
                         message_text,
                     )
+                if not message_text and not requested_target:
+                    honest_text = _honest_degradation_message()
+                    if honest_text is not None:
+                        message_text = honest_text
                 thinking = _drain_thinking_locked(use_id, message)
                 sol_message_fields: dict[str, Any] = {
                     "use_id": logical_use_id,

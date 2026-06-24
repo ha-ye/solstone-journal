@@ -79,7 +79,7 @@ def _require_credential(credentials: dict[str, str], key: str) -> str:
 def assemble_backend_env(destination: Destination) -> dict[str, str]:
     credentials = destination.credentials
     if destination.backend == "s3":
-        return {
+        env = {
             "AWS_ACCESS_KEY_ID": _require_credential(
                 credentials,
                 "access_key_id",
@@ -89,6 +89,10 @@ def assemble_backend_env(destination: Destination) -> dict[str, str]:
                 "secret_access_key",
             ),
         }
+        session_token = credentials.get("session_token")
+        if session_token:
+            env["AWS_SESSION_TOKEN"] = session_token
+        return env
     if destination.backend == "b2":
         return {
             "B2_ACCOUNT_ID": _require_credential(credentials, "account_id"),

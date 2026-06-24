@@ -13,14 +13,14 @@ The code-adjacent opt-in fragments are:
 
 | Path | Ownership evidence |
 |---|---|
-| `solstone/apps/link/contract.py` | Link routes are owned by the link app blueprint at `solstone/apps/link/routes.py:124-128`. |
+| `solstone/apps/network/contract.py` | Link routes are owned by the link app blueprint at `solstone/apps/network/routes.py:124-128`. |
 | `solstone/apps/observer/contract.py` | Observer routes are owned by the observer app blueprint at `solstone/apps/observer/routes.py:79-86`. |
 | `solstone/convey/push_contract.py` | Push is a root Convey blueprint beside `solstone/convey/push.py`, whose `push_bp` is defined at `solstone/convey/push.py:30`. |
 
 Each fragment exposes `OPERATIONS: list[OperationSpec]`. The generator uses only
 this explicit fragment list:
 
-- `solstone.apps.link.contract`
+- `solstone.apps.network.contract`
 - `solstone.apps.observer.contract`
 - `solstone.convey.push_contract`
 
@@ -64,7 +64,7 @@ These operation IDs are pinned and renames are breaking:
 - `push.register`
 - `push.unregister`
 
-They are 1:1 with the handler set in `solstone/apps/link/routes.py:401-861`,
+They are 1:1 with the handler set in `solstone/apps/network/routes.py:401-861`,
 `solstone/apps/observer/routes.py:256-1250`, and
 `solstone/convey/push.py:73-112`.
 
@@ -75,11 +75,11 @@ Werkzeug rules, including `<day>`.
 
 | Method | Path | operationId | Named request fields | Named success response fields | `x-reason-codes` |
 |---|---|---|---|---|---|
-| POST | `/app/link/pair-start` | `link.pairStart` | body: `device_label?`, `role?` (`solstone/apps/link/routes.py:530-535`) | `nonce`, `pair_link`, `expires_in`, `rotating`, `device_label`, `ca_fingerprint` (`routes.py:287-294`, `routes.py:594-602`) | `invalid_operation_for_state`, `pairing_request_invalid`, `pl_revoked` |
-| POST | `/app/link/pair` | `link.pair` | query: `token?`; body: `csr`, `nonce?`, `device_label?`, `sender_instance_id?` (`routes.py:704-724`) | `client_cert`, `ca_chain`, `instance_id`, `home_label`, `home_attestation`, `fingerprint`, `local_endpoints?` (`routes.py:622-633`) | `missing_required_field`, `operation_no_longer_available`, `pairing_key_invalid`, `pairing_request_invalid`, `pl_revoked` |
-| POST | `/app/link/unpair` | `link.unpair` | body: `fingerprint?`, `device_label?`; one is required (`routes.py:797-818`) | `unpaired` (`routes.py:861`) | `missing_required_field`, `paired_device_not_found`, `pl_revoked` |
-| GET | `/app/link/local-endpoints` | `link.localEndpoints` | none | `v`, `endpoints`, `ttl_s`, `generated_at` (`routes.py:507-513`, `solstone/think/link/local_endpoints.py:34-40`) | `pl_revoked` |
-| GET | `/app/link/api/status` | `link.status` | none | `instance_id`, `home_label`, `enrolled`, `relay_url`, `ca_fingerprint`, `lan_accessible`, `posture`, `reachability`, `relay_state`, `home_address`, `vpn` (`routes.py:421-435`) | `pl_revoked` |
+| POST | `/app/network/pair-start` | `link.pairStart` | body: `device_label?`, `role?` (`solstone/apps/network/routes.py:530-535`) | `nonce`, `pair_link`, `expires_in`, `rotating`, `device_label`, `ca_fingerprint` (`routes.py:287-294`, `routes.py:594-602`) | `invalid_operation_for_state`, `pairing_request_invalid`, `pl_revoked` |
+| POST | `/app/network/pair` | `link.pair` | query: `token?`; body: `csr`, `nonce?`, `device_label?`, `sender_instance_id?` (`routes.py:704-724`) | `client_cert`, `ca_chain`, `instance_id`, `home_label`, `home_attestation`, `fingerprint`, `local_endpoints?` (`routes.py:622-633`) | `missing_required_field`, `operation_no_longer_available`, `pairing_key_invalid`, `pairing_request_invalid`, `pl_revoked` |
+| POST | `/app/network/unpair` | `link.unpair` | body: `fingerprint?`, `device_label?`; one is required (`routes.py:797-818`) | `unpaired` (`routes.py:861`) | `missing_required_field`, `paired_device_not_found`, `pl_revoked` |
+| GET | `/app/network/local-endpoints` | `link.localEndpoints` | none | `v`, `endpoints`, `ttl_s`, `generated_at` (`routes.py:507-513`, `solstone/think/link/local_endpoints.py:34-40`) | `pl_revoked` |
+| GET | `/app/network/api/status` | `link.status` | none | `instance_id`, `home_label`, `enrolled`, `relay_url`, `ca_fingerprint`, `lan_accessible`, `posture`, `reachability`, `relay_state`, `home_address`, `vpn` (`routes.py:421-435`) | `pl_revoked` |
 | POST | `/app/observer/register` | `observer.register` | body: `platform`, `hostname`, `stream_type`, `version`, `label?` (`solstone/apps/observer/routes.py:419-452`) | `key`, `prefix`, `name`, `ingest_url`, `protocol_version` (`routes.py:467-475`) | `invalid_segment_or_stream`, `local_request_only`, `missing_required_field`, `settings_operation_failed` |
 | POST | `/app/observer/ingest` | `observer.ingestUpload` | auth: `Authorization` bearer or `X-Solstone-Observer`; multipart: `segment`, `day`, `files`, `host?`, `platform?`, `meta?` (`routes.py:890-942`) | normal/collision: `status`, `segment`, `files`, `bytes`; duplicate: `status`, `existing_segment`, `message` (`routes.py:740-747`, `routes.py:859-865`) | `auth_key_invalid`, `auth_required`, `feature_unavailable`, `ingest_no_files`, `ingest_storage_failed`, `invalid_day`, `invalid_segment_or_stream`, `missing_required_field`, `pl_revoked` |
 | POST | `/app/observer/ingest/event` | `observer.ingestEvent` | auth; body: `tract`, `event`, plus open event fields (`routes.py:1073-1093`) | `status` (`routes.py:1100`) | `auth_key_invalid`, `auth_required`, `feature_unavailable`, `missing_required_field`, `pl_revoked` |
@@ -98,7 +98,7 @@ but it additionally has handler-local observer auth errors through
 `resolve_observer_identity()`.
 
 `link.localEndpoints` also has a bare non-reason-coded Flask 404 for non-loopback
-requests at `solstone/apps/link/routes.py:503-506`. That response is documented
+requests at `solstone/apps/network/routes.py:503-506`. That response is documented
 separately from `x-reason-codes`.
 
 ## 4. Reason-Code Two-Tier Model
