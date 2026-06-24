@@ -3,10 +3,11 @@
 
 """solstone namespace package."""
 
-import logging
 import os
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
+
+from solstone.log_policy import apply_http_logging_policy
 
 # HuggingFace Hub reads this at import time. Default telemetry off before any
 # optional provider path can import huggingface_hub.
@@ -18,8 +19,5 @@ try:
 except PackageNotFoundError:
     __version__ = "0.0.0+source"
 
-# httpx logs the full request URL at INFO; the Gemini API authenticates via
-# `?key=AIzaSy...`, so INFO leaks live keys into describe.log / transcribe.log.
-# Set the level on the named logger so it survives later basicConfig() calls
-# from individual CLI entry points.
-logging.getLogger("httpx").setLevel(logging.WARNING)
+# Keep httpx URL logging below the key-leaking INFO level.
+apply_http_logging_policy()

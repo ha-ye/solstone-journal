@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
-from openhands.sdk import LLM
-from openhands.sdk.context.condenser import LLMSummarizingCondenser
+from tests._logging_isolation import preserve_global_logging
+
+with preserve_global_logging():
+    from openhands.sdk import LLM
+    from openhands.sdk.context.condenser import LLMSummarizingCondenser
 
 from solstone.think.providers import openhands
 from solstone.think.providers.local_server import LOCAL_MIN_CONTEXT_TOKENS

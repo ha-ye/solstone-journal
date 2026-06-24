@@ -27,6 +27,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
+from solstone.log_policy import apply_http_logging_policy, snapshot_root_logging
 from solstone.think.cogitate_contract import (
     capabilities_for_access_tier,
     expects_emit_final,
@@ -1044,10 +1045,12 @@ async def run_cogitate(
     llm: Any | None = None
     usage_start: dict[str, int] | None = None
     try:
+        root_baseline = snapshot_root_logging()
         from openhands.sdk import Conversation
         from openhands.sdk.tool.registry import register_tool
         from openhands.sdk.tool.spec import Tool
 
+        apply_http_logging_policy(root_baseline)
         wants_emit_final = expects_emit_final(config)
         max_turns = int(config.get("max_turns", MAX_TURNS) or MAX_TURNS)
         cost_cap = float(
