@@ -109,3 +109,29 @@ def test_app_bar_jobs_indicator_and_composer_state_are_source_wired():
 
     assert "function setQueueDepth" not in source
     assert "eventName === 'chat_queue_depth'" not in source
+
+
+def test_app_bar_talent_tray_reflects_in_flight_only():
+    source = _read(APP_TEMPLATE)
+
+    # Removal helper exists and re-renders, mirroring upsertTalent.
+    assert "function removeTalent(useId)" in source
+    assert "talentState.delete(useId);" in source
+
+    # Load path seeds the tray from in-flight talents only.
+    assert "data.active_talents" in source
+    assert "data.completed_talents" not in source
+
+    # No terminal status is ever written into the tray state.
+    assert "status: 'finished'" not in source
+    assert "status: 'errored'" not in source
+
+    # Both terminal handlers clear the dot instead of keeping a finished/errored chip.
+    assert source.count("removeTalent(String(msg.use_id || ''))") == 2
+
+    # Running lifecycle is intact: spawn + active-seed still mark running.
+    assert "status: 'running'" in source
+
+    # Queued path untouched (no tray dots for queued talents).
+    assert "data.queued_talents" in source
+    assert source.count("queuedJobs.delete(String(msg.use_id || ''));") == 3
