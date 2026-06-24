@@ -4222,7 +4222,7 @@ wheels = [
 
 [[package]]
 name = "solstone"
-version = "0.6.11"
+version = "0.6.12"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
@@ -4429,7 +4429,7 @@ dev = [
 
 [[package]]
 name = "solstone-journal-host"
-version = "0.6.11"
+version = "0.6.12"
 source = { editable = "packages/solstone-journal-host" }
 dependencies = [
     { name = "solstone", extra = ["journal-host"] },

@@ -4,6 +4,19 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.12] - 2026-06-23
+
+### Added
+- a new way to run sol on a box that can't keep up with heavy local analysis in real time. pick "deferred" in your processing settings and solstone takes in your day exactly as before, in real time, nothing dropped, while the heavier analysis waits and runs in a window you choose (overnight by default) or while your display is asleep. your journal's health view shows how many segments are waiting and when they last caught up. built for owners running sol on their own hardware, like a single GPU, who want to observe all day and let the deep work happen while the machine is idle.
+- while you're in deferred mode, if you ask sol about today and the answer would come up empty, sol now tells you it has taken your day in but hasn't analyzed it yet and will during your chosen window, instead of just coming back with nothing.
+
+### Changed
+- your journal's activity records read cleaner. a single moment used to spawn several near-duplicate entries that all shared one summary, including minor ones that didn't warrant their own; now only the ones worth their own entry get one, each described in its own words. existing records are untouched.
+
+### Fixed
+- running sol on a local model no longer stalls or comes back empty on a dense, busy day. on constrained hardware a packed day could overflow the local model and produce nothing for that stretch with an opaque error; the local model now sizes itself to your graphics card and fits each request to what it can hold, so a long day finishes cleanly. surfaced by an owner running this on an AMD card.
+- the row of active-work dots next to the chat bar reflects what's actually running again. it had been collecting grey "finished" dots and replaying them every time you reloaded or restarted; now it shows only work in flight and clears each item as it finishes.
+
 ## [0.6.11] - 2026-06-23
 
 ### Changed
