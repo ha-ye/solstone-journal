@@ -30,6 +30,7 @@ MODE_DISPOSITIONS = {
     "--source": "http-client",
     "--force": "http-client",
     "--auto": "http-client",
+    "--deterministic-only": "http-client",
     "--dry-run": "reject-journal-host",
     "--json": "client-output",
     "-v/--verbose": "client-logging",
@@ -69,6 +70,11 @@ def _build_parser() -> argparse.ArgumentParser:
         const=True,
         default=None,
         help="Accept the server-detected timestamp",
+    )
+    parser.add_argument(
+        "--deterministic-only",
+        action="store_true",
+        help="Use only deterministic timestamp detection; skip model detection",
     )
     parser.add_argument(
         "--dry-run",
@@ -169,6 +175,8 @@ def _save_media(client: ConveyClient, args: argparse.Namespace) -> dict[str, Any
         }.items()
         if value is not None
     }
+    if args.deterministic_only:
+        data["deterministic_only"] = "true"
     if media_path.exists() and media_path.is_file():
         return client.upload(
             f"{IMPORT_API}/save",

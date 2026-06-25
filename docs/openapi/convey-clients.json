@@ -1293,6 +1293,9 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "deterministic_only": {
+                    "type": "boolean"
+                  },
                   "facet": {
                     "type": "string"
                   },
@@ -1327,7 +1330,10 @@
                   "facet": null,
                   "path": "/journal/imports/20260618_143022/source.txt",
                   "setting": null,
-                  "timestamp": "20260618_143022"
+                  "timestamp": "20260618_143022",
+                  "timestamp_detection_method": "deterministic",
+                  "timestamp_detection_model_called": false,
+                  "timestamp_detection_no_match_reason": null
                 },
                 "schema": {
                   "additionalProperties": true,
@@ -1349,13 +1355,29 @@
                     },
                     "timestamp": {
                       "type": "string"
+                    },
+                    "timestamp_detection_method": {
+                      "description": "Timestamp detection method: deterministic, model, upload_fallback, or explicit.",
+                      "type": "string"
+                    },
+                    "timestamp_detection_model_called": {
+                      "type": "boolean"
+                    },
+                    "timestamp_detection_no_match_reason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
                   "required": [
                     "path",
                     "timestamp",
                     "facet",
-                    "setting"
+                    "setting",
+                    "timestamp_detection_method",
+                    "timestamp_detection_model_called",
+                    "timestamp_detection_no_match_reason"
                   ],
                   "type": "object"
                 }

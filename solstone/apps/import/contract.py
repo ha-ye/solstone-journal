@@ -46,6 +46,7 @@ OPERATIONS: list[OperationSpec] = [
                 FieldSpec("setting", "string"),
                 FieldSpec("imported_via", "string"),
                 FieldSpec("observer_handle", "string"),
+                FieldSpec("deterministic_only", "boolean"),
             ),
             description="Multipart body with either file or text.",
         ),
@@ -68,12 +69,35 @@ OPERATIONS: list[OperationSpec] = [
                         required=True,
                         raw_schema=_NULLABLE_STRING,
                     ),
+                    FieldSpec(
+                        "timestamp_detection_method",
+                        "string",
+                        required=True,
+                        description=(
+                            "Timestamp detection method: deterministic, model, "
+                            "upload_fallback, or explicit."
+                        ),
+                    ),
+                    FieldSpec(
+                        "timestamp_detection_model_called",
+                        "boolean",
+                        required=True,
+                    ),
+                    FieldSpec(
+                        "timestamp_detection_no_match_reason",
+                        "string",
+                        required=True,
+                        raw_schema=_NULLABLE_STRING,
+                    ),
                 ),
                 example={
                     "path": "/journal/imports/20260618_143022/source.txt",
                     "timestamp": "20260618_143022",
                     "facet": None,
                     "setting": None,
+                    "timestamp_detection_method": "deterministic",
+                    "timestamp_detection_model_called": False,
+                    "timestamp_detection_no_match_reason": None,
                 },
             ),
             _json_error(

@@ -66,6 +66,7 @@ def test_mode_disposition_table_covers_d5_modes() -> None:
         "--source": "http-client",
         "--force": "http-client",
         "--auto": "http-client",
+        "--deterministic-only": "http-client",
         "--dry-run": "reject-journal-host",
         "--json": "client-output",
         "-v/--verbose": "client-logging",
@@ -183,6 +184,21 @@ def test_metadata_and_start_options_forward(tmp_path: Path) -> None:
         "setting": "office",
         "source": "ics",
     }
+
+
+def test_deterministic_only_forwards_only_on_save_data(tmp_path: Path) -> None:
+    media = tmp_path / "sample.txt"
+    media.write_text("hello", encoding="utf-8")
+    client = FakeClient()
+
+    code = import_client.main(
+        [str(media), "--deterministic-only"],
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert code == 0
+    assert client.uploads[0]["data"] == {"deterministic_only": "true"}
+    assert "deterministic_only" not in client.requests[0]["json"]
 
 
 def test_json_output_shape(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -101,6 +101,9 @@ def _import_route_client(
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     think_utils._journal_path_cache = None
     monkeypatch.setattr(import_routes, "detect_created", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        import_routes, "resolve_created_deterministic", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(import_routes, "now_ms", lambda: 1_765_000_000_000)
 
     stamped = identity or ConveyIdentity(
@@ -131,6 +134,109 @@ def _post_import_save(client, data: dict):
         data=payload,
         content_type="multipart/form-data",
     )
+
+
+def _read_import_metadata(journal_root: Path, timestamp: str) -> dict:
+    return json.loads(
+        (journal_root / "imports" / timestamp / "import.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+
+def test_importer_deterministic_success_skips_model_without_flag(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.importers.cli")
+    media = tmp_path / "note.txt"
+    media.write_text("meeting notes", encoding="utf-8")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    think_utils._journal_path_cache = None
+    monkeypatch.setattr(
+        mod,
+        "resolve_created_deterministic",
+        lambda *args, **kwargs: {"day": "20240115", "time": "103000"},
+    )
+
+    def fail_detect(*args, **kwargs):
+        raise AssertionError("model detection should not be called")
+
+    monkeypatch.setattr(mod, "detect_created", fail_detect)
+
+    result = mod.import_one(media)
+
+    assert result == {
+        "skipped": True,
+        "reason": "timestamp_required",
+        "detected_timestamp": "20240115_103000",
+    }
+
+
+def test_importer_deterministic_only_no_match_never_calls_model(
+    tmp_path, monkeypatch, capsys
+):
+    mod = importlib.import_module("solstone.think.importers.cli")
+    media = tmp_path / "note.txt"
+    media.write_text("meeting notes", encoding="utf-8")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    think_utils._journal_path_cache = None
+    monkeypatch.setattr(
+        mod, "resolve_created_deterministic", lambda *args, **kwargs: None
+    )
+
+    def fail_detect(*args, **kwargs):
+        raise AssertionError("model detection should not be called")
+
+    monkeypatch.setattr(mod, "detect_created", fail_detect)
+
+    result = mod.import_one(media, deterministic_only=True)
+
+    assert result == {"skipped": True, "reason": "no_deterministic_match"}
+    assert "No deterministic timestamp found" in capsys.readouterr().out
+
+
+def test_importer_falls_back_to_model_when_deterministic_missing(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.importers.cli")
+    media = tmp_path / "note.txt"
+    media.write_text("meeting notes", encoding="utf-8")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    think_utils._journal_path_cache = None
+    monkeypatch.setattr(
+        mod, "resolve_created_deterministic", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        mod,
+        "detect_created",
+        lambda *args, **kwargs: {"day": "20240115", "time": "103000"},
+    )
+
+    result = mod.import_one(media)
+
+    assert result == {
+        "skipped": True,
+        "reason": "timestamp_required",
+        "detected_timestamp": "20240115_103000",
+    }
+
+
+def test_import_one_explicit_timestamp_bypasses_resolver_and_model(
+    tmp_path, monkeypatch
+):
+    mod = importlib.import_module("solstone.think.importers.cli")
+    transcript = "hello\nworld"
+    txt = tmp_path / "sample.txt"
+    txt.write_text(transcript, encoding="utf-8")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    think_utils._journal_path_cache = None
+    _configure_text_import_runtime(monkeypatch, mod)
+
+    def fail_detect(*args, **kwargs):
+        raise AssertionError("timestamp detection should not be called")
+
+    monkeypatch.setattr(mod, "resolve_created_deterministic", fail_detect)
+    monkeypatch.setattr(mod, "detect_created", fail_detect)
+
+    result = mod.import_one(txt, timestamp="20240101_120000")
+
+    assert result["processed_timestamp"] == "20240101_120000"
 
 
 def test_import_save_stamps_web_dashboard_provenance(tmp_path, monkeypatch):
@@ -183,6 +289,126 @@ def test_import_save_stamps_pl_link_id(tmp_path, monkeypatch):
         (tmp_path / "imports" / timestamp / "import.json").read_text(encoding="utf-8")
     )
     assert metadata["link_id"] == fingerprint
+
+
+def test_import_save_deterministic_success_skips_model_and_audits(
+    tmp_path, monkeypatch
+):
+    client = _import_route_client(tmp_path, monkeypatch)
+    import_routes = importlib.import_module("solstone.apps.import.routes")
+    deterministic_result = {
+        "day": "20240115",
+        "time": "103000",
+        "confidence": "high",
+        "source": "filename_local",
+        "utc": False,
+    }
+    monkeypatch.setattr(
+        import_routes,
+        "resolve_created_deterministic",
+        lambda *args, **kwargs: deterministic_result,
+    )
+
+    def fail_detect(*args, **kwargs):
+        raise AssertionError("model detection should not be called")
+
+    monkeypatch.setattr(import_routes, "detect_created", fail_detect)
+
+    response = _post_import_save(client, {})
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["timestamp"] == "20240115_103000"
+    assert body["timestamp_detection_method"] == "deterministic"
+    assert body["timestamp_detection_model_called"] is False
+    assert body["timestamp_detection_no_match_reason"] is None
+    metadata = _read_import_metadata(tmp_path, body["timestamp"])
+    assert metadata["detection_result"] == deterministic_result
+    assert metadata["detected_timestamp"] == "20240115_103000"
+    assert metadata["timestamp_detection_method"] == "deterministic"
+    assert metadata["timestamp_detection_model_called"] is False
+    assert metadata["timestamp_detection_no_match_reason"] is None
+
+
+def test_import_save_deterministic_only_no_match_uses_upload_fallback_and_audit(
+    tmp_path, monkeypatch
+):
+    client = _import_route_client(tmp_path, monkeypatch)
+    import_routes = importlib.import_module("solstone.apps.import.routes")
+    monkeypatch.setattr(
+        import_routes, "resolve_created_deterministic", lambda *args, **kwargs: None
+    )
+
+    def fail_detect(*args, **kwargs):
+        raise AssertionError("model detection should not be called")
+
+    monkeypatch.setattr(import_routes, "detect_created", fail_detect)
+
+    response = _post_import_save(client, {"deterministic_only": "true"})
+
+    assert response.status_code == 200
+    body = response.get_json()
+    expected_timestamp = dt.datetime.fromtimestamp(1_765_000_000_000 / 1000).strftime(
+        "%Y%m%d_%H%M%S"
+    )
+    assert body["timestamp"] == expected_timestamp
+    assert body["timestamp_detection_method"] == "upload_fallback"
+    assert body["timestamp_detection_model_called"] is False
+    assert body["timestamp_detection_no_match_reason"] == "no_deterministic_match"
+    metadata = _read_import_metadata(tmp_path, body["timestamp"])
+    assert metadata["detected_timestamp"] is None
+    assert metadata["user_timestamp"] == body["timestamp"]
+    assert metadata["timestamp_detection_method"] == "upload_fallback"
+    assert metadata["timestamp_detection_model_called"] is False
+    assert metadata["timestamp_detection_no_match_reason"] == "no_deterministic_match"
+
+
+def test_import_save_model_success_audits(tmp_path, monkeypatch):
+    client = _import_route_client(tmp_path, monkeypatch)
+    import_routes = importlib.import_module("solstone.apps.import.routes")
+    model_result = {"day": "20240115", "time": "103000"}
+    monkeypatch.setattr(
+        import_routes, "resolve_created_deterministic", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        import_routes, "detect_created", lambda *args, **kwargs: model_result
+    )
+
+    response = _post_import_save(client, {})
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["timestamp"] == "20240115_103000"
+    assert body["timestamp_detection_method"] == "model"
+    assert body["timestamp_detection_model_called"] is True
+    assert body["timestamp_detection_no_match_reason"] is None
+    metadata = _read_import_metadata(tmp_path, body["timestamp"])
+    assert metadata["detection_result"] == model_result
+    assert metadata["timestamp_detection_method"] == "model"
+    assert metadata["timestamp_detection_model_called"] is True
+    assert metadata["timestamp_detection_no_match_reason"] is None
+
+
+def test_import_save_model_no_match_audits_upload_fallback(tmp_path, monkeypatch):
+    client = _import_route_client(tmp_path, monkeypatch)
+    import_routes = importlib.import_module("solstone.apps.import.routes")
+    monkeypatch.setattr(
+        import_routes, "resolve_created_deterministic", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(import_routes, "detect_created", lambda *args, **kwargs: None)
+
+    response = _post_import_save(client, {})
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["timestamp_detection_method"] == "upload_fallback"
+    assert body["timestamp_detection_model_called"] is True
+    assert body["timestamp_detection_no_match_reason"] == "model_no_match"
+    metadata = _read_import_metadata(tmp_path, body["timestamp"])
+    assert metadata["detected_timestamp"] is None
+    assert metadata["timestamp_detection_method"] == "upload_fallback"
+    assert metadata["timestamp_detection_model_called"] is True
+    assert metadata["timestamp_detection_no_match_reason"] == "model_no_match"
 
 
 def test_cli_import_provenance_defaults(tmp_path, monkeypatch):
@@ -284,9 +510,12 @@ def test_importer_text(tmp_path, monkeypatch):
     txt.write_text(transcript)
 
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr(
-        mod, "detect_created", lambda p, **kw: {"day": "20240101", "time": "120000"}
-    )
+
+    def fail_detect(*args, **kwargs):
+        raise AssertionError("timestamp detection should not be called")
+
+    monkeypatch.setattr(mod, "resolve_created_deterministic", fail_detect)
+    monkeypatch.setattr(mod, "detect_created", fail_detect)
 
     # Mock segment detection: returns (start_at, text) tuples with absolute times
     def mock_detect_segment(text, start_time):

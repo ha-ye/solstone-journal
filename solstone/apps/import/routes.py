@@ -31,7 +31,7 @@ from solstone.convey.utils import (
     respond_collection,
     success_response,
 )
-from solstone.think.detect_created import detect_created
+from solstone.think.detect_created import detect_created, resolve_created_deterministic
 from solstone.think.importers.utils import (
     build_import_info,
     generate_content_manifest,
@@ -218,6 +218,10 @@ def _link_id_from_identity() -> str | None:
     )
 
 
+def _form_bool(value: str | None) -> bool:
+    return value.strip().lower() in {"true", "1", "yes"} if value else False
+
+
 @import_bp.route("/api/save", methods=["POST"])
 def import_save() -> Any:
     from datetime import datetime
@@ -226,6 +230,7 @@ def import_save() -> Any:
     text = request.form.get("text", "").strip()
     facet = request.form.get("facet", "").strip() or None
     setting = request.form.get("setting", "").strip() or None
+    deterministic_only = _form_bool(request.form.get("deterministic_only"))
 
     # Generate timestamp for folder name
     timestamp_ms = now_ms()
@@ -241,6 +246,9 @@ def import_save() -> Any:
     # Detect timestamp from content first (need temporary save for detection)
     ts = None
     detection_result = None
+    timestamp_detection_method = "upload_fallback"
+    timestamp_detection_model_called = False
+    timestamp_detection_no_match_reason = None
 
     # Create temporary file for detection if needed
     if upload:
@@ -264,17 +272,47 @@ def import_save() -> Any:
             temp_path = tmp.name
 
     try:
-        # Pass original filename for better timestamp detection
-        original_name = upload.filename if upload else None
-        detection_result = detect_created(temp_path, original_filename=original_name)
-        if (
-            detection_result
-            and detection_result.get("day")
-            and detection_result.get("time")
-        ):
-            ts = f"{detection_result['day']}_{detection_result['time']}"
-    except Exception:
-        ts = None
+        try:
+            original_name = upload.filename if upload else None
+            detection_result = resolve_created_deterministic(
+                temp_path,
+                original_filename=original_name,
+            )
+            if (
+                detection_result
+                and detection_result.get("day")
+                and detection_result.get("time")
+            ):
+                ts = f"{detection_result['day']}_{detection_result['time']}"
+                timestamp_detection_method = "deterministic"
+        except Exception:
+            detection_result = None
+
+        if not ts:
+            if deterministic_only:
+                timestamp_detection_no_match_reason = "no_deterministic_match"
+            else:
+                try:
+                    # Pass original filename for better timestamp detection
+                    original_name = upload.filename if upload else None
+                    detection_result = detect_created(
+                        temp_path,
+                        original_filename=original_name,
+                    )
+                    timestamp_detection_model_called = True
+                    if (
+                        detection_result
+                        and detection_result.get("day")
+                        and detection_result.get("time")
+                    ):
+                        ts = f"{detection_result['day']}_{detection_result['time']}"
+                        timestamp_detection_method = "model"
+                    else:
+                        timestamp_detection_no_match_reason = "model_no_match"
+                except Exception:
+                    detection_result = None
+                    timestamp_detection_model_called = True
+                    timestamp_detection_no_match_reason = "model_no_match"
     finally:
         # Clean up temporary file
         Path(temp_path).unlink(missing_ok=True)
@@ -320,6 +358,9 @@ def import_save() -> Any:
         "detection_result": detection_result,
         "detected_timestamp": ts,
         "user_timestamp": folder_timestamp,  # The timestamp used for the folder
+        "timestamp_detection_method": timestamp_detection_method,
+        "timestamp_detection_model_called": timestamp_detection_model_called,
+        "timestamp_detection_no_match_reason": timestamp_detection_no_match_reason,
         "file_size": file_path.stat().st_size if file_path.exists() else 0,
         "mime_type": upload.content_type if upload else "text/plain",
         "facet": facet,  # Include selected facet
@@ -358,6 +399,9 @@ def import_save() -> Any:
         "timestamp": folder_timestamp,
         "facet": facet,
         "setting": setting,
+        "timestamp_detection_method": timestamp_detection_method,
+        "timestamp_detection_model_called": timestamp_detection_model_called,
+        "timestamp_detection_no_match_reason": timestamp_detection_no_match_reason,
     }
     if dedup:
         result["dedup"] = dedup
