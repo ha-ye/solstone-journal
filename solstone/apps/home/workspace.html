@@ -14,7 +14,7 @@
 .pulse-dashboard a:focus-visible,
 .pulse-dashboard button:focus-visible,
 .pulse-dashboard [role="button"]:focus-visible {
-  outline-color: #6366f1;
+  outline-color: var(--focus);
 }
 
 /* Vital Signs */
@@ -59,19 +59,19 @@
 
 .pulse-vitals > a.pulse-vitals-health-link {
   margin-left: auto;
-  color: #6366f1;
+  color: var(--orange-ink);
   text-decoration: none;
   font-size: 0.85rem;
 }
 
 .pulse-vitals a:hover { text-decoration: underline; }
 .pulse-vitals a:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
   border-radius: 2px;
 }
 .pulse-vitals a:active {
-  color: #4f46e5;
+  color: var(--orange-ink);
 }
 
 .pulse-vitals-attention {
@@ -102,7 +102,7 @@
 }
 
 .pulse-vitals-action-link {
-  color: #6366f1;
+  color: var(--orange-ink);
   font-size: 0.75rem;
   text-decoration: none;
 }
@@ -180,7 +180,7 @@
   border-radius: 6px;
 }
 .pulse-section-toggle:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
   border-radius: 6px;
 }
@@ -377,7 +377,7 @@
 
 .pulse-needs-more {
   font-size: 0.8rem;
-  color: #6366f1;
+  color: var(--orange-ink);
   margin-top: 0.5rem;
 }
 
@@ -415,15 +415,15 @@
   background: #e2e8f0;
 }
 [data-conversation]:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 .pulse-briefing-header:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 .pulse-yesterday-header:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 .pulse-briefing-header:hover {
@@ -444,7 +444,7 @@
   display: inline-block;
   margin-top: 0.5rem;
   font-size: 0.8rem;
-  color: #6366f1;
+  color: var(--orange-ink);
   text-decoration: none;
 }
 .pulse-tell-more:hover {
@@ -452,12 +452,12 @@
   background: transparent;
 }
 .pulse-tell-more:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
   border-radius: 2px;
 }
 .pulse-tell-more:active {
-  color: #4f46e5;
+  color: var(--orange-ink);
 }
 
 /* Briefing Card */
@@ -600,7 +600,7 @@
   color: #64748b;
 }
 .pulse-briefing-section-toggle:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
   border-radius: 4px;
 }
@@ -609,14 +609,14 @@
 }
 
 .pulse-reading-link {
-  color: #6366f1;
+  color: var(--orange-ink);
   text-decoration: none;
 }
 .pulse-reading-link:hover {
   text-decoration: underline;
 }
 .pulse-reading-link:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
   border-radius: 2px;
 }
@@ -666,6 +666,7 @@
 }
 
 .pulse-welcome h2 {
+  font-family: var(--font-display);
   font-size: 1.15rem;
   font-weight: 600;
   color: #1e293b;
@@ -684,7 +685,7 @@
 }
 
 .pulse-welcome a {
-  color: #6366f1;
+  color: var(--orange-ink);
   text-decoration: none;
   font-size: 0.85rem;
   font-weight: 500;
@@ -697,13 +698,13 @@
 }
 
 .pulse-welcome a:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
   border-radius: 2px;
 }
 
 .pulse-welcome a:active {
-  color: #4f46e5;
+  color: var(--orange-ink);
 }
 
 .pulse-empty-state {
@@ -732,7 +733,7 @@
 }
 
 .pulse-empty-state .pulse-empty-message a {
-  color: #6366f1;
+  color: var(--orange-ink);
   text-decoration: none;
 }
 
@@ -742,14 +743,14 @@
 
 .pulse-needs-more a:focus-visible,
 .pulse-empty-state .pulse-empty-message a:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
   border-radius: 2px;
 }
 
 .pulse-needs-more a:active,
 .pulse-empty-state .pulse-empty-message a:active {
-  color: #4f46e5;
+  color: var(--orange-ink);
 }
 
 /* Responsive breakpoints */
