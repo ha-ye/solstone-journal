@@ -1561,19 +1561,18 @@ body.menu-all .menu-bar {
 }
 
 .facet-pill.selected:hover {
-  background: var(--pill-color);
+  background: color-mix(in srgb, var(--pill-color, var(--orange)) 22%, var(--paper));
   opacity: 1;
-  border-color: var(--pill-color);
+  border-color: var(--pill-color, var(--orange));
   transform: translateY(0);
   box-shadow: none;
-  filter: brightness(1.1);
 }
 
 .facet-pill.selected {
   opacity: 1;
-  background: var(--pill-color);
-  color: var(--ink-on-dark);
-  border-color: var(--pill-color);
+  background: color-mix(in srgb, var(--pill-color, var(--orange)) 14%, var(--paper));
+  color: var(--ink);
+  border-color: var(--pill-color, var(--orange));
   font-weight: 600;
 }
 
@@ -3000,8 +2999,9 @@ body.has-date-nav .chat-app {
 }
 
 .chat-bubble--owner {
-  background: var(--facet-color, #b06a1a);
-  color: var(--ink-on-dark);
+  background: color-mix(in srgb, var(--facet-color, var(--orange)) 14%, var(--paper));
+  color: var(--ink);
+  border: 1px solid var(--facet-color, var(--orange));
   border-bottom-right-radius: 6px;
 }
 

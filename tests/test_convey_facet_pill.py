@@ -10,15 +10,19 @@ def _function_body(text: str, name: str) -> str:
     return text[start:nxt]
 
 
-def test_selected_pill_uses_status_inactive_fallback():
+def test_selected_pill_defers_to_css_for_contrast_safe_treatment():
     fn = _function_body(
         Path("solstone/convey/static/app.js").read_text(encoding="utf-8"),
         "applyPillStyle",
     )
 
-    assert "pill.style.background = facet.color || 'var(--status-inactive)';" in fn
-    assert "pill.style.borderColor = facet.color || 'var(--status-inactive)';" in fn
-    assert "pill.style.color = 'white';" in fn
+    # The selected pill must not force white-on-color inline; the contrast-safe
+    # .selected treatment (soft facet wash + dark ink + facet-hued border) lives
+    # in app.css. Inline writes would override the stylesheet and re-break it.
+    assert "pill.style.color = 'white';" not in fn
+    assert "var(--status-inactive)" not in fn
+    # It still marks selection via the class the CSS rule keys on.
+    assert "pill.classList.add('selected');" in fn
 
 
 def test_unselected_pill_reset_and_color_setters_unchanged():

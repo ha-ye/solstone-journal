@@ -66,10 +66,10 @@
 }
 
 .settings-nav-item.active {
-  background: var(--facet-color, #E8923A);
-  color: white;
+  background: color-mix(in srgb, var(--facet-color, var(--orange)) 14%, var(--paper));
+  color: var(--ink);
   font-weight: 600;
-  box-shadow: inset 3px 0 0 0 rgba(255,255,255,0.5);
+  box-shadow: inset 3px 0 0 0 var(--facet-color, var(--orange));
 }
 
 /* Reusable per-tab attention indicator. Any tab can opt in by setting
