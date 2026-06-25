@@ -175,18 +175,19 @@
 
   /* Buttons */
   .support-btn {
-    background: var(--facet-color, #3b82f6);
-    color: #fff;
+    background: color-mix(in srgb, var(--facet-color, var(--orange)) 14%, var(--paper));
+    color: var(--ink);
     border: none;
+    box-shadow: inset 0 0 0 2px var(--facet-color, var(--orange));
     padding: 0.5rem 1.25rem;
     border-radius: 6px;
     cursor: pointer;
     font-size: 0.9rem;
-    font-weight: 500;
+    font-weight: 600;
   }
-  .support-btn:hover { filter: brightness(1.1); }
+  .support-btn:hover { background: color-mix(in srgb, var(--facet-color, var(--orange)) 22%, var(--paper)); }
   .support-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .support-btn:active:not(:disabled) { filter: brightness(0.9); transform: translateY(1px); }
+  .support-btn:active:not(:disabled) { background: color-mix(in srgb, var(--facet-color, var(--orange)) 30%, var(--paper)); transform: translateY(1px); }
   .support-btn-secondary {
     background: transparent;
     color: var(--text, #222);
@@ -215,24 +216,26 @@
     margin-bottom: 1.5rem;
   }
   .support-empty-action {
-    background: var(--facet-color, #3b82f6);
-    color: #fff;
+    background: color-mix(in srgb, var(--facet-color, var(--orange)) 14%, var(--paper));
+    color: var(--ink);
     border: none;
+    box-shadow: inset 0 0 0 2px var(--facet-color, var(--orange));
     padding: 0.5rem 1.25rem;
     border-radius: 6px;
     cursor: pointer;
     font-size: 0.9rem;
-    font-weight: 500;
+    font-weight: 600;
   }
-  .support-empty-action:hover { filter: brightness(1.1); }
-  .support-empty-action:active { filter: brightness(0.9); transform: translateY(1px); }
+  .support-empty-action:hover { background: color-mix(in srgb, var(--facet-color, var(--orange)) 22%, var(--paper)); }
+  .support-empty-action:active { background: color-mix(in srgb, var(--facet-color, var(--orange)) 30%, var(--paper)); transform: translateY(1px); }
 
   .support-tab-badge {
     position: absolute;
     top: 2px;
     right: 2px;
-    background: var(--facet-color, #3b82f6);
-    color: #fff;
+    background: color-mix(in srgb, var(--facet-color, var(--orange)) 14%, var(--paper));
+    color: var(--ink);
+    border: 1px solid var(--facet-color, var(--orange));
     font-size: 0.7rem;
     font-weight: 600;
     min-width: 1.1rem;

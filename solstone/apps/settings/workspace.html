@@ -811,22 +811,23 @@ input:checked + .slider:before {
 .save-color-btn {
   width: 100%;
   padding: 0.75em 1.5em;
-  background: var(--facet-color, #E8923A);
-  color: white;
+  background: color-mix(in srgb, var(--facet-color, var(--orange)) 14%, var(--paper));
+  color: var(--ink);
   border: none;
+  box-shadow: inset 0 0 0 2px var(--facet-color, var(--orange));
   border-radius: 8px;
   font-size: 1em;
   font-weight: 600;
   cursor: pointer;
-  transition: opacity 0.2s;
+  transition: background 0.2s;
 }
 
 .save-color-btn:hover {
-  opacity: 0.9;
+  background: color-mix(in srgb, var(--facet-color, var(--orange)) 22%, var(--paper));
 }
 
 .save-color-btn:active {
-  opacity: 0.75;
+  background: color-mix(in srgb, var(--facet-color, var(--orange)) 30%, var(--paper));
   transform: translateY(1px);
 }
 
@@ -2672,7 +2673,7 @@ button:focus:not(:focus-visible) {
         </div>
 
         <p id="plaudSyncTokenNote" style="display: none; color: #888; font-size: 0.85em; margin-top: 1em; padding: 0.75em; background: #f8f9fa; border-radius: 4px;">
-          configure your Plaud token in <a href="#apikeys" id="plaudApiKeysLink" style="color: #667eea;">API keys</a> to enable sync.
+          configure your Plaud token in <a href="#apikeys" id="plaudApiKeysLink" style="color: var(--orange-ink);">API keys</a> to enable sync.
         </p>
       </div>
 
@@ -5730,7 +5731,7 @@ function startEditField(el, field) {
   input.className = 'activity-desc-input';
   input.value = isPlaceholder ? '' : currentText;
   input.placeholder = field === 'instructions' ? 'Detection hints and level guidance' : '';
-  input.style.cssText = 'width:100%;padding:0.3em;font-size:0.85em;border:1px solid var(--facet-color,#667eea);border-radius:4px;';
+  input.style.cssText = 'width:100%;padding:0.3em;font-size:0.85em;border:1px solid var(--facet-color,var(--orange));border-radius:4px;';
 
   el.style.display = 'none';
   el.parentNode.insertBefore(input, el.nextSibling);

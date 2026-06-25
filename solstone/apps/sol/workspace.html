@@ -503,9 +503,9 @@
 }
 
 .rd-tab.active {
-  background: var(--facet-color, #b06a1a);
-  border-color: var(--facet-color, #b06a1a);
-  color: #fff;
+  background: color-mix(in srgb, var(--facet-color, var(--orange)) 14%, var(--paper));
+  border-color: var(--facet-color, var(--orange));
+  color: var(--ink);
 }
 
 .rd-tab:not(.active):active {
