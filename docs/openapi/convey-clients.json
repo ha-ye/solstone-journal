@@ -267,12 +267,16 @@
             "content": {
               "application/json": {
                 "example": {
+                  "queue_depth": 0,
                   "queued": false,
                   "use_id": "1781803200000"
                 },
                 "schema": {
                   "additionalProperties": true,
                   "properties": {
+                    "queue_depth": {
+                      "type": "integer"
+                    },
                     "queued": {
                       "type": "boolean"
                     },
@@ -282,7 +286,8 @@
                   },
                   "required": [
                     "use_id",
-                    "queued"
+                    "queued",
+                    "queue_depth"
                   ],
                   "type": "object"
                 }
@@ -320,7 +325,23 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "additionalProperties": true,
+                      "properties": {
+                        "queue_depth": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "queue_depth"
+                      ],
+                      "type": "object"
+                    }
+                  ]
                 }
               }
             },
@@ -3293,7 +3314,21 @@
                 }
               }
             },
-            "description": "Callosum event stream. Heartbeat frames are comments `: heartbeat\\n\\n`; data frames are `data: {json}\\n\\n` and carry CallosumEvent JSON for all tracts, including chat."
+            "description": "Callosum event stream. Heartbeat frames are comments `: heartbeat\\n\\n`; data frames are `data: {json}\\n\\n` and carry CallosumEvent JSON for all tracts, including chat.",
+            "x-chat-events": {
+              "description": "CallosumEvent kinds on tract 'chat' a native client branches on. Payloads remain open (CallosumEvent.additionalProperties).",
+              "kinds": [
+                "owner_message",
+                "sol_message",
+                "talent_queued",
+                "talent_spawned",
+                "talent_finished",
+                "talent_errored",
+                "chat_queue_depth",
+                "result",
+                "chat_error"
+              ]
+            }
           },
           "403": {
             "content": {
@@ -3324,6 +3359,7 @@
     "chat": [
       "owner_message",
       "sol_message",
+      "talent_queued",
       "talent_spawned",
       "talent_finished",
       "talent_errored",

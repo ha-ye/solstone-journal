@@ -271,6 +271,7 @@ def error_response(
     status: int | None = None,
     *,
     detail: str | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> tuple[Response, int]:
     """Create a standard JSON error response.
 
@@ -280,6 +281,7 @@ def error_response(
         reason: Reason constant
         status: Optional HTTP status override
         detail: Optional implementation-specific context
+        extra: Optional additional JSON fields
 
     Returns:
         Tuple of (jsonify response, status_code) ready for Flask return
@@ -288,6 +290,7 @@ def error_response(
     return (
         jsonify(
             {
+                **(extra or {}),
                 "error": reason.message,
                 "reason_code": reason.code,
                 "detail": detail or "",

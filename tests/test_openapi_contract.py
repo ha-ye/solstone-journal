@@ -11,10 +11,12 @@ from typing import Any
 
 import pytest
 
+import solstone.convey.chat as chat
 from solstone.apps.home.contract import OPERATIONS as HOME_OPERATIONS
 from solstone.apps.network.contract import OPERATIONS as LINK_OPERATIONS
 from solstone.apps.observer.contract import OPERATIONS as OBSERVER_OPERATIONS
 from solstone.convey import create_app
+from solstone.convey.chat import ChatSpawnResult
 from solstone.convey.chat_contract import OPERATIONS as CHAT_OPERATIONS
 from solstone.convey.contract.assemble import build_document
 from solstone.convey.contract.diff import (
@@ -175,6 +177,33 @@ def _push_identity() -> ConveyIdentity:
     )
 
 
+def _reset_chat_state() -> None:
+    chat.stop_all_chat_runtime()
+    with chat._state_lock:
+        chat._current_chat_use_id = None
+        chat._current_chat_state = None
+        chat._queued_triggers.clear()
+        chat._active_talents.clear()
+        chat._reserved_use_ids.clear()
+        chat._thinking_buffers.clear()
+        chat._thinking_providers.clear()
+        for timer in chat._watchdog_timers.values():
+            timer.cancel()
+        chat._watchdog_timers.clear()
+        chat._last_use_id = 0
+
+
+def _patch_chat_post_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "solstone.think.identity.ensure_identity_directory",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "solstone.convey.chat._spawn_chat_generate",
+        lambda _action: ChatSpawnResult(ok=True),
+    )
+
+
 def test_all_fragment_routes_resolve(contract_app):
     app, _client, _journal = contract_app
     assert build_document()["paths"]
@@ -331,6 +360,104 @@ def test_home_pulse_named_fields_present(contract_app):
     assert schema.get("additionalProperties") is True
 
 
+def test_post_chat_accepted_named_fields_present(contract_app, monkeypatch):
+    _reset_chat_state()
+    _patch_chat_post_dependencies(monkeypatch)
+    _app, client, _journal = contract_app
+    document = build_document()
+
+    response = client.post("/api/chat", json={"message": "hi"})
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    body = response.get_json()
+    assert isinstance(body, dict)
+    assert isinstance(body.get("use_id"), str) and body["use_id"]
+    assert isinstance(body.get("queued"), bool)
+    assert isinstance(body.get("queue_depth"), int)
+    allowed = _declared_response_fields(document, "chat.postMessage", 200)
+    assert allowed <= set(body)
+    assert undeclared_top_level_fields(allowed, body) == []
+
+
+def test_post_chat_queue_full_carries_depth(contract_app, monkeypatch):
+    _reset_chat_state()
+    _app, client, _journal = contract_app
+    document = build_document()
+    monkeypatch.setattr(
+        "solstone.think.identity.ensure_identity_directory",
+        lambda: None,
+    )
+    with chat._state_lock:
+        chat._current_chat_use_id = "current"
+        chat._current_chat_state = {
+            "raw_use_id": "raw-current",
+            "raw_use_ids_seen": {"raw-current"},
+            "trigger": {"type": "owner_message", "message": "busy"},
+            "location": {"app": "sol", "path": "/app/sol", "facet": "work"},
+            "retry_count": 0,
+        }
+        for index in range(10):
+            chat._queued_triggers.append(
+                {
+                    "use_id": str(index + 1),
+                    "trigger": {
+                        "type": "owner_message",
+                        "message": f"queued {index}",
+                    },
+                    "location": {"app": "sol", "path": "/app/sol", "facet": "work"},
+                }
+            )
+
+    response = client.post("/api/chat", json={"message": "x"})
+
+    assert response.status_code == 429
+    body = response.get_json()
+    assert isinstance(body, dict)
+    _assert_structured_error(body, document)
+    assert body["reason_code"] == "chat_queue_full"
+    assert isinstance(body["queue_depth"], int) and body["queue_depth"] == 10
+
+
+def test_post_chat_missing_message_reason_code(contract_app, monkeypatch):
+    _reset_chat_state()
+    _patch_chat_post_dependencies(monkeypatch)
+    _app, client, _journal = contract_app
+    document = build_document()
+
+    response = client.post("/api/chat", json={})
+
+    assert response.status_code == 400
+    body = response.get_json()
+    assert isinstance(body, dict)
+    _assert_structured_error(body, document)
+    assert body["reason_code"] == "missing_required_field"
+
+
+def test_chat_session_empty_state_named_fields(contract_app):
+    _reset_chat_state()
+    _app, client, _journal = contract_app
+    document = build_document()
+
+    response = client.get("/api/chat/session")
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    body = response.get_json()
+    assert isinstance(body, dict)
+    allowed = _declared_response_fields(document, "chat.session", 200)
+    assert allowed <= set(body)
+    assert undeclared_top_level_fields(allowed, body) == []
+    assert body["chat_error"] is None
+    assert body["latest_sol_message"] is None
+    for key in (
+        "active_talents",
+        "queued_talents",
+        "completed_talents",
+        "errored_talents",
+    ):
+        assert body[key] == []
+    assert isinstance(body["queue_depth"], int)
+
+
 def test_contracted_inventory_triples():
     document = build_document()
     expected_operation_ids = {
@@ -360,6 +487,17 @@ def test_root_sse_event_stream():
         "$ref": "#/components/schemas/CallosumEvent"
     }
     assert "x-sse-error-frame" not in response
+    assert set(response["x-chat-events"]["kinds"]) == {
+        "owner_message",
+        "sol_message",
+        "talent_queued",
+        "talent_spawned",
+        "talent_finished",
+        "talent_errored",
+        "chat_queue_depth",
+        "result",
+        "chat_error",
+    }
 
 
 def test_all_referenced_reason_codes_are_global():

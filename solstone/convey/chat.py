@@ -172,7 +172,10 @@ def post_chat() -> Any:
 
     with _state_lock:
         if _current_chat_use_id is not None and len(_queued_triggers) >= 10:
-            return error_response(CHAT_QUEUE_FULL)
+            return error_response(
+                CHAT_QUEUE_FULL,
+                extra={"queue_depth": len(_queued_triggers)},
+            )
 
     append_chat_event("owner_message", **event_fields)
 
@@ -182,6 +185,7 @@ def post_chat() -> Any:
             trigger,
             location,
         )
+        queue_depth = len(_queued_triggers)
 
     if start_info is not None:
         spawn_result = _spawn_chat_generate(start_info)
@@ -196,7 +200,7 @@ def post_chat() -> Any:
                 detail="Failed to connect to agent service",
             )
 
-    return jsonify(use_id=response_use_id, queued=queued)
+    return jsonify(use_id=response_use_id, queued=queued, queue_depth=queue_depth)
 
 
 @chat_bp.route(f"/{KIND_SOL_CHAT_REQUEST}/open", methods=["POST"])

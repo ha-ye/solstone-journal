@@ -7,6 +7,18 @@ from __future__ import annotations
 
 from solstone.convey.contract import OperationSpec, ResponseSpec
 
+NATIVE_CHAT_EVENT_KINDS = [
+    "owner_message",
+    "sol_message",
+    "talent_queued",
+    "talent_spawned",
+    "talent_finished",
+    "talent_errored",
+    "chat_queue_depth",
+    "result",
+    "chat_error",
+]
+
 
 def _json_error(
     status: int,
@@ -48,6 +60,16 @@ OPERATIONS: list[OperationSpec] = [
                     "event": "owner_message",
                     "ts": 1781803200000,
                     "message": "What changed?",
+                },
+                extensions={
+                    "x-chat-events": {
+                        "description": (
+                            "CallosumEvent kinds on tract 'chat' a native client "
+                            "branches on. Payloads remain open "
+                            "(CallosumEvent.additionalProperties)."
+                        ),
+                        "kinds": NATIVE_CHAT_EVENT_KINDS,
+                    }
                 },
             ),
             _json_error(

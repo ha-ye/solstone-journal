@@ -2351,6 +2351,7 @@ def test_post_chat_rejects_when_queue_depth_cap_reached(chat_client, monkeypatch
         "error": "Chat queue full",
         "reason_code": "chat_queue_full",
         "detail": "",
+        "queue_depth": 10,
     }
     events = read_chat_events(date.today().strftime("%Y%m%d"))
     assert [event for event in events if event["kind"] == "owner_message"] == []
