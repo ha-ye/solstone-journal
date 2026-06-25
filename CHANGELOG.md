@@ -4,6 +4,12 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.13] - 2026-06-24
+
+### Changed
+- importing the same thing twice no longer doubles it up in your journal. when you import a file or paste text, whether from the web import page or `sol import`, solstone now recognizes content it has already taken in and skips it instead of creating a second copy. re-running an import that got interrupted picks up where it left off rather than starting over.
+- imported items now get the right date straight from the file when solstone can tell. for filenames that already carry a full timestamp, exports from tools that stamp their own times, and media that carries the time it was taken, solstone reads the date directly instead of asking a model to guess it. anything ambiguous still falls back to a best guess as before.
+
 ## [0.6.12] - 2026-06-23
 
 ### Added
