@@ -7,6 +7,7 @@
   "priority": 55,
   "multi_facet": true,
   "group": "Entities",
+  "access_tier": "synthesis",
   "hook": {"pre": "entities:entity_digest"}
 }
 
@@ -57,6 +58,8 @@ SOL_DAY and SOL_FACET are set in your environment. Commands default to the curre
 - `sol call entities digest FACET -d DAY` - re-fetch the deterministic facet-day digest if needed
 - `sol call entities detect TYPE ENTITY DESCRIPTION` - record a detected entity FOR THIS FACET
   - The `entity` parameter can be entity_id, full name, or alias - if it matches an attached entity, uses that entity's canonical name
+
+Raw filesystem read tools (`read_file`, `list_directory`, `glob`, `grep_search`) are intentionally unavailable for this talent. Use the provided digest and the `sol call entities ...` commands above; do not inspect the journal tree directly.
 
 ## Entity Detection Process
 

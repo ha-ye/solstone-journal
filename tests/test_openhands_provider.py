@@ -1337,6 +1337,12 @@ def test_run_cogitate_passes_outbound_approval_to_policy(
     ("name", "expected_access_tier", "expected_agent_tools", "expected_default_tools"),
     [
         (
+            "entities:entities",
+            "synthesis",
+            {"sol", "emit_final"},
+            [],
+        ),
+        (
             "support:support",
             "outbound",
             {"sol"},

@@ -31,6 +31,7 @@ def test_entities_agent_config(fixture_journal):
     assert config.get("schedule") == "daily"
     assert config.get("priority") == 55
     assert config.get("multi_facet") is True
+    assert config.get("access_tier") == "synthesis"
 
 
 def test_entities_review_agent_config(fixture_journal):
@@ -60,6 +61,7 @@ def test_entities_agent_instruction_content(fixture_journal):
     assert "$facet_day_digest" in prompt
     assert "sol call entities detect" in prompt
     assert "sol call entities list" in prompt
+    assert "Raw filesystem read tools" in prompt
     assert "ONLY detect entities that were ACTIVELY INVOLVED" in prompt
     assert (
         "Person/org from Facet A is merely referenced while working in Facet B"
