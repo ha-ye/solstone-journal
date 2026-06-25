@@ -359,6 +359,94 @@ class TestRunSegmentSense:
             "active": {},
         }
 
+    def test_idle_short_circuit_persists_same_id_facet_records(
+        self, segment_dir, monkeypatch
+    ):
+        from solstone.think import thinking as think
+        from solstone.think.activities import load_activity_records
+        from solstone.think.activity_state_machine import ActivityStateMachine
+
+        spawned = []
+        facets = [
+            {"facet": "work", "activity": "deep parser work", "level": "high"},
+            {"facet": "personal", "activity": "reading docs", "level": "medium"},
+        ]
+        entities = [
+            {"type": "Person", "name": "Alice", "context": "pairing"},
+            {"type": "Tool", "name": "VS Code", "context": "editor"},
+        ]
+
+        def sense(density="active", facet_payload=None):
+            return {
+                "density": density,
+                "content_type": "coding",
+                "activity_summary": "Working on parser state.",
+                "entities": entities,
+                "facets": facets if facet_payload is None else facet_payload,
+                "meeting_detected": False,
+                "speakers": [],
+                "recommend": {"screen_record": True},
+            }
+
+        sm = ActivityStateMachine(journal_root=segment_dir.parents[3])
+        sm.update(sense(), "115000_300", "20240115")
+        sm.update(sense(), "115500_300", "20240115")
+        _write_sense_output(segment_dir, sense(density="idle", facet_payload=[]))
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _segment_configs(
+                "sense", "entities", "screen"
+            ),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "_callosum", None)
+
+        success, failed, failed_names = think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+            state_machine=sm,
+            skip_activity_prompts=True,
+        )
+
+        assert spawned == ["sense"]
+        assert success == 1
+        assert failed == 0
+        assert failed_names == []
+
+        work_records = load_activity_records("work", "20240115")
+        personal_records = load_activity_records("personal", "20240115")
+        assert len(work_records) == 1
+        assert len(personal_records) == 1
+
+        work = work_records[0]
+        personal = personal_records[0]
+        expected_segments = ["115000_300", "115500_300"]
+        expected_entities = ["Alice", "VS Code"]
+        assert work["description"] == "deep parser work"
+        assert work["level_avg"] == 1.0
+        assert work["segments"] == expected_segments
+        assert work["active_entities"] == expected_entities
+        assert personal["description"] == "reading docs"
+        assert personal["level_avg"] == 0.5
+        assert personal["segments"] == expected_segments
+        assert personal["active_entities"] == expected_entities
+        assert work["description"] != personal["description"]
+        assert work["level_avg"] != personal["level_avg"]
+
     def test_conditional_screen_dispatch(self, segment_dir, monkeypatch):
         from solstone.think import thinking as think
 
@@ -988,6 +1076,7 @@ class TestRunSegmentSense:
                 return [
                     {
                         "id": "coding_120000_300",
+                        "facet": "work",
                         "activity": "coding",
                         "segments": ["120000_300"],
                         "level_avg": 0.5,

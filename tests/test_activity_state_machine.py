@@ -685,6 +685,7 @@ class TestCompletedRecordFields:
         rec = sm.get_completed_activities()[0]
         required = {
             "id",
+            "facet",
             "activity",
             "segments",
             "level_avg",

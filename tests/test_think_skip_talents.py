@@ -177,6 +177,7 @@ class EndedActivityStateMachine:
         return [
             {
                 "id": ACTIVITY_ID,
+                "facet": FACET,
                 "activity": "coding",
                 "segments": [SEGMENT],
                 "level_avg": 0.5,

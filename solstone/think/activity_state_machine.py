@@ -121,6 +121,7 @@ class ActivityStateMachine:
     def _make_completed_record(self, entry: dict) -> dict:
         return {
             "id": entry["id"],
+            "facet": entry["facet"],
             "activity": entry["activity"],
             "segments": entry.get("segments", [entry["since"]]),
             "level_avg": LEVEL_VALUES.get(entry.get("level", "medium"), 0.5),

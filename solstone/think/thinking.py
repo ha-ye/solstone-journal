@@ -222,12 +222,16 @@ def _persist_and_maybe_run_activity_prompts(
     segment: str,
     target_schedule: str,
     ended_triples: list[tuple[object, object, object]],
-    completed_lookup: dict[object, dict],
+    completed: list[dict],
     refresh: bool,
     verbose: bool,
     max_concurrency: int,
     skip_activity_prompts: bool,
 ) -> None:
+    completed_by_key: dict[tuple[str, str], dict] = {}
+    for rec in completed:
+        completed_by_key.setdefault((str(rec["facet"]), str(rec["id"])), rec)
+
     written_by: dict[tuple[str, str], bool] = {}
     record_by: dict[tuple[str, str], dict] = {}
 
@@ -245,7 +249,7 @@ def _persist_and_maybe_run_activity_prompts(
             state="ended",
             change=change,
         )
-        rec = completed_lookup.get(activity_id)
+        rec = completed_by_key.get(key)
         if rec:
             record_by[key] = rec
             written_by[key] = append_activity_record(facet_str, routing_day, rec)
@@ -348,9 +352,6 @@ def _run_activity_state_tail(
         for c in changes
         if c.get("state") == "ended"
     ]
-    completed_lookup = {}
-    for rec in state_machine.get_completed_activities():
-        completed_lookup.setdefault(rec["id"], rec)
     if state_machine.journal_root is not None:
         try:
             snapshot = {
@@ -373,7 +374,7 @@ def _run_activity_state_tail(
         segment=segment,
         target_schedule=target_schedule,
         ended_triples=ended_triples,
-        completed_lookup=completed_lookup,
+        completed=state_machine.get_completed_activities(),
         refresh=refresh,
         verbose=verbose,
         max_concurrency=max_concurrency,
@@ -412,16 +413,13 @@ def _flush_batch_state_machines(
         ]
         if not ended_triples:
             continue
-        completed_lookup: dict = {}
-        for rec in sm.get_completed_activities():
-            completed_lookup.setdefault(rec["id"], rec)
         _persist_and_maybe_run_activity_prompts(
             routing_day=sm.last_segment_day or day,
             log_day=day,
             segment=sm.last_segment_key,
             target_schedule="segment",
             ended_triples=ended_triples,
-            completed_lookup=completed_lookup,
+            completed=sm.get_completed_activities(),
             refresh=refresh,
             verbose=verbose,
             max_concurrency=max_concurrency,
@@ -1067,16 +1065,13 @@ def run_segment_sense(
                 for c in idle_changes
                 if c.get("state") == "ended"
             ]
-            completed_lookup = {}
-            for rec in state_machine.get_completed_activities():
-                completed_lookup.setdefault(rec["id"], rec)
             _persist_and_maybe_run_activity_prompts(
                 routing_day=routing_day,
                 log_day=day,
                 segment=segment,
                 target_schedule=target_schedule,
                 ended_triples=ended_triples,
-                completed_lookup=completed_lookup,
+                completed=state_machine.get_completed_activities(),
                 refresh=refresh,
                 verbose=verbose,
                 max_concurrency=max_concurrency,
