@@ -297,6 +297,11 @@ IMPORT_CONFLICT = Reason(
     "I couldn't start that import because it already exists.",
     409,
 )
+IMPORT_CLIENT_ID_CONFLICT = Reason(
+    "import_client_id_conflict",
+    "That client_item_id is already staged for different content.",
+    409,
+)
 IMPORT_METADATA_FAILED = Reason(
     "import_metadata_failed",
     "I couldn't update that import metadata.",

@@ -57,6 +57,13 @@ class FakeClient:
         return self.request_responses[index]
 
 
+def _pop_client_item_id(payload: dict[str, Any]) -> str:
+    client_item_id = payload.pop("client_item_id")
+    assert isinstance(client_item_id, str)
+    assert client_item_id
+    return client_item_id
+
+
 def test_mode_disposition_table_covers_d5_modes() -> None:
     assert import_client.MODE_DISPOSITIONS == {
         "positional_media": "http-client",
@@ -89,15 +96,15 @@ def test_file_save_then_start(
     code = import_client.main([str(media)], client=client)  # type: ignore[arg-type]
 
     assert code == 0
-    assert client.uploads == [
-        {
-            "path": "/app/import/api/save",
-            "files": {
-                "file": ("sample.txt", media, "application/octet-stream"),
-            },
-            "data": {},
-        }
-    ]
+    save_data = dict(client.uploads[0]["data"])
+    client_item_id = _pop_client_item_id(save_data)
+    assert len(client_item_id) == 32
+    assert len(client.uploads) == 1
+    assert client.uploads[0]["path"] == "/app/import/api/save"
+    assert client.uploads[0]["files"] == {
+        "file": ("sample.txt", media, "application/octet-stream"),
+    }
+    assert save_data == {}
     assert client.requests == [
         {
             "method": "POST",
@@ -130,12 +137,13 @@ def test_save_path_then_start(tmp_path: Path) -> None:
 
     assert code == 0
     assert client.uploads == []
-    assert client.requests[0] == {
-        "method": "POST",
-        "path": "/app/import/api/save-path",
-        "params": None,
-        "json": {"path": str(media_dir)},
-    }
+    save_json = dict(client.requests[0]["json"])
+    client_item_id = _pop_client_item_id(save_json)
+    assert len(client_item_id) == 32
+    assert client.requests[0]["method"] == "POST"
+    assert client.requests[0]["path"] == "/app/import/api/save-path"
+    assert client.requests[0]["params"] is None
+    assert save_json == {"path": str(media_dir)}
     assert client.requests[1]["path"] == "/app/import/api/start"
     assert client.requests[1]["json"]["timestamp"] == "20260101_130000"
 
@@ -175,14 +183,17 @@ def test_metadata_and_start_options_forward(tmp_path: Path) -> None:
     )
 
     assert code == 0
-    assert client.uploads[0]["data"] == {"facet": "work", "setting": "office"}
+    save_data = dict(client.uploads[0]["data"])
+    _pop_client_item_id(save_data)
+    assert save_data == {
+        "facet": "work",
+        "setting": "office",
+        "source_hint": "ics",
+    }
     assert client.requests[0]["json"] == {
         "path": "/journal/imports/20260101_120000/sample.txt",
         "timestamp": "20260101_120000",
         "force": True,
-        "facet": "work",
-        "setting": "office",
-        "source": "ics",
     }
 
 
@@ -197,7 +208,9 @@ def test_deterministic_only_forwards_only_on_save_data(tmp_path: Path) -> None:
     )
 
     assert code == 0
-    assert client.uploads[0]["data"] == {"deterministic_only": "true"}
+    save_data = dict(client.uploads[0]["data"])
+    _pop_client_item_id(save_data)
+    assert save_data == {"deterministic_only": "true"}
     assert "deterministic_only" not in client.requests[0]["json"]
 
 
@@ -206,7 +219,10 @@ def test_json_output_shape(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -
     media.write_text("hello", encoding="utf-8")
     client = FakeClient()
 
-    code = import_client.main([str(media), "--json"], client=client)  # type: ignore[arg-type]
+    code = import_client.main(
+        [str(media), "--json"],
+        client=client,  # type: ignore[arg-type]
+    )
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
@@ -220,6 +236,68 @@ def test_json_output_shape(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -
         },
         "start": {"status": "ok", "task_id": "task-1"},
     }
+
+
+def test_duplicate_save_skips_start_and_returns_success(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    media = tmp_path / "sample.txt"
+    media.write_text("hello", encoding="utf-8")
+    client = FakeClient(
+        upload_response={
+            "schema_version": 1,
+            "status": "duplicate",
+            "recommended_action": "do_not_start",
+            "path": "/journal/imports/20260101_120000/sample.txt",
+            "timestamp": "20260101_120000",
+            "duplicate": {
+                "import_id": "20260101_120000",
+                "imported_at": "2026-01-01T12:00:00",
+                "entry_count": 2,
+                "state": "imported",
+            },
+        }
+    )
+
+    code = import_client.main([str(media)], client=client)  # type: ignore[arg-type]
+
+    assert code == 0
+    assert client.requests == []
+    captured = capsys.readouterr()
+    assert (
+        "sol import: already imported on 2026-01-01T12:00:00 (2 entries); skipping"
+    ) in captured.out
+    assert captured.err == ""
+
+
+def test_duplicate_json_outputs_save_response_without_start(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    media = tmp_path / "sample.txt"
+    media.write_text("hello", encoding="utf-8")
+    duplicate_response = {
+        "schema_version": 1,
+        "status": "duplicate",
+        "recommended_action": "do_not_start",
+        "path": "/journal/imports/20260101_120000/sample.txt",
+        "timestamp": "20260101_120000",
+        "duplicate": {
+            "import_id": "20260101_120000",
+            "imported_at": None,
+            "entry_count": None,
+            "state": "staged",
+        },
+    }
+    client = FakeClient(upload_response=duplicate_response)
+
+    code = import_client.main(
+        [str(media), "--json"],
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert code == 0
+    assert client.requests == []
+    assert json.loads(capsys.readouterr().out) == duplicate_response
 
 
 def test_unreachable_is_clean(

@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import time
+import uuid
 import zipfile
 from io import BytesIO
 from pathlib import Path
@@ -127,6 +128,7 @@ def _import_route_client(
 def _post_import_save(client, data: dict):
     payload = {
         "file": (BytesIO(b"hello"), "note.txt"),
+        "client_item_id": uuid.uuid4().hex,
         **data,
     }
     return client.post(
@@ -319,9 +321,9 @@ def test_import_save_deterministic_success_skips_model_and_audits(
     assert response.status_code == 200
     body = response.get_json()
     assert body["timestamp"] == "20240115_103000"
-    assert body["timestamp_detection_method"] == "deterministic"
-    assert body["timestamp_detection_model_called"] is False
-    assert body["timestamp_detection_no_match_reason"] is None
+    assert body["diagnostics"]["timestamp_detection_method"] == "deterministic"
+    assert body["diagnostics"]["timestamp_detection_model_called"] is False
+    assert body["diagnostics"]["timestamp_detection_no_match_reason"] is None
     metadata = _read_import_metadata(tmp_path, body["timestamp"])
     assert metadata["detection_result"] == deterministic_result
     assert metadata["detected_timestamp"] == "20240115_103000"
@@ -352,9 +354,12 @@ def test_import_save_deterministic_only_no_match_uses_upload_fallback_and_audit(
         "%Y%m%d_%H%M%S"
     )
     assert body["timestamp"] == expected_timestamp
-    assert body["timestamp_detection_method"] == "upload_fallback"
-    assert body["timestamp_detection_model_called"] is False
-    assert body["timestamp_detection_no_match_reason"] == "no_deterministic_match"
+    assert body["diagnostics"]["timestamp_detection_method"] == "upload_fallback"
+    assert body["diagnostics"]["timestamp_detection_model_called"] is False
+    assert (
+        body["diagnostics"]["timestamp_detection_no_match_reason"]
+        == "no_deterministic_match"
+    )
     metadata = _read_import_metadata(tmp_path, body["timestamp"])
     assert metadata["detected_timestamp"] is None
     assert metadata["user_timestamp"] == body["timestamp"]
@@ -379,9 +384,9 @@ def test_import_save_model_success_audits(tmp_path, monkeypatch):
     assert response.status_code == 200
     body = response.get_json()
     assert body["timestamp"] == "20240115_103000"
-    assert body["timestamp_detection_method"] == "model"
-    assert body["timestamp_detection_model_called"] is True
-    assert body["timestamp_detection_no_match_reason"] is None
+    assert body["diagnostics"]["timestamp_detection_method"] == "model"
+    assert body["diagnostics"]["timestamp_detection_model_called"] is True
+    assert body["diagnostics"]["timestamp_detection_no_match_reason"] is None
     metadata = _read_import_metadata(tmp_path, body["timestamp"])
     assert metadata["detection_result"] == model_result
     assert metadata["timestamp_detection_method"] == "model"
@@ -401,9 +406,11 @@ def test_import_save_model_no_match_audits_upload_fallback(tmp_path, monkeypatch
 
     assert response.status_code == 200
     body = response.get_json()
-    assert body["timestamp_detection_method"] == "upload_fallback"
-    assert body["timestamp_detection_model_called"] is True
-    assert body["timestamp_detection_no_match_reason"] == "model_no_match"
+    assert body["diagnostics"]["timestamp_detection_method"] == "upload_fallback"
+    assert body["diagnostics"]["timestamp_detection_model_called"] is True
+    assert (
+        body["diagnostics"]["timestamp_detection_no_match_reason"] == "model_no_match"
+    )
     metadata = _read_import_metadata(tmp_path, body["timestamp"])
     assert metadata["detected_timestamp"] is None
     assert metadata["timestamp_detection_method"] == "upload_fallback"

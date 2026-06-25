@@ -48,7 +48,9 @@ CONTRACTED_PATHS = {
     "/api/voice/session",
     "/api/voice/status",
     "/app/home/api/pulse",
+    "/app/import/api/meta",
     "/app/import/api/save",
+    "/app/import/api/save-path",
     "/app/import/api/start",
     "/app/network/api/status",
     "/app/network/local-endpoints",
@@ -79,7 +81,9 @@ CONTRACTED_INVENTORY_TRIPLES = {
     ("GET", "/api/voice/observer-actions", "voice.observerActions"),
     ("GET", "/api/voice/status", "voice.status"),
     ("GET", "/app/home/api/pulse", "home.pulse"),
+    ("POST", "/app/import/api/meta", "import.meta"),
     ("POST", "/app/import/api/save", "import.save"),
+    ("POST", "/app/import/api/save-path", "import.savePath"),
     ("POST", "/app/import/api/start", "import.start"),
     ("DELETE", "/app/observer/source/{stream}", "observer.deleteSource"),
 }
@@ -338,7 +342,7 @@ def test_no_r0_routes_in_artifact():
     assert "/api/config/convey" not in document["paths"]
     assert "/api/system/status" not in document["paths"]
     assert set(document["paths"]) == CONTRACTED_PATHS
-    assert len(document["paths"]) == 28
+    assert len(document["paths"]) == 30
 
 
 def test_home_pulse_named_fields_present(contract_app):

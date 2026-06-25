@@ -403,8 +403,6 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
     global _stage_start_time, _stages_run, _status_thread, _status_running
 
     args.media = os.path.expanduser(args.media)
-    if args.source == "quick":
-        args.source = None
 
     _file_importer = None
     import_source = None
@@ -434,8 +432,10 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
             _file_importer = detected
             import_source = detected.name
 
-    # Try file importer detection for unknown file extensions
-    if _file_importer is None and not args.source:
+    # Try file importer detection for unknown file extensions. Non-file-importer
+    # --source values are intentionally ignored, so they should not suppress
+    # detection for image/structured imports.
+    if _file_importer is None:
         _ext = os.path.splitext(args.media)[1].lower()
         if _ext not in {".m4a", ".txt", ".md", ".pdf"}:
             from solstone.think.importers.file_importer import detect_file_importer
@@ -537,17 +537,13 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
     day = base_dt.strftime("%Y%m%d")
 
     # --- Derive import_source for non-file-importer paths ---
+    # Generic (non-file-importer) items stream as audio or text by extension.
+    # A non-importer --source value (e.g. legacy "recording"/"quick") never
+    # becomes a stream name; it is ignored here so leaked vocabulary cannot
+    # reach the stream/manifest. File-importer sources are handled earlier.
     if import_source is None:
-        if args.source:
-            import_source = args.source
-        else:
-            _ext = os.path.splitext(args.media)[1].lower()
-            if _ext == ".m4a":
-                import_source = "apple"
-            elif _ext in {".txt", ".md", ".pdf"}:
-                import_source = "text"
-            else:
-                import_source = "audio"
+        _ext = os.path.splitext(args.media)[1].lower()
+        import_source = "text" if _ext in {".txt", ".md", ".pdf"} else "audio"
 
     stream = stream_name(import_source=import_source)
     needs_setup = _file_importer is None and not _is_in_imports(args.media)
@@ -1347,7 +1343,11 @@ def main() -> None:
         "--source",
         type=str,
         default=None,
-        help="Import source type (apple, plaud, audio, text, or a file importer name). Auto-detected if omitted.",
+        help=(
+            "Import source hint: a file importer name (e.g. obsidian, plaud, ics) "
+            "or a canonical category (audio, image, document, text). "
+            "Auto-detected if omitted."
+        ),
     )
     parser.add_argument(
         "--force",

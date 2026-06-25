@@ -9,6 +9,7 @@ import argparse
 import json
 import logging
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -57,7 +58,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--source",
-        help="Import source type (apple, plaud, audio, text, or a file importer name)",
+        help=(
+            "Import source hint: a file importer name (e.g. obsidian, plaud, ics) "
+            "or a canonical category (audio, image, document, text)"
+        ),
     )
     parser.add_argument(
         "--force",
@@ -165,13 +169,19 @@ def _payload_value(value: str | None) -> str | None:
     return stripped or None
 
 
-def _save_media(client: ConveyClient, args: argparse.Namespace) -> dict[str, Any]:
+def _save_media(
+    client: ConveyClient,
+    args: argparse.Namespace,
+    client_item_id: str,
+) -> dict[str, Any]:
     media_path = Path(args.media).expanduser()
     data = {
         key: value
         for key, value in {
+            "client_item_id": client_item_id,
             "facet": _payload_value(args.facet),
             "setting": _payload_value(args.setting),
+            "source_hint": _payload_value(args.source),
         }.items()
         if value is not None
     }
@@ -216,13 +226,6 @@ def _start_import(
         "timestamp": timestamp,
         "force": bool(args.force),
     }
-    for key, value in {
-        "facet": _payload_value(args.facet),
-        "setting": _payload_value(args.setting),
-        "source": _payload_value(args.source),
-    }.items():
-        if value is not None:
-            payload[key] = value
     start_response = client.request("POST", f"{IMPORT_API}/start", json=payload)
     if not isinstance(start_response, dict):
         raise ConveyClientError(MALFORMED_RESPONSE)
@@ -294,9 +297,35 @@ def _print_success(
         print("queued processing")
 
 
+def _print_duplicate(save_response: dict[str, Any], *, json_out: bool) -> None:
+    if json_out:
+        print(json.dumps(save_response, sort_keys=True))
+        return
+
+    duplicate = save_response.get("duplicate")
+    if not isinstance(duplicate, dict):
+        print("sol import: duplicate import; skipping")
+        return
+
+    state = duplicate.get("state")
+    import_id = duplicate.get("import_id") or "unknown"
+    if state == "imported":
+        imported_at = duplicate.get("imported_at") or "unknown date"
+        entry_count = duplicate.get("entry_count")
+        entries = f" ({entry_count} entries)" if entry_count is not None else ""
+        print(f"sol import: already imported on {imported_at}{entries}; skipping")
+        return
+    if state == "staged":
+        print(f"sol import: already staged as {import_id}; skipping")
+        return
+
+    print("sol import: duplicate import; skipping")
+
+
 def _run(args: argparse.Namespace, client: ConveyClient) -> int:
+    client_item_id = uuid.uuid4().hex
     try:
-        save_response = _save_media(client, args)
+        save_response = _save_media(client, args, client_item_id)
         if not isinstance(save_response, dict):
             raise ConveyClientError(MALFORMED_RESPONSE)
     except ConveyUnreachableError:
@@ -308,6 +337,13 @@ def _run(args: argparse.Namespace, client: ConveyClient) -> int:
     except ConveyClientError as err:
         _print_client_error("stage import", err)
         return 1
+
+    if (
+        save_response.get("status") == "duplicate"
+        or save_response.get("recommended_action") == "do_not_start"
+    ):
+        _print_duplicate(save_response, json_out=bool(args.json))
+        return 0
 
     staged_path = str(save_response.get("path") or args.media)
     try:
