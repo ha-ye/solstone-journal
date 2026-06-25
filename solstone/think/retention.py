@@ -32,6 +32,7 @@ from typing import Any
 from solstone.think.media import AUDIO_EXTENSIONS as RAW_AUDIO_EXTENSIONS
 from solstone.think.media import MEDIA_EXTENSIONS as RAW_MEDIA_EXTENSIONS
 from solstone.think.media import VIDEO_EXTENSIONS as RAW_VIDEO_EXTENSIONS
+from solstone.think.pruning_audit import write_prune_audit
 from solstone.think.utils import day_dirs, get_journal, iter_segments
 
 logger = logging.getLogger(__name__)
@@ -460,8 +461,66 @@ def purge(
 
     if not dry_run and result.files_deleted > 0:
         _write_retention_log(journal_path, result)
+        _write_retention_prune_audit(journal_path, result, older_than_days)
 
     return result
+
+
+def _raw_media_audit_by_day(result: PurgeResult) -> dict[str, dict[str, int]]:
+    by_day: dict[str, dict[str, int]] = {}
+    for detail in result.details:
+        day = str(detail["day"])
+        entry = by_day.setdefault(
+            day,
+            {"files_deleted": 0, "bytes_freed": 0, "segments": 0},
+        )
+        entry["files_deleted"] += len(detail.get("files", []))
+        entry["bytes_freed"] += int(detail.get("bytes_freed", 0))
+        entry["segments"] += 1
+    return by_day
+
+
+def _raw_media_audit_day_messages(
+    by_day: dict[str, dict[str, int]],
+) -> dict[str, str]:
+    return {
+        day: (
+            "raw-media retention: pruned "
+            f"{stats['files_deleted']} raw media file(s) "
+            f"({_human_bytes(stats['bytes_freed'])}) from "
+            f"{stats['segments']} segment(s) for this day"
+        )
+        for day, stats in sorted(by_day.items())
+    }
+
+
+def _write_retention_prune_audit(
+    journal_path: Path,
+    result: PurgeResult,
+    older_than_days: int | None,
+) -> None:
+    by_day = _raw_media_audit_by_day(result)
+    run_record = {
+        "timestamp": datetime.now().isoformat(),
+        "kind": "raw_media",
+        "dry_run": False,
+        "days": older_than_days,
+        "by_day": by_day,
+        "totals": {
+            "files_deleted": result.files_deleted,
+            "bytes_freed": result.bytes_freed,
+            "segments_processed": result.segments_processed,
+            "segments_skipped_incomplete": result.segments_skipped_incomplete,
+        },
+        "details": result.details,
+        "errors": [],
+    }
+    write_prune_audit(
+        journal_path,
+        kind="raw_media",
+        run_record=run_record,
+        per_day_messages=_raw_media_audit_day_messages(by_day),
+    )
 
 
 def _write_retention_log(journal_path: Path, result: PurgeResult) -> None:

@@ -136,6 +136,26 @@ def test_workspace_has_diagnostic_reports_toggle():
     assert "diagnostic reports" in text
 
 
+def test_workspace_has_log_retention_storage_controls():
+    text = _workspace_text()
+
+    assert 'id="logRetentionEnabled"' in text
+    assert 'id="cleanupLogsBtn"' in text
+    assert 'id="cleanupLogsModal"' in text
+
+
+def test_workspace_log_cleanup_renderer_surfaces_preview_skips_and_errors():
+    text = _workspace_text()
+
+    assert "function renderLogCleanupResult(result, phase)" in text
+    assert "would be deleted" in text
+    assert "cleanup complete" in text
+    assert "stats.skipped" in text
+    assert "error.hint" in text
+    assert "runLogCleanupPreview" in text
+    assert "runLogCleanupExecute" in text
+
+
 def test_workspace_vision_max_extractions_reads_server_value():
     text = _workspace_text()
 

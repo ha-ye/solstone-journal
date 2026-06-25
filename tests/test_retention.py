@@ -334,6 +334,7 @@ class TestPurge:
                 return fixed_now
 
         monkeypatch.setattr("solstone.think.retention.datetime", FixedDateTime)
+        monkeypatch.setattr("solstone.think.pruning_audit.datetime", FixedDateTime)
         # Clear cached journal path
         import solstone.think.utils as think_utils
 
@@ -357,6 +358,7 @@ class TestPurge:
         ).exists()
         # No retention log for dry run
         assert not (journal / "health" / "retention.log").exists()
+        assert not (journal / "health" / "pruning-runs").exists()
 
     def test_actual_purge(self, tmp_path, monkeypatch):
         journal = self._setup_journal(tmp_path, monkeypatch)
@@ -364,6 +366,7 @@ class TestPurge:
         result = purge(older_than_days=30, dry_run=False)
 
         assert result.files_deleted == 2
+        assert result.segments_skipped_incomplete == 1
         # Files should be gone
         assert not (
             journal / "chronicle" / "20260115" / "default" / "100000_300" / "audio.flac"
@@ -382,6 +385,30 @@ class TestPurge:
         ).exists()
         # Retention log written
         assert (journal / "health" / "retention.log").exists()
+        run_log = journal / "health" / "pruning-runs" / "20260415.jsonl"
+        assert run_log.exists()
+        run_record = json.loads(run_log.read_text(encoding="utf-8").strip())
+        assert run_record["kind"] == "raw_media"
+        assert run_record["dry_run"] is False
+        assert run_record["days"] == 30
+        assert run_record["by_day"] == {
+            "20260115": {
+                "files_deleted": 2,
+                "bytes_freed": 1500,
+                "segments": 2,
+            }
+        }
+        assert run_record["totals"]["files_deleted"] == 2
+        assert run_record["totals"]["bytes_freed"] == 1500
+        assert run_record["totals"]["segments_skipped_incomplete"] == 1
+        assert run_record["details"] == result.details
+        assert run_record["errors"] == []
+        task_log = journal / "chronicle" / "20260115" / "task_log.txt"
+        task_line = task_log.read_text(encoding="utf-8")
+        assert (
+            "raw-media retention: pruned 2 raw media file(s) (1.5 KB) "
+            "from 2 segment(s) for this day"
+        ) in task_line
 
     def test_skips_incomplete(self, tmp_path, monkeypatch):
         self._setup_journal(tmp_path, monkeypatch)

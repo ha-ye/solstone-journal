@@ -3,7 +3,8 @@
 
 import pytest
 
-from solstone.think.utils import parse_duration_seconds
+import solstone.think.utils as think_utils
+from solstone.think.utils import day_log, day_log_checked, parse_duration_seconds
 
 
 @pytest.mark.parametrize(
@@ -34,3 +35,15 @@ def test_parse_duration_seconds_valid(spec, expected):
 def test_parse_duration_seconds_invalid(spec):
     with pytest.raises(ValueError, match="invalid duration"):
         parse_duration_seconds(spec)
+
+
+def test_day_log_checked_raises_while_day_log_swallows(monkeypatch):
+    def fail_write(dir_path, message):
+        raise OSError("blocked")
+
+    monkeypatch.setattr(think_utils, "_write_task_log", fail_write)
+
+    with pytest.raises(OSError, match="blocked"):
+        day_log_checked("20260315", "checked")
+
+    day_log("20260315", "best effort")

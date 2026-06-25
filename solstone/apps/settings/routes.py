@@ -57,6 +57,7 @@ from solstone.think.journal_config import (
     hold_config_lock,
     write_journal_config,
 )
+from solstone.think.log_retention import load_log_retention_config, prune
 from solstone.think.processing import (
     load_processing_settings,
     validate_processing_update,
@@ -93,6 +94,24 @@ GENERIC_SETTINGS_ERROR = (
 
 def _settings_operation_failed(detail: str = GENERIC_SETTINGS_ERROR) -> Any:
     return error_response(SETTINGS_OPERATION_FAILED, detail=detail)
+
+
+def _serialize_prune_result(result: Any) -> dict[str, Any]:
+    return {
+        "enabled": result.enabled,
+        "dry_run": result.dry_run,
+        "days": result.days,
+        "cutoff_day": result.cutoff_day,
+        "files_deleted": result.files_deleted,
+        "dirs_deleted": result.dirs_deleted,
+        "bytes_freed": result.bytes_freed,
+        "bytes_freed_human": _human_bytes(result.bytes_freed),
+        "by_class": result.by_class,
+        "by_day": result.by_day,
+        "errors": result.errors,
+        "audit_written": result.audit_written,
+        "partial_error": result.partial_error,
+    }
 
 
 def _public_facet_record(name: str, data: dict[str, object]) -> dict[str, object]:
@@ -1779,6 +1798,7 @@ def get_storage() -> Any:
     try:
         summary = compute_storage_summary()
         config = load_retention_config()
+        log_config = load_log_retention_config()
         journal_path = get_journal()
         warnings = check_storage_health(summary, journal_path)
         try:
@@ -1803,6 +1823,10 @@ def get_storage() -> Any:
                     "per_stream": {
                         name: {"raw_media": p.mode, "raw_media_days": p.days}
                         for name, p in config.per_stream.items()
+                    },
+                    "journal_logs": {
+                        "enabled": log_config.enabled,
+                        "days": log_config.days,
                     },
                 },
                 "streams": [{"name": s.get("name", "")} for s in streams],
@@ -1893,6 +1917,48 @@ def update_storage() -> Any:
                     }
                 retention["per_stream"] = new_per_stream
 
+            if "journal_logs" in request_data:
+                journal_logs = request_data["journal_logs"]
+                if not isinstance(journal_logs, dict):
+                    return error_response(
+                        INVALID_CONFIG_VALUE,
+                        detail="journal_logs must be an object",
+                    )
+
+                current_journal_logs = retention.get("journal_logs", {})
+                if not isinstance(current_journal_logs, dict):
+                    current_journal_logs = {}
+                old_journal_logs = {
+                    "enabled": current_journal_logs.get("enabled", True),
+                    "days": current_journal_logs.get("days", 30),
+                }
+                new_journal_logs = dict(old_journal_logs)
+
+                if "enabled" in journal_logs:
+                    enabled = journal_logs["enabled"]
+                    if not isinstance(enabled, bool):
+                        return error_response(
+                            INVALID_CONFIG_VALUE,
+                            detail="enabled must be a boolean",
+                        )
+                    new_journal_logs["enabled"] = enabled
+
+                if "days" in journal_logs:
+                    days = journal_logs["days"]
+                    if not isinstance(days, int) or isinstance(days, bool) or days < 1:
+                        return error_response(
+                            INVALID_CONFIG_VALUE,
+                            detail="days must be a positive integer",
+                        )
+                    new_journal_logs["days"] = days
+
+                if old_journal_logs != new_journal_logs:
+                    changed["journal_logs"] = {
+                        "old": old_journal_logs,
+                        "new": new_journal_logs,
+                    }
+                retention["journal_logs"] = new_journal_logs
+
             write_journal_config(config)
 
         if changed:
@@ -1978,4 +2044,46 @@ def run_purge() -> Any:
         raise
     except Exception:
         logger.exception("error running purge")
+        return _settings_operation_failed()
+
+
+@settings_bp.route("/api/storage/prune-logs", methods=["POST"])
+def run_prune_logs() -> Any:
+    """Run operational log/cache pruning (dry-run or execute)."""
+    try:
+        request_data = request.get_json(silent=True) or {}
+        if not isinstance(request_data, dict):
+            return error_response(
+                INVALID_CONFIG_VALUE,
+                detail="request body must be an object",
+            )
+
+        dry_run = request_data.get("dry_run", True)
+        days = request_data.get("days")
+        if days is not None:
+            if not isinstance(days, int) or isinstance(days, bool) or days < 1:
+                return error_response(
+                    INVALID_CONFIG_VALUE,
+                    detail="days must be a positive integer",
+                )
+
+        result = prune(days=days, dry_run=dry_run)
+
+        if not dry_run and result.enabled:
+            log_app_action(
+                app="settings",
+                facet=None,
+                action="prune_logs",
+                params={
+                    "days": result.days,
+                    "files_deleted": result.files_deleted,
+                    "dirs_deleted": result.dirs_deleted,
+                },
+            )
+
+        return jsonify(_serialize_prune_result(result))
+    except CorruptConfigError:
+        raise
+    except Exception:
+        logger.exception("error pruning logs")
         return _settings_operation_failed()
