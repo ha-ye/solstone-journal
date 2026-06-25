@@ -49,6 +49,7 @@ from solstone.think.talent import (
     source_is_required,
 )
 from solstone.think.talent_provenance import (
+    UnsupportedProvenancePath,
     compute_identity_hash,
     output_digest,
     read_provenance,
@@ -1028,20 +1029,38 @@ def _write_clean_provenance(
 ) -> None:
     if not output_path or not result:
         return
-    output_sha256, output_size = output_digest(output_path)
-    write_provenance(
-        output_path,
-        identity_hash=_identity_hash(config, runtime_json_schema),
-        output_sha256=output_sha256,
-        output_size=output_size,
-        provider=config.get("provider"),
-        model=config.get("model"),
-        fallback_from=config.get("fallback_from"),
-        generation_params=_generation_params(config),
-        completed_at_ms=completed_at_ms,
-        use_id=config.get("use_id"),
-        identity_fields=_identity_fields(config),
-    )
+    # Provenance is an observability sidecar, never the run's success
+    # contract: a sidecar failure must not flip a saved output to "error".
+    # Mirrors the non-fatal read path in _try_reuse_output. The unsupported-
+    # path sentinel is the benign "this output shape has no day-rooted
+    # provenance home" signal (logged at WARNING); any other failure is
+    # unexpected and logged LOUDLY at ERROR (not a silent swallow).
+    try:
+        output_sha256, output_size = output_digest(output_path)
+        write_provenance(
+            output_path,
+            identity_hash=_identity_hash(config, runtime_json_schema),
+            output_sha256=output_sha256,
+            output_size=output_size,
+            provider=config.get("provider"),
+            model=config.get("model"),
+            fallback_from=config.get("fallback_from"),
+            generation_params=_generation_params(config),
+            completed_at_ms=completed_at_ms,
+            use_id=config.get("use_id"),
+            identity_fields=_identity_fields(config),
+        )
+    except UnsupportedProvenancePath:
+        LOG.warning(
+            "skipping talent provenance for unmapped output path %s",
+            output_path,
+        )
+    except Exception:
+        LOG.error(
+            "failed to write talent provenance for %s",
+            output_path,
+            exc_info=True,
+        )
 
 
 def _build_dry_run_event(config: dict, before_values: dict) -> dict:
