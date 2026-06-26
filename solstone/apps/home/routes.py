@@ -49,7 +49,7 @@ home_bp = Blueprint(
     url_prefix="/app/home",
 )
 
-_FIRST_WEEK_FRAMING = "Most of what I learn becomes useful in the third or fourth week, when I've seen enough patterns to surface them. For now, here's what's already happening:"
+_FIRST_WEEK_FRAMING = "Most of what I learn becomes useful after about a week, when I've seen enough patterns to surface them. For now, here's what's already happening:"
 
 
 def _today() -> str:

@@ -368,7 +368,7 @@ def test_yesterdays_card_healthy_expanded_with_framing_on_days_1_to_7(
     assert summary["default_collapsed"] is False
     assert (
         summary["first_week_framing"]
-        == "Most of what I learn becomes useful in the third or fourth week, when I've seen enough patterns to surface them. For now, here's what's already happening:"
+        == "Most of what I learn becomes useful after about a week, when I've seen enough patterns to surface them. For now, here's what's already happening:"
     )
 
 
