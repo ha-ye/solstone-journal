@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -31,6 +31,11 @@ def _read_config(journal_path: Path) -> dict:
 
 def _old_day(days: int = 31) -> str:
     return (date.today() - timedelta(days=days)).strftime("%Y%m%d")
+
+
+def _root_task_log_line(day: str, message: str) -> bytes:
+    dt = datetime.strptime(day, "%Y%m%d").replace(hour=12)
+    return f"{int(dt.timestamp())}\t{message}\n".encode("utf-8")
 
 
 def _write(path: Path, content: str = "x") -> Path:
@@ -136,6 +141,27 @@ def test_storage_prune_logs_dry_run_serializes_result_and_deletes_nothing(
     assert payload["audit_written"] is False
     assert payload["partial_error"] is False
     assert old_token.exists()
+
+
+def test_storage_prune_logs_serializes_root_task_log_dry_run(settings_env):
+    journal_path, _config = settings_env({"setup": {"completed_at": "2026-05-09"}})
+    old_line = _root_task_log_line(_old_day(), "old root line")
+    root_log = journal_path / "task_log.txt"
+    root_log.write_bytes(old_line)
+    client = _client(journal_path)
+
+    response = client.post("/app/settings/api/storage/prune-logs", json={})
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["files_deleted"] == 0
+    assert payload["dirs_deleted"] == 0
+    assert payload["bytes_freed"] == len(old_line)
+    assert payload["root_task_log"]["exists"] is True
+    assert payload["root_task_log"]["lines_removed"] == 1
+    assert payload["root_task_log"]["bytes_freed"] == len(old_line)
+    assert payload["root_task_log"]["rewritten"] is False
+    assert root_log.read_bytes() == old_line
 
 
 def test_storage_prune_logs_disabled_config_deletes_nothing(settings_env):

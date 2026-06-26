@@ -4,9 +4,10 @@
 """CLI functionality for the indexer."""
 
 import argparse
+import logging
 from typing import Any
 
-from solstone.think.utils import get_journal, journal_log, require_solstone, setup_cli
+from solstone.think.utils import get_journal, require_solstone, setup_cli
 
 from .journal import (
     index_file,
@@ -15,6 +16,8 @@ from .journal import (
     search_counts,
     search_journal,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _format_count_column(
@@ -177,13 +180,13 @@ def main() -> None:
             parser.error("--rescan-file cannot be used with --rescan or --rescan-full")
         try:
             index_file(journal, args.rescan_file, verbose=args.verbose)
-            journal_log(f"indexer file indexed: {args.rescan_file}")
+            logger.info("indexer file indexed: %s", args.rescan_file)
         except (ValueError, FileNotFoundError) as e:
             parser.error(str(e))
     elif args.rescan or args.rescan_full:
         changed = scan_journal(journal, verbose=args.verbose, full=args.rescan_full)
         if changed:
-            journal_log("indexer journal rescan ok")
+            logger.info("indexer journal rescan ok")
 
     if args.query is not None:
         query_kwargs: dict[str, Any] = {}

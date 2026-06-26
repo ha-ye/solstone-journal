@@ -52,6 +52,15 @@ def _epoch_ms(day: str) -> str:
     return str(int(dt.timestamp() * 1000))
 
 
+def _epoch_seconds(day: str) -> str:
+    dt = datetime.strptime(day, "%Y%m%d").replace(hour=12)
+    return str(int(dt.timestamp()))
+
+
+def _root_task_log_line(day: str, message: str) -> bytes:
+    return f"{_epoch_seconds(day)}\t{message}\n".encode("utf-8")
+
+
 def _write(path: Path, content: str = "x") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -96,12 +105,17 @@ def test_ac1_load_log_retention_config_defaults_per_field(journal):
 def test_ac3_disabled_config_deletes_nothing_and_writes_no_audit(journal):
     old_day = _day(31)
     old_file = _write(journal / "tokens" / f"{old_day}.jsonl")
+    root_log = journal / "task_log.txt"
+    root_log.write_bytes(_root_task_log_line(old_day, "old root line"))
+    root_before = root_log.read_bytes()
 
     result = prune(config=LogRetentionConfig(enabled=False, days=30))
 
     assert old_file.exists()
+    assert root_log.read_bytes() == root_before
     assert result.enabled is False
     assert result.files_deleted == 0
+    assert result.root_task_log["lines_removed"] == 0
     assert result.audit_written is False
     assert not (journal / "health" / "pruning-runs").exists()
     assert not (journal / "chronicle" / old_day / "task_log.txt").exists()
@@ -119,6 +133,134 @@ def test_ac4_dry_run_reports_candidates_without_deleting_or_audit(journal):
     assert result.by_class["tokens"]["files_deleted"] == 1
     assert result.by_day[old_day]["files_deleted"] == 1
     assert result.audit_written is False
+    assert not (journal / "health" / "pruning-runs").exists()
+
+
+def test_root_task_log_dry_run_reports_without_rewrite_or_audit(journal):
+    old_line = _root_task_log_line(_day(31), "old root line")
+    cutoff_line = _root_task_log_line(_day(30), "cutoff root line")
+    recent_line = _root_task_log_line(_day(1), "recent root line")
+    malformed_line = b"not-an-epoch\tkeep this line\n"
+    no_tab_line = b"missing separator\n"
+    root_log = journal / "task_log.txt"
+    original = old_line + cutoff_line + recent_line + malformed_line + no_tab_line
+    root_log.write_bytes(original)
+
+    result = prune(dry_run=True, config=LogRetentionConfig(days=30))
+
+    stats = result.root_task_log
+    assert root_log.read_bytes() == original
+    assert stats["exists"] is True
+    assert stats["lines_total"] == 5
+    assert stats["lines_removed"] == 1
+    assert stats["lines_kept"] == 4
+    assert stats["unparseable_lines_kept"] == 2
+    assert stats["bytes_freed"] == len(old_line)
+    assert stats["rewritten"] is False
+    assert result.bytes_freed == len(old_line)
+    assert result.audit_written is False
+    assert not (journal / "health" / "pruning-runs").exists()
+
+
+def test_root_task_log_compacts_old_epoch_lines_and_writes_audit(journal):
+    old_line = _root_task_log_line(_day(31), "old root line")
+    cutoff_line = _root_task_log_line(_day(30), "cutoff root line")
+    recent_line = _root_task_log_line(_day(1), "recent root line")
+    impossible_epoch_line = b"999999999999999999999999\tkeep malformed\n"
+    root_log = journal / "task_log.txt"
+    root_log.write_bytes(old_line + cutoff_line + recent_line + impossible_epoch_line)
+
+    result = prune(config=LogRetentionConfig(days=30))
+
+    expected = cutoff_line + recent_line + impossible_epoch_line
+    stats = result.root_task_log
+    assert root_log.exists()
+    assert root_log.read_bytes() == expected
+    assert result.files_deleted == 0
+    assert result.dirs_deleted == 0
+    assert result.bytes_freed == len(old_line)
+    assert result.audit_written is True
+    assert stats["exists"] is True
+    assert stats["lines_total"] == 4
+    assert stats["lines_removed"] == 1
+    assert stats["lines_kept"] == 3
+    assert stats["unparseable_lines_kept"] == 1
+    assert stats["bytes_freed"] == len(old_line)
+    assert stats["rewritten"] is True
+    assert stats["errors"] == []
+
+    run_log = journal / "health" / "pruning-runs" / f"{FIXED_NOW:%Y%m%d}.jsonl"
+    records = _read_jsonl(run_log)
+    assert len(records) == 1
+    record = records[0]
+    assert record["totals"]["files_deleted"] == 0
+    assert record["totals"]["dirs_deleted"] == 0
+    assert record["totals"]["bytes_freed"] == len(old_line)
+    assert record["root_task_log"]["lines_removed"] == 1
+    assert not (journal / "chronicle" / _day(31) / "task_log.txt").exists()
+
+
+def test_root_task_log_all_old_lines_leaves_file_in_place(journal):
+    old_line = _root_task_log_line(_day(31), "old root line")
+    root_log = journal / "task_log.txt"
+    root_log.write_bytes(old_line)
+
+    result = prune(config=LogRetentionConfig(days=30))
+
+    assert root_log.exists()
+    assert root_log.read_bytes() == b""
+    assert result.root_task_log["lines_removed"] == 1
+    assert result.root_task_log["rewritten"] is True
+
+
+def test_root_task_log_missing_or_no_old_lines_writes_no_audit(journal):
+    missing = prune(config=LogRetentionConfig(days=30))
+
+    assert missing.root_task_log["exists"] is False
+    assert missing.audit_written is False
+    assert not (journal / "health" / "pruning-runs").exists()
+
+    root_log = journal / "task_log.txt"
+    recent_line = _root_task_log_line(_day(1), "recent root line")
+    root_log.write_bytes(recent_line)
+
+    recent_only = prune(config=LogRetentionConfig(days=30))
+
+    assert root_log.read_bytes() == recent_line
+    assert recent_only.root_task_log["exists"] is True
+    assert recent_only.root_task_log["lines_removed"] == 0
+    assert recent_only.root_task_log["rewritten"] is False
+    assert recent_only.audit_written is False
+    assert not (journal / "health" / "pruning-runs").exists()
+
+
+def test_root_task_log_rewrite_failure_preserves_original_and_reports_partial(
+    journal,
+    monkeypatch,
+):
+    old_line = _root_task_log_line(_day(31), "old root line")
+    recent_line = _root_task_log_line(_day(1), "recent root line")
+    root_log = journal / "task_log.txt"
+    root_log.write_bytes(old_line + recent_line)
+    original = root_log.read_bytes()
+
+    def fail_replace(_path, _data):
+        raise OSError("blocked")
+
+    monkeypatch.setattr(log_retention, "_atomic_replace_file", fail_replace)
+
+    result = prune(config=LogRetentionConfig(days=30))
+
+    assert root_log.read_bytes() == original
+    assert result.audit_written is False
+    assert result.partial_error is True
+    assert result.bytes_freed == 0
+    assert result.root_task_log["lines_removed"] == 1
+    assert result.root_task_log["bytes_freed"] == 0
+    assert result.root_task_log["rewritten"] is False
+    assert any(
+        error["reason"] == "root_task_log_rewrite_failed" for error in result.errors
+    )
     assert not (journal / "health" / "pruning-runs").exists()
 
 

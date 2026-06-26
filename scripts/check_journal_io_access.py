@@ -112,6 +112,7 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/think/facets.py",
         "solstone/think/identity.py",
         "solstone/think/journal_config.py",
+        "solstone/think/log_retention.py",
         "solstone/think/schedule_config.py",
         "solstone/think/push/devices.py",
         # Backup hosted-tier binding (0600 broker-token cache).

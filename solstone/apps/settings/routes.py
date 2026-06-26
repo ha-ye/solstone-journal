@@ -108,6 +108,7 @@ def _serialize_prune_result(result: Any) -> dict[str, Any]:
         "bytes_freed_human": _human_bytes(result.bytes_freed),
         "by_class": result.by_class,
         "by_day": result.by_day,
+        "root_task_log": result.root_task_log,
         "errors": result.errors,
         "audit_written": result.audit_written,
         "partial_error": result.partial_error,

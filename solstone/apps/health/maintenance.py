@@ -46,6 +46,14 @@ def run_prune_logs_routine(args: list[str]) -> int:
             f"  {class_name}: {files} file(s), {dirs} cache dir(s), "
             f"{_human_bytes(bytes_freed)}"
         )
+    root_stats = result.root_task_log
+    root_lines = int(root_stats.get("lines_removed", 0))
+    if root_lines:
+        root_action = "would compact" if result.dry_run else "compacted"
+        print(
+            f"  root_task_log: {root_action} {root_lines} line(s), "
+            f"{_human_bytes(int(root_stats.get('bytes_freed', 0)))}"
+        )
     for error in result.errors:
         hint = f" hint={error['hint']}" if error.get("hint") else ""
         print(f"  error: {error['reason']}: {error['message']}{hint}")

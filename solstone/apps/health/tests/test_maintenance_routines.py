@@ -20,6 +20,7 @@ def _result(
     dirs_deleted: int = 0,
     bytes_freed: int = 0,
     errors: list[dict] | None = None,
+    root_task_log: dict | None = None,
 ) -> PruneResult:
     return PruneResult(
         enabled=enabled,
@@ -42,6 +43,17 @@ def _result(
         errors=errors or [],
         audit_written=False,
         partial_error=bool(errors),
+        root_task_log=root_task_log
+        or {
+            "exists": False,
+            "lines_total": 0,
+            "lines_kept": 0,
+            "lines_removed": 0,
+            "unparseable_lines_kept": 0,
+            "bytes_freed": 0,
+            "rewritten": False,
+            "errors": [],
+        },
     )
 
 
@@ -94,6 +106,36 @@ def test_prune_logs_routine_rejects_nonpositive_days(monkeypatch, capsys):
     require_solstone.assert_called_once_with()
     prune.assert_not_called()
     assert "--days must be a positive integer" in capsys.readouterr().err
+
+
+def test_prune_logs_routine_prints_root_task_log_work(monkeypatch, capsys):
+    require_solstone = Mock()
+    prune = Mock(
+        return_value=_result(
+            bytes_freed=42,
+            root_task_log={
+                "exists": True,
+                "lines_total": 4,
+                "lines_kept": 1,
+                "lines_removed": 3,
+                "unparseable_lines_kept": 0,
+                "bytes_freed": 42,
+                "rewritten": True,
+                "errors": [],
+            },
+        )
+    )
+    monkeypatch.setattr(maintenance, "require_solstone", require_solstone)
+    monkeypatch.setattr(maintenance, "prune", prune)
+
+    code = maintenance.run_prune_logs_routine([])
+
+    assert code == 0
+    output = capsys.readouterr().out
+    assert (
+        "prune-logs: pruned 0 operational-log file(s), 0 cache dir(s), 42 B" in output
+    )
+    assert "root_task_log: compacted 3 line(s), 42 B" in output
 
 
 def test_prune_logs_routine_prints_partial_errors(monkeypatch, capsys):

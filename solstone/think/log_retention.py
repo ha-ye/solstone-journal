@@ -6,10 +6,11 @@
 from __future__ import annotations
 
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from solstone.think.journal_io import atomic_replace
 from solstone.think.pruning_audit import write_prune_audit
 from solstone.think.retention import _human_bytes
 from solstone.think.utils import get_config, get_journal
@@ -57,6 +58,7 @@ class PruneResult:
     errors: list[dict]
     audit_written: bool
     partial_error: bool
+    root_task_log: dict = field(default_factory=lambda: _empty_root_task_log_stats())
 
     def to_record(self) -> dict:
         """Return the global audit record for this prune result."""
@@ -77,6 +79,7 @@ class PruneResult:
                     stats.get("skipped", 0) for stats in self.by_class.values()
                 ),
             },
+            "root_task_log": self.root_task_log,
             "errors": self.errors,
         }
 
@@ -187,8 +190,9 @@ def prune(
     )
     _scan_facet_logs(journal_path, cutoff, result, dry_run=dry_run)
     _scan_observer_history(journal_path, cutoff, result, dry_run=dry_run)
+    _compact_root_task_log(journal_path, cutoff, result, dry_run=dry_run)
 
-    if not dry_run and (result.files_deleted + result.dirs_deleted) > 0:
+    if not dry_run and _has_audit_work(result):
         outcome = write_prune_audit(
             journal_path,
             kind="journal_logs",
@@ -253,6 +257,7 @@ def _empty_result(
         errors=[],
         audit_written=False,
         partial_error=False,
+        root_task_log=_empty_root_task_log_stats(),
     )
 
 
@@ -264,6 +269,31 @@ def _empty_class_stats() -> dict:
         "skipped": 0,
         "errors": [],
     }
+
+
+def _empty_root_task_log_stats() -> dict:
+    return {
+        "exists": False,
+        "lines_total": 0,
+        "lines_kept": 0,
+        "lines_removed": 0,
+        "unparseable_lines_kept": 0,
+        "bytes_freed": 0,
+        "rewritten": False,
+        "errors": [],
+    }
+
+
+def _has_root_task_log_work(result: PruneResult) -> bool:
+    return int(result.root_task_log.get("lines_removed", 0)) > 0 and bool(
+        result.root_task_log.get("rewritten", False)
+    )
+
+
+def _has_audit_work(result: PruneResult) -> bool:
+    return (result.files_deleted + result.dirs_deleted) > 0 or _has_root_task_log_work(
+        result
+    )
 
 
 def _scan_chronicle_health_logs(
@@ -489,6 +519,120 @@ def _scan_observer_history(
             base=observer_dir / "hist",
             pattern="*.jsonl",
         )
+
+
+def _compact_root_task_log(
+    journal_path: Path,
+    cutoff: date,
+    result: PruneResult,
+    *,
+    dry_run: bool,
+) -> None:
+    path = journal_path / "task_log.txt"
+    stats = result.root_task_log
+    stats["exists"] = path.exists()
+    if not stats["exists"]:
+        return
+
+    try:
+        original = path.read_bytes()
+    except OSError as exc:
+        _add_root_task_log_error(
+            result,
+            path,
+            "root_task_log_read_failed",
+            f"failed to read root task log before compaction: {exc}",
+            DELETE_FAILED_HINT,
+            journal_path=journal_path,
+        )
+        return
+
+    lines = original.splitlines(keepends=True)
+    kept: list[bytes] = []
+    unparseable = 0
+
+    for line in lines:
+        entry_day = _parse_root_task_log_day(line)
+        if entry_day is None:
+            unparseable += 1
+            kept.append(line)
+            continue
+        if entry_day < cutoff:
+            continue
+        kept.append(line)
+
+    rewritten = b"".join(kept)
+    stats.update(
+        {
+            "lines_total": len(lines),
+            "lines_kept": len(kept),
+            "lines_removed": len(lines) - len(kept),
+            "unparseable_lines_kept": unparseable,
+            "bytes_freed": len(original) - len(rewritten),
+        }
+    )
+    result.bytes_freed += int(stats["bytes_freed"])
+
+    if dry_run or stats["lines_removed"] == 0:
+        return
+
+    try:
+        _atomic_replace_file(path, rewritten)
+    except OSError as exc:
+        result.bytes_freed -= int(stats["bytes_freed"])
+        stats["bytes_freed"] = 0
+        _add_root_task_log_error(
+            result,
+            path,
+            "root_task_log_rewrite_failed",
+            f"failed to rewrite root task log during compaction: {exc}",
+            DELETE_FAILED_HINT,
+            journal_path=journal_path,
+        )
+        return
+
+    stats["rewritten"] = True
+
+
+def _parse_root_task_log_day(line: bytes) -> date | None:
+    epoch_raw, separator, _rest = line.partition(b"\t")
+    if not separator or not epoch_raw:
+        return None
+    try:
+        epoch = int(epoch_raw)
+    except ValueError:
+        return None
+    try:
+        return datetime.fromtimestamp(epoch).date()
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def _atomic_replace_file(path: Path, data: bytes) -> None:
+    original_mode = path.stat().st_mode & 0o777
+    atomic_replace(path, data, mode=original_mode)
+
+
+def _add_root_task_log_error(
+    result: PruneResult,
+    path: Path,
+    reason: str,
+    message: str,
+    hint: str | None,
+    *,
+    journal_path: Path,
+) -> None:
+    result.root_task_log["errors"].append(message)
+    _add_error(
+        result,
+        "root_task_log",
+        path=path,
+        day=None,
+        reason=reason,
+        message=message,
+        hint=hint,
+        journal_path=journal_path,
+    )
 
 
 def _delete_target(
