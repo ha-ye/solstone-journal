@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from solstone.convey.icons import is_lucide_icon
 from solstone.think.journal_io import append_text, atomic_replace, hold_lock
 from solstone.think.utils import day_dirs, day_path, get_journal, iter_segments
 
@@ -245,6 +246,13 @@ def _write_facet_json(path: Path, data: dict[str, Any]) -> None:
     atomic_replace(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
+def _validate_icon(icon: str) -> None:
+    if not is_lucide_icon(icon):
+        raise ValueError(
+            f"unknown Lucide icon '{icon}' — open the picker or see lucide.dev/icons"
+        )
+
+
 def ensure_facet(slug: str) -> bool:
     """Ensure a facet directory has facet metadata."""
     facet_path = Path(get_journal()) / "facets" / slug
@@ -328,6 +336,8 @@ def get_facets() -> dict[str, dict[str, object]]:
                     "emoji": facet_data.get("emoji", ""),
                     "muted": facet_data.get("muted", False),
                 }
+                if "icon" in facet_data:
+                    facet_info["icon"] = facet_data["icon"]
 
                 facets[facet_name] = facet_info
         except (
@@ -759,6 +769,7 @@ def create_facet(
     color: str = "#667eea",
     description: str = "",
     *,
+    icon: str = "",
     consent: bool = False,
 ) -> str:
     """Create a new facet directory with facet.json.
@@ -768,6 +779,7 @@ def create_facet(
         emoji: Icon emoji (default: "📦")
         color: Hex color (default: "#667eea")
         description: Facet description
+        icon: Lucide icon name override
 
     Returns:
         The generated slug name for the facet
@@ -789,6 +801,9 @@ def create_facet(
     if slug in get_facets():
         raise ValueError(f"Facet '{slug}' already exists")
 
+    if icon:
+        _validate_icon(icon)
+
     facet_path = Path(get_journal()) / "facets" / slug
     facet_path.mkdir(parents=True, exist_ok=True)
     facet_json_path = facet_path / "facet.json"
@@ -799,6 +814,8 @@ def create_facet(
         "color": color,
         "emoji": emoji,
     }
+    if icon:
+        facet_data["icon"] = icon
 
     _write_facet_json(facet_json_path, facet_data)
 
@@ -808,6 +825,8 @@ def create_facet(
         "color": color,
         "description": description,
     }
+    if icon:
+        log_params["icon"] = icon
     if consent:
         log_params["consent"] = True
     log_call_action(
@@ -823,7 +842,7 @@ def update_facet(name: str, **kwargs: Any) -> dict[str, Any]:
 
     Args:
         name: Facet name
-        **kwargs: Fields to update (title, description, emoji, color)
+        **kwargs: Fields to update (title, description, emoji, color, icon)
 
     Returns:
         Dict of changed fields {field: {"old": ..., "new": ...}}
@@ -846,7 +865,8 @@ def update_facet(name: str, **kwargs: Any) -> dict[str, Any]:
     allowed_fields = {"title", "description", "color", "emoji"}
     changed_fields: dict[str, Any] = {}
     filtered = {k: v for k, v in kwargs.items() if k in allowed_fields}
-    if not filtered:
+    icon_provided = "icon" in kwargs
+    if not filtered and not icon_provided:
         raise ValueError("No valid fields to update")
 
     for field, new_value in filtered.items():
@@ -854,6 +874,19 @@ def update_facet(name: str, **kwargs: Any) -> dict[str, Any]:
         if old_value != new_value:
             changed_fields[field] = {"old": old_value, "new": new_value}
             facet_data[field] = new_value
+
+    if icon_provided:
+        new_icon = kwargs["icon"]
+        old_icon = facet_data.get("icon")
+        if new_icon:
+            _validate_icon(new_icon)
+            if old_icon != new_icon:
+                changed_fields["icon"] = {"old": old_icon, "new": new_icon}
+                facet_data["icon"] = new_icon
+        else:
+            if "icon" in facet_data:
+                changed_fields["icon"] = {"old": old_icon, "new": None}
+                facet_data.pop("icon")
 
     _write_facet_json(facet_json_path, facet_data)
 

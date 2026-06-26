@@ -14,7 +14,7 @@ from solstone.apps import AppRegistry
 from solstone.convey.provider_readiness import is_blocking_reason, present_for_reason
 from solstone.think.talent_runs import AgentFailure, read_unresolved_agent_failures
 
-from .icons import APP_LUCIDE_MAP, lucide_svg, lucide_svg_for_emoji
+from .icons import APP_LUCIDE_MAP, lucide_svg, resolve_facet_icon_svg
 
 
 def _get_facets_data() -> list[dict]:
@@ -36,7 +36,10 @@ def _get_facets_data() -> list[dict]:
                 "title": data.get("title", name),
                 "color": data.get("color", ""),
                 "emoji": data.get("emoji", ""),
-                "icon_svg": lucide_svg_for_emoji(data.get("emoji", "")),
+                "icon": data.get("icon", ""),
+                "icon_svg": resolve_facet_icon_svg(
+                    data.get("icon"), data.get("emoji", "")
+                ),
             }
         )
 

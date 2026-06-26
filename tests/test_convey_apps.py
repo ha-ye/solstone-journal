@@ -12,6 +12,7 @@ from jinja2 import ChoiceLoader, FileSystemLoader
 from solstone.apps import AppRegistry
 from solstone.convey.apps import register_app_context
 from solstone.convey.chat_stream import append_chat_event
+from solstone.convey.icons import lucide_svg
 from solstone.convey.sol_initiated.copy import CATEGORIES, KIND_SOL_CHAT_REQUEST
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -137,6 +138,18 @@ def test_get_facets_data_adds_icon_svg_and_preserves_emoji(monkeypatch):
                 "color": "#654321",
                 "emoji": "🪮",
             },
+            "override": {
+                "title": "Override",
+                "color": "#abcdef",
+                "emoji": "📚",
+                "icon": "brain",
+            },
+            "dangling": {
+                "title": "Dangling",
+                "color": "#fedcba",
+                "emoji": "📚",
+                "icon": "definitely-not-an-icon",
+            },
         },
     )
     monkeypatch.setattr("solstone.convey.config.load_convey_config", lambda: {})
@@ -145,9 +158,16 @@ def test_get_facets_data_adds_icon_svg_and_preserves_emoji(monkeypatch):
     by_name = {facet["name"]: facet for facet in facets}
 
     assert by_name["library"]["emoji"] == "📚"
+    assert by_name["library"]["icon"] == ""
     assert "<svg" in by_name["library"]["icon_svg"]
     assert by_name["comb"]["emoji"] == "🪮"
+    assert by_name["comb"]["icon"] == ""
     assert by_name["comb"]["icon_svg"] is None
+    assert by_name["override"]["icon"] == "brain"
+    assert by_name["override"]["icon_svg"] == lucide_svg("brain")
+    assert by_name["override"]["icon_svg"] != lucide_svg("library")
+    assert by_name["dangling"]["icon"] == "definitely-not-an-icon"
+    assert by_name["dangling"]["icon_svg"] == lucide_svg("library")
 
 
 # --- Placeholder resolution ---

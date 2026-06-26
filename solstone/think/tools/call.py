@@ -246,6 +246,9 @@ def create(
     emoji: str = typer.Option("📦", "--emoji", help="Icon emoji."),
     color: str = typer.Option("#667eea", "--color", help="Hex color."),
     description: str = typer.Option("", "--description", help="Facet description."),
+    icon: str = typer.Option(
+        "", "--icon", help="Lucide icon name (overrides the emoji-derived icon)."
+    ),
     consent: bool = typer.Option(
         False,
         "--consent",
@@ -259,6 +262,7 @@ def create(
             emoji=emoji,
             color=color,
             description=description,
+            icon=icon,
             consent=consent,
         )
     except ValueError as e:
@@ -276,6 +280,9 @@ def update(
     ),
     emoji: str | None = typer.Option(None, "--emoji", help="New icon emoji."),
     color: str | None = typer.Option(None, "--color", help="New hex color."),
+    icon: str | None = typer.Option(
+        None, "--icon", help="Lucide icon name; pass empty string to clear."
+    ),
 ) -> None:
     """Update facet configuration."""
     kwargs = {}
@@ -287,10 +294,12 @@ def update(
         kwargs["emoji"] = emoji
     if color is not None:
         kwargs["color"] = color
+    if icon is not None:
+        kwargs["icon"] = icon
 
     if not kwargs:
         typer.echo(
-            "Error: No fields to update. Use --title, --description, --emoji, or --color.",
+            "Error: No fields to update. Use --title, --description, --emoji, --color, or --icon.",
             err=True,
         )
         raise typer.Exit(1)

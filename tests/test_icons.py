@@ -12,9 +12,13 @@ from pathlib import Path
 from solstone.apps import AppRegistry
 from solstone.convey.icons import (
     APP_LUCIDE_MAP,
+    _lucide_tags,
     emoji_to_lucide,
+    is_lucide_icon,
     lucide_svg,
     lucide_svg_for_emoji,
+    resolve_facet_icon_svg,
+    search_lucide_icons,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +27,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def test_lucide_svg_hit_and_miss() -> None:
     assert "<svg" in (lucide_svg("house") or "")
     assert lucide_svg("not-a-lucide-icon") is None
+
+
+def test_is_lucide_icon() -> None:
+    assert is_lucide_icon("house") is True
+    assert is_lucide_icon("not-a-lucide-icon") is False
+    assert is_lucide_icon("") is False
 
 
 def test_emoji_to_lucide_required_cases() -> None:
@@ -42,6 +52,50 @@ def test_emoji_to_lucide_preserves_raw_zwj_key() -> None:
 def test_lucide_svg_for_emoji_hit_and_miss() -> None:
     assert "<svg" in (lucide_svg_for_emoji("📚") or "")
     assert lucide_svg_for_emoji("🪮") is None
+
+
+def test_resolve_facet_icon_svg_precedence_and_fallback() -> None:
+    assert resolve_facet_icon_svg("brain", "📚") == lucide_svg("brain")
+    assert resolve_facet_icon_svg(None, "📚") == lucide_svg("library")
+    assert resolve_facet_icon_svg("", "📚") == lucide_svg("library")
+    assert resolve_facet_icon_svg("definitely-not-an-icon", "📚") == lucide_svg(
+        "library"
+    )
+    assert resolve_facet_icon_svg("coins", "🪮") == lucide_svg("coins")
+
+
+def test_search_lucide_icons_lock_matches_name_or_tag() -> None:
+    tags = _lucide_tags()
+    results = search_lucide_icons("lock")
+
+    assert results
+    assert all(
+        "lock" in result["name"]
+        or any("lock" in tag for tag in tags.get(result["name"], []))
+        for result in results
+    )
+
+
+def test_search_lucide_icons_empty_is_alphabetical_and_limited() -> None:
+    results = search_lucide_icons("", limit=7)
+    names = [result["name"] for result in results]
+
+    assert len(results) == 7
+    assert names == sorted(names)
+
+
+def test_search_lucide_icons_respects_limit() -> None:
+    assert len(search_lucide_icons("lock", limit=5)) <= 5
+
+
+def test_search_lucide_icons_orders_name_matches_before_tag_only() -> None:
+    results = search_lucide_icons("brain", limit=20)
+    names = [result["name"] for result in results]
+    tag_only_start = next(i for i, name in enumerate(names) if "brain" not in name)
+
+    assert tag_only_start > 0
+    assert all("brain" in name for name in names[:tag_only_start])
+    assert all("brain" not in name for name in names[tag_only_start:])
 
 
 def test_lucide_loading_is_package_relative(tmp_path: Path) -> None:

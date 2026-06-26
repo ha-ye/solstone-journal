@@ -630,6 +630,138 @@ input:checked + .slider:before {
   text-align: center;
 }
 
+/* Lucide icon picker */
+.icon-picker-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75em;
+  cursor: pointer;
+  padding: 0.6em 0.75em;
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--facet-color, #E8923A);
+  transition: all 0.2s;
+}
+
+.icon-picker-trigger:hover {
+  background: #f5f5f5;
+  border-color: #999;
+}
+
+.icon-picker-trigger:focus-visible {
+  outline: 2px solid var(--facet-color, #E8923A);
+  outline-offset: 2px;
+}
+
+.icon-picker-preview,
+.icon-modal-preview-glyph {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--pill-color, var(--facet-color, #E8923A));
+}
+
+.icon-picker-preview svg,
+.icon-modal-preview-glyph svg,
+.icon-result-btn svg {
+  width: 24px;
+  height: 24px;
+  stroke-width: 1.5;
+  color: currentColor;
+}
+
+.icon-picker-name {
+  color: #333;
+  font-weight: 600;
+}
+
+.icon-search-input {
+  width: 100%;
+  padding: 0.65em 0.75em;
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  font: inherit;
+  margin-bottom: 1em;
+}
+
+.icon-results-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
+  gap: 0.6em;
+  max-height: 280px;
+  overflow: auto;
+  margin-bottom: 1em;
+}
+
+.icon-result-btn {
+  aspect-ratio: 1;
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--pill-color, var(--facet-color, #E8923A));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.icon-result-btn:hover {
+  background: #f5f5f5;
+  border-color: #999;
+}
+
+.icon-result-btn:active {
+  transform: scale(0.95);
+}
+
+.icon-result-btn.selected {
+  border-color: var(--facet-color, #E8923A);
+  box-shadow: 0 0 0 2px #fff, 0 0 0 5px var(--facet-color, #E8923A);
+}
+
+.icon-picker-message {
+  padding: 0.75em;
+  border-radius: 8px;
+  background: #f8f8f8;
+  color: #555;
+  margin-bottom: 1em;
+}
+
+.icon-picker-message.error {
+  background: #fff4f4;
+  color: #a33;
+}
+
+.icon-picker-actions {
+  display: flex;
+  gap: 0.75em;
+}
+
+.icon-picker-actions .save-color-btn {
+  flex: 1;
+}
+
+.icon-clear-btn {
+  flex: 1;
+  padding: 0.75em 1.5em;
+  background: #fff;
+  color: #333;
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  font-size: 1em;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.icon-clear-btn:hover {
+  background: #f5f5f5;
+  border-color: #999;
+}
+
 /* Color picker */
 .color-picker-trigger {
   display: flex;
@@ -1862,6 +1994,9 @@ input:checked + .slider:before {
 .log-more-btn:focus-visible,
 .color-close:focus-visible,
 .color-swatch:focus-visible,
+.icon-picker-trigger:focus-visible,
+.icon-result-btn:focus-visible,
+.icon-clear-btn:focus-visible,
 .field-display:focus-visible,
 button:focus-visible {
   outline: 2px solid var(--facet-color, #E8923A);
@@ -1887,6 +2022,7 @@ button:focus-visible {
 .save-color-btn:focus:not(:focus-visible),
 .field-display:focus:not(:focus-visible),
 .color-picker-trigger:focus:not(:focus-visible),
+.icon-picker-trigger:focus:not(:focus-visible),
 .emoji-display:focus:not(:focus-visible),
 button:focus:not(:focus-visible) {
   outline: none;
@@ -2948,6 +3084,15 @@ button:focus:not(:focus-visible) {
       </div>
 
       <div class="settings-field">
+        <label for="iconTrigger">lucide icon</label>
+        <button type="button" class="icon-picker-trigger" id="iconTrigger">
+          <span class="icon-picker-preview" id="iconPreview" aria-hidden="true">—</span>
+          <span class="icon-picker-name" id="iconNameDisplay">use emoji</span>
+        </button>
+        <small>choose a Lucide override, or keep using the emoji</small>
+      </div>
+
+      <div class="settings-field">
         <label>theme color</label>
         <div class="color-picker-trigger" id="colorTrigger" tabindex="0" role="button">
           <div class="color-preview" id="colorPreview"></div>
@@ -3030,6 +3175,29 @@ button:focus:not(:focus-visible) {
       </div>
     </section>
     <p style="font-size: 0.8rem; color: #aaa; margin-top: 1.5rem; text-align: center;">your journal stays on your device — nothing leaves unless you send it</p>
+  </div>
+</div>
+
+<!-- Icon Picker Modal -->
+<div id="iconPickerModal" class="color-modal" role="dialog" aria-modal="true" aria-labelledby="iconPickerHeading">
+  <div class="color-modal-content">
+    <span class="color-close" id="iconPickerClose">&times;</span>
+    <h3 id="iconPickerHeading">choose lucide icon</h3>
+    <label for="iconSearchInput">search icons</label>
+    <input type="search" id="iconSearchInput" class="icon-search-input" placeholder="search by name or tag" autocomplete="off">
+    <div class="icon-picker-message" id="iconPickerMessage" role="status" aria-live="polite" style="display:none"></div>
+    <div class="icon-results-grid" id="iconResultsGrid"></div>
+    <div class="color-preview-section">
+      <h4>preview</h4>
+      <div class="modal-preview-pill" id="iconModalPreview">
+        <span class="icon-modal-preview-glyph" id="iconModalPreviewGlyph" aria-hidden="true">—</span>
+        <span class="modal-preview-title" id="iconModalPreviewTitle">facet</span>
+      </div>
+    </div>
+    <div class="icon-picker-actions">
+      <button class="save-color-btn" id="applyIconBtn">apply icon</button>
+      <button class="icon-clear-btn" id="clearIconBtn">use emoji instead</button>
+    </div>
   </div>
 </div>
 
@@ -3131,6 +3299,7 @@ let keyValidationData = {};
 let solVoiceData = null;
 let solVoiceThrottledTimer = null;
 let transcribeResource = null;
+const iconSvgCache = new Map();
 const escapeHtml = (value) => window.AppServices.escapeHtml(value);
 const solVoiceCopy = {
   autoMutedFormat: {{ sol_voice_copy.SOL_VOICE_SETTINGS_CATEGORY_CAP_AUTO_MUTED_FORMAT | tojson }},
@@ -3165,14 +3334,20 @@ function setTabAttention(section, on) {
 }
 
 // ========== MODAL ACCESSIBILITY ==========
+const MODAL_FOCUSABLE_SELECTOR = 'input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function refreshModalFocusables(modal) {
+  const focusable = modal.querySelectorAll(MODAL_FOCUSABLE_SELECTOR);
+  modal._focusableEls = Array.from(focusable);
+}
+
 function setupModalAccessibility(modalId) {
   const modal = document.getElementById(modalId);
   if (!modal) return;
 
   modal._openAccessible = function(triggerEl) {
     this._triggerEl = triggerEl || document.activeElement;
-    const focusable = this.querySelectorAll('input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])');
-    this._focusableEls = Array.from(focusable);
+    refreshModalFocusables(this);
     if (this._focusableEls.length) {
       requestAnimationFrame(() => this._focusableEls[0].focus());
     }
@@ -3211,6 +3386,7 @@ function setupModalAccessibility(modalId) {
 }
 
 setupModalAccessibility('colorPickerModal');
+setupModalAccessibility('iconPickerModal');
 setupModalAccessibility('customActivityModal');
 setupModalAccessibility('cleanupModal');
 
@@ -4254,6 +4430,10 @@ function populateFacetForm(facetName, config) {
   document.getElementById('facetDescInput').value = config.description || '';
 
   document.getElementById('emojiDisplay').textContent = config.emoji || '\uD83D\uDCE6';
+  updateIconDisplay(config.icon || '', null);
+  if (config.icon) {
+    loadIconDisplaySvg(config.icon);
+  }
 
   const color = config.color || '#667eea';
   document.getElementById('colorPreview').style.backgroundColor = color;
@@ -4268,6 +4448,7 @@ function setupFacetEditing() {
   setupDoubleTapEdit('facetTitleField', 'facetTitleDisplay', 'facetTitleInput', 'title');
   setupDoubleTapEdit('facetDescField', 'facetDescDisplay', 'facetDescInput', 'description');
   setupEmojiPicker();
+  setupIconPicker();
   setupColorPicker();
   setupMutedToggle();
 }
@@ -4346,6 +4527,227 @@ function setupEmojiPicker() {
 
   input.onkeydown = (e) => {
     if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+  };
+}
+
+function setIconSvg(element, svg) {
+  element.innerHTML = svg;
+  const svgEl = element.querySelector('svg');
+  if (svgEl) {
+    svgEl.setAttribute('stroke-width', '1.5');
+    svgEl.setAttribute('aria-hidden', 'true');
+    svgEl.style.color = 'currentColor';
+  }
+}
+
+function updateIconDisplay(iconName, svg) {
+  const preview = document.getElementById('iconPreview');
+  const nameDisplay = document.getElementById('iconNameDisplay');
+  if (!preview || !nameDisplay) return;
+
+  if (iconName && svg) {
+    setIconSvg(preview, svg);
+    nameDisplay.textContent = iconName;
+  } else if (iconName) {
+    preview.textContent = '?';
+    nameDisplay.textContent = iconName;
+  } else {
+    preview.textContent = '—';
+    nameDisplay.textContent = 'use emoji';
+  }
+}
+
+async function loadIconDisplaySvg(iconName) {
+  if (!iconName) return;
+  if (iconSvgCache.has(iconName)) {
+    updateIconDisplay(iconName, iconSvgCache.get(iconName));
+    return;
+  }
+
+  try {
+    const response = await fetch(`/app/settings/api/icons?q=${encodeURIComponent(iconName)}&limit=80`);
+    const data = await response.json();
+    if (!response.ok || data.error) throw new Error(data.error || 'icon lookup failed');
+    const match = (data.icons || []).find(icon => icon.name === iconName);
+    if (match) {
+      iconSvgCache.set(match.name, match.svg);
+      if (facetConfig?.icon === iconName) {
+        updateIconDisplay(iconName, match.svg);
+      }
+    }
+  } catch (err) {
+    console.error('Icon lookup error:', err);
+  }
+}
+
+function setupIconPicker() {
+  const modal = document.getElementById('iconPickerModal');
+  const trigger = document.getElementById('iconTrigger');
+  const closeBtn = document.getElementById('iconPickerClose');
+  const searchInput = document.getElementById('iconSearchInput');
+  const grid = document.getElementById('iconResultsGrid');
+  const message = document.getElementById('iconPickerMessage');
+  const applyBtn = document.getElementById('applyIconBtn');
+  const clearBtn = document.getElementById('clearIconBtn');
+  const previewGlyph = document.getElementById('iconModalPreviewGlyph');
+  const previewTitle = document.getElementById('iconModalPreviewTitle');
+  const previewPill = document.getElementById('iconModalPreview');
+  if (!modal || !trigger || !closeBtn || !searchInput || !grid || !message || !applyBtn || !clearBtn || !previewGlyph || !previewTitle || !previewPill) return;
+
+  let selectedIcon = '';
+  let selectedSvg = null;
+  let searchTimer = null;
+  let searchRequestId = 0;
+
+  function clearIconMessage() {
+    message.style.display = 'none';
+    message.classList.remove('error');
+    message.replaceChildren();
+  }
+
+  function showIconMessage(text, isError = false, retryQuery = null) {
+    message.replaceChildren();
+    const span = document.createElement('span');
+    span.textContent = text;
+    message.appendChild(span);
+    if (retryQuery !== null) {
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'icon-clear-btn';
+      retry.textContent = 'retry';
+      retry.style.marginTop = '0.75em';
+      retry.addEventListener('click', () => fetchIcons(retryQuery));
+      message.appendChild(retry);
+    }
+    message.style.display = 'block';
+    message.classList.toggle('error', isError);
+    refreshModalFocusables(modal);
+  }
+
+  function updateIconPreview() {
+    const color = facetConfig?.color || '#667eea';
+    previewPill.style.borderColor = color;
+    previewPill.style.backgroundColor = color + '1a';
+    previewGlyph.style.setProperty('--pill-color', color);
+    previewTitle.style.color = color;
+    previewTitle.textContent = document.getElementById('facetTitleDisplay').textContent;
+    if (selectedIcon && selectedSvg) {
+      setIconSvg(previewGlyph, selectedSvg);
+    } else {
+      previewGlyph.textContent = document.getElementById('emojiDisplay').textContent || '—';
+    }
+    applyBtn.disabled = !selectedIcon;
+    refreshModalFocusables(modal);
+  }
+
+  function setSelectedIcon(name, svg) {
+    selectedIcon = name;
+    selectedSvg = svg;
+    grid.querySelectorAll('.icon-result-btn').forEach(btn => {
+      btn.classList.toggle('selected', btn.dataset.iconName === name);
+    });
+    updateIconPreview();
+  }
+
+  function renderIconResults(icons, query) {
+    grid.replaceChildren();
+    if (!icons.length) {
+      showIconMessage(query ? 'no icons match' : 'no icons available');
+      return;
+    }
+
+    clearIconMessage();
+    icons.forEach(icon => {
+      iconSvgCache.set(icon.name, icon.svg);
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'icon-result-btn';
+      button.dataset.iconName = icon.name;
+      button.setAttribute('aria-label', icon.name);
+      button.title = icon.name;
+      setIconSvg(button, icon.svg);
+      if (icon.name === selectedIcon) {
+        button.classList.add('selected');
+      }
+      button.addEventListener('click', () => setSelectedIcon(icon.name, icon.svg));
+      grid.appendChild(button);
+    });
+    refreshModalFocusables(modal);
+  }
+
+  async function fetchIcons(query) {
+    const requestId = ++searchRequestId;
+    showIconMessage('loading icons...');
+    try {
+      const response = await fetch(`/app/settings/api/icons?q=${encodeURIComponent(query)}`);
+      const data = await response.json();
+      if (requestId !== searchRequestId) return;
+      if (!response.ok || data.error) throw new Error(data.error || 'icon search failed');
+      renderIconResults(data.icons || [], query);
+      if (selectedIcon && !selectedSvg && iconSvgCache.has(selectedIcon)) {
+        selectedSvg = iconSvgCache.get(selectedIcon);
+        updateIconPreview();
+      }
+    } catch (err) {
+      if (requestId !== searchRequestId) return;
+      console.error('Icon search error:', err);
+      showIconMessage('icon search failed', true, query);
+    }
+  }
+
+  function queueIconSearch() {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => fetchIcons(searchInput.value), 200);
+  }
+
+  grid.onkeydown = (e) => {
+    const target = e.target.closest('.icon-result-btn');
+    if (!target) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      target.click();
+    }
+    if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)) {
+      e.preventDefault();
+      const all = [...grid.querySelectorAll('.icon-result-btn')];
+      const idx = all.indexOf(target);
+      const cols = Math.floor(grid.clientWidth / all[0].offsetWidth) || 4;
+      let next = idx;
+      if (e.key === 'ArrowRight') next = Math.min(idx + 1, all.length - 1);
+      if (e.key === 'ArrowLeft') next = Math.max(idx - 1, 0);
+      if (e.key === 'ArrowDown') next = Math.min(idx + cols, all.length - 1);
+      if (e.key === 'ArrowUp') next = Math.max(idx - cols, 0);
+      all[next].focus();
+    }
+  };
+
+  trigger.onclick = () => {
+    selectedIcon = facetConfig?.icon || '';
+    selectedSvg = selectedIcon && iconSvgCache.has(selectedIcon) ? iconSvgCache.get(selectedIcon) : null;
+    searchInput.value = selectedIcon;
+    updateIconPreview();
+    modal.style.display = 'block';
+    modal._openAccessible(trigger);
+    fetchIcons(searchInput.value);
+  };
+
+  closeBtn.onclick = () => modal._closeAccessible();
+  modal.onclick = (e) => { if (e.target === modal) modal._closeAccessible(); };
+  searchInput.oninput = queueIconSearch;
+
+  applyBtn.onclick = () => {
+    if (!selectedIcon) return;
+    updateIconDisplay(selectedIcon, selectedSvg);
+    saveFacetField('icon', selectedIcon, null);
+    modal._closeAccessible();
+  };
+
+  clearBtn.onclick = () => {
+    selectedIcon = '';
+    selectedSvg = null;
+    updateIconDisplay('', null);
+    saveFacetField('icon', '', null);
+    modal._closeAccessible();
   };
 }
 
@@ -4476,7 +4878,7 @@ async function saveFacetField(field, value, triggerEl) {
         showFieldStatus(triggerEl, 'saved');
       }
       // Prompt reload for changes that affect the facet bar
-      if (field === 'title' || field === 'emoji' || field === 'color' || field === 'muted') {
+      if (field === 'title' || field === 'emoji' || field === 'icon' || field === 'color' || field === 'muted') {
         promptReload();
       }
     } else {

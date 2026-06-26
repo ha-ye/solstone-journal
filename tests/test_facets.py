@@ -16,12 +16,14 @@ from solstone.think.facets import (
     _get_principal_display_name,
     _rank_entities_by_signal,
     aggregate_speculative_facets,
+    create_facet,
     ensure_facet,
     facet_summaries,
     facet_summary,
     find_orphan_facets,
     get_active_facets,
     get_facets,
+    update_facet,
 )
 
 # Use the permanent fixtures in tests/fixtures/journal/facets/
@@ -84,6 +86,93 @@ def setup_facet(
         facet_data["description"] = description
     (facet_dir / "facet.json").write_text(json.dumps(facet_data), encoding="utf-8")
     return facet_dir
+
+
+def _facet_json_bytes(payload: dict[str, object]) -> str:
+    return json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+
+
+def test_create_facet_with_icon_persists_icon(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    slug = create_facet("Treasury", icon="coins")
+
+    payload = json.loads(
+        (tmp_path / "facets" / slug / "facet.json").read_text(encoding="utf-8")
+    )
+    assert payload["icon"] == "coins"
+
+
+def test_create_facet_without_icon_omits_icon_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    slug = create_facet("No Icon")
+
+    expected = {
+        "title": "No Icon",
+        "description": "",
+        "color": "#667eea",
+        "emoji": "📦",
+    }
+    assert (tmp_path / "facets" / slug / "facet.json").read_text(
+        encoding="utf-8"
+    ) == _facet_json_bytes(expected)
+
+
+def test_update_facet_icon_set_persists(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    slug = create_facet("Thinking")
+
+    changed = update_facet(slug, icon="brain")
+
+    payload = json.loads(
+        (tmp_path / "facets" / slug / "facet.json").read_text(encoding="utf-8")
+    )
+    assert changed["icon"] == {"old": None, "new": "brain"}
+    assert payload["icon"] == "brain"
+
+
+def test_update_facet_invalid_icon_writes_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    slug = create_facet("Stable")
+    facet_path = tmp_path / "facets" / slug / "facet.json"
+    before = facet_path.read_text(encoding="utf-8")
+
+    with pytest.raises(ValueError, match="open the picker or see lucide.dev/icons"):
+        update_facet(slug, title="Changed", icon="not-a-real-icon")
+
+    assert facet_path.read_text(encoding="utf-8") == before
+    assert "icon" not in json.loads(before)
+
+
+def test_update_facet_icon_clear_removes_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    slug = create_facet("Clearable", icon="brain")
+
+    changed = update_facet(slug, icon="")
+
+    payload = json.loads(
+        (tmp_path / "facets" / slug / "facet.json").read_text(encoding="utf-8")
+    )
+    assert changed["icon"] == {"old": "brain", "new": None}
+    assert "icon" not in payload
+
+
+def test_update_facet_icon_clear_when_absent_is_observable_noop(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    slug = create_facet("Already Emoji")
+    facet_path = tmp_path / "facets" / slug / "facet.json"
+    before = facet_path.read_text(encoding="utf-8")
+    today = datetime.now().strftime("%Y%m%d")
+    log_path = tmp_path / "facets" / slug / "logs" / f"{today}.jsonl"
+    before_log = log_path.read_text(encoding="utf-8")
+
+    changed = update_facet(slug, icon="")
+
+    assert changed == {}
+    assert facet_path.read_text(encoding="utf-8") == before
+    assert "icon" not in json.loads(before)
+    assert log_path.read_text(encoding="utf-8") == before_log
 
 
 def write_identity_config(

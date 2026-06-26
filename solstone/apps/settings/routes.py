@@ -26,6 +26,7 @@ from solstone.apps.settings import install_copy, transcribe_resource
 from solstone.apps.utils import log_app_action
 from solstone.convey import chat_stream, state
 from solstone.convey import copy as convey_copy
+from solstone.convey.icons import resolve_facet_icon_svg
 from solstone.convey.reasons import (
     ACTIVITY_INVALID,
     ACTIVITY_NOT_FOUND,
@@ -121,6 +122,10 @@ def _public_facet_record(name: str, data: dict[str, object]) -> dict[str, object
         "title": str(data.get("title") or name),
         "color": str(data.get("color") or ""),
         "emoji": str(data.get("emoji") or ""),
+        "icon": str(data.get("icon") or ""),
+        "icon_svg": resolve_facet_icon_svg(
+            data.get("icon"), str(data.get("emoji") or "")
+        ),
         "muted": bool(data.get("muted", False)),
     }
 
@@ -1161,6 +1166,20 @@ def get_muted_facets() -> Any:
         return _settings_operation_failed()
 
 
+@settings_bp.route("/api/icons")
+def search_icons() -> Any:
+    try:
+        from solstone.convey.icons import search_lucide_icons
+
+        q = request.args.get("q", "")
+        limit = request.args.get("limit", default=80, type=int) or 80
+        limit = max(1, min(limit, 200))
+        return jsonify({"icons": search_lucide_icons(q, limit=limit)})
+    except Exception:
+        logger.exception("error searching icons")
+        return _settings_operation_failed()
+
+
 @settings_bp.route("/api/facet", methods=["POST"])
 def create_facet() -> Any:
     """Create a new facet.
@@ -1184,6 +1203,7 @@ def create_facet() -> Any:
         # Optional fields with defaults
         emoji = data.get("emoji", "📦")
         color = data.get("color", "#667eea")
+        icon = (data.get("icon") or "").strip()
 
         # Generate slug from title: lowercase, replace spaces/special chars with hyphens
         slug = re.sub(r"[^a-z0-9]+", "-", title.lower())
@@ -1203,7 +1223,7 @@ def create_facet() -> Any:
                 detail=f"Facet '{slug}' already exists",
             )
 
-        facets.create_facet(title, emoji=emoji, color=color)
+        facets.create_facet(title, emoji=emoji, color=color, icon=icon)
 
         config = {
             "title": title,
@@ -1211,6 +1231,8 @@ def create_facet() -> Any:
             "color": color,
             "emoji": emoji,
         }
+        if icon:
+            config["icon"] = icon
 
         return jsonify({"success": True, "facet": slug, "config": config}), 201
 
@@ -1250,7 +1272,7 @@ def update_facet_config(facet_name: str) -> Any:
 
         update_fields = {
             key: data[key]
-            for key in ("title", "description", "color", "emoji")
+            for key in ("title", "description", "color", "emoji", "icon")
             if key in data
         }
         if update_fields:
@@ -1266,6 +1288,8 @@ def update_facet_config(facet_name: str) -> Any:
         return jsonify({"success": True, "facet": facet_name, "config": config})
     except FileNotFoundError:
         return error_response(FACET_NOT_FOUND, detail="Facet not found")
+    except ValueError as e:
+        return error_response(INVALID_REQUEST_VALUE, detail=str(e))
     except Exception:
         logger.exception("error saving facet config")
         return _settings_operation_failed()
