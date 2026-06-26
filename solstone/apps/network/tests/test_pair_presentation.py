@@ -65,6 +65,7 @@ def test_pair_presentation_selector_markup_and_copy(link_env) -> None:
 
     input_idx = body.index('id="link-pair-link-input"')
     assert "readonly" in body[input_idx : input_idx + 200]
+    assert 'aria-labelledby="link-pair-link-label"' in body[input_idx : input_idx + 200]
     assert 'id="link-pair-link-copy"' in body
     assert copy.PAIR_LINK_FIELD_LABEL in body_text
     assert copy.PAIR_LINK_COPY_LABEL in body_text
