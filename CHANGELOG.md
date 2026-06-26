@@ -4,6 +4,20 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.14] - 2026-06-25
+
+### Added
+- pairing a new device to your journal now matches how you're pairing it. pick phone, computer, or glasses, and solstone shows the right hand-off for each: a large QR code for glasses to point at, a copy-to-clipboard link for a computer, and the usual flow for a phone. and when your journal can be reached more than one way, you can pick which to use.
+- solstone can now tidy up its own behind-the-scenes logs and caches on a schedule, so they don't pile up over time. in your storage settings there's a cleanup that removes only these dated housekeeping files (health logs, run logs, and similar caches) once they age out, on by default at 30 days. it never touches what sol has taken in or anything in your memories, only solstone's own bookkeeping. you can preview exactly what a cleanup would remove before anything is deleted, and run it by hand anytime.
+
+### Changed
+- your journal's web app is easier to read. text that used to sit on bright facet-colored fills (a selected facet, your chat bubble, the active settings tab) now has stronger contrast, the app matches sol pbc's current look, and a spot where the home screen could get clipped on a narrow window is fixed.
+- sol now scopes each lookup in your journal to just the part it needs, rather than reaching across the whole journal at once. this keeps what sol reads tightly scoped, and keeps sol quick to respond even when your journal has grown large.
+
+### Fixed
+- a piece of work sol finished could show as failed even though it completed and saved its result. that's resolved; each run now reflects its true outcome.
+- when a single activity spanned several facets, each of those facets' history could end up showing the same description copied from one of them. each facet now keeps its own accurate activity history.
+
 ## [0.6.13] - 2026-06-24
 
 ### Changed
