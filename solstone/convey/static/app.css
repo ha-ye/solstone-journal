@@ -1262,6 +1262,28 @@ body.menu-full .menu-bar .menu-item .icon { width: 36px; }
 body.menu-full .menu-bar .menu-item .star-toggle,
 body.menu-full .menu-bar .menu-item .drag-handle { min-width: 28px; }
 
+.menu-bar .menu-item .icon svg,
+.facet-pill .emoji svg {
+  display: block;
+  color: inherit;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  flex-shrink: 0;
+}
+
+.menu-bar .menu-item .icon svg *,
+.facet-pill .emoji svg * {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.menu-bar .menu-item .icon svg {
+  width: 22px;
+  height: 22px;
+}
+
 .menu-bar .menu-item .label {
   font-size: 14px;
   font-weight: 500;
@@ -1593,10 +1615,19 @@ body.menu-all .menu-bar {
 }
 
 .facet-pill .emoji {
-  display: block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
   line-height: 0;
   user-select: none;
   pointer-events: none;
+}
+
+.facet-pill .emoji svg {
+  width: 24px;
+  height: 24px;
 }
 
 .facet-pill .facet-badge {

@@ -14,6 +14,8 @@ from solstone.apps import AppRegistry
 from solstone.convey.provider_readiness import is_blocking_reason, present_for_reason
 from solstone.think.talent_runs import AgentFailure, read_unresolved_agent_failures
 
+from .icons import APP_LUCIDE_MAP, lucide_svg, lucide_svg_for_emoji
+
 
 def _get_facets_data() -> list[dict]:
     """Get active facets data for templates."""
@@ -34,6 +36,7 @@ def _get_facets_data() -> list[dict]:
                 "title": data.get("title", name),
                 "color": data.get("color", ""),
                 "emoji": data.get("emoji", ""),
+                "icon_svg": lucide_svg_for_emoji(data.get("emoji", "")),
             }
         )
 
@@ -277,8 +280,10 @@ def register_app_context(app: Flask, registry: AppRegistry) -> None:
         # Build apps dict for menu-bar
         apps_dict = {}
         for app_instance in registry.apps.values():
+            name_lucide = APP_LUCIDE_MAP.get(app_instance.name)
             apps_dict[app_instance.name] = {
                 "icon": app_instance.icon,
+                "icon_svg": lucide_svg(name_lucide) if name_lucide else None,
                 "label": app_instance.label,
             }
 

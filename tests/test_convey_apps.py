@@ -3,13 +3,20 @@
 
 """Tests for convey app placeholder and attention behavior."""
 
+from pathlib import Path
+
 import pytest
-from flask import Flask
+from flask import Flask, render_template
+from jinja2 import ChoiceLoader, FileSystemLoader
 
 from solstone.apps import AppRegistry
 from solstone.convey.apps import register_app_context
 from solstone.convey.chat_stream import append_chat_event
 from solstone.convey.sol_initiated.copy import CATEGORIES, KIND_SOL_CHAT_REQUEST
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CONVEY_TEMPLATES = REPO_ROOT / "solstone" / "convey" / "templates"
+APPS_ROOT = REPO_ROOT / "solstone" / "apps"
 
 
 @pytest.fixture(autouse=True)
@@ -61,6 +68,86 @@ def _append_request(request_id: str = "req", *, ts: int | None = None) -> None:
     if ts is not None:
         fields["ts"] = ts
     append_chat_event(KIND_SOL_CHAT_REQUEST, **fields)
+
+
+def _template_app() -> Flask:
+    app = Flask(__name__, template_folder=str(CONVEY_TEMPLATES))
+    app.jinja_loader = ChoiceLoader(
+        [
+            FileSystemLoader(str(CONVEY_TEMPLATES)),
+            FileSystemLoader(str(APPS_ROOT)),
+        ]
+    )
+    return app
+
+
+def test_menu_bar_renders_discovered_app_lucide_svg(monkeypatch, tmp_path):
+    import solstone.convey.state as convey_state
+
+    app = _template_app()
+    registry = AppRegistry()
+    registry.discover()
+    monkeypatch.setattr(convey_state, "journal_root", str(tmp_path))
+    monkeypatch.setattr("solstone.convey.apps._get_facets_data", lambda: [])
+    monkeypatch.setattr("solstone.convey.apps._get_selected_facet", lambda: None)
+    monkeypatch.setattr("solstone.think.awareness.get_current", lambda: {})
+    monkeypatch.setattr("solstone.think.utils.day_dirs", lambda: {})
+    register_app_context(app, registry)
+
+    with app.test_request_context("/"):
+        context: dict = {}
+        app.update_template_context(context)
+        html = render_template("menu_bar.html", **context)
+
+    home_start = html.index('data-app-name="home"')
+    home_end = html.index("</li>", home_start)
+    home_item = html[home_start:home_end]
+    assert '<span class="icon"><svg' in home_item
+    assert "&lt;svg" not in home_item
+
+
+def test_menu_bar_falls_back_to_emoji_without_icon_svg():
+    app = _template_app()
+
+    with app.test_request_context("/"):
+        html = render_template(
+            "menu_bar.html",
+            app=None,
+            apps={"edge": {"icon_svg": None, "icon": "📦", "label": "edge"}},
+            starred_apps=[],
+        )
+
+    assert "📦" in html
+    assert "<svg" not in html
+
+
+def test_get_facets_data_adds_icon_svg_and_preserves_emoji(monkeypatch):
+    from solstone.convey.apps import _get_facets_data
+
+    monkeypatch.setattr(
+        "solstone.think.facets.get_facets",
+        lambda: {
+            "library": {
+                "title": "Library",
+                "color": "#123456",
+                "emoji": "📚",
+            },
+            "comb": {
+                "title": "Comb",
+                "color": "#654321",
+                "emoji": "🪮",
+            },
+        },
+    )
+    monkeypatch.setattr("solstone.convey.config.load_convey_config", lambda: {})
+
+    facets = _get_facets_data()
+    by_name = {facet["name"]: facet for facet in facets}
+
+    assert by_name["library"]["emoji"] == "📚"
+    assert "<svg" in by_name["library"]["icon_svg"]
+    assert by_name["comb"]["emoji"] == "🪮"
+    assert by_name["comb"]["icon_svg"] is None
 
 
 # --- Placeholder resolution ---
