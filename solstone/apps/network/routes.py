@@ -218,6 +218,31 @@ def _secure_listener_port() -> int:
     return interface_watcher.LINK_DIRECT_PORT
 
 
+def _home_candidate_entries() -> list[dict[str, Any]]:
+    port = _secure_listener_port()
+    detected = [f"{ip}:{port}" for ip in _list_pair_link_candidates()]
+    override = override_host_port()
+    selected = override or (detected[0] if detected else None)
+
+    entries: list[dict[str, Any]] = [
+        {
+            "address": address,
+            "selected": address == selected,
+            "source": "detected",
+        }
+        for address in detected
+    ]
+    if override is not None and override not in detected:
+        entries.append(
+            {
+                "address": override,
+                "selected": True,
+                "source": "override",
+            }
+        )
+    return entries
+
+
 def _effective_home_address() -> tuple[bool, str | None]:
     override_addr = override_host_port()
     if override_addr is not None:
@@ -430,6 +455,15 @@ def api_status() -> Any:
         for ep in _current_local_endpoints()
         if ep.scope in VPN_SCOPES
     ]
+    try:
+        home_candidates = _home_candidate_entries()
+        home_candidates_state = "ready"
+        home_candidates_error = None
+    except Exception:
+        logger.exception("link home candidate collection failed")
+        home_candidates = []
+        home_candidates_state = "unavailable"
+        home_candidates_error = link_copy.HOME_CANDIDATES_ERROR
     return jsonify(
         {
             "instance_id": state.instance_id if state else None,
@@ -443,6 +477,9 @@ def api_status() -> Any:
             "relay_state": relay_state,
             "home_address": home_address,
             "vpn": {"active": None, "candidates": vpn_candidates},
+            "home_candidates": home_candidates,
+            "home_candidates_state": home_candidates_state,
+            "home_candidates_error": home_candidates_error,
         }
     )
 

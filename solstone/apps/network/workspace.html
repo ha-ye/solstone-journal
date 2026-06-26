@@ -95,6 +95,17 @@
           ></dd>
         </div>
       </dl>
+      <div
+        id="link-home-candidates-picker"
+        class="link-home-candidates-picker"
+        data-refresh-fail="{{ link_copy.REACH_HOME_CANDIDATES_REFRESH_FAIL }}"
+        data-unavailable="{{ link_copy.REACH_HOME_CANDIDATES_UNAVAILABLE }}"
+        hidden
+      >
+        <p class="link-home-candidates-label">{{ link_copy.REACH_HOME_CANDIDATES_LABEL }}</p>
+        <div id="link-home-candidates-list" class="link-home-candidates-list"></div>
+        <p id="link-home-candidates-problem" class="link-home-candidates-problem" role="status" hidden></p>
+      </div>
       <details id="link-host-address-override" class="link-host-address-override">
         <summary>{{ link_copy.REACH_HOST_ADDRESS_DISCLOSURE }}</summary>
         <div class="link-host-address-controls">
@@ -173,6 +184,21 @@
     <div class="link-modal-box">
       <h3 id="link-pair-modal-title">{{ link_copy.MODAL_TITLE }}</h3>
 
+      <div id="link-present-selector" class="link-present-selector" role="radiogroup" aria-label="{{ link_copy.PRESENTATION_SELECTOR_LABEL }}">
+        <button type="button" id="link-present-phone" class="link-present-seg is-selected" role="radio" aria-checked="true" data-presentation-mode="phone">
+          <span class="link-present-radio" aria-hidden="true"></span>
+          <span>{{ link_copy.PRESENTATION_PHONE_LABEL }}</span>
+        </button>
+        <button type="button" id="link-present-computer" class="link-present-seg" role="radio" aria-checked="false" data-presentation-mode="computer">
+          <span class="link-present-radio" aria-hidden="true"></span>
+          <span>{{ link_copy.PRESENTATION_COMPUTER_LABEL }}</span>
+        </button>
+        <button type="button" id="link-present-glasses" class="link-present-seg" role="radio" aria-checked="false" data-presentation-mode="glasses">
+          <span class="link-present-radio" aria-hidden="true"></span>
+          <span>{{ link_copy.PRESENTATION_GLASSES_LABEL }}</span>
+        </button>
+      </div>
+
       <div id="link-pair-code" class="link-pair-grid">
         <div class="link-pair-qr-cell">
           <div id="link-qr-container" class="link-qr-container" aria-label="pair QR code"></div>
@@ -203,6 +229,14 @@
           <span class="link-pair-rotate-note">{{ link_copy.PAIR_ROTATE_NOTE }}</span>
         </div>
         <p id="link-pair-network" class="link-pair-network" hidden>{{ link_copy.PAIR_NETWORK_LINE }}</p>
+
+        <div class="link-modal-label link-pair-computer-panel" aria-labelledby="link-pair-link-label">
+          <span id="link-pair-link-label">{{ link_copy.PAIR_LINK_FIELD_LABEL }}</span>
+          <div class="link-pair-link-row">
+            <input type="text" id="link-pair-link-input" class="link-pair-link-input" readonly />
+            <button type="button" id="link-pair-link-copy" class="link-pair-link-copy">{{ link_copy.PAIR_LINK_COPY_LABEL }}</button>
+          </div>
+        </div>
 
         <label class="link-modal-label link-pair-label-edit">
           {{ link_copy.DEVICE_LABEL_FIELD_LABEL }}
@@ -279,6 +313,8 @@
       UNPAIR_TITLE_FORMAT: {{ link_copy.UNPAIR_TITLE_FORMAT|tojson }},
       FINGERPRINT_COPY_SUCCESS_TOAST: {{ link_copy.FINGERPRINT_COPY_SUCCESS_TOAST|tojson }},
       FINGERPRINT_COPY_FAIL_TOAST: {{ link_copy.FINGERPRINT_COPY_FAIL_TOAST|tojson }},
+      PAIR_LINK_COPY_SUCCESS_TOAST: {{ link_copy.PAIR_LINK_COPY_SUCCESS_TOAST|tojson }},
+      PAIR_LINK_COPY_FAIL_TOAST: {{ link_copy.PAIR_LINK_COPY_FAIL_TOAST|tojson }},
       RENAME_FAIL_TOAST: {{ link_copy.RENAME_FAIL_TOAST|tojson }},
       UNPAIR_SUCCESS_TOAST: {{ link_copy.UNPAIR_SUCCESS_TOAST|tojson }},
       UNPAIR_FAIL_TOAST: {{ link_copy.UNPAIR_FAIL_TOAST|tojson }}
@@ -374,6 +410,15 @@
   .link-host-address-controls button { border: 1px solid #E2D7BF; background: #FEFCF8; color: #B06A1A; border-radius: 5px; padding: 0.55em 0.8em; cursor: pointer; font-weight: 500; }
   .link-host-address-error { color: #8a2d1c; font-weight: 500; margin: 0.5em 0 0; }
   .link-host-address-error[hidden] { display: none; }
+  .link-home-candidates-picker { margin-top: 0.85em; border: 1px solid #ECE3D0; border-radius: 8px; background: #fffdfa; padding: 0.8em; }
+  .link-home-candidates-picker[hidden] { display: none; }
+  .link-home-candidates-label { margin: 0 0 0.55em; color: #555; font-weight: 600; font-size: 0.9em; }
+  .link-home-candidates-list { display: flex; flex-direction: column; gap: 0.45em; }
+  .link-home-candidate-row { display: flex; align-items: center; gap: 0.55em; min-height: 34px; color: #444; }
+  .link-home-candidate-row input { flex: none; }
+  .link-home-candidate-row code { font-family: ui-monospace, monospace; color: #555; word-break: break-all; }
+  .link-home-candidates-problem { margin: 0; color: #8a2d1c; font-weight: 500; }
+  .link-home-candidates-problem[hidden] { display: none; }
   .link-vpn-candidates { display: flex; flex-direction: column; gap: 0.4em; }
   .link-vpn-candidate { display: flex; gap: 0.45em; align-items: baseline; flex-wrap: wrap; }
   .link-vpn-candidate-label { color: #555; font-weight: 500; }
@@ -443,6 +488,13 @@
   .link-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 1000; }
   .link-modal-box { background: #fff; border-radius: 10px; padding: 1.5em; max-width: 480px; width: 92%; box-shadow: 0 10px 40px rgba(0,0,0,0.2); }
   .link-modal-box h3 { margin-top: 0; margin-bottom: 1em; }
+  .link-present-selector { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 0 0 1em; }
+  .link-present-selector[hidden] { display: none; }
+  .link-present-seg { min-height: 44px; border: 1.5px solid #E2D7BF; border-radius: 8px; background: #FEFCF8; color: #1A1A1A; cursor: pointer; font: inherit; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 0.55em 0.65em; }
+  .link-present-seg.is-selected { border-color: #E8923A; background: #FFFFFF; box-shadow: 0 0 0 3px rgba(232,146,58,0.14); }
+  .link-present-seg:focus-visible { outline: 2px solid #b06a1a; outline-offset: 2px; }
+  .link-present-radio { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #E2D7BF; flex: none; }
+  .link-present-seg.is-selected .link-present-radio { border-color: #E8923A; background: radial-gradient(circle at center, #E8923A 0 4px, #FFFFFF 4px 6px); }
   .link-modal-label { display: flex; flex-direction: column; gap: 0.35em; margin-bottom: 1em; font-size: 0.9em; }
   .link-modal-label input { padding: 0.5em; border: 1px solid #ccc; border-radius: 5px; font-size: 1em; }
   .link-modal-actions { display: flex; gap: 0.5em; justify-content: flex-end; }
@@ -486,6 +538,27 @@
   .link-pair-fp-label { color: #777; margin-right: 0.4em; }
   .link-pair-fp-note { color: #888; }
   .link-pair-label-edit { grid-column: 1 / -1; }
+  .link-pair-computer-panel { display: none; grid-column: 1 / -1; }
+  .link-pair-link-row { display: flex; gap: 0.5em; flex-wrap: wrap; align-items: center; }
+  .link-pair-link-input { flex: 1 1 18em; min-width: min(100%, 18em); }
+  .link-pair-link-copy { min-height: 44px; border: 1px solid #E2D7BF; border-radius: 5px; background: #FEFCF8; color: #B06A1A; cursor: pointer; font-weight: 500; padding: 0.55em 0.8em; }
+  .link-pair-grid.is-computer { grid-template-columns: 1fr; }
+  .link-pair-grid.is-computer .link-pair-qr-cell,
+  .link-pair-grid.is-computer .link-pair-steps,
+  .link-pair-grid.is-computer #link-pair-rotation,
+  .link-pair-grid.is-computer #link-pair-network { display: none; }
+  .link-pair-grid.is-computer .link-pair-computer-panel { display: flex; }
+  .link-pair-grid.is-glasses { grid-template-columns: 1fr; }
+  .link-pair-grid.is-glasses .link-pair-qr-cell { grid-row: auto; width: 100%; }
+  .link-pair-grid.is-glasses .link-qr-container { box-sizing: border-box; width: 100%; justify-content: center; }
+  .link-pair-grid.is-glasses .link-qr-container svg,
+  .link-pair-grid.is-glasses .link-qr-container img { width: 100%; max-width: 100%; height: auto; }
+  .link-pair-grid.is-glasses .link-pair-steps,
+  .link-pair-grid.is-glasses #link-pair-rotation,
+  .link-pair-grid.is-glasses #link-pair-network,
+  .link-pair-grid.is-glasses .link-pair-label-edit,
+  .link-pair-grid.is-glasses .link-pair-details,
+  .link-pair-grid.is-glasses .link-pair-computer-panel { display: none; }
   .link-pair-error { padding: 1.5em 0.5em; text-align: center; }
   .link-pair-error[hidden] { display: none; }
   .link-pair-error p { color: #555; margin: 0 0 1.25em; }
@@ -547,6 +620,10 @@
   const hostAddressApply = document.getElementById('link-host-address-apply');
   const hostAddressClear = document.getElementById('link-host-address-clear');
   const hostAddressError = document.getElementById('link-host-address-error');
+  const hostAddressOverride = document.getElementById('link-host-address-override');
+  const homeCandidatesPicker = document.getElementById('link-home-candidates-picker');
+  const homeCandidatesList = document.getElementById('link-home-candidates-list');
+  const homeCandidatesProblem = document.getElementById('link-home-candidates-problem');
   const vpnCandidatesRow = document.getElementById('link-vpn-candidates-row');
   const vpnCandidatesEl = document.getElementById('link-vpn-candidates');
   const privateLinkSetup = document.getElementById('link-private-link-setup');
@@ -572,9 +649,13 @@
   const pairModal = document.getElementById('link-pair-modal');
   const pairCancel = document.getElementById('link-pair-cancel');
   const deviceLabelInput = document.getElementById('link-device-label');
+  const presentSelector = document.getElementById('link-present-selector');
+  const presentButtons = Array.from(document.querySelectorAll('[data-presentation-mode]'));
   const pairCodeBox = document.getElementById('link-pair-code');
   const qrContainer = document.getElementById('link-qr-container');
   const qrExpired = document.getElementById('link-qr-expired');
+  const pairLinkInput = document.getElementById('link-pair-link-input');
+  const pairLinkCopy = document.getElementById('link-pair-link-copy');
   const pairRegenerate = document.getElementById('link-pair-regenerate');
   const rotationRing = document.getElementById('link-pair-rotation-ring');
   const pairRotation = document.getElementById('link-pair-rotation');
@@ -596,6 +677,9 @@
   let splWindowActive = false;
   let autoRefreshFired = false;
   let lastPairedFingerprint = '';
+  let currentPair = null;
+  let presentationMode = 'phone';
+  let lastPairLinkInputCopyAt = 0;
 
   const unpairModal = document.getElementById('link-unpair-modal');
   const unpairTitle = document.getElementById('link-unpair-title');
@@ -615,6 +699,19 @@
     toast.textContent = msg;
     toast.hidden = false;
     setTimeout(() => { toast.hidden = true; }, 2500);
+  }
+
+  async function clipboardWriteText(text) {
+    if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
+      return false;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (err) {
+      window.logError?.(err, { context: 'link: clipboard write failed' });
+      return false;
+    }
   }
 
   function setPairCopy(rotating) {
@@ -721,6 +818,87 @@
     vpnCandidatesRow.hidden = rendered === 0;
   }
 
+  function setHomeCandidateRadiosDisabled(disabled) {
+    if (!homeCandidatesList) return;
+    homeCandidatesList.querySelectorAll('input[type="radio"]').forEach((radio) => {
+      radio.disabled = disabled;
+    });
+  }
+
+  function showHomeCandidateWriteError(message) {
+    setHostAddressError(message || '');
+    if (hostAddressOverride) hostAddressOverride.open = true;
+  }
+
+  function restoreHomeCandidatesFromStatus() {
+    renderHomeCandidates(latestStatus || {});
+  }
+
+  async function selectHomeCandidate(address) {
+    setHomeCandidateRadiosDisabled(true);
+    try {
+      const refreshed = await submitHostAddress(address);
+      if (!refreshed) {
+        showHomeCandidateWriteError(homeCandidatesPicker?.dataset.refreshFail || '');
+        restoreHomeCandidatesFromStatus();
+      }
+    } catch (err) {
+      showHomeCandidateWriteError(err?.rawDetail || err?.serverMessage || err?.message || '');
+      restoreHomeCandidatesFromStatus();
+      window.logError?.(err, { context: 'link: home candidate select failed' });
+    } finally {
+      setHomeCandidateRadiosDisabled(false);
+    }
+  }
+
+  function renderHomeCandidates(data) {
+    if (!homeCandidatesPicker || !homeCandidatesList || !homeCandidatesProblem) return;
+    homeCandidatesList.textContent = '';
+    homeCandidatesProblem.textContent = '';
+    homeCandidatesProblem.hidden = true;
+    homeCandidatesList.hidden = true;
+
+    if (data?.home_candidates_state === 'unavailable') {
+      homeCandidatesPicker.hidden = false;
+      homeCandidatesProblem.textContent =
+        data?.home_candidates_error || homeCandidatesPicker.dataset.unavailable || '';
+      homeCandidatesProblem.hidden = false;
+      return;
+    }
+
+    const candidates = Array.isArray(data?.home_candidates) ? data.home_candidates : [];
+    if (candidates.length < 2) {
+      homeCandidatesPicker.hidden = true;
+      return;
+    }
+
+    homeCandidatesPicker.hidden = false;
+    homeCandidatesList.hidden = false;
+    candidates.forEach((candidate) => {
+      const address = typeof candidate?.address === 'string' ? candidate.address : '';
+      if (!address) return;
+      const row = document.createElement('label');
+      row.className = 'link-home-candidate-row';
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = 'link-home-candidate';
+      radio.value = address;
+      radio.checked = Boolean(candidate.selected);
+      radio.addEventListener('change', () => {
+        if (radio.checked) selectHomeCandidate(address);
+      });
+      const code = document.createElement('code');
+      code.textContent = address;
+      row.appendChild(radio);
+      row.appendChild(code);
+      homeCandidatesList.appendChild(row);
+    });
+
+    if (!homeCandidatesList.children.length) {
+      homeCandidatesPicker.hidden = true;
+    }
+  }
+
   function renderSplState(data) {
     const isSpl = data?.posture === 'spl';
     const reachability = data?.reachability;
@@ -778,17 +956,17 @@
 
     const candidates = Array.isArray(data?.vpn?.candidates) ? data.vpn.candidates : [];
     renderVpnCandidates(candidates);
+    renderHomeCandidates(data || {});
   }
 
   async function submitHostAddress(address) {
-    const result = await window.apiJson('/app/network/host-address', {
+    await window.apiJson('/app/network/host-address', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ address }),
     });
     setHostAddressError('');
-    await refreshStatus();
-    return result;
+    return await refreshStatus();
   }
 
   async function applyHostAddressOverride() {
@@ -840,6 +1018,7 @@
     try {
       const data = await window.apiJson('/app/network/api/status', { headers: { accept: 'application/json' } });
       applyStatus(data || {});
+      return true;
     } catch (err) {
       window.logError(err, { context: 'link: refreshStatus failed' });
       revealStatusPanel();
@@ -849,6 +1028,7 @@
         serverMessage: err.serverMessage,
         detail: err,
       }));
+      return false;
     }
   }
 
@@ -1552,11 +1732,14 @@
     clearPairTimers();
     splWindowActive = false;
     autoRefreshFired = false;
+    currentPair = null;
     pairCodeBox.hidden = false;
     pairError.hidden = true;
     pairSuccess.hidden = true;
+    if (presentSelector) presentSelector.hidden = false;
     qrExpired.hidden = true;
     qrContainer.classList.remove('is-expired');
+    pairCodeBox.classList.remove('is-computer', 'is-glasses');
   }
 
   function renderQr(pairLink) {
@@ -1579,6 +1762,82 @@
     qrContainer.querySelector('svg').setAttribute('data-module-count', qr.getModuleCount());
   }
 
+  function updatePresentationSelector() {
+    presentButtons.forEach((button) => {
+      const selected = button.dataset.presentationMode === presentationMode;
+      button.classList.toggle('is-selected', selected);
+      button.setAttribute('aria-checked', String(selected));
+    });
+  }
+
+  function renderPairPresentation() {
+    if (!currentPair) return;
+    pairCodeBox.classList.toggle('is-computer', presentationMode === 'computer');
+    pairCodeBox.classList.toggle('is-glasses', presentationMode === 'glasses');
+    renderQr(currentPair.pair_link);
+    caFpEl.textContent = currentPair.ca_fingerprint;
+    if (pairLinkInput) pairLinkInput.value = currentPair.pair_link;
+    setPairCopy(currentPair.rotating);
+    updatePresentationSelector();
+  }
+
+  function setPresentationMode(mode) {
+    presentationMode = mode;
+    renderPairPresentation();
+  }
+
+  function selectedPresentationIndex() {
+    return Math.max(0, presentButtons.findIndex((button) => button.dataset.presentationMode === presentationMode));
+  }
+
+  function handlePresentationSelectorKey(event) {
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', ' ', 'Enter'].includes(event.key)) {
+      return;
+    }
+    event.preventDefault();
+    if (event.key === ' ' || event.key === 'Enter') {
+      const mode = event.target?.dataset?.presentationMode;
+      if (mode) setPresentationMode(mode);
+      return;
+    }
+    let nextIndex = selectedPresentationIndex();
+    if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = presentButtons.length - 1;
+    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      nextIndex = (nextIndex - 1 + presentButtons.length) % presentButtons.length;
+    } else {
+      nextIndex = (nextIndex + 1) % presentButtons.length;
+    }
+    const next = presentButtons[nextIndex];
+    if (!next) return;
+    setPresentationMode(next.dataset.presentationMode);
+    next.focus();
+  }
+
+  function selectPairLinkInput() {
+    if (!pairLinkInput) return;
+    pairLinkInput.focus();
+    pairLinkInput.select();
+  }
+
+  async function copyCurrentPairLink() {
+    if (!currentPair?.pair_link) return;
+    const copied = await clipboardWriteText(currentPair.pair_link);
+    showToast(copied
+      ? (window.LinkCopy.PAIR_LINK_COPY_SUCCESS_TOAST || 'pairing link copied')
+      : (window.LinkCopy.PAIR_LINK_COPY_FAIL_TOAST || "couldn't copy pairing link"));
+  }
+
+  async function selectAndCopyPairLink() {
+    selectPairLinkInput();
+    const now = Date.now();
+    if (now - lastPairLinkInputCopyAt < 250) return;
+    lastPairLinkInputCopyAt = now;
+    await copyCurrentPairLink();
+  }
+
   async function requestPairCode({ restart = false } = {}) {
     clearExpiryTimer();
     clearRotationTimer();
@@ -1595,12 +1854,17 @@
     if (!r.ok) throw new Error(`pair-start failed: ${r.status}`);
 
     const data = await r.json();
-    renderQr(data.pair_link);
-    caFpEl.textContent = data.ca_fingerprint;
+    currentPair = {
+      pair_link: data.pair_link,
+      ca_fingerprint: data.ca_fingerprint,
+      device_label: data.device_label,
+      expires_in: Number(data.expires_in) || 300,
+      rotating: Boolean(data.rotating),
+    };
     deviceLabelInput.value = data.device_label;
+    renderPairPresentation();
 
     const rotating = Boolean(data.rotating);
-    setPairCopy(rotating);  // authoritative copy toggle from the live response
 
     const expiresIn = Number(data.expires_in) || 300;
     if (rotating) {
@@ -1648,6 +1912,7 @@
     splWindowActive = false;
     lastPairedFingerprint = payload.fingerprint || '';
     pairCodeBox.hidden = true;
+    if (presentSelector) presentSelector.hidden = true;
     pairError.hidden = true;
     pairSuccess.hidden = false;
     pairSuccessHeading.textContent = window.LinkCopy.SUCCESS_HEADING.replace('{label}', payload.device_label || '');
@@ -1673,6 +1938,7 @@
     clearPairTimers();
     splWindowActive = false;
     pairCodeBox.hidden = true;
+    if (presentSelector) presentSelector.hidden = true;
     pairSuccess.hidden = true;
     pairError.hidden = false;
   }
@@ -1684,6 +1950,8 @@
     pairModal.hidden = false;
     cleanupPairEvents();
     resetPairCodeState();
+    presentationMode = 'phone';
+    updatePresentationSelector();
     setPairCopy(latestStatus?.posture === 'spl');
     if (window.appEvents) {
       pairEventsCleanup = window.appEvents.listen('link', (payload) => {
@@ -1738,10 +2006,21 @@
   heroHowReach.addEventListener('click', revealReachSelector);
   segByo?.addEventListener('click', () => selectReachMode('byo'));
   segHosted?.addEventListener('click', () => selectReachMode('hosted'));
+  presentButtons.forEach((button) => {
+    button.addEventListener('click', () => setPresentationMode(button.dataset.presentationMode));
+  });
+  presentSelector?.addEventListener('keydown', handlePresentationSelectorKey);
   privateLinkSetup?.addEventListener('click', startPrivateLinkSetup);
   privateLinkDisable?.addEventListener('click', disablePrivateLink);
   privateLinkOperationRetry?.addEventListener('click', () => {
     if (privateLinkRetryAction) privateLinkRetryAction();
+  });
+  pairLinkInput?.addEventListener('focus', selectAndCopyPairLink);
+  pairLinkInput?.addEventListener('click', selectAndCopyPairLink);
+  pairLinkCopy?.addEventListener('click', () => {
+    lastPairLinkInputCopyAt = Date.now();
+    selectPairLinkInput();
+    copyCurrentPairLink();
   });
   pairCancel.addEventListener('click', closePairModal);
   pairErrorCancel.addEventListener('click', closePairModal);

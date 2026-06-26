@@ -85,6 +85,9 @@ def test_workspace_renders_reach_shell_copy_and_static_guards(link_env) -> None:
     assert 'id="link-private-link-setup"' in hosted_setup_body
     assert "https://services.solstone.app/" not in byo_body
     for expected in (
+        'id="link-home-candidates-picker"',
+        'id="link-home-candidates-list"',
+        'id="link-home-candidates-problem"',
         'id="link-host-address-override"',
         'id="link-host-address-input"',
         'id="link-host-address-apply"',
@@ -100,6 +103,7 @@ def test_workspace_renders_reach_shell_copy_and_static_guards(link_env) -> None:
     assert "let viewedMode = null;" in body
     assert "let lastPosture = null;" in body
     assert "let reachRevealed = false;" in body
+    assert "renderHomeCandidates(data || {});" in body
     assert "appOnOff.hidden = reachability !== 'online';" in body
     for removed_export in (
         "REACH_HOST_ADDRESS_DISCLOSURE:",
@@ -178,6 +182,89 @@ def test_workspace_renders_hosted_mode_and_states(link_env) -> None:
     assert f"[ {copy.CHECK_AGAIN_LABEL} ]" in body_text
     assert "splCheckAgain?.addEventListener('click', () => {" in body
     assert "refreshPrivateLinkStatus();" in body
+
+
+def test_workspace_home_candidate_picker_markup_stays_in_byo_body(link_env) -> None:
+    env = link_env()
+    response = env.client.get("/app/network/")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    body_text = _normalized_body(body)
+
+    byo_start = body.index('id="link-mode-byo-body"')
+    hosted_setup_start = body.index('id="link-mode-hosted-setup"', byo_start)
+    hosted_active_start = body.index('id="link-mode-hosted-active"', hosted_setup_start)
+    byo_body = body[byo_start:hosted_setup_start]
+    hosted_body = body[hosted_setup_start:hosted_active_start]
+
+    picker_idx = byo_body.index('id="link-home-candidates-picker"')
+    override_idx = byo_body.index('id="link-host-address-override"')
+    assert picker_idx < override_idx
+    assert 'id="link-home-candidates-list"' in byo_body
+    assert 'id="link-home-candidates-problem"' in byo_body
+    assert f'data-refresh-fail="{copy.REACH_HOME_CANDIDATES_REFRESH_FAIL}"' in body_text
+    assert f'data-unavailable="{copy.REACH_HOME_CANDIDATES_UNAVAILABLE}"' in body_text
+    assert copy.REACH_HOME_CANDIDATES_LABEL in body_text
+    assert copy.REACH_HOME_CANDIDATES_REFRESH_FAIL in body_text
+    assert copy.REACH_HOME_CANDIDATES_UNAVAILABLE in body_text
+    assert 'id="link-home-candidates-picker"' not in hosted_body
+
+
+def test_workspace_home_candidate_picker_js_paths(link_env) -> None:
+    env = link_env()
+    response = env.client.get("/app/network/")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+
+    render_start = body.index("function renderHomeCandidates")
+    render_end = body.index("function renderSplState", render_start)
+    render_body = body[render_start:render_end]
+    assert "data?.home_candidates_state === 'unavailable'" in render_body
+    assert "homeCandidatesProblem.textContent =" in render_body
+    assert "homeCandidatesList.hidden = true;" in render_body
+    assert (
+        "Array.isArray(data?.home_candidates) ? data.home_candidates : []"
+        in render_body
+    )
+    assert "if (candidates.length < 2)" in render_body
+    assert "radio.type = 'radio';" in render_body
+    assert "radio.name = 'link-home-candidate';" in render_body
+    assert "radio.checked = Boolean(candidate.selected);" in render_body
+    assert "selectHomeCandidate(address);" in render_body
+
+    select_start = body.index("async function selectHomeCandidate")
+    select_end = body.index("function renderHomeCandidates", select_start)
+    select_body = body[select_start:select_end]
+    assert "setHomeCandidateRadiosDisabled(true);" in select_body
+    assert "const refreshed = await submitHostAddress(address);" in select_body
+    assert "if (!refreshed)" in select_body
+    assert (
+        "showHomeCandidateWriteError(homeCandidatesPicker?.dataset.refreshFail || '');"
+        in select_body
+    )
+    assert "restoreHomeCandidatesFromStatus();" in select_body
+
+    error_start = body.index("function showHomeCandidateWriteError")
+    error_end = body.index("function restoreHomeCandidatesFromStatus", error_start)
+    error_body = body[error_start:error_end]
+    assert "setHostAddressError(message || '');" in error_body
+    assert "if (hostAddressOverride) hostAddressOverride.open = true;" in error_body
+
+    submit_start = body.index("async function submitHostAddress")
+    submit_end = body.index("async function applyHostAddressOverride", submit_start)
+    submit_body = body[submit_start:submit_end]
+    assert "'/app/network/host-address'" in submit_body
+    assert "setHostAddressError('');" in submit_body
+    assert "return await refreshStatus();" in submit_body
+
+    refresh_start = body.index("async function refreshStatus")
+    refresh_end = body.index("function privateLinkSleep", refresh_start)
+    refresh_body = body[refresh_start:refresh_end]
+    assert "applyStatus(data || {});" in refresh_body
+    assert "return true;" in refresh_body
+    assert "return false;" in refresh_body
 
 
 def test_workspace_keeps_spl_trust_line_out_of_header_and_direct_card(

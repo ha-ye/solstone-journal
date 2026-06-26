@@ -2249,6 +2249,9 @@
                   "ca_fingerprint": "9c5f2e0c8e6a42f0a32e55e5cf7f5b4a",
                   "enrolled": true,
                   "home_address": null,
+                  "home_candidates": [],
+                  "home_candidates_error": null,
+                  "home_candidates_state": "ready",
                   "home_label": "home",
                   "instance_id": "4d1f3d57-4f39-4930-b8f8-5e6f2a84d51a",
                   "lan_accessible": true,
@@ -2278,6 +2281,46 @@
                         "string",
                         "null"
                       ]
+                    },
+                    "home_candidates": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "address": {
+                            "type": "string"
+                          },
+                          "selected": {
+                            "type": "boolean"
+                          },
+                          "source": {
+                            "enum": [
+                              "detected",
+                              "override"
+                            ],
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "address",
+                          "selected",
+                          "source"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "home_candidates_error": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "home_candidates_state": {
+                      "enum": [
+                        "ready",
+                        "unavailable"
+                      ],
+                      "type": "string"
                     },
                     "home_label": {
                       "type": [
@@ -2336,7 +2379,10 @@
                     "reachability",
                     "relay_state",
                     "home_address",
-                    "vpn"
+                    "vpn",
+                    "home_candidates",
+                    "home_candidates_state",
+                    "home_candidates_error"
                   ],
                   "type": "object"
                 }

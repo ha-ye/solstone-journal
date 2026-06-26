@@ -309,6 +309,42 @@ OPERATIONS: list[OperationSpec] = [
                             },
                         },
                     ),
+                    FieldSpec(
+                        "home_candidates",
+                        "array",
+                        required=True,
+                        raw_schema={
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {
+                                    "address": {"type": "string"},
+                                    "selected": {"type": "boolean"},
+                                    "source": {
+                                        "type": "string",
+                                        "enum": ["detected", "override"],
+                                    },
+                                },
+                                "required": ["address", "selected", "source"],
+                            },
+                        },
+                    ),
+                    FieldSpec(
+                        "home_candidates_state",
+                        "string",
+                        required=True,
+                        raw_schema={
+                            "type": "string",
+                            "enum": ["ready", "unavailable"],
+                        },
+                    ),
+                    FieldSpec(
+                        "home_candidates_error",
+                        "string",
+                        required=True,
+                        raw_schema={"type": ["string", "null"]},
+                    ),
                 ),
                 example={
                     "instance_id": "4d1f3d57-4f39-4930-b8f8-5e6f2a84d51a",
@@ -322,6 +358,9 @@ OPERATIONS: list[OperationSpec] = [
                     "relay_state": "not_configured",
                     "home_address": None,
                     "vpn": {"active": None, "candidates": []},
+                    "home_candidates": [],
+                    "home_candidates_state": "ready",
+                    "home_candidates_error": None,
                 },
             ),
             _json_error(

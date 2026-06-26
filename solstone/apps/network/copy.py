@@ -8,6 +8,10 @@ from __future__ import annotations
 PAIR_LINK_HOST = "go.solstone.app"
 PAIR_LINK_PATH = "/p"
 MODAL_TITLE = "pair a device"
+PRESENTATION_SELECTOR_LABEL = "pairing display"
+PRESENTATION_PHONE_LABEL = "phone"
+PRESENTATION_COMPUTER_LABEL = "computer"
+PRESENTATION_GLASSES_LABEL = "glasses"
 STEP_1 = "open the camera on the device you're adding"
 STEP_2 = "point it at this code"
 STEP_3 = "tap the link to open solstone"
@@ -25,6 +29,10 @@ CA_FP_NOTE = (
 DEVICE_LABEL_FIELD_LABEL = "name this device"
 DEVICE_LABEL_PLACEHOLDER = "e.g. my iPhone"
 DEVICE_LABEL_DEFAULT_FORMAT = "device — added {month} {day}"
+PAIR_LINK_FIELD_LABEL = "pairing link"
+PAIR_LINK_COPY_LABEL = "copy link"
+PAIR_LINK_COPY_SUCCESS_TOAST = "pairing link copied"
+PAIR_LINK_COPY_FAIL_TOAST = "couldn't copy pairing link"
 EXPIRED_BUTTON = "this code expired — show a new one"
 WINDOW_CLOSED_BUTTON = "pairing window closed — open a new one"
 SUCCESS_HEADING = '"{label}" is now paired with your solstone'
@@ -100,6 +108,14 @@ REACH_HOST_ADDRESS_DISCLOSURE = "▸ use a different address"
 REACH_HOST_ADDRESS_PLACEHOLDER = "192.168.1.44:7657"
 REACH_HOST_ADDRESS_APPLY_LABEL = "apply"
 REACH_HOST_ADDRESS_CLEAR_LABEL = "clear"
+REACH_HOME_CANDIDATES_LABEL = "choose a home address"
+REACH_HOME_CANDIDATES_REFRESH_FAIL = (
+    "saved, but couldn't refresh. showing the last confirmed address."
+)
+REACH_HOME_CANDIDATES_UNAVAILABLE = (
+    "couldn't check home addresses. you can still type one below."
+)
+HOME_CANDIDATES_ERROR = "couldn't check home addresses"
 REACH_VPN_CANDIDATE_LABEL = "VPN address"
 REACH_VPN_USE_THIS = "use this"
 REACH_SPL_ACTIVE_BODY = "your devices reach home over the internet, wherever you are."

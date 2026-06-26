@@ -9,6 +9,7 @@ from typing import Any
 from typer.testing import CliRunner
 
 from solstone.apps.network import call as link_call
+from solstone.apps.network import copy as link_copy
 from solstone.apps.network import routes as link_routes
 from solstone.apps.network.tests.conftest import _StubWatcher
 from solstone.convey import create_app
@@ -18,6 +19,22 @@ from solstone.think.link.paths import LinkState
 from solstone.think.link.window import read_posture
 
 TOTP_SECRET = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+STATUS_FIELD_SET = {
+    "instance_id",
+    "home_label",
+    "enrolled",
+    "relay_url",
+    "ca_fingerprint",
+    "lan_accessible",
+    "posture",
+    "reachability",
+    "relay_state",
+    "home_address",
+    "vpn",
+    "home_candidates",
+    "home_candidates_state",
+    "home_candidates_error",
+}
 
 
 def _write_config(env: Any, *, link: Any = None, include_link: bool = True) -> None:
@@ -39,6 +56,13 @@ def _write_service_token(env: Any, token: str = "secret-token-xyz") -> None:
         json.dumps({"service_token": token}),
         encoding="utf-8",
     )
+
+
+def _write_host_override(env: Any, address: str) -> None:
+    config_path = env.journal / "config" / "journal.json"
+    config = json.loads(config_path.read_text("utf-8"))
+    config["pairing"] = {"host_url": f"http://{address}"}
+    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
 
 def _get_status(env: Any) -> dict[str, Any]:
@@ -284,6 +308,127 @@ def test_vpn_maps_synthetic_vpn_endpoint(link_env, monkeypatch) -> None:
     assert data["vpn"]["active"] is None
 
 
+def test_home_candidates_ready_empty_when_no_detected_addresses(
+    link_env,
+    monkeypatch,
+) -> None:
+    env = link_env(local_endpoints=[])
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: None)
+
+    data = _get_status(env)
+
+    assert data["home_candidates"] == []
+    assert data["home_candidates_state"] == "ready"
+    assert data["home_candidates_error"] is None
+
+
+def test_home_candidates_single_detected_selected(link_env, monkeypatch) -> None:
+    env = link_env(
+        local_endpoints=[LocalEndpoint(ip="192.168.1.50", port=1111, scope="lan")]
+    )
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+
+    data = _get_status(env)
+
+    assert data["home_candidates"] == [
+        {"address": "192.168.1.50:7657", "selected": True, "source": "detected"}
+    ]
+    assert data["home_candidates_state"] == "ready"
+    assert data["home_candidates_error"] is None
+
+
+def test_home_candidates_route_first_dedupes_and_excludes_ipv6(
+    link_env,
+    monkeypatch,
+) -> None:
+    env = link_env(
+        local_endpoints=[
+            LocalEndpoint(ip="192.0.2.10", port=1111, scope="lan"),
+            LocalEndpoint(ip="fd00::1", port=7657, scope="ula"),
+            LocalEndpoint(ip="192.0.2.11", port=2222, scope="lan"),
+            LocalEndpoint(ip="192.0.2.10", port=3333, scope="lan"),
+        ]
+    )
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.0.2.11")
+
+    data = _get_status(env)
+
+    assert data["home_candidates"] == [
+        {"address": "192.0.2.11:7657", "selected": True, "source": "detected"},
+        {"address": "192.0.2.10:7657", "selected": False, "source": "detected"},
+    ]
+
+
+def test_home_candidates_override_in_detected_selects_detected(
+    link_env,
+    monkeypatch,
+) -> None:
+    env = link_env(
+        local_endpoints=[
+            LocalEndpoint(ip="192.168.1.50", port=7657, scope="lan"),
+            LocalEndpoint(ip="192.168.1.51", port=7657, scope="lan"),
+        ]
+    )
+    _write_host_override(env, "192.168.1.51:7657")
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+
+    data = _get_status(env)
+
+    assert data["home_candidates"] == [
+        {"address": "192.168.1.50:7657", "selected": False, "source": "detected"},
+        {"address": "192.168.1.51:7657", "selected": True, "source": "detected"},
+    ]
+
+
+def test_home_candidates_override_not_detected_appends_override(
+    link_env,
+    monkeypatch,
+) -> None:
+    env = link_env(
+        local_endpoints=[LocalEndpoint(ip="192.168.1.50", port=7657, scope="lan")]
+    )
+    _write_host_override(env, "192.168.1.44:7657")
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+
+    data = _get_status(env)
+
+    assert data["home_candidates"] == [
+        {"address": "192.168.1.50:7657", "selected": False, "source": "detected"},
+        {"address": "192.168.1.44:7657", "selected": True, "source": "override"},
+    ]
+
+
+def test_home_candidates_unavailable_keeps_status_200(
+    link_env,
+    monkeypatch,
+) -> None:
+    env = link_env()
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+
+    def fail_candidates() -> list[str]:
+        raise RuntimeError("watcher exploded")
+
+    monkeypatch.setattr(link_routes, "_list_pair_link_candidates", fail_candidates)
+
+    data = _get_status(env)
+
+    assert data["home_candidates"] == []
+    assert data["home_candidates_state"] == "unavailable"
+    assert data["home_candidates_error"] == link_copy.HOME_CANDIDATES_ERROR
+    assert data["reachability"] == "online"
+
+
+def test_api_status_does_not_mint_pairing_nonces(link_env, monkeypatch) -> None:
+    env = link_env()
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+    nonce_path = env.journal / "link" / "nonces.json"
+    assert not nonce_path.exists()
+
+    _get_status(env)
+
+    assert not nonce_path.exists()
+
+
 def test_no_secrets_in_response(link_env, monkeypatch) -> None:
     env = link_env()
     _write_config(env, link={"totp": "TOPSECRET_TOTP_VALUE"})
@@ -310,19 +455,7 @@ def test_back_compat_field_set(link_env, monkeypatch) -> None:
 
     data = _get_status(env)
 
-    assert set(data) == {
-        "instance_id",
-        "home_label",
-        "enrolled",
-        "relay_url",
-        "ca_fingerprint",
-        "lan_accessible",
-        "posture",
-        "reachability",
-        "relay_state",
-        "home_address",
-        "vpn",
-    }
+    assert set(data) == STATUS_FIELD_SET
     assert isinstance(data["instance_id"], str)
     assert isinstance(data["home_label"], str)
     assert isinstance(data["enrolled"], bool)
@@ -343,19 +476,7 @@ def test_api_status_unprovisioned(link_env, monkeypatch) -> None:
 
     data = _get_status(env)
 
-    assert set(data) == {
-        "instance_id",
-        "home_label",
-        "enrolled",
-        "relay_url",
-        "ca_fingerprint",
-        "lan_accessible",
-        "posture",
-        "reachability",
-        "relay_state",
-        "home_address",
-        "vpn",
-    }
+    assert set(data) == STATUS_FIELD_SET
     assert data["instance_id"] is None
     assert data["home_label"] is None
     assert not (env.journal / "link" / "state.json").exists()
