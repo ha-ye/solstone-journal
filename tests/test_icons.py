@@ -76,6 +76,21 @@ def test_search_lucide_icons_lock_matches_name_or_tag() -> None:
     )
 
 
+def test_search_lucide_icons_ranks_relevance_over_substring() -> None:
+    # "lock" must surface the lock icon itself ahead of substring-only hits
+    # like "alarm-clock"/"clock" (which only contain "lock" inside "clock").
+    names = [r["name"] for r in search_lucide_icons("lock", limit=40)]
+    assert names[0] == "lock"
+    assert "alarm-clock" not in names[:5]
+    if "clock" in names and "alarm-clock" in names:
+        assert names.index("lock") < names.index("clock")
+        assert names.index("lock") < names.index("alarm-clock")
+
+    # Exact name matches rank first for other queries too.
+    assert search_lucide_icons("heart")[0]["name"] == "heart"
+    assert search_lucide_icons("shield")[0]["name"] == "shield"
+
+
 def test_search_lucide_icons_empty_is_alphabetical_and_limited() -> None:
     results = search_lucide_icons("", limit=7)
     names = [result["name"] for result in results]
