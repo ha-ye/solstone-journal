@@ -1,7 +1,7 @@
 ---
 name: support
 description: >
-  Draft support tickets and feedback to sol pbc, search the KB, check open
+  Draft support tickets and feedback to solstone support, search the KB, check open
   tickets, check announcements, and run diagnostics. TRIGGER: file bug, request
   feature, submit feedback, search KB, announcements, tickets, sol call support
   create/search/list/reply/diagnose.
@@ -19,7 +19,7 @@ Draft tickets, search the knowledge base, prepare feedback, and check existing s
 
 3. **Diagnostics are auto-populated.** When creating a ticket, `sol call support create` includes system info (version, OS, services, recent errors). You do not need to gather this manually.
 
-4. **Draft only.** `create` and `feedback` run as dry-runs that save a draft for owner review. `reply` and `attach` need `--no-submit` to draft. Nothing is sent by the agent.
+4. **Draft only.** `create` and `feedback` run as dry-runs that save a local draft for owner review. `reply` and `attach` need `--no-submit` to draft. The draft stays local until the owner chooses from the review card.
 
 ## Subcommands
 
@@ -53,14 +53,14 @@ sol call support create \
   --category bug
 ```
 
-The `create` command is a dry run by default: it prints the would-be payload, saves a draft for owner review, and sends nothing.
+The `create` command is a dry run by default: it prints the would-be payload and saves a local draft for owner review.
 
 The `create` command implements a KB-first flow:
 1. Searches KB for related articles
 2. Shows matches
 3. Includes diagnostics automatically
 4. Shows the full ticket draft for review
-5. Saves a draft for the owner to review
+5. Saves a local draft for the owner to review
 
 **Flags:**
 - `--subject` / `-s` - Ticket subject (required)
@@ -97,7 +97,7 @@ sol call support show 42 --json
 sol call support attach 42 screenshot.png --no-submit
 ```
 
-Screenshots can help support understand visual bugs. Prepare an attachment draft only when the owner explicitly provides or asks to attach a file, and always include `--no-submit`. Never attach journal content — transcript, screenshot, or journal-derived content — unless the owner explicitly asks. Nothing is sent by the agent.
+Screenshots can help support understand visual bugs. Prepare an attachment draft only when the owner explicitly provides or asks to attach a file, and always include `--no-submit`. Never attach journal content — transcript, screenshot, or journal-derived content — unless the owner explicitly asks. The attachment draft stays local until the owner chooses from the review card.
 
 ### Feedback
 
@@ -105,7 +105,7 @@ Screenshots can help support understand visual bugs. Prepare an attachment draft
 sol call support feedback --body "The entity search is great but I wish it could filter by date range"
 ```
 
-Lower friction than a full ticket. Feedback is dry run by default: it prints the would-be payload, saves a draft for owner review, and sends nothing. Feedback is shaped as a ticket with category "feedback". Supports `--anonymous`.
+Lower friction than a full ticket. Feedback is dry run by default: it prints the would-be payload and saves a local draft for owner review. Feedback is shaped as a ticket with category "feedback". Supports `--anonymous`.
 
 ### Announcements
 
@@ -122,7 +122,7 @@ sol call support diagnose
 sol call support diagnose --json
 ```
 
-Reflects the journal host (read-only; no support ticket is sent). Shows:
+Reflects the journal host (read-only; does not create a support ticket). Shows:
 - solstone version
 - OS/platform info
 - Active services and their status
@@ -167,12 +167,12 @@ sol call support show 15
 sol call support diagnose
 ```
 
-Running `create` or `feedback` produces a safe dry-run preview and saves a draft for owner review.
+Running `create` or `feedback` produces a safe dry-run preview and saves a local draft for owner review.
 
 ## Gotchas
 
-- **`create`/`feedback` are dry-run by default.** They save a draft for owner review. The `DRY RUN` banner in stdout is the signal that nothing was sent.
+- **`create`/`feedback` are dry-run by default.** They save a local draft for owner review. The `DRY RUN` banner in stdout is the signal that the draft remains local.
 - **`reply` and `attach` need `--no-submit` for drafts.** Always include it when preparing a reply or attachment for owner review.
 - **KB-first is automatic on `create`.** The `create` command always searches the KB and shows matches for owner review before preparing the draft. Pass `--skip-kb` only if the issue is clearly unique.
-- **`--product` defaults to solstone.** Support handles other sol pbc products too. Confirm with the owner before preparing a non-solstone ticket.
+- **`--product` defaults to solstone.** Solstone support handles other products too. Confirm with the owner before preparing a non-solstone ticket.
 - **Diagnostics can include configuration.** Secrets are stripped, but the full diagnostic payload must still be shown to the owner.

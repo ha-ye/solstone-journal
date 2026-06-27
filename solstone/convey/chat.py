@@ -81,6 +81,7 @@ MAX_ACTIVE_TALENTS = 2
 _WATCHDOG_TIMEOUTS = {"chat": 30, "talent": 180}
 _DEFAULT_WATCHDOG_SECONDS = 180
 _RESERVED_USE_ID_CAP = 256
+_ABANDONED_RAW_USE_ID_CAP = 256
 
 _state_lock = threading.Lock()
 _runtime_lock = threading.Lock()
@@ -89,6 +90,7 @@ _current_chat_state: dict[str, Any] | None = None
 _queued_triggers: deque[dict[str, Any]] = deque()
 _active_talents: dict[str, dict[str, Any]] = {}
 _reserved_use_ids: dict[str, None] = {}
+_abandoned_raw_use_ids: dict[str, None] = {}
 _thinking_buffers: dict[str, list[str]] = {}
 _thinking_providers: dict[str, str] = {}
 _watchdog_timers: dict[str, threading.Timer] = {}
@@ -467,6 +469,7 @@ def stop_all_chat_runtime() -> None:
             timer.cancel()
         _watchdog_timers.clear()
         _reserved_use_ids.clear()
+        _abandoned_raw_use_ids.clear()
         _thinking_buffers.clear()
         _thinking_providers.clear()
 
@@ -1432,9 +1435,20 @@ def _pop_next_trigger_locked() -> dict[str, Any] | None:
     return _queued_triggers.popleft()
 
 
+def _abandon_raw_use_ids_locked(use_ids: set[str] | None) -> None:
+    if not use_ids:
+        return
+    for use_id in sorted(use_ids):
+        _abandoned_raw_use_ids[use_id] = None
+    while len(_abandoned_raw_use_ids) > _ABANDONED_RAW_USE_ID_CAP:
+        _abandoned_raw_use_ids.pop(next(iter(_abandoned_raw_use_ids)))
+
+
 def _clear_current_locked() -> dict[str, Any] | None:
     global _current_chat_use_id, _current_chat_state
 
+    if _current_chat_state is not None:
+        _abandon_raw_use_ids_locked(_current_chat_state.get("raw_use_ids_seen"))
     _current_chat_use_id = None
     _current_chat_state = None
     queued = _pop_next_trigger_locked()
@@ -1489,12 +1503,13 @@ def _set_current_raw_use_locked(logical_use_id: str, raw_use_id: str | None) -> 
 
 
 def _is_superseded_raw_use_id_locked(use_id: str) -> bool:
-    if _current_chat_state is None:
-        return False
-    raw_chat_use_id = str(_current_chat_state.get("raw_use_id") or "")
-    if use_id == raw_chat_use_id:
-        return False
-    return use_id in _current_chat_state["raw_use_ids_seen"]
+    if _current_chat_state is not None:
+        raw_chat_use_id = str(_current_chat_state.get("raw_use_id") or "")
+        if use_id == raw_chat_use_id:
+            return False
+        if use_id in _current_chat_state["raw_use_ids_seen"]:
+            return True
+    return use_id in _abandoned_raw_use_ids
 
 
 def _capture_thinking_locked(message: dict[str, Any]) -> None:

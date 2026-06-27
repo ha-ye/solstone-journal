@@ -23,3 +23,29 @@ def test_support_talent_prompt_is_draft_only() -> None:
     assert "per-send owner approval" not in lower_text
     assert "gate denial" not in lower_text
     assert "--submit" not in skill_text
+
+
+def test_support_talent_prompt_distinguishes_draft_states() -> None:
+    prompt_path = REPO_ROOT / "solstone/apps/support/talent/support.md"
+    text = prompt_path.read_text()
+    lower_text = text.lower()
+
+    assert "local draft was prepared successfully" in lower_text
+    assert (
+        "nothing leaves this machine or goes to solstone support unless you choose"
+        in lower_text
+    )
+    assert "support submission is off by setting, not failed" in lower_text
+    assert "draft-preparation failure" in lower_text
+    assert "local review draft could not be prepared" in lower_text
+    assert "sol pbc" not in lower_text
+
+    success_start = text.index(
+        "2. Otherwise, the local draft was prepared successfully."
+    )
+    success_end = text.index("3. Tell the owner", success_start)
+    success_text = text[success_start:success_end].lower()
+
+    assert "couldn't reach" not in success_text
+    assert "could not be prepared" not in success_text
+    assert "nothing was sent" not in success_text

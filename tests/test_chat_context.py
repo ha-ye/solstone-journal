@@ -302,6 +302,40 @@ def test_chat_context_owner_message_anchors_after_different_user(monkeypatch, tm
     ]
 
 
+def test_chat_context_chat_error_marks_incomplete_prior_user_turn(
+    monkeypatch, tmp_path
+):
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+
+    _append_owner_message("A", _ts(8, 0))
+    append_chat_event(
+        "chat_error",
+        ts=_ts(8, 1),
+        reason="chat_timeout",
+        use_id="use-chat-timeout",
+    )
+    _append_owner_message("B", _ts(8, 2))
+
+    module = _load_chat_context_module()
+    result = module.pre_process(
+        {
+            "day": "20260420",
+            "trigger": {
+                "type": "owner_message",
+                "message": "B",
+                "ts": _ts(8, 2),
+            },
+        }
+    )
+
+    assert result["messages"] == [
+        {"role": "user", "content": "A"},
+        {"role": "assistant", "content": module.CHAT_ERROR_TURN_MARKER},
+        {"role": "user", "content": "B"},
+    ]
+
+
 def test_chat_context_prompt_only_owner_message_anchors(monkeypatch, tmp_path):
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))

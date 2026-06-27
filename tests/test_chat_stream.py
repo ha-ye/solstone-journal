@@ -1113,6 +1113,45 @@ def test_talent_queued_is_not_an_unresponded_trigger(tmp_path, monkeypatch):
     assert find_unresponded_trigger("20260420") is None
 
 
+def test_find_unresponded_trigger_chat_error_terminal_preserves_owner_recovery(
+    tmp_path, monkeypatch
+):
+    _setup_journal(tmp_path, monkeypatch)
+    start = _ms(2026, 4, 20, 12, 0, 0)
+
+    append_chat_event(
+        "owner_message",
+        ts=start,
+        text="hello",
+        app="sol",
+        path="/chat",
+        facet="work",
+    )
+    append_chat_event(
+        "chat_error",
+        ts=start + 1_000,
+        reason="chat_timeout",
+        use_id="chat-1",
+    )
+
+    assert find_unresponded_trigger("20260420") is None
+
+    recovery_start = _ms(2026, 4, 21, 12, 0, 0)
+    append_chat_event(
+        "owner_message",
+        ts=recovery_start,
+        text="restart me",
+        app="sol",
+        path="/chat",
+        facet="work",
+    )
+
+    trigger = find_unresponded_trigger("20260421")
+    assert trigger is not None
+    assert trigger["kind"] == "owner_message"
+    assert trigger["text"] == "restart me"
+
+
 def test_find_unresponded_trigger_resolved(tmp_path, monkeypatch):
     _setup_journal(tmp_path, monkeypatch)
     start = _ms(2026, 4, 20, 12, 0, 0)

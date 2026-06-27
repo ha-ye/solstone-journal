@@ -354,10 +354,18 @@ def reduce_chat_state(day: str) -> dict[str, Any]:
 
 
 def find_unresponded_trigger(day: str) -> dict[str, Any] | None:
-    """Return the most recent unresolved trigger event for ``day``."""
+    """Return the most recent unresolved trigger event for ``day``.
+
+    A turn terminally closed by ``chat_error`` is not unresponded: timeout,
+    provider-error, and invalid-response paths all clear the active turn. An
+    ``owner_message`` with no later terminal event stays restartable for crash
+    recovery.
+    """
     for event in reversed(read_chat_events(day)):
         kind = event.get("kind")
         if kind == "sol_message":
+            return None
+        if kind == "chat_error":
             return None
         if kind in _TRIGGER_KINDS:
             return event
