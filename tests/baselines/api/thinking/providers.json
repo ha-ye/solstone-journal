@@ -205,6 +205,14 @@
       "label": "Agent Prompt Generation",
       "tier": 2
     },
+    "talent.entities.detection": {
+      "disabled": false,
+      "group": "Think",
+      "label": "Entity Detection",
+      "schedule": "segment",
+      "tier": 2,
+      "type": "generate"
+    },
     "talent.entities.entities": {
       "disabled": false,
       "group": "Entities",

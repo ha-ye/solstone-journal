@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["detections"],
+  "properties": {
+    "detections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "type", "facet", "contribution", "detect"],
+        "properties": {
+          "name": {"type": "string"},
+          "type": {
+            "type": "string",
+            "enum": ["Person", "Company", "Project", "Tool"]
+          },
+          "facet": {
+            "type": "string",
+            "enum": ["__RUNTIME_FACETS__"]
+          },
+          "contribution": {"type": "string"},
+          "detect": {"type": "boolean"}
+        }
+      }
+    }
+  }
+}

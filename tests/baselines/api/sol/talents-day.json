@@ -93,6 +93,17 @@
       "title": "Entity Extraction",
       "type": "generate"
     },
+    "entities:detection": {
+      "app": "entities",
+      "color": "#00695c",
+      "description": "Per-segment, per-entity facet-relevance judgment feeding the living detection substrate",
+      "multi_facet": false,
+      "output_format": "json",
+      "schedule": "segment",
+      "source": "app",
+      "title": "Entity Detection",
+      "type": "generate"
+    },
     "entities:entities": {
       "app": "entities",
       "color": "#00897b",

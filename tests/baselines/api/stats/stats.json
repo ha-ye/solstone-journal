@@ -115,6 +115,32 @@
       "title": "Entity Extraction",
       "type": "generate"
     },
+    "entities:detection": {
+      "app": "entities",
+      "color": "#00695c",
+      "description": "Per-segment, per-entity facet-relevance judgment feeding the living detection substrate",
+      "hook": {
+        "post": "entities:detection",
+        "pre": "entities:detection"
+      },
+      "load": {
+        "percepts": false,
+        "talents": false,
+        "transcripts": false
+      },
+      "max_output_tokens": 1024,
+      "mtime": 0,
+      "output": "json",
+      "path": "<PROJECT>/solstone/apps/entities/talent/detection.md",
+      "priority": 15,
+      "provider": "google",
+      "schedule": "segment",
+      "schema": "detection.schema.json",
+      "source": "app",
+      "thinking_budget": 2048,
+      "title": "Entity Detection",
+      "type": "generate"
+    },
     "entities:entity_describe": {
       "app": "entities",
       "color": "#26a69a",

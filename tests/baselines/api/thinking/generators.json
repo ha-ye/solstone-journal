@@ -43,6 +43,14 @@
   ],
   "segment": [
     {
+      "app": "entities",
+      "description": "Per-segment, per-entity facet-relevance judgment feeding the living detection substrate",
+      "disabled": false,
+      "key": "entities:detection",
+      "source": "app",
+      "title": "Entity Detection"
+    },
+    {
       "app": "timeline",
       "description": "",
       "disabled": false,
