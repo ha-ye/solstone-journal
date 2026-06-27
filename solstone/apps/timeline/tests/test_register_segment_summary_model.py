@@ -12,6 +12,7 @@ import sys
 import pytest
 
 from solstone.apps.timeline.tests.conftest import write_json
+from solstone.think.models import resolve_provider
 from solstone.think.utils import CorruptConfigError
 
 mod = importlib.import_module(
@@ -74,6 +75,19 @@ def test_creates_providers_contexts_when_missing_section(timeline_journal):
     data = json.loads(_journal_config_path(timeline_journal).read_text())
     assert summary.added == 1
     assert data["providers"]["contexts"][mod.CONTEXT_NAME] == mod.EXPECTED_CONTEXT
+
+
+def test_local_generate_default_wins_over_registered_cloud_context(timeline_journal):
+    write_json(
+        _journal_config_path(timeline_journal),
+        {"providers": {"generate": {"provider": "local"}}},
+    )
+
+    summary = mod.run_registration(timeline_journal)
+    provider, _ = resolve_provider(mod.CONTEXT_NAME, "generate")
+
+    assert summary.added == 1
+    assert provider == "local"
 
 
 def test_malformed_json_fails_loud(timeline_journal, monkeypatch):

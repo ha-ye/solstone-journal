@@ -615,6 +615,15 @@ def resolve_provider(context: str, agent_type: str) -> tuple[str, str]:
     # Resolve provider (from match or default)
     provider = match_config.get("provider", default_provider)
 
+    # Local type-default is a hard promise: a cloud context provider pin cannot
+    # override it. Honor only the context's tier for local model selection;
+    # never carry the context's cloud model string into a local run.
+    if type_default_is_local(agent_type, config):
+        tier = match_config.get("tier", default_tier)
+        if not isinstance(tier, int) or tier < 1 or tier > 3:
+            tier = default_tier
+        return ("local", _resolve_model("local", tier, config_models))
+
     # Resolve model: explicit model takes precedence over tier
     if "model" in match_config:
         model = match_config["model"]
@@ -653,6 +662,23 @@ def is_local_provider_needed(config: dict[str, Any] | None = None) -> bool:
         isinstance(context_config, dict) and context_config.get("provider") == "local"
         for context_config in contexts.values()
     )
+
+
+def type_default_is_local(
+    agent_type: str, config: dict[str, Any] | None = None
+) -> bool:
+    """Return True when the per-type provider default for agent_type is local.
+
+    This is the authority for the local-lane hard promise: when a type's default
+    provider is local, no cloud context override or cloud frontmatter/request pin
+    may route a talent of that type onto a cloud provider.
+    """
+    journal_config = config if config is not None else get_config()
+    providers = journal_config.get("providers", {})
+    if not isinstance(providers, dict):
+        return False
+    type_config = providers.get(agent_type, {})
+    return isinstance(type_config, dict) and type_config.get("provider") == "local"
 
 
 def log_token_usage(
@@ -1575,6 +1601,7 @@ __all__ = [
     "agenerate",
     "resolve_provider",
     "is_local_provider_needed",
+    "type_default_is_local",
     # Utilities
     "log_token_usage",
     "calc_token_cost",

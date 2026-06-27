@@ -201,7 +201,7 @@ def post_process(result: str, context: dict) -> str | None:
         "title": parsed.get("title", ""),
         "description": parsed.get("description", ""),
         "origin": origin_for_segment(seg_dir),
-        "model": MODEL,
+        "model": context.get("model", MODEL),
         "generated_at": int(time.time()),
     }
     atomic_replace(

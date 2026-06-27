@@ -489,6 +489,7 @@ def prepare_config(request: dict) -> dict:
         _resolve_tier,
         resolve_model_for_provider,
         resolve_provider,
+        type_default_is_local,
     )
     from solstone.think.talent import get_talent, key_to_context
 
@@ -559,13 +560,19 @@ def prepare_config(request: dict) -> dict:
     talent_type = config["type"]
     default_provider, default_model = resolve_provider(context, talent_type)
 
-    provider = config.get("provider") or default_provider
-    model = config.get("model")
-    if not model:
-        if provider != default_provider:
-            model = resolve_model_for_provider(context, provider, talent_type)
-        else:
-            model = default_model
+    if type_default_is_local(talent_type):
+        # Local type-default is a hard runtime promise: neither a frontmatter
+        # nor a request provider pin may force a local-lane talent onto cloud.
+        provider = default_provider  # "local" (resolve_provider already forced it)
+        model = default_model
+    else:
+        provider = config.get("provider") or default_provider
+        model = config.get("model")
+        if not model:
+            if provider != default_provider:
+                model = resolve_model_for_provider(context, provider, talent_type)
+            else:
+                model = default_model
 
     config["provider"] = provider
     config["model"] = model
