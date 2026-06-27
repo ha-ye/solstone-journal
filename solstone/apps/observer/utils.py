@@ -293,6 +293,23 @@ def find_observer_by_name(name: str) -> dict | None:
     return ObserverRegistry.singleton().by_name(name)
 
 
+def find_oldest_unrevoked_by_name(name: str) -> dict | None:
+    """Return the oldest unrevoked observer record for a stream name.
+
+    The survivor rule shared by idempotent register and `observer reconcile`:
+    filter to unrevoked records whose name matches, then take the minimum
+    created_at. Returns None when no unrevoked record exists for the name.
+    """
+    candidates = [
+        record
+        for record in list_observers()
+        if record.get("name") == name and not record.get("revoked", False)
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda record: record.get("created_at", 0))
+
+
 def _get_auth_key() -> str | None:
     from flask import request
 

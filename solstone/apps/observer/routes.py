@@ -77,6 +77,7 @@ from .share_delete import DELETABLE_SOURCE_STREAMS, delete_source_stream
 from .utils import (
     ObserverRegistry,
     append_history_record,
+    find_oldest_unrevoked_by_name,
     find_segment_by_sha256,
     get_hist_dir,
     get_observers_dir,
@@ -426,18 +427,7 @@ def api_create() -> Any:
         params={"name": name, "key_prefix": key[:8]},
     )
 
-    # Build ingest URL
-    ingest_url = "/app/observer/ingest"
-
-    return jsonify(
-        {
-            "key": key,
-            "prefix": key[:8],
-            "name": name,
-            "ingest_url": ingest_url,
-            "protocol_version": protocol.OBSERVER_PROTOCOL_VERSION,
-        }
-    )
+    return jsonify(_register_descriptor(observer_data))
 
 
 _REGISTER_REQUIRED_FIELDS = ("platform", "hostname", "stream_type", "version")
@@ -467,6 +457,18 @@ def _is_authorized_pl_identity() -> bool:
 
 def _is_trusted_register_caller() -> bool:
     return _is_trusted_localhost() or _is_authorized_pl_identity()
+
+
+def _register_descriptor(record: dict) -> dict:
+    """Build the pinned register/ingest response body from a saved record."""
+    key = record["key"]
+    return {
+        "key": key,
+        "prefix": key[:8],
+        "name": record["name"],
+        "ingest_url": "/app/observer/ingest",
+        "protocol_version": protocol.OBSERVER_PROTOCOL_VERSION,
+    }
 
 
 @observer_bp.route("/register", methods=["POST"])
@@ -503,6 +505,27 @@ def register() -> Any:
     except ValueError as exc:
         return error_response(INVALID_SEGMENT_OR_STREAM, detail=str(exc))
 
+    existing = find_oldest_unrevoked_by_name(stream)
+    if existing is not None:
+        # Idempotent re-register: reuse the prior key/record, refresh the
+        # mutable descriptor fields, preserve key/created_at/stats/last_seen.
+        existing["platform"] = data["platform"].strip()
+        existing["stream_type"] = stream_type
+        existing["label"] = data.get("label")
+        existing["version"] = data["version"].strip()
+        if not save_observer(existing):
+            return error_response(
+                SETTINGS_OPERATION_FAILED,
+                detail="Failed to save observer",
+            )
+        log_app_action(
+            app="observer",
+            facet=None,
+            action="observer_register_reused",
+            params={"name": stream, "key_prefix": existing["key"][:8]},
+        )
+        return jsonify(_register_descriptor(existing))
+
     key = _generate_key()
     observer_data = {
         "key": key,
@@ -536,15 +559,7 @@ def register() -> Any:
         params={"name": stream, "key_prefix": key[:8]},
     )
 
-    return jsonify(
-        {
-            "key": key,
-            "prefix": key[:8],
-            "name": stream,
-            "ingest_url": "/app/observer/ingest",
-            "protocol_version": protocol.OBSERVER_PROTOCOL_VERSION,
-        }
-    )
+    return jsonify(_register_descriptor(observer_data))
 
 
 @observer_bp.route("/api/<key_prefix>", methods=["DELETE"])

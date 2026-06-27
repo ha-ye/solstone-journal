@@ -91,6 +91,19 @@ def test_register_loopback_returns_pinned_response(observer_env):
     assert data["protocol_version"] == 2
 
 
+def test_register_same_stream_twice_reuses_key(observer_env):
+    env = observer_env()
+
+    r1 = _register(env.client)
+    r2 = _register(env.client)
+
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert r1.get_json()["key"] == r2.get_json()["key"]
+    assert r1.get_json() == r2.get_json()
+    assert len(_observer_records(env.journal)) == 1
+
+
 def test_register_desktop_and_qualified_streams_persist_distinctly(observer_env):
     env = observer_env()
 
@@ -105,6 +118,20 @@ def test_register_desktop_and_qualified_streams_persist_distinctly(observer_env)
     records = _observer_records(env.journal)
     assert len(records) == 2
     assert {record["stream"] for record in records} == {"fedora.tmux", "fedora"}
+
+
+def test_register_distinct_stream_types_keep_distinct_keys(observer_env):
+    env = observer_env()
+
+    tmux = _register(env.client)
+    desktop = _register(env.client, stream_type="desktop")
+
+    assert tmux.status_code == 200
+    assert desktop.status_code == 200
+    assert tmux.get_json()["key"] != desktop.get_json()["key"]
+    assert tmux.get_json()["name"] == "fedora.tmux"
+    assert desktop.get_json()["name"] == "fedora"
+    assert len(_observer_records(env.journal)) == 2
 
 
 def test_register_persists_descriptor_recoverably(observer_env):
@@ -136,6 +163,50 @@ def test_register_persists_descriptor_recoverably(observer_env):
     assert {
         field: loaded[field] for field in expected_descriptor
     } == expected_descriptor
+
+
+def test_register_reuse_refreshes_descriptor_preserving_identity(observer_env):
+    env = observer_env()
+
+    r1 = _register(env.client, label="L1", version="1")
+
+    assert r1.status_code == 200
+    key1 = r1.get_json()["key"]
+    initial_records = _observer_records(env.journal)
+    assert len(initial_records) == 1
+    created_at = initial_records[0]["created_at"]
+    stats = initial_records[0]["stats"]
+
+    r2 = _register(env.client, label="L2", version="2")
+
+    assert r2.status_code == 200
+    assert r2.get_json()["key"] == key1
+    records = _observer_records(env.journal)
+    assert len(records) == 1
+    assert records[0]["label"] == "L2"
+    assert records[0]["version"] == "2"
+    assert records[0]["created_at"] == created_at
+    assert records[0]["stats"] == stats
+
+
+def test_register_skips_revoked_record_and_mints_fresh(observer_env):
+    env = observer_env()
+    resp = _register(env.client)
+    assert resp.status_code == 200
+    revoked_key = resp.get_json()["key"]
+    observer = load_observer(revoked_key)
+    assert observer is not None
+    observer["revoked"] = True
+    observer["revoked_at"] = 1704312345000
+    assert save_observer(observer)
+
+    fresh = _register(env.client)
+
+    assert fresh.status_code == 200
+    assert fresh.get_json()["key"] != revoked_key
+    records = _observer_records(env.journal)
+    assert len(records) == 2
+    assert sum(not record.get("revoked", False) for record in records) == 1
 
 
 @pytest.mark.parametrize(
@@ -222,6 +293,29 @@ def test_register_authorized_pl_identity_from_non_loopback(observer_env):
     records = _observer_records(env.journal)
     assert len(records) == 1
     assert records[0]["stream"] == "fedora.tmux"
+
+
+def test_register_reuse_over_authorized_pl_path(observer_env):
+    env = observer_env()
+    _authorize_pl()
+
+    r1 = env.client.post(
+        "/app/observer/register",
+        json=VALID_REGISTER_PAYLOAD,
+        environ_base={"REMOTE_ADDR": "192.168.1.5"},
+        environ_overrides={"pl.identity": _pl_identity()},
+    )
+    r2 = env.client.post(
+        "/app/observer/register",
+        json=VALID_REGISTER_PAYLOAD,
+        environ_base={"REMOTE_ADDR": "192.168.1.5"},
+        environ_overrides={"pl.identity": _pl_identity()},
+    )
+
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert r1.get_json()["key"] == r2.get_json()["key"]
+    assert len(_observer_records(env.journal)) == 1
 
 
 def test_register_unknown_pl_identity_from_non_loopback_mints_nothing(observer_env):
