@@ -1190,6 +1190,21 @@ def run_segment_sense(
             **({"stream": stream} if stream else {}),
         )
 
+    detection_name = "entities:detection"
+    detection_config = _cfg(detection_name)
+    if detection_config:
+        agents_to_run.append((detection_name, detection_config))
+    else:
+        _log_skip(
+            detection_name,
+            "no_config",
+            f"{detection_name} config not found",
+            mode=target_schedule,
+            day=day,
+            segment=segment,
+            **({"stream": stream} if stream else {}),
+        )
+
     # Only fold-consumed segment events carry stream; not_recommended skips stay untagged.
     if recommend.get("screen_record"):
         screen_config = _cfg("screen")

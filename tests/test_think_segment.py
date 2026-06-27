@@ -47,6 +47,12 @@ def _segment_configs(*names: str) -> dict[str, dict]:
             "output": "json",
             "schedule": "segment",
         },
+        "entities:detection": {
+            "priority": 15,
+            "type": "generate",
+            "output": "json",
+            "schedule": "segment",
+        },
         "screen": {
             "priority": 20,
             "type": "generate",
@@ -484,6 +490,58 @@ class TestRunSegmentSense:
         )
 
         assert spawned == ["sense", "entities", "screen"]
+
+    @pytest.mark.parametrize("live", [False, True])
+    def test_entities_detection_dispatches_in_stable_order(
+        self, segment_dir, monkeypatch, live
+    ):
+        from solstone.think import thinking as think
+
+        spawned = []
+        _write_sense_output(
+            segment_dir,
+            {"density": "active", "recommend": {}, "facets": []},
+        )
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _segment_configs(
+                "sense",
+                "entities",
+                "documents",
+                "timeline:segment_summary",
+                "entities:detection",
+            ),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "_callosum", None)
+
+        think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+            live=live,
+        )
+
+        assert spawned == [
+            "sense",
+            "entities",
+            "documents",
+            "timeline:segment_summary",
+            "entities:detection",
+        ]
 
     @pytest.mark.parametrize(
         ("has_embeddings", "expected"),

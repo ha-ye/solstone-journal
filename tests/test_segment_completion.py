@@ -14,6 +14,8 @@ import pytest
 
 from solstone.think.cluster import cluster_segments
 from solstone.think.pipeline_health import (
+    SEGMENT_FLOOR_TALENTS,
+    SEGMENT_NONGATING_TALENTS,
     SegmentProgress,
     classify_segment_completion,
     lookup_segment_progress,
@@ -434,6 +436,27 @@ def test_stream_keyed_dispatch_blocks_without_terminal(segment_journal):
     ) == (False, "dispatched:screen")
 
 
+@pytest.mark.parametrize("emit_fail", [False, True])
+def test_stream_keyed_detection_dispatch_is_nongating(segment_journal, emit_fail):
+    day = "20990414"
+    stream = "delta"
+    _seed_segment(segment_journal, day, SEGMENT, stream=stream)
+    events = _complete_segment_events(SEGMENT, stream=stream) + [
+        _dispatch(SEGMENT, "entities:detection", 30, stream=stream)
+    ]
+    if emit_fail:
+        events.append(_fail(SEGMENT, "entities:detection", 31, stream=stream))
+    _write_health(segment_journal, day, "001_segment.jsonl", events)
+
+    progress = read_segment_progress(day)
+
+    assert "entities:detection" in progress[(stream, SEGMENT)].dispatched
+    assert "entities:detection" not in progress[(stream, SEGMENT)].completed
+    assert segment_fully_thought(
+        lookup_segment_progress(progress, stream, SEGMENT)
+    ) == (True, None)
+
+
 def test_primary_segment_uses_legacy_progress_fallback(segment_journal):
     day = "20990412"
     _seed_segment(segment_journal, day, SEGMENT, stream=None)
@@ -519,6 +542,10 @@ def test_segment_fully_thought_requires_floor_after_sense():
     assert segment_fully_thought(progress) == (False, "floor:entities")
 
 
+def test_segment_floor_and_nongating_talents_are_disjoint():
+    assert set(SEGMENT_NONGATING_TALENTS).isdisjoint(SEGMENT_FLOOR_TALENTS)
+
+
 def test_segment_fully_thought_ignores_skipped_not_dispatched_conditionals(
     segment_journal,
 ):
@@ -533,6 +560,19 @@ def test_segment_fully_thought_ignores_skipped_not_dispatched_conditionals(
     progress = read_segment_progress(DAY)[(None, SEGMENT)]
 
     assert "speaker_attribution" not in progress.dispatched
+    assert segment_fully_thought(progress) == (True, None)
+
+
+def test_segment_fully_thought_does_not_require_detection_before_activation():
+    progress = SegmentProgress(
+        sensed=True,
+        density="active",
+        change_class=None,
+        dispatched=frozenset({"sense", "entities", "documents"}),
+        completed=frozenset({"sense", "entities", "documents"}),
+        unconfigured=frozenset(),
+    )
+
     assert segment_fully_thought(progress) == (True, None)
 
 
@@ -573,6 +613,19 @@ def test_segment_fully_thought_requires_dispatched_completion():
     )
 
     assert segment_fully_thought(progress) == (False, "dispatched:screen")
+
+
+def test_segment_fully_thought_allows_nongating_detection_without_completion():
+    progress = SegmentProgress(
+        sensed=True,
+        density="active",
+        change_class=None,
+        dispatched=frozenset({"sense", "entities", "documents", "entities:detection"}),
+        completed=frozenset({"sense", "entities", "documents"}),
+        unconfigured=frozenset(),
+    )
+
+    assert segment_fully_thought(progress) == (True, None)
 
 
 def test_classifier_stats_and_gate_agree_on_all_gate_states(
@@ -685,6 +738,27 @@ def test_dropped_empty_modality_segment_is_not_counted(segment_journal):
     )
 
     assert completion.total == 1
+    assert completion.blockers == []
+
+
+def test_classify_segment_completion_ignores_missing_pre_activation_detection(
+    segment_journal,
+):
+    day = "20990415"
+    _seed_segment(segment_journal, day, SEGMENT)
+    _write_health(
+        segment_journal,
+        day,
+        "001_segment.jsonl",
+        _complete_segment_events(SEGMENT),
+    )
+
+    completion = classify_segment_completion(
+        cluster_segments(day),
+        read_segment_progress(day),
+    )
+
+    assert completion.not_thought == 0
     assert completion.blockers == []
 
 

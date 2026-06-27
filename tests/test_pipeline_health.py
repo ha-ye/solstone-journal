@@ -19,8 +19,10 @@ from solstone.think.pipeline_health import (
     BACKLOG_STATE_STUCK,
     REASON_CATCHUP_BACKOFF,
     STUCK_FAIL_THRESHOLD,
+    TERMINAL_FAIL,
     CompletionsSince,
     TerminalUnit,
+    lookup_segment_progress,
     pipeline_status_message,
     read_backlog_view,
     read_completed_since,
@@ -29,6 +31,7 @@ from solstone.think.pipeline_health import (
     read_day_stuck,
     read_segment_progress,
     read_terminal_states,
+    segment_fully_thought,
     summarize_pipeline_day,
 )
 
@@ -1607,6 +1610,91 @@ def test_read_backlog_view_dispatch_without_terminal_is_pending_not_in_progress(
     assert backlog_day.state == "pending"
     assert backlog_day.state != "in_progress"
     assert [unit.why for unit in backlog_day.why] == ["sensed_not_thought"]
+
+
+def test_nongating_detection_failure_stays_diagnosable(pipeline_journal):
+    day = "20990420"
+    segment = "123000_300"
+    _seed_screen_segment(pipeline_journal, day, segment)
+    _write_jsonl(
+        pipeline_journal / "chronicle" / day / "health" / "001_segment.jsonl",
+        [
+            _sense_complete(segment, "active", 1, stream="default"),
+            _dispatch(segment, "entities", 2, stream="default"),
+            _complete(segment, "entities", 3, stream="default"),
+            _dispatch(segment, "documents", 4, stream="default"),
+            _complete(segment, "documents", 5, stream="default"),
+            _dispatch(segment, "entities:detection", 6, stream="default"),
+            _fail(
+                segment,
+                "entities:detection",
+                7,
+                stream="default",
+                use_id="agent-detect",
+                reason_code="provider_quota_exceeded",
+                provider="openai",
+                model="gpt-5",
+            ),
+        ],
+    )
+
+    progress = read_segment_progress(day)
+
+    assert segment_fully_thought(
+        lookup_segment_progress(progress, "default", segment)
+    ) == (True, None)
+
+    unit = TerminalUnit(
+        mode="segment",
+        name="entities:detection",
+        facet=None,
+        stream="default",
+        segment=segment,
+        activity=None,
+    )
+    state = read_terminal_states(day)[unit]
+    assert state.latest_event == TERMINAL_FAIL
+    assert state.reason_code == "provider_quota_exceeded"
+    assert state.provider == "openai"
+    assert state.model == "gpt-5"
+
+    failure = {
+        "mode": "segment",
+        "name": "entities:detection",
+        "use_id": "agent-detect",
+        "state": "error",
+    }
+    summary = summarize_pipeline_day(day)
+    assert summary["talents"]["failed"] == 1
+    assert failure in summary["talents"]["failed_list"]
+    assert {"kind": "talent_failure", **failure} in summary["anomalies"]
+
+
+def test_read_backlog_view_ignores_nongating_detection_without_terminal(
+    pipeline_journal,
+):
+    day = "20990421"
+    segment = "123000_300"
+    _seed_screen_segment(pipeline_journal, day, segment)
+    _write_jsonl(
+        pipeline_journal / "chronicle" / day / "health" / "001_segment.jsonl",
+        [
+            _sense_complete(segment, "active", 1, stream="default"),
+            _dispatch(segment, "entities", 2, stream="default"),
+            _complete(segment, "entities", 3, stream="default"),
+            _dispatch(segment, "documents", 4, stream="default"),
+            _complete(segment, "documents", 5, stream="default"),
+            _dispatch(segment, "entities:detection", 6, stream="default"),
+        ],
+    )
+    _touch_marker(pipeline_journal, day, "stream.updated", mtime_ms=8000)
+
+    backlog_day = read_backlog_view(window=1).days[0]
+
+    assert backlog_day.state == "complete"
+    assert backlog_day.why == ()
+    assert backlog_day.units == 0
+    assert not any(unit.name == "entities:detection" for unit in backlog_day.why)
 
 
 def test_read_backlog_view_unknown_day_is_retained(pipeline_journal, monkeypatch):

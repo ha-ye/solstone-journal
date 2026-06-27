@@ -168,7 +168,7 @@ def test_pre_process_skip_taxonomy(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     _write_sense(root, _sense(facets=[], entities=[{"name": "Sarah Chen"}]))
     assert detection.pre_process(_context()) == {"skip_reason": "no_facets"}
 
-    _write_sense(
+    seg_dir = _write_sense(
         root,
         _sense(
             facets=[{"facet": "work", "activity": "planning", "level": "high"}],
@@ -176,6 +176,7 @@ def test_pre_process_skip_taxonomy(tmp_path: Path, monkeypatch: pytest.MonkeyPat
         ),
     )
     assert detection.pre_process(_context()) == {"skip_reason": "no_candidates"}
+    assert not (seg_dir / "talents" / "detection_outcome.json").exists()
 
 
 def test_detection_schema_validates_sample_and_rejects_malformed():

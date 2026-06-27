@@ -33,6 +33,7 @@ _now = datetime.now
 _MODES = ("segment", "daily", "activity", "weekly", "flush", "cadence")
 _FAILED_LIST_CAP = 20
 SEGMENT_FLOOR_TALENTS: tuple[str, ...] = ("entities", "documents")
+SEGMENT_NONGATING_TALENTS: tuple[str, ...] = ("entities:detection",)
 STUCK_FAIL_THRESHOLD = 3
 BACKLOG_DEFAULT_WINDOW = 30
 
@@ -793,6 +794,8 @@ def segment_fully_thought(progress: SegmentProgress | None) -> tuple[bool, str |
         if name not in progress.completed and name not in progress.unconfigured:
             return False, f"floor:{name}"
     for name in sorted(progress.dispatched):
+        if name in SEGMENT_NONGATING_TALENTS:
+            continue
         if name not in progress.completed:
             return False, f"dispatched:{name}"
     return True, None
