@@ -48,6 +48,25 @@ def _observer(name: str = "archon", key: str = "existing-key-abcdef") -> dict:
     }
 
 
+def _observer_with_stats(
+    *,
+    name: str,
+    key: str,
+    created_at: int,
+    segments_received: int,
+    bytes_received: int,
+    duplicates_rejected: int = 0,
+) -> dict:
+    record = _observer(name=name, key=key)
+    record["created_at"] = created_at
+    record["stats"] = {
+        "segments_received": segments_received,
+        "bytes_received": bytes_received,
+        "duplicates_rejected": duplicates_rejected,
+    }
+    return record
+
+
 def test_create_observer_record_reuses_existing_without_create_side_effects(
     observer_cli_env,
     monkeypatch: pytest.MonkeyPatch,
@@ -220,6 +239,201 @@ def test_cmd_create_reuse_existing_creates_normally_when_absent(
             "params": {"name": "archon", "key_prefix": "fresh-ke"},
         }
     ]
+
+
+def test_reconcile_collapses_duplicates_oldest_survives(observer_cli_env) -> None:
+    assert save_observer(
+        _observer_with_stats(
+            name="fedora.tmux",
+            key="newest03-key",
+            created_at=3,
+            segments_received=5,
+            bytes_received=100,
+            duplicates_rejected=1,
+        )
+    )
+    assert save_observer(
+        _observer_with_stats(
+            name="fedora.tmux",
+            key="oldest01-key",
+            created_at=1,
+            segments_received=7,
+            bytes_received=200,
+            duplicates_rejected=2,
+        )
+    )
+    assert save_observer(
+        _observer_with_stats(
+            name="fedora.tmux",
+            key="middle02-key",
+            created_at=2,
+            segments_received=11,
+            bytes_received=300,
+        )
+    )
+    lone = _observer_with_stats(
+        name="fedora",
+        key="desktop1-key",
+        created_at=4,
+        segments_received=13,
+        bytes_received=400,
+        duplicates_rejected=5,
+    )
+    assert save_observer(lone)
+
+    plan = observer_cli.reconcile_observers(dry_run=False)
+
+    assert plan == [
+        {
+            "name": "fedora.tmux",
+            "survivor_prefix": "oldest01",
+            "revoked_prefixes": ["newest03", "middle02"],
+            "stats": {
+                "segments_received": 23,
+                "bytes_received": 600,
+                "duplicates_rejected": 3,
+            },
+        }
+    ]
+    records = list_observers()
+    tmux_records = [record for record in records if record["name"] == "fedora.tmux"]
+    unrevoked_tmux = [
+        record for record in tmux_records if not record.get("revoked", False)
+    ]
+    assert len(unrevoked_tmux) == 1
+    assert unrevoked_tmux[0]["created_at"] == 1
+    assert unrevoked_tmux[0]["stats"] == {
+        "segments_received": 23,
+        "bytes_received": 600,
+        "duplicates_rejected": 3,
+    }
+    revoked_tmux = [record for record in tmux_records if record.get("revoked", False)]
+    assert {record["created_at"] for record in revoked_tmux} == {2, 3}
+    lone_record = next(record for record in records if record["name"] == "fedora")
+    assert lone_record.get("revoked", False) is False
+    assert lone_record["stats"] == lone["stats"]
+
+
+def test_reconcile_dry_run_mutates_nothing(observer_cli_env) -> None:
+    assert save_observer(
+        _observer_with_stats(
+            name="fedora.tmux",
+            key="newest03-key",
+            created_at=3,
+            segments_received=5,
+            bytes_received=100,
+            duplicates_rejected=1,
+        )
+    )
+    assert save_observer(
+        _observer_with_stats(
+            name="fedora.tmux",
+            key="oldest01-key",
+            created_at=1,
+            segments_received=7,
+            bytes_received=200,
+            duplicates_rejected=2,
+        )
+    )
+    assert save_observer(
+        _observer_with_stats(
+            name="fedora.tmux",
+            key="middle02-key",
+            created_at=2,
+            segments_received=11,
+            bytes_received=300,
+        )
+    )
+    observers_dir = observer_cli_env.journal / "apps" / "observer" / "observers"
+    before = {path.name: path.read_bytes() for path in observers_dir.glob("*.json")}
+
+    plan = observer_cli.reconcile_observers(dry_run=True)
+
+    assert plan == [
+        {
+            "name": "fedora.tmux",
+            "survivor_prefix": "oldest01",
+            "revoked_prefixes": ["newest03", "middle02"],
+            "stats": {
+                "segments_received": 23,
+                "bytes_received": 600,
+                "duplicates_rejected": 3,
+            },
+        }
+    ]
+    after = {path.name: path.read_bytes() for path in observers_dir.glob("*.json")}
+    assert after == before
+
+
+def test_reconcile_lone_stream_returns_empty_plan(observer_cli_env) -> None:
+    lone = _observer_with_stats(
+        name="fedora",
+        key="desktop1-key",
+        created_at=1,
+        segments_received=13,
+        bytes_received=400,
+        duplicates_rejected=5,
+    )
+    assert save_observer(lone)
+
+    plan = observer_cli.reconcile_observers(dry_run=False)
+
+    assert plan == []
+    records = list_observers()
+    assert len(records) == 1
+    assert records[0].get("revoked", False) is False
+    assert records[0]["stats"] == lone["stats"]
+
+
+def test_cmd_reconcile_reports_plan(
+    observer_cli_env,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert save_observer(
+        _observer_with_stats(
+            name="fedora.tmux",
+            key="newest03-key",
+            created_at=3,
+            segments_received=5,
+            bytes_received=100,
+        )
+    )
+    assert save_observer(
+        _observer_with_stats(
+            name="fedora.tmux",
+            key="oldest01-key",
+            created_at=1,
+            segments_received=7,
+            bytes_received=200,
+        )
+    )
+
+    rc = observer_cli.cmd_reconcile(
+        argparse.Namespace(dry_run=False, json_output=False)
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.err == ""
+    assert "Reconciled stream 'fedora.tmux':" in captured.out
+    assert "  survivor:  oldest01" in captured.out
+    assert "  revoking:  newest03" in captured.out
+
+
+def test_cmd_reconcile_no_duplicates(
+    observer_cli_env,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert save_observer(_observer(name="fedora", key="desktop1-key"))
+
+    rc = observer_cli.cmd_reconcile(
+        argparse.Namespace(dry_run=False, json_output=False)
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.err == ""
+    assert captured.out == "No duplicate observer streams to reconcile.\n"
 
 
 def test_cmd_list_json_includes_prefix_and_status(
