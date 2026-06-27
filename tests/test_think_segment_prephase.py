@@ -206,15 +206,7 @@ def test_existing_segment_talent_output_prevents_second_llm_run(
 
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    out = (
-        journal
-        / "chronicle"
-        / DAY
-        / STREAM
-        / ACTIVE_SEGMENT
-        / "talents"
-        / "entities.md"
-    )
+    out = journal / "chronicle" / DAY / STREAM / ACTIVE_SEGMENT / "talents" / "flow.md"
     events: list[dict] = []
     called: list[str] = []
 
@@ -227,7 +219,7 @@ def test_existing_segment_talent_output_prevents_second_llm_run(
 
     config = {
         "type": "generate",
-        "name": "entities",
+        "name": "flow",
         "provider": "google",
         "model": "x",
         "prompt": "think about this segment",
@@ -246,7 +238,7 @@ def test_existing_segment_talent_output_prevents_second_llm_run(
     assert len(called) == 1
     assert out.exists()
 
-    _append_segment_terminal(journal, name="entities")
+    _append_segment_terminal(journal, name="flow")
 
     second_events: list[dict] = []
     asyncio.run(talents._run_talent(config, second_events.append, dry_run=False))

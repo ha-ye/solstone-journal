@@ -87,7 +87,7 @@
       "color": "#2e7d32",
       "description": "Extracts people, companies, projects, and tools from segment content",
       "multi_facet": false,
-      "output_format": "md",
+      "output_format": "json",
       "schedule": "segment",
       "source": "system",
       "title": "Entity Extraction",

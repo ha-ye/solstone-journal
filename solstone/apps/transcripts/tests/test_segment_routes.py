@@ -543,6 +543,42 @@ def test_segment_content_marks_headerless_screen_frame_analyzed(client, journal_
     assert any(chunk["type"] == "screen" for chunk in data["chunks"])
 
 
+def test_segment_content_renders_entities_jsonl_over_stale_markdown(
+    client, journal_copy
+):
+    day = "20990116"
+    stream = "default"
+    segment = "090000_300"
+    _write_segment(journal_copy, day, stream, segment, audio=False, screen=False)
+    talents_dir = journal_copy / "chronicle" / day / stream / segment / "talents"
+    talents_dir.mkdir(parents=True, exist_ok=True)
+    _write_jsonl(
+        talents_dir / "entities.jsonl",
+        [
+            {
+                "type": "Person",
+                "name": "Alice Smith",
+                "description": "Discussed the timeline",
+            },
+            {
+                "type": "Tool",
+                "name": "Grafana",
+                "description": "Used for dashboards",
+            },
+        ],
+    )
+    (talents_dir / "entities.md").write_text("STALE MD", encoding="utf-8")
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    md_files = response.get_json()["md_files"]
+    assert list(md_files).count("entities") == 1
+    assert "Alice Smith" in md_files["entities"]
+    assert " — " in md_files["entities"]
+    assert "STALE MD" not in md_files["entities"]
+
+
 def test_segment_content_strips_duplicate_audio_markdown_timestamp(
     client, journal_copy
 ):

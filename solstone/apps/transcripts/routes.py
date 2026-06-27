@@ -65,6 +65,7 @@ from solstone.think.data_state import (
     derive_modality_state,
 )
 from solstone.think.entities.journal import get_journal_principal, load_journal_entity
+from solstone.think.formatters import format_file
 from solstone.think.media import MIME_TYPES
 from solstone.think.models import get_usage_cost
 from solstone.think.pipeline_health import (
@@ -924,6 +925,21 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
         md_files.pop("screen", None)
     if "audio" in data_state:
         md_files.pop("audio", None)
+
+    entities_jsonl = talents_dir / "entities.jsonl"
+    if entities_jsonl.is_file():
+        try:
+            chunks, _meta = format_file(entities_jsonl)
+            rendered = "\n".join(
+                chunk["markdown"] for chunk in chunks if chunk.get("markdown")
+            )
+            if rendered:
+                md_files["entities"] = rendered
+        except Exception:
+            logger.warning(
+                "segment detail: failed to render entities.jsonl",
+                exc_info=True,
+            )
 
     return jsonify(
         {

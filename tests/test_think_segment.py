@@ -1218,16 +1218,14 @@ class TestRunSegmentSense:
             segment_dir,
             {"density": "active", "recommend": {}, "facets": []},
         )
-        (segment_dir / "talents" / "entities.md").write_text(
-            "entities", encoding="utf-8"
-        )
+        (segment_dir / "talents" / "flow.md").write_text("flow", encoding="utf-8")
 
         monkeypatch.setattr(
             think,
             "get_talent_configs",
             lambda schedule=None, **kwargs: {
                 **_segment_configs("sense"),
-                "entities": {
+                "flow": {
                     "priority": 20,
                     "type": "generate",
                     "output": "md",
@@ -1250,6 +1248,7 @@ class TestRunSegmentSense:
             "run_queued_command",
             lambda cmd, day, timeout=60: indexer_calls.append(cmd) or True,
         )
+        monkeypatch.setattr(think, "SEGMENT_FLOOR_TALENTS", ("flow",))
         monkeypatch.setattr(think, "_callosum", None)
 
         think.run_segment_sense(

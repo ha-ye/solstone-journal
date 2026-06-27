@@ -84,6 +84,15 @@ class TestRegistry:
         formatter = get_formatter("random/path/unknown.jsonl")
         assert formatter is None
 
+    def test_get_formatter_segment_entities_jsonl(self):
+        """Segment entities JSONL uses the dedicated formatter."""
+        from solstone.think.formatters import get_formatter
+
+        formatter = get_formatter("20240101/default/120000_300/talents/entities.jsonl")
+
+        assert formatter is not None
+        assert formatter.__name__ == "format_segment_entities"
+
     def test_no_spans_formatter_registered(self):
         """Spans JSONL is no longer registered after the story refactor."""
         from solstone.think.formatters import FORMATTERS, get_formatter
@@ -571,6 +580,30 @@ class TestFormatEntities:
         assert "Person: Alice" in chunks[0]["markdown"]
         assert "Friend from work" in chunks[0]["markdown"]
         assert "Company: Acme Corp" in chunks[1]["markdown"]
+
+    def test_format_segment_entities_direct(self):
+        """Test canonical segment entities formatting."""
+        from solstone.think.entities.formatting import format_segment_entities
+
+        entries = [
+            {
+                "type": "Person",
+                "name": "Alice Smith",
+                "description": "In the meeting",
+            },
+            {"type": "Person", "name": "Bob", "description": ""},
+            {"type": "Tool", "name": "   ", "description": "Skipped"},
+        ]
+
+        chunks, meta = format_segment_entities(entries)
+
+        assert [chunk["markdown"] for chunk in chunks] == [
+            "Person: Alice Smith — In the meeting",
+            "Person: Bob",
+        ]
+        assert chunks[0]["timestamp"] == 0
+        assert chunks[0]["source"] is entries[0]
+        assert meta["indexer"]["agent"] == "entities"
 
     def test_format_entities_no_description(self):
         """Test that missing description shows placeholder."""

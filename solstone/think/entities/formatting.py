@@ -238,6 +238,34 @@ def format_entity_identity(
     return chunks, meta
 
 
+def format_segment_entities(
+    entries: list[dict[str, Any]],
+    context: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Render the per-segment canonical talents/entities.jsonl artifact."""
+    _ = context
+    chunks: list[dict[str, Any]] = []
+    for entry in entries:
+        etype = str(entry.get("type", "")).strip()
+        name = str(entry.get("name", "")).strip()
+        description = str(entry.get("description", "")).strip()
+        if not name:
+            continue
+
+        markdown = (
+            f"{etype}: {name} — {description}" if description else f"{etype}: {name}"
+        )
+        chunks.append(
+            {
+                "timestamp": 0,
+                "markdown": markdown,
+                "source": entry,
+            }
+        )
+
+    return chunks, {"indexer": {"agent": "entities"}}
+
+
 def format_observations(
     entries: list[dict[str, Any]],
     context: dict[str, Any] | None = None,

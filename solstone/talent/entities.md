@@ -9,7 +9,8 @@
   "hook": {"post": "entities"},
   "thinking_budget": 4096,
   "max_output_tokens": 1024,
-  "output": "md",
+  "output": "json",
+  "schema": "entities.schema.json",
   "load": {"transcripts": true, "percepts": true, "talents": false}
 
 }
@@ -34,9 +35,23 @@ Skip any url, domain, filename, or path.
 - Only extract first-name-only references when identity is unambiguous (one "Sarah" in the conversation). Skip ambiguous first-name references rather than guessing.
 - Use the official or most common name for companies (e.g., "MS", "Microsoft", "MSFT" → "Microsoft").
 
-Output as a markdown list. Each line has three parts separated by colon and dash:
-* Type: Entity Name - Description
+## What to return
+
+Return a single JSON object: `{"entities": [ ... ]}`. Each entry has exactly three fields: `type` (one of Person, Company, Project, Tool), `name`, and `description`. If no entities qualify, return `{"entities": []}`.
 
 Example:
-* Person: Alice Smith - Mentioned in discussion about the project timeline
-* Tool: Grafana - Referenced for monitoring metrics dashboards
+
+{
+  "entities": [
+    {
+      "type": "Person",
+      "name": "Alice Smith",
+      "description": "Mentioned in discussion about the project timeline"
+    },
+    {
+      "type": "Tool",
+      "name": "Grafana",
+      "description": "Referenced for monitoring metrics dashboards"
+    }
+  ]
+}

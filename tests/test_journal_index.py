@@ -400,6 +400,62 @@ def test_search_journal_outputs(journal_fixture):
     assert found
 
 
+def test_segment_entities_jsonl_searchable_and_exact(journal_copy):
+    """Segment entities JSONL is indexed with its dedicated formatter."""
+    from solstone.think.indexer.journal import scan_journal, search_journal
+
+    day = "20990115"
+    segment_dir = journal_copy / "chronicle" / day / "default" / "120000_300"
+    talents_dir = segment_dir / "talents"
+    talents_dir.mkdir(parents=True, exist_ok=True)
+    (talents_dir / "entities.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "Project",
+                "name": "Zephyr Quartz Index",
+                "description": "Unique regression seed phrase",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (talents_dir / "entities.json").write_text(
+        json.dumps({"raw": "raw model output should not be indexed"}),
+        encoding="utf-8",
+    )
+
+    scan_journal(str(journal_copy), full=True)
+
+    total, name_results = search_journal("Zephyr Quartz Index")
+    assert total >= 1
+    assert any(
+        result["metadata"]["path"] == f"{day}/default/120000_300/talents/entities.jsonl"
+        for result in name_results
+    )
+
+    total, description_results = search_journal("regression seed")
+    assert total >= 1
+    expected = "Project: Zephyr Quartz Index — Unique regression seed phrase"
+    matching = [
+        result
+        for result in description_results
+        if result["metadata"]["path"]
+        == f"{day}/default/120000_300/talents/entities.jsonl"
+    ]
+    assert matching
+    assert any(result["text"] == expected for result in matching)
+    assert all(result["metadata"]["agent"] == "entities" for result in matching)
+
+    conn, _ = get_journal_index(str(journal_copy))
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM chunks WHERE path LIKE '%talents/entities.json'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert count == 0
+
+
 def test_search_journal_events(journal_fixture):
     """Test searching returns event chunks."""
     from solstone.think.indexer.journal import scan_journal, search_journal
