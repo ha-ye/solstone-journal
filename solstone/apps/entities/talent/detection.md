@@ -22,7 +22,7 @@ For each person or thing noticed in this moment, make three judgments:
 
 1. **Was it notable here?** Only log someone or something that genuinely took part in this moment — they participated in the conversation, meeting, message, decision, or work; were the subject of the activity; or were actively discussed. **Leave out** anything only mentioned in passing, brought in from an unrelated area, or just present in the background. When unsure, leave it out — a short, true log beats a noisy one. Logging nothing is a fine answer.
 
-2. **Which facet does it belong to?** Choose from the facets listed as active in this moment, and pick the one where this entity was actually involved. If it was genuinely active in more than one of the listed facets, you may log it once for each — but only where it truly belongs, not everywhere it happens to be known.
+2. **Which facet does it belong to?** Pick the single facet — from those listed as active in this moment — that best fits this entity's involvement. **Log each entity exactly once: one entry, one facet.** Even when the moment spans several facets, choose the one where the entity most belongs; never log the same entity under more than one facet.
 
 3. **Write or update its day summary.** For the chosen facet, give one short, concrete summary of what this entity did across the whole day so far in that facet. If a summary for today is already shown below, fold what just happened into it so the result reads as one natural, up-to-date line or two — merge, don't just tack on. If there's no summary yet, write a fresh one from what happened just now. Keep it about what they actually did today, not a generic description of who they are.
 
@@ -38,4 +38,4 @@ Return a single JSON object: `{"detections": [ ... ]}`. Each entry is one entity
 - `facet` — one of the facets listed as active in this moment.
 - `description` — the updated, full-day summary for that entity in that facet.
 
-Include only the entities worth logging. The same name may appear more than once when it genuinely belongs to more than one active facet. If nothing in this moment was notable, return an empty list.
+Include only the entities worth logging, and **each entity at most once** — one entry, its single best-fitting facet. If nothing in this moment was notable, return an empty list.
