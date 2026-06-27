@@ -14,72 +14,28 @@
   "load": {"transcripts": false, "percepts": false, "talents": false}
 }
 
-## Core Mission
+## Your job
 
-Make per-ENTITY facet-relevance judgments for THIS ~5-minute segment's candidates. Return exactly one JSON object matching the schema:
+You keep a running daily log of the people, companies, projects, and tools that genuinely mattered to the journal owner today, organized by the facets — the areas — of their life. Below is one moment from today, what's already been logged, and what was noticed just now. Update the log.
 
-`{"detections": [...]}`
+For each person or thing noticed in this moment, make three judgments:
 
-Each row judges whether a candidate actively participated in one of THIS segment's facets. Zero detections is valid and preferred over cross-facet contamination.
+1. **Was it notable here?** Only log someone or something that genuinely took part in this moment — they participated in the conversation, meeting, message, decision, or work; were the subject of the activity; or were actively discussed. **Leave out** anything only mentioned in passing, brought in from an unrelated area, or just present in the background. When unsure, leave it out — a short, true log beats a noisy one. Logging nothing is a fine answer.
 
-## ⚠️ CRITICAL FACET SCOPING RULE
+2. **Which facet does it belong to?** Choose from the facets listed as active in this moment, and pick the one where this entity was actually involved. If it was genuinely active in more than one of the listed facets, you may log it once for each — but only where it truly belongs, not everywhere it happens to be known.
 
-**ONLY detect entities that were ACTIVELY INVOLVED in THIS segment's facet activity.**
+3. **Write or update its day summary.** For the chosen facet, give one short, concrete summary of what this entity did across the whole day so far in that facet. If a summary for today is already shown below, fold what just happened into it so the result reads as one natural, up-to-date line or two — merge, don't just tack on. If there's no summary yet, write a fresh one from what happened just now. Keep it about what they actually did today, not a generic description of who they are.
 
-❌ DO NOT DETECT if:
-- Entity is mentioned in passing from another facet's context
-- Entity appears in context but is not tied to this segment's facet work
-- Person/org from Facet A is merely referenced while working in Facet B
-- Transcript mentions "then I called my friend Sarah" but Sarah is not relevant to this segment's shown facets
-
-✅ DETECT if:
-- Entity participated in this segment's meetings/events/communications
-- Entity is the subject of work/activities within one shown facet
-- Entity appears in facet-tagged segment activity or insights for this facet
-- Entity had direct involvement in this segment's facet activity
-
-**When in doubt: If the entity was not actively participating in THIS segment's shown facet activity, skip it.**
-
-**If the segment was quiet or only background mentions appeared, 0 detections is perfectly acceptable and preferred over cross-contamination.**
-
-## Entity Priority Guidelines
-
-1. **High Priority - People and Contacts** (capture all active involvement)
-   - Detect people who participated in conversations, meetings, messages, reviews, decisions, or collaboration in this segment.
-   - Include brief but active participation.
-   - Type: Person.
-
-2. **Medium Priority - Companies and Projects** (selective)
-   - Companies: Detect only significant business relationships, clients, vendors, partners, or organizations actively discussed or acted on.
-   - Projects: Detect only when clearly central to this segment's work, planning, review, or decision.
-   - Skip passing mentions and tangential references.
-   - Types: Company or Project.
-
-3. **Low Priority - Tools and Resources** (rare)
-   - Detect only when the tool is the subject of discussion, evaluation, migration, debugging, or learning.
-   - Skip tools merely used in the background.
-   - Type: Tool.
-
-## Per-Candidate Decision
-
-For each candidate in the packet:
-
-- Decide whether it ACTIVELY participated in one of THIS segment's shown facets.
-- If yes, set `detect: true`.
-- Pick EXACTLY ONE `facet`, only from the facets shown in the packet.
-- Default to the dominant `level: high` facet when the entity's involvement spans multiple shown facets.
-- Write `contribution` as one concrete sentence describing what happened with this entity in THIS segment within THAT facet.
-- Make `contribution` day-specific and concrete, not a generic bio.
-- If the entity was only mentioned, background, cross-facet, generic, or uncertain, set `detect: false`; `contribution` may be an empty string.
-
-## Source Packet
+## What you're given
 
 $detection_packet
 
-## Output Rules
+## What to return
 
-- Output only JSON matching the schema.
-- Use `facet` only from the packet's active segment facets.
-- Use only these types: Person, Company, Project, Tool.
-- Do not invent entities beyond the candidates.
-- Do not detect entities just because they are attached, familiar, or historically important.
+Return a single JSON object: `{"detections": [ ... ]}`. Each entry is one entity in one facet, with exactly these fields:
+
+- `name` — the entity's name, exactly as written above.
+- `facet` — one of the facets listed as active in this moment.
+- `description` — the updated, full-day summary for that entity in that facet.
+
+Include only the entities worth logging. The same name may appear more than once when it genuinely belongs to more than one active facet. If nothing in this moment was notable, return an empty list.
