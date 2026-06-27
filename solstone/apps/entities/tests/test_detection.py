@@ -178,14 +178,15 @@ def test_pre_process_builds_plain_packet_with_active_facet_context(
     assert "Why it matters: This was a main focus." in packet
     assert "### personal" in packet
     assert "Why it matters: This came up in passing." in packet
-    assert "### Sarah Chen — person" in packet
+    assert "### Sarah Chen" in packet
+    assert "Sarah Chen — person" not in packet  # entity type removed from packet
     assert "- In work: Backend lead" in packet
     assert "- In personal: Family friend" in packet
     assert (
         "Summary so far today in work: Sarah reviewed earlier design notes." in packet
     )
     assert "In this moment: Sarah reviewed the release plan." in packet
-    assert "### New Project — project" in packet
+    assert "### New Project" in packet
     assert "Summary so far today: Nothing saved yet in the active facets." in packet
     assert "Prefers concise launch notes" not in packet
 

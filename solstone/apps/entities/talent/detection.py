@@ -19,13 +19,6 @@ from solstone.think.utils import now_ms
 
 logger = logging.getLogger(__name__)
 
-TYPE_LABELS = {
-    "Person": "person",
-    "Company": "company",
-    "Project": "project",
-    "Tool": "tool",
-}
-
 NOTABILITY_LABELS = {
     "high": "This was a main focus",
     "medium": "This came up clearly",
@@ -75,10 +68,6 @@ def _candidate_rows(sense: dict) -> list[dict[str, Any]]:
     if not isinstance(rows, list):
         return []
     return [row for row in rows if isinstance(row, dict)]
-
-
-def _type_label(entity_type: Any) -> str:
-    return TYPE_LABELS.get(str(entity_type), "thing")
 
 
 def _notability_label(raw_level: Any) -> str:
@@ -173,7 +162,7 @@ def _build_packet(
 
         lines.extend(
             [
-                f"### {name} — {_type_label(candidate.get('type'))}",
+                f"### {name}",
                 "What's known:",
                 *_known_lines_for_active_facets(name, segment_facets),
                 *_daily_summary_lines(day, name, segment_facets),

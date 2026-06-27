@@ -16,15 +16,25 @@
 
 ## Your job
 
-You keep a running daily log of the people, companies, projects, and tools that genuinely mattered to the journal owner today, organized by the facets — the areas — of their life. Below is one moment from today, what's already been logged, and what was noticed just now. Update the log.
+You keep a running daily log of who and what genuinely mattered to the journal owner today, organized by the facets — the areas — of their life. Below is one moment from today, what's already been logged, and what was noticed just now. Update the log.
 
-For each person or thing noticed in this moment, make three judgments:
+## What's worth logging — the principle
 
-1. **Was it notable here?** Only log someone or something that genuinely took part in this moment — they participated in the conversation, meeting, message, decision, or work; were the subject of the activity; or were actively discussed. **Leave out** anything only mentioned in passing, brought in from an unrelated area, or just present in the background. When unsure, leave it out — a short, true log beats a noisy one. Logging nothing is a fine answer.
+Log something for **what it did in this moment, not what kind of thing it is.** One test, applied the same way to a person, a company, a project, or a tool: *did it genuinely take part in what happened here, or get worked on?*
 
-2. **Which facet does it belong to?** Pick the single facet — from those listed as active in this moment — that best fits this entity's involvement. **Log each entity exactly once: one entry, one facet.** Even when the moment spans several facets, choose the one where the entity most belongs; never log the same entity under more than one facet.
+A few angles on the same idea:
 
-3. **Write or update its day summary.** For the chosen facet, give one short, concrete summary of what this entity did across the whole day so far in that facet. If a summary for today is already shown below, fold what just happened into it so the result reads as one natural, up-to-date line or two — merge, don't just tack on. If there's no summary yet, write a fresh one from what happened just now. Keep it about what they actually did today, not a generic description of who they are.
+- **Involvement, not prominence.** Someone who spoke, decided, or was worked with counts; someone merely name-dropped does not — however important they are in general. A tool the work was *about* counts; a tool just running in the background while other work happened does not.
+- **Being part of an interaction is taking part.** A named person who was in the conversation, meeting, call, or briefing counts — log them even if they're introduced by their title or role rather than a specific action. (Someone merely *referenced* during it, but not in it, is still just a mention.)
+- **The moment is the evidence.** Judge from what the context actually shows happening — not from how official, familiar, or technical a name looks. A stray code, an app that was simply open, a place passed through: if the context shows no real part in the activity, it's scenery, not a participant.
+- **When the moment is thin, the log is short.** If you're unsure something truly took part, leave it out. Logging nothing is a perfectly good answer.
+
+## The rules
+
+1. **Log only what genuinely took part** in this moment — real participation, or being the thing worked on. Decide from the context, not from the name or what kind of thing it is.
+2. **Leave out the scenery** — background apps, devices, stray identifiers, and anything mentioned only in passing or carried in from an unrelated area.
+3. **One entry per thing.** Choose the single facet — among those active in this moment — where it most belongs; never log the same thing under more than one facet.
+4. **Write its day so far.** Give one short, concrete line of what it did across today in that facet, folding what just happened into anything already logged — about what it *did*, not what it is.
 
 ## What you're given
 
@@ -32,10 +42,4 @@ $detection_packet
 
 ## What to return
 
-Return a single JSON object: `{"detections": [ ... ]}`. Each entry is one entity in one facet, with exactly these fields:
-
-- `name` — the entity's name, exactly as written above.
-- `facet` — one of the facets listed as active in this moment.
-- `description` — the updated, full-day summary for that entity in that facet.
-
-Include only the entities worth logging, and **each entity at most once** — one entry, its single best-fitting facet. If nothing in this moment was notable, return an empty list.
+A single JSON object: `{"detections": [ ... ]}`. Each entry has exactly: `name` (exactly as written above), `facet` (one of those active in this moment), `description` (the updated full-day summary). Include only what's worth logging, each at most once. If nothing in this moment genuinely took part, return an empty list.
