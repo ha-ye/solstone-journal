@@ -10,9 +10,8 @@ from typing import Any
 
 from solstone.think.cluster import _find_segment_dir
 from solstone.think.entities.core import EntityDict, entity_slug
-from solstone.think.entities.loading import detected_entities_path, load_entities
+from solstone.think.entities.loading import load_entities
 from solstone.think.entities.matching import find_matching_entity
-from solstone.think.entities.observations import load_observations
 from solstone.think.entities.relationships import load_facet_relationship
 from solstone.think.entities.saving import upsert_detection_segment
 from solstone.think.facets import get_facets
@@ -20,7 +19,18 @@ from solstone.think.utils import now_ms
 
 logger = logging.getLogger(__name__)
 
-VALID_TYPES = {"Person", "Company", "Project", "Tool"}
+TYPE_LABELS = {
+    "Person": "person",
+    "Company": "company",
+    "Project": "project",
+    "Tool": "tool",
+}
+
+NOTABILITY_LABELS = {
+    "high": "This was a main focus",
+    "medium": "This came up clearly",
+    "low": "This came up in passing",
+}
 
 
 def _composite_segment_id(seg_dir: Path) -> str:
@@ -67,49 +77,57 @@ def _candidate_rows(sense: dict) -> list[dict[str, Any]]:
     return [row for row in rows if isinstance(row, dict)]
 
 
-def _find_attached_context(
+def _type_label(entity_type: Any) -> str:
+    return TYPE_LABELS.get(str(entity_type), "thing")
+
+
+def _notability_label(raw_level: Any) -> str:
+    return NOTABILITY_LABELS.get(str(raw_level), "This came up")
+
+
+def _known_lines_for_active_facets(
     name: str,
     segment_facets: list[dict[str, Any]],
-) -> tuple[str, dict[str, Any], dict[str, Any] | None] | None:
+) -> list[str]:
+    lines: list[str] = []
     for facet_row in segment_facets:
         facet = str(facet_row["facet"])
         match = find_matching_entity(name, load_entities(facet))
-        if match:
-            entity_id = str(
-                match.get("id") or entity_slug(str(match.get("name", name)))
-            )
-            relationship = load_facet_relationship(facet, entity_id)
-            return facet, dict(match), relationship
-    return None
-
-
-def _current_detection_lines(
-    facet: str,
-    day: str,
-    slug: str,
-    composite: str,
-) -> list[str]:
-    matches = [
-        entity
-        for entity in load_entities(facet, day)
-        if str(entity.get("id") or entity_slug(str(entity.get("name", "")))) == slug
-    ]
-    if not matches:
-        return []
-
-    lines = [f"Current detection in {facet}:"]
-    for entity in matches:
-        description = str(entity.get("description") or "").strip()
+        if not match:
+            continue
+        entity_id = str(match.get("id") or entity_slug(str(match.get("name") or name)))
+        relationship = load_facet_relationship(facet, entity_id)
+        if not relationship:
+            continue
+        description = str(relationship.get("description") or "").strip()
         if description:
-            lines.append(f"- Current description: {description}")
-        prior = [
-            str(row.get("contribution") or "").strip()
-            for row in entity.get("segments") or []
-            if row.get("segment") != composite
-            and str(row.get("contribution") or "").strip()
-        ]
-        for contribution in prior:
-            lines.append(f"- Prior contribution: {contribution}")
+            lines.append(f"- In {facet}: {description}")
+
+    return lines or ["- No saved notes for the active facets."]
+
+
+def _daily_summary_lines(
+    day: str,
+    name: str,
+    segment_facets: list[dict[str, Any]],
+) -> list[str]:
+    slug = entity_slug(name)
+    lines: list[str] = []
+    for facet_row in segment_facets:
+        facet = str(facet_row["facet"])
+        for entity in load_entities(facet, day):
+            entity_id = str(
+                entity.get("id") or entity_slug(str(entity.get("name", "")))
+            )
+            if entity_id != slug:
+                continue
+            description = str(entity.get("description") or "").strip()
+            if description:
+                lines.append(f"Summary so far today in {facet}: {description}")
+            break
+
+    if not lines:
+        return ["Summary so far today: Nothing saved yet in the active facets."]
     return lines
 
 
@@ -119,63 +137,50 @@ def _build_packet(
     segment_facets: list[dict[str, Any]],
     candidates: list[dict[str, Any]],
 ) -> str:
-    composite = _composite_segment_id(seg_dir)
     configured_facets = get_facets()
-    lines = [f"## Segment: {composite}", "", "## Facets active in this segment"]
+    lines = [
+        "This is a moment from today. You keep a running daily log of who and "
+        "what mattered, organized by facet.",
+        "",
+        "## Facets active in this moment",
+        "",
+    ]
 
     for facet_row in segment_facets:
         facet = str(facet_row["facet"])
-        description = str(configured_facets.get(facet, {}).get("description") or "")
+        description = str(
+            configured_facets.get(facet, {}).get("description")
+            or "No description saved."
+        )
         activity = str(facet_row.get("activity") or "")
-        level = str(facet_row.get("level") or "")
-        heading = f"### {facet}"
-        if description:
-            heading += f" - {description}"
-        lines.extend([heading, f"This segment: {activity} (level: {level})", ""])
+        lines.extend(
+            [
+                f"### {facet}",
+                f"Facet: {description}",
+                f"What happened here: {activity}",
+                f"Why it matters: {_notability_label(facet_row.get('level'))}.",
+                "",
+            ]
+        )
 
-    lines.append("## Candidate entities")
+    lines.extend(["## People and things noticed", ""])
 
     for candidate in candidates:
         name = str(candidate.get("name") or "").strip()
-        entity_type = str(candidate.get("type") or "").strip()
-        role = str(candidate.get("role") or "").strip()
         context = str(candidate.get("context") or "").strip()
         if not name:
             continue
 
-        slug = entity_slug(name)
-        lines.extend([f"### {name} ({entity_type}) - role: {role}"])
-        if context:
-            lines.append(f"Sense context: {context}")
-
-        attached = _find_attached_context(name, segment_facets)
-        if attached:
-            facet, match, relationship = attached
-            entity_id = str(match.get("id") or slug)
-            lines.append(f"Attached identity in {facet}: {match.get('name', name)}")
-            if relationship:
-                rel_desc = str(relationship.get("description") or "").strip()
-                if rel_desc:
-                    lines.append(f"Facet relationship: {rel_desc}")
-            observations = load_observations(facet, entity_id)[-3:]
-            for observation in observations:
-                content = str(observation.get("content") or "").strip()
-                source_day = str(observation.get("source_day") or "").strip()
-                if content:
-                    suffix = f" ({source_day})" if source_day else ""
-                    lines.append(f"Observation{suffix}: {content}")
-
-        for facet_row in segment_facets:
-            lines.extend(
-                _current_detection_lines(
-                    str(facet_row["facet"]),
-                    day,
-                    slug,
-                    composite,
-                )
-            )
-
-        lines.append("")
+        lines.extend(
+            [
+                f"### {name} — {_type_label(candidate.get('type'))}",
+                "What's known:",
+                *_known_lines_for_active_facets(name, segment_facets),
+                *_daily_summary_lines(day, name, segment_facets),
+                f"In this moment: {context or 'No one-line activity was provided.'}",
+                "",
+            ]
+        )
 
     return "\n".join(lines).strip() + "\n"
 
@@ -226,14 +231,14 @@ def post_process(result: str, context: dict) -> None:
         day = str(context.get("day"))
         composite = _composite_segment_id(seg_dir)
         sense = _read_sense(seg_dir) or {}
-        facet_meta = {
-            str(row["facet"]): (
-                str(row.get("activity") or ""),
-                str(row.get("level") or ""),
+        segment_facets = {str(row["facet"]) for row in _segment_facets(sense)}
+        sense_types = {
+            entity_slug(str(candidate["name"]).strip()): str(
+                candidate.get("type") or ""
             )
-            for row in _segment_facets(sense)
+            for candidate in _candidate_rows(sense)
+            if isinstance(candidate.get("name"), str) and candidate["name"].strip()
         }
-        segment_facets = set(facet_meta)
 
         try:
             data = json.loads(result)
@@ -255,44 +260,34 @@ def post_process(result: str, context: dict) -> None:
                 counts["dropped"] += 1
                 continue
             name = item.get("name")
-            entity_type = item.get("type")
-            detect = item.get("detect")
+            facet = item.get("facet")
+            description = item.get("description")
             if (
                 not isinstance(name, str)
                 or not name.strip()
-                or entity_type not in VALID_TYPES
-                or not isinstance(detect, bool)
+                or not isinstance(facet, str)
+                or facet not in segment_facets
+                or not isinstance(description, str)
             ):
                 counts["dropped"] += 1
                 continue
-            if detect is False:
-                counts["skipped"] += 1
-                continue
 
-            facet = item.get("facet")
-            contribution = item.get("contribution")
-            if not isinstance(facet, str) or facet not in segment_facets:
-                counts["dropped"] += 1
-                continue
-            if not isinstance(contribution, str):
+            slug = entity_slug(name.strip())
+            entity_type = sense_types.get(slug)
+            if entity_type is None:
                 counts["dropped"] += 1
                 continue
 
-            activity, level = facet_meta[facet]
             kept_by_facet.setdefault(facet, []).append(
                 {
                     "name": name.strip(),
-                    "type": str(entity_type),
-                    "facet_activity": activity,
-                    "level": level,
-                    "contribution": contribution.strip(),
+                    "type": entity_type,
+                    "description": description,
                 }
             )
 
-        for facet in sorted(segment_facets):
+        for facet in sorted(kept_by_facet):
             kept = kept_by_facet.get(facet, [])
-            if not kept and not detected_entities_path(facet, day).exists():
-                continue
             try:
                 res = upsert_detection_segment(facet, day, composite, kept)
                 counts["wrote"] += int(res.get("wrote", 0))

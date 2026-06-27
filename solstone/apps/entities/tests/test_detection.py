@@ -91,7 +91,7 @@ def _valid_result(*rows: dict) -> str:
     return json.dumps({"detections": list(rows)})
 
 
-def test_pre_process_builds_multi_facet_packet_with_context(
+def test_pre_process_builds_plain_packet_with_active_facet_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -103,6 +103,17 @@ def test_pre_process_builds_multi_facet_packet_with_context(
         [{"type": "Person", "name": "Sarah Chen", "description": "Backend lead"}],
         day=None,
     )
+    save_entities(
+        "personal",
+        [
+            {
+                "type": "Person",
+                "name": "Sarah Chen",
+                "description": "Family friend",
+            }
+        ],
+        day=None,
+    )
     add_observation("work", "sarah_chen", "Prefers concise launch notes", "20240101")
     upsert_detection_segment(
         "work",
@@ -112,9 +123,7 @@ def test_pre_process_builds_multi_facet_packet_with_context(
             {
                 "name": "Sarah Chen",
                 "type": "Person",
-                "facet_activity": "planning",
-                "level": "medium",
-                "contribution": "Sarah reviewed earlier design notes.",
+                "description": "Sarah reviewed earlier design notes.",
             }
         ],
     )
@@ -148,15 +157,37 @@ def test_pre_process_builds_multi_facet_packet_with_context(
 
     assert isinstance(result, dict)
     packet = result["template_vars"]["detection_packet"]
-    assert f"## Segment: {COMPOSITE}" in packet
-    assert "### work - Professional work" in packet
-    assert "This segment: planning (level: high)" in packet
-    assert "### personal - Personal life" in packet
-    assert "### Sarah Chen (Person) - role: attendee" in packet
-    assert "Attached identity in work: Sarah Chen" in packet
-    assert "Facet relationship: Backend lead" in packet
-    assert "Observation (20240101): Prefers concise launch notes" in packet
-    assert "Prior contribution: Sarah reviewed earlier design notes." in packet
+    lower_packet = packet.lower()
+    for banned in (
+        "segment",
+        "sense",
+        "candidate",
+        "attached identity",
+        "facet relationship",
+        "observation",
+        "detection",
+        "contribution",
+        "level:",
+    ):
+        assert banned not in lower_packet
+    assert COMPOSITE not in packet
+    assert "This is a moment from today." in packet
+    assert "### work" in packet
+    assert "Facet: Professional work" in packet
+    assert "What happened here: planning" in packet
+    assert "Why it matters: This was a main focus." in packet
+    assert "### personal" in packet
+    assert "Why it matters: This came up in passing." in packet
+    assert "### Sarah Chen — person" in packet
+    assert "- In work: Backend lead" in packet
+    assert "- In personal: Family friend" in packet
+    assert (
+        "Summary so far today in work: Sarah reviewed earlier design notes." in packet
+    )
+    assert "In this moment: Sarah reviewed the release plan." in packet
+    assert "### New Project — project" in packet
+    assert "Summary so far today: Nothing saved yet in the active facets." in packet
+    assert "Prefers concise launch notes" not in packet
 
 
 def test_pre_process_skip_taxonomy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -193,26 +224,42 @@ def test_detection_schema_validates_sample_and_rejects_malformed():
             "detections": [
                 {
                     "name": "Sarah Chen",
-                    "type": "Person",
                     "facet": "work",
-                    "contribution": "Sarah reviewed the launch.",
-                    "detect": True,
-                },
-                {
-                    "name": "Background Tool",
-                    "type": "Tool",
-                    "facet": "work",
-                    "contribution": "",
-                    "detect": False,
-                },
+                    "description": "Sarah reviewed the launch.",
+                }
             ]
         }
     )
     with pytest.raises(ValidationError):
-        validator.validate({"detections": [{"name": "Sarah Chen", "detect": "yes"}]})
+        validator.validate(
+            {
+                "detections": [
+                    {
+                        "name": "Sarah Chen",
+                        "type": "Person",
+                        "facet": "work",
+                        "contribution": "Sarah reviewed the launch.",
+                        "detect": True,
+                    }
+                ]
+            }
+        )
+    with pytest.raises(ValidationError):
+        validator.validate(
+            {
+                "detections": [
+                    {
+                        "name": "Sarah Chen",
+                        "facet": "work",
+                        "description": "Sarah reviewed the launch.",
+                        "extra": True,
+                    }
+                ]
+            }
+        )
 
 
-def test_post_process_upserts_per_facet_and_writes_outcome(
+def test_post_process_uses_sense_type_and_writes_same_name_to_two_facets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -233,35 +280,33 @@ def test_post_process_upserts_per_facet_and_writes_outcome(
         _valid_result(
             {
                 "name": "Sarah Chen",
-                "type": "Person",
+                "type": "Company",
                 "facet": "work",
-                "contribution": "Sarah reviewed the release plan.",
-                "detect": True,
+                "description": "Sarah reviewed the release plan.",
             },
             {
-                "name": "Family Call",
-                "type": "Project",
+                "name": "Sarah Chen",
                 "facet": "personal",
-                "contribution": "Family Call was scheduled.",
-                "detect": True,
-            },
-            {
-                "name": "Background Tool",
-                "type": "Tool",
-                "facet": "work",
-                "contribution": "",
-                "detect": False,
+                "description": "Sarah coordinated the family call.",
             },
         ),
         _context(),
     )
 
     assert result is None
-    assert load_entities("work", DAY)[0]["name"] == "Sarah Chen"
-    assert load_entities("personal", DAY)[0]["name"] == "Family Call"
+    work = load_entities("work", DAY)[0]
+    personal = load_entities("personal", DAY)[0]
+    assert work["name"] == "Sarah Chen"
+    assert work["type"] == "Person"
+    assert work["description"] == "Sarah reviewed the release plan."
+    assert work["segments"] == [COMPOSITE]
+    assert personal["name"] == "Sarah Chen"
+    assert personal["type"] == "Person"
+    assert personal["description"] == "Sarah coordinated the family call."
+    assert personal["segments"] == [COMPOSITE]
     outcome = _outcome(seg_dir)
     assert outcome["wrote"] == 2
-    assert outcome["skipped"] == 1
+    assert outcome["skipped"] == 0
     assert outcome["dropped"] == 0
     assert outcome["errored"] == 0
     assert outcome["error"] is None
@@ -284,7 +329,7 @@ def test_post_process_defensively_handles_bad_json(
     assert outcome["errored"] == 0
 
 
-def test_post_process_drops_invalid_rows(
+def test_post_process_drops_invalid_and_invented_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     root = _set_journal(tmp_path, monkeypatch)
@@ -295,30 +340,36 @@ def test_post_process_drops_invalid_rows(
         _valid_result(
             {
                 "name": "Sarah Chen",
-                "type": "Person",
                 "facet": "personal",
-                "contribution": "Wrong facet.",
-                "detect": True,
+                "description": "Wrong facet.",
             },
             {
-                "name": "Bad Bool",
-                "type": "Person",
+                "name": "Sarah Chen",
                 "facet": "work",
-                "contribution": "Invalid detect.",
-                "detect": "yes",
+                "description": 7,
             },
             {
-                "type": "Person",
+                "name": "",
                 "facet": "work",
-                "contribution": "Missing name.",
-                "detect": True,
+                "description": "Missing name.",
+            },
+            {
+                "facet": "work",
+                "description": "Missing name.",
+            },
+            {
+                "name": "Invented Person",
+                "facet": "work",
+                "description": "Not in the packet.",
             },
         ),
         _context(),
     )
 
     outcome = _outcome(seg_dir)
-    assert outcome["dropped"] == 3
+    assert outcome["wrote"] == 0
+    assert outcome["skipped"] == 0
+    assert outcome["dropped"] == 5
     assert load_entities("work", DAY) == []
 
 
@@ -331,10 +382,8 @@ def test_post_process_idempotent_reprocess(
     payload = _valid_result(
         {
             "name": "Sarah Chen",
-            "type": "Person",
             "facet": "work",
-            "contribution": "Sarah reviewed the release plan.",
-            "detect": True,
+            "description": "Sarah reviewed the release plan.",
         }
     )
 
@@ -343,49 +392,10 @@ def test_post_process_idempotent_reprocess(
 
     entity = load_entities("work", DAY)[0]
     assert entity["description"] == "Sarah reviewed the release plan."
-    assert len(entity["segments"]) == 1
+    assert entity["segments"] == [COMPOSITE]
 
 
-def test_post_process_retracts_detection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    root = _set_journal(tmp_path, monkeypatch)
-    _write_facet(root, "work", "Professional work")
-    seg_dir = _write_sense(root, _sense())
-
-    detection.post_process(
-        _valid_result(
-            {
-                "name": "Sarah Chen",
-                "type": "Person",
-                "facet": "work",
-                "contribution": "Sarah reviewed the release plan.",
-                "detect": True,
-            }
-        ),
-        _context(),
-    )
-    detection.post_process(
-        _valid_result(
-            {
-                "name": "Sarah Chen",
-                "type": "Person",
-                "facet": "work",
-                "contribution": "",
-                "detect": False,
-            }
-        ),
-        _context(),
-    )
-
-    assert load_entities("work", DAY) == []
-    outcome = _outcome(seg_dir)
-    assert outcome["wrote"] == 0
-    assert outcome["skipped"] == 1
-    assert outcome["dropped"] == 0
-
-
-def test_post_process_quiet_segment_writes_all_zero_outcome_with_skipped(
+def test_post_process_empty_result_writes_all_zero_outcome_without_upsert(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -393,22 +403,15 @@ def test_post_process_quiet_segment_writes_all_zero_outcome_with_skipped(
     _write_facet(root, "work", "Professional work")
     seg_dir = _write_sense(root, _sense())
 
-    detection.post_process(
-        _valid_result(
-            {
-                "name": "Sarah Chen",
-                "type": "Person",
-                "facet": "work",
-                "contribution": "",
-                "detect": False,
-            }
-        ),
-        _context(),
-    )
+    def fail_upsert(*args, **kwargs):
+        raise AssertionError("upsert should not be called")
+
+    monkeypatch.setattr(detection, "upsert_detection_segment", fail_upsert)
+    detection.post_process(_valid_result(), _context())
 
     outcome = _outcome(seg_dir)
     assert outcome["wrote"] == 0
-    assert outcome["skipped"] == 1
+    assert outcome["skipped"] == 0
     assert outcome["dropped"] == 0
     assert outcome["errored"] == 0
 
@@ -429,10 +432,8 @@ def test_post_process_records_substrate_failure(
         _valid_result(
             {
                 "name": "Sarah Chen",
-                "type": "Person",
                 "facet": "work",
-                "contribution": "Sarah reviewed the release plan.",
-                "detect": True,
+                "description": "Sarah reviewed the release plan.",
             }
         ),
         _context(),
@@ -460,14 +461,7 @@ def test_forward_compat_detection_rows_load_and_digest(
                         "type": "Person",
                         "name": "Sarah Chen",
                         "description": "Sarah reviewed the release plan.",
-                        "segments": [
-                            {
-                                "segment": COMPOSITE,
-                                "facet_activity": "planning",
-                                "level": "high",
-                                "contribution": "Sarah reviewed the release plan.",
-                            }
-                        ],
+                        "segments": [COMPOSITE],
                         "updated_at": 123,
                     }
                 ),
@@ -485,7 +479,7 @@ def test_forward_compat_detection_rows_load_and_digest(
     )
 
     rows = load_entities("work", DAY)
-    assert rows[0]["segments"][0]["segment"] == COMPOSITE
+    assert rows[0]["segments"] == [COMPOSITE]
     assert rows[0]["updated_at"] == 123
     assert any(row["name"] == "Legacy Project" for row in rows)
 

@@ -8,19 +8,14 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "type", "facet", "contribution", "detect"],
+        "required": ["name", "facet", "description"],
         "properties": {
           "name": {"type": "string"},
-          "type": {
-            "type": "string",
-            "enum": ["Person", "Company", "Project", "Tool"]
-          },
           "facet": {
             "type": "string",
             "enum": ["__RUNTIME_FACETS__"]
           },
-          "contribution": {"type": "string"},
-          "detect": {"type": "boolean"}
+          "description": {"type": "string"}
         }
       }
     }
