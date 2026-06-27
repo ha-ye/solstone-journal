@@ -561,10 +561,16 @@ def prepare_config(request: dict) -> dict:
     default_provider, default_model = resolve_provider(context, talent_type)
 
     if type_default_is_local(talent_type):
-        # Local type-default is a hard runtime promise: neither a frontmatter
-        # nor a request provider pin may force a local-lane talent onto cloud.
+        # Local type-default is a hard runtime promise: a frontmatter/request
+        # cloud provider pin may not force a local-lane talent onto cloud. An
+        # explicit local pin (provider: local + model) at the talent/request
+        # level is honored verbatim; otherwise the local model comes from
+        # resolve_provider (which already carries any context-level local pin).
         provider = default_provider  # "local" (resolve_provider already forced it)
-        model = default_model
+        if config.get("provider") == "local" and config.get("model"):
+            model = config["model"]
+        else:
+            model = default_model
     else:
         provider = config.get("provider") or default_provider
         model = config.get("model")

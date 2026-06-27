@@ -40,3 +40,23 @@ def test_prepare_config_local_type_default_ignores_segment_summary_provider_pin(
 
     assert prepared["provider"] == "local"
     assert prepared["model"] == LOCAL_MODEL
+
+
+def test_prepare_config_honors_explicit_local_request_model_pin(
+    journal_copy: Path,
+) -> None:
+    config = _read_config(journal_copy)
+    providers = config.setdefault("providers", {})
+    providers["generate"] = {"provider": "local"}
+    _write_config(journal_copy, config)
+
+    prepared = prepare_config(
+        {
+            "name": "timeline:segment_summary",
+            "provider": "local",
+            "model": "local/custom-7b",
+        }
+    )
+
+    assert prepared["provider"] == "local"
+    assert prepared["model"] == "local/custom-7b"

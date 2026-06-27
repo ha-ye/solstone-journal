@@ -616,9 +616,12 @@ def resolve_provider(context: str, agent_type: str) -> tuple[str, str]:
     provider = match_config.get("provider", default_provider)
 
     # Local type-default is a hard promise: a cloud context provider pin cannot
-    # override it. Honor only the context's tier for local model selection;
-    # never carry the context's cloud model string into a local run.
+    # override it — its cloud model string is neutralized. An *explicit* local
+    # context pin (provider: local + model) is honored verbatim; otherwise only
+    # the context's tier feeds local model selection.
     if type_default_is_local(agent_type, config):
+        if match_config.get("provider") == "local" and "model" in match_config:
+            return ("local", match_config["model"])
         tier = match_config.get("tier", default_tier)
         if not isinstance(tier, int) or tier < 1 or tier > 3:
             tier = default_tier

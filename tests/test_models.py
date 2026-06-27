@@ -524,6 +524,33 @@ def test_resolve_provider_local_type_default_overrides_cloud_context(
     assert model != "gemini-flash-lite-latest"
 
 
+def test_resolve_provider_local_context_model_pin_is_honored(
+    use_fixtures_journal, monkeypatch, tmp_path
+):
+    """An explicit local context pin (provider: local + model) keeps its model."""
+    _write_tmp_journal_config(
+        tmp_path,
+        monkeypatch,
+        {
+            "providers": {
+                "generate": {"provider": "local"},
+                "contexts": {
+                    "talent.timeline.segment_summary": {
+                        "provider": "local",
+                        "model": "local/custom-7b",
+                    }
+                },
+            }
+        },
+    )
+
+    provider, model = resolve_provider("talent.timeline.segment_summary", "generate")
+
+    assert provider == "local"
+    assert model == "local/custom-7b"
+    assert model != LOCAL_MODEL
+
+
 def test_resolve_provider_local_honors_context_tier_and_models_override(
     use_fixtures_journal, monkeypatch, tmp_path
 ):
