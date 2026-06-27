@@ -707,6 +707,44 @@ def _complete_pairing(
                 pass
         raise
 
+    # Auto-retire a superseded device cert when a device re-pairs after losing
+    # its local identity (reinstall / data-clear / restore). The returning
+    # device sends a new keypair → new fingerprint, just appended above.
+    # Recognize it by home-assigned device label and revoke the prior entry
+    # (removal == cert revocation) so exactly one entry per label remains.
+    # Best-effort: any failure is logged and swallowed — the new pair stands and
+    # the prior orphan persists (status quo), never rolled back. Peers are never
+    # retired, and a blank label never collapses unlabeled devices.
+    if not is_peer(consumed.role) and assigned_label.strip():
+        try:
+            authorized = _authorized()
+            superseded = [
+                entry
+                for entry in authorized.snapshot()
+                if entry.device_label
+                and entry.device_label == assigned_label
+                and entry.fingerprint != fingerprint
+                and entry.role == ""
+                and entry.instance_id == state.instance_id
+            ]
+            for entry in superseded:
+                if authorized.remove(entry.fingerprint):
+                    emit(
+                        "link",
+                        "device_superseded",
+                        device_label=assigned_label,
+                        retired_fingerprint=entry.fingerprint,
+                        retired_fingerprint_short=entry.fingerprint.replace(
+                            "sha256:", ""
+                        )[:16],
+                        replaced_by=fingerprint,
+                        network=network,
+                    )
+        except Exception as exc:
+            logger.warning(
+                "pair: auto-retire failed for label %r: %s", assigned_label, exc
+            )
+
     return response, fingerprint, paired_at
 
 
