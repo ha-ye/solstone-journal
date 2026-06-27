@@ -48,6 +48,8 @@ dependencies = [
     # handshake-time verify callback that stdlib ssl can't express.
     "cryptography>=42",
     "pyOpenSSL>=24.0",
+    # argon2id for the journal-mark work factor (think/link/mark.py).
+    "argon2-cffi",
     "websockets>=13.0",
     "psutil",
     "userpath>=1.9.2,<2",
