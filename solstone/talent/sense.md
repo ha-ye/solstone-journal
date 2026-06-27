@@ -68,7 +68,7 @@ Extract ALL named entities mentioned in the content. Be thorough — extract eve
 
 **For screen content specifically:** Extract entities from visible text in screen descriptions — article headlines, page titles, product names, people mentioned in articles, organizations referenced. If the user is browsing a website about the Renaissance, extract the specific historical figures, art movements, and institutions mentioned.
 
-Skip URLs, domains, filenames, paths. Each entity needs type, name, and context (brief description of the entity's role in this segment).
+Skip URLs, domains, filenames, paths. Each entity needs type, name, and **context** — a brief description of **what it did, or what happened with it, in this segment**: the action or involvement, not its title or who it is in general. For a person, what they did or said here ("presented the launch schedule", "asked about the budget"); for a company, project, or tool, what was done with it or how it was used ("used to build the imager", "reviewed in the design discussion"). Capture the activity the content actually shows; fall back to a bare identifier only when no action is evident.
 
 #### role
 - **attendee**: The entity was directly participating in the live interaction during this segment. Use only for people who were actively present in the meeting or call.
