@@ -4,6 +4,15 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.15] - 2026-06-26
+
+### Added
+- you can now give any facet its own icon. open a facet's appearance settings, search the icon set, see each option in your facet's color, and apply the one you want. your emoji stays the default, so you can switch back to it anytime.
+
+### Changed
+- the menu in your journal's web app and your facets now show clean, consistent icons. each facet's icon comes from its emoji by default; the icons are simply a crisper way to render it.
+- for new owners, the welcome now sets a more accurate expectation: sol's insight starts to feel useful after about a week, not the third or fourth week.
+
 ## [0.6.14] - 2026-06-25
 
 ### Added
