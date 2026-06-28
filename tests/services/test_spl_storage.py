@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import stat
 import urllib.error
@@ -159,6 +160,60 @@ def test_enable_spl_relay_down_leaves_posture_direct(
     with pytest.raises(spl.RelayUnreachableError):
         spl.enable_spl()
 
+    assert _read_config(journal_copy)["link"]["posture"] == "direct"
+
+
+def test_enable_spl_relay_http_rejection_raises_relay_rejected(
+    journal_copy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_posture(journal_copy, "direct")
+    monkeypatch.setenv("SOL_LINK_RELAY_URL", "https://relay.test")
+
+    def post_json(_url: str, _body: dict[str, Any]) -> dict[str, str]:
+        raise urllib.error.HTTPError(
+            "https://relay.test/enroll/home",
+            409,
+            "conflict",
+            hdrs=None,
+            fp=io.BytesIO(
+                json.dumps(
+                    {"error": "ca_pubkey already registered to another instance"}
+                ).encode()
+            ),
+        )
+
+    monkeypatch.setattr(relay_client, "_post_json_sync", post_json)
+
+    with pytest.raises(spl.RelayRejectedError) as excinfo:
+        spl.enable_spl()
+
+    assert excinfo.value.status == 409
+    assert excinfo.value.reason == "ca_pubkey already registered to another instance"
+    assert _read_config(journal_copy)["link"]["posture"] == "direct"
+
+
+def test_enable_spl_relay_http_rejection_non_json_body_has_no_reason(
+    journal_copy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_posture(journal_copy, "direct")
+    monkeypatch.setenv("SOL_LINK_RELAY_URL", "https://relay.test")
+
+    def post_json(_url: str, _body: dict[str, Any]) -> dict[str, str]:
+        raise urllib.error.HTTPError(
+            "https://relay.test/enroll/home",
+            502,
+            "bad gateway",
+            hdrs=None,
+            fp=io.BytesIO(b"<html>502 Bad Gateway</html>"),
+        )
+
+    monkeypatch.setattr(relay_client, "_post_json_sync", post_json)
+
+    with pytest.raises(spl.RelayRejectedError) as excinfo:
+        spl.enable_spl()
+
+    assert excinfo.value.status == 502
+    assert excinfo.value.reason is None
     assert _read_config(journal_copy)["link"]["posture"] == "direct"
 
 

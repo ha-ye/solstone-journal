@@ -18,6 +18,20 @@ MALFORMED = "malformed"
 NETWORK_ERROR = "network_error"
 LOCAL_ERROR = "local_error"
 NEEDS_SUBSCRIPTION = "needs_subscription"
+RELAY_IDENTITY_CONFLICT = "relay_identity_conflict"
+RELAY_ROTATION_UNSUPPORTED = "relay_rotation_unsupported"
+RELAY_UNAVAILABLE = "relay_unavailable"
+RELAY_REJECTED = "relay_rejected"
+
+# Verbatim error-body `error` strings from the external relay
+# (github.com/solpbc/spl, enroll.ts). Matched exactly; anything else -> RELAY_REJECTED.
+RELAY_REASON_ALREADY_REGISTERED = "ca_pubkey already registered to another instance"
+RELAY_REASON_CA_MISMATCH = "ca_pubkey mismatch — rotation not supported in v1"
+
+# D guidance is status-parameterized, so it is a template formatted at build time.
+_RELAY_REJECTED_GUIDANCE = (
+    "the relay couldn't finish setting up your private network (error {code})."
+)
 
 CODES = frozenset(
     {
@@ -29,6 +43,10 @@ CODES = frozenset(
         NETWORK_ERROR,
         LOCAL_ERROR,
         NEEDS_SUBSCRIPTION,
+        RELAY_IDENTITY_CONFLICT,
+        RELAY_ROTATION_UNSUPPORTED,
+        RELAY_UNAVAILABLE,
+        RELAY_REJECTED,
     }
 )
 
@@ -51,6 +69,18 @@ GUIDANCE: dict[str, str | None] = {
         "private network needs an active subscription before it can turn on. "
         "your consent is saved; set one up, then enable private network again."
     ),
+    RELAY_IDENTITY_CONFLICT: (
+        "this solstone is already set up under a different identity. "
+        "reach out to support to reset it, then try again."
+    ),
+    RELAY_ROTATION_UNSUPPORTED: (
+        "this solstone's security key changed and can't be re-registered "
+        "automatically yet. reach out to support."
+    ),
+    RELAY_UNAVAILABLE: (
+        "the private network service isn't available right now. try again in a bit."
+    ),
+    RELAY_REJECTED: _RELAY_REJECTED_GUIDANCE,
 }
 
 TOKEN_TO_CODE: dict[str, str] = {
@@ -89,6 +119,28 @@ def outcome_for_code(code: str, *, detail: str | None = None) -> HandoffOutcome:
     if code not in GUIDANCE:
         raise ValueError(f"unsupported handoff outcome code: {code!r}")
     return HandoffOutcome(code=code, guidance=GUIDANCE[code], detail=detail)
+
+
+def relay_rejection_outcome(*, status: int, reason: str | None) -> HandoffOutcome:
+    """Map a relay HTTP rejection to a cause-specific owner-facing outcome.
+
+    The raw status + reason are carried verbatim on `detail` (operator/log facing)
+    so the two distinct 409s are tellable apart from `detail` alone.
+    """
+    detail = f"relay rejected enroll: status={status} reason={reason}"
+    if status == 409 and reason == RELAY_REASON_ALREADY_REGISTERED:
+        return HandoffOutcome(
+            RELAY_IDENTITY_CONFLICT, GUIDANCE[RELAY_IDENTITY_CONFLICT], detail
+        )
+    if status == 409 and reason == RELAY_REASON_CA_MISMATCH:
+        return HandoffOutcome(
+            RELAY_ROTATION_UNSUPPORTED, GUIDANCE[RELAY_ROTATION_UNSUPPORTED], detail
+        )
+    if status == 503:
+        return HandoffOutcome(RELAY_UNAVAILABLE, GUIDANCE[RELAY_UNAVAILABLE], detail)
+    return HandoffOutcome(
+        RELAY_REJECTED, _RELAY_REJECTED_GUIDANCE.format(code=status), detail
+    )
 
 
 def outcome_from_token(token: str, *, detail: str | None = None) -> HandoffOutcome:

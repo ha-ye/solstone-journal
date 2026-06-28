@@ -92,13 +92,13 @@ def _install_spl_relay(
     monkeypatch.setattr(relay_client, "_post_json_sync", post_json)
 
 
-def _http_error(code: int) -> urllib.error.HTTPError:
+def _http_error(code: int, body: bytes = b"") -> urllib.error.HTTPError:
     return urllib.error.HTTPError(
         "https://services.solstone.app/handoff/spl",
         code,
         "error",
         hdrs=None,
-        fp=io.BytesIO(b""),
+        fp=io.BytesIO(body),
     )
 
 
@@ -359,6 +359,104 @@ def test_relay_bad_response_after_approval_is_local_error(
     assert outcome.code == outcomes.LOCAL_ERROR
     assert outcome.detail is None
     assert read_posture() != "spl" or load_service_token() is None
+
+
+def test_relay_identity_conflict_after_approval_surfaces_copy_a(
+    journal_copy: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("SOL_LINK_RELAY_URL", "https://relay.test")
+    _install_urlopen(monkeypatch, [FakeResponse(200, _body(_approved_payload()))])
+
+    def post_json(_url: str, _body_arg: dict[str, Any]):
+        raise _http_error(
+            409,
+            _body({"error": "ca_pubkey already registered to another instance"}),
+        )
+
+    monkeypatch.setattr(relay_client, "_post_json_sync", post_json)
+
+    outcome = _run()
+
+    assert outcome.code == outcomes.RELAY_IDENTITY_CONFLICT
+    assert outcome.guidance == (
+        "this solstone is already set up under a different identity. "
+        "reach out to support to reset it, then try again."
+    )
+    assert outcome.detail is not None
+    assert "ca_pubkey already registered to another instance" in outcome.detail
+    assert read_posture() == "direct"
+    assert load_service_token() is None
+
+
+@pytest.mark.parametrize(
+    ("status", "error_body", "expected_code", "expected_guidance"),
+    [
+        (
+            409,
+            "ca_pubkey mismatch — rotation not supported in v1",
+            outcomes.RELAY_ROTATION_UNSUPPORTED,
+            "this solstone's security key changed and can't be re-registered "
+            "automatically yet. reach out to support.",
+        ),
+        (
+            503,
+            "not provisioned",
+            outcomes.RELAY_UNAVAILABLE,
+            "the private network service isn't available right now. "
+            "try again in a bit.",
+        ),
+        (
+            413,
+            "payload too large",
+            outcomes.RELAY_REJECTED,
+            "the relay couldn't finish setting up your private network (error 413).",
+        ),
+    ],
+)
+def test_relay_http_rejection_maps_to_cause_specific_outcome(
+    journal_copy: Path,
+    monkeypatch,
+    status: int,
+    error_body: str,
+    expected_code: str,
+    expected_guidance: str,
+) -> None:
+    monkeypatch.setenv("SOL_LINK_RELAY_URL", "https://relay.test")
+    _install_urlopen(monkeypatch, [FakeResponse(200, _body(_approved_payload()))])
+
+    def post_json(_url: str, _body_arg: dict[str, Any]):
+        raise _http_error(status, _body({"error": error_body}))
+
+    monkeypatch.setattr(relay_client, "_post_json_sync", post_json)
+
+    outcome = _run()
+
+    assert outcome.code == expected_code
+    assert outcome.guidance == expected_guidance
+    assert read_posture() == "direct"
+    assert load_service_token() is None
+
+
+def test_relay_http_rejection_non_json_body_falls_to_generic(
+    journal_copy: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("SOL_LINK_RELAY_URL", "https://relay.test")
+    _install_urlopen(monkeypatch, [FakeResponse(200, _body(_approved_payload()))])
+
+    def post_json(_url: str, _body_arg: dict[str, Any]):
+        raise _http_error(504, b"<html>504 Gateway Timeout</html>")
+
+    monkeypatch.setattr(relay_client, "_post_json_sync", post_json)
+
+    outcome = _run()
+
+    assert outcome.code == outcomes.RELAY_REJECTED
+    assert outcome.guidance == (
+        "the relay couldn't finish setting up your private network (error 504)."
+    )
+    assert read_posture() == "direct"
 
 
 def test_posture_write_failure_after_token_save_is_not_enabled(

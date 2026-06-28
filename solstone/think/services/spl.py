@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import logging
 import os
 import ssl
@@ -41,6 +42,15 @@ class JournalNotInitializedError(RuntimeError):
 
 class RelayUnreachableError(RuntimeError):
     """Raised when the spl relay cannot be reached."""
+
+
+class RelayRejectedError(RuntimeError):
+    """Raised when the relay was reached but rejected the enroll with an HTTP error."""
+
+    def __init__(self, *, status: int, reason: str | None) -> None:
+        self.status = status
+        self.reason = reason
+        super().__init__(f"relay rejected enroll: status={status} reason={reason}")
 
 
 class RelayResponseError(RuntimeError):
@@ -90,6 +100,24 @@ def _generate_and_store_secret() -> str:
     return secret
 
 
+def _relay_error_reason(exc: urllib.error.HTTPError) -> str | None:
+    """Best-effort extract the relay's ``{"error": ...}`` reason. Never raises."""
+    try:
+        raw = exc.read()
+    except Exception:  # noqa: BLE001 - body parse must never raise (degrade to None)
+        return None
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    reason = parsed.get("error")
+    return reason if isinstance(reason, str) and reason else None
+
+
 def enable_spl() -> None:
     _require_journal_config()
     secret = load_totp_secret() or _generate_and_store_secret()
@@ -104,6 +132,10 @@ def enable_spl() -> None:
             home_label=state.home_label,
             totp_secret=secret,
         )
+    except urllib.error.HTTPError as exc:
+        reason = _relay_error_reason(exc)
+        log.warning("spl relay rejected enroll: status=%s reason=%s", exc.code, reason)
+        raise RelayRejectedError(status=exc.code, reason=reason) from exc
     except (urllib.error.URLError, ssl.SSLError, TimeoutError) as exc:
         raise RelayUnreachableError(str(exc)) from exc
     except RuntimeError as exc:
