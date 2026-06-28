@@ -183,3 +183,10 @@ FINGERPRINT_COPY_FAIL_TOAST = "couldn't copy fingerprint"
 RENAME_FAIL_TOAST = "couldn't rename device"
 UNPAIR_SUCCESS_TOAST = "unpaired"
 UNPAIR_FAIL_TOAST = "couldn't unpair this device"
+
+# --- identity header (read-only journal mark) ---
+IDENTITY_HEADER_LABEL = "this is your journal"
+IDENTITY_ID_LABEL = "journal id"
+IDENTITY_ID_COPY_LABEL = "copy"
+IDENTITY_ID_COPY_SUCCESS_TOAST = "journal id copied"
+IDENTITY_ID_COPY_FAIL_TOAST = "couldn't copy journal id"

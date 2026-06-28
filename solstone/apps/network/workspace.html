@@ -3,6 +3,16 @@
 <main class="link-dashboard">
   <p class="link-brandlock"><span class="link-lockdot" aria-hidden="true"></span>{{ link_copy.BRANDLOCK_LINE }}</p>
 
+  <section id="link-identity-header" class="link-identity" hidden>
+    <p class="link-identity-title">{{ link_copy.IDENTITY_HEADER_LABEL }}</p>
+    <div id="link-identity-mark" class="link-identity-mark" aria-hidden="true"></div>
+    <div class="link-identity-id">
+      <span class="link-identity-id-label">{{ link_copy.IDENTITY_ID_LABEL }}</span>
+      <code id="link-identity-id-value" class="link-identity-id-value"></code>
+      <button type="button" id="link-identity-id-copy" class="link-identity-id-copy">{{ link_copy.IDENTITY_ID_COPY_LABEL }}</button>
+    </div>
+  </section>
+
   <header class="link-header">
     <div id="link-status-panel" class="link-status-panel" aria-live="polite" aria-atomic="true">
       <span id="link-status-dot" class="link-dot is-amber" aria-hidden="true"></span>
@@ -317,7 +327,9 @@
       PAIR_LINK_COPY_FAIL_TOAST: {{ link_copy.PAIR_LINK_COPY_FAIL_TOAST|tojson }},
       RENAME_FAIL_TOAST: {{ link_copy.RENAME_FAIL_TOAST|tojson }},
       UNPAIR_SUCCESS_TOAST: {{ link_copy.UNPAIR_SUCCESS_TOAST|tojson }},
-      UNPAIR_FAIL_TOAST: {{ link_copy.UNPAIR_FAIL_TOAST|tojson }}
+      UNPAIR_FAIL_TOAST: {{ link_copy.UNPAIR_FAIL_TOAST|tojson }},
+      IDENTITY_ID_COPY_SUCCESS_TOAST: {{ link_copy.IDENTITY_ID_COPY_SUCCESS_TOAST|tojson }},
+      IDENTITY_ID_COPY_FAIL_TOAST: {{ link_copy.IDENTITY_ID_COPY_FAIL_TOAST|tojson }}
     };
   </script>
 
@@ -353,6 +365,17 @@
   @keyframes skeleton-pulse { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
   .link-status-skeleton { display: inline-block; width: 14em; max-width: 60vw; height: 1em; }
   #link-status-text[hidden], #link-status-skeleton[hidden] { display: none; }
+
+  .link-identity { margin: 0 0 1.5em; padding: 1em 1.1em; border: 1px solid #e7d8c6; border-radius: 12px; background: #fffdf9; }
+  .link-identity-title { margin: 0 0 0.7em; font-size: 0.95rem; font-weight: 600; color: #B06A1A; }
+  .link-identity-mark { min-height: 48px; }
+  .link-mark-chips { display: flex; gap: 0.6em; }
+  .link-mark-chip { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; border: 2px solid #ccc; border-radius: 10px; box-sizing: border-box; }
+  .link-mark-chip svg { width: 28px; height: 28px; display: block; }
+  .link-mark-words { display: flex; gap: 0.5em; margin-top: 0.5em; font-size: 1.05rem; color: #222; }
+  .link-identity-id { display: flex; align-items: center; gap: 0.5em; margin-top: 0.9em; font-size: 0.9rem; color: #555; flex-wrap: wrap; }
+  .link-identity-id-value { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #222; word-break: break-all; }
+  .link-identity-id-copy { border: 1px solid #d9c4ab; background: #fff; color: #B06A1A; border-radius: 7px; padding: 0.2em 0.6em; cursor: pointer; font-size: 0.85rem; }
 
   .link-hero { border: 1px solid #e4ded4; border-radius: 8px; background: #fffdfa; padding: 2em 1.5em; margin-bottom: 1.5em; text-align: center; }
   .link-hero[hidden] { display: none; }
@@ -712,6 +735,44 @@
       window.logError?.(err, { context: 'link: clipboard write failed' });
       return false;
     }
+  }
+
+  function renderIdentityMark(spec) {
+    const markEl = document.getElementById('link-identity-mark');
+    if (!markEl) return false;
+    const icons = spec ? [spec.icon1, spec.icon2] : [];
+    const words = Array.isArray(spec && spec.words) ? spec.words : [];
+    const validIcons = icons.length === 2 && icons.every(icon => icon && icon.svg && icon.color && icon.color.hex);
+    if (!validIcons || words.length !== 2) return false;
+    markEl.innerHTML = '<div class="link-mark-chips"><div class="link-mark-chip"></div><div class="link-mark-chip"></div></div><div class="link-mark-words"><span></span><span></span></div>';
+    const chips = markEl.querySelectorAll('.link-mark-chip');
+    chips.forEach((chip, index) => {
+      const icon = icons[index];
+      chip.style.borderColor = icon.color.hex;
+      if (icon.rot === 45) chip.style.transform = 'rotate(45deg)';
+      chip.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="${icon.color.hex}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icon.svg}</svg>`;
+    });
+    const wordSpans = markEl.querySelectorAll('.link-mark-words span');
+    wordSpans[0].textContent = words[0];
+    wordSpans[1].textContent = words[1];
+    return true;
+  }
+
+  async function loadIdentity() {
+    const section = document.getElementById('link-identity-header');
+    if (!section) return;
+    let data;
+    try {
+      data = await window.apiJson('/app/network/api/identity');
+    } catch (err) {
+      window.logError?.(err, { context: 'link: identity load failed' });
+      return; // stays hidden/empty — quiet failure
+    }
+    if (!data || !data.committed || !data.mark) return; // quiet not-committed branch
+    if (!renderIdentityMark(data.mark)) return;          // malformed spec → stays hidden
+    const idValue = document.getElementById('link-identity-id-value');
+    if (idValue && typeof data.instance_id === 'string') idValue.textContent = data.instance_id;
+    section.hidden = false;
   }
 
   function setPairCopy(rotating) {
@@ -2133,6 +2194,18 @@
     refreshStatus();
     refreshPrivateLinkStatus();
     refreshDevices();
+    loadIdentity();
+    const identityCopyBtn = document.getElementById('link-identity-id-copy');
+    if (identityCopyBtn) {
+      identityCopyBtn.addEventListener('click', async () => {
+        const idValue = document.getElementById('link-identity-id-value');
+        const text = idValue ? idValue.textContent : '';
+        if (!text) return;
+        const ok = await clipboardWriteText(text);
+        showToast(ok ? (window.LinkCopy.IDENTITY_ID_COPY_SUCCESS_TOAST || 'journal id copied')
+                     : (window.LinkCopy.IDENTITY_ID_COPY_FAIL_TOAST || "couldn't copy journal id"));
+      });
+    }
     if (window.appEvents) {
       window.appEvents.listen('link', (payload) => {
         if (payload.event === 'pair_complete') refreshDevices();

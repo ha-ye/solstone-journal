@@ -69,7 +69,7 @@ from solstone.convey.reasons import (
     SERVICE_OPERATION_FAILED,
 )
 from solstone.convey.utils import error_response
-from solstone.think.link import interface_watcher
+from solstone.think.link import establish, interface_watcher
 from solstone.think.link.auth import AuthorizedClients, ClientEntry, is_peer
 from solstone.think.link.ca import (
     generate_nonce,
@@ -482,6 +482,35 @@ def api_status() -> Any:
             "home_candidates_error": home_candidates_error,
         }
     )
+
+
+@network_bp.route("/api/identity")
+def api_identity() -> Any:
+    """Read-only committed journal mark + id for the identity header.
+
+    Display-only. Derives the immutable mark once per request (argon2id is
+    deliberately costly — never put this on a poll). Any failure degrades to a
+    neutral not-committed payload at HTTP 200; the exception is logged but the
+    client never sees a 500.
+    """
+    neutral = {"committed": False, "instance_id": None, "mark": None}
+    try:
+        if not establish.is_committed():
+            return jsonify(neutral)
+        state = LinkState.load()
+        if state is None:
+            return jsonify(neutral)
+        mark = establish.committed_mark()
+        return jsonify(
+            {
+                "committed": True,
+                "instance_id": state.instance_id,
+                "mark": mark.to_render_spec(),
+            }
+        )
+    except Exception:
+        logger.exception("network identity derivation failed")
+        return jsonify(neutral)
 
 
 @network_bp.route("/api/private-link")
