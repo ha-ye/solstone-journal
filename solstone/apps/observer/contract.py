@@ -576,6 +576,7 @@ OPERATIONS: list[OperationSpec] = [
                     "removed": {
                         "originals": 0,
                         "segments": 0,
+                        "mixed_segments": 0,
                         "in_segment_derived": 0,
                         "index_chunks": 0,
                         "stream_identity": 0,

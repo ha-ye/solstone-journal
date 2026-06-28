@@ -532,6 +532,25 @@ def load_history(key_prefix: str, day: str) -> list[dict]:
     return records
 
 
+def has_history_for_stream(stream: str) -> bool:
+    """True if any observer sync-history row references this stream. Read-only."""
+    for observer in list_observers():
+        prefix = observer["filename_prefix"]
+        hist_dir = get_hist_dir(prefix, ensure_exists=False)
+        if not hist_dir.exists():
+            continue
+        for hist_path in hist_dir.glob("*.jsonl"):
+            try:
+                with open(hist_path, encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and json.loads(line).get("stream") == stream:
+                            return True
+            except (json.JSONDecodeError, OSError):
+                continue
+    return False
+
+
 def prune_history_by_stream(stream: str) -> int:
     """Remove observer sync-history rows for a stream across all prefixes.
 

@@ -7,13 +7,18 @@ from __future__ import annotations
 
 import logging
 import shutil
+from collections.abc import Iterable
 from pathlib import Path
 
-from solstone.apps.observer.utils import prune_history_by_stream
+from solstone.apps.observer.source_discovery import (
+    LOCATION_ORIGINAL,
+    find_location_sources,
+)
+from solstone.apps.observer.utils import has_history_for_stream, prune_history_by_stream
 from solstone.think.facets import get_facets
 from solstone.think.indexer.journal import prune_chunks_by_stream
 from solstone.think.streams import delete_stream_state
-from solstone.think.utils import day_dirs, get_journal, iter_segments
+from solstone.think.utils import get_journal
 
 logger = logging.getLogger(__name__)
 
@@ -36,36 +41,23 @@ _HISTORY_NOT_REMOVED_REASON = (
     "Observer history could not be updated. The imported files may be gone, but "
     "this source may still appear there until this is repaired."
 )
+_ORIGINAL_NOT_REMOVED_REASON = (
+    "This source file could not be removed from disk. Try again after checking file "
+    "permissions."
+)
 
 
 def _day_display(day: str) -> str:
     return f"{day[:4]}-{day[4:6]}-{day[6:8]}"
 
 
-def _classify_segment_files(seg_path: Path, stream: str) -> tuple[int, int]:
-    originals = 0
-    derived = 0
-    for file_path in seg_path.iterdir():
-        if not file_path.is_file():
-            continue
-        if file_path.name in {"item.json", "stream.json"}:
-            continue
-        if stream == LOCATION_STREAM and file_path.suffix in {".jsonl", ".npz"}:
-            originals += 1
-        elif file_path.suffix in {".jsonl", ".npz"}:
-            derived += 1
-        else:
-            originals += 1
-    return originals, derived
-
-
 def _not_confirmed_entries(
     journal: str,
-    days_with_segments: dict[str, list[Path]],
+    days: Iterable[str],
 ) -> list[dict[str, str]]:
     entries: list[dict[str, str]] = []
     facets = get_facets()
-    for day in sorted(days_with_segments):
+    for day in sorted(days):
         day_fmt = _day_display(day)
         for facet_name, meta in facets.items():
             facet_dir = Path(
@@ -103,59 +95,72 @@ def delete_source_stream(stream: str) -> dict:
     """Delete everything attributed to an allowed source stream."""
     if stream not in DELETABLE_SOURCE_STREAMS:
         raise ValueError(f"Cannot delete unsupported source stream: {stream!r}")
-
     journal = str(Path(get_journal()).resolve())
-
-    days_with_segments: dict[str, list[Path]] = {}
-    for day in day_dirs():
-        segs = [
-            seg_path
-            for seg_stream, _segment, seg_path in iter_segments(day)
-            if seg_stream == stream
-        ]
-        if segs:
-            days_with_segments[day] = segs
 
     originals = 0
     segments = 0
+    mixed_segments = 0
     in_segment_derived = 0
     index_chunks = 0
     stream_identity = 0
     history_rows = 0
     not_removed: list[dict[str, str]] = []
+    days: set[str] = set()
+    location_only_parents: set[Path] = set()
+    mobile_streams_touched: set[str] = set()
 
-    for day in sorted(days_with_segments):
-        day_fmt = _day_display(day)
-        segs = days_with_segments[day]
-        for seg_path in segs:
+    for src in find_location_sources():
+        day_fmt = _day_display(src.day)
+        if src.is_mixed:
             try:
-                segment_originals, segment_derived = _classify_segment_files(
-                    seg_path,
-                    stream,
-                )
-                shutil.rmtree(seg_path)
+                (src.path / LOCATION_ORIGINAL).unlink()
             except OSError as exc:
                 logger.warning(
-                    "Failed to remove %s segment %s: %s",
-                    stream,
-                    seg_path,
+                    "Failed to remove location original in %s: %s",
+                    src.path,
                     exc,
                 )
                 not_removed.append(
                     {
-                        "what": f"{stream} {day_fmt} {seg_path.name}: segment",
+                        "what": f"{src.stream} {day_fmt} {src.segment}: location data",
+                        "plain_reason": _ORIGINAL_NOT_REMOVED_REASON,
+                    }
+                )
+                continue
+            originals += 1
+            mixed_segments += 1
+            days.add(src.day)
+            if src.stream != LOCATION_STREAM:
+                mobile_streams_touched.add(src.stream)
+        else:
+            try:
+                shutil.rmtree(src.path)
+            except OSError as exc:
+                logger.warning(
+                    "Failed to remove %s segment %s: %s",
+                    src.stream,
+                    src.path,
+                    exc,
+                )
+                not_removed.append(
+                    {
+                        "what": f"{src.stream} {day_fmt} {src.segment}: segment",
                         "plain_reason": _SEGMENT_NOT_REMOVED_REASON,
                     }
                 )
                 continue
-            originals += segment_originals
-            in_segment_derived += segment_derived
+            originals += 1
             segments += 1
+            days.add(src.day)
+            if src.stream == LOCATION_STREAM:
+                location_only_parents.add(src.path.parent)
+            else:
+                mobile_streams_touched.add(src.stream)
 
-        stream_dir = segs[0].parent
+    for parent in location_only_parents:
         try:
-            if stream_dir.exists() and not any(stream_dir.iterdir()):
-                stream_dir.rmdir()
+            if parent.exists() and not any(parent.iterdir()):
+                parent.rmdir()
         except OSError:
             pass
 
@@ -193,10 +198,20 @@ def delete_source_stream(stream: str) -> dict:
             }
         )
 
-    not_confirmed = _not_confirmed_entries(journal, days_with_segments)
+    not_confirmed = _not_confirmed_entries(journal, days)
+    for mobile_stream in sorted(mobile_streams_touched):
+        if has_history_for_stream(mobile_stream):
+            not_confirmed.append(
+                {
+                    "what": f"{mobile_stream}: import history",
+                    "plain_reason": "This source was imported together with others in one record; its history entry can't be removed on its own.",
+                }
+            )
+
     removed = {
         "originals": originals,
         "segments": segments,
+        "mixed_segments": mixed_segments,
         "in_segment_derived": in_segment_derived,
         "index_chunks": index_chunks,
         "stream_identity": stream_identity,
@@ -206,7 +221,7 @@ def delete_source_stream(stream: str) -> dict:
     # ("removed ... across {N} days"); surface the day count the op already
     # computed.
     if stream == LOCATION_STREAM:
-        removed["days"] = len(days_with_segments)
+        removed["days"] = len(days)
     receipt = {
         "target": {
             "stream": stream,
@@ -218,12 +233,13 @@ def delete_source_stream(stream: str) -> dict:
         "backup_hosted": "not confirmed",
     }
     logger.info(
-        "Deleted %s source: originals=%s segments=%s derived=%s "
+        "Deleted %s source: originals=%s segments=%s mixed_segments=%s derived=%s "
         "index_chunks=%s stream_identity=%s history_rows=%s not_confirmed=%s "
         "not_removed=%s",
         stream,
         originals,
         segments,
+        mixed_segments,
         in_segment_derived,
         index_chunks,
         stream_identity,

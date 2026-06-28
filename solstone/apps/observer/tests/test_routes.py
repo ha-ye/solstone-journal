@@ -973,6 +973,41 @@ def test_ingest_success(observer_env):
     assert expected_file.read_bytes() == test_data
 
 
+def test_ingest_mixed_segment_stores_all_sources(observer_env):
+    env = observer_env()
+    key = _create_observer(env, "pixel")
+
+    resp = env.client.post(
+        "/app/observer/ingest",
+        headers={"Authorization": f"Bearer {key}"},
+        data={
+            "day": "20250103",
+            "segment": "120000_300",
+            "files": [
+                (io.BytesIO(b"audio bytes"), "audio.m4a"),
+                (io.BytesIO(b'{"lat": 1.0}\n'), "location.jsonl"),
+                (io.BytesIO(b"screen bytes"), "screen.mp4"),
+            ],
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["status"] == "ok"
+    assert data["files"] == ["audio.m4a", "location.jsonl", "screen.mp4"]
+
+    segment_dir = _day_dir(env) / "pixel" / data["segment"]
+    audio_path = segment_dir / "audio.m4a"
+    location_path = segment_dir / "location.jsonl"
+    screen_path = segment_dir / "screen.mp4"
+    assert audio_path.exists()
+    assert location_path.exists()
+    assert screen_path.exists()
+    assert {audio_path.parent, location_path.parent, screen_path.parent} == {
+        segment_dir
+    }
+
+
 def test_ingest_reuses_cached_contract_bundle(observer_env, monkeypatch):
     from solstone.think.contract import journal as contract_journal
 

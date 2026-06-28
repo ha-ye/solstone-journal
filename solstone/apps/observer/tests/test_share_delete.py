@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,10 @@ import solstone.apps.observer.share_delete as share_delete
 from solstone.apps.observer.share_delete import (
     LOCATION_STREAM,
     delete_source_stream,
+)
+from solstone.apps.observer.source_discovery import (
+    LocationSource,
+    find_location_sources,
 )
 from solstone.apps.observer.utils import (
     append_history_record,
@@ -131,6 +136,47 @@ def _write_location_segment(
     return seg_dir
 
 
+def _write_mixed_mobile_segment(
+    journal: Path,
+    day: str,
+    segment: str,
+    stream: str = "pixel",
+    *,
+    history_prefix: str | None = None,
+    location_payload: str = '{"lat": 1.0}\n',
+    audio_bytes: bytes = b"AUDIODATA",
+) -> Path:
+    seg_dir = journal / "chronicle" / day / stream / segment
+    seg_dir.mkdir(parents=True)
+    (seg_dir / "location.jsonl").write_text(location_payload, encoding="utf-8")
+    (seg_dir / "audio.m4a").write_bytes(audio_bytes)
+    (seg_dir / "audio.jsonl").write_text('{"text":"x"}\n', encoding="utf-8")
+    state = update_stream(stream, day, segment, type="observer")
+    write_segment_stream(
+        seg_dir,
+        stream,
+        state["prev_day"],
+        state["prev_segment"],
+        state["seq"],
+    )
+    if history_prefix is not None:
+        append_history_record(
+            history_prefix,
+            day,
+            {
+                "ts": 1,
+                "segment": segment,
+                "stream": stream,
+                "files": [
+                    {"written": "audio.m4a"},
+                    {"written": "location.jsonl"},
+                    {"written": "screen.mp4"},
+                ],
+            },
+        )
+    return seg_dir
+
+
 def test_delete_source_stream_rejects_unsupported_stream():
     with pytest.raises(ValueError):
         delete_source_stream("import.audio")
@@ -173,6 +219,7 @@ def test_removes_location_across_two_days_leaves_other_streams(tmp_path, monkeyp
     assert receipt["removed"] == {
         "originals": 2,
         "segments": 2,
+        "mixed_segments": 0,
         "in_segment_derived": 0,
         "index_chunks": 0,
         "stream_identity": 1,
@@ -210,6 +257,7 @@ def test_location_idempotent_zero_count(tmp_path, monkeypatch):
     zero_removed = {
         "originals": 0,
         "segments": 0,
+        "mixed_segments": 0,
         "in_segment_derived": 0,
         "index_chunks": 0,
         "stream_identity": 0,
@@ -258,6 +306,126 @@ def test_location_failure_uses_location_in_not_removed(tmp_path, monkeypatch):
             "plain_reason": "This segment could not be removed from disk. Try again after checking file permissions.",
         }
     ]
+
+
+def test_mixed_segment_removes_only_location(tmp_path, monkeypatch):
+    journal = _set_journal(tmp_path, monkeypatch)
+    prefix = _observer_prefix("loc0040")
+    seg_dir = _write_mixed_mobile_segment(
+        journal,
+        "20260112",
+        "090000_300",
+        history_prefix=prefix,
+    )
+
+    receipt = delete_source_stream(LOCATION_STREAM)
+
+    assert not (seg_dir / "location.jsonl").exists()
+    assert (seg_dir / "audio.m4a").exists()
+    assert (seg_dir / "audio.jsonl").exists()
+    assert (seg_dir / "stream.json").exists()
+    assert seg_dir.exists()
+    assert receipt["removed"]["mixed_segments"] == 1
+    assert receipt["removed"]["segments"] == 0
+    assert receipt["removed"]["originals"] == 1
+    assert receipt["removed"]["history_rows"] == 0
+    assert (journal / "streams" / "pixel.json").exists()
+    assert load_history(prefix, "20260112")
+    assert receipt["not_confirmed"] == [
+        {
+            "what": "pixel: import history",
+            "plain_reason": "This source was imported together with others in one record; its history entry can't be removed on its own.",
+        }
+    ]
+
+
+def test_mixed_segment_idempotent(tmp_path, monkeypatch):
+    journal = _set_journal(tmp_path, monkeypatch)
+    seg_dir = _write_mixed_mobile_segment(journal, "20260113", "090000_300")
+
+    delete_source_stream(LOCATION_STREAM)
+    second = delete_source_stream(LOCATION_STREAM)
+
+    assert second["removed"]["mixed_segments"] == 0
+    assert second["removed"]["originals"] == 0
+    assert second["not_removed"] == []
+    assert (seg_dir / "audio.m4a").exists()
+
+
+def test_find_location_sources_sees_then_stops(tmp_path, monkeypatch):
+    journal = _set_journal(tmp_path, monkeypatch)
+    _write_mixed_mobile_segment(journal, "20260114", "090000_300")
+
+    sources = find_location_sources()
+
+    assert len(sources) == 1
+    assert isinstance(sources[0], LocationSource)
+    assert sources[0].is_mixed is True
+    assert sources[0].stream == "pixel"
+
+    delete_source_stream(LOCATION_STREAM)
+
+    assert find_location_sources() == []
+
+
+def test_mobile_location_only_segment_removed(tmp_path, monkeypatch):
+    journal = _set_journal(tmp_path, monkeypatch)
+    prefix = _observer_prefix("loc0050")
+    day = "20260115"
+    segment = "090000_300"
+    stream = "pixel"
+    seg_dir = journal / "chronicle" / day / stream / segment
+    seg_dir.mkdir(parents=True)
+    (seg_dir / "location.jsonl").write_text('{"lat": 1.0}\n', encoding="utf-8")
+    state = update_stream(stream, day, segment, type="observer")
+    write_segment_stream(
+        seg_dir,
+        stream,
+        state["prev_day"],
+        state["prev_segment"],
+        state["seq"],
+    )
+    append_history_record(
+        prefix,
+        day,
+        {
+            "ts": 1,
+            "segment": segment,
+            "stream": stream,
+            "files": [{"written": "location.jsonl"}],
+        },
+    )
+
+    receipt = delete_source_stream(LOCATION_STREAM)
+
+    assert not seg_dir.exists()
+    assert receipt["removed"]["segments"] == 1
+    assert receipt["removed"]["mixed_segments"] == 0
+    assert (journal / "streams" / "pixel.json").exists()
+    assert {
+        "what": "pixel: import history",
+        "plain_reason": "This source was imported together with others in one record; its history entry can't be removed on its own.",
+    } in receipt["not_confirmed"]
+
+
+def test_no_artifact_values_leak(tmp_path, monkeypatch, caplog):
+    journal = _set_journal(tmp_path, monkeypatch)
+    _write_mixed_mobile_segment(
+        journal,
+        "20260116",
+        "090000_300",
+        location_payload='{"secret":"LOCSENTINEL123"}\n',
+        audio_bytes=b"AUDIOSENTINEL456",
+    )
+
+    with caplog.at_level(logging.INFO):
+        receipt = delete_source_stream(LOCATION_STREAM)
+
+    receipt_json = json.dumps(receipt)
+    assert "LOCSENTINEL123" not in receipt_json
+    assert "AUDIOSENTINEL456" not in receipt_json
+    assert "LOCSENTINEL123" not in caplog.text
+    assert "AUDIOSENTINEL456" not in caplog.text
 
 
 def test_prune_history_by_stream_across_prefixes(tmp_path, monkeypatch):
