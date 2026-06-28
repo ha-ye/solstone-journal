@@ -132,6 +132,11 @@ ls -la journal/$(date +%Y%m%d)/health/
 
 Health uses a **fail-fast model**: observers exit if they detect problems, and supervisor restarts them. Health is simply whether the observer is running and sending status events.
 
+`journal doctor` also runs the `observer_ingest_health` advisory check. It warns
+when the journal has recorded an active observer ingest rejection, but never
+blocks. Remediation is to update or restart the observer, then confirm a valid
+upload clears the active rejection.
+
 | Signal | Healthy when | Stale when |
 |--------|--------------|------------|
 | `hear` | Status received within threshold | No status for 60+ seconds |

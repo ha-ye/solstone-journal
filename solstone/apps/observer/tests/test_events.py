@@ -11,6 +11,7 @@ import pytest
 
 from solstone.apps.events import EventContext
 from solstone.apps.observer.events import handle_observed, handle_transferred
+from solstone.apps.observer.utils import list_observers
 
 
 @pytest.fixture
@@ -52,6 +53,73 @@ def observer_journal(tmp_path, monkeypatch):
             self.observer_path = observer_path
 
     return Env()
+
+
+def test_status_beacon_persisted_allowlisted(observer_env):
+    env = observer_env()
+    resp = env.client.post(
+        "/app/observer/api/create",
+        json={"name": "beacon-test"},
+        content_type="application/json",
+    )
+    assert resp.status_code == 200
+    key = resp.get_json()["key"]
+
+    resp = env.client.post(
+        "/app/observer/ingest/event",
+        headers={"Authorization": f"Bearer {key}"},
+        json={
+            "tract": "observe",
+            "event": "status",
+            "name": "fedora",
+            "stream_type": "screen",
+            "version": "0.3.1",
+            "uptime": 120,
+            "last_successful_sync": 1700000000000,
+            "pending_queue_depth": "not-an-int",
+            "recent_error_count": 1,
+            "last_error_reason": "x" * 500,
+            "bogus_field": "ignored",
+            "uptime_bad": "NaN",
+        },
+    )
+
+    assert resp.status_code == 200
+    record = list_observers()[0]
+    beacon = record["health"]["beacon"]
+    assert record["last_seen"] is not None
+    assert beacon["received_at"] is not None
+    assert beacon["name"] == "fedora"
+    assert beacon["stream_type"] == "screen"
+    assert beacon["version"] == "0.3.1"
+    assert beacon["uptime"] == 120
+    assert beacon["last_successful_sync"] == 1700000000000
+    assert beacon["pending_queue_depth"] is None
+    assert beacon["recent_error_count"] == 1
+    assert len(beacon["last_error_reason"]) == 200
+    assert "bogus_field" not in beacon
+
+
+def test_legacy_status_event_no_beacon(observer_env):
+    env = observer_env()
+    resp = env.client.post(
+        "/app/observer/api/create",
+        json={"name": "legacy-status-test"},
+        content_type="application/json",
+    )
+    assert resp.status_code == 200
+    key = resp.get_json()["key"]
+
+    resp = env.client.post(
+        "/app/observer/ingest/event",
+        headers={"Authorization": f"Bearer {key}"},
+        json={"tract": "observe", "event": "status"},
+    )
+
+    assert resp.status_code == 200
+    record = list_observers()[0]
+    assert record["last_seen"] is not None
+    assert "beacon" not in record.get("health", {})
 
 
 class TestHandleObserved:

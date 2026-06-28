@@ -77,6 +77,17 @@ Each observer is a standalone package in its own repo (see the Observer Architec
 
 All upload segments via the same HTTP ingest API (`/app/observer/ingest/<key>`).
 
+### Observer health
+
+Observer health has two journal-side sources. Observers can post sanitized status
+beacons, stored on the observer record as `health.beacon`. The journal can also
+record an active `health.ingest_rejection` when an upload fails the ingest
+contract. Capture health surfaces an active rejection as `degraded`.
+
+Missing beacons are not a failure; legacy observers without `health.beacon` use
+normal liveness only. A later valid upload, including a duplicate after it passes
+validation, clears the active rejection.
+
 ## Output Formats
 
 See [captures.md](../talent/journal/references/captures.md) for detailed extract schemas:

@@ -18,11 +18,16 @@ from solstone.apps.observer.routes import (
     STALE_THRESHOLD_MS,
     _classify_observer_freshness,
 )
-from solstone.apps.observer.utils import save_observer
+from solstone.apps.observer.utils import (
+    list_observers,
+    sanitize_validation_summary,
+    save_observer,
+)
 from solstone.convey.copy import OBSERVER_CALLOSUM_LIVE_LABEL
 from solstone.convey.secure_listener import ConveyIdentity
 from solstone.convey.sol_initiated.copy import KIND_SOL_CHAT_REQUEST
 from solstone.observe.protocol import OBSERVER_PROTOCOL_VERSION
+from solstone.think.contract.journal import ContractIssue
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.paths import authorized_clients_path
 from solstone.think.streams import update_stream, write_segment_stream
@@ -53,6 +58,61 @@ def _api_list_observers(env):
 
 def _day_dir(env, day: str = "20250103"):
     return env.journal / "chronicle" / day
+
+
+def _create_observer(env, name: str) -> str:
+    resp = env.client.post(
+        "/app/observer/api/create",
+        json={"name": name},
+        content_type="application/json",
+    )
+    assert resp.status_code == 200
+    return resp.get_json()["key"]
+
+
+def _observer_record() -> dict:
+    observers = list_observers()
+    assert len(observers) == 1
+    return observers[0]
+
+
+def _post_invalid_contract_audio(env, key: str):
+    invalid_audio = b'{"raw":"audio.flac"}\n{"start":"00:00:00"}\n'
+    return env.client.post(
+        "/app/observer/ingest",
+        headers={"Authorization": f"Bearer {key}"},
+        data={
+            "day": "20250103",
+            "segment": "120000_300",
+            "files": (io.BytesIO(invalid_audio), "120000_300_audio.jsonl"),
+        },
+    )
+
+
+def _valid_contract_files() -> list[tuple[io.BytesIO, str]]:
+    audio = b'{"raw":"audio.flac"}\n{"start":"00:00:00","text":"hello"}\n'
+    screen = b'{"raw":"screen.mp4","qualified_count":1}\n{"timestamp":1.0}\n'
+    stream = (
+        b'{"stream":"contract-valid-test","prev_day":null,'
+        b'"prev_segment":null,"seq":1}\n'
+    )
+    return [
+        (io.BytesIO(audio), "120000_300_audio.jsonl"),
+        (io.BytesIO(screen), "screen.jsonl"),
+        (io.BytesIO(stream), "stream.json"),
+    ]
+
+
+def _post_valid_contract_triple(env, key: str):
+    return env.client.post(
+        "/app/observer/ingest",
+        headers={"Authorization": f"Bearer {key}"},
+        data={
+            "day": "20250103",
+            "segment": "120000_300",
+            "files": _valid_contract_files(),
+        },
+    )
 
 
 def _plant_source_segment(
@@ -2486,6 +2546,138 @@ def test_ingest_contract_sidecar_invalid_quarantined_without_emit(
     failed_dir = env.journal / "chronicle" / body["failed_path"]
     assert failed_dir.exists()
     assert (failed_dir / "120000_300_audio.jsonl").read_bytes() == invalid_audio
+
+
+def test_ingest_contract_invalid_records_rejection(observer_env):
+    env = observer_env()
+    key = _create_observer(env, "contract-rejection-test")
+
+    resp = _post_invalid_contract_audio(env, key)
+
+    body = resp.get_json()
+    assert resp.status_code == 422
+    assert body["status"] == "failed"
+    assert body["reason_code"] == "ingest_contract_invalid"
+    assert any(
+        "audio.jsonl" in item and "text" in item for item in body["invalid_files"]
+    )
+    assert "failed_path" in body
+
+    rejection = _observer_record()["health"]["ingest_rejection"]
+    assert rejection["reason_code"] == "ingest_contract_invalid"
+    assert rejection["active_count"] == 1
+    assert rejection["segment"] == "120000_300"
+    assert rejection["stream"] == "contract-rejection-test"
+    assert rejection["summary"]
+    assert rejection["version"] is None
+
+
+def test_repeated_invalid_keeps_first_ts_increments_count(observer_env, monkeypatch):
+    env = observer_env()
+    key = _create_observer(env, "contract-repeat-test")
+    ticks = iter([1000, 2000])
+    monkeypatch.setattr("solstone.apps.observer.utils.now_ms", lambda: next(ticks))
+
+    first = _post_invalid_contract_audio(env, key)
+    assert first.status_code == 422
+    first_rejection = _observer_record()["health"]["ingest_rejection"]
+
+    second = _post_invalid_contract_audio(env, key)
+    assert second.status_code == 422
+    second_rejection = _observer_record()["health"]["ingest_rejection"]
+
+    assert second_rejection["first_ts"] == first_rejection["first_ts"]
+    assert second_rejection["latest_ts"] > first_rejection["latest_ts"]
+    assert second_rejection["active_count"] == 2
+
+
+def test_valid_upload_clears_rejection(observer_env):
+    env = observer_env()
+    key = _create_observer(env, "valid-clear-test")
+
+    invalid = _post_invalid_contract_audio(env, key)
+    assert invalid.status_code == 422
+    assert "ingest_rejection" in _observer_record()["health"]
+
+    valid = _post_valid_contract_triple(env, key)
+    assert valid.status_code == 200
+    assert valid.get_json()["status"] == "ok"
+
+    record = _observer_record()
+    assert "ingest_rejection" not in record.get("health", {})
+    assert record["stats"]["segments_received"] == 1
+
+
+def test_duplicate_after_validation_clears_rejection(observer_env):
+    env = observer_env()
+    key = _create_observer(env, "duplicate-clear-test")
+
+    first = _post_valid_contract_triple(env, key)
+    assert first.status_code == 200
+    assert first.get_json()["status"] == "ok"
+
+    invalid = _post_invalid_contract_audio(env, key)
+    assert invalid.status_code == 422
+    assert "ingest_rejection" in _observer_record()["health"]
+
+    duplicate = _post_valid_contract_triple(env, key)
+    assert duplicate.status_code == 200
+    assert duplicate.get_json()["status"] == "duplicate"
+    assert "ingest_rejection" not in _observer_record().get("health", {})
+
+
+def test_bounded_summary_no_content_leak(observer_env):
+    summary = sanitize_validation_summary(
+        [
+            ContractIssue(
+                "screen.jsonl:2:timestamp",
+                "'LEAKING_OCR_CONTENT_12345' is not of type 'number'",
+            )
+        ]
+    )
+    assert "LEAKING_OCR_CONTENT_12345" not in summary
+    assert "value is not of type 'number'" in summary
+    assert len(summary) <= 240
+
+    required_summary = sanitize_validation_summary(
+        [ContractIssue("screen.jsonl:2", "'timestamp' is a required property")]
+    )
+    assert "is a required property" in required_summary
+
+    env = observer_env()
+    key = _create_observer(env, "leak-test")
+    leaking_screen = (
+        b'{"raw":"screen.mp4"}\n{"timestamp":"LEAKING_OCR_CONTENT_12345"}\n'
+    )
+    resp = env.client.post(
+        "/app/observer/ingest",
+        headers={"Authorization": f"Bearer {key}"},
+        data={
+            "day": "20250103",
+            "segment": "120000_300",
+            "files": (io.BytesIO(leaking_screen), "120000_300_screen.jsonl"),
+        },
+    )
+
+    assert resp.status_code == 422
+    persisted_summary = _observer_record()["health"]["ingest_rejection"]["summary"]
+    assert "LEAKING_OCR_CONTENT_12345" not in persisted_summary
+    assert "value is not of type 'number'" in persisted_summary
+
+
+def test_disabled_observer_no_ingest_state(observer_env):
+    env = observer_env()
+    key = _create_observer(env, "disabled-ingest-test")
+    observer = _observer_record()
+    observer["enabled"] = False
+    assert save_observer(observer)
+
+    resp = _post_invalid_contract_audio(env, key)
+
+    body = resp.get_json()
+    assert resp.status_code == 403
+    assert body["reason_code"] == "feature_unavailable"
+    assert "ingest_rejection" not in _observer_record().get("health", {})
 
 
 def test_ingest_contract_sidecars_valid_are_accepted(observer_env, monkeypatch):

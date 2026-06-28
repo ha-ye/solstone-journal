@@ -44,3 +44,68 @@ def test_list_observers_raises_returns_unknown(monkeypatch):
     result = get_capture_health()
 
     assert result == {"status": "unknown", "observers": []}
+
+
+def test_degraded_status_from_rejection(monkeypatch):
+    monkeypatch.setattr("solstone.think.capture_health.now_ms", lambda: 1000)
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        lambda: [
+            {
+                "name": "fedora",
+                "enabled": True,
+                "last_seen": 1000,
+                "health": {
+                    "ingest_rejection": {
+                        "reason_code": "ingest_contract_invalid",
+                        "active_count": 1,
+                        "first_ts": 900,
+                        "latest_ts": 1000,
+                        "summary": "screen.jsonl:2: value is not of type 'number'",
+                        "stream": "fedora",
+                        "version": "0.3.1",
+                    }
+                },
+            }
+        ],
+    )
+
+    result = get_capture_health()
+
+    assert result["status"] == "degraded"
+    observer = result["observers"][0]
+    assert observer["status"] == "degraded"
+    assert observer["ingest_rejection"]["reason_code"] == "ingest_contract_invalid"
+
+
+def test_legacy_observer_not_failed(monkeypatch):
+    monkeypatch.setattr("solstone.think.capture_health.now_ms", lambda: 1000)
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        lambda: [{"name": "legacy", "enabled": True, "last_seen": 1000}],
+    )
+
+    result = get_capture_health()
+
+    assert result["status"] == "active"
+    assert result["observers"][0]["status"] == "active"
+    assert "ingest_rejection" not in result["observers"][0]
+
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        lambda: [
+            {
+                "name": "beacon-only",
+                "enabled": True,
+                "last_seen": 1000,
+                "health": {"beacon": {"received_at": 1000, "version": "0.3.1"}},
+            }
+        ],
+    )
+
+    result = get_capture_health()
+
+    assert result["status"] == "active"
+    assert result["observers"][0]["status"] == "active"
+    assert "ingest_rejection" not in result["observers"][0]
+    assert result["observers"][0]["beacon"]["version"] == "0.3.1"

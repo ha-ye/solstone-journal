@@ -119,6 +119,51 @@ def test_service_running_failed_unit_fails(doctor, monkeypatch):
     assert result.detail == "journal service unit is failed"
 
 
+def test_observer_ingest_health_warns(doctor, monkeypatch):
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        lambda: [
+            {
+                "name": "fedora",
+                "enabled": True,
+                "health": {
+                    "ingest_rejection": {
+                        "version": "0.3.1",
+                        "summary": "screen.jsonl:2: value is not of type 'number'",
+                        "active_count": 2,
+                        "first_ts": 1700000000000,
+                    }
+                },
+            }
+        ],
+    )
+
+    result = doctor.observer_ingest_health_check(args(doctor))
+
+    assert result.status == "warn"
+    assert "fedora" in result.detail
+    assert "screen.jsonl:2" in result.detail
+    assert "2x" in result.detail
+    assert "2023-11-14" in result.detail
+
+
+def test_observer_ingest_health_ok_and_skip(doctor, monkeypatch):
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        lambda: [{"name": "fedora", "enabled": True}],
+    )
+
+    result = doctor.observer_ingest_health_check(args(doctor))
+
+    assert result.status == "ok"
+
+    monkeypatch.setattr("solstone.apps.observer.utils.list_observers", lambda: [])
+
+    result = doctor.observer_ingest_health_check(args(doctor))
+
+    assert result.status == "skip"
+
+
 def test_service_running_crash_loop_fails(doctor, monkeypatch):
     monkeypatch.setattr(doctor, "service_is_installed", lambda: True)
     monkeypatch.setattr(

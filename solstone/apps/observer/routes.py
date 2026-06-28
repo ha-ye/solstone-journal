@@ -77,6 +77,7 @@ from .share_delete import DELETABLE_SOURCE_STREAMS, delete_source_stream
 from .utils import (
     ObserverRegistry,
     append_history_record,
+    clear_ingest_rejection,
     find_oldest_unrevoked_by_name,
     find_segment_by_sha256,
     get_hist_dir,
@@ -84,6 +85,8 @@ from .utils import (
     list_observers,
     load_history,
     observer_filename_prefix,
+    record_ingest_rejection,
+    record_status_beacon,
     resolve_observer_identity,
     revoke_observer_record,
     save_observer,
@@ -820,6 +823,20 @@ def _process_ingest_files(
         day_dir = day_path(day)
         day_dir.mkdir(parents=True, exist_ok=True)
         failed_dir = _save_to_failed(day_dir, file_data, segment)
+        try:
+            record_ingest_rejection(
+                observer,
+                reason_code=INGEST_CONTRACT_INVALID.code,
+                segment=segment,
+                stream=stream,
+                version=observer.get("version"),
+                issues=contract_issues,
+            )
+            save_observer(observer)
+        except Exception:
+            logger.exception(
+                "Failed to record ingest rejection for %s", observer.get("name")
+            )
         return (
             {
                 "status": "failed",
@@ -849,6 +866,7 @@ def _process_ingest_files(
         observer["stats"]["duplicates_rejected"] = (
             observer["stats"].get("duplicates_rejected", 0) + 1
         )
+        clear_ingest_rejection(observer)
         save_observer(observer)
 
         return (
@@ -968,6 +986,7 @@ def _process_ingest_files(
     observer["stats"]["bytes_received"] = (
         observer["stats"].get("bytes_received", 0) + total_bytes
     )
+    clear_ingest_rejection(observer)
     save_observer(observer)
 
     status = "collision" if segment != original_segment else "ok"
@@ -1216,7 +1235,7 @@ def ingest_event() -> Any:
 
     # Update last_seen on status events
     if tract == "observe" and event == "status":
-        observer["last_seen"] = now_ms()
+        record_status_beacon(observer, data)
         save_observer(observer)
 
     return jsonify({"status": "ok"})
