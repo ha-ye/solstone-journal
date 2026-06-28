@@ -14,9 +14,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
+from solstone.think.link import establish
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.ca import load_or_generate_ca
 from solstone.think.link.paths import LinkState, authorized_clients_path, ca_dir
+from solstone.think.utils import get_journal, journal_is_active
 
 from .accept import SecureListener
 from .tls import build_relaxed_server_context, build_server_context, issue_server_cert
@@ -127,6 +129,15 @@ def start_secure_listener(app: Any) -> None:
     global _runtime, _atexit_registered
 
     if not app.config.get("SECURE_LISTENER_ENABLED", False):
+        return
+
+    if not journal_is_active(get_journal()):
+        if establish.is_committed():
+            logger.warning(
+                "secure_listener: journal identity is committed but setup is "
+                "not marked complete; listener will not start until onboarding "
+                "finishes (config read may have failed)"
+            )
         return
 
     with _RUNTIME_LOCK:

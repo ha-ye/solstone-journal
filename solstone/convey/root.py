@@ -18,6 +18,7 @@ from typing import Any
 from flask import (
     Blueprint,
     Response,
+    current_app,
     g,
     jsonify,
     redirect,
@@ -48,7 +49,7 @@ from .reasons import (
     INVALID_OPERATION_FOR_STATE,
     PL_REVOKED,
 )
-from .secure_listener import get_authorized_clients
+from .secure_listener import get_authorized_clients, start_secure_listener
 from .secure_listener.wsgi import CERTLESS_PAIR_ENDPOINTS
 from .utils import error_response, error_response_with_reason
 
@@ -341,6 +342,11 @@ def init_finalize() -> Any:
         locked_modify_convey_config(_seed)
     except Exception:
         logger.error("default app navigation seed convey-config PERSIST failed")
+
+    try:
+        start_secure_listener(current_app._get_current_object())
+    except Exception:
+        logger.error("secure listener start after finalize FAILED")
 
     return jsonify({"success": True, "redirect": url_for("app:thinking.index")})
 

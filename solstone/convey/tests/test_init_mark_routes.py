@@ -10,6 +10,7 @@ from typing import Any
 
 from solstone.think.link.ca import load_or_generate_ca
 from solstone.think.link.paths import LinkState, ca_dir, state_path
+from solstone.think.utils import get_journal, journal_is_active
 
 
 def _commit_journal_identity() -> None:
@@ -65,6 +66,80 @@ def test_init_mark_lock_is_idempotent(convey_env_setup_pending) -> None:
     assert first.get_json()["locked"] is True
     assert second.get_json()["locked"] is True
     assert second.get_json()["mark"] == first.get_json()["mark"]
+
+
+def test_init_finalize_starts_secure_listener_after_config_write(
+    convey_env_setup_pending,
+    monkeypatch,
+) -> None:
+    env = convey_env_setup_pending()
+    _commit_journal_identity()
+    calls: list[dict[str, Any]] = []
+
+    def spy(app: Any) -> None:
+        calls.append(
+            {
+                "app": app,
+                "active": journal_is_active(get_journal()),
+            }
+        )
+
+    monkeypatch.setattr("solstone.convey.root.start_secure_listener", spy)
+
+    response = env.client.post(
+        "/init/finalize",
+        json={"name": "X"},
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["success"] is True
+    assert len(calls) == 1
+    assert calls[0]["active"] is True
+    assert calls[0]["app"] is env.app
+
+
+def test_init_mark_flow_commits_only_on_lock_then_finalizes(
+    convey_env_setup_pending,
+    monkeypatch,
+) -> None:
+    env = convey_env_setup_pending()
+    calls: list[Any] = []
+
+    def spy(app: Any) -> None:
+        calls.append(app)
+
+    monkeypatch.setattr("solstone.convey.root.start_secure_listener", spy)
+
+    mark_response = env.client.get("/init/mark")
+
+    assert mark_response.status_code == 200
+    assert mark_response.get_json()["locked"] is False
+    assert not (ca_dir() / "cert.pem").exists()
+
+    regenerate_response = env.client.post("/init/mark/regenerate")
+
+    assert regenerate_response.status_code == 200
+    assert regenerate_response.get_json()["locked"] is False
+    assert not (ca_dir() / "cert.pem").exists()
+
+    lock_response = env.client.post("/init/mark/lock")
+
+    assert lock_response.status_code == 200
+    assert lock_response.get_json()["locked"] is True
+    assert (ca_dir() / "cert.pem").exists()
+    state = json.loads(state_path().read_text("utf-8"))
+    assert state.get("instance_id")
+
+    finalize_response = env.client.post(
+        "/init/finalize",
+        json={"name": "X"},
+        content_type="application/json",
+    )
+
+    assert finalize_response.status_code == 200
+    assert finalize_response.get_json()["success"] is True
+    assert len(calls) == 1
 
 
 def test_legacy_lazy_journal_stays_locked_and_preserves_ca(
