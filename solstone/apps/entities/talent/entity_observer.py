@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Entity observer talent hook — pre-computes context and persists observations.
+"""Entity observer talent hook — pre-computes context and applies observation ops.
 
-pre_process:  Assembles entity context (attached entities, recent observations,
-              KG excerpts) and injects it as $observer_context template variable.
+pre_process:  Assembles entity context and injects it as $observer_context.
 
-post_process: Parses JSON output, validates entity_ids against attached entities,
-              and persists valid observations via add_observation().
+post_process: Parses JSON operations, validates them against attached entities,
+              applies clean ops through the observations storage primitive, and
+              writes an outcome sidecar.
 """
 
 from __future__ import annotations
@@ -16,9 +16,10 @@ import json
 import logging
 
 from solstone.think.entities.context import assemble_observer_context
-from solstone.think.entities.loading import load_entities
-from solstone.think.entities.observations import add_observation, load_observations
+from solstone.think.entities.loading import detected_entities_path, load_entities
+from solstone.think.entities.observations import record_observation_ops
 from solstone.think.journal_io import LockTimeout
+from solstone.think.utils import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -33,68 +34,165 @@ def pre_process(context: dict) -> dict | None:
     return {"template_vars": {"observer_context": observer_context}}
 
 
+def _empty_counts() -> dict[str, int]:
+    return {"update": 0, "add": 0, "drop": 0, "keep": 0, "skipped": 0}
+
+
+def _write_outcome(
+    facet: str,
+    day: str,
+    counts: dict[str, int],
+    error: str | None,
+) -> None:
+    payload = {**counts, "error": error, "ts": now_ms()}
+    out = detected_entities_path(facet, day).parent / f"{day}_observer_outcome.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _target_index(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def _target_quote(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _clean_operation(item: object, seen_indexes: set[int]) -> tuple[dict | None, bool]:
+    if not isinstance(item, dict):
+        return None, True
+
+    op = item.get("op")
+    if op == "add":
+        content = item.get("content")
+        if not isinstance(content, str) or not content.strip():
+            return None, True
+        return {"op": "add", "content": content.strip()}, False
+
+    if op not in {"update", "drop", "keep"}:
+        return None, True
+
+    target_index = _target_index(item.get("target_index"))
+    if target_index is None:
+        return None, True
+    content: str | None = None
+    if op == "update":
+        raw_content = item.get("content")
+        if not isinstance(raw_content, str) or not raw_content.strip():
+            return None, True
+        content = raw_content.strip()
+    raw_quote = item.get("target_quote")
+    if raw_quote is not None and not isinstance(raw_quote, str):
+        return None, True
+    quote = _target_quote(raw_quote)
+    if target_index in seen_indexes:
+        return None, True
+    seen_indexes.add(target_index)
+
+    cleaned: dict = {"op": op, "target_index": target_index}
+    if quote is not None:
+        cleaned["target_quote"] = quote
+
+    if content is not None:
+        cleaned["content"] = content
+
+    return cleaned, False
+
+
+def _merge_counts(target: dict[str, int], source: dict[str, int]) -> None:
+    for key in target:
+        target[key] += int(source.get(key, 0))
+
+
 def post_process(result: str, context: dict) -> str | None:
     facet = context.get("facet")
     day = context.get("day")
     if not facet or not day:
         return None
 
+    facet = str(facet)
+    day = str(day)
+    counts = _empty_counts()
+    error: str | None = None
+
     try:
-        data = json.loads(result)
-    except json.JSONDecodeError:
-        logger.warning("entity_observer: could not parse result as JSON")
-        return None
+        try:
+            data = json.loads(result)
+        except json.JSONDecodeError:
+            logger.warning("entity_observer: could not parse result as JSON")
+            return None
 
-    if not isinstance(data, dict):
-        return None
+        if not isinstance(data, dict):
+            logger.warning("entity_observer: result is not a JSON object")
+            return None
 
-    observations = data.get("observations")
-    if not isinstance(observations, list):
-        logger.warning("entity_observer: observations is not a list")
-        return None
-    if not observations:
-        return None
+        entities = data.get("entities")
+        if not isinstance(entities, list):
+            logger.warning("entity_observer: entities is not a list")
+            return None
 
-    valid_entity_ids = {
-        entity.get("id") for entity in load_entities(facet) if entity.get("id")
-    }
-
-    for entry in observations:
-        if not isinstance(entry, dict):
-            logger.debug("Skipping non-dict observation entry: %r", entry)
-            continue
-        entity_id = entry.get("entity_id")
-        items = entry.get("items")
-        if not isinstance(entity_id, str) or not isinstance(items, list):
-            logger.debug("Skipping malformed observation entry: %r", entry)
-            continue
-        if entity_id not in valid_entity_ids:
-            logger.debug("Skipping unrecognized entity_id: %s", entity_id)
-            continue
-
-        existing = {
-            obs.get("content", "").strip().lower()
-            for obs in load_observations(facet, entity_id)
+        valid_entity_ids = {
+            entity.get("id") for entity in load_entities(facet) if entity.get("id")
         }
 
-        for item in items:
-            if not isinstance(item, dict):
+        for entry in entities:
+            if not isinstance(entry, dict):
+                logger.debug("Skipping non-dict entity operation entry: %r", entry)
                 continue
-            content = str(item.get("content", "")).strip()
-            if not content:
+            entity_id = entry.get("entity_id")
+            operations = entry.get("operations")
+            if not isinstance(operations, list):
+                logger.debug("Skipping entity entry without operations list: %r", entry)
                 continue
-            if content.lower() in existing:
-                logger.debug(
-                    "Skipping duplicate observation for %s: %s", entity_id, content[:60]
-                )
+            if not isinstance(entity_id, str):
+                counts["skipped"] += len(operations)
+                logger.debug("Skipping entity entry with invalid entity_id: %r", entry)
                 continue
+            if entity_id not in valid_entity_ids:
+                counts["skipped"] += len(operations)
+                logger.debug("Skipping unrecognized entity_id: %s", entity_id)
+                continue
+
+            clean_ops: list[dict] = []
+            seen_indexes: set[int] = set()
+            for item in operations:
+                clean_op, skipped = _clean_operation(item, seen_indexes)
+                if skipped:
+                    counts["skipped"] += 1
+                    continue
+                if clean_op is not None:
+                    clean_ops.append(clean_op)
+
+            if not clean_ops:
+                continue
+
             try:
-                add_observation(facet, entity_id, content, day)
-            except LockTimeout:
+                op_counts = record_observation_ops(facet, entity_id, clean_ops, day)
+            except (LockTimeout, OSError) as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                counts["skipped"] += len(clean_ops)
                 logger.warning(
-                    "observations busy for %s; skipping remaining", entity_id
+                    "entity_observer: observation ops failed for %s: %s",
+                    entity_id,
+                    exc,
                 )
-                break
-            existing.add(content.lower())
+                continue
+
+            _merge_counts(counts, op_counts)
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        logger.warning("entity_observer post-hook failed: %s", exc)
+    finally:
+        try:
+            _write_outcome(facet, day, counts, error)
+        except Exception as exc:
+            logger.warning("entity_observer outcome write failed: %s", exc)
 
     return None
