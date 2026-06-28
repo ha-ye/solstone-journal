@@ -64,6 +64,7 @@ def test_degraded_status_from_rejection(monkeypatch):
                         "summary": "screen.jsonl:2: value is not of type 'number'",
                         "stream": "fedora",
                         "version": "0.3.1",
+                        "segment": "20260622/120000_300",
                     }
                 },
             }
@@ -76,6 +77,7 @@ def test_degraded_status_from_rejection(monkeypatch):
     observer = result["observers"][0]
     assert observer["status"] == "degraded"
     assert observer["ingest_rejection"]["reason_code"] == "ingest_contract_invalid"
+    assert "segment" not in observer["ingest_rejection"]
 
 
 def test_legacy_observer_not_failed(monkeypatch):

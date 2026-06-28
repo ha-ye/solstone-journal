@@ -49,7 +49,9 @@
 .pulse-vitals-dot.active { background: #4ade80; }
 .pulse-vitals-dot.stale { background: #fbbf24; }
 .pulse-vitals-dot.offline { background: #f87171; }
+.pulse-vitals-dot.degraded { background: #dc2626; }
 .pulse-vitals-dot.unknown { background: #9ca3af; }
+.pulse-vitals-degraded { color: #b91c1c; }
 
 .pulse-vitals-sep {
   width: 1px;
@@ -832,10 +834,10 @@
 
   <!-- Vital Signs -->
   <div class="pulse-vitals" id="pulse-vitals" role="status" aria-live="polite">
-	    {% set dot_class = 'active' if capture_status == 'active' else ('stale' if capture_status == 'stale' else ('offline' if capture_status == 'offline' else 'unknown')) %}
+	    {% set dot_class = 'active' if capture_status == 'active' else ('stale' if capture_status == 'stale' else ('offline' if capture_status == 'offline' else ('degraded' if capture_status == 'degraded' else 'unknown'))) %}
 	    <div class="pulse-vitals-item">
 	      <span class="pulse-vitals-dot {{ dot_class }}" aria-hidden="true"></span>
-	      <span>{{ capture_display_text }}</span>
+	      <span{% if capture_status == 'degraded' %} class="pulse-vitals-degraded"{% endif %}>{{ capture_display_text }}</span>
 	    </div>
     {% if segment_count > 0 %}
     <div class="pulse-vitals-sep"></div>
@@ -1384,10 +1386,11 @@
         }
         renderNeedsYouFromPulse(data);
         clearPulseRefreshError('pulse-vitals');
-        let dotClass = data.capture_status === 'active' ? 'active' : (data.capture_status === 'stale' ? 'stale' : (data.capture_status === 'offline' ? 'offline' : 'unknown'));
+        let dotClass = data.capture_status === 'active' ? 'active' : (data.capture_status === 'stale' ? 'stale' : (data.capture_status === 'offline' ? 'offline' : (data.capture_status === 'degraded' ? 'degraded' : 'unknown')));
         let displayStatus = data.capture_status === 'no_observers' ? 'no observers' : data.capture_status;
         let captureText = data.capture_display_text || ('observer ' + displayStatus);
-        let html = '<div class="pulse-vitals-item"><span class="pulse-vitals-dot ' + dotClass + '" aria-hidden="true"></span><span>' + esc(captureText) + '</span></div>';
+        var captureTextClass = data.capture_status === 'degraded' ? ' class="pulse-vitals-degraded"' : '';
+        let html = '<div class="pulse-vitals-item"><span class="pulse-vitals-dot ' + dotClass + '" aria-hidden="true"></span><span' + captureTextClass + '>' + esc(captureText) + '</span></div>';
         if (data.segment_count > 0) {
           html += '<div class="pulse-vitals-sep"></div><div class="pulse-vitals-item">' + data.segment_count + ' segment' + (data.segment_count !== 1 ? 's' : '');
           if (data.duration_minutes > 0) html += ' · ' + data.duration_minutes + 'm';

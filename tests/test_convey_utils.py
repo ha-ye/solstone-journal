@@ -3,6 +3,7 @@
 
 import math
 import os
+from datetime import datetime
 
 from flask import Flask
 
@@ -10,6 +11,7 @@ from solstone.convey.utils import (
     created,
     format_date,
     format_date_short,
+    format_month_day,
     relative_time,
     respond_collection,
     safe_journal_path,
@@ -60,6 +62,13 @@ def test_format_date_short(monkeypatch):
 
     # Test invalid date - should return input unchanged
     assert format_date_short("bad") == "bad"
+
+
+def test_format_month_day():
+    two_digit = datetime(2026, 6, 22, 12, 0, 0).timestamp() * 1000
+    assert format_month_day(two_digit) == "jun 22"
+    one_digit = datetime(2026, 6, 2, 12, 0, 0).timestamp() * 1000
+    assert format_month_day(one_digit) == "jun 2"
 
 
 def test_time_since(monkeypatch):

@@ -7,8 +7,88 @@ from datetime import datetime
 
 import pytest
 
+from solstone.apps.home.routes import _format_capture_vitals_text
 from solstone.convey import create_app
 from solstone.think.day_accumulator import append_record
+
+
+def _june_22_ms() -> float:
+    return datetime(2026, 6, 22, 12, 0, 0).timestamp() * 1000
+
+
+def _degraded_capture(name: str = "fedora") -> dict:
+    return {
+        "status": "degraded",
+        "observers": [
+            {
+                "name": name,
+                "status": "degraded",
+                "ingest_rejection": {
+                    "reason_code": "ingest_contract_invalid",
+                    "active_count": 79,
+                    "first_ts": _june_22_ms(),
+                    "latest_ts": _june_22_ms(),
+                    "summary": "screen.jsonl:2: value is invalid",
+                    "stream": name,
+                    "version": "0.3.1",
+                },
+            }
+        ],
+    }
+
+
+def test_format_capture_vitals_text_degraded_single():
+    assert (
+        _format_capture_vitals_text(_degraded_capture(), datetime.now())
+        == "fedora isn't reaching your journal — 79 rejected since jun 22"
+    )
+
+
+def test_format_capture_vitals_text_degraded_multiple():
+    capture = _degraded_capture()
+    capture["observers"].append(
+        {
+            "name": "phone",
+            "status": "degraded",
+            "ingest_rejection": {
+                "reason_code": "ingest_contract_invalid",
+                "active_count": 2,
+                "first_ts": _june_22_ms(),
+                "latest_ts": _june_22_ms(),
+                "summary": "screen.jsonl:2: value is invalid",
+                "stream": "phone",
+                "version": None,
+            },
+        }
+    )
+
+    assert (
+        _format_capture_vitals_text(capture, datetime.now())
+        == "fedora isn't reaching your journal — 79 rejected since jun 22, and 1 more"
+    )
+
+
+def test_format_capture_vitals_text_degraded_without_usable_observer():
+    result = _format_capture_vitals_text(
+        {
+            "status": "degraded",
+            "observers": [{"name": "fedora", "status": "degraded"}],
+        },
+        datetime.now(),
+    )
+
+    assert result == "an observer isn't reaching your journal"
+    assert "since None" not in result
+
+
+def test_format_capture_vitals_text_active_unchanged():
+    assert (
+        _format_capture_vitals_text(
+            {"status": "active", "observers": [{"name": "fedora", "status": "active"}]},
+            datetime.now(),
+        )
+        == "observer active"
+    )
 
 
 def test_api_pulse_includes_needs_you_items_json_shape(journal_copy, monkeypatch):

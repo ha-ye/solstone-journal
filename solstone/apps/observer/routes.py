@@ -80,6 +80,7 @@ from .utils import (
     clear_ingest_rejection,
     find_oldest_unrevoked_by_name,
     find_segment_by_sha256,
+    get_active_ingest_rejection,
     get_hist_dir,
     get_observers_dir,
     list_observers,
@@ -255,27 +256,43 @@ def _classify_observer_freshness(
 
 def _serialize_observer(observer: dict[str, Any], current_now: int) -> dict[str, Any]:
     """Serialize a registered observer for management API consumers."""
+    revoked = observer.get("revoked", False)
+    enabled = observer.get("enabled", True)
+    rejection = get_active_ingest_rejection(observer)
+    failing = bool(rejection) and not revoked and enabled
     freshness = _classify_observer_freshness(
         observer.get("last_seen"),
-        observer.get("revoked", False),
+        revoked,
         current_now,
     )
     key_prefix = observer_filename_prefix(observer)
-    return {
+    data = {
         "prefix": key_prefix,
         "name": observer.get("name", ""),
         "created_at": observer.get("created_at", 0),
         "last_seen": observer.get("last_seen"),
         "last_segment": observer.get("last_segment"),
-        "enabled": observer.get("enabled", True),
-        "revoked": observer.get("revoked", False),
+        "enabled": enabled,
+        "revoked": revoked,
         "revoked_at": observer.get("revoked_at"),
         "stats": observer.get("stats", {}),
         "live": convey_bridge.subscription_count(key_prefix) > 0,
         "last_chat_request_at": convey_bridge.last_chat_request_at(key_prefix),
         **freshness,
         "label": OBSERVER_STATE_LABELS[str(freshness["state"])],
+        "failing": failing,
     }
+    if failing:
+        data["ingest_rejection"] = {
+            "reason_code": rejection.get("reason_code"),
+            "active_count": rejection.get("active_count"),
+            "first_ts": rejection.get("first_ts"),
+            "latest_ts": rejection.get("latest_ts"),
+            "summary": rejection.get("summary"),
+            "stream": rejection.get("stream"),
+            "version": rejection.get("version"),
+        }
+    return data
 
 
 # === Management API (session-protected) ===

@@ -168,25 +168,41 @@ def _save_test_observer(
     created_at: int,
     last_seen: int | None,
     revoked: bool = False,
+    enabled: bool = True,
+    health: dict | None = None,
 ):
     key = key_prefix + ("f" * 56)
-    assert save_observer(
-        {
-            "key": key,
-            "name": name,
-            "created_at": created_at,
-            "last_seen": last_seen,
-            "last_segment": None,
-            "enabled": True,
-            "revoked": revoked,
-            "revoked_at": created_at + 1 if revoked else None,
-            "stats": {
-                "segments_received": 0,
-                "bytes_received": 0,
-            },
-        }
-    )
+    record = {
+        "key": key,
+        "name": name,
+        "created_at": created_at,
+        "last_seen": last_seen,
+        "last_segment": None,
+        "enabled": enabled,
+        "revoked": revoked,
+        "revoked_at": created_at + 1 if revoked else None,
+        "stats": {
+            "segments_received": 0,
+            "bytes_received": 0,
+        },
+    }
+    if health is not None:
+        record["health"] = health
+    assert save_observer(record)
     return key
+
+
+def _raw_ingest_rejection() -> dict:
+    return {
+        "reason_code": "ingest_contract_invalid",
+        "active_count": 79,
+        "first_ts": 1_781_999_200_000,
+        "latest_ts": 1_782_000_000_000,
+        "summary": "screen.jsonl:2: value is invalid",
+        "stream": "fedora",
+        "version": "0.3.1",
+        "segment": "20260622/120000_300",
+    }
 
 
 def test_classifier_last_seen_none_returns_disconnected():
@@ -617,6 +633,75 @@ def test_api_list_includes_state_and_group_per_observer(observer_env, monkeypatc
     assert isinstance(observer["elapsed_ms"], int)
     assert observer["elapsed_ms"] == 5_000
     assert observer["clock_skew"] is False
+
+
+def test_api_list_serializes_failing_ingest_rejection_without_segment(
+    observer_env, monkeypatch
+):
+    env = observer_env()
+    fixed_now = 6_000_000
+    monkeypatch.setattr(routes_module, "now_ms", lambda: fixed_now)
+
+    _save_test_observer(
+        "feda0000",
+        "fedora",
+        created_at=10,
+        last_seen=fixed_now - 5_000,
+        health={"ingest_rejection": _raw_ingest_rejection()},
+    )
+
+    observer = _api_list_observers(env)[0]
+
+    assert observer["failing"] is True
+    assert set(observer["ingest_rejection"]) == {
+        "reason_code",
+        "active_count",
+        "first_ts",
+        "latest_ts",
+        "summary",
+        "stream",
+        "version",
+    }
+    assert "segment" not in observer["ingest_rejection"]
+
+
+def test_api_list_omits_ingest_rejection_when_not_failing(observer_env, monkeypatch):
+    env = observer_env()
+    fixed_now = 7_000_000
+    monkeypatch.setattr(routes_module, "now_ms", lambda: fixed_now)
+
+    _save_test_observer(
+        "aaaa0000",
+        "no-rejection",
+        created_at=10,
+        last_seen=fixed_now - 5_000,
+    )
+    _save_test_observer(
+        "bbbb0000",
+        "revoked-with-rejection",
+        created_at=20,
+        last_seen=fixed_now - 5_000,
+        revoked=True,
+        health={"ingest_rejection": _raw_ingest_rejection()},
+    )
+    _save_test_observer(
+        "cccc0000",
+        "disabled-with-rejection",
+        created_at=30,
+        last_seen=fixed_now - 5_000,
+        enabled=False,
+        health={"ingest_rejection": _raw_ingest_rejection()},
+    )
+
+    observers = {observer["name"]: observer for observer in _api_list_observers(env)}
+
+    for name in [
+        "no-rejection",
+        "revoked-with-rejection",
+        "disabled-with-rejection",
+    ]:
+        assert observers[name]["failing"] is False
+        assert "ingest_rejection" not in observers[name]
 
 
 def test_api_delete_nonexistent(observer_env):

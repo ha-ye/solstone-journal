@@ -17,7 +17,10 @@ logger = logging.getLogger(__name__)
 import frontmatter
 from flask import Blueprint, jsonify, render_template
 
-from solstone.apps.home.needs_you import classify_needs_you
+from solstone.apps.home.needs_you import (
+    classify_needs_you,
+    format_degraded_capture_line,
+)
 from solstone.convey.apps import _resolve_attention
 from solstone.convey.bridge import get_cached_state
 from solstone.convey.utils import DATE_RE, format_date, relative_time
@@ -657,6 +660,11 @@ def _format_capture_vitals_text(capture: dict[str, Any], now: datetime) -> str:
     status = capture.get("status")
     if status == "no_observers":
         return "observer no observers"
+    if status == "degraded":
+        return (
+            format_degraded_capture_line(capture)
+            or "an observer isn't reaching your journal"
+        )
 
     observers = [
         observer
@@ -994,7 +1002,9 @@ def _build_pulse_context() -> dict[str, Any]:
         today_summary_parts.append(f"{n} {'activities' if n != 1 else 'activity'}")
     today_summary = ", ".join(today_summary_parts)
 
-    needs_you_items = classify_needs_you(attention, pulse_needs)
+    needs_you_items = classify_needs_you(
+        attention, pulse_needs, capture_health=capture_health
+    )
     needs_count = len(needs_you_items)
     needs_summary = ""
     if needs_count:

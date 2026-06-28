@@ -48,6 +48,7 @@
   const statusConsoleLink = document.getElementById('status-pane-console-link');
   const liveRegion = document.getElementById('status-live-region');
   let statusPaneOpen = false;
+  let lastCaptureStatusForPane = null;
   let _lastHistoryLen = -1;
 
   // Shared label updater — called from here and from websocket.js
@@ -142,7 +143,10 @@
     const wsLastMessageRaw = document.getElementById('ws-last-message-raw');
 
     if (statusSentence) {
-      if (metrics.state === 'connected') {
+      if (metrics.state === 'connected' && lastCaptureStatusForPane === 'degraded') {
+        statusSentence.textContent = 'an observer needs attention';
+        statusSentence.style.color = '#b91c1c';
+      } else if (metrics.state === 'connected') {
         statusSentence.textContent = 'all systems connected';
         statusSentence.style.color = '#10b981';
       } else if (metrics.state === 'connecting') {
@@ -205,12 +209,14 @@
       .catch(() => null)
       .then(data => {
         if (data) {
+          lastCaptureStatusForPane = data.capture?.status ?? 'unknown';
           window.appEvents?.setCaptureStatus?.(data.capture?.status ?? 'unknown');
           if (statusPaneOpen) {
             renderCaptureSection(data.capture);
             renderVersionSection(data.version);
           }
         } else {
+          lastCaptureStatusForPane = 'unknown';
           window.appEvents?.setCaptureStatus?.('unknown');
         }
       });
@@ -221,6 +227,10 @@
     if (!seen.length) return '';
     const lastSeen = Math.max(...seen.map(o => o.last_seen));
     return relativeTime(Date.now() - lastSeen) + ' ago';
+  }
+
+  function captureMonthDay(ms) {
+    return new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toLowerCase();
   }
 
 	  function restartObserverFromStatusPane(button, resultEl) {
@@ -253,11 +263,78 @@
 
     section.style.display = '';
     const status = capture?.status;
-    const displayStatus = status === 'no_observers' ? 'no observers' : (status || 'unknown');
-	    if (status === 'active') {
-	      text.style.color = '#10b981';
-	    } else if (status === 'stale') {
-	      const stale = (capture.observers || []).filter(o => o.status === 'stale');
+	    const displayStatus = status === 'no_observers' ? 'no observers' : (status || 'unknown');
+		    if (status === 'active') {
+		      text.style.color = '#10b981';
+		    } else if (status === 'degraded') {
+		      text.textContent = '';
+		      text.style.color = '';
+		      const degraded = (capture.observers || []).filter(o => o.status === 'degraded' && o.ingest_rejection);
+		      const appendLine = (value, cssText) => {
+		        const line = document.createElement('div');
+		        line.textContent = value;
+		        if (cssText) line.style.cssText = cssText;
+		        text.appendChild(line);
+		        return line;
+		      };
+		      const appendHealthLink = () => {
+		        const link = document.createElement('a');
+		        link.href = '/app/health';
+		        link.textContent = 'view observer health →';
+		        link.style.cssText = 'display: inline-block; margin-top: 4px; color: #b91c1c; font-size: 12px;';
+		        text.appendChild(link);
+		      };
+
+		      if (!degraded.length) {
+		        appendLine('observer needs attention', 'color: #b91c1c; font-weight: 600;');
+		        appendLine("an observer isn't reaching your journal.", 'color: #b91c1c; font-size: 12px;');
+		        appendHealthLink();
+		        return;
+		      }
+
+		      const first = degraded[0];
+		      const rej = first.ingest_rejection;
+		      const name = (first.name || '').trim();
+		      const title = name ? name + ' needs attention' : 'observer needs attention';
+		      const hasFirstTs = typeof rej.first_ts === 'number' && isFinite(rej.first_ts);
+		      const hasActiveCount = typeof rej.active_count === 'number' && isFinite(rej.active_count);
+		      appendLine(title, 'color: #b91c1c; font-weight: 600;');
+
+		      let consequence;
+		      if (hasFirstTs && hasActiveCount) {
+		        consequence = "its recordings haven't reached your journal since " + captureMonthDay(rej.first_ts) + ' — ' + rej.active_count + ' rejected.';
+		      } else if (hasActiveCount) {
+		        consequence = "its recordings aren't reaching your journal — " + rej.active_count + ' rejected.';
+		      } else if (hasFirstTs) {
+		        consequence = "its recordings haven't reached your journal since " + captureMonthDay(rej.first_ts) + '.';
+		      } else {
+		        consequence = "its recordings aren't reaching your journal.";
+		      }
+		      appendLine(consequence, 'color: #b91c1c; font-size: 12px;');
+
+		      const recovery = rej.version
+		        ? (name || 'this observer') + ' is on v' + rej.version + '. update or restart it on that device, then a valid upload clears this.'
+		        : 'update or restart it on that device, then a valid upload clears this.';
+		      appendLine(recovery, 'color: #6b7280; font-size: 12px;');
+
+		      const parts = [];
+		      if (rej.reason_code) parts.push('reason: ' + rej.reason_code);
+		      if (rej.stream) parts.push('stream: ' + rej.stream);
+		      if (rej.summary) parts.push(rej.summary);
+		      if (typeof rej.latest_ts === 'number' && isFinite(rej.latest_ts)) {
+		        parts.push('last rejected ' + relativeTime(Date.now() - rej.latest_ts) + ' ago');
+		      }
+		      if (parts.length) {
+		        appendLine(parts.join(' · '), 'color: #6b7280; font-size: 11px;');
+		      }
+
+		      appendHealthLink();
+		      if (degraded.length > 1) {
+		        appendLine('and ' + (degraded.length - 1) + ' more need attention', 'color: #6b7280; font-size: 12px; margin-top: 2px;');
+		      }
+		      return;
+		    } else if (status === 'stale') {
+		      const stale = (capture.observers || []).filter(o => o.status === 'stale');
 	      const names = stale.map(o => o.name).filter(Boolean).join(', ');
 	      const label = stale.length === 1 ? 'observer' : 'observers';
 	      const lastReported = formatObserverLastReported(stale);

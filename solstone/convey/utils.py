@@ -47,6 +47,11 @@ def format_date(date_str: str) -> str:
         return date_str
 
 
+def format_month_day(ts_ms: int | float) -> str:
+    """Lowercase 'mon d' from the local date of an epoch-ms timestamp."""
+    return datetime.fromtimestamp(ts_ms / 1000).strftime("%b %-d").lower()
+
+
 def format_date_short(date_str: str) -> str:
     """Convert YYYYMMDD to smart relative/short format.
 

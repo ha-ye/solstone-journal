@@ -196,6 +196,8 @@
     } else if (wsState === 'connecting') {
       variant = 'active';
       spin = true;
+    } else if (captureStatus === 'degraded') {
+      variant = 'degraded';
     } else if (captureStatus === 'offline') {
       variant = 'error';
     } else if (captureStatus === null || captureStatus === 'unknown') {
@@ -216,6 +218,7 @@
       active: 'active',
       x: 'disconnected',
       error: 'observers offline',
+      degraded: 'observer needs attention',
       question: 'status unknown',
       bang: 'attention',
       half: 'observers stale',
