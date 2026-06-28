@@ -385,11 +385,11 @@ class TestInitMark:
         resp = fresh_client.get("/init")
         for text in (
             "this is your journal",
-            "every journal has its own mark — two little symbols and two words, unique to yours. you'll recognize it whenever you connect a device to this journal.",
+            "every journal has its own mark — two symbols and two words, unique to yours. you'll recognize it whenever you connect a device.",
             "try another",
-            "lock in my journal id",
-            "this becomes your journal's permanent id — once you lock it in, it's yours for good and can't be changed. regenerate as many times as you like first.",
-            "locked in — this is your journal's mark for good.",
+            "lock it in",
+            "lock it in and this mark is your journal's, for good — it can't be changed later. try as many as you like first.",
+            "locked in · this is your journal's mark, for good.",
         ):
             assert text.encode() in resp.data
 

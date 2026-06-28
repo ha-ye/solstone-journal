@@ -366,14 +366,15 @@
   .link-status-skeleton { display: inline-block; width: 14em; max-width: 60vw; height: 1em; }
   #link-status-text[hidden], #link-status-skeleton[hidden] { display: none; }
 
-  .link-identity { margin: 0 0 1.5em; padding: 1em 1.1em; border: 1px solid #e7d8c6; border-radius: 12px; background: #fffdf9; }
+  .link-identity { margin: 0 0 1.5em; padding: 1.15em 1.3em; border: 1px solid #e7d8c6; border-radius: 12px; background: #fffdf9; text-align: center; }
   .link-identity-title { margin: 0 0 0.7em; font-size: 0.95rem; font-weight: 600; color: #B06A1A; }
   .link-identity-mark { min-height: 48px; }
-  .link-mark-chips { display: flex; gap: 0.6em; }
-  .link-mark-chip { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; border: 2px solid #ccc; border-radius: 10px; box-sizing: border-box; }
+  .link-mark-chips { display: flex; gap: 0.7em; justify-content: center; }
+  .link-mark-chip { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; border: 2px solid #ccc; border-radius: 12px; box-sizing: border-box; }
   .link-mark-chip svg { width: 28px; height: 28px; display: block; }
-  .link-mark-words { display: flex; gap: 0.5em; margin-top: 0.5em; font-size: 1.05rem; color: #222; }
-  .link-identity-id { display: flex; align-items: center; gap: 0.5em; margin-top: 0.9em; font-size: 0.9rem; color: #555; flex-wrap: wrap; }
+  .link-mark-words { display: flex; align-items: center; justify-content: center; gap: 0.5em; margin-top: 0.55em; font-family: var(--font-display); font-size: 1.1rem; letter-spacing: .3px; color: #222; }
+  .link-mark-words .link-mark-sep { color: #c2b9a6; }
+  .link-identity-id { display: flex; align-items: center; justify-content: center; gap: 0.5em; margin-top: 0.9em; font-size: 0.9rem; color: #555; flex-wrap: wrap; }
   .link-identity-id-value { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #222; word-break: break-all; }
   .link-identity-id-copy { border: 1px solid #d9c4ab; background: #fff; color: #B06A1A; border-radius: 7px; padding: 0.2em 0.6em; cursor: pointer; font-size: 0.85rem; }
 
@@ -744,15 +745,16 @@
     const words = Array.isArray(spec && spec.words) ? spec.words : [];
     const validIcons = icons.length === 2 && icons.every(icon => icon && icon.svg && icon.color && icon.color.hex);
     if (!validIcons || words.length !== 2) return false;
-    markEl.innerHTML = '<div class="link-mark-chips"><div class="link-mark-chip"></div><div class="link-mark-chip"></div></div><div class="link-mark-words"><span></span><span></span></div>';
+    markEl.innerHTML = '<div class="link-mark-chips"><div class="link-mark-chip"></div><div class="link-mark-chip"></div></div><div class="link-mark-words"><span></span><span class="link-mark-sep">·</span><span></span></div>';
     const chips = markEl.querySelectorAll('.link-mark-chip');
     chips.forEach((chip, index) => {
       const icon = icons[index];
       chip.style.borderColor = icon.color.hex;
+      chip.style.background = icon.color.hex + '1f';
       if (icon.rot === 45) chip.style.transform = 'rotate(45deg)';
       chip.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="${icon.color.hex}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icon.svg}</svg>`;
     });
-    const wordSpans = markEl.querySelectorAll('.link-mark-words span');
+    const wordSpans = markEl.querySelectorAll('.link-mark-words span:not(.link-mark-sep)');
     wordSpans[0].textContent = words[0];
     wordSpans[1].textContent = words[1];
     return true;

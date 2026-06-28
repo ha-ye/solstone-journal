@@ -159,13 +159,22 @@
     }
     .password-toggle:hover { color: #333; }
     .password-toggle:active { color: #111; transform: translateY(-50%) scale(0.9); }
-    .mark-display { display: flex; align-items: center; gap: 1rem; margin: 0 0 0.75rem; min-height: 64px; flex-wrap: wrap; }
-    .mark-chips { display: flex; gap: 0.6rem; }
-    .mark-chip { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; border: 2px solid #ccc; border-radius: 10px; box-sizing: border-box; }
+    .mark-display { display: flex; justify-content: center; min-height: 64px; margin: 0 0 0.85rem; }
+    .mark-card { display: inline-flex; flex-direction: column; align-items: center; gap: 0.55rem; background: #fffdf9; border: 1px solid #e7d8c6; border-radius: 12px; padding: 1.15rem 1.4rem; }
+    .mark-card.locked { border-color: #cfe3d3; box-shadow: 0 0 0 3px rgba(63,157,106,0.08); }
+    .mark-chips { display: flex; gap: 0.7rem; }
+    .mark-chip { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; border: 2px solid #ccc; border-radius: 12px; box-sizing: border-box; }
     .mark-chip svg { width: 28px; height: 28px; display: block; }
-    .mark-words { display: flex; gap: 0.5rem; font-family: 'Comfortaa', system-ui, sans-serif; font-size: 1.05rem; color: #222; }
-    .mark-actions { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.25rem; }
-    .mark-locked { color: #22c55e; font-size: 0.9rem; margin-top: 0.5rem; }
+    .mark-words { display: flex; align-items: center; gap: 0.5rem; font-family: 'Comfortaa', system-ui, sans-serif; font-size: 1.1rem; letter-spacing: .3px; color: #222; }
+    .mark-words .mark-sep { color: #c2b9a6; }
+    .mark-actions { display: flex; align-items: center; justify-content: center; gap: 0.75rem; margin-top: 0.25rem; }
+    .mark-permanence { text-align: center; }
+    .mark-locked { display: flex; align-items: center; justify-content: center; gap: 0.4rem; color: #166534; font-size: 0.92rem; margin-top: 0.5rem; font-weight: 600; }
+    .mark-locked svg { width: 16px; height: 16px; flex: none; }
+    @media (prefers-reduced-motion: no-preference) {
+      .mark-card.pop { animation: mark-pop .26s ease-out; }
+      @keyframes mark-pop { from { opacity: 0; transform: translateY(4px) scale(.98); } to { opacity: 1; transform: none; } }
+    }
     .cta-button:disabled { opacity: 0.5; cursor: not-allowed; }
   </style>
   <script src="{{ url_for('root.static', filename='error-handler.js') }}"></script>
@@ -194,16 +203,16 @@
 
     <section class="init-section" id="section-journal-mark">
       <h3>this is your journal</h3>
-      <p class="section-hint">every journal has its own mark — two little symbols and two words, unique to yours. you'll recognize it whenever you connect a device to this journal.</p>
+      <p class="section-hint">every journal has its own mark — two symbols and two words, unique to yours. you'll recognize it whenever you connect a device.</p>
       <div id="journal-mark-display" class="mark-display" aria-live="polite"></div>
       <div id="journal-mark-error" class="error-message" hidden></div>
       <button type="button" id="journal-mark-retry" class="settings-preset-btn" hidden>try again</button>
       <div class="mark-actions">
         <button type="button" id="journal-mark-regenerate" class="settings-preset-btn">try another</button>
-        <button type="button" id="journal-mark-lock" class="cta-button">lock in my journal id</button>
+        <button type="button" id="journal-mark-lock" class="cta-button">lock it in</button>
       </div>
-      <p class="section-hint mark-permanence">this becomes your journal's permanent id — once you lock it in, it's yours for good and can't be changed. regenerate as many times as you like first.</p>
-      <p id="journal-mark-locked" class="mark-locked" hidden>locked in — this is your journal's mark for good.</p>
+      <p class="section-hint mark-permanence">lock it in and this mark is your journal's, for good — it can't be changed later. try as many as you like first.</p>
+      <p id="journal-mark-locked" class="mark-locked" hidden><svg viewBox="0 0 24 24" fill="none" stroke="#166534" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>locked in · this is your journal's mark, for good.</p>
     </section>
 
     <form id="init-form" onsubmit="finalize(event); return false;">
@@ -526,16 +535,17 @@
         return;
       }
 
-      display.innerHTML = '<div class="mark-chips"><div class="mark-chip"></div><div class="mark-chip"></div></div><div class="mark-words"><span></span><span></span></div>';
+      display.innerHTML = '<div class="mark-card' + (locked ? ' locked' : '') + ' pop"><div class="mark-chips"><div class="mark-chip"></div><div class="mark-chip"></div></div><div class="mark-words"><span></span><span class="mark-sep">·</span><span></span></div></div>';
       const chips = display.querySelectorAll('.mark-chip');
       chips.forEach((chip, index) => {
         const icon = icons[index];
         chip.style.borderColor = icon.color.hex;
+        chip.style.background = icon.color.hex + '1f';
         if (icon.rot === 45) chip.style.transform = 'rotate(45deg)';
         chip.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="${icon.color.hex}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icon.svg}</svg>`;
       });
 
-      const wordSpans = display.querySelectorAll('.mark-words span');
+      const wordSpans = display.querySelectorAll('.mark-words span:not(.mark-sep)');
       wordSpans[0].textContent = words[0];
       wordSpans[1].textContent = words[1];
       if (errorEl) {
