@@ -87,7 +87,9 @@ Observer health has three distinct signals:
   paths/names, surfaces to local vantage points such as the TUI, and is not yet
   recorded into the observer registry.
 - Platform upload observers can post sanitized status beacons over the HTTP
-  ingest API, stored on the observer record as `health.beacon`.
+  observer API, either as extra fields on `/app/observer/ingest/event`
+  `observe.status` or as a dedicated `/app/observer/health` payload. Both are
+  stored on the observer record as `health.beacon`.
 - The journal can record an active `health.ingest_rejection` when an upload
   fails the ingest contract. Capture health surfaces an active rejection as
   `degraded`.

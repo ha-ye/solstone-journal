@@ -2960,6 +2960,134 @@
         ]
       }
     },
+    "/app/observer/health": {
+      "post": {
+        "description": "Record a diagnostics-only observer health beacon on the observer registry record.",
+        "operationId": "observer.health",
+        "parameters": [
+          {
+            "description": "Observer handle. Preferred over Authorization when present.",
+            "in": "header",
+            "name": "X-Solstone-Observer",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Bearer observer handle.",
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "last_error_reason": null,
+                "last_successful_sync": 1767100000000,
+                "name": "phone",
+                "pending_queue_depth": 3,
+                "recent_error_count": 0,
+                "stream_type": "phone",
+                "uptime": 42,
+                "version": "1.2.3"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "last_error_reason": {
+                    "type": "string"
+                  },
+                  "last_successful_sync": {
+                    "type": "integer"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "pending_queue_depth": {
+                    "type": "integer"
+                  },
+                  "recent_error_count": {
+                    "type": "integer"
+                  },
+                  "stream_type": {
+                    "type": "string"
+                  },
+                  "uptime": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": "ok"
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Health beacon recorded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Observer handle missing or invalid.",
+            "x-reason-codes": [
+              "auth_key_invalid",
+              "auth_required"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Observer is disabled or revoked.",
+            "x-reason-codes": [
+              "feature_unavailable",
+              "pl_revoked"
+            ]
+          }
+        },
+        "summary": "Record observer health beacon",
+        "tags": [
+          "observer"
+        ]
+      }
+    },
     "/app/observer/ingest": {
       "post": {
         "description": "Upload one capture segment as multipart form data and trigger local observe processing.",

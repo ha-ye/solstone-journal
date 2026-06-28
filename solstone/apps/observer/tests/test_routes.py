@@ -26,7 +26,7 @@ from solstone.apps.observer.utils import (
 from solstone.convey.copy import OBSERVER_CALLOSUM_LIVE_LABEL
 from solstone.convey.secure_listener import ConveyIdentity
 from solstone.convey.sol_initiated.copy import KIND_SOL_CHAT_REQUEST
-from solstone.observe.protocol import OBSERVER_PROTOCOL_VERSION
+from solstone.observe.protocol import OBSERVER_HANDLE_HEADER, OBSERVER_PROTOCOL_VERSION
 from solstone.think.contract.journal import ContractIssue
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.paths import authorized_clients_path
@@ -1153,6 +1153,100 @@ def test_ingest_event_revoked_key(observer_env):
     )
     assert resp.status_code == 403
     assert "Observer revoked" in resp.get_json()["detail"]
+
+
+def test_observer_health_records_sanitized_beacon(observer_env):
+    env = observer_env()
+    key = _create_observer(env, "health-test")
+
+    resp = env.client.post(
+        "/app/observer/health",
+        headers={OBSERVER_HANDLE_HEADER: key},
+        json={
+            "name": "phone",
+            "stream_type": "phone",
+            "version": "1.2.3",
+            "uptime": 42,
+            "last_successful_sync": 1_767_100_000_000,
+            "pending_queue_depth": 3,
+            "recent_error_count": 2,
+            "last_error_reason": "x" * 250,
+            "captured_path": "/Users/jer/private/audio.m4a",
+            "response_body": "raw server body",
+        },
+        content_type="application/json",
+    )
+
+    assert resp.status_code == 200
+    assert resp.get_json()["status"] == "ok"
+
+    health = _observer_record()["health"]
+    beacon = health["beacon"]
+    assert set(beacon) == {
+        "received_at",
+        "name",
+        "stream_type",
+        "version",
+        "uptime",
+        "last_successful_sync",
+        "pending_queue_depth",
+        "recent_error_count",
+        "last_error_reason",
+    }
+    assert beacon["name"] == "phone"
+    assert beacon["stream_type"] == "phone"
+    assert beacon["version"] == "1.2.3"
+    assert beacon["uptime"] == 42
+    assert beacon["last_successful_sync"] == 1_767_100_000_000
+    assert beacon["pending_queue_depth"] == 3
+    assert beacon["recent_error_count"] == 2
+    assert len(beacon["last_error_reason"]) == 200
+    assert "captured_path" not in beacon
+    assert "response_body" not in beacon
+
+
+def test_observer_health_missing_and_invalid_identity(observer_env):
+    env = observer_env()
+
+    resp = env.client.post(
+        "/app/observer/health",
+        json={"name": "phone"},
+        content_type="application/json",
+    )
+    assert resp.status_code == 401
+    assert resp.get_json()["reason_code"] == "auth_required"
+
+    resp = env.client.post(
+        "/app/observer/health",
+        headers={"Authorization": "Bearer invalid-key"},
+        json={"name": "phone"},
+        content_type="application/json",
+    )
+    assert resp.status_code == 401
+    assert resp.get_json()["reason_code"] == "auth_key_invalid"
+
+
+def test_observer_health_revoked_key(observer_env):
+    env = observer_env()
+    resp = env.client.post(
+        "/app/observer/api/create",
+        json={"name": "revoked-health-test"},
+        content_type="application/json",
+    )
+    data = resp.get_json()
+    key = data["key"]
+
+    resp = env.client.delete(f"/app/observer/api/{data['prefix']}")
+    assert resp.status_code == 200
+
+    resp = env.client.post(
+        "/app/observer/health",
+        headers={"Authorization": f"Bearer {key}"},
+        json={"name": "phone"},
+        content_type="application/json",
+    )
+    assert resp.status_code == 403
+    assert resp.get_json()["reason_code"] == "pl_revoked"
 
 
 def test_api_get_key(observer_env):

@@ -1241,6 +1241,19 @@ def ingest_event() -> Any:
     return jsonify({"status": "ok"})
 
 
+@observer_bp.route("/health", methods=["POST"])
+def ingest_health() -> Any:
+    """Record a diagnostics-only observer health beacon."""
+    observer, _key_prefix, error = resolve_observer_identity()
+    if error is not None:
+        return error
+
+    data = request.get_json(force=True) if request.is_json else {}
+    record_status_beacon(observer, data)
+    save_observer(observer)
+    return jsonify({"status": "ok"})
+
+
 def _requested_protocol_version() -> int:
     """Observer ingest protocol version the requesting peer advertises.
 
