@@ -44,12 +44,5 @@ def test_list_positional_and_flag_forms_match(indexed_entities_client) -> None:
     _assert_same_output(["list", "montague"], ["list", "-f", "montague"])
 
 
-def test_digest_positional_and_flag_forms_match(indexed_entities_client) -> None:
-    _assert_same_output(
-        ["digest", "montague", "--day", "20260306"],
-        ["digest", "-f", "montague", "--day", "20260306"],
-    )
-
-
 def test_search_positional_and_flag_forms_match(indexed_entities_client) -> None:
     _assert_same_output(["search", "Romeo"], ["search", "-q", "Romeo"])

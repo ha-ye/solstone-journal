@@ -296,7 +296,7 @@ def test_show_prompt_context_multi_facet_validation(capsys):
     from solstone.think.talent_cli import show_prompt_context
 
     with pytest.raises(SystemExit):
-        show_prompt_context("entities:entities")
+        show_prompt_context("entities:entities_review")
 
     output = capsys.readouterr().err
     assert "multi-facet" in output.lower()

@@ -10,7 +10,6 @@ import pytest
 from jsonschema import Draft202012Validator, ValidationError
 
 from solstone.apps.entities.talent import detection
-from solstone.apps.entities.talent.entity_digest import assemble_facet_day_digest
 from solstone.think.entities.loading import load_entities
 from solstone.think.entities.observations import add_observation
 from solstone.think.entities.saving import save_entities, upsert_detection_segment
@@ -445,7 +444,7 @@ def test_post_process_records_substrate_failure(
     assert "RuntimeError: boom" == outcome["error"]
 
 
-def test_forward_compat_detection_rows_load_and_digest(
+def test_forward_compat_detection_rows_load(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -483,7 +482,3 @@ def test_forward_compat_detection_rows_load_and_digest(
     assert rows[0]["segments"] == [COMPOSITE]
     assert rows[0]["updated_at"] == 123
     assert any(row["name"] == "Legacy Project" for row in rows)
-
-    digest = assemble_facet_day_digest("work", DAY)
-    assert "Sarah Chen (Person): Sarah reviewed the release plan." in digest
-    assert "Legacy Project (Project): Legacy project row." in digest

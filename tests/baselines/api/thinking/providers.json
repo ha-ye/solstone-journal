@@ -213,14 +213,6 @@
       "tier": 2,
       "type": "generate"
     },
-    "talent.entities.entities": {
-      "disabled": false,
-      "group": "Entities",
-      "label": "Entity Detector",
-      "schedule": "daily",
-      "tier": 2,
-      "type": "cogitate"
-    },
     "talent.entities.entities_review": {
       "disabled": false,
       "group": "Entities",

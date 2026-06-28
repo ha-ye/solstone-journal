@@ -1694,7 +1694,7 @@ class TestFormatLogs:
             {
                 "timestamp": "2025-12-16T07:33:05.135587+00:00",
                 "source": "tool",
-                "actor": "entities:entities",
+                "actor": "entities:entities_review",
                 "action": "entity_attach",
                 "params": {"type": "Person", "name": "Alice"},
             }
@@ -1703,7 +1703,7 @@ class TestFormatLogs:
         chunks, meta = format_logs(entries)
 
         assert len(chunks) == 1
-        assert "Entity Attach by entities:entities" in chunks[0]["markdown"]
+        assert "Entity Attach by entities:entities_review" in chunks[0]["markdown"]
         assert "**Source:** tool" in chunks[0]["markdown"]
         assert "**Time:** 07:33:05" in chunks[0]["markdown"]
         assert "**Parameters:**" in chunks[0]["markdown"]

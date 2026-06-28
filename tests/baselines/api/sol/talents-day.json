@@ -104,17 +104,6 @@
       "title": "Entity Detection",
       "type": "generate"
     },
-    "entities:entities": {
-      "app": "entities",
-      "color": "#00897b",
-      "description": "Mines journal for entity mentions and records facet-scoped detections with day-specific context",
-      "multi_facet": true,
-      "output_format": null,
-      "schedule": "daily",
-      "source": "app",
-      "title": "Entity Detector",
-      "type": "cogitate"
-    },
     "entities:entities_review": {
       "app": "entities",
       "color": "#00796b",
@@ -305,7 +294,7 @@
     "support:support": {
       "app": "support",
       "color": "#0288d1",
-      "description": "Drafts support requests and feedback to sol pbc for owner review, searches help articles, and runs local diagnostics.",
+      "description": "Drafts support requests and feedback to solstone support for owner review, searches help articles, and runs local diagnostics.",
       "multi_facet": false,
       "output_format": null,
       "schedule": null,
