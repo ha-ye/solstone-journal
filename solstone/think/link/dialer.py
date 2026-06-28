@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import queue
 import threading
 import time
@@ -13,6 +14,7 @@ from typing import Any, NamedTuple, Self
 
 from solstone.think.link.bundle import endpoint_label
 from solstone.think.link.client import (
+    BodySource,
     Client,
     ClientIdentity,
     EnrolledDevice,
@@ -22,6 +24,29 @@ from solstone.think.link.client import (
 from solstone.think.link.tls import TlsError
 
 _ESTABLISH_TIMEOUT_SECONDS = 30
+_QUEUE_PUT_TIMEOUT_SECONDS = 0.1
+
+
+async def _put_queue_item(chunks: queue.Queue[Any], item: Any) -> None:
+    """Put without blocking the tunnel event loop when a bounded queue is full."""
+
+    try:
+        chunks.put_nowait(item)
+        return
+    except queue.Full:
+        pass
+
+    while True:
+        try:
+            await asyncio.to_thread(
+                chunks.put,
+                item,
+                True,
+                _QUEUE_PUT_TIMEOUT_SECONDS,
+            )
+            return
+        except queue.Full:
+            await asyncio.sleep(0)
 
 
 class TunnelResponseHead(NamedTuple):
@@ -207,7 +232,7 @@ class TunnelClient:
         path: str,
         *,
         headers: dict[str, str] | None = None,
-        body: bytes = b"",
+        body: bytes | BodySource = b"",
     ) -> tuple[int, dict[str, str], bytes]:
         try:
             return self._run(
@@ -228,7 +253,7 @@ class TunnelClient:
         path: str,
         *,
         headers: dict[str, str],
-        body: bytes,
+        body: bytes | BodySource,
     ) -> tuple[int, dict[str, str], bytes]:
         session = await self._get_session_async()
         async with asyncio.timeout(self._establish_timeout):
@@ -240,7 +265,7 @@ class TunnelClient:
         path: str,
         *,
         headers: dict[str, str] | None = None,
-        body: bytes = b"",
+        body: bytes | BodySource = b"",
         chunks: queue.Queue[TunnelResponseHead | bytes | Exception | None],
     ) -> Future[None]:
         """Stream a proxy response to a queue.
@@ -267,7 +292,7 @@ class TunnelClient:
         path: str,
         *,
         headers: dict[str, str] | None = None,
-        body: bytes = b"",
+        body: bytes | BodySource = b"",
         chunks: queue.Queue[bytes | Exception | None] | None = None,
     ) -> Future[None] | tuple[int, dict[str, str], bytes, Any]:
         if chunks is None:
@@ -297,7 +322,7 @@ class TunnelClient:
         path: str,
         *,
         headers: dict[str, str],
-        body: bytes,
+        body: bytes | BodySource,
     ) -> tuple[int, dict[str, str], bytes, Any]:
         session = await self._get_session_async()
         async with asyncio.timeout(self._establish_timeout):
@@ -311,9 +336,11 @@ class TunnelClient:
         path: str,
         *,
         headers: dict[str, str],
-        body: bytes,
+        body: bytes | BodySource,
         chunks: queue.Queue[TunnelResponseHead | bytes | Exception | None],
     ) -> None:
+        stream: Any | None = None
+        cancelled = False
         try:
             (
                 status,
@@ -326,18 +353,29 @@ class TunnelClient:
                 headers=headers,
                 body=body,
             )
-            chunks.put(TunnelResponseHead(status, dict(resp_headers)))
+            await _put_queue_item(
+                chunks, TunnelResponseHead(status, dict(resp_headers))
+            )
             if initial_body:
-                chunks.put(initial_body)
+                await _put_queue_item(chunks, initial_body)
             async for chunk in stream.read():
-                chunks.put(chunk)
+                await _put_queue_item(chunks, chunk)
+        except asyncio.CancelledError:
+            cancelled = True
+            if stream is not None and hasattr(stream, "cancel"):
+                with contextlib.suppress(Exception):
+                    await stream.cancel()
+            raise
         except (ConnectionError, OSError, StreamResetError, TlsError) as exc:
             await self._close_session_async()
-            chunks.put(TunnelRequestError(type(exc).__name__, str(exc)))
+            await _put_queue_item(
+                chunks, TunnelRequestError(type(exc).__name__, str(exc))
+            )
         except Exception as exc:
-            chunks.put(exc)
+            await _put_queue_item(chunks, exc)
         finally:
-            chunks.put(None)
+            if not cancelled:
+                await _put_queue_item(chunks, None)
 
     async def _stream_to_queue(
         self,
@@ -345,9 +383,11 @@ class TunnelClient:
         path: str,
         *,
         headers: dict[str, str],
-        body: bytes,
+        body: bytes | BodySource,
         chunks: queue.Queue[bytes | Exception | None],
     ) -> None:
+        stream: Any | None = None
+        cancelled = False
         try:
             status, _headers, initial_body, stream = await self._stream_request_async(
                 method,
@@ -357,21 +397,35 @@ class TunnelClient:
             )
             if status == 200:
                 if initial_body:
-                    chunks.put(initial_body)
+                    await _put_queue_item(chunks, initial_body)
                 async for chunk in stream.read():
-                    chunks.put(chunk)
+                    await _put_queue_item(chunks, chunk)
                 return
             if status in {401, 403}:
-                chunks.put(PermissionError(f"stream request rejected ({status})"))
+                await _put_queue_item(
+                    chunks,
+                    PermissionError(f"stream request rejected ({status})"),
+                )
                 return
-            chunks.put(RuntimeError(f"stream request failed ({status})"))
+            await _put_queue_item(
+                chunks, RuntimeError(f"stream request failed ({status})")
+            )
+        except asyncio.CancelledError:
+            cancelled = True
+            if stream is not None and hasattr(stream, "cancel"):
+                with contextlib.suppress(Exception):
+                    await stream.cancel()
+            raise
         except (ConnectionError, OSError, StreamResetError, TlsError) as exc:
             await self._close_session_async()
-            chunks.put(TunnelRequestError(type(exc).__name__, str(exc)))
+            await _put_queue_item(
+                chunks, TunnelRequestError(type(exc).__name__, str(exc))
+            )
         except Exception as exc:
-            chunks.put(exc)
+            await _put_queue_item(chunks, exc)
         finally:
-            chunks.put(None)
+            if not cancelled:
+                await _put_queue_item(chunks, None)
 
     def close(self) -> None:
         if self._closed:

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import queue
+import threading
+from concurrent.futures import CancelledError
 
 import pytest
 
@@ -252,6 +254,72 @@ class _SlowBodyStream:
         for chunk in self._chunks:
             await asyncio.sleep(0.03)
             yield chunk
+
+
+def test_proxy_stream_request_accepts_body_source(monkeypatch) -> None:
+    class FakeStream:
+        async def read(self):
+            if False:
+                yield b""
+
+    client = TunnelClient(_identity(endpoints=()), None)
+    source = BodySource(6, (b"ab", b"cd", b"ef"))
+    calls = []
+
+    async def fake_stream_request_async(method, path, *, headers, body):
+        calls.append((method, path, headers, body))
+        return 200, {}, b"", FakeStream()
+
+    monkeypatch.setattr(client, "_stream_request_async", fake_stream_request_async)
+    chunks: queue.Queue[TunnelResponseHead | bytes | Exception | None] = queue.Queue()
+    try:
+        future = client.proxy_stream_request(
+            "POST",
+            "/upload",
+            body=source,
+            chunks=chunks,
+        )
+        future.result(timeout=2)
+    finally:
+        client.close()
+
+    assert calls == [("POST", "/upload", {}, source)]
+    assert chunks.get_nowait() == TunnelResponseHead(200, {})
+    assert chunks.get_nowait() is None
+
+
+def test_proxy_stream_request_cancel_resets_remote_stream(monkeypatch) -> None:
+    entered_read = threading.Event()
+    cancel_called = threading.Event()
+
+    class CancellableStream:
+        async def read(self):
+            entered_read.set()
+            await asyncio.sleep(3600)
+            if False:
+                yield b""
+
+        async def cancel(self) -> None:
+            cancel_called.set()
+
+    client = TunnelClient(_identity(endpoints=()), None)
+
+    async def fake_stream_request_async(_method, _path, *, headers, body):
+        _ = (headers, body)
+        return 200, {}, b"", CancellableStream()
+
+    monkeypatch.setattr(client, "_stream_request_async", fake_stream_request_async)
+    chunks: queue.Queue[TunnelResponseHead | bytes | Exception | None] = queue.Queue()
+    try:
+        future = client.proxy_stream_request("GET", "/events", chunks=chunks)
+        assert chunks.get(timeout=1) == TunnelResponseHead(200, {})
+        assert entered_read.wait(timeout=1)
+        future.cancel()
+        with pytest.raises(CancelledError):
+            future.result(timeout=1)
+        assert cancel_called.wait(timeout=1)
+    finally:
+        client.close()
 
 
 def test_dead_cached_session_redials_for_request(monkeypatch) -> None:

@@ -420,6 +420,29 @@ async def test_stream_cancel_emits_reset_cancel_and_forgets_state(
 
 
 @pytest.mark.asyncio
+async def test_request_cancel_while_reading_response_resets_stream(
+    pass_through_tls: None,
+) -> None:
+    transport = FakeTransport()
+    session = _session(transport)
+    task = asyncio.create_task(session.request("GET", "/slow"))
+    try:
+        await _wait_for(lambda: len(_open_frames(transport.sent, 1)) == 1)
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        resets = _reset_frames(transport.sent, 1)
+        assert len(resets) == 1
+        assert parse_reset_reason(resets[0]) == RESET_CANCEL
+        assert 1 not in session._mux._streams
+    finally:
+        await session.close()
+        await _finish_background_task(task)
+
+
+@pytest.mark.asyncio
 async def test_mid_body_send_surfaces_remote_reset_or_session_close(
     pass_through_tls: None,
 ) -> None:

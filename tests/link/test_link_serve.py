@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import http.client
+import logging
 import queue
 import socket
 import threading
@@ -14,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from solstone.think.link import serve_cli
+from solstone.think.link.client import BodySource
 from solstone.think.link.dialer import TunnelRequestError, TunnelResponseHead
 from solstone.think.link.paths import DEFAULT_RELAY_URL
 
@@ -24,7 +26,9 @@ class _StubTunnel:
         items: list[TunnelResponseHead | bytes | Exception | None],
     ) -> None:
         self.items = items
-        self.requests: list[tuple[str, str, dict[str, str], bytes]] = []
+        self.requests: list[tuple[str, str, dict[str, str], bytes | BodySource]] = []
+        self.consumed_bodies: list[bytes] = []
+        self.queue_maxsizes: list[int] = []
 
     def proxy_stream_request(
         self,
@@ -32,19 +36,27 @@ class _StubTunnel:
         path: str,
         *,
         headers: dict[str, str] | None = None,
-        body: bytes = b"",
+        body: bytes | BodySource = b"",
         chunks: queue.Queue[TunnelResponseHead | bytes | Exception | None],
     ) -> Future[None]:
         self.requests.append((method, path, headers or {}, body))
+        self.queue_maxsizes.append(chunks.maxsize)
         future: Future[None] = Future()
 
         def run() -> None:
+            self.consumed_bodies.append(_collect_body(body))
             for item in self.items:
                 chunks.put(item)
             future.set_result(None)
 
         threading.Thread(target=run, daemon=True).start()
         return future
+
+
+def _collect_body(body: bytes | BodySource) -> bytes:
+    if isinstance(body, BodySource):
+        return b"".join(body.chunks)
+    return body
 
 
 def _start_server(tunnel: object) -> tuple[serve_cli._ProxyServer, threading.Thread]:
@@ -107,7 +119,10 @@ def test_serve_request_mapping() -> None:
     method, path, headers, forwarded_body = tunnel.requests[0]
     assert method == "POST"
     assert path == "/app/path?x=1"
-    assert forwarded_body == b"hello"
+    assert isinstance(forwarded_body, BodySource)
+    assert forwarded_body.length == 5
+    assert tunnel.consumed_bodies == [b"hello"]
+    assert tunnel.queue_maxsizes == [serve_cli.RESPONSE_QUEUE_MAX_ITEMS]
     assert headers["Content-Length"] == "5"
     assert headers["Host"] == f"{serve_cli.LOOPBACK_HOST}:{server.server_address[1]}"
     assert headers["X-Keep"] == "value"
@@ -125,7 +140,7 @@ def test_serve_streaming_incremental() -> None:
             _path: str,
             *,
             headers: dict[str, str] | None = None,
-            body: bytes = b"",
+            body: bytes | BodySource = b"",
             chunks: queue.Queue[TunnelResponseHead | bytes | Exception | None],
         ) -> Future[None]:
             _ = (headers, body)
@@ -158,6 +173,66 @@ def test_serve_streaming_incremental() -> None:
     finally:
         release.set()
         _stop_server(server, thread)
+
+
+def test_serve_rejects_transfer_encoding_before_tunnel(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    tunnel = _StubTunnel([TunnelResponseHead(200, {"Content-Length": "0"}), None])
+    server, thread = _start_server(tunnel)
+    caplog.set_level(logging.WARNING, logger=serve_cli.LOG.name)
+    try:
+        with socket.create_connection(
+            (serve_cli.LOOPBACK_HOST, server.server_address[1]),
+            timeout=2,
+        ) as sock:
+            sock.sendall(
+                b"POST /chunked HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"Transfer-Encoding: chunked\r\n\r\n"
+                b"1\r\nx\r\n0\r\n\r\n"
+            )
+            response = sock.recv(4096)
+    finally:
+        _stop_server(server, thread)
+
+    assert b"400" in response
+    assert tunnel.requests == []
+    assert "Transfer-Encoding" in caplog.text
+
+
+def test_serve_times_out_waiting_for_response_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    returned_future: Future[None] = Future()
+
+    class HangingTunnel:
+        def proxy_stream_request(
+            self,
+            _method: str,
+            _path: str,
+            *,
+            headers: dict[str, str] | None = None,
+            body: bytes | BodySource = b"",
+            chunks: queue.Queue[TunnelResponseHead | bytes | Exception | None],
+        ) -> Future[None]:
+            _ = (headers, body, chunks)
+            return returned_future
+
+    monkeypatch.setattr(serve_cli, "RESPONSE_HEAD_TIMEOUT_SECONDS", 0.05)
+    server, thread = _start_server(HangingTunnel())
+    try:
+        conn = _connection(server)
+        conn.request("GET", "/hang")
+        response = conn.getresponse()
+        body = response.read()
+        conn.close()
+    finally:
+        _stop_server(server, thread)
+
+    assert response.status == 502
+    assert b"TimeoutError" in body
+    assert returned_future.cancelled()
 
 
 def test_serve_midstream_failure() -> None:

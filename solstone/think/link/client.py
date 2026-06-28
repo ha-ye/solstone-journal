@@ -16,7 +16,7 @@ import dataclasses
 import logging
 import secrets
 import urllib.parse
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
 from typing import Protocol
 
 import requests
@@ -64,6 +64,7 @@ _CONNECT_TIMEOUT_SECONDS = 15
 _HTTP_TIMEOUT_SECONDS = 30
 _KEEPALIVE_INTERVAL_SECONDS = 20
 _KEEPALIVE_TIMEOUT_SECONDS = 45
+_BODY_DONE = object()
 
 
 class StreamResetError(ConnectionError):
@@ -88,6 +89,10 @@ def _coerce_body_source(body: bytes | BodySource) -> BodySource:
     if isinstance(body, BodySource):
         return body
     return BodySource(len(body), (body,))
+
+
+def _next_body_chunk(chunks: Iterator[bytes]) -> bytes | object:
+    return next(chunks, _BODY_DONE)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -170,6 +175,19 @@ class _DialerStream:
             view = view[chunk_len:]
             self._state.send_credit -= chunk_len
             await self._mux._emit(build_data(self._state.stream_id, chunk))
+
+    async def wait_for_send_credit(self) -> None:
+        while self._state.send_credit <= 0:
+            if self._state.reset_reason is not None:
+                raise StreamResetError(
+                    f"stream {self._state.stream_id} reset: {self._state.reset_reason}"
+                )
+            if self._state.writer_closed:
+                raise ConnectionError(
+                    f"stream {self._state.stream_id} writer is closed"
+                )
+            self._state.credit_event.clear()
+            await self._state.credit_event.wait()
 
     async def close(self) -> None:
         if self._state.writer_closed:
@@ -512,7 +530,12 @@ class TunnelSession:
             headers=headers,
             body=body,
         )
-        response = await stream.read_all()
+        try:
+            response = await stream.read_all()
+        except asyncio.CancelledError:
+            with contextlib.suppress(Exception):
+                await stream.cancel()
+            raise
         return _parse_http_response(response)
 
     async def stream_request(
@@ -530,13 +553,18 @@ class TunnelSession:
             body=body,
         )
         buffered = bytearray()
-        async for chunk in stream.read():
-            buffered.extend(chunk)
-            split = buffered.find(b"\r\n\r\n")
-            if split < 0:
-                continue
-            status, response_headers = _parse_http_head(bytes(buffered[:split]))
-            return status, response_headers, bytes(buffered[split + 4 :]), stream
+        try:
+            async for chunk in stream.read():
+                buffered.extend(chunk)
+                split = buffered.find(b"\r\n\r\n")
+                if split < 0:
+                    continue
+                status, response_headers = _parse_http_head(bytes(buffered[:split]))
+                return status, response_headers, bytes(buffered[split + 4 :]), stream
+        except asyncio.CancelledError:
+            with contextlib.suppress(Exception):
+                await stream.cancel()
+            raise
         raise ValueError("response missing header terminator")
 
     async def _open_request_stream(
@@ -556,9 +584,20 @@ class TunnelSession:
         )
         stream = await self._mux.open_stream(head)
         try:
-            for chunk in source.chunks:
+            chunks = iter(source.chunks)
+            while True:
+                await stream.wait_for_send_credit()
+                chunk = await asyncio.to_thread(_next_body_chunk, chunks)
+                if chunk is _BODY_DONE:
+                    break
+                if not isinstance(chunk, bytes):
+                    raise TypeError("body source yielded a non-bytes chunk")
                 await stream.write(chunk)
             await stream.close()
+        except asyncio.CancelledError:
+            with contextlib.suppress(Exception):
+                await stream.cancel()
+            raise
         except Exception:
             with contextlib.suppress(Exception):
                 await stream.reset()
