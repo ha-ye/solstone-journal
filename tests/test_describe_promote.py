@@ -96,6 +96,24 @@ def test_build_metadata_header_includes_static_single_frame_hash(tmp_path, monke
     }
 
 
+def test_describe_header_raw_is_producer_invariant(tmp_path, monkeypatch):
+    video_path = _video_path(tmp_path)
+    processor = describe_module.VideoProcessor.__new__(describe_module.VideoProcessor)
+    processor.video_path = video_path
+    processor.first_hash = None
+    processor.last_hash = None
+    processor.qualified_count = 1
+    monkeypatch.delenv("OBSERVER_NAME", raising=False)
+    monkeypatch.delenv("SEGMENT_META", raising=False)
+
+    header = processor._build_metadata_header()
+
+    # raw is the producer's invariant (relaxed from the shared floor), so the
+    # describer must keep emitting it.
+    assert "raw" in header
+    assert header["raw"] == video_path.name
+
+
 class FakeBatch:
     instances = []
     outcomes = {}

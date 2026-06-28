@@ -709,6 +709,20 @@ class TestJSONLFormat:
         assert metadata["duration"] == 12.34
         assert isinstance(metadata["duration"], float)
 
+    def test_statements_to_jsonl_raw_is_producer_invariant(self):
+        lines = _statements_to_jsonl(
+            [{"start": 1.0, "end": 2.0, "text": "Hello"}],
+            "audio.flac",
+            datetime(2026, 5, 22, 9, 0, 0),
+            {"model": "unit", "device": "cpu", "compute_type": "int8"},
+        )
+
+        metadata = json.loads(lines[0])
+
+        # raw is the producer's invariant (relaxed from the shared floor), so the
+        # transcriber must keep emitting it.
+        assert metadata["raw"] == "audio.flac"
+
     def test_metadata_first_line(self):
         """First line should be metadata with 'raw' field."""
         lines = [

@@ -2720,6 +2720,92 @@ def test_ingest_contract_sidecars_valid_are_accepted(observer_env, monkeypatch):
     assert len(emitted) == 1
 
 
+def test_ingest_contract_sidecars_without_raw_are_accepted(observer_env, monkeypatch):
+    env = observer_env()
+    emitted = []
+    monkeypatch.setattr(
+        routes_module,
+        "emit",
+        lambda tract, event, **fields: emitted.append((tract, event, fields)),
+    )
+
+    resp = env.client.post(
+        "/app/observer/api/create",
+        json={"name": "contract-no-raw-test"},
+        content_type="application/json",
+    )
+    key = resp.get_json()["key"]
+
+    audio = b'{"observer":"external"}\n{"start":"00:00:00","text":"hi"}\n'
+    screen = b'{"observer":"tmux"}\n{"timestamp":1.0}\n'
+    resp = env.client.post(
+        "/app/observer/ingest",
+        headers={"Authorization": f"Bearer {key}"},
+        data={
+            "day": "20250103",
+            "segment": "120000_300",
+            "files": [
+                (io.BytesIO(audio), "120000_300_audio.jsonl"),
+                (io.BytesIO(screen), "screen.jsonl"),
+            ],
+        },
+    )
+
+    body = resp.get_json()
+    assert resp.status_code == 200
+    assert body["status"] == "ok"
+    assert body["files"] == ["audio.jsonl", "screen.jsonl"]
+    assert len(emitted) == 1
+    segment_dir = _day_dir(env) / "contract-no-raw-test" / "120000_300"
+    assert (segment_dir / "audio.jsonl").read_bytes() == audio
+    assert (segment_dir / "screen.jsonl").read_bytes() == screen
+    assert not (_day_dir(env) / "observer" / "failed").exists()
+
+
+def test_ingest_contract_screen_floor_violation_quarantined_without_emit(
+    observer_env, monkeypatch
+):
+    env = observer_env()
+    emitted = []
+    monkeypatch.setattr(
+        routes_module,
+        "emit",
+        lambda tract, event, **fields: emitted.append((tract, event, fields)),
+    )
+
+    resp = env.client.post(
+        "/app/observer/api/create",
+        json={"name": "contract-screen-invalid-test"},
+        content_type="application/json",
+    )
+    key = resp.get_json()["key"]
+
+    invalid_screen = b'{"observer":"tmux"}\n{"content":{}}\n'
+    resp = env.client.post(
+        "/app/observer/ingest",
+        headers={"Authorization": f"Bearer {key}"},
+        data={
+            "day": "20250103",
+            "segment": "120000_300",
+            "files": (io.BytesIO(invalid_screen), "screen.jsonl"),
+        },
+    )
+
+    body = resp.get_json()
+    assert resp.status_code == 422
+    assert body["status"] == "failed"
+    assert body["reason_code"] == "ingest_contract_invalid"
+    assert any(
+        "screen.jsonl" in item and "timestamp" in item for item in body["invalid_files"]
+    )
+    assert emitted == []
+
+    assert not (_day_dir(env) / "contract-screen-invalid-test" / "120000_300").exists()
+    failed_dir = env.journal / "chronicle" / body["failed_path"]
+    assert failed_dir.exists()
+    assert (failed_dir / "screen.jsonl").read_bytes() == invalid_screen
+
+
 def test_ingest_stream_qualifier_preserved(observer_env):
     """Regression: tmux observer must land in host.tmux, not host stream.
 

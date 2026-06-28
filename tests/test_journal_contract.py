@@ -12,6 +12,10 @@ from solstone.think.contract import journal
 from solstone.think.journal_io.migrate import locked_rewrite_jsonl, rewrite_json
 
 
+def _contract_fixture(name: str) -> bytes:
+    return (journal.ROOT / "tests" / "fixtures" / "contract" / name).read_bytes()
+
+
 def test_journal_contract_bundle_discovers_writer_adjacent_schemas() -> None:
     bundle = journal.build_bundle()
     formats = set(bundle["schemas"])
@@ -42,6 +46,133 @@ def test_contract_validator_accepts_audio_jsonl_and_reports_missing_text() -> No
     issues = journal.validate_contract_file("audio.jsonl", invalid, schema)
 
     assert any("'text' is a required property" in issue.message for issue in issues)
+
+
+def test_contract_validator_accepts_screen_no_raw_fixture() -> None:
+    bundle = journal.build_bundle()
+    schema = bundle["schemas"]["screen-jsonl"]["schema"]
+
+    issues = journal.validate_contract_file(
+        "screen.jsonl",
+        _contract_fixture("tmux_screen_no_raw.jsonl"),
+        schema,
+    )
+
+    assert issues == []
+
+
+def test_contract_validator_accepts_audio_no_raw_fixture() -> None:
+    bundle = journal.build_bundle()
+    schema = bundle["schemas"]["audio-jsonl"]["schema"]
+
+    issues = journal.validate_contract_file(
+        "audio.jsonl",
+        _contract_fixture("external_audio_no_raw.jsonl"),
+        schema,
+    )
+
+    assert issues == []
+
+
+def test_contract_validator_accepts_producer_headers_with_raw() -> None:
+    bundle = journal.build_bundle()
+    screen_schema = bundle["schemas"]["screen-jsonl"]["schema"]
+    audio_schema = bundle["schemas"]["audio-jsonl"]["schema"]
+
+    screen = b'{"raw":"screen.webm","observer":"desk"}\n{"timestamp":1.0}\n'
+    audio = b'{"raw":"audio.flac","observer":"mic"}\n{"start":"00:00:00","text":"hi"}\n'
+
+    assert journal.validate_contract_file("screen.jsonl", screen, screen_schema) == []
+    assert journal.validate_contract_file("audio.jsonl", audio, audio_schema) == []
+
+
+def test_contract_validator_still_rejects_non_raw_floor_violations() -> None:
+    bundle = journal.build_bundle()
+    screen_schema = bundle["schemas"]["screen-jsonl"]["schema"]
+    audio_schema = bundle["schemas"]["audio-jsonl"]["schema"]
+
+    screen_issues = journal.validate_contract_file(
+        "screen.jsonl",
+        b'{"observer":"tmux"}\n{"content":{}}\n',
+        screen_schema,
+    )
+    audio_issues = journal.validate_contract_file(
+        "audio.jsonl",
+        b'{"observer":"external"}\n{"start":"00:00:00"}\n',
+        audio_schema,
+    )
+
+    assert any("timestamp" in issue.message for issue in screen_issues)
+    assert any("text" in issue.message for issue in audio_issues)
+
+
+def test_old_floor_no_raw_fixtures_failed_only_on_raw() -> None:
+    bundle = journal.build_bundle()
+    screen_schema = copy.deepcopy(bundle["schemas"]["screen-jsonl"]["schema"])
+    audio_schema = copy.deepcopy(bundle["schemas"]["audio-jsonl"]["schema"])
+    screen_schema["$defs"]["header"]["required"] = ["raw"]
+    audio_schema["$defs"]["header"]["required"] = ["raw"]
+
+    screen_issues = journal.validate_contract_file(
+        "screen.jsonl",
+        _contract_fixture("tmux_screen_no_raw.jsonl"),
+        screen_schema,
+    )
+    audio_issues = journal.validate_contract_file(
+        "audio.jsonl",
+        _contract_fixture("external_audio_no_raw.jsonl"),
+        audio_schema,
+    )
+
+    assert len(screen_issues) == 1
+    assert "raw" in screen_issues[0].message
+    assert "required" in screen_issues[0].message
+    assert len(audio_issues) == 1
+    assert "raw" in audio_issues[0].message
+    assert "required" in audio_issues[0].message
+
+
+def test_validate_journal_tree_accepts_no_raw_at_rest_files(tmp_path) -> None:
+    segment = tmp_path / "chronicle" / "20260601" / "tmux" / "093000_300"
+    segment.mkdir(parents=True)
+    (segment / "screen.jsonl").write_bytes(
+        _contract_fixture("tmux_screen_no_raw.jsonl")
+    )
+    (segment / "audio.jsonl").write_bytes(
+        _contract_fixture("external_audio_no_raw.jsonl")
+    )
+
+    raw_segment = tmp_path / "chronicle" / "20260601" / "tmux" / "093500_300"
+    raw_segment.mkdir(parents=True)
+    (raw_segment / "screen.jsonl").write_bytes(
+        b'{"raw":"screen.webm","observer":"desk"}\n{"timestamp":1.0}\n'
+    )
+
+    assert journal.validate_journal_tree(tmp_path, journal.build_bundle()) == []
+
+
+def test_schema_for_filename_selects_screen_and_audio_sidecars() -> None:
+    bundle = journal.build_bundle()
+
+    for filename in (
+        "screen.jsonl",
+        "audio.jsonl",
+        "123456_screen.jsonl",
+        "src_audio.jsonl",
+    ):
+        assert journal.schema_for_filename(filename, bundle) is not None
+
+
+def test_journal_contract_docs_cover_floor_and_maintenance_playbook() -> None:
+    playbook = (
+        journal.ROOT / "vpe" / "playbooks" / "journal-format-contract-maintenance.md"
+    ).read_text(encoding="utf-8")
+
+    assert "## Adding an observer with a new format" in playbook
+    assert "## Forward-compatibility governing principle" in playbook
+    assert journal.__doc__ is not None
+    assert "Floor model" in journal.__doc__
+    assert "producer-owned invariant" in journal.__doc__
 
 
 def test_contract_breaking_change_tripwire_flags_removed_key_fields() -> None:
