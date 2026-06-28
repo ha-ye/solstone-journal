@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from solstone import __version__
 from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED, WATCHDOG_TIMEOUT
 from solstone.observe.utils import (
     AUDIO_EXTENSIONS,
@@ -56,6 +57,8 @@ logger = logging.getLogger(__name__)
 
 # Handlers with serialized worker pools. Add a new entry here when registering one in main().
 HANDLER_NAMES = ("describe", "transcribe", "extract", "depict")
+NATIVE_OBSERVE_NAME = "native.observe"
+NATIVE_STREAM_TYPE = "screen_audio"
 
 # Per-job wall-clock caps (seconds) for handler subprocesses. A handler whose
 # single job (including any CPU-fallback retry) exceeds its cap is killed by
@@ -71,6 +74,11 @@ _DEFAULT_MAX_RUNTIME = {
     "extract": 900,
     "depict": 600,
 }
+
+
+def _sanitize_beacon_reason(reason: str) -> str:
+    """Collapse a failure reason to a single line, capped at 200 chars."""
+    return " ".join(reason.split())[:200]
 
 
 def _handler_icon(handler_name: str) -> str:
@@ -155,6 +163,12 @@ class FileSensor:
         # Track last status emission time
         self.last_status_emit = 0.0
 
+        # Diagnostics health-beacon state (read by the status loop, written by handler workers)
+        self._start_monotonic = time.monotonic()
+        self.recent_error_count = 0
+        self.last_successful_sync: Optional[int] = None
+        self.last_error_reason: Optional[str] = None
+
         # Track segment processing: {segment_key: {pending_files}}
         self.segment_files: Dict[str, set[Path]] = {}
         # Track segment start times: {segment_key: start_timestamp}
@@ -197,6 +211,41 @@ class FileSensor:
                 _DEFAULT_MAX_RUNTIME[handler_name],
             )
             return _DEFAULT_MAX_RUNTIME[handler_name]
+
+    def _record_successful_contact(self) -> None:
+        """Mark a successful handler completion or a no-work cadence cycle."""
+        with self.lock:
+            self.recent_error_count = 0
+            self.last_successful_sync = now_ms()
+
+    def _record_handler_failure(self, reason: str) -> None:
+        """Record a terminal handler failure for the diagnostics beacon."""
+        with self.lock:
+            self.recent_error_count = min(99, self.recent_error_count + 1)
+            self.last_error_reason = _sanitize_beacon_reason(reason)
+
+    def _build_health_beacon(self) -> Dict[str, Any]:
+        """Build the sanitized diagnostics-only status beacon.
+
+        Allowlisted fields only — never file paths, names, titles, or content.
+        """
+        with self.lock:
+            pending = sum(len(v) for v in self.running_handlers.values()) + sum(
+                len(v) for v in self.queued_handlers.values()
+            )
+            error_count = min(99, max(0, self.recent_error_count))
+            last_sync = self.last_successful_sync
+            last_reason = self.last_error_reason
+        return {
+            "name": NATIVE_OBSERVE_NAME,
+            "stream_type": NATIVE_STREAM_TYPE,
+            "version": __version__,
+            "uptime": max(0, int(time.monotonic() - self._start_monotonic)),
+            "last_successful_sync": last_sync,
+            "pending_queue_depth": pending,
+            "recent_error_count": error_count,
+            "last_error_reason": last_reason,
+        }
 
     def register(self, pattern: str, handler_name: str, command: List[str]):
         """
@@ -346,6 +395,7 @@ class FileSensor:
             f"{handler_name} timed out after {cap}s (watchdog) for "
             f"{file_path.name} — terminating"
         )
+        self._record_handler_failure(f"{handler_name} {WATCHDOG_TIMEOUT}")
 
         try:
             log_rel = handler_proc.managed.log_writer.path.relative_to(self.journal_dir)
@@ -482,6 +532,7 @@ class FileSensor:
                         f"({elapsed:.1f}s)"
                     )
                     self._check_segment_observed(file_path)
+                    self._record_successful_contact()
                     handler_proc.cleanup()
                     self._remove_running_handler(handler_name, handler_proc)
                     return
@@ -518,6 +569,7 @@ class FileSensor:
                     file_path,
                     error=f"{handler_name} exit {exit_code}",
                 )
+                self._record_handler_failure(f"{handler_name} exit {exit_code}")
                 handler_proc.cleanup()
                 self._remove_running_handler(handler_name, handler_proc)
                 return
@@ -763,7 +815,7 @@ class FileSensor:
                 self._emit_segment_observed(segment, note=emit_note)
 
     def _emit_status(self):
-        """Emit observe.status event with current processing state (only when active)."""
+        """Emit observe.status: the diagnostics beacon plus any active work."""
         if not self.callosum:
             return
 
@@ -778,12 +830,10 @@ class FileSensor:
         has_running = any(running_snapshot.values())
         has_queued = any(queued_snapshot.values())
         if not has_running and not has_queued:
-            return
+            # Idle cadence tick is a successful no-work contact.
+            self._record_successful_contact()
 
-        # Build status object
         status = {}
-
-        # Get journal path for relative paths
         journal_path = Path(get_journal())
         now = time.time()
 
@@ -855,9 +905,8 @@ class FileSensor:
             if handler_status:
                 status[handler_name] = handler_status
 
-        # Only emit if we have something to report
-        if status:
-            self.callosum.emit("observe", "status", **status)
+        status.update(self._build_health_beacon())
+        self.callosum.emit("observe", "status", **status)
 
     def start(self):
         """Start listening for observe.observing Callosum events."""
@@ -866,9 +915,11 @@ class FileSensor:
         self.callosum = CallosumConnection(defaults={"rev": get_rev()})
         self.callosum.start(callback=self._handle_callosum_message)
         logger.info("Listening for observe.observing events via Callosum")
+        self._emit_status()
+        self.last_status_emit = time.time()
 
         while self.running_flag:
-            # Emit status every 5 seconds if there's activity
+            # Emit status every 5 seconds.
             now = time.time()
             if now - self.last_status_emit >= 5:
                 self._emit_status()

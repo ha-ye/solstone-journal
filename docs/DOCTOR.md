@@ -148,11 +148,18 @@ Staleness threshold: 60 seconds (configurable via `--threshold`).
 
 ### Callosum Status Events
 
-Services emit periodic status to Callosum (every 5 seconds when active):
+Services emit periodic status to Callosum. Most emit every 5 seconds when active:
 
 - `observe.status` - Capture state (screencast, audio, activity)
 - `cortex.status` - Running agents list
 - `supervisor.status` - Service health, stale heartbeats
+
+The native `observe.status` event also carries a diagnostics-only health beacon
+with the allowlisted fields `name`, `stream_type`, `version`, `uptime`,
+`last_successful_sync`, `pending_queue_depth`, `recent_error_count`, and
+`last_error_reason`. It is emitted at startup and every 5 seconds, including
+when healthy-idle, contains no captured content or file paths, and is distinct
+from platform upload observer beacons and journal-detected ingest rejections.
 
 The supervisor checks for `observe.status` event freshness and includes `stale_heartbeats` in its own status.
 

@@ -102,6 +102,26 @@ def _processing_settings(mode: str) -> ProcessingSettings:
     )
 
 
+BEACON_FIELDS = {
+    "name",
+    "stream_type",
+    "version",
+    "uptime",
+    "last_successful_sync",
+    "pending_queue_depth",
+    "recent_error_count",
+    "last_error_reason",
+}
+
+
+def _status_emit_calls(sensor):
+    return [
+        call
+        for call in sensor.callosum.emit.call_args_list
+        if call.args[:2] == ("observe", "status")
+    ]
+
+
 # --- QueuedItem Tests ---
 
 
@@ -768,6 +788,176 @@ def test_handler_watchdog_timeout_terminates_and_surfaces(
     assert observed_calls
     assert observed_calls[0].kwargs["error"] is True
     assert "Unhandled exception in handler worker" not in caplog.text
+
+
+def test_start_emits_native_observe_health_beacon(tmp_path, monkeypatch):
+    import solstone.observe.sense as sense_module
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    callosum = MagicMock()
+    monkeypatch.setattr(sense_module, "CallosumConnection", lambda **_kwargs: callosum)
+
+    sensor = FileSensor(tmp_path)
+    sensor.running_flag = False
+
+    sensor.start()
+
+    status_calls = _status_emit_calls(sensor)
+    assert len(status_calls) == 1
+    kwargs = status_calls[0].kwargs
+    assert kwargs["name"] == "native.observe"
+    assert kwargs["stream_type"] == "screen_audio"
+    assert BEACON_FIELDS <= set(kwargs)
+
+
+def test_emit_status_idle_emits_beacon_without_handler_sections(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    sensor = FileSensor(tmp_path)
+    sensor.callosum = MagicMock()
+
+    sensor._emit_status()
+
+    status_calls = _status_emit_calls(sensor)
+    assert len(status_calls) == 1
+    kwargs = status_calls[0].kwargs
+    assert BEACON_FIELDS <= set(kwargs)
+    for handler_name in ("describe", "transcribe", "extract", "depict"):
+        assert handler_name not in kwargs
+
+
+def test_emit_status_pending_depth_counts_work_without_path_leaks(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    sensor = FileSensor(tmp_path)
+    sensor.callosum = MagicMock()
+    running_file = make_segment_file(tmp_path, "running_secret.webm")
+    queued_file = make_segment_file(
+        tmp_path,
+        "queued_secret.flac",
+        segment="143023_300",
+    )
+
+    sensor.running_handlers["describe"].append(
+        HandlerProcess(running_file, FakeManaged(ref="running-ref"), "describe")
+    )
+    sensor.queued_handlers["transcribe"].append(QueuedItem(queued_file))
+
+    sensor._emit_status()
+
+    kwargs = _status_emit_calls(sensor)[0].kwargs
+    assert kwargs["pending_queue_depth"] == 2
+    leaked_substrings = (
+        running_file.name,
+        queued_file.name,
+        str(running_file),
+        str(queued_file),
+    )
+    for field in BEACON_FIELDS:
+        value = str(kwargs[field])
+        for leaked in leaked_substrings:
+            assert leaked not in value
+
+
+def test_successful_contact_and_idle_status_reset_recent_errors(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    sensor = FileSensor(tmp_path)
+    sensor.recent_error_count = 3
+
+    sensor._record_successful_contact()
+
+    assert sensor.recent_error_count == 0
+    assert sensor.last_successful_sync is not None
+
+    sensor.recent_error_count = 3
+    sensor.last_successful_sync = None
+    sensor.callosum = MagicMock()
+
+    sensor._emit_status()
+
+    kwargs = _status_emit_calls(sensor)[0].kwargs
+    assert kwargs["recent_error_count"] == 0
+    assert kwargs["last_successful_sync"] is not None
+
+
+def test_handler_failure_count_reason_cap_and_provider_blocked_exclusion(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    sensor = FileSensor(tmp_path)
+
+    sensor._record_handler_failure("describe exit 7")
+
+    assert sensor.recent_error_count == 1
+    assert sensor.last_error_reason == "describe exit 7"
+    assert "\n" not in sensor.last_error_reason
+    assert len(sensor.last_error_reason) <= 200
+
+    for _ in range(150):
+        sensor._record_handler_failure("describe exit 7")
+
+    assert sensor.recent_error_count == 99
+
+    provider_sensor = FileSensor(tmp_path)
+    provider_sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
+    provider_sensor.callosum = MagicMock()
+    test_file = make_segment_file(tmp_path, "provider_blocked.webm")
+    queued_item = QueuedItem(test_file)
+    provider_sensor.queued_handlers["describe"].append(queued_item)
+    log_path = tmp_path / "chronicle" / "20250101" / "health" / "provider.log"
+
+    monkeypatch.setattr(
+        provider_sensor,
+        "_spawn_managed_process",
+        lambda *_args: FakeManaged(
+            FakeProcess(EXIT_PROVIDER_BLOCKED),
+            log_path=log_path,
+        ),
+    )
+
+    provider_sensor._run_handler(
+        queued_item,
+        "describe",
+        ["journal", "describe", "{file}"],
+        "143022_300",
+        "20250101",
+        False,
+    )
+
+    assert provider_sensor.recent_error_count == 0
+
+
+def test_watchdog_timeout_counts_path_free_reason(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
+    sensor.callosum = MagicMock()
+    test_file = make_segment_file(tmp_path, "timeout_secret.webm")
+    process = TimeoutProcess()
+
+    monkeypatch.setattr(sensor, "_resolve_max_runtime", lambda _handler: 1)
+    monkeypatch.setattr(
+        sensor,
+        "_spawn_managed_process",
+        lambda *_args: FakeManaged(process),
+    )
+
+    sensor._handle_file(test_file)
+    sensor.handler_pools["describe"].shutdown(wait=True)
+
+    assert sensor.recent_error_count == 1
+    assert sensor.last_error_reason is not None
+    assert WATCHDOG_TIMEOUT in sensor.last_error_reason
+    assert test_file.name not in sensor.last_error_reason
+    assert str(test_file) not in sensor.last_error_reason
+
+
+def test_health_beacon_allowlist(tmp_path):
+    sensor = FileSensor(tmp_path)
+
+    beacon = sensor._build_health_beacon()
+
+    assert set(beacon.keys()) == BEACON_FIELDS
 
 
 def test_emit_status_soft_warns_once_before_handler_cap(tmp_path, monkeypatch):
