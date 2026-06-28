@@ -551,6 +551,71 @@ def test_resolve_provider_local_context_model_pin_is_honored(
     assert model != LOCAL_MODEL
 
 
+def test_resolve_provider_local_context_blank_pin_uses_context_tier(
+    use_fixtures_journal, monkeypatch, tmp_path
+):
+    """Blank local context model pins fall through to tier-based local routing."""
+    _write_tmp_journal_config(
+        tmp_path,
+        monkeypatch,
+        {
+            "providers": {
+                "generate": {"provider": "local"},
+                "models": {"local": {"3": "local/lite-test"}},
+                "contexts": {
+                    "talent.blank": {
+                        "provider": "local",
+                        "model": "",
+                        "tier": 3,
+                    }
+                },
+            }
+        },
+    )
+
+    provider, model = resolve_provider("talent.blank", "generate")
+
+    assert provider == "local"
+    assert model == "local/lite-test"
+    assert model != ""
+
+
+def test_resolve_provider_local_context_malformed_pin_uses_type_default_tier(
+    use_fixtures_journal, monkeypatch, tmp_path
+):
+    """Malformed local model pins fall through without crashing."""
+    _write_tmp_journal_config(
+        tmp_path,
+        monkeypatch,
+        {
+            "providers": {
+                "generate": {"provider": "local", "tier": 2},
+                "models": {"local": {"2": "local/default-test"}},
+                "contexts": {
+                    "talent.blank.no_tier": {
+                        "provider": "local",
+                        "model": "",
+                    },
+                    "talent.numeric.invalid_tier": {
+                        "provider": "local",
+                        "model": 123,
+                        "tier": 99,
+                    },
+                },
+            }
+        },
+    )
+
+    assert resolve_provider("talent.blank.no_tier", "generate") == (
+        "local",
+        "local/default-test",
+    )
+    assert resolve_provider("talent.numeric.invalid_tier", "generate") == (
+        "local",
+        "local/default-test",
+    )
+
+
 def test_resolve_provider_local_honors_context_tier_and_models_override(
     use_fixtures_journal, monkeypatch, tmp_path
 ):
@@ -628,6 +693,85 @@ def test_resolve_provider_split_lane_other_type_stays_cloud(
 
     assert generate_provider == "local"
     assert cogitate_provider == "openai"
+
+
+def test_generate_rejects_cloud_model_override_for_local_provider():
+    with (
+        patch(
+            "solstone.think.models.resolve_provider",
+            return_value=("local", "local/qwen3.5-4b"),
+        ),
+        patch(
+            "solstone.think.providers.get_provider_module",
+            side_effect=AssertionError("provider module should not be invoked"),
+        ),
+    ):
+        with pytest.raises(ValueError, match="local provider cannot serve"):
+            generate("hello", "test.context", model="gpt-5.5")
+
+
+def test_generate_with_result_rejects_cloud_model_override_for_local_provider():
+    with (
+        patch(
+            "solstone.think.models.resolve_provider",
+            return_value=("local", "local/qwen3.5-4b"),
+        ),
+        patch(
+            "solstone.think.providers.get_provider_module",
+            side_effect=AssertionError("provider module should not be invoked"),
+        ),
+    ):
+        with pytest.raises(ValueError, match="local provider cannot serve"):
+            generate_with_result("hello", "test.context", model="gpt-5.5")
+
+
+def test_agenerate_rejects_cloud_model_override_for_local_provider():
+    with (
+        patch(
+            "solstone.think.models.resolve_provider",
+            return_value=("local", "local/qwen3.5-4b"),
+        ),
+        patch(
+            "solstone.think.providers.get_provider_module",
+            side_effect=AssertionError("provider module should not be invoked"),
+        ),
+    ):
+        with pytest.raises(ValueError, match="local provider cannot serve"):
+            asyncio.run(agenerate("hello", "test.context", model="gpt-5.5"))
+
+
+def test_unknown_model_override_for_local_provider_proceeds_to_provider():
+    provider_module = SimpleNamespace(
+        run_generate=MagicMock(
+            return_value={"text": "ok", "finish_reason": "stop"},
+        ),
+        run_agenerate=AsyncMock(
+            return_value={"text": "ok", "finish_reason": "stop"},
+        ),
+    )
+
+    with (
+        patch(
+            "solstone.think.models.resolve_provider",
+            return_value=("local", "local/qwen3.5-4b"),
+        ),
+        patch(
+            "solstone.think.providers.get_provider_module",
+            return_value=provider_module,
+        ),
+    ):
+        assert generate("hello", "test.context", model="served-model") == "ok"
+        assert generate_with_result("hello", "test.context", model="served-model") == {
+            "text": "ok",
+            "finish_reason": "stop",
+        }
+        assert (
+            asyncio.run(agenerate("hello", "test.context", model="served-model"))
+            == "ok"
+        )
+
+    assert provider_module.run_generate.call_count == 2
+    assert provider_module.run_agenerate.call_count == 1
 
 
 # ---------------------------------------------------------------------------

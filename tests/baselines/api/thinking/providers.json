@@ -8,7 +8,153 @@
     "split": false
   },
   "ai_readiness": {
+    "context_routes": [
+      {
+        "context": null,
+        "detail": "Finish local model setup, then try the request again.",
+        "interface": "generate",
+        "model": "local/qwen3.5-4b",
+        "operator_detail": "reason_code=local_model_missing; provider=local; status=blocked; model=local/qwen3.5-4b; interface=generate",
+        "provider": "local",
+        "reason_code": "local_model_missing",
+        "recovery_action": {
+          "href": "/app/thinking/#local-setup",
+          "label": "Open Local Model Setup"
+        },
+        "semantic_key": "local_model_missing:local:local/qwen3.5-4b",
+        "severity": "blocker",
+        "status": "blocked",
+        "summary": "local model setup is not finished",
+        "work_key": null
+      },
+      {
+        "context": null,
+        "detail": "Open provider setup and add credentials, then try again.",
+        "interface": "generate",
+        "model": "claude-sonnet-4-5",
+        "operator_detail": "reason_code=provider_key_missing; provider=anthropic; status=blocked; model=claude-sonnet-4-5; interface=generate; message=ANTHROPIC_API_KEY not set",
+        "provider": "anthropic",
+        "reason_code": "provider_key_missing",
+        "recovery_action": {
+          "href": "/app/thinking/#main",
+          "label": "Open Settings"
+        },
+        "semantic_key": "provider_key_missing:anthropic:",
+        "severity": "blocker",
+        "status": "blocked",
+        "summary": "Anthropic needs credentials before it can read your screen descriptions",
+        "work_key": null
+      },
+      {
+        "context": null,
+        "detail": "Open provider setup and add credentials, then try again.",
+        "interface": "generate",
+        "model": "gemini-custom-flash-test",
+        "operator_detail": "reason_code=provider_key_missing; provider=google; status=blocked; model=gemini-custom-flash-test; interface=generate; message=GOOGLE_API_KEY not set",
+        "provider": "google",
+        "reason_code": "provider_key_missing",
+        "recovery_action": {
+          "href": "/app/thinking/#main",
+          "label": "Open Settings"
+        },
+        "semantic_key": "provider_key_missing:google:",
+        "severity": "blocker",
+        "status": "blocked",
+        "summary": "Gemini needs credentials before it can read your screen descriptions",
+        "work_key": null
+      },
+      {
+        "context": null,
+        "detail": "Open provider setup and add credentials, then try again.",
+        "interface": "generate",
+        "model": "gemini-flash-lite-latest",
+        "operator_detail": "reason_code=provider_key_missing; provider=google; status=blocked; model=gemini-flash-lite-latest; interface=generate; message=GOOGLE_API_KEY not set",
+        "provider": "google",
+        "reason_code": "provider_key_missing",
+        "recovery_action": {
+          "href": "/app/thinking/#main",
+          "label": "Open Settings"
+        },
+        "semantic_key": "provider_key_missing:google:",
+        "severity": "blocker",
+        "status": "blocked",
+        "summary": "Gemini needs credentials before it can read your screen descriptions",
+        "work_key": null
+      },
+      {
+        "context": null,
+        "detail": "Open provider setup and add credentials, then try again.",
+        "interface": "generate",
+        "model": "gemini-pro-latest",
+        "operator_detail": "reason_code=provider_key_missing; provider=google; status=blocked; model=gemini-pro-latest; interface=generate; message=GOOGLE_API_KEY not set",
+        "provider": "google",
+        "reason_code": "provider_key_missing",
+        "recovery_action": {
+          "href": "/app/thinking/#main",
+          "label": "Open Settings"
+        },
+        "semantic_key": "provider_key_missing:google:",
+        "severity": "blocker",
+        "status": "blocked",
+        "summary": "Gemini needs credentials before it can read your screen descriptions",
+        "work_key": null
+      },
+      {
+        "context": null,
+        "detail": "Open provider setup and add credentials, then try again.",
+        "interface": "generate",
+        "model": "gpt-5-mini",
+        "operator_detail": "reason_code=provider_key_missing; provider=openai; status=blocked; model=gpt-5-mini; interface=generate; message=OPENAI_API_KEY not set",
+        "provider": "openai",
+        "reason_code": "provider_key_missing",
+        "recovery_action": {
+          "href": "/app/thinking/#main",
+          "label": "Open Settings"
+        },
+        "semantic_key": "provider_key_missing:openai:",
+        "severity": "blocker",
+        "status": "blocked",
+        "summary": "OpenAI needs credentials before it can read your screen descriptions",
+        "work_key": null
+      },
+      {
+        "context": null,
+        "detail": "Open provider setup and add credentials, then try again.",
+        "interface": "generate",
+        "model": "gpt-5.4-mini",
+        "operator_detail": "reason_code=provider_key_missing; provider=openai; status=blocked; model=gpt-5.4-mini; interface=generate; message=OPENAI_API_KEY not set",
+        "provider": "openai",
+        "reason_code": "provider_key_missing",
+        "recovery_action": {
+          "href": "/app/thinking/#main",
+          "label": "Open Settings"
+        },
+        "semantic_key": "provider_key_missing:openai:",
+        "severity": "blocker",
+        "status": "blocked",
+        "summary": "OpenAI needs credentials before it can read your screen descriptions",
+        "work_key": null
+      }
+    ],
     "groups": [
+      {
+        "context": null,
+        "detail": "Finish local model setup, then try the request again.",
+        "interface": "generate",
+        "model": "local/qwen3.5-4b",
+        "operator_detail": "reason_code=local_model_missing; provider=local; status=blocked; model=local/qwen3.5-4b; interface=generate",
+        "provider": "local",
+        "reason_code": "local_model_missing",
+        "recovery_action": {
+          "href": "/app/thinking/#local-setup",
+          "label": "Open Local Model Setup"
+        },
+        "semantic_key": "local_model_missing:local:local/qwen3.5-4b",
+        "severity": "blocker",
+        "status": "blocked",
+        "summary": "local model setup is not finished",
+        "work_key": null
+      },
       {
         "context": null,
         "detail": "Open provider setup and add credentials, then try again.",
@@ -25,6 +171,24 @@
         "severity": "blocker",
         "status": "blocked",
         "summary": "OpenAI needs credentials before it can read your screen descriptions",
+        "work_key": null
+      },
+      {
+        "context": null,
+        "detail": "Open provider setup and add credentials, then try again.",
+        "interface": "generate",
+        "model": "claude-sonnet-4-5",
+        "operator_detail": "reason_code=provider_key_missing; provider=anthropic; status=blocked; model=claude-sonnet-4-5; interface=generate; message=ANTHROPIC_API_KEY not set",
+        "provider": "anthropic",
+        "reason_code": "provider_key_missing",
+        "recovery_action": {
+          "href": "/app/thinking/#main",
+          "label": "Open Settings"
+        },
+        "semantic_key": "provider_key_missing:anthropic:",
+        "severity": "blocker",
+        "status": "blocked",
+        "summary": "Anthropic needs credentials before it can read your screen descriptions",
         "work_key": null
       },
       {
@@ -103,8 +267,8 @@
       "work_key": null
     },
     "summary": {
-      "active_groups": 2,
-      "blocked_count": 2,
+      "active_groups": 4,
+      "blocked_count": 4,
       "severity": "blocker",
       "status": "blocked"
     }
@@ -447,6 +611,56 @@
     "test.tier.override": {
       "provider": "openai",
       "tier": 2
+    }
+  },
+  "effective_contexts": {
+    "observe.*": {
+      "differs_from_raw": false,
+      "interface": "generate",
+      "model": "gemini-flash-lite-latest",
+      "provider": "google"
+    },
+    "test.anthropic": {
+      "differs_from_raw": false,
+      "interface": "generate",
+      "model": "claude-sonnet-4-5",
+      "provider": "anthropic"
+    },
+    "test.config.override": {
+      "differs_from_raw": false,
+      "interface": "generate",
+      "model": "gemini-custom-flash-test",
+      "provider": "google"
+    },
+    "test.local": {
+      "differs_from_raw": false,
+      "interface": "generate",
+      "model": "local/qwen3.5-4b",
+      "provider": "local"
+    },
+    "test.openai": {
+      "differs_from_raw": false,
+      "interface": "generate",
+      "model": "gpt-5-mini",
+      "provider": "openai"
+    },
+    "test.tier": {
+      "differs_from_raw": false,
+      "interface": "generate",
+      "model": "gemini-pro-latest",
+      "provider": "google"
+    },
+    "test.tier.inherit": {
+      "differs_from_raw": false,
+      "interface": "generate",
+      "model": "gemini-flash-lite-latest",
+      "provider": "google"
+    },
+    "test.tier.override": {
+      "differs_from_raw": false,
+      "interface": "generate",
+      "model": "gpt-5.4-mini",
+      "provider": "openai"
     }
   },
   "generate": {

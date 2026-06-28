@@ -70,6 +70,9 @@ def _build_interface_snapshot() -> dict[str, Any]:
         interface_views[interface] = view_to_dict(view)
         views.append(view)
 
+    context_route_views = _build_context_route_views()
+    views.extend(context_route_views)
+
     groups_by_key = {}
     for view in views:
         if view.severity not in {"blocker", "attention"}:
@@ -92,8 +95,25 @@ def _build_interface_snapshot() -> dict[str, Any]:
             ),
         },
         "interfaces": interface_views,
+        "context_routes": [view_to_dict(view) for view in context_route_views],
         "groups": groups,
     }
+
+
+def _build_context_route_views() -> list:
+    config = models.get_config()
+    providers = config.get("providers", {})
+    contexts = providers.get("contexts", {}) if isinstance(providers, dict) else {}
+    if not isinstance(contexts, dict):
+        return []
+    views_by_route: dict[tuple[str, str, str], Any] = {}
+    for context in sorted(contexts):
+        interface, provider, model = models.resolve_effective_route(context)
+        key = (provider, model, interface)
+        if key not in views_by_route:
+            state = provider_state.readiness_for_provider(provider, interface, model)
+            views_by_route[key] = present_readiness(state)
+    return list(views_by_route.values())
 
 
 def highest_severity_group(snapshot: dict[str, Any]) -> dict[str, Any] | None:
