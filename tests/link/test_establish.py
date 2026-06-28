@@ -7,11 +7,12 @@ import json
 import uuid
 from pathlib import Path
 
+import pytest
 from cryptography.hazmat.primitives import serialization
 
 from solstone.think.link import establish
 from solstone.think.link.ca import LoadedCa, load_ca, load_or_generate_ca
-from solstone.think.link.mark import Mark, jid_from_spki
+from solstone.think.link.mark import Mark, jid_from_spki, mark_from_spki
 from solstone.think.link.paths import LinkState, ca_dir, staging_dir, state_path
 
 
@@ -48,7 +49,7 @@ def test_lock_in_persists_id_derived_from_permanent_ca(
     assert state.instance_id == _derived_jid(permanent)
 
 
-def test_lock_in_preserves_legacy_random_state_id(
+def test_lock_in_normalizes_legacy_random_state_id(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -56,15 +57,156 @@ def test_lock_in_preserves_legacy_random_state_id(
     load_or_generate_ca(ca_dir())
     legacy_id = str(uuid.uuid4())
     LinkState(instance_id=legacy_id, home_label="legacy").save()
-    before = state_path().read_bytes()
 
     establish.lock_in()
 
-    assert state_path().read_bytes() == before
     state = LinkState.load()
     assert state is not None
+    assert state.instance_id == _derived_jid(load_ca(ca_dir()))
+    assert state.home_label == "legacy"
+    assert state.locked_at is not None
+
+
+def test_create_link_state_normalizes_legacy_id_against_committed_ca(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _set_journal(monkeypatch, tmp_path)
+    load_or_generate_ca(ca_dir())
+    legacy_id = str(uuid.uuid4())
+    LinkState(instance_id=legacy_id, home_label="legacy").save()
+
+    state = establish.create_link_state()
+
+    reloaded = LinkState.load()
+    derived = _derived_jid(load_ca(ca_dir()))
+    assert state.instance_id == derived
+    assert state.home_label == "legacy"
+    assert state.locked_at is not None
+    assert reloaded is not None
+    assert reloaded.instance_id == derived
+    assert reloaded.home_label == "legacy"
+    assert reloaded.locked_at is not None
+
+
+def test_load_or_create_normalizes_legacy_id(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _set_journal(monkeypatch, tmp_path)
+    load_or_generate_ca(ca_dir())
+    legacy_id = str(uuid.uuid4())
+    LinkState(instance_id=legacy_id, home_label="legacy").save()
+
+    state = LinkState.load_or_create()
+
+    assert state.instance_id == _derived_jid(load_ca(ca_dir()))
+    assert state.home_label == "legacy"
+    assert state.locked_at is not None
+
+
+def test_normalize_legacy_id_without_ca_leaves_state_and_makes_no_ca(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _set_journal(monkeypatch, tmp_path)
+    legacy_id = str(uuid.uuid4())
+    LinkState(instance_id=legacy_id, home_label="legacy").save()
+    before = state_path().read_bytes()
+
+    state = LinkState.load_or_create()
+
+    ca_path = ca_dir()
+    assert not (ca_path / "cert.pem").exists()
+    assert not (ca_path / "private.pem").exists()
+    assert state_path().read_bytes() == before
     assert state.instance_id == legacy_id
-    assert state.locked_at is None
+
+
+def test_normalize_is_idempotent(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _set_journal(monkeypatch, tmp_path)
+    load_or_generate_ca(ca_dir())
+    legacy_id = str(uuid.uuid4())
+    LinkState(instance_id=legacy_id, home_label="legacy").save()
+
+    first = LinkState.load_or_create()
+    first_payload = state_path().read_bytes()
+    second = LinkState.load_or_create()
+    second_payload = state_path().read_bytes()
+
+    assert first.instance_id == _derived_jid(load_ca(ca_dir()))
+    assert second.instance_id == first.instance_id
+    assert second_payload == first_payload
+
+
+def test_already_derived_id_untouched(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _set_journal(monkeypatch, tmp_path)
+    created = establish.create_link_state()
+    before = state_path().read_bytes()
+
+    loaded = LinkState.load_or_create()
+
+    assert loaded.instance_id == created.instance_id
+    assert state_path().read_bytes() == before
+
+
+def test_normalize_invariant_raises_on_nondeterministic_derivation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _set_journal(monkeypatch, tmp_path)
+    load_or_generate_ca(ca_dir())
+    legacy_id = str(uuid.uuid4())
+    LinkState(instance_id=legacy_id, home_label="legacy").save()
+    values = iter([uuid.UUID(int=1), uuid.UUID(int=2)])
+    monkeypatch.setattr(establish, "jid_from_spki", lambda _spki: next(values))
+
+    with pytest.raises(
+        RuntimeError,
+        match="link identity normalization produced a non-deterministic instance_id",
+    ):
+        establish.create_link_state()
+
+
+def test_normalize_invariant_does_not_raise_for_already_derived_id(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _set_journal(monkeypatch, tmp_path)
+    created = establish.create_link_state()
+    values = iter([uuid.UUID(created.instance_id), uuid.UUID(int=2)])
+    monkeypatch.setattr(establish, "jid_from_spki", lambda _spki: next(values))
+
+    state = establish.create_link_state()
+
+    assert state.instance_id == created.instance_id
+
+
+def test_normalization_leaves_ca_and_mark_unchanged(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _set_journal(monkeypatch, tmp_path)
+    load_or_generate_ca(ca_dir())
+    ca_path = ca_dir()
+    cert_before = (ca_path / "cert.pem").read_bytes()
+    key_before = (ca_path / "private.pem").read_bytes()
+    mark_before = mark_from_spki(_spki_der(load_ca(ca_dir())))
+    legacy_id = str(uuid.uuid4())
+    LinkState(instance_id=legacy_id, home_label="legacy").save()
+
+    state = LinkState.load_or_create()
+
+    assert (ca_path / "cert.pem").read_bytes() == cert_before
+    assert (ca_path / "private.pem").read_bytes() == key_before
+    assert mark_from_spki(_spki_der(load_ca(ca_dir()))) == mark_before
+    assert state.instance_id == _derived_jid(load_ca(ca_dir()))
 
 
 def test_lock_in_self_heals_missing_state_from_committed_ca(

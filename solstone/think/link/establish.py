@@ -58,6 +58,29 @@ def is_committed() -> bool:
     return ca_is_present(ca_dir())
 
 
+def _normalize_instance_id_against_ca(state: LinkState) -> LinkState:
+    if not is_committed():
+        return state
+
+    ca = load_ca(ca_dir())
+    spki = _spki_der(ca)
+    derived = str(jid_from_spki(spki))
+    if state.instance_id == derived:
+        return state
+
+    rewritten = LinkState(
+        instance_id=derived,
+        home_label=state.home_label,
+        locked_at=state.locked_at if state.locked_at is not None else now_ms(),
+    )
+    rewritten.save()
+    if str(jid_from_spki(spki)) != rewritten.instance_id:
+        raise RuntimeError(
+            "link identity normalization produced a non-deterministic instance_id"
+        )
+    return rewritten
+
+
 def committed_mark() -> Mark:
     """Return the mark derived from the committed permanent CA."""
     return mark_from_spki(_spki_der(load_ca(ca_dir())))
@@ -94,6 +117,8 @@ def lock_in() -> Mark:
                 home_label="solstone",
                 locked_at=now_ms(),
             ).save()
+        else:
+            _normalize_instance_id_against_ca(existing)
 
         shutil.rmtree(staging_dir(), ignore_errors=True)
         return mark_from_spki(spki)
@@ -104,7 +129,7 @@ def create_link_state(default_label: str = "solstone") -> LinkState:
     with hold_lock(_identity_lock_path()):
         existing = LinkState.load(default_label=default_label)
         if existing is not None:
-            return existing
+            return _normalize_instance_id_against_ca(existing)
 
         ca = load_or_generate_ca(ca_dir())
         jid = str(jid_from_spki(_spki_der(ca)))

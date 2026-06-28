@@ -118,18 +118,6 @@ class LinkState:
 
     @classmethod
     def load_or_create(cls, *, default_label: str = "solstone") -> LinkState:
-        path = state_path()
-        if path.exists():
-            try:
-                raw = json.loads(path.read_text("utf-8"))
-                iid = raw.get("instance_id")
-                label = raw.get("home_label") or default_label
-                value = raw.get("locked_at")
-                locked_at = value if isinstance(value, int) else None
-                if isinstance(iid, str) and iid:
-                    return cls(instance_id=iid, home_label=label, locked_at=locked_at)
-            except (json.JSONDecodeError, OSError):
-                pass
         from solstone.think.link import establish
 
         return establish.create_link_state(default_label=default_label)
