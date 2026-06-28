@@ -4,6 +4,20 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.16] - 2026-06-28
+
+### Added
+- setting up solstone now gives your journal its own identity. you'll see your journal's mark, a small visual of two icons and two words derived from your journal's own key, and you can regenerate it until you like the one you get, then lock it in. your journal id comes from that same key, so it's unique to your journal and the same wherever it appears. after setup, your mark and journal id also stay visible where your devices connect to your journal.
+
+### Changed
+- if you run solstone fully on your own device, sol's local work, like summarizing your day and your weekly reflection, now stays on your device as intended even when no cloud key is set up. before, some of it could stop with a setup error. this keeps more of sol's work on your device.
+- re-registering an observer after a restart or reinstall no longer creates a duplicate entry; it reuses the one already there. a new `observer reconcile` command also collapses any duplicate observer entries you already have.
+
+### Fixed
+- re-pairing a device after a reinstall or restore used to leave its previous credential active, so old credentials could accumulate over time. re-pairing now retires the credential it replaces, leaving one current credential per device.
+- a chat reply that took too long to finish could later appear as the answer to a different message. that no longer happens. a reply that times out is now closed out cleanly and can't carry into your next message.
+- when sol prepared a message to solstone support for you to review, it could be described as a failure to reach support even though the draft was ready. the wording now matches what happened: your draft is prepared for you to review and send.
+
 ## [0.6.15] - 2026-06-26
 
 ### Added
