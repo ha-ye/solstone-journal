@@ -18,15 +18,25 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
 from solstone.think.link.ca import (
+    LoadedCa,
     _write_key,
+    ca_is_present,
     cert_fingerprint,
     generate_ca,
     load_ca,
     load_or_generate_ca,
     mint_attestation,
     mint_reach_assertion,
+    promote_ca,
     sign_csr,
 )
+
+
+def _spki_der(ca: LoadedCa) -> bytes:
+    return ca.cert.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
 
 
 def test_generate_and_reload(tmp_path: Path) -> None:
@@ -47,6 +57,34 @@ def test_load_or_generate_is_idempotent(tmp_path: Path) -> None:
     second = load_or_generate_ca(ca_dir)
 
     assert first.fingerprint_sha256() == second.fingerprint_sha256()
+
+
+def test_ca_is_present_requires_cert_and_key(tmp_path: Path) -> None:
+    ca_dir = tmp_path / "ca"
+
+    assert ca_is_present(ca_dir) is False
+    generate_ca(ca_dir)
+    assert ca_is_present(ca_dir) is True
+
+    (ca_dir / "cert.pem").unlink()
+    assert ca_is_present(ca_dir) is False
+
+    generate_ca(ca_dir)
+    (ca_dir / "private.pem").unlink()
+    assert ca_is_present(ca_dir) is False
+
+
+def test_promote_ca_copies_staged_ca_to_permanent(tmp_path: Path) -> None:
+    staging = tmp_path / "staging"
+    permanent = tmp_path / "permanent"
+    staged = generate_ca(staging)
+
+    promoted = promote_ca(staging, permanent)
+
+    assert _spki_der(promoted) == _spki_der(staged)
+    assert (permanent / "cert.pem").exists()
+    assert (permanent / "private.pem").exists()
+    assert (permanent / "private.pem").stat().st_mode & 0o777 == 0o600
 
 
 def test_generate_ca_write_is_atomic(tmp_path: Path, monkeypatch) -> None:

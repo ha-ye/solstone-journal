@@ -31,6 +31,13 @@ def _make_empty_client(tmp_path, monkeypatch, *, timezone="America/Denver"):
     return app.test_client(), journal
 
 
+def _commit_journal_identity() -> None:
+    from solstone.think.link.ca import load_or_generate_ca
+    from solstone.think.link.paths import ca_dir
+
+    load_or_generate_ca(ca_dir())
+
+
 def _clear_setup(journal_dir):
     config = _read_config(journal_dir)
     config.pop("setup", None)
@@ -528,6 +535,7 @@ class TestInitFinalize:
     """Tests for the atomic finalize endpoint."""
 
     def test_finalize_saves_all_config(self, fresh_client, journal_copy):
+        _commit_journal_identity()
         resp = fresh_client.post(
             "/init/finalize",
             json={
@@ -555,6 +563,7 @@ class TestInitFinalize:
         assert "completed_at" in config["setup"]
 
     def test_finalize_succeeds(self, fresh_client, journal_copy):
+        _commit_journal_identity()
         resp = fresh_client.post(
             "/init/finalize",
             json={"name": "Jane"},
@@ -570,6 +579,7 @@ class TestInitFinalize:
 
     def test_finalize_minimal(self, fresh_client, journal_copy):
         """Finalize with optional fields omitted."""
+        _commit_journal_identity()
         resp = fresh_client.post(
             "/init/finalize",
             json={},
@@ -586,6 +596,7 @@ class TestInitFinalize:
             tmp_path, monkeypatch, timezone="America/Denver"
         )
         client.get("/init")
+        _commit_journal_identity()
 
         resp = client.post(
             "/init/finalize",
@@ -611,6 +622,7 @@ class TestInitFinalize:
             tmp_path, monkeypatch, timezone="America/Denver"
         )
         client.get("/init")
+        _commit_journal_identity()
 
         resp = client.post(
             "/init/finalize",
@@ -626,6 +638,7 @@ class TestInitFinalize:
         assert "completed_at" in config["setup"]
 
     def test_finalize_completes_setup_access(self, fresh_client, journal_copy):
+        _commit_journal_identity()
         response = fresh_client.post(
             "/init/finalize",
             json={},
@@ -643,6 +656,7 @@ class TestInitFinalize:
 
     def test_post_init_redirect(self, fresh_client, journal_copy):
         """After finalize, /init redirects away."""
+        _commit_journal_identity()
         fresh_client.post(
             "/init/finalize",
             json={},
@@ -653,6 +667,7 @@ class TestInitFinalize:
 
     def test_finalize_with_retention_config(self, fresh_client, journal_copy):
         """Finalize with explicit retention config writes correct values."""
+        _commit_journal_identity()
         resp = fresh_client.post(
             "/init/finalize",
             json={
@@ -668,6 +683,7 @@ class TestInitFinalize:
 
     def test_finalize_default_retention(self, fresh_client, journal_copy):
         """Finalize without retention fields writes default (keep/null)."""
+        _commit_journal_identity()
         resp = fresh_client.post(
             "/init/finalize",
             json={},
@@ -681,6 +697,7 @@ class TestInitFinalize:
     def test_finalize_corrupt_config_returns_reason_without_writing(
         self, fresh_client, journal_copy
     ):
+        _commit_journal_identity()
         config_path = journal_copy / "config" / "journal.json"
         config_path.write_bytes(b"{ invalid json }")
         before = config_path.read_bytes()

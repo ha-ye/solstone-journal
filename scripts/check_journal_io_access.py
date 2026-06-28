@@ -120,6 +120,7 @@ OWNER_FILES: frozenset[str] = frozenset(
         # Link domain — device-pairing service state.
         "solstone/think/link/auth.py",
         "solstone/think/link/ca.py",
+        "solstone/think/link/establish.py",
         "solstone/think/link/nonces.py",
         "solstone/think/link/paths.py",
         "solstone/think/sense_splitter.py",

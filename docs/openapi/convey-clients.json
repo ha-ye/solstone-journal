@@ -63,6 +63,7 @@
               "file_read_failed",
               "health_report_failed",
               "identity_busy",
+              "identity_not_locked",
               "import_client_id_conflict",
               "import_conflict",
               "import_metadata_failed",

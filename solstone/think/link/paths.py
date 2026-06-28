@@ -27,7 +27,6 @@ import base64
 import json
 import os
 import secrets
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -50,6 +49,11 @@ def ca_dir() -> Path:
     d = link_root() / "ca"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def staging_dir() -> Path:
+    """Pure path for staged candidate CA material."""
+    return Path(get_journal()) / "link" / "ca-staging"
 
 
 def authorized_clients_path() -> Path:
@@ -106,6 +110,11 @@ class LinkState:
 
     instance_id: str
     home_label: str
+    locked_at: int | None = None
+
+    @property
+    def jid(self) -> str:
+        return self.instance_id
 
     @classmethod
     def load_or_create(cls, *, default_label: str = "solstone") -> LinkState:
@@ -115,13 +124,15 @@ class LinkState:
                 raw = json.loads(path.read_text("utf-8"))
                 iid = raw.get("instance_id")
                 label = raw.get("home_label") or default_label
+                value = raw.get("locked_at")
+                locked_at = value if isinstance(value, int) else None
                 if isinstance(iid, str) and iid:
-                    return cls(instance_id=iid, home_label=label)
+                    return cls(instance_id=iid, home_label=label, locked_at=locked_at)
             except (json.JSONDecodeError, OSError):
                 pass
-        state = cls(instance_id=str(uuid.uuid4()), home_label=default_label)
-        state.save()
-        return state
+        from solstone.think.link import establish
+
+        return establish.create_link_state(default_label=default_label)
 
     @classmethod
     def load(cls, *, default_label: str = "solstone") -> LinkState | None:
@@ -133,18 +144,22 @@ class LinkState:
             raw = json.loads(path.read_text("utf-8"))
             iid = raw.get("instance_id")
             label = raw.get("home_label") or default_label
+            value = raw.get("locked_at")
+            locked_at = value if isinstance(value, int) else None
             if isinstance(iid, str) and iid:
-                return cls(instance_id=iid, home_label=label)
+                return cls(instance_id=iid, home_label=label, locked_at=locked_at)
         except (json.JSONDecodeError, OSError):
             return None
         return None
 
     def save(self) -> None:
-        write_json(
-            state_path(),
-            {"instance_id": self.instance_id, "home_label": self.home_label},
-            indent=2,
-        )
+        payload: dict[str, object] = {
+            "instance_id": self.instance_id,
+            "home_label": self.home_label,
+        }
+        if self.locked_at is not None:
+            payload["locked_at"] = self.locked_at
+        write_json(state_path(), payload, indent=2)
 
 
 def load_service_token() -> str | None:

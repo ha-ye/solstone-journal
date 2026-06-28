@@ -67,9 +67,9 @@ def generate_ca(
 ) -> LoadedCa:
     """Generate a fresh ECDSA-P256 CA and write it to disk.
 
-    Writes `<ca_dir>/cert.pem` (world-readable) + `<ca_dir>/private.pem`
-    (mode 0600). No passphrase — filesystem perms + disk encryption are
-    the protection surface per the spec.
+    Writes `<ca_dir>/private.pem` (mode 0600), then `<ca_dir>/cert.pem`
+    (world-readable). No passphrase — filesystem perms + disk encryption
+    are the protection surface per the spec.
     """
     private_key = ec.generate_private_key(ec.SECP256R1())
     now = dt.datetime.now(dt.UTC)
@@ -104,8 +104,8 @@ def generate_ca(
 
     cert_path = _cert_path(ca_dir)
     key_path = _key_path(ca_dir)
-    atomic_replace(cert_path, cert.public_bytes(serialization.Encoding.PEM))
     _write_key(key_path, private_key)
+    atomic_replace(cert_path, cert.public_bytes(serialization.Encoding.PEM))
     return _materialize(cert, private_key)
 
 
@@ -120,11 +120,27 @@ def load_ca(ca_dir: Path) -> LoadedCa:
     return _materialize(cert, key)
 
 
+def ca_is_present(ca_dir: Path) -> bool:
+    """Return whether both permanent CA files are present."""
+    return _cert_path(ca_dir).exists() and _key_path(ca_dir).exists()
+
+
 def load_or_generate_ca(ca_dir: Path) -> LoadedCa:
     """Return an existing CA if present; otherwise generate a fresh one."""
-    if _cert_path(ca_dir).exists() and _key_path(ca_dir).exists():
+    if ca_is_present(ca_dir):
         return load_ca(ca_dir)
     return generate_ca(ca_dir)
+
+
+def promote_ca(staging_dir: Path, permanent_dir: Path) -> LoadedCa:
+    """Promote a valid staged CA into the permanent CA location."""
+    staging = load_ca(staging_dir)
+    _write_key(_key_path(permanent_dir), staging.private_key)
+    atomic_replace(
+        _cert_path(permanent_dir),
+        staging.cert.public_bytes(serialization.Encoding.PEM),
+    )
+    return load_ca(permanent_dir)
 
 
 def sign_csr(

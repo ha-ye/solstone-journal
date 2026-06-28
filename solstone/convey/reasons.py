@@ -95,6 +95,11 @@ CORRUPT_CONFIG = Reason(
     "I couldn't read your settings.",
     500,
 )
+IDENTITY_NOT_LOCKED = Reason(
+    "identity_not_locked",
+    "I couldn't finish setup because the journal id is not locked.",
+    400,
+)
 INVALID_CONFIG_VALUE = Reason(
     "invalid_config_value",
     "I couldn't save that setting because one value was invalid.",
