@@ -356,6 +356,84 @@ class TestInitDetection:
         assert config_path.read_bytes() == before
 
 
+class TestInitMark:
+    def test_mark_section_scaffold(self, fresh_client):
+        resp = fresh_client.get("/init")
+        assert resp.status_code == 200
+        assert b'id="section-journal-mark"' in resp.data
+        assert b"this is your journal" in resp.data
+        assert b'id="journal-mark-display"' in resp.data
+
+    def test_mark_routes_referenced(self, fresh_client):
+        resp = fresh_client.get("/init")
+        assert b"/init/mark/regenerate" in resp.data
+        assert b"/init/mark/lock" in resp.data
+        assert b"/init/mark" in resp.data
+
+    def test_mark_svg_wrapper_present(self, fresh_client):
+        resp = fresh_client.get("/init")
+        assert b'viewBox="0 0 24 24"' in resp.data
+        assert b'stroke-width="2"' in resp.data
+
+    def test_mark_error_branches_present(self, fresh_client):
+        resp = fresh_client.get("/init")
+        assert b'id="journal-mark-error"' in resp.data
+        assert b'id="journal-mark-retry"' in resp.data
+        assert resp.data.count(b"showMarkError(") >= 4
+
+    def test_mark_copy_verbatim(self, fresh_client):
+        resp = fresh_client.get("/init")
+        for text in (
+            "this is your journal",
+            "every journal has its own mark — two little symbols and two words, unique to yours. you'll recognize it whenever you connect a device to this journal.",
+            "try another",
+            "lock in my journal id",
+            "this becomes your journal's permanent id — once you lock it in, it's yours for good and can't be changed. regenerate as many times as you like first.",
+            "locked in — this is your journal's mark for good.",
+        ):
+            assert text.encode() in resp.data
+
+    def test_no_jid_token(self, fresh_client):
+        resp = fresh_client.get("/init")
+        assert re.search(r"\bjid\b", resp.data.decode()) is None
+
+    def test_finalize_blocked_when_unlocked(self, fresh_client):
+        resp = fresh_client.post(
+            "/init/finalize",
+            json={"name": "X"},
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
+        assert resp.get_json()["reason_code"] == "identity_not_locked"
+
+    def test_finalize_catch_routes_server_error(self, fresh_client):
+        resp = fresh_client.get("/init")
+        assert b"err.serverMessage" in resp.data
+        assert b"showFinalizeError" in resp.data
+
+    def test_mark_locked_on_commit(self, fresh_client):
+        _commit_journal_identity()
+        resp = fresh_client.get("/init/mark")
+        assert resp.get_json()["locked"] is True
+
+    def test_regenerate_blocked_when_locked(self, fresh_client):
+        _commit_journal_identity()
+        resp = fresh_client.post("/init/mark/regenerate")
+        assert resp.status_code == 400
+        assert resp.get_json()["reason_code"] == "invalid_operation_for_state"
+
+    def test_linked_assets_load(self, fresh_client):
+        resp = fresh_client.get("/init")
+        assert resp.status_code == 200
+        text = resp.data.decode()
+        urls = re.findall(r'<script src="([^"]+)"', text)
+        urls.extend(re.findall(r'<link [^>]*href="([^"]+)"', text))
+        assert urls
+        for url in urls:
+            asset_resp = fresh_client.get(url)
+            assert asset_resp.status_code == 200, url
+
+
 class TestInitValidateProvider:
     """Tests for the validate-only provider endpoint."""
 

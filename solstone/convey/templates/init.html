@@ -158,6 +158,14 @@
     }
     .password-toggle:hover { color: #333; }
     .password-toggle:active { color: #111; transform: translateY(-50%) scale(0.9); }
+    .mark-display { display: flex; align-items: center; gap: 1rem; margin: 0 0 0.75rem; min-height: 64px; flex-wrap: wrap; }
+    .mark-chips { display: flex; gap: 0.6rem; }
+    .mark-chip { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; border: 2px solid #ccc; border-radius: 10px; box-sizing: border-box; }
+    .mark-chip svg { width: 28px; height: 28px; display: block; }
+    .mark-words { display: flex; gap: 0.5rem; font-family: 'Comfortaa', system-ui, sans-serif; font-size: 1.05rem; color: #222; }
+    .mark-actions { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.25rem; }
+    .mark-locked { color: #22c55e; font-size: 0.9rem; margin-top: 0.5rem; }
+    .cta-button:disabled { opacity: 0.5; cursor: not-allowed; }
   </style>
   <script src="{{ url_for('root.static', filename='error-handler.js') }}"></script>
   <script src="{{ url_for('root.static', filename='api.js') }}"></script>
@@ -181,6 +189,20 @@
     <section id="section-machine-card" class="section machine-card">
       <h2 class="machine-card-headline">solstone runs on your device.</h2>
       <p>your observers, your journal, and sol — all right here. nothing else is required to start.</p>
+    </section>
+
+    <section class="init-section" id="section-journal-mark">
+      <h3>this is your journal</h3>
+      <p class="section-hint">every journal has its own mark — two little symbols and two words, unique to yours. you'll recognize it whenever you connect a device to this journal.</p>
+      <div id="journal-mark-display" class="mark-display" aria-live="polite"></div>
+      <div id="journal-mark-error" class="error-message" hidden></div>
+      <button type="button" id="journal-mark-retry" class="settings-preset-btn" hidden>try again</button>
+      <div class="mark-actions">
+        <button type="button" id="journal-mark-regenerate" class="settings-preset-btn">try another</button>
+        <button type="button" id="journal-mark-lock" class="cta-button">lock in my journal id</button>
+      </div>
+      <p class="section-hint mark-permanence">this becomes your journal's permanent id — once you lock it in, it's yours for good and can't be changed. regenerate as many times as you like first.</p>
+      <p id="journal-mark-locked" class="mark-locked" hidden>locked in — this is your journal's mark for good.</p>
     </section>
 
     <form id="init-form" onsubmit="finalize(event); return false;">
@@ -274,7 +296,7 @@
       </div>
     </section>
 
-    <button type="submit" class="cta-button">finish welcome setup</button>
+    <button type="submit" class="cta-button" disabled>finish welcome setup</button>
     </form>
     <div id="finalize-error" class="error-message" hidden></div>
 
@@ -464,6 +486,129 @@
       });
       document.getElementById('retention-days-input').addEventListener('input', updateRetentionUI);
       updateRetentionUI();
+    });
+
+    let journalMarkLocked = false;
+
+    function showMarkError(message) {
+      const errorEl = document.getElementById('journal-mark-error');
+      if (!errorEl) return;
+      errorEl.textContent = message;
+      errorEl.hidden = false;
+    }
+
+    function applyLockState(locked) {
+      journalMarkLocked = locked === true;
+      const regenerateButton = document.getElementById('journal-mark-regenerate');
+      const lockButton = document.getElementById('journal-mark-lock');
+      const permanence = document.querySelector('.mark-permanence');
+      const lockedMessage = document.getElementById('journal-mark-locked');
+      const finishButton = document.querySelector('button[type="submit"].cta-button');
+
+      if (regenerateButton) regenerateButton.hidden = journalMarkLocked;
+      if (lockButton) lockButton.hidden = journalMarkLocked;
+      if (permanence) permanence.hidden = journalMarkLocked;
+      if (lockedMessage) lockedMessage.hidden = !journalMarkLocked;
+      if (finishButton) finishButton.disabled = !journalMarkLocked;
+    }
+
+    function renderMark(spec, locked) {
+      const display = document.getElementById('journal-mark-display');
+      const errorEl = document.getElementById('journal-mark-error');
+      const retryButton = document.getElementById('journal-mark-retry');
+      const icons = spec ? [spec.icon1, spec.icon2] : [];
+      const words = Array.isArray(spec && spec.words) ? spec.words : [];
+      const validIcons = icons.length === 2 && icons.every(icon => icon && icon.svg && icon.color && icon.color.hex);
+
+      if (!display || !validIcons || words.length !== 2) {
+        showMarkError("couldn't draw your mark — try again.");
+        return;
+      }
+
+      display.innerHTML = '<div class="mark-chips"><div class="mark-chip"></div><div class="mark-chip"></div></div><div class="mark-words"><span></span><span></span></div>';
+      const chips = display.querySelectorAll('.mark-chip');
+      chips.forEach((chip, index) => {
+        const icon = icons[index];
+        chip.style.borderColor = icon.color.hex;
+        if (icon.rot === 45) chip.style.transform = 'rotate(45deg)';
+        chip.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="${icon.color.hex}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icon.svg}</svg>`;
+      });
+
+      const wordSpans = display.querySelectorAll('.mark-words span');
+      wordSpans[0].textContent = words[0];
+      wordSpans[1].textContent = words[1];
+      if (errorEl) {
+        errorEl.textContent = '';
+        errorEl.hidden = true;
+      }
+      if (retryButton) retryButton.hidden = true;
+      applyLockState(locked);
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      const retryButton = document.getElementById('journal-mark-retry');
+      const regenerateButton = document.getElementById('journal-mark-regenerate');
+      const lockButton = document.getElementById('journal-mark-lock');
+      const finishButton = document.querySelector('button[type="submit"].cta-button');
+
+      async function loadMark() {
+        const originalLabel = retryButton ? retryButton.textContent : '';
+        if (retryButton && !retryButton.hidden) {
+          retryButton.disabled = true;
+          retryButton.textContent = 'trying…';
+        }
+        try {
+          const data = await window.apiJson('/init/mark');
+          renderMark(data.mark, data.locked);
+        } catch (err) {
+          showMarkError((err && err.serverMessage) || "couldn't load your mark — try again.");
+          if (retryButton) retryButton.hidden = false;
+          if (finishButton) finishButton.disabled = true;
+        } finally {
+          if (retryButton && !retryButton.hidden) {
+            retryButton.textContent = originalLabel || 'try again';
+            retryButton.disabled = false;
+          }
+        }
+      }
+
+      if (retryButton) retryButton.addEventListener('click', loadMark);
+      if (regenerateButton) {
+        regenerateButton.addEventListener('click', async () => {
+          const originalLabel = regenerateButton.textContent;
+          regenerateButton.disabled = true;
+          regenerateButton.textContent = 'trying…';
+          try {
+            const data = await window.apiJson('/init/mark/regenerate', {method: 'POST'});
+            renderMark(data.mark, false);
+          } catch (err) {
+            showMarkError((err && err.serverMessage) || "couldn't regenerate — try again.");
+          } finally {
+            regenerateButton.textContent = originalLabel;
+            regenerateButton.disabled = false;
+          }
+        });
+      }
+      if (lockButton) {
+        lockButton.addEventListener('click', async () => {
+          const originalLabel = lockButton.textContent;
+          lockButton.disabled = true;
+          lockButton.textContent = 'locking…';
+          try {
+            const data = await window.apiJson('/init/mark/lock', {method: 'POST'});
+            renderMark(data.mark, true);
+          } catch (err) {
+            showMarkError((err && err.serverMessage) || "couldn't lock it in — try again.");
+            applyLockState(false);
+          } finally {
+            if (!lockButton.hidden) {
+              lockButton.textContent = originalLabel;
+              lockButton.disabled = false;
+            }
+          }
+        });
+      }
+      loadMark();
     });
 
     function showFinalizeError(errorEl, message) {
