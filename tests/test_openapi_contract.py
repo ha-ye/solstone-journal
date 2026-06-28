@@ -58,6 +58,7 @@ CONTRACTED_PATHS = {
     "/app/network/pair-start",
     "/app/network/unpair",
     "/app/observer/callosum",
+    "/app/observer/health",
     "/app/observer/ingest",
     "/app/observer/ingest/event",
     "/app/observer/ingest/manifest",
@@ -342,7 +343,7 @@ def test_no_r0_routes_in_artifact():
     assert "/api/config/convey" not in document["paths"]
     assert "/api/system/status" not in document["paths"]
     assert set(document["paths"]) == CONTRACTED_PATHS
-    assert len(document["paths"]) == 30
+    assert len(document["paths"]) == 31
 
 
 def test_home_pulse_named_fields_present(contract_app):
