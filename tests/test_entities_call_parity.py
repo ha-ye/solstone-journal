@@ -736,7 +736,7 @@ def test_aka_success_duplicate_first_word_conflict_and_busy_byte_exact(
     assert busy.stderr == ENTITY_BUSY.message + "\n"
 
 
-def test_update_owner_errors_consolidate_and_observe_busy_byte_exact(
+def test_update_owner_errors_and_observe_busy_byte_exact(
     entity_env,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -794,13 +794,6 @@ def test_update_owner_errors_consolidate_and_observe_busy_byte_exact(
     )
     assert observe_busy.exit_code == 1
     assert observe_busy.stderr == ENTITY_BUSY.message + "\n"
-
-    consolidate = runner.invoke(app, ["consolidate"])
-    consolidate_full = runner.invoke(app, ["consolidate", "--full"])
-    assert consolidate.exit_code == 0
-    assert consolidate.stdout.startswith("Wrote ")
-    assert consolidate_full.exit_code == 0
-    assert consolidate_full.stdout.startswith("Wrote ")
 
 
 def test_observations_and_observe_byte_exact(entity_env) -> None:

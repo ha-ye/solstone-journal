@@ -2,7 +2,7 @@
 name: entities
 description: >
   Tracked entities — people, companies, projects, tools — within facets.
-  Detect, attach, move, merge, consolidate, update, alias, search.
+  Detect, attach, move, merge, update, alias, search.
   TRIGGER: entity, person, company, relationship, who is, contact, sol call
   entities detect/attach/merge/search.
 ---
@@ -256,36 +256,13 @@ sol call entities search --type Person --facet work
 sol call entities search --since 20260115
 ```
 
-## consolidate
-
-```bash
-sol call entities consolidate [--full]
-```
-
-Roll up segment-level entity detections into journal-level entity records.
-
-- `--full`: scan all days. Default scans today only.
-
-Behavior notes:
-
-- Uses 85% fuzzy-name matching to merge duplicates. Threshold is not configurable.
-- Noise-filter entities are skipped.
-- Reports the number of new entities written; existing entities are updated in place with richer descriptions.
-
-Example:
-
-```bash
-sol call entities consolidate
-sol call entities consolidate --full
-```
-
 ## merge
 
 ```bash
 sol call entities merge SOURCE_SLUG TARGET_SLUG [--commit/--no-commit] [--keep-source-as-aka/--no-keep-source-as-aka]
 ```
 
-Plan or execute a merge of two journal entities (e.g., collapse duplicates after consolidation).
+Plan or execute a merge of two journal entities (e.g., collapse duplicate records after review).
 
 - `SOURCE_SLUG`: entity slug to merge from (removed on `--commit`).
 - `TARGET_SLUG`: entity slug to merge into (canonical).
@@ -308,6 +285,5 @@ sol call entities merge jeremy-miller jeremie-miller --commit
 ## Gotchas
 
 - **`merge` previews by default.** Default is `--no-commit`: it emits a JSON plan without mutating anything. Pass `--commit` when you actually want the merge to happen.
-- **`consolidate` auto-merges at 85%.** Fuzzy-name matching runs unattended; review the output whenever it reports new entities to catch unexpected consolidations.
 - **`detect` requires TYPE ≥ 3 chars.** Shorter types are silently rejected.
 - **`observe` is for durable traits, `detect` is for day-scoped sightings.** Mixing them skews future entity context.

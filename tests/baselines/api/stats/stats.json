@@ -93,29 +93,6 @@
       "title": "Document Analysis",
       "type": "generate"
     },
-    "entities": {
-      "color": "#2e7d32",
-      "description": "Extracts people, companies, projects, and tools from segment content",
-      "hook": {
-        "post": "entities"
-      },
-      "load": {
-        "percepts": true,
-        "talents": false,
-        "transcripts": true
-      },
-      "max_output_tokens": 1024,
-      "mtime": 0,
-      "output": "json",
-      "path": "<PROJECT>/solstone/talent/entities.md",
-      "priority": 10,
-      "schedule": "segment",
-      "schema": "entities.schema.json",
-      "source": "system",
-      "thinking_budget": 4096,
-      "title": "Entity Extraction",
-      "type": "generate"
-    },
     "entities:detection": {
       "app": "entities",
       "color": "#00695c",

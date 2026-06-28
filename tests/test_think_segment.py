@@ -31,11 +31,6 @@ def _segment_configs(*names: str) -> dict[str, dict]:
             "output": "json",
             "schedule": "segment",
         },
-        "entities": {
-            "priority": 20,
-            "type": "cogitate",
-            "schedule": "segment",
-        },
         "documents": {
             "priority": 20,
             "type": "cogitate",
@@ -167,7 +162,6 @@ def _patch_segment_cortex(monkeypatch, think, spawned: list[str]) -> None:
         "get_talent_configs",
         lambda schedule=None, **kwargs: _segment_configs(
             "sense",
-            "entities",
             "documents",
             "timeline:segment_summary",
             "screen",
@@ -258,7 +252,7 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "get_talent_configs",
-            lambda schedule=None, **kwargs: _segment_configs("sense", "entities"),
+            lambda schedule=None, **kwargs: _segment_configs("sense", "documents"),
         )
         monkeypatch.setattr(
             think,
@@ -280,7 +274,7 @@ class TestRunSegmentSense:
             stream="default",
         )
 
-        assert spawned == ["sense", "entities"]
+        assert spawned == ["sense", "documents"]
         assert success == 2
         assert failed == 0
         assert failed_names == []
@@ -316,7 +310,7 @@ class TestRunSegmentSense:
             think,
             "get_talent_configs",
             lambda schedule=None, **kwargs: _segment_configs(
-                "sense", "entities", "screen"
+                "sense", "documents", "screen"
             ),
         )
         monkeypatch.setattr(
@@ -403,7 +397,7 @@ class TestRunSegmentSense:
             think,
             "get_talent_configs",
             lambda schedule=None, **kwargs: _segment_configs(
-                "sense", "entities", "screen"
+                "sense", "documents", "screen"
             ),
         )
         monkeypatch.setattr(
@@ -466,7 +460,7 @@ class TestRunSegmentSense:
             think,
             "get_talent_configs",
             lambda schedule=None, **kwargs: _segment_configs(
-                "sense", "entities", "screen"
+                "sense", "documents", "screen"
             ),
         )
         monkeypatch.setattr(
@@ -489,7 +483,7 @@ class TestRunSegmentSense:
             stream="default",
         )
 
-        assert spawned == ["sense", "entities", "screen"]
+        assert spawned == ["sense", "documents", "screen"]
 
     @pytest.mark.parametrize("live", [False, True])
     def test_entities_detection_dispatches_in_stable_order(
@@ -508,7 +502,6 @@ class TestRunSegmentSense:
             "get_talent_configs",
             lambda schedule=None, **kwargs: _segment_configs(
                 "sense",
-                "entities",
                 "documents",
                 "timeline:segment_summary",
                 "entities:detection",
@@ -537,7 +530,6 @@ class TestRunSegmentSense:
 
         assert spawned == [
             "sense",
-            "entities",
             "documents",
             "timeline:segment_summary",
             "entities:detection",
@@ -546,8 +538,8 @@ class TestRunSegmentSense:
     @pytest.mark.parametrize(
         ("has_embeddings", "expected"),
         [
-            (False, ["sense", "entities"]),
-            (True, ["sense", "entities", "speaker_attribution"]),
+            (False, ["sense", "documents"]),
+            (True, ["sense", "documents", "speaker_attribution"]),
         ],
     )
     def test_conditional_speaker_attribution(
@@ -577,7 +569,7 @@ class TestRunSegmentSense:
             "get_talent_configs",
             lambda schedule=None, **kwargs: _segment_configs(
                 "sense",
-                "entities",
+                "documents",
                 "speaker_attribution",
             ),
         )
@@ -627,7 +619,6 @@ class TestRunSegmentSense:
             "get_talent_configs",
             lambda schedule=None, **kwargs: _segment_configs(
                 "sense",
-                "entities",
                 "documents",
                 "timeline:segment_summary",
                 "screen",
@@ -656,7 +647,6 @@ class TestRunSegmentSense:
 
         assert spawned == [
             "sense",
-            "entities",
             "documents",
             "timeline:segment_summary",
             "screen",
@@ -717,7 +707,6 @@ class TestRunSegmentSense:
 
         assert spawned == [
             "sense",
-            "entities",
             "documents",
             "timeline:segment_summary",
             "screen",
@@ -769,7 +758,6 @@ class TestRunSegmentSense:
 
         assert spawned == [
             "sense",
-            "entities",
             "documents",
             "timeline:segment_summary",
             "screen",
@@ -801,7 +789,6 @@ class TestRunSegmentSense:
 
         assert spawned == [
             "sense",
-            "entities",
             "documents",
             "timeline:segment_summary",
             "screen",
@@ -923,7 +910,7 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "get_talent_configs",
-            lambda schedule=None, **kwargs: _segment_configs("sense", "entities"),
+            lambda schedule=None, **kwargs: _segment_configs("sense", "documents"),
         )
         monkeypatch.setattr(
             think,
@@ -945,12 +932,12 @@ class TestRunSegmentSense:
             stream="default",
         )
 
-        assert spawned == ["sense", "entities"]
+        assert spawned == ["sense", "documents"]
         assert success == 2
         assert failed == 0
         assert failed_names == []
 
-    def test_entities_always_runs(self, segment_dir, monkeypatch):
+    def test_documents_always_runs(self, segment_dir, monkeypatch):
         from solstone.think import thinking as think
 
         spawned = []
@@ -963,7 +950,7 @@ class TestRunSegmentSense:
             think,
             "get_talent_configs",
             lambda schedule=None, **kwargs: _segment_configs(
-                "sense", "entities", "screen"
+                "sense", "documents", "screen"
             ),
         )
         monkeypatch.setattr(
@@ -986,7 +973,7 @@ class TestRunSegmentSense:
             stream="default",
         )
 
-        assert "entities" in spawned
+        assert "documents" in spawned
         assert "screen" not in spawned
 
     def test_segment_summary_dispatched_for_non_idle(self, segment_dir, monkeypatch):
@@ -1002,7 +989,7 @@ class TestRunSegmentSense:
             think,
             "get_talent_configs",
             lambda schedule=None, **kwargs: _segment_configs(
-                "sense", "entities", "timeline:segment_summary"
+                "sense", "documents", "timeline:segment_summary"
             ),
         )
         monkeypatch.setattr(
@@ -1040,7 +1027,7 @@ class TestRunSegmentSense:
             think,
             "get_talent_configs",
             lambda schedule=None, **kwargs: _segment_configs(
-                "sense", "entities", "timeline:segment_summary"
+                "sense", "documents", "timeline:segment_summary"
             ),
         )
         monkeypatch.setattr(
@@ -1077,7 +1064,7 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "get_talent_configs",
-            lambda schedule=None, **kwargs: _segment_configs("sense", "entities"),
+            lambda schedule=None, **kwargs: _segment_configs("sense"),
         )
         monkeypatch.setattr(
             think,
@@ -1152,7 +1139,7 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "get_talent_configs",
-            lambda schedule=None, **kwargs: _segment_configs("sense", "entities"),
+            lambda schedule=None, **kwargs: _segment_configs("sense", "documents"),
         )
         monkeypatch.setattr(
             think,
@@ -1281,7 +1268,7 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "get_talent_configs",
-            lambda schedule=None, **kwargs: _segment_configs("sense", "entities"),
+            lambda schedule=None, **kwargs: _segment_configs("sense", "documents"),
         )
         monkeypatch.setattr(think, "cortex_request", mock_cortex_request)
         monkeypatch.setattr(think, "_SEND_RETRY_DELAYS", (0.0, 0.0))
@@ -1301,10 +1288,10 @@ class TestRunSegmentSense:
         )
 
         assert calls[0] == "sense"
-        assert calls[1:] == ["entities", "entities", "entities"]
+        assert calls[1:] == ["documents", "documents", "documents"]
         assert success == 1
         assert failed == 1
-        assert failed_names == ["entities (send)"]
+        assert failed_names == ["documents (send)"]
 
 
 class TestCortexRequestRetry:
@@ -1631,7 +1618,7 @@ class TestThinkJSONLEvents:
         monkeypatch.setattr(
             think,
             "get_talent_configs",
-            lambda schedule=None, **kwargs: _segment_configs("sense", "entities"),
+            lambda schedule=None, **kwargs: _segment_configs("sense"),
         )
         monkeypatch.setattr(
             think,

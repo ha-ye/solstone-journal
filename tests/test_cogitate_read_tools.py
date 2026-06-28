@@ -28,8 +28,8 @@ def read_tools_journal(tmp_path):
     write("chronicle/20260608/session/090000_300/evidence.md", "x evidence\n")
     write("chronicle/20260608/session/090000_300/nested/deep.txt", "deep x\n")
     write(
-        "chronicle/20260608/session/090000_300/talents/entities.jsonl",
-        '{"entity":"rohan"}\n',
+        "chronicle/20260608/session/090000_300/talents/sense.json",
+        '{"activity_summary":"rohan"}\n',
     )
     write("chronicle/20260608/foo", "date redirected\n")
     write("chronicle/20260608/.git/config", "git-secret x\n")
@@ -373,9 +373,9 @@ def test_allowed_bounded_recursive_roots_succeed(read_tools_journal):
 
     root_list = crt.list_directory(journal)
     day_glob = crt.glob(journal, "*090000*", root="chronicle/20260608")
-    entities_jsonl = crt.glob(
+    sense_json = crt.glob(
         journal,
-        "*/talents/entities.jsonl",
+        "*/talents/sense.json",
         root="chronicle/20260608/session/090000_300",
     )
     facet_glob = crt.glob(journal, "*", root="facets/work")
@@ -391,9 +391,9 @@ def test_allowed_bounded_recursive_roots_succeed(read_tools_journal):
     assert _payload_paths(root_list)
     assert day_glob.ok is True
     assert any("090000_300" in path for path in _payload_paths(day_glob))
-    assert entities_jsonl.ok is True
-    assert _payload_paths(entities_jsonl) == [
-        "chronicle/20260608/session/090000_300/talents/entities.jsonl"
+    assert sense_json.ok is True
+    assert _payload_paths(sense_json) == [
+        "chronicle/20260608/session/090000_300/talents/sense.json"
     ]
     assert facet_glob.ok is True
     assert "facets/work/facet.json" in _payload_paths(facet_glob)

@@ -83,7 +83,6 @@ from solstone.think.entities import (
     update_facet_entity_description,
     update_facet_entity_identity,
 )
-from solstone.think.entities.consolidation import consolidate_detected_entities
 from solstone.think.entities.journal import delete_journal_entity, load_journal_entity
 from solstone.think.entities.relationships import move_facet_entity
 from solstone.think.entities.review_candidates import (
@@ -537,18 +536,6 @@ def add_aka_for_call(facet_name: str) -> Any:
         params={"entity": original_query, "name": exclude_name, "aka": aka},
     )
     return success_response({"aka": aka_list})
-
-
-@entities_bp.route("/api/consolidate", methods=["POST"])
-def consolidate_entities_for_call() -> Any:
-    """Consolidate detected entities for the CLI."""
-    data = _json_body()
-    full = _body_bool(data, "full")
-    try:
-        count = consolidate_detected_entities(state.journal_root, full=full)
-    except Exception as exc:
-        return error_response(ENTITY_OPERATION_FAILED, detail=str(exc))
-    return success_response({"count": count})
 
 
 @entities_bp.route("/api/record-merge-candidate", methods=["POST"])

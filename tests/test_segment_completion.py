@@ -167,10 +167,8 @@ def _complete_segment_events(
     if density != "idle":
         events.extend(
             [
-                _dispatch(segment, "entities", 13, stream=stream),
-                _complete(segment, "entities", 14, stream=stream),
-                _dispatch(segment, "documents", 15, stream=stream),
-                _complete(segment, "documents", 16, stream=stream),
+                _dispatch(segment, "documents", 13, stream=stream),
+                _complete(segment, "documents", 14, stream=stream),
             ]
         )
     return events
@@ -274,13 +272,13 @@ def test_read_segment_progress_folds_latest_terminal_and_segments(
         "001_segment.jsonl",
         [
             _sense_complete(SEGMENT, "active", 1),
-            _dispatch(SEGMENT, "entities", 2),
-            _complete(SEGMENT, "entities", 3),
-            _skip(SEGMENT, "entities", "not_recommended", 4),
-            _fail(SEGMENT, "entities", 5),
+            _dispatch(SEGMENT, "documents", 2),
+            _complete(SEGMENT, "documents", 3),
+            _skip(SEGMENT, "documents", "not_recommended", 4),
+            _fail(SEGMENT, "documents", 5),
             _sense_complete(SEGMENT_B, "active", 1),
-            _dispatch(SEGMENT_B, "entities", 2),
-            _complete(SEGMENT_B, "entities", 3),
+            _dispatch(SEGMENT_B, "documents", 2),
+            _complete(SEGMENT_B, "documents", 3),
         ],
     )
 
@@ -288,9 +286,9 @@ def test_read_segment_progress_folds_latest_terminal_and_segments(
 
     assert progress[(None, SEGMENT)].sensed is True
     assert progress[(None, SEGMENT)].density == "active"
-    assert "entities" not in progress[(None, SEGMENT)].completed
-    assert progress[(None, SEGMENT)].dispatched == frozenset({"entities"})
-    assert progress[(None, SEGMENT_B)].completed == frozenset({"entities"})
+    assert "documents" not in progress[(None, SEGMENT)].completed
+    assert progress[(None, SEGMENT)].dispatched == frozenset({"documents"})
+    assert progress[(None, SEGMENT_B)].completed == frozenset({"documents"})
 
 
 def test_read_segment_progress_tracks_latest_sense_density(segment_journal):
@@ -343,8 +341,6 @@ def test_stream_keyed_progress_separates_duplicate_segment_ids(segment_journal):
             _dispatch(SEGMENT, "sense", 20, stream="beta"),
             _complete(SEGMENT, "sense", 21, stream="beta"),
             _sense_complete(SEGMENT, "active", 22, stream="beta"),
-            _dispatch(SEGMENT, "entities", 23, stream="beta"),
-            _complete(SEGMENT, "entities", 24, stream="beta"),
         ],
     )
 
@@ -352,10 +348,8 @@ def test_stream_keyed_progress_separates_duplicate_segment_ids(segment_journal):
 
     assert ("alpha", SEGMENT) in progress
     assert ("beta", SEGMENT) in progress
-    assert progress[("alpha", SEGMENT)].completed == frozenset(
-        {"sense", "entities", "documents"}
-    )
-    assert progress[("beta", SEGMENT)].completed == frozenset({"sense", "entities"})
+    assert progress[("alpha", SEGMENT)].completed == frozenset({"sense", "documents"})
+    assert progress[("beta", SEGMENT)].completed == frozenset({"sense"})
     assert segment_fully_thought(
         lookup_segment_progress(progress, "alpha", SEGMENT)
     ) == (True, None)
@@ -387,7 +381,7 @@ def test_stream_lookup_does_not_borrow_from_other_stream(segment_journal):
     ) == (True, None)
     assert segment_fully_thought(
         lookup_segment_progress(progress, "beta", SEGMENT)
-    ) == (False, "floor:entities")
+    ) == (False, "floor:documents")
 
     completion = classify_segment_completion(cluster_segments(day), progress)
     assert completion.not_thought == 1
@@ -403,14 +397,13 @@ def test_stream_keyed_no_config_floor_allows_completion(segment_journal):
         "001_segment.jsonl",
         [
             _sense_complete(SEGMENT, "active", 1, stream="gamma"),
-            _complete(SEGMENT, "documents", 2, stream="gamma"),
-            _skip(SEGMENT, "entities", "no_config", 3, stream="gamma"),
+            _skip(SEGMENT, "documents", "no_config", 3, stream="gamma"),
         ],
     )
 
     progress = read_segment_progress(day)
 
-    assert progress[("gamma", SEGMENT)].unconfigured == frozenset({"entities"})
+    assert progress[("gamma", SEGMENT)].unconfigured == frozenset({"documents"})
     assert segment_fully_thought(
         lookup_segment_progress(progress, "gamma", SEGMENT)
     ) == (True, None)
@@ -539,7 +532,7 @@ def test_segment_fully_thought_requires_floor_after_sense():
         unconfigured=frozenset(),
     )
 
-    assert segment_fully_thought(progress) == (False, "floor:entities")
+    assert segment_fully_thought(progress) == (False, "floor:documents")
 
 
 def test_segment_floor_and_nongating_talents_are_disjoint():
@@ -568,8 +561,8 @@ def test_segment_fully_thought_does_not_require_detection_before_activation():
         sensed=True,
         density="active",
         change_class=None,
-        dispatched=frozenset({"sense", "entities", "documents"}),
-        completed=frozenset({"sense", "entities", "documents"}),
+        dispatched=frozenset({"sense", "documents"}),
+        completed=frozenset({"sense", "documents"}),
         unconfigured=frozenset(),
     )
 
@@ -581,8 +574,8 @@ def test_segment_fully_thought_does_not_require_rolling_talents():
         sensed=True,
         density="active",
         change_class=None,
-        dispatched=frozenset({"sense", "entities", "documents"}),
-        completed=frozenset({"sense", "entities", "documents"}),
+        dispatched=frozenset({"sense", "documents"}),
+        completed=frozenset({"sense", "documents"}),
         unconfigured=frozenset(),
     )
 
@@ -594,9 +587,9 @@ def test_segment_fully_thought_allows_unconfigured_floor_talent():
         sensed=True,
         density="active",
         change_class=None,
-        dispatched=frozenset({"sense", "documents"}),
-        completed=frozenset({"sense", "documents"}),
-        unconfigured=frozenset({"entities"}),
+        dispatched=frozenset({"sense"}),
+        completed=frozenset({"sense"}),
+        unconfigured=frozenset({"documents"}),
     )
 
     assert segment_fully_thought(progress) == (True, None)
@@ -607,8 +600,8 @@ def test_segment_fully_thought_requires_dispatched_completion():
         sensed=True,
         density="active",
         change_class=None,
-        dispatched=frozenset({"sense", "entities", "documents", "screen"}),
-        completed=frozenset({"sense", "entities", "documents"}),
+        dispatched=frozenset({"sense", "documents", "screen"}),
+        completed=frozenset({"sense", "documents"}),
         unconfigured=frozenset(),
     )
 
@@ -620,8 +613,8 @@ def test_segment_fully_thought_allows_nongating_detection_without_completion():
         sensed=True,
         density="active",
         change_class=None,
-        dispatched=frozenset({"sense", "entities", "documents", "entities:detection"}),
-        completed=frozenset({"sense", "entities", "documents"}),
+        dispatched=frozenset({"sense", "documents", "entities:detection"}),
+        completed=frozenset({"sense", "documents"}),
         unconfigured=frozenset(),
     )
 
@@ -655,7 +648,7 @@ def test_classifier_stats_and_gate_agree_on_all_gate_states(
         {
             "segment": SEGMENT_C,
             "dimension": "not_thought",
-            "detail": "floor:entities",
+            "detail": "floor:documents",
         },
         {
             "segment": SEGMENT_D,
@@ -694,15 +687,13 @@ def test_classify_segment_completion_latest_terminal_wins(segment_journal):
         "001_segment.jsonl",
         [
             _sense_complete(fail_then_complete, "active", 1),
-            _complete(fail_then_complete, "documents", 4),
-            _dispatch(fail_then_complete, "entities", 4),
-            _fail(fail_then_complete, "entities", 5),
-            _complete(fail_then_complete, "entities", 6),
+            _dispatch(fail_then_complete, "documents", 4),
+            _fail(fail_then_complete, "documents", 5),
+            _complete(fail_then_complete, "documents", 6),
             _sense_complete(complete_then_fail, "active", 1),
-            _complete(complete_then_fail, "documents", 4),
-            _dispatch(complete_then_fail, "entities", 4),
-            _complete(complete_then_fail, "entities", 5),
-            _fail(complete_then_fail, "entities", 6),
+            _dispatch(complete_then_fail, "documents", 4),
+            _complete(complete_then_fail, "documents", 5),
+            _fail(complete_then_fail, "documents", 6),
         ],
     )
 
@@ -716,7 +707,7 @@ def test_classify_segment_completion_latest_terminal_wins(segment_journal):
         {
             "segment": complete_then_fail,
             "dimension": "not_thought",
-            "detail": "floor:entities",
+            "detail": "floor:documents",
         }
     ]
 
@@ -934,7 +925,6 @@ def test_all_skip_rerun_writes_marker_and_leaves_updated_days(
         "002_segment.jsonl",
         _complete_segment_events(SEGMENT)
         + [
-            _skip(SEGMENT, "entities", "already_complete", 30),
             _skip(SEGMENT, "documents", "already_complete", 31),
         ],
     )

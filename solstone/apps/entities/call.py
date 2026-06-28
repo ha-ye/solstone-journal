@@ -428,23 +428,6 @@ def add_aka(
     typer.echo(f"Added alias '{aka_value}' to '{resolved_name}'.")
 
 
-@app.command()
-def consolidate(
-    full: bool = typer.Option(False, "--full", help="Scan all days, not just today."),
-) -> None:
-    """Consolidate segment-detected entities into journal identities."""
-    try:
-        body = _request(
-            "POST",
-            "/app/entities/api/consolidate",
-            json_body={"full": full},
-        )
-    except ConveyClientError as err:
-        _handle_entity_error(err)
-    count = body.get("count", 0) if isinstance(body, dict) else 0
-    typer.echo(f"Wrote {count} new entities.")
-
-
 @app.command("record-merge-candidate")
 def record_merge_candidate(
     source: str = typer.Argument(

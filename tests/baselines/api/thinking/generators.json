@@ -68,14 +68,6 @@
     },
     {
       "app": null,
-      "description": "Extracts people, companies, projects, and tools from segment content",
-      "disabled": false,
-      "key": "entities",
-      "source": "system",
-      "title": "Entity Extraction"
-    },
-    {
-      "app": null,
       "description": "Extracts structured intelligence from imported documents",
       "disabled": false,
       "key": "documents",

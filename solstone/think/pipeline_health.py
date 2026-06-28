@@ -32,7 +32,7 @@ _now = datetime.now
 
 _MODES = ("segment", "daily", "activity", "weekly", "flush", "cadence")
 _FAILED_LIST_CAP = 20
-SEGMENT_FLOOR_TALENTS: tuple[str, ...] = ("entities", "documents")
+SEGMENT_FLOOR_TALENTS: tuple[str, ...] = ("documents",)
 SEGMENT_NONGATING_TALENTS: tuple[str, ...] = ("entities:detection",)
 STUCK_FAIL_THRESHOLD = 3
 BACKLOG_DEFAULT_WINDOW = 30

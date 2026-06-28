@@ -926,18 +926,19 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
     if "audio" in data_state:
         md_files.pop("audio", None)
 
-    entities_jsonl = talents_dir / "entities.jsonl"
-    if entities_jsonl.is_file():
+    md_files.pop("sense", None)
+    sense_json = talents_dir / "sense.json"
+    if sense_json.is_file():
         try:
-            chunks, _meta = format_file(entities_jsonl)
+            chunks, _meta = format_file(sense_json)
             rendered = "\n".join(
                 chunk["markdown"] for chunk in chunks if chunk.get("markdown")
             )
             if rendered:
-                md_files["entities"] = rendered
+                md_files["sense"] = rendered
         except Exception:
             logger.warning(
-                "segment detail: failed to render entities.jsonl",
+                "segment detail: failed to render sense.json",
                 exc_info=True,
             )
 

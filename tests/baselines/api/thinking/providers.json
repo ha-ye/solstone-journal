@@ -445,14 +445,6 @@
       "tier": 2,
       "type": "generate"
     },
-    "talent.system.entities": {
-      "disabled": false,
-      "group": "Think",
-      "label": "Entity Extraction",
-      "schedule": "segment",
-      "tier": 2,
-      "type": "generate"
-    },
     "talent.system.event": {
       "disabled": false,
       "group": "Think",

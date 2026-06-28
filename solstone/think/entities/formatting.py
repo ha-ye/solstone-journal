@@ -238,32 +238,99 @@ def format_entity_identity(
     return chunks, meta
 
 
-def format_segment_entities(
+def format_sense(
     entries: list[dict[str, Any]],
     context: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Render the per-segment canonical talents/entities.jsonl artifact."""
+    """Render the per-segment talents/sense.json artifact."""
     _ = context
-    chunks: list[dict[str, Any]] = []
-    for entry in entries:
-        etype = str(entry.get("type", "")).strip()
-        name = str(entry.get("name", "")).strip()
-        description = str(entry.get("description", "")).strip()
-        if not name:
-            continue
+    meta = {"indexer": {"agent": "sense"}}
+    if not entries:
+        return [], meta
 
-        markdown = (
-            f"{etype}: {name} — {description}" if description else f"{etype}: {name}"
-        )
-        chunks.append(
-            {
-                "timestamp": 0,
-                "markdown": markdown,
-                "source": entry,
-            }
-        )
+    sense_obj = entries[0]
+    if not isinstance(sense_obj, dict):
+        return [], meta
 
-    return chunks, {"indexer": {"agent": "entities"}}
+    lines: list[str] = []
+    content_type = str(sense_obj.get("content_type") or "").strip()
+    emotional_register = str(sense_obj.get("emotional_register") or "").strip()
+    heading_parts = [part for part in (content_type, emotional_register) if part]
+    if heading_parts:
+        lines.append(f"## Sense: {' · '.join(heading_parts)}")
+
+    activity_summary = str(sense_obj.get("activity_summary") or "").strip()
+    if activity_summary:
+        if lines:
+            lines.append("")
+        lines.append(activity_summary)
+
+    entities = sense_obj.get("entities") or []
+    entity_lines: list[str] = []
+    if isinstance(entities, list):
+        for entity in entities:
+            if not isinstance(entity, dict):
+                continue
+            name = str(entity.get("name") or "").strip()
+            if not name:
+                continue
+            etype = str(entity.get("type") or "").strip()
+            context_text = str(entity.get("context") or "").strip()
+            prefix = f"{etype}: " if etype else ""
+            line = f"- {prefix}{name}"
+            if context_text:
+                line += f" — {context_text}"
+            entity_lines.append(line)
+    if entity_lines:
+        if lines:
+            lines.append("")
+        lines.append("### Entities")
+        lines.extend(entity_lines)
+
+    facets = sense_obj.get("facets") or []
+    facet_lines: list[str] = []
+    if isinstance(facets, list):
+        for facet in facets:
+            if not isinstance(facet, dict):
+                continue
+            facet_name = str(facet.get("facet") or "").strip()
+            activity = str(facet.get("activity") or "").strip()
+            level = str(facet.get("level") or "").strip()
+            if not any((facet_name, activity, level)):
+                continue
+            if facet_name and activity:
+                text = f"{facet_name}: {activity}"
+            elif facet_name:
+                text = facet_name
+            elif activity:
+                text = activity
+            else:
+                text = f"({level})"
+                level = ""
+            if level:
+                text += f" ({level})"
+            facet_lines.append(f"- {text}")
+    if facet_lines:
+        if lines:
+            lines.append("")
+        lines.append("### Facets")
+        lines.extend(facet_lines)
+
+    speakers = sense_obj.get("speakers") or []
+    if sense_obj.get("meeting_detected") and isinstance(speakers, list):
+        speaker_names = [
+            str(speaker).strip() for speaker in speakers if str(speaker).strip()
+        ]
+        if speaker_names:
+            if lines:
+                lines.append("")
+            lines.append(f"**Speakers:** {', '.join(speaker_names)}")
+
+    markdown = "\n".join(lines).strip()
+    if not markdown:
+        return [], meta
+
+    return [{"markdown": markdown, "timestamp": 0, "source": sense_obj}], meta
 
 
 def format_observations(

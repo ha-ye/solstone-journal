@@ -84,14 +84,14 @@ class TestRegistry:
         formatter = get_formatter("random/path/unknown.jsonl")
         assert formatter is None
 
-    def test_get_formatter_segment_entities_jsonl(self):
-        """Segment entities JSONL uses the dedicated formatter."""
+    def test_get_formatter_segment_sense_json(self):
+        """Segment sense JSON uses the dedicated formatter."""
         from solstone.think.formatters import get_formatter
 
-        formatter = get_formatter("20240101/default/120000_300/talents/entities.jsonl")
+        formatter = get_formatter("20240101/default/120000_300/talents/sense.json")
 
         assert formatter is not None
-        assert formatter.__name__ == "format_segment_entities"
+        assert formatter.__name__ == "format_sense"
 
     def test_no_spans_formatter_registered(self):
         """Spans JSONL is no longer registered after the story refactor."""
@@ -581,29 +581,53 @@ class TestFormatEntities:
         assert "Friend from work" in chunks[0]["markdown"]
         assert "Company: Acme Corp" in chunks[1]["markdown"]
 
-    def test_format_segment_entities_direct(self):
-        """Test canonical segment entities formatting."""
-        from solstone.think.entities.formatting import format_segment_entities
+    def test_format_sense_direct(self):
+        """Test canonical segment sense formatting."""
+        from solstone.think.entities.formatting import format_sense
 
-        entries = [
-            {
-                "type": "Person",
-                "name": "Alice Smith",
-                "description": "In the meeting",
-            },
-            {"type": "Person", "name": "Bob", "description": ""},
-            {"type": "Tool", "name": "   ", "description": "Skipped"},
-        ]
+        sense_obj = {
+            "density": "active",
+            "content_type": "meeting",
+            "activity_summary": "Reviewed the launch timeline with product leads.",
+            "entities": [
+                {
+                    "type": "Person",
+                    "name": "Alice Smith",
+                    "role": "attendee",
+                    "source": "voice",
+                    "context": "Owned the launch checklist.",
+                },
+                {
+                    "type": "Tool",
+                    "name": "Grafana",
+                    "role": "mentioned",
+                    "source": "screen",
+                    "context": "Displayed dashboard latency.",
+                },
+            ],
+            "facets": [
+                {"facet": "work", "activity": "launch planning", "level": "high"}
+            ],
+            "speculative_facet": None,
+            "meeting_detected": True,
+            "speakers": ["Alice Smith", "Bob Chen"],
+            "recommend": {"screen_record": True, "speaker_attribution": True},
+            "emotional_register": "collaborative",
+        }
 
-        chunks, meta = format_segment_entities(entries)
+        chunks, meta = format_sense([sense_obj])
 
-        assert [chunk["markdown"] for chunk in chunks] == [
-            "Person: Alice Smith — In the meeting",
-            "Person: Bob",
-        ]
+        assert len(chunks) == 1
+        markdown = chunks[0]["markdown"]
+        assert "meeting" in markdown
+        assert "collaborative" in markdown
+        assert "Reviewed the launch timeline with product leads." in markdown
+        assert "Person: Alice Smith — Owned the launch checklist." in markdown
+        assert "work: launch planning (high)" in markdown
+        assert "**Speakers:** Alice Smith, Bob Chen" in markdown
         assert chunks[0]["timestamp"] == 0
-        assert chunks[0]["source"] is entries[0]
-        assert meta["indexer"]["agent"] == "entities"
+        assert chunks[0]["source"] is sense_obj
+        assert meta["indexer"]["agent"] == "sense"
 
     def test_format_entities_no_description(self):
         """Test that missing description shows placeholder."""

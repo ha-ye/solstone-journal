@@ -543,40 +543,59 @@ def test_segment_content_marks_headerless_screen_frame_analyzed(client, journal_
     assert any(chunk["type"] == "screen" for chunk in data["chunks"])
 
 
-def test_segment_content_renders_entities_jsonl_over_stale_markdown(
-    client, journal_copy
-):
+def test_segment_content_renders_sense_json_over_stale_markdown(client, journal_copy):
     day = "20990116"
     stream = "default"
     segment = "090000_300"
     _write_segment(journal_copy, day, stream, segment, audio=False, screen=False)
     talents_dir = journal_copy / "chronicle" / day / stream / segment / "talents"
     talents_dir.mkdir(parents=True, exist_ok=True)
-    _write_jsonl(
-        talents_dir / "entities.jsonl",
-        [
+    (talents_dir / "sense.json").write_text(
+        json.dumps(
             {
-                "type": "Person",
-                "name": "Alice Smith",
-                "description": "Discussed the timeline",
-            },
-            {
-                "type": "Tool",
-                "name": "Grafana",
-                "description": "Used for dashboards",
-            },
-        ],
+                "density": "active",
+                "content_type": "meeting",
+                "activity_summary": "Discussed the timeline for the launch.",
+                "entities": [
+                    {
+                        "type": "Person",
+                        "name": "Alice Smith",
+                        "role": "attendee",
+                        "source": "voice",
+                        "context": "Owned timeline follow-up.",
+                    },
+                    {
+                        "type": "Tool",
+                        "name": "Grafana",
+                        "role": "mentioned",
+                        "source": "screen",
+                        "context": "Used for dashboards.",
+                    },
+                ],
+                "facets": [
+                    {"facet": "work", "activity": "launch planning", "level": "high"}
+                ],
+                "speculative_facet": None,
+                "meeting_detected": True,
+                "speakers": ["Alice Smith", "Bob Chen"],
+                "recommend": {"screen_record": True, "speaker_attribution": True},
+                "emotional_register": "collaborative",
+            }
+        ),
+        encoding="utf-8",
     )
-    (talents_dir / "entities.md").write_text("STALE MD", encoding="utf-8")
+    (talents_dir / "sense.md").write_text("STALE MD", encoding="utf-8")
 
     response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
 
     assert response.status_code == 200
     md_files = response.get_json()["md_files"]
-    assert list(md_files).count("entities") == 1
-    assert "Alice Smith" in md_files["entities"]
-    assert " — " in md_files["entities"]
-    assert "STALE MD" not in md_files["entities"]
+    assert "entities" not in md_files
+    assert list(md_files).count("sense") == 1
+    assert "Alice Smith" in md_files["sense"]
+    assert "Owned timeline follow-up." in md_files["sense"]
+    assert "Discussed the timeline for the launch." in md_files["sense"]
+    assert "STALE MD" not in md_files["sense"]
 
 
 def test_segment_content_strips_duplicate_audio_markdown_timestamp(
