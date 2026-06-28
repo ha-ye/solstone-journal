@@ -16,7 +16,7 @@ import dataclasses
 import logging
 import secrets
 import urllib.parse
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from typing import Protocol
 
 import requests
@@ -39,6 +39,7 @@ from solstone.convey.secure_listener.framing import (
     MAX_CONCURRENT_STREAMS,
     MAX_PAYLOAD,
     RECOMMENDED_CHUNK,
+    RESET_CANCEL,
     RESET_FLOW_CONTROL_ERROR,
     RESET_INTERNAL_ERROR,
     RESET_PROTOCOL_ERROR,
@@ -75,6 +76,18 @@ class EncryptedTransport(Protocol):
     async def recv(self) -> bytes | None: ...
 
     async def close(self) -> None: ...
+
+
+@dataclasses.dataclass(frozen=True)
+class BodySource:
+    length: int
+    chunks: Iterable[bytes]
+
+
+def _coerce_body_source(body: bytes | BodySource) -> BodySource:
+    if isinstance(body, BodySource):
+        return body
+    return BodySource(len(body), (body,))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -135,6 +148,14 @@ class _DialerStream:
             raise ConnectionError(f"stream {self._state.stream_id} writer is closed")
         view = memoryview(data)
         while view:
+            if self._state.reset_reason is not None:
+                raise StreamResetError(
+                    f"stream {self._state.stream_id} reset: {self._state.reset_reason}"
+                )
+            if self._state.writer_closed:
+                raise ConnectionError(
+                    f"stream {self._state.stream_id} writer is closed"
+                )
             chunk_len = min(
                 len(view),
                 RECOMMENDED_CHUNK,
@@ -167,10 +188,15 @@ class _DialerStream:
         await self._mux._emit(build_reset(self._state.stream_id, reason))
         self._mux._close_stream(self._state, forget=True)
 
+    async def cancel(self) -> None:
+        await self.reset(RESET_CANCEL)
+
     async def read(self) -> AsyncIterator[bytes]:
         while True:
             if self._state.buffered:
-                yield self._state.buffered.pop(0)
+                chunk = self._state.buffered.pop(0)
+                await self._mux._note_drained(self._state, len(chunk))
+                yield chunk
                 continue
             if self._state.reader_closed:
                 if self._state.reset_reason is not None:
@@ -189,6 +215,7 @@ class _DialerStream:
                         f"stream {self._state.stream_id} reset: {self._state.reset_reason}"
                     )
                 return
+            await self._mux._note_drained(self._state, len(chunk))
             yield chunk
 
     async def read_all(self) -> bytes:
@@ -285,18 +312,12 @@ class _DialerMultiplexer:
                 self._close_stream(state, forget=True)
                 return
             state.recv_credit -= len(frame.payload)
-            state.unacked_recv += len(frame.payload)
             if state.waiters:
                 waiter = state.waiters.pop(0)
                 if not waiter.done():
                     waiter.set_result(frame.payload)
             else:
                 state.buffered.append(frame.payload)
-            if state.unacked_recv >= INITIAL_WINDOW // 2:
-                grant = state.unacked_recv
-                state.recv_credit += grant
-                state.unacked_recv = 0
-                await self._emit(build_window(frame.stream_id, grant))
 
         if frame.flags & FLAG_CLOSE:
             state.reader_closed = True
@@ -347,6 +368,17 @@ class _DialerMultiplexer:
         if self._closed:
             return
         await self._send_frame(frame.encode())
+
+    async def _note_drained(self, state: _StreamState, n: int) -> None:
+        if n <= 0 or state.reader_closed:
+            return
+        state.unacked_recv += n
+        if state.unacked_recv < INITIAL_WINDOW // 2:
+            return
+        grant = state.unacked_recv
+        state.recv_credit += grant
+        state.unacked_recv = 0
+        await self._emit(build_window(state.stream_id, grant))
 
     def _close_stream(self, state: _StreamState, *, forget: bool) -> None:
         state.writer_closed = True
@@ -472,11 +504,14 @@ class TunnelSession:
         path: str,
         *,
         headers: dict[str, str] | None = None,
-        body: bytes = b"",
+        body: bytes | BodySource = b"",
     ) -> tuple[int, dict[str, str], bytes]:
-        request_bytes = _http_request_bytes(method, path, headers=headers, body=body)
-        stream = await self._mux.open_stream(request_bytes)
-        await stream.close()
+        stream = await self._open_request_stream(
+            method,
+            path,
+            headers=headers,
+            body=body,
+        )
         response = await stream.read_all()
         return _parse_http_response(response)
 
@@ -486,11 +521,14 @@ class TunnelSession:
         path: str,
         *,
         headers: dict[str, str] | None = None,
-        body: bytes = b"",
+        body: bytes | BodySource = b"",
     ) -> tuple[int, dict[str, str], bytes, _DialerStream]:
-        request_bytes = _http_request_bytes(method, path, headers=headers, body=body)
-        stream = await self._mux.open_stream(request_bytes)
-        await stream.close()
+        stream = await self._open_request_stream(
+            method,
+            path,
+            headers=headers,
+            body=body,
+        )
         buffered = bytearray()
         async for chunk in stream.read():
             buffered.extend(chunk)
@@ -500,6 +538,32 @@ class TunnelSession:
             status, response_headers = _parse_http_head(bytes(buffered[:split]))
             return status, response_headers, bytes(buffered[split + 4 :]), stream
         raise ValueError("response missing header terminator")
+
+    async def _open_request_stream(
+        self,
+        method: str,
+        path: str,
+        *,
+        headers: dict[str, str] | None,
+        body: bytes | BodySource,
+    ) -> _DialerStream:
+        source = _coerce_body_source(body)
+        head = _http_head_bytes(
+            method,
+            path,
+            headers=headers,
+            content_length=source.length,
+        )
+        stream = await self._mux.open_stream(head)
+        try:
+            for chunk in source.chunks:
+                await stream.write(chunk)
+            await stream.close()
+        except Exception:
+            with contextlib.suppress(Exception):
+                await stream.reset()
+            raise
+        return stream
 
     async def close(self) -> None:
         if self._closed.is_set():
@@ -792,24 +856,23 @@ def _drive_tls_client(
     return bytes(outbound), bytes(plaintext_in)
 
 
-def _http_request_bytes(
+def _http_head_bytes(
     method: str,
     path: str,
     *,
     headers: dict[str, str] | None,
-    body: bytes,
+    content_length: int,
 ) -> bytes:
-    body_bytes = body or b""
     normalized_headers = {"host": "spl.local"}
     if headers:
         normalized_headers.update({k.lower(): v for k, v in headers.items()})
-    normalized_headers["content-length"] = str(len(body_bytes))
+    normalized_headers["content-length"] = str(content_length)
     head = (
         f"{method} {path} HTTP/1.1\r\n"
         + "".join(f"{name}: {value}\r\n" for name, value in normalized_headers.items())
         + "\r\n"
     )
-    return head.encode("ascii") + body_bytes
+    return head.encode("ascii")
 
 
 def _parse_http_response(raw: bytes) -> tuple[int, dict[str, str], bytes]:
@@ -910,11 +973,12 @@ def _redact_url(url: str) -> str:
 
 
 __all__ = [
+    "BodySource",
     "Client",
     "ClientIdentity",
     "EncryptedTransport",
     "EnrolledDevice",
     "StreamResetError",
     "TunnelSession",
-    "_http_request_bytes",
+    "_http_head_bytes",
 ]

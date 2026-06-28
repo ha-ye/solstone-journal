@@ -14,7 +14,7 @@ import pytest
 
 from solstone.convey.secure_listener.identity import ConveyIdentity
 from solstone.convey.secure_listener.wsgi import DispatchResult, dispatch_stream
-from solstone.think.link.client import _http_request_bytes, _parse_http_response
+from solstone.think.link.client import _http_head_bytes, _parse_http_response
 
 
 @dataclass(frozen=True)
@@ -117,7 +117,15 @@ async def dispatch_request(
     body: bytes = b"",
     headers: dict[str, str] | None = None,
 ) -> DispatchResponse:
-    request_bytes = _http_request_bytes(method, path, headers=headers, body=body)
+    request_bytes = (
+        _http_head_bytes(
+            method,
+            path,
+            headers=headers,
+            content_length=len(body),
+        )
+        + body
+    )
     reader = asyncio.StreamReader()
     reader.feed_data(request_bytes)
     reader.feed_eof()

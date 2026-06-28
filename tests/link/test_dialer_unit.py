@@ -12,12 +12,13 @@ import pytest
 
 from solstone.think.link import dialer
 from solstone.think.link.client import (
+    BodySource,
     Client,
     ClientIdentity,
     EnrolledDevice,
     StreamResetError,
     TunnelSession,
-    _http_request_bytes,
+    _http_head_bytes,
 )
 from solstone.think.link.dialer import (
     TunnelClient,
@@ -34,11 +35,12 @@ def test_link_client_public_imports() -> None:
     assert TunnelSession is not None
     assert TlsError is not None
     assert StreamResetError is not None
-    assert _http_request_bytes(
+    assert BodySource is not None
+    assert _http_head_bytes(
         "GET",
         "/",
         headers={},
-        body=b"",
+        content_length=0,
     ).startswith(b"GET / HTTP/1.1\r\n")
 
 
