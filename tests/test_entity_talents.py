@@ -27,10 +27,13 @@ def test_entities_review_agent_config(fixture_journal):
     assert len(config["user_instruction"]) > 0
 
     # Verify JSON metadata fields from entities_review.json
+    assert config.get("type") == "generate"
     assert config.get("title") == "Entity Reviewer"
     assert config.get("schedule") == "daily"
     assert config.get("priority") == 56
     assert config.get("multi_facet") is True
+    assert config.get("output") == "json"
+    assert isinstance(config.get("json_schema"), dict)
 
 
 def test_entities_review_agent_instruction_content(fixture_journal):
@@ -38,12 +41,15 @@ def test_entities_review_agent_instruction_content(fixture_journal):
     config = get_talent("entities:entities_review")
     prompt = config["user_instruction"]
 
-    # Check for key sections in the agent prompt
-    assert "Core Mission" in prompt
-    assert "sol call entities attach" in prompt
-    assert "sol call entities list" in prompt
-    assert "3+" in prompt or "promotion" in prompt.lower()
-    assert "description" in prompt.lower()
+    assert prompt
+    assert "sol call" not in prompt
+    assert "emit_final" not in prompt
+    assert "$facets" not in prompt
+    assert "2+" not in prompt
+    assert "3+" not in prompt
+    assert "5+" not in prompt
+    assert "timeless description" in prompt
+    assert "canonical" in prompt
 
 
 def test_agent_context_with_facet_focus(fixture_journal):

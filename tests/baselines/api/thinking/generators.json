@@ -9,6 +9,14 @@
       "title": "Entity Observer"
     },
     {
+      "app": "entities",
+      "description": "Reviews detected entities and promotes recurring ones to attached status",
+      "disabled": false,
+      "key": "entities:entities_review",
+      "source": "app",
+      "title": "Entity Reviewer"
+    },
+    {
       "app": null,
       "description": "Analyzes activity patterns to identify optimal times for scheduled maintenance tasks.",
       "disabled": false,

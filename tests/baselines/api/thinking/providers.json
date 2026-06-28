@@ -383,7 +383,7 @@
       "label": "Entity Reviewer",
       "schedule": "daily",
       "tier": 2,
-      "type": "cogitate"
+      "type": "generate"
     },
     "talent.entities.entity_assist": {
       "disabled": false,

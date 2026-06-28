@@ -119,6 +119,33 @@
       "title": "Entity Detection",
       "type": "generate"
     },
+    "entities:entities_review": {
+      "app": "entities",
+      "color": "#00796b",
+      "description": "Reviews detected entities and promotes recurring ones to attached status",
+      "group": "Entities",
+      "hook": {
+        "post": "entities:entities_review",
+        "pre": "entities:entities_review"
+      },
+      "load": {
+        "percepts": false,
+        "talents": false,
+        "transcripts": false
+      },
+      "mtime": 0,
+      "multi_facet": true,
+      "output": "json",
+      "path": "<PROJECT>/solstone/apps/entities/talent/entities_review.md",
+      "priority": 56,
+      "schedule": "daily",
+      "schema": "entities_review.schema.json",
+      "source": "app",
+      "thinking_budget": 2048,
+      "tier": 2,
+      "title": "Entity Reviewer",
+      "type": "generate"
+    },
     "entities:entity_describe": {
       "app": "entities",
       "color": "#26a69a",

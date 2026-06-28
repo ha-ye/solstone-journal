@@ -98,11 +98,11 @@
       "color": "#00796b",
       "description": "Reviews detected entities and promotes recurring ones to attached status",
       "multi_facet": true,
-      "output_format": null,
+      "output_format": "json",
       "schedule": "daily",
       "source": "app",
       "title": "Entity Reviewer",
-      "type": "cogitate"
+      "type": "generate"
     },
     "entities:entity_assist": {
       "app": "entities",
