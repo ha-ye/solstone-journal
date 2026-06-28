@@ -128,42 +128,10 @@ def test_format_degraded_capture_line_fallbacks_and_non_degraded():
     assert format_degraded_capture_line({"status": "active", "observers": []}) is None
 
 
-def test_classify_needs_you_prepends_degraded_route_item():
-    capture = _degraded_capture()
-    line = format_degraded_capture_line(capture)
+def test_classify_needs_you_no_longer_emits_capture_route():
+    items = classify_needs_you({"placeholder_text": "x"}, ["y"])
 
-    items = classify_needs_you(
-        {"placeholder_text": "Pipeline needs review"},
-        ["Review the launch checklist"],
-        capture_health=capture,
-    )
-
-    assert items[0] == NeedsYouItem(
-        text=line,
-        kind="route",
-        payload={"href": "/app/health"},
-    )
-    assert [item.text for item in items] == [
-        line,
-        "Pipeline needs review",
-        "Review the launch checklist",
-    ]
-
-
-def test_classify_needs_you_does_not_add_health_route_without_degraded_capture():
-    healthy_items = classify_needs_you(
-        None,
-        ["Review the launch checklist"],
-        capture_health={"status": "active", "observers": []},
-    )
-    none_items = classify_needs_you(
-        None,
-        ["Review the launch checklist"],
-        capture_health=None,
-    )
-
-    assert all(item.payload != {"href": "/app/health"} for item in healthy_items)
-    assert all(item.payload != {"href": "/app/health"} for item in none_items)
+    assert all(item.payload != {"href": "/app/health"} for item in items)
 
 
 def test_classify_needs_you_warns_and_omits_malformed(caplog):

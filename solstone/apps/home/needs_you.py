@@ -38,18 +38,8 @@ class NeedsYouItem:
 def classify_needs_you(
     attention: Any,
     pulse_needs: list[Any],
-    capture_health: dict | None = None,
 ) -> list[NeedsYouItem]:
     items: list[NeedsYouItem] = []
-
-    if capture_health is not None:
-        degraded_line = format_degraded_capture_line(capture_health)
-        if degraded_line:
-            items.append(
-                NeedsYouItem(
-                    text=degraded_line, kind="route", payload={"href": "/app/health"}
-                )
-            )
 
     if attention:
         item = _classify_safely("attention", attention, _classify_attention)
