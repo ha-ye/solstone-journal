@@ -16,7 +16,11 @@ import pytest
 
 from solstone.think.link import serve_cli
 from solstone.think.link.client import BodySource
-from solstone.think.link.dialer import TunnelRequestError, TunnelResponseHead
+from solstone.think.link.dialer import (
+    TunnelLifecycleError,
+    TunnelRequestError,
+    TunnelResponseHead,
+)
 from solstone.think.link.paths import DEFAULT_RELAY_URL
 
 
@@ -51,6 +55,19 @@ class _StubTunnel:
 
         threading.Thread(target=run, daemon=True).start()
         return future
+
+    def status(self) -> dict[str, object]:
+        return {
+            "health": "healthy",
+            "state": "connected",
+            "manager_alive": True,
+            "connected_age_seconds": 12.0,
+            "last_connected_at": 1_800_000_000.0,
+            "last_failure": None,
+            "next_retry_at": None,
+            "reconnect_count": 0,
+            "active_requests": 0,
+        }
 
 
 def _collect_body(body: bytes | BodySource) -> bytes:
@@ -235,6 +252,51 @@ def test_serve_times_out_waiting_for_response_head(
     assert returned_future.cancelled()
 
 
+def test_serve_status_path_is_local_json() -> None:
+    tunnel = _StubTunnel([TunnelResponseHead(200, {"Content-Length": "0"}), None])
+    server, thread = _start_server(tunnel)
+    try:
+        conn = _connection(server)
+        conn.request("GET", serve_cli.STATUS_PATH)
+        response = conn.getresponse()
+        payload = response.read()
+        conn.close()
+    finally:
+        _stop_server(server, thread)
+
+    assert response.status == 200
+    assert response.getheader("Content-Type") == "application/json"
+    assert b'"health": "healthy"' in payload
+    assert b'"state": "connected"' in payload
+    assert b"secret" not in payload.lower()
+    assert tunnel.requests == []
+
+
+def test_serve_lifecycle_error_is_retryable_json() -> None:
+    tunnel = _StubTunnel(
+        [
+            TunnelLifecycleError("connecting", "no live tunnel session available"),
+            None,
+        ]
+    )
+    server, thread = _start_server(tunnel)
+    try:
+        conn = _connection(server)
+        conn.request("GET", "/app/path?token=secret")
+        response = conn.getresponse()
+        payload = response.read()
+        conn.close()
+    finally:
+        _stop_server(server, thread)
+
+    assert response.status == 503
+    assert response.getheader("Content-Type") == "application/json"
+    assert b'"error": "link_lifecycle"' in payload
+    assert b'"retryable": true' in payload
+    assert b'"state": "connecting"' in payload
+    assert b"secret" not in payload
+
+
 def test_serve_midstream_failure() -> None:
     tunnel = _StubTunnel(
         [
@@ -331,6 +393,9 @@ def test_serve_port_collision(
     class FakeTunnel:
         def __init__(self, *_args: object) -> None:
             self.closed = False
+
+        def start(self) -> None:
+            pass
 
         def close(self) -> None:
             self.closed = True

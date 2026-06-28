@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import json
 import logging
 import queue
 import sys
@@ -21,6 +22,7 @@ from solstone.think.link.bundle import load_client_identity
 from solstone.think.link.client import RECOMMENDED_CHUNK, BodySource
 from solstone.think.link.dialer import (
     TunnelClient,
+    TunnelLifecycleError,
     TunnelRequestError,
     TunnelResponseHead,
 )
@@ -32,6 +34,7 @@ LOOPBACK_HOST = "127.0.0.1"
 DEFAULT_PORT = 5015
 RESPONSE_QUEUE_MAX_ITEMS = 8
 RESPONSE_HEAD_TIMEOUT_SECONDS = 30.0
+STATUS_PATH = "/_solstone/link/status"
 REQUEST_HOP_BY_HOP = {
     "connection",
     "keep-alive",
@@ -63,6 +66,8 @@ class _ProxyTunnel(Protocol):
         body: bytes | BodySource = b"",
         chunks: queue.Queue[TunnelResponseHead | bytes | Exception | None],
     ) -> Future[None]: ...
+
+    def status(self) -> dict[str, object]: ...
 
 
 class _BundleSelection(NamedTuple):
@@ -107,6 +112,7 @@ def main(args: argparse.Namespace) -> int:
         None if getattr(args, "direct", False) else _resolve_relay_url(args.relay_url)
     )
     tunnel = TunnelClient(identity, relay)
+    tunnel.start()
     try:
         server = _build_server(args.port, tunnel)
     except OSError as exc:
@@ -231,6 +237,10 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         self._handle()
 
     def _handle(self) -> None:
+        if _origin_path(self.path) == STATUS_PATH:
+            self._send_status()
+            return
+
         body = self._read_body_source()
         if body is None:
             return
@@ -336,6 +346,9 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             LOG.debug("link proxy could not send bad request response: %s", exc)
 
     def _send_gateway_error(self, exc: Exception) -> None:
+        if isinstance(exc, TunnelLifecycleError):
+            self._send_lifecycle_error(exc)
+            return
         if isinstance(exc, TunnelRequestError):
             detail = exc.reason
         else:
@@ -344,6 +357,38 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             self.send_error(502, f"Link tunnel failed: {detail}")
         except (BrokenPipeError, ConnectionError, OSError) as send_exc:
             LOG.debug("link proxy could not send gateway error response: %s", send_exc)
+        self.close_connection = True
+
+    def _send_lifecycle_error(self, exc: TunnelLifecycleError) -> None:
+        body = json.dumps(exc.as_dict(), sort_keys=True).encode("utf-8")
+        try:
+            self.send_response_only(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionError, OSError) as send_exc:
+            LOG.debug(
+                "link proxy could not send lifecycle error response: %s", send_exc
+            )
+        self.close_connection = True
+
+    def _send_status(self) -> None:
+        server = cast(_ProxyServer, self.server)
+        status = server.tunnel.status()
+        body = json.dumps(status, sort_keys=True).encode("utf-8")
+        try:
+            self.send_response_only(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionError, OSError) as exc:
+            LOG.debug("link proxy could not send status response: %s", exc)
         self.close_connection = True
 
     def log_message(self, fmt: str, *args: object) -> None:

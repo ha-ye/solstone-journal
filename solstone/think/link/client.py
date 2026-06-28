@@ -617,6 +617,13 @@ class TunnelSession:
     def is_alive(self) -> bool:
         return not (self._closed.is_set() or self._mux._closed or self._dead)
 
+    def failure_reason(self) -> str | None:
+        if self._dead:
+            return "liveness_failed"
+        if self._closed.is_set():
+            return "session_closed"
+        return None
+
     async def _read_transport(self) -> None:
         try:
             while True:
