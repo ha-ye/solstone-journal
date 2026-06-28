@@ -276,10 +276,13 @@ def format_sense(
                 continue
             etype = str(entity.get("type") or "").strip()
             context_text = str(entity.get("context") or "").strip()
+            level = str(entity.get("level") or "").strip()
             prefix = f"{etype}: " if etype else ""
             line = f"- {prefix}{name}"
             if context_text:
                 line += f" — {context_text}"
+            if level:
+                line += f" ({level})"
             entity_lines.append(line)
     if entity_lines:
         if lines:

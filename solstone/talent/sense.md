@@ -83,6 +83,14 @@ Contamination guard: tool or product names visible on screen must be `source: sc
 - **screen**: Use when the entity is visible in screen content such as UI, documents, headlines, or app chrome.
 - **other**: Use only when the entity is grounded in another clear signal that does not fit the categories above.
 
+#### level
+How central the entity was to this segment — distinct from `role`. `role` is whether it was present in the interaction; `level` is how much the segment was actually about it.
+- **high**: central to the segment — the subject of the activity, or heavily involved in what happened.
+- **medium**: meaningfully involved, but not the focus.
+- **low**: a brief or peripheral mention.
+
+Centrality is independent of `role`: an entity can be `role: mentioned` yet `level: high` (the whole segment was about it, though it wasn't present), or `role: attendee` yet `level: low` (present but barely involved). Judge centrality from what the segment was actually about, not from whether the entity was attending.
+
 ### facets
 Classify into the owner's configured facets. Always include at least one facet — pick the closest configured facet. If multiple facets fit, include the dominant one as `level: high` and others at `level: medium` or `level: low`. For each:
 - `facet`: The facet ID slug — MUST be one of the configured facets listed in the input

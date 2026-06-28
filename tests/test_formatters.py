@@ -596,6 +596,7 @@ class TestFormatEntities:
                     "role": "attendee",
                     "source": "voice",
                     "context": "Owned the launch checklist.",
+                    "level": "high",
                 },
                 {
                     "type": "Tool",
@@ -622,7 +623,9 @@ class TestFormatEntities:
         assert "meeting" in markdown
         assert "collaborative" in markdown
         assert "Reviewed the launch timeline with product leads." in markdown
-        assert "Person: Alice Smith — Owned the launch checklist." in markdown
+        assert "Person: Alice Smith — Owned the launch checklist. (high)" in markdown
+        assert "Tool: Grafana — Displayed dashboard latency." in markdown
+        assert "Displayed dashboard latency. (" not in markdown
         assert "work: launch planning (high)" in markdown
         assert "**Speakers:** Alice Smith, Bob Chen" in markdown
         assert chunks[0]["timestamp"] == 0

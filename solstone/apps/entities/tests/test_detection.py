@@ -185,9 +185,50 @@ def test_pre_process_builds_plain_packet_with_active_facet_context(
         "Summary so far today in work: Sarah reviewed earlier design notes." in packet
     )
     assert "In this moment: Sarah reviewed the release plan." in packet
+    assert "How central it was:" not in packet
     assert "### New Project" in packet
     assert "Summary so far today: Nothing saved yet in the active facets." in packet
     assert "Prefers concise launch notes" not in packet
+
+
+def test_pre_process_surfaces_entity_centrality_cue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    root = _set_journal(tmp_path, monkeypatch)
+    _write_facet(root, "work", "Professional work")
+    _write_sense(
+        root,
+        _sense(
+            facets=[{"facet": "work", "activity": "planning", "level": "high"}],
+            entities=[
+                {
+                    "type": "Person",
+                    "name": "Sarah Chen",
+                    "role": "attendee",
+                    "source": "transcript",
+                    "context": "Sarah reviewed the release plan.",
+                    "level": "high",
+                },
+                {
+                    "type": "Project",
+                    "name": "New Project",
+                    "role": "mentioned",
+                    "source": "screen",
+                    "context": "New Project appeared in notes.",
+                    "level": "low",
+                },
+            ],
+        ),
+    )
+
+    result = detection.pre_process(_context())
+
+    assert isinstance(result, dict)
+    packet = result["template_vars"]["detection_packet"]
+    assert "How central it was: central to this moment." in packet
+    assert "How central it was: a peripheral mention." in packet
+    assert "level:" not in packet.lower()
 
 
 def test_pre_process_skip_taxonomy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

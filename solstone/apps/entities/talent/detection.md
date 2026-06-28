@@ -28,6 +28,7 @@ A few angles on the same idea:
 - **Being part of an interaction is taking part.** A named person who was in the conversation, meeting, call, or briefing counts — log them even if they're introduced by their title or role rather than a specific action. (Someone merely *referenced* during it, but not in it, is still just a mention.)
 - **The moment is the evidence.** Judge from what the context actually shows happening — not from how official, familiar, or technical a name looks. A stray code, an app that was simply open, a place passed through: if the context shows no real part in the activity, it's scenery, not a participant.
 - **When the moment is thin, the log is short.** If you're unsure something truly took part, leave it out. Logging nothing is a perfectly good answer.
+- **Centrality is a prior, not a rule.** Where the packet notes how central something was — central to the moment, meaningfully involved, or a passing mention — let it tilt a genuine borderline call. It never overrides the involvement test above: something only name-dropped stays out even if it loomed large, and something that truly took part stays in even if it was peripheral.
 
 ## The rules
 

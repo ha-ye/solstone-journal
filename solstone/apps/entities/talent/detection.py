@@ -25,6 +25,12 @@ NOTABILITY_LABELS = {
     "low": "This came up in passing",
 }
 
+CENTRALITY_LABELS = {
+    "high": "central to this moment",
+    "medium": "meaningfully involved",
+    "low": "a peripheral mention",
+}
+
 
 def _composite_segment_id(seg_dir: Path) -> str:
     parts = seg_dir.parts
@@ -72,6 +78,10 @@ def _candidate_rows(sense: dict) -> list[dict[str, Any]]:
 
 def _notability_label(raw_level: Any) -> str:
     return NOTABILITY_LABELS.get(str(raw_level), "This came up")
+
+
+def _centrality_cue(raw_level: Any) -> str | None:
+    return CENTRALITY_LABELS.get(str(raw_level))
 
 
 def _known_lines_for_active_facets(
@@ -160,16 +170,18 @@ def _build_packet(
         if not name:
             continue
 
-        lines.extend(
-            [
-                f"### {name}",
-                "What's known:",
-                *_known_lines_for_active_facets(name, segment_facets),
-                *_daily_summary_lines(day, name, segment_facets),
-                f"In this moment: {context or 'No one-line activity was provided.'}",
-                "",
-            ]
-        )
+        entity_lines = [
+            f"### {name}",
+            "What's known:",
+            *_known_lines_for_active_facets(name, segment_facets),
+            *_daily_summary_lines(day, name, segment_facets),
+            f"In this moment: {context or 'No one-line activity was provided.'}",
+        ]
+        cue = _centrality_cue(candidate.get("level"))
+        if cue:
+            entity_lines.append(f"How central it was: {cue}.")
+        entity_lines.append("")
+        lines.extend(entity_lines)
 
     return "\n".join(lines).strip() + "\n"
 
