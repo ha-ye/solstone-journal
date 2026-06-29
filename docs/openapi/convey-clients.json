@@ -2256,8 +2256,13 @@
                   "home_label": "home",
                   "instance_id": "4d1f3d57-4f39-4930-b8f8-5e6f2a84d51a",
                   "lan_accessible": true,
+                  "last_link_event_at": null,
+                  "last_relay_tunnel_error": null,
+                  "last_relay_tunnel_error_at": null,
+                  "last_successful_relay_tunnel_at": null,
                   "posture": "lan",
                   "reachability": "local",
+                  "relay_listen_generation": null,
                   "relay_state": "not_configured",
                   "relay_url": "https://relay.solstone.local",
                   "vpn": {
@@ -2338,11 +2343,41 @@
                     "lan_accessible": {
                       "type": "boolean"
                     },
+                    "last_link_event_at": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "last_relay_tunnel_error": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "last_relay_tunnel_error_at": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "last_successful_relay_tunnel_at": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
                     "posture": {
                       "type": "string"
                     },
                     "reachability": {
                       "type": "string"
+                    },
+                    "relay_listen_generation": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
                     },
                     "relay_state": {
                       "type": "string"
@@ -2379,6 +2414,11 @@
                     "posture",
                     "reachability",
                     "relay_state",
+                    "last_link_event_at",
+                    "relay_listen_generation",
+                    "last_successful_relay_tunnel_at",
+                    "last_relay_tunnel_error",
+                    "last_relay_tunnel_error_at",
                     "home_address",
                     "vpn",
                     "home_candidates",

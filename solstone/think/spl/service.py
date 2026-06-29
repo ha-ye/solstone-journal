@@ -12,6 +12,7 @@ The internal Callosum tract remains `link` for dashboard continuity:
   connecting   opening listen WS
   connected    listen WS open (service is reachable)
   disconnect   listen WS closed (about to reconnect)
+  health       structured relay health snapshot
   tunnel_pair  incoming tunnel (paired device dialed in)
   tunnel_close tunnel closed
 """

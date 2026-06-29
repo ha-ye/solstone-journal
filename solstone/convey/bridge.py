@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from solstone.think.callosum import CallosumConnection
+from solstone.think.spl.health import LINK_HEALTH_EVENT
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ _SSE_LOCK = threading.Lock()
 _STATE_CACHE: Dict[str, Any] = {
     "supervisor_status": None,
     "last_observe_ts": None,
-    "link_connection": None,
+    "link_health": None,
 }
 
 
@@ -131,8 +132,21 @@ def _broadcast_callosum_event(message: Dict[str, Any]) -> None:
         _STATE_CACHE["supervisor_status"] = message
     if tract == "observe" and event in ("observed", "status"):
         _STATE_CACHE["last_observe_ts"] = time.time()
-    if tract == "link" and event in ("connecting", "connected", "disconnect"):
-        _STATE_CACHE["link_connection"] = event
+    if tract == "link" and event == LINK_HEALTH_EVENT:
+        health = {
+            "state": message.get("state"),
+            "listen_generation": message.get("listen_generation"),
+            "last_successful_relay_tunnel_at": message.get(
+                "last_successful_relay_tunnel_at"
+            ),
+            "last_relay_tunnel_error": message.get("last_relay_tunnel_error"),
+            "last_relay_tunnel_error_at": message.get("last_relay_tunnel_error_at"),
+            "relay_tunnel_error_status": message.get("relay_tunnel_error_status"),
+            "ts": _message_ts_ms(message),
+        }
+        cached = _STATE_CACHE["link_health"]
+        if cached is None or health["listen_generation"] >= cached["listen_generation"]:
+            _STATE_CACHE["link_health"] = health
 
     # Broadcast to SSE clients
     try:

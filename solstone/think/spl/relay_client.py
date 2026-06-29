@@ -17,12 +17,23 @@ from typing import Any
 
 import websockets
 from websockets.asyncio.client import ClientConnection
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, InvalidStatus, InvalidURI
+
+from solstone.think.spl.health import (
+    LINK_HEALTH_EVENT,
+    REASON_HOME_MISSING_MOBILE,
+    REASON_LOCAL_PRIVATE_LISTENER_UNREACHABLE,
+    REASON_RELAY_TUNNEL_REJECTED,
+    REASON_RELAY_TUNNEL_UNREACHABLE,
+    REASON_SERVICE_TOKEN_REJECTED,
+)
+from solstone.think.utils import now_ms
 
 log = logging.getLogger("spl.relay_client")
 
 _RECONNECT_MIN = 1.0
 _RECONNECT_MAX = 60.0
+_HEALTH_REFRESH_SECONDS = 30.0
 _LINK_DIRECT_HOST = "127.0.0.1"
 _LINK_DIRECT_PORT = 7657
 _BUF = 65536
@@ -77,6 +88,13 @@ class RelayClient:
         self._emit = callosum_emit or (lambda _event, _fields: None)
         self._running = False
         self._tunnels: dict[str, asyncio.Task[None]] = {}
+        self._listen_generation = 0
+        self._state = "connecting"
+        self._last_successful_tunnel_at: int | None = None
+        self._last_tunnel_error: str | None = None
+        self._last_tunnel_error_at: int | None = None
+        self._last_tunnel_error_status: int | None = None
+        self._listen_ws: ClientConnection | None = None
 
     async def run(self) -> None:
         self._running = True
@@ -86,12 +104,12 @@ class RelayClient:
                 await self._run_once()
                 delay = _RECONNECT_MIN
             except ConnectionClosed as exc:
-                log.warning("listen WS closed: code=%s reason=%s", exc.code, exc.reason)
+                log.warning("listen WS closed: code=%s", exc.code)
             except Exception as exc:  # noqa: BLE001
-                log.exception("listen loop error: %s", exc)
+                log.warning("listen loop error: type=%s", type(exc).__name__)
             if not self._running:
                 break
-            self._emit("disconnect", {})
+            self._set_state("disconnect", "reconnecting")
             jitter = delay * 0.25
             wait = delay + random.uniform(-jitter, jitter)  # noqa: S311
             log.info("reconnecting in %.1fs", wait)
@@ -107,33 +125,49 @@ class RelayClient:
         self._tunnels.clear()
 
     async def _run_once(self) -> None:
+        self._listen_generation += 1
         assert self._service_token is not None
-        self._emit("connecting", {})
+        refresh_task: asyncio.Task[None] | None = None
+        self._set_state("connecting", "connecting")
         listen_url = self._url_for("/session/listen", token=self._service_token)
         log.info("opening listen WS")
-        async with websockets.connect(
-            listen_url,
-            additional_headers={"Authorization": f"Bearer {self._service_token}"},
-            max_size=None,
-        ) as ws:
-            self._emit("connected", {})
-            log.info("listen WS open; waiting for incoming")
-            async for message in ws:
-                control = _parse_control(message)
-                tunnel_id = control.get("tunnel_id") if control else None
-                if not (control and control.get("type") == "incoming" and tunnel_id):
-                    continue
-                tunnel_id = str(tunnel_id)
-                log.info("incoming tunnel_id=%s", tunnel_id)
-                self._emit("tunnel_pair", {"tunnel_id": tunnel_id})
-                task = asyncio.create_task(
-                    self._handle_tunnel(tunnel_id),
-                    name=f"link-tunnel-{tunnel_id}",
+        try:
+            async with websockets.connect(
+                listen_url,
+                additional_headers={"Authorization": f"Bearer {self._service_token}"},
+                max_size=None,
+            ) as ws:
+                self._listen_ws = ws
+                self._set_state("connected", "connected")
+                refresh_task = asyncio.create_task(
+                    self._refresh_health_loop(),
+                    name="spl-relay-health-refresh",
                 )
-                self._tunnels[tunnel_id] = task
-                task.add_done_callback(
-                    lambda _t, tid=tunnel_id: self._tunnels.pop(tid, None)
-                )
+                log.info("listen WS open; waiting for incoming")
+                async for message in ws:
+                    control = _parse_control(message)
+                    tunnel_id = control.get("tunnel_id") if control else None
+                    if not (
+                        control and control.get("type") == "incoming" and tunnel_id
+                    ):
+                        continue
+                    tunnel_id = str(tunnel_id)
+                    log.info("incoming tunnel_id=%s", tunnel_id)
+                    self._emit("tunnel_pair", {"tunnel_id": tunnel_id})
+                    task = asyncio.create_task(
+                        self._handle_tunnel(tunnel_id),
+                        name=f"link-tunnel-{tunnel_id}",
+                    )
+                    self._tunnels[tunnel_id] = task
+                    task.add_done_callback(
+                        lambda _t, tid=tunnel_id: self._tunnels.pop(tid, None)
+                    )
+        finally:
+            if refresh_task is not None:
+                refresh_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await refresh_task
+            self._listen_ws = None
 
     async def _handle_tunnel(self, tunnel_id: str) -> None:
         assert self._service_token is not None
@@ -144,23 +178,109 @@ class RelayClient:
                 additional_headers={"Authorization": f"Bearer {self._service_token}"},
                 max_size=None,
             ) as ws:
-                tcp_reader, tcp_writer = await asyncio.open_connection(
-                    _LINK_DIRECT_HOST,
-                    _LINK_DIRECT_PORT,
+                self._record_tunnel_success()
+                self._emit_health()
+                try:
+                    tcp_reader, tcp_writer = await asyncio.open_connection(
+                        _LINK_DIRECT_HOST,
+                        _LINK_DIRECT_PORT,
+                    )
+                except OSError:
+                    self._record_tunnel_error(REASON_LOCAL_PRIVATE_LISTENER_UNREACHABLE)
+                    self._emit_health()
+                    log.warning(
+                        "tunnel %s failed: reason=%s",
+                        tunnel_id,
+                        REASON_LOCAL_PRIVATE_LISTENER_UNREACHABLE,
+                    )
+                    return
+                try:
+                    await _pipe_tunnel(ws, tcp_reader, tcp_writer, tunnel_id)
+                except ConnectionClosed as exc:
+                    log.info("tunnel %s closed: code=%s", tunnel_id, exc.code)
+                except OSError:
+                    log.warning("tunnel %s pipe socket error", tunnel_id)
+        except InvalidStatus as exc:
+            status = exc.response.status_code
+            if status == 404:
+                self._record_tunnel_error(REASON_HOME_MISSING_MOBILE)
+                self._emit_health()
+                log.warning(
+                    "tunnel %s failed: reason=%s", tunnel_id, REASON_HOME_MISSING_MOBILE
                 )
-                await _pipe_tunnel(ws, tcp_reader, tcp_writer, tunnel_id)
-        except ConnectionClosed as exc:
-            log.info(
-                "tunnel %s closed: code=%s reason=%s", tunnel_id, exc.code, exc.reason
+                if self._listen_ws is not None:
+                    with contextlib.suppress(Exception):
+                        await self._listen_ws.close()
+            elif status in (401, 403):
+                self._record_tunnel_error(REASON_SERVICE_TOKEN_REJECTED)
+                self._emit_health()
+                log.warning(
+                    "tunnel %s failed: reason=%s",
+                    tunnel_id,
+                    REASON_SERVICE_TOKEN_REJECTED,
+                )
+            else:
+                self._record_tunnel_error(REASON_RELAY_TUNNEL_REJECTED, status=status)
+                self._emit_health()
+                log.warning(
+                    "tunnel %s failed: reason=%s status=%s",
+                    tunnel_id,
+                    REASON_RELAY_TUNNEL_REJECTED,
+                    status,
+                )
+        except (OSError, InvalidURI, asyncio.TimeoutError, TimeoutError):
+            self._record_tunnel_error(REASON_RELAY_TUNNEL_UNREACHABLE)
+            self._emit_health()
+            log.warning(
+                "tunnel %s failed: reason=%s",
+                tunnel_id,
+                REASON_RELAY_TUNNEL_UNREACHABLE,
             )
+        except ConnectionClosed as exc:
+            log.info("tunnel %s closed: code=%s", tunnel_id, exc.code)
         except Exception as exc:  # noqa: BLE001
-            log.exception("tunnel %s error: %s", tunnel_id, exc)
+            log.warning("tunnel %s error: type=%s", tunnel_id, type(exc).__name__)
         finally:
             if tcp_writer is not None:
                 tcp_writer.close()
                 with contextlib.suppress(OSError, RuntimeError):
                     await tcp_writer.wait_closed()
             self._emit("tunnel_close", {"tunnel_id": tunnel_id})
+            self._emit_health()
+
+    async def _refresh_health_loop(self) -> None:
+        while True:
+            await asyncio.sleep(_HEALTH_REFRESH_SECONDS)
+            self._emit_health()
+
+    def _emit_health(self) -> None:
+        self._emit(
+            LINK_HEALTH_EVENT,
+            {
+                "state": self._state,
+                "listen_generation": self._listen_generation,
+                "last_successful_relay_tunnel_at": self._last_successful_tunnel_at,
+                "last_relay_tunnel_error": self._last_tunnel_error,
+                "last_relay_tunnel_error_at": self._last_tunnel_error_at,
+                "relay_tunnel_error_status": self._last_tunnel_error_status,
+            },
+        )
+
+    def _set_state(self, coarse_event: str, state: str) -> None:
+        self._state = state
+        self._emit(coarse_event, {})
+        self._emit_health()
+
+    def _record_tunnel_success(self) -> None:
+        self._last_successful_tunnel_at = now_ms()
+        self._last_tunnel_error = None
+        self._last_tunnel_error_at = None
+        self._last_tunnel_error_status = None
+
+    def _record_tunnel_error(self, reason: str, *, status: int | None = None) -> None:
+        self._last_tunnel_error = reason
+        self._last_tunnel_error_at = now_ms()
+        self._last_tunnel_error_status = status
 
     def _url_for(self, path: str, *, token: str | None = None) -> str:
         query = {"instance": self._instance_id}

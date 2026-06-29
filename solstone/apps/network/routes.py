@@ -106,6 +106,7 @@ from solstone.think.pairing.config import (
 )
 from solstone.think.services import operations, spl, spl_handoff
 from solstone.think.services import status as service_status
+from solstone.think.spl.health import OFFLINE_TUNNEL_REASONS
 from solstone.think.utils import get_journal, now_ms
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,7 @@ _SENDER_INSTANCE_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,256}$")
 VALID_ROLES = {"", "phone", "observer", "peer"}
 # The watcher emits only lan/ula today; vpn stays empty until a scope is wired.
 VPN_SCOPES = {"vpn"}
+_HEALTH_FRESHNESS_MS = 90_000
 journal_sources = import_module("solstone.apps.import.journal_sources")
 create_state_directory = journal_sources.create_state_directory
 load_journal_source_by_fingerprint = journal_sources.load_journal_source_by_fingerprint
@@ -176,9 +178,9 @@ def _is_loopback_request() -> bool:
     return request.remote_addr in {"127.0.0.1", "::1"}
 
 
-def _read_link_connection_event() -> str | None:
-    event = get_cached_state().get("link_connection")
-    return event if isinstance(event, str) else None
+def _read_link_health() -> dict[str, Any] | None:
+    health = get_cached_state().get("link_health")
+    return health if isinstance(health, dict) else None
 
 
 def _current_local_endpoints() -> list[LocalEndpoint]:
@@ -356,21 +358,39 @@ def _derive_relay_state(token_present: bool) -> str:
     return "offline" if token_present else "not-enrolled"
 
 
+def _link_health_is_fresh(health: dict[str, Any], now_ms_val: int) -> bool:
+    ts = health.get("ts")
+    return isinstance(ts, int) and now_ms_val - ts <= _HEALTH_FRESHNESS_MS
+
+
+def _current_tunnel_error(health: dict[str, Any]) -> str | None:
+    error = health.get("last_relay_tunnel_error")
+    if not isinstance(error, str):
+        return None
+    error_at = health.get("last_relay_tunnel_error_at") or 0
+    success_at = health.get("last_successful_relay_tunnel_at") or 0
+    return error if error_at >= success_at else None
+
+
 def _derive_spl_relay_state(
     token_present: bool,
-    connection_event: str | None,
+    health: dict[str, Any] | None,
+    now_ms_val: int,
 ) -> str:
     if not token_present:
         return "not-enrolled"
-    # A missing event usually means convey restarted before observing the link
-    # service transition. Treat it as connecting; a genuinely down relay can
-    # read as finishing setup briefly until a disconnect event arrives.
-    if connection_event == "connected":
-        # Connected has no freshness bound. A hard service crash can leave this
-        # parked until convey restarts, which resets the cache to connecting.
-        return "parked"
-    if connection_event == "disconnect":
+    if health is None:
+        return "connecting"
+    if not _link_health_is_fresh(health, now_ms_val):
         return "offline"
+    current_error = _current_tunnel_error(health)
+    if current_error in OFFLINE_TUNNEL_REASONS:
+        return "offline"
+    state = health.get("state")
+    if state == "reconnecting":
+        return "reconnecting"
+    if state == "connected":
+        return "parked"
     return "connecting"
 
 
@@ -383,10 +403,11 @@ def _derive_reachability(
         return "lan-unreachable"
     if posture == "direct":
         return "online"
-    # posture == "spl": map relay_state. "reconnecting" is reserved.
+    # posture == "spl": map relay_state.
     return {
         "connecting": "finishing-setup",
         "parked": "online",
+        "reconnecting": "reconnecting",
         "offline": "offline",
         "not-enrolled": "finishing-setup",
     }[relay_state]
@@ -438,6 +459,8 @@ def api_devices() -> Any:
 @network_bp.route("/api/status")
 def api_status() -> Any:
     """Snapshot of link-service state for the dashboard header."""
+    now_ms_val = now_ms()
+    health = _read_link_health()
     state = LinkState.load()
     token = load_service_token()
     token_present = token is not None
@@ -445,7 +468,7 @@ def api_status() -> Any:
     lan_accessible, home_address = _effective_home_address()
     posture = read_posture()
     relay_state = (
-        _derive_spl_relay_state(token_present, _read_link_connection_event())
+        _derive_spl_relay_state(token_present, health, now_ms_val)
         if posture == "spl"
         else _derive_relay_state(token_present)
     )
@@ -475,6 +498,17 @@ def api_status() -> Any:
             "posture": posture,
             "reachability": reachability,
             "relay_state": relay_state,
+            "last_link_event_at": health["ts"] if health else None,
+            "relay_listen_generation": health["listen_generation"] if health else None,
+            "last_successful_relay_tunnel_at": (
+                health["last_successful_relay_tunnel_at"] if health else None
+            ),
+            "last_relay_tunnel_error": (
+                health["last_relay_tunnel_error"] if health else None
+            ),
+            "last_relay_tunnel_error_at": (
+                health["last_relay_tunnel_error_at"] if health else None
+            ),
             "home_address": home_address,
             "vpn": {"active": None, "candidates": vpn_candidates},
             "home_candidates": home_candidates,
