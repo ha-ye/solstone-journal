@@ -19,6 +19,7 @@ from solstone.think.link.paths import (
     LinkState,
     authorized_clients_path,
     nonces_path,
+    save_totp_secret,
 )
 from tests._baseline_harness import make_test_client
 
@@ -167,6 +168,48 @@ def test_pair_mints_nonce_prints_payload_and_times_out(runner, monkeypatch):
     assert len(nonces) == 1
     assert nonces[0].device_label == "Test Phone"
     assert nonces[0].role == "observer"
+
+
+def test_pair_no_wait_mints_nonce_prints_payload_and_exits(runner, monkeypatch):
+    _install_pair_watcher(monkeypatch)
+
+    result = runner.invoke(
+        link_call.app,
+        ["pair", "--device-label", "Headless", "--as", "observer", "--no-wait"],
+    )
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    assert "pair-link: https://go.solstone.app/p#" in result.stdout
+    assert "link this device with:\n" in result.stdout
+    assert "  sol link join --code " in result.stdout
+    assert "CA fingerprint: sha256:" in result.stdout
+    assert "Device: Headless\n" in result.stdout
+    assert "pair-link freshness:" not in result.stdout
+    assert "Waiting for linked system" not in result.stdout
+    assert "Timed out. Pair code expired." not in result.stdout
+    nonces = _nonces().snapshot()
+    assert len(nonces) == 1
+    assert nonces[0].device_label == "Headless"
+    assert nonces[0].role == "observer"
+
+
+def test_pair_no_wait_prints_relay_freshness_hint(journal, runner):
+    config_path = journal / "config" / "journal.json"
+    config = json.loads(config_path.read_text("utf-8"))
+    config["link"] = {"posture": "spl"}
+    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    save_totp_secret("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
+
+    result = runner.invoke(
+        link_call.app,
+        ["pair", "--device-label", "Relay Phone", "--no-wait"],
+    )
+
+    assert result.exit_code == 0
+    hint = "pair-link freshness: use within about 30 seconds; relay codes rotate.\n"
+    assert hint in result.stdout
+    assert "Waiting for linked system" not in result.stdout
 
 
 @pytest.mark.parametrize(

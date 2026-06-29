@@ -60,6 +60,9 @@ PRIVATE_LINK_STATE_LABELS = {
 CLI_PAIR_LINK_LABEL = "pair-link"
 CLI_PAIR_JOIN_HINT = "link this device with:"
 CLI_PAIR_CA_FINGERPRINT_LABEL = "CA fingerprint"
+CLI_PAIR_RELAY_FRESHNESS_HINT = (
+    "pair-link freshness: use within about {duration}; relay codes rotate."
+)
 CLI_PAIR_NO_LAN_ADDRESS = (
     "can't start pairing — your solstone isn't reachable on a network address "
     "yet. turn on your private network to pair from anywhere, or connect this "
@@ -289,8 +292,13 @@ def pair(
         "--timeout",
         help="How long to wait for the linked system before giving up",
     ),
+    no_wait: bool = typer.Option(
+        False,
+        "--no-wait",
+        help="Print the pair link and exit without waiting for the linked system.",
+    ),
 ) -> None:
-    """Start a pairing link, print join-ready credentials, wait for completion."""
+    """Start a pairing link, print join-ready credentials, optionally wait."""
     if as_role is not None and as_role not in VALID_ROLES:
         typer.echo("invalid role; expected one of: phone, observer, peer", err=True)
         raise typer.Exit(2)
@@ -317,8 +325,16 @@ def pair(
         join_cmd += ["--label", device_label]
     typer.echo("  " + shlex.join(join_cmd))
     typer.echo(f"{CLI_PAIR_CA_FINGERPRINT_LABEL}: sha256:{ca_fp}")
+    if resp.get("rotating"):
+        typer.echo(
+            CLI_PAIR_RELAY_FRESHNESS_HINT.format(
+                duration=relative_time(int(resp["expires_in"]))
+            )
+        )
     if device_label:
         typer.echo(f"Device: {device_label}{' (peer)' if as_role == 'peer' else ''}")
+    if no_wait:
+        return
     typer.echo("")
     typer.echo("Waiting for linked system…")
 
