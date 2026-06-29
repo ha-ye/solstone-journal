@@ -715,14 +715,21 @@ def test_api_delete_nonexistent(observer_env):
 def test_ingest_invalid_key(observer_env):
     """Test that ingest rejects invalid keys."""
     env = observer_env()
+    before_observers = list_observers()
 
     resp = env.client.post(
         "/app/observer/ingest",
         headers={"Authorization": "Bearer invalid-key-12345"},
-        data={"day": "20250103", "segment": "120000_300"},
+        data={
+            "day": "20250103",
+            "segment": "120000_300",
+            "files": (io.BytesIO(b"should-not-be-parsed"), "audio.flac"),
+        },
     )
     assert resp.status_code == 401
     assert "Invalid key" in resp.get_json()["detail"]
+    assert list_observers() == before_observers
+    assert not _day_dir(env).exists()
 
 
 def test_delete_source_requires_auth(observer_env):

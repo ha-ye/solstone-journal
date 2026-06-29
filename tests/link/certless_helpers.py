@@ -33,6 +33,9 @@ class FakeStreamWriter:
         self.data = bytearray()
         self.closed = False
         self.reset_called = False
+        self.reset_reason: int | None = None
+        self.reset_context: str | None = None
+        self.drain_context: str | None = None
 
     async def write(self, data: bytes) -> None:
         self.data.extend(data)
@@ -40,9 +43,14 @@ class FakeStreamWriter:
     async def close(self) -> None:
         self.closed = True
 
-    async def reset(self) -> None:
+    async def reset(self, reason: int, context: str) -> None:
         self.reset_called = True
+        self.reset_reason = reason
+        self.reset_context = context
         self.closed = True
+
+    def begin_drain(self, context: str) -> None:
+        self.drain_context = context
 
 
 def make_convey_app(

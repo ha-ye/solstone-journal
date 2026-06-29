@@ -21,8 +21,9 @@ from OpenSSL import SSL
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.window import window_open
 
+from .framing import RESET_INTERNAL_ERROR
 from .identity import ConveyIdentity
-from .mux import Multiplexer, StreamWriter
+from .mux import RESET_CTX_NO_IDENTITY, Multiplexer, ResetDiagnostic, StreamWriter
 from .tls import TlsError, drive_tls, new_server
 from .wsgi import CERTLESS_PAIR_ENDPOINTS, DispatchResult, dispatch_stream
 
@@ -231,7 +232,7 @@ class SecureListener:
             writer: StreamWriter,
         ) -> None:
             if identity is None:
-                await writer.reset()
+                await writer.reset(RESET_INTERNAL_ERROR, RESET_CTX_NO_IDENTITY)
                 return
             self._log.debug(
                 "secure stream opened conn=%s stream_id=%d",
@@ -275,7 +276,31 @@ class SecureListener:
                     writer.stream_id,
                 )
 
-        mux = Multiplexer(send_frame, handle_stream, is_listener=True)
+        def on_reset(diag: ResetDiagnostic) -> None:
+            self._log.info(
+                "secure stream reset conn=%s stream_id=%d reason=%s context=%s",
+                connection_id,
+                diag.stream_id,
+                diag.reason_name,
+                diag.context,
+            )
+            self._emit(
+                "stream_reset",
+                {
+                    "stream_id": diag.stream_id,
+                    "reason_code": diag.reason_code,
+                    "reason_name": diag.reason_name,
+                    "context": diag.context,
+                    "tunnel_id": connection_id,
+                },
+            )
+
+        mux = Multiplexer(
+            send_frame,
+            handle_stream,
+            is_listener=True,
+            on_reset=on_reset,
+        )
 
         async def tcp_reader_loop() -> None:
             nonlocal certless_handle, certless_registered, identity
