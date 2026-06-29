@@ -4,6 +4,20 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.17] - 2026-06-29
+
+### Added
+- you can now begin pairing over your private network without waiting for the whole pairing to finish first. start it and carry on while it completes.
+
+### Changed
+- your home screen now shows your solstone's health as a single honest verdict. it rolls every signal into one line, always reflects the most serious thing happening, and never reads "everything's working" while something is failing or can't be checked. anything it flags is now a link you can follow to learn more or fix it, and it will tell you if sol has no working way to think. day-to-day activity counts moved off the glance so it stays focused on what needs your attention.
+
+### Fixed
+- deleting a location source now also removes location data that was bundled inside mixed mobile observations, where it used to be left behind.
+- if an observer was running but its observations were silently never reaching your journal, solstone used to show it as fine, unknown, or stale. that state now shows up clearly wherever you check on solstone, in red, with what went wrong and how to recover.
+- observations from a terminal or screen-only observer, which have no separate media to send, were being turned away and set aside. they're now accepted into your journal.
+- when turning on your private network runs into a problem, you now get the specific reason and what to do about it, instead of one generic error message.
+
 ## [0.6.16] - 2026-06-28
 
 ### Added
