@@ -14,6 +14,13 @@ BANNED_RE = re.compile(
     r"\b(watch|capture|record|monitor|track|collect)\b",
     re.IGNORECASE,
 )
+EXTENDED_BANNED_RE = re.compile(
+    r"\b("
+    r"capture|watch|record|monitor|track|collect|credentials|api|key|gemini|"
+    r"cloud|model|provider|llm|configure"
+    r")\b",
+    re.IGNORECASE,
+)
 HEALTH_DETAIL_HREF = "/app/health#focus=recent-errors&day=today"
 
 
@@ -196,6 +203,50 @@ def test_pipeline_health_actions_route_to_recent_errors(pipeline_status):
     assert result["issues"][0]["href"] == HEALTH_DETAIL_HREF
 
 
+def test_thinking_blocked_alone_returns_amber_attention_issue():
+    result = build_health_glance(_active_capture(), None, None, thinking_blocked=True)
+
+    assert result["issues"] == [
+        {
+            "text": "sol needs a way to think",
+            "severity": "amber",
+            "href": "/app/thinking/",
+        }
+    ]
+    assert result["verdict"] == "attention"
+    assert result["severity"] == "amber"
+    assert result["headline"] == "1 thing needs your attention"
+
+
+def test_thinking_blocked_combines_with_red_capture_issue():
+    result = build_health_glance(
+        _degraded_capture("fedora"), None, None, thinking_blocked=True
+    )
+
+    assert len(result["issues"]) == 2
+    assert result["verdict"] == "attention"
+    assert result["severity"] == "red"
+    assert result["headline"] == "2 things need your attention"
+    assert {
+        "text": "sol needs a way to think",
+        "severity": "amber",
+        "href": "/app/thinking/",
+    } in result["issues"]
+    assert any(issue["severity"] == "red" for issue in result["issues"])
+
+
+def test_thinking_not_blocked_keeps_ok_glance():
+    result = build_health_glance(
+        _active_capture(), None, "5m ago", thinking_blocked=False
+    )
+
+    assert result["verdict"] == "ok"
+    assert result["headline"] == "everything's working"
+    assert all(
+        issue["text"] != "sol needs a way to think" for issue in result["issues"]
+    )
+
+
 def test_all_issue_and_cta_hrefs_are_local_paths():
     states = [
         build_health_glance(_degraded_capture("fedora"), None, None),
@@ -245,6 +296,7 @@ def test_owner_facing_strings_use_allowed_terms():
             None,
         ),
         build_health_glance(_active_capture(), None, "5m ago"),
+        build_health_glance(_active_capture(), None, None, thinking_blocked=True),
         build_health_glance({"status": "no_observers", "observers": []}, None, None),
         build_health_glance({"status": "unknown", "observers": []}, None, None),
         build_health_glance(
@@ -263,3 +315,16 @@ def test_owner_facing_strings_use_allowed_terms():
         strings.extend(issue["text"] for issue in state["issues"])
         for text in strings:
             assert BANNED_RE.findall(text) == []
+
+
+def test_thinking_blocked_chip_uses_owner_copy() -> None:
+    result = build_health_glance(_active_capture(), None, None, thinking_blocked=True)
+    chip = next(
+        issue
+        for issue in result["issues"]
+        if issue["text"] == "sol needs a way to think"
+    )
+
+    assert chip["text"] == "sol needs a way to think"
+    assert chip["text"] == chip["text"].lower()
+    assert EXTENDED_BANNED_RE.findall(chip["text"]) == []

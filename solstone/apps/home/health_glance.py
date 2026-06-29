@@ -17,6 +17,7 @@ def build_health_glance(
     capture_health: Any,
     pipeline_status: Any,
     last_observe_relative: str | None,
+    thinking_blocked: bool = False,
 ) -> dict:
     issues = []
 
@@ -31,6 +32,15 @@ def build_health_glance(
     )
     if pipeline_issue is not None:
         issues.append(pipeline_issue)
+
+    if thinking_blocked:
+        issues.append(
+            {
+                "text": "sol needs a way to think",
+                "severity": "amber",
+                "href": "/app/thinking/",
+            }
+        )
 
     if issues:
         severity = (

@@ -19,6 +19,7 @@ from flask import Blueprint, jsonify, render_template
 
 from solstone.apps.home.health_glance import build_health_glance
 from solstone.apps.home.needs_you import classify_needs_you
+from solstone.apps.home.thinking_readiness import _thinking_blocked
 from solstone.convey.apps import _resolve_attention
 from solstone.convey.bridge import get_cached_state
 from solstone.convey.utils import DATE_RE, format_date, relative_time
@@ -988,8 +989,12 @@ def _build_pulse_context() -> dict[str, Any]:
         summary = read_steward_summary()
         if summary:
             pipeline_status = {**pipeline_status, **summary}
+    thinking_blocked = _thinking_blocked()
     health_glance = build_health_glance(
-        capture_health, pipeline_status, last_observe_relative
+        capture_health,
+        pipeline_status,
+        last_observe_relative,
+        thinking_blocked=thinking_blocked,
     )
 
     yesterday_processing = _summarize_yesterday_processing(yesterday, journal_age_days)
