@@ -142,7 +142,7 @@ def test_workspace_renders_reach_shell_copy_and_static_guards(link_env) -> None:
 def test_workspace_renders_hosted_mode_and_states(link_env) -> None:
     env = link_env(
         posture="spl",
-        totp_secret="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+        service_token="svc-token",
     )
     response = env.client.get("/app/network/")
 

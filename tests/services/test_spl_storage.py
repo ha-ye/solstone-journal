@@ -3,10 +3,8 @@
 
 from __future__ import annotations
 
-import base64
 import io
 import json
-import stat
 import urllib.error
 from pathlib import Path
 from typing import Any
@@ -17,9 +15,7 @@ from solstone.think.journal_config import write_journal_config
 from solstone.think.link.paths import (
     authorized_clients_path,
     load_service_token,
-    load_totp_secret,
-    save_totp_secret,
-    totp_secret_path,
+    save_service_token,
 )
 from solstone.think.services import spl
 from solstone.think.spl import relay_client
@@ -52,7 +48,7 @@ def _install_relay(
     monkeypatch.setattr(relay_client, "_post_json_sync", post_json)
 
 
-def test_enable_spl_writes_posture_secret_and_service_token(
+def test_enable_spl_writes_posture_and_service_token(
     journal_copy: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     captured: list[tuple[str, dict[str, Any]]] = []
@@ -61,21 +57,16 @@ def test_enable_spl_writes_posture_secret_and_service_token(
     spl.enable_spl()
 
     config = _read_config(journal_copy)
-    secret = load_totp_secret()
     assert config["link"]["posture"] == "spl"
-    assert secret is not None
-    assert stat.S_IMODE(totp_secret_path().stat().st_mode) == 0o600
-    decoded = base64.b32decode(secret + "=" * ((8 - len(secret) % 8) % 8))
-    assert len(decoded) >= 20
     assert captured[0][0] == "https://relay.test/enroll/home"
-    assert captured[0][1]["totp_secret"] == secret
+    assert set(captured[0][1]) == {"instance_id", "ca_pubkey", "home_label"}
     assert captured[0][1]["instance_id"]
     assert captured[0][1]["ca_pubkey"]
     assert captured[0][1]["home_label"]
     assert load_service_token() == "tok.spl"
 
 
-def test_enable_spl_does_not_write_secret_to_journal_config(
+def test_enable_spl_does_not_write_token_to_journal_config(
     journal_copy: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     captured: list[tuple[str, dict[str, Any]]] = []
@@ -84,22 +75,22 @@ def test_enable_spl_does_not_write_secret_to_journal_config(
     spl.enable_spl()
 
     config_text = json.dumps(_read_config(journal_copy))
-    assert "totp" not in config_text
+    assert "tok.spl" not in config_text
 
 
-def test_enable_spl_does_not_regenerate_existing_secret(
+def test_enable_spl_reenrolls_service_identity_only(
     journal_copy: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     captured: list[tuple[str, dict[str, Any]]] = []
     _install_relay(monkeypatch, captured)
 
     spl.enable_spl()
-    first_secret = load_totp_secret()
     spl.enable_spl()
 
-    assert load_totp_secret() == first_secret
-    assert captured[0][1]["totp_secret"] == first_secret
-    assert captured[1][1]["totp_secret"] == first_secret
+    assert len(captured) == 2
+    assert set(captured[0][1]) == {"instance_id", "ca_pubkey", "home_label"}
+    assert set(captured[1][1]) == {"instance_id", "ca_pubkey", "home_label"}
+    assert load_service_token() == "tok.spl"
     assert spl.is_spl_enabled()
 
 
@@ -116,7 +107,6 @@ def test_disable_spl_when_enabled_parks_relay_state(
 
     assert outcome == spl.SplDisableOutcome(was_enabled=True)
     assert _read_config(journal_copy)["link"]["posture"] == "direct"
-    assert totp_secret_path().exists()
     assert load_service_token() == "tok.spl"
     assert authorized_clients_path().read_text("utf-8") == authorized_text
 
@@ -139,7 +129,7 @@ def test_is_spl_enabled_matrix(journal_copy: Path) -> None:
     assert not spl.is_spl_enabled()
 
     _write_posture(journal_copy, "direct")
-    save_totp_secret("SECRET")
+    save_service_token("tok.spl")
     assert not spl.is_spl_enabled()
 
     _write_posture(journal_copy, "spl")

@@ -229,15 +229,6 @@
           <li>{{ link_copy.STEP_3 }}</li>
         </ol>
 
-        <div id="link-pair-rotation" class="link-pair-rotation" hidden>
-          <span id="link-pair-rotation-ring" class="link-pair-rotation-ring" aria-hidden="true">
-            <svg viewBox="0 0 40 40" focusable="false">
-              <circle class="link-pair-rotation-track" cx="20" cy="20" r="17"></circle>
-              <circle class="link-pair-rotation-arc" cx="20" cy="20" r="17" pathLength="100"></circle>
-            </svg>
-          </span>
-          <span class="link-pair-rotate-note">{{ link_copy.PAIR_ROTATE_NOTE }}</span>
-        </div>
         <p id="link-pair-network" class="link-pair-network" hidden>{{ link_copy.PAIR_NETWORK_LINE }}</p>
 
         <div class="link-modal-label link-pair-computer-panel" aria-labelledby="link-pair-link-label">
@@ -544,17 +535,6 @@
   .link-pair-network { grid-column: 1 / -1; margin: 0; }
   .link-pair-network[hidden] { display: none; }
   .link-pair-network { color: #555; }
-  .link-pair-rotation { grid-column: 1 / -1; display: flex; align-items: center; gap: 0.65em; margin: 0; color: #555; }
-  .link-pair-rotation[hidden] { display: none; }
-  .link-pair-rotation-ring { width: 28px; height: 28px; flex: 0 0 28px; color: #B06A1A; }
-  .link-pair-rotation-ring svg { display: block; width: 100%; height: 100%; transform: rotate(-90deg); }
-  .link-pair-rotation-track,
-  .link-pair-rotation-arc { fill: none; stroke-width: 4; }
-  .link-pair-rotation-track { stroke: #ECE3D0; }
-  .link-pair-rotation-arc { stroke: currentColor; stroke-linecap: round; stroke-dasharray: 100; stroke-dashoffset: 0; }
-  .link-pair-rotation-ring.is-running .link-pair-rotation-arc { animation: link-pair-ring-drain var(--link-pair-rotation-duration, 300s) linear forwards; }
-  @keyframes link-pair-ring-drain { from { stroke-dashoffset: 0; } to { stroke-dashoffset: 100; } }
-  .link-pair-rotate-note { line-height: 1.45; }
   .link-pair-details { grid-column: 1 / -1; color: #777; font-size: 0.82em; }
   .link-pair-details summary { color: #777; cursor: pointer; }
   .link-pair-details code { word-break: break-all; }
@@ -569,7 +549,6 @@
   .link-pair-grid.is-computer { grid-template-columns: 1fr; }
   .link-pair-grid.is-computer .link-pair-qr-cell,
   .link-pair-grid.is-computer .link-pair-steps,
-  .link-pair-grid.is-computer #link-pair-rotation,
   .link-pair-grid.is-computer #link-pair-network { display: none; }
   .link-pair-grid.is-computer .link-pair-computer-panel { display: flex; }
   .link-pair-grid.is-glasses { grid-template-columns: 1fr; }
@@ -578,7 +557,6 @@
   .link-pair-grid.is-glasses .link-qr-container svg,
   .link-pair-grid.is-glasses .link-qr-container img { width: 100%; max-width: 100%; height: auto; }
   .link-pair-grid.is-glasses .link-pair-steps,
-  .link-pair-grid.is-glasses #link-pair-rotation,
   .link-pair-grid.is-glasses #link-pair-network,
   .link-pair-grid.is-glasses .link-pair-label-edit,
   .link-pair-grid.is-glasses .link-pair-details,
@@ -681,8 +659,6 @@
   const pairLinkInput = document.getElementById('link-pair-link-input');
   const pairLinkCopy = document.getElementById('link-pair-link-copy');
   const pairRegenerate = document.getElementById('link-pair-regenerate');
-  const rotationRing = document.getElementById('link-pair-rotation-ring');
-  const pairRotation = document.getElementById('link-pair-rotation');
   const pairNetwork = document.getElementById('link-pair-network');
   const caFpEl = document.getElementById('link-pair-ca-fp');
   const pairError = document.getElementById('link-pair-error');
@@ -696,7 +672,6 @@
   const pairDone = document.getElementById('link-pair-done');
   let pairEventsCleanup = null;
   let expiryTimer = null;
-  let rotationTimer = null;
   let windowTimer = null;
   let splWindowActive = false;
   let autoRefreshFired = false;
@@ -777,9 +752,8 @@
     section.hidden = false;
   }
 
-  function setPairCopy(rotating) {
-    if (pairRotation) pairRotation.hidden = !rotating;
-    if (pairNetwork) pairNetwork.hidden = rotating;
+  function setPairCopy() {
+    if (pairNetwork) pairNetwork.hidden = false;
   }
 
   function relativeTime(iso) {
@@ -1728,13 +1702,6 @@
     }
   }
 
-  function clearRotationTimer() {
-    if (rotationTimer !== null) {
-      clearTimeout(rotationTimer);
-      rotationTimer = null;
-    }
-  }
-
   function clearWindowTimer() {
     if (windowTimer !== null) {
       clearTimeout(windowTimer);
@@ -1742,33 +1709,15 @@
     }
   }
 
-  function resetRotationRing() {
-    if (!rotationRing) return;
-    rotationRing.classList.remove('is-running');
-    rotationRing.style.removeProperty('--link-pair-rotation-duration');
-  }
-
-  function startRotationRing(expiresIn) {
-    if (!rotationRing) return;
-    rotationRing.style.setProperty('--link-pair-rotation-duration', `${expiresIn}s`);
-    rotationRing.classList.remove('is-running');
-    void rotationRing.offsetWidth;
-    rotationRing.classList.add('is-running');
-  }
-
   function clearPairTimers() {
     clearExpiryTimer();
-    clearRotationTimer();
     clearWindowTimer();
-    resetRotationRing();
   }
 
   function closeSplPairWindow() {
     splWindowActive = false;
     clearExpiryTimer();
-    clearRotationTimer();
     clearWindowTimer();
-    resetRotationRing();
     qrContainer.classList.add('is-expired');
     qrExpired.hidden = false;
   }
@@ -1840,7 +1789,7 @@
     renderQr(currentPair.pair_link);
     caFpEl.textContent = currentPair.ca_fingerprint;
     if (pairLinkInput) pairLinkInput.value = currentPair.pair_link;
-    setPairCopy(currentPair.rotating);
+    setPairCopy();
     updatePresentationSelector();
   }
 
@@ -1903,8 +1852,6 @@
 
   async function requestPairCode({ restart = false } = {}) {
     clearExpiryTimer();
-    clearRotationTimer();
-    resetRotationRing();
     pairError.hidden = true;
     qrExpired.hidden = true;
     qrContainer.classList.remove('is-expired');
@@ -1922,29 +1869,15 @@
       ca_fingerprint: data.ca_fingerprint,
       device_label: data.device_label,
       expires_in: Number(data.expires_in) || 300,
-      rotating: Boolean(data.rotating),
     };
     deviceLabelInput.value = data.device_label;
     renderPairPresentation();
 
-    const rotating = Boolean(data.rotating);
-
     const expiresIn = Number(data.expires_in) || 300;
-    if (rotating) {
-      if (!splWindowActive) {
-        // Mid-session rotation re-fetch that finished after the 5-min window
-        // closed: bail without re-arming. A fresh start opens the window.
-        if (!restart) return;
+    if (latestStatus?.posture === 'spl') {
+      if (restart) {
         startSplPairWindow();
       }
-      startRotationRing(expiresIn);
-      rotationTimer = setTimeout(() => {
-        if (!splWindowActive || pairModal.hidden) return;
-        requestPairCode().catch((err) => {
-          showPairError();
-          window.logError(err, { context: 'link: rotate pair code failed' });
-        });
-      }, expiresIn * 1000);
       return;
     }
 
@@ -2015,7 +1948,7 @@
     resetPairCodeState();
     presentationMode = 'phone';
     updatePresentationSelector();
-    setPairCopy(latestStatus?.posture === 'spl');
+    setPairCopy();
     if (window.appEvents) {
       pairEventsCleanup = window.appEvents.listen('link', (payload) => {
         if (payload.event === 'pair_complete') {

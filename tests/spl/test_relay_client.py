@@ -7,6 +7,8 @@ import asyncio
 import contextlib
 import json
 import logging
+import threading
+import time
 from typing import Any
 
 import pytest
@@ -112,6 +114,99 @@ class ConnectRouter:
         raise AssertionError(f"unexpected url: {url}")
 
 
+class _FakeWS:
+    def __init__(self, frames=()) -> None:
+        self._frames = list(frames)
+        self.closed = False
+
+    async def __aenter__(self) -> "_FakeWS":
+        return self
+
+    async def __aexit__(self, *_args: Any) -> bool:
+        return False
+
+    def __aiter__(self) -> "_FakeWS":
+        return self
+
+    async def __anext__(self):
+        if self._frames:
+            return self._frames.pop(0)
+        raise StopAsyncIteration
+
+    async def close(self) -> None:
+        self.closed = True
+
+    async def send(self, _data) -> None:
+        return None
+
+
+class _RecordingOpener:
+    def __init__(self, *ws: _FakeWS) -> None:
+        self._ws = list(ws)
+        self.calls: list[tuple[str, dict[str, str], int | None]] = []
+
+    def __call__(
+        self,
+        url: str,
+        *,
+        additional_headers=None,
+        max_size: int | None = None,
+    ) -> _FakeWS:
+        self.calls.append((url, dict(additional_headers or {}), max_size))
+        if not self._ws:
+            raise AssertionError(f"unexpected url: {url}")
+        return self._ws.pop(0)
+
+
+class _BlockingPairWindowWS(_FakeWS):
+    def __init__(self, entered: threading.Event) -> None:
+        super().__init__()
+        self._entered = entered
+
+    async def __aenter__(self) -> "_BlockingPairWindowWS":
+        self._entered.set()
+        return self
+
+    async def __anext__(self):
+        await asyncio.sleep(30)
+        raise StopAsyncIteration
+
+
+class _BlockingFramesWS(_FakeWS):
+    async def __anext__(self):
+        if self._frames:
+            return self._frames.pop(0)
+        await asyncio.sleep(30)
+        raise StopAsyncIteration
+
+
+class _BlockingOpener:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, str], int | None]] = []
+        self.entered: list[threading.Event] = []
+
+    def __call__(
+        self,
+        url: str,
+        *,
+        additional_headers=None,
+        max_size: int | None = None,
+    ) -> _BlockingPairWindowWS:
+        event = threading.Event()
+        self.entered.append(event)
+        self.calls.append((url, dict(additional_headers or {}), max_size))
+        return _BlockingPairWindowWS(event)
+
+    def wait_until_entered(self, index: int, timeout: float = 5.0) -> None:
+        deadline = time.monotonic() + timeout
+        while len(self.entered) <= index and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if len(self.entered) <= index:
+            raise AssertionError("pair-window opener was not called")
+        if not self.entered[index].wait(timeout):
+            raise AssertionError("pair-window did not open")
+
+
 def _client(emitted: list[tuple[str, dict[str, Any]]]) -> relay_client.RelayClient:
     return relay_client.RelayClient(
         instance_id="instance.test",
@@ -183,40 +278,7 @@ def test_enroll_rejects_response_without_service_token(
         )
 
 
-def test_enroll_home_includes_totp_secret_when_provided(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: list[tuple[str, dict[str, Any]]] = []
-
-    def post_json(url: str, body: dict[str, Any]) -> dict[str, str]:
-        captured.append((url, body))
-        return {"service_token": "tok"}
-
-    monkeypatch.setattr(relay_client, "_post_json_sync", post_json)
-
-    token = relay_client.enroll_home(
-        "https://relay.test",
-        instance_id="instance.test",
-        ca_pubkey="pem",
-        home_label="home.test",
-        totp_secret="SECRET",
-    )
-
-    assert token == "tok"
-    assert captured == [
-        (
-            "https://relay.test/enroll/home",
-            {
-                "instance_id": "instance.test",
-                "ca_pubkey": "pem",
-                "home_label": "home.test",
-                "totp_secret": "SECRET",
-            },
-        )
-    ]
-
-
-def test_enroll_home_omits_totp_secret_when_none(
+def test_enroll_home_posts_service_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: list[tuple[str, dict[str, Any]]] = []
@@ -245,6 +307,125 @@ def test_enroll_home_omits_totp_secret_when_none(
             },
         )
     ]
+
+
+def test_enroll_home_posts_only_service_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[tuple[str, dict[str, Any]]] = []
+
+    def post_json(url: str, body: dict[str, Any]) -> dict[str, str]:
+        captured.append((url, body))
+        return {"service_token": "tok"}
+
+    monkeypatch.setattr(relay_client, "_post_json_sync", post_json)
+
+    token = relay_client.enroll_home(
+        "https://relay.test",
+        instance_id="instance.test",
+        ca_pubkey="pem",
+        home_label="home.test",
+    )
+
+    assert token == "tok"
+    assert captured == [
+        (
+            "https://relay.test/enroll/home",
+            {
+                "instance_id": "instance.test",
+                "ca_pubkey": "pem",
+                "home_label": "home.test",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_hold_pair_window_opens_with_rk_header_and_bearer() -> None:
+    rk = bytes.fromhex("00112233445566778899aabbccddeeff")
+    opener = _RecordingOpener(_FakeWS([]))
+
+    await relay_client.hold_pair_window(
+        relay_endpoint="https://link.solstone.app",
+        service_token="tok",
+        rk=rk,
+        timeout=0.05,
+        opener=opener,
+    )
+
+    url, headers, max_size = opener.calls[0]
+    assert url == "wss://link.solstone.app/session/pair-window"
+    assert "?instance=" not in url
+    assert "?token=" not in url
+    assert headers["Authorization"] == "Bearer tok"
+    assert headers["Sec-Pair-Key"] == "00112233445566778899aabbccddeeff"
+    assert max_size is None
+
+
+@pytest.mark.asyncio
+async def test_hold_pair_window_bridges_incoming_tunnel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_open_connection(*_args: Any) -> tuple[object, FakeWriter]:
+        raise OSError("local listener unavailable")
+
+    monkeypatch.setattr(relay_client.asyncio, "open_connection", fail_open_connection)
+    rk = bytes.fromhex("00112233445566778899aabbccddeeff")
+    opener = _RecordingOpener(
+        _BlockingFramesWS([_incoming("t1")]),
+        _FakeWS([]),
+    )
+
+    await relay_client.hold_pair_window(
+        relay_endpoint="https://link.solstone.app",
+        service_token="tok",
+        rk=rk,
+        timeout=0.05,
+        opener=opener,
+    )
+
+    assert len(opener.calls) == 2
+    url, headers, max_size = opener.calls[1]
+    assert url == "wss://link.solstone.app/tunnel/t1"
+    assert "?instance=" not in url
+    assert "?token=" not in url
+    assert headers["Authorization"] == "Bearer tok"
+    assert headers["Sec-Pair-Key"] == "00112233445566778899aabbccddeeff"
+    assert max_size is None
+
+
+def test_start_pair_window_replaces_prior_and_cancels() -> None:
+    opener = _BlockingOpener()
+    first = relay_client.start_pair_window(
+        rk=b"0" * 16,
+        service_token="tok",
+        relay_endpoint="https://link.solstone.app",
+        opener=opener,
+        timeout=30.0,
+    )
+    try:
+        opener.wait_until_entered(0)
+        assert first.is_alive()
+
+        second = relay_client.start_pair_window(
+            rk=b"1" * 16,
+            service_token="tok",
+            relay_endpoint="https://link.solstone.app",
+            opener=opener,
+            timeout=30.0,
+        )
+        try:
+            opener.wait_until_entered(1)
+            first.join(timeout=5)
+            assert not first.is_alive()
+            assert second.is_alive()
+        finally:
+            relay_client.cancel_pair_window()
+            second.join(timeout=5)
+            assert not second.is_alive()
+    finally:
+        relay_client.cancel_pair_window()
+        first.join(timeout=5)
 
 
 @pytest.mark.asyncio

@@ -11,7 +11,6 @@ import pytest
 from solstone.think.journal_config import write_journal_config
 from solstone.think.link.paths import (
     save_service_token,
-    save_totp_secret,
     service_token_path,
 )
 from solstone.think.services import scout, status
@@ -119,7 +118,6 @@ def test_spl_status_enabled_when_posture_spl_and_token_present(
 ) -> None:
     _set_posture(journal_copy, "spl")
     save_service_token("SECRET_TOKEN")
-    save_totp_secret("SECRET_TOTP")
 
     result = status.spl_status()
 
@@ -127,7 +125,6 @@ def test_spl_status_enabled_when_posture_spl_and_token_present(
     assert result == {"service": "spl", "state": "enabled", "guidance": None}
     serialized = json.dumps(result)
     assert "SECRET_TOKEN" not in serialized
-    assert "SECRET_TOTP" not in serialized
 
 
 def test_spl_status_inconsistent_when_spl_without_token(journal_copy: Path) -> None:

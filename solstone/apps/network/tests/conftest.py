@@ -27,7 +27,7 @@ def link_env(tmp_path, monkeypatch):
     def _create(
         *,
         posture: str | None = None,
-        totp_secret: str | None = None,
+        service_token: str | None = None,
         provision: bool = True,
         local_endpoints: list[LocalEndpoint] | None = None,
     ):
@@ -51,10 +51,10 @@ def link_env(tmp_path, monkeypatch):
             from solstone.think.link.paths import LinkState
 
             LinkState.load_or_create()
-        if totp_secret is not None:
-            from solstone.think.link.paths import save_totp_secret
+        if service_token is not None:
+            from solstone.think.link.paths import save_service_token
 
-            save_totp_secret(totp_secret)
+            save_service_token(service_token)
 
         from solstone.convey import create_app
 
@@ -72,12 +72,24 @@ def link_env(tmp_path, monkeypatch):
             "get_interface_watcher",
             lambda: _StubWatcher(endpoints),
         )
+        pair_window_calls: list[dict] = []
+
+        def _record_start_pair_window(**kwargs):
+            pair_window_calls.append(kwargs)
+            return None
+
+        monkeypatch.setattr(
+            link_routes,
+            "start_pair_window",
+            _record_start_pair_window,
+        )
 
         class Env:
             def __init__(self):
                 self.journal = journal
                 self.client = client
                 self.app = app
+                self.pair_window_calls = pair_window_calls
 
         return Env()
 

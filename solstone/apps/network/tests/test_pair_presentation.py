@@ -121,7 +121,7 @@ def test_pair_render_seam_uses_current_pair_without_label_clobber(link_env) -> N
     assert "renderQr(currentPair.pair_link);" in render_body
     assert "caFpEl.textContent = currentPair.ca_fingerprint;" in render_body
     assert "pairLinkInput.value = currentPair.pair_link;" in render_body
-    assert "setPairCopy(currentPair.rotating);" in render_body
+    assert "setPairCopy();" in render_body
     assert "updatePresentationSelector();" in render_body
     assert "deviceLabelInput.value" not in render_body
 
@@ -135,7 +135,6 @@ def test_pair_render_seam_uses_current_pair_without_label_clobber(link_env) -> N
     assert "ca_fingerprint: data.ca_fingerprint" in request_body
     assert "device_label: data.device_label" in request_body
     assert "expires_in: Number(data.expires_in) || 300" in request_body
-    assert "rotating: Boolean(data.rotating)" in request_body
     assert "deviceLabelInput.value = data.device_label;" in request_body
     assert "renderPairPresentation();" in request_body
     assert body.count("deviceLabelInput.value = data.device_label;") == 1

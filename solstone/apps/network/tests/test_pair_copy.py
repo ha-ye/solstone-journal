@@ -34,7 +34,6 @@ U4_COPY_VALUES = [
 ]
 
 U8_COPY_VALUES = [
-    copy.PAIR_ROTATE_NOTE,
     copy.WINDOW_CLOSED_BUTTON,
     copy.SUCCESS_VERIFY_NOTE_ANYWHERE,
     copy.RECENT_NETWORK_LABEL_ANYWHERE,
@@ -107,10 +106,6 @@ def test_u4_copy_values_are_locked() -> None:
 
 
 def test_u8_copy_values_are_locked() -> None:
-    assert (
-        copy.PAIR_ROTATE_NOTE
-        == "this code refreshes on its own — keep this page open while you pair."
-    )
     assert copy.WINDOW_CLOSED_BUTTON == "pairing window closed — open a new one"
     assert copy.SUCCESS_VERIFY_NOTE_ANYWHERE == (
         "this device can now reach home from anywhere. check it now — "

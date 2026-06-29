@@ -12,7 +12,6 @@ All link-service state lives under `journal/link/`:
       authorized_clients.json   paired-device ledger (mtime-reloaded)
       tokens/
         account.json   cached service_token from /enroll/home
-      totp.json      mode 0600 relay pairing TOTP secret
       nonces.json      pair-ceremony nonces (5-min TTL, single-use)
       state.json       instance_id + home_label (generated on first run)
 
@@ -23,10 +22,8 @@ one service (see cpo/strategy/journal-memory-structure.md).
 
 from __future__ import annotations
 
-import base64
 import json
 import os
-import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -62,10 +59,6 @@ def authorized_clients_path() -> Path:
 
 def service_token_path() -> Path:
     return Path(get_journal()) / "link" / "tokens" / "account.json"
-
-
-def totp_secret_path() -> Path:
-    return link_root() / "totp.json"
 
 
 def nonces_path() -> Path:
@@ -168,26 +161,3 @@ def save_service_token(token: str) -> None:
     """Persist the service token atomically with mode 0600."""
     path = service_token_path()
     write_json(path, {"service_token": token}, indent=2, mode=0o600)
-
-
-def generate_totp_secret() -> str:
-    return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
-
-
-def load_totp_secret() -> str | None:
-    """Read the relay pairing TOTP secret, or None."""
-    path = totp_secret_path()
-    if not path.exists():
-        return None
-    try:
-        raw = json.loads(path.read_text("utf-8"))
-        secret = raw.get("totp_secret")
-        return secret if isinstance(secret, str) and secret else None
-    except (json.JSONDecodeError, OSError):
-        return None
-
-
-def save_totp_secret(secret: str) -> None:
-    """Persist the relay pairing TOTP secret atomically with mode 0600."""
-    path = totp_secret_path()
-    write_json(path, {"totp_secret": secret}, indent=2, mode=0o600)

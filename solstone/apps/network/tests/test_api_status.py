@@ -27,7 +27,6 @@ from solstone.think.spl.health import (
     REASON_SERVICE_TOKEN_REJECTED,
 )
 
-TOTP_SECRET = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
 NOW = 1_700_000_000_000
 STATUS_FIELD_SET = {
     "instance_id",
@@ -292,7 +291,7 @@ def test_spl_status_health_matrix(
     expected_relay_state: str,
     expected_reachability: str,
 ) -> None:
-    env = link_env(posture="spl", totp_secret=TOTP_SECRET)
+    env = link_env(posture="spl")
     if token_present:
         _write_service_token(env)
     monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
@@ -522,7 +521,6 @@ def test_api_status_does_not_mint_pairing_nonces(link_env, monkeypatch) -> None:
 
 def test_no_secrets_in_response(link_env, monkeypatch) -> None:
     env = link_env()
-    _write_config(env, link={"totp": "TOPSECRET_TOTP_VALUE"})
     _write_service_token(env, "TOPSECRET_TOKEN_VALUE")
     monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
 
@@ -532,7 +530,6 @@ def test_no_secrets_in_response(link_env, monkeypatch) -> None:
     for forbidden in (
         "topsecret_token_value",
         "token",
-        "totp",
         "attestation",
         "account_token",
         "service_token",

@@ -10,6 +10,7 @@ import contextlib
 import json
 import logging
 import random
+import threading
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
@@ -47,23 +48,13 @@ def enroll_home(
     instance_id: str,
     ca_pubkey: str,
     home_label: str,
-    totp_secret: str | None = None,
 ) -> str:
-    """POST /enroll/home and return the service_token.
-
-    Carries totp_secret when provided. The relay is external
-    (github.com/solpbc/spl, out of this repo); STATED ASSUMPTION: /enroll/home
-    upserts totp_secret for an existing (instance_id, ca_pubkey) enrollment and
-    returns the same/refreshed service_token, so an already-enrolled home can
-    re-POST to upload a later-generated secret.
-    """
+    """POST /enroll/home and return the service_token."""
     body = {
         "instance_id": instance_id,
         "ca_pubkey": ca_pubkey,
         "home_label": home_label,
     }
-    if totp_secret is not None:
-        body["totp_secret"] = totp_secret
     result = _post_json_sync(f"{relay_endpoint.rstrip('/')}/enroll/home", body)
     # back-compat: relay still returns "account_token" until lode L2 renames it
     token = result.get("service_token") or result.get("account_token")
@@ -287,6 +278,243 @@ class RelayClient:
         if token:
             query["token"] = token
         return self._relay_ws_endpoint + path + "?" + urllib.parse.urlencode(query)
+
+
+_PAIR_KEY_HEADER = "Sec-Pair-Key"
+_PAIR_WINDOW_TIMEOUT_SECONDS = 300.0
+
+RelayWsOpener = Callable[..., Any]
+# Call-compatible with websockets.connect(url, additional_headers=..., max_size=...):
+# returns an async context manager yielding a connection that supports `async for`
+# (control frames) and `.send`/`.close`.
+
+
+async def _bridge_pairing_tunnel(
+    ws_endpoint: str,
+    tunnel_id: str,
+    *,
+    service_token: str,
+    rk_hex: str,
+    opener: RelayWsOpener | None = None,
+) -> None:
+    """Bridge one brokered pairing tunnel to the local secure listener.
+
+    Pairing tunnels route by RK (header), carry NO ?instance=, and present the
+    home's service_token so the relay can match the window's instance. The byte
+    pipe reuses _pipe_tunnel. Health/error state is intentionally NOT recorded
+    here (this is a transient convey-process window, not the daemon listen client).
+    """
+    connect = opener or websockets.connect
+    url = ws_endpoint + f"/tunnel/{tunnel_id}"
+    headers = {
+        "Authorization": f"Bearer {service_token}",
+        _PAIR_KEY_HEADER: rk_hex,
+    }
+    tcp_writer: asyncio.StreamWriter | None = None
+    try:
+        async with connect(url, additional_headers=headers, max_size=None) as ws:
+            tcp_reader, tcp_writer = await asyncio.open_connection(
+                _LINK_DIRECT_HOST,
+                _LINK_DIRECT_PORT,
+            )
+            await _pipe_tunnel(ws, tcp_reader, tcp_writer, tunnel_id)
+    except ConnectionClosed as exc:
+        log.info("pairing tunnel %s closed: code=%s", tunnel_id, exc.code)
+    except (
+        OSError,
+        InvalidStatus,
+        InvalidURI,
+        asyncio.TimeoutError,
+        TimeoutError,
+    ) as exc:
+        log.warning("pairing tunnel %s failed: type=%s", tunnel_id, type(exc).__name__)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("pairing tunnel %s error: type=%s", tunnel_id, type(exc).__name__)
+    finally:
+        if tcp_writer is not None:
+            tcp_writer.close()
+            with contextlib.suppress(OSError, RuntimeError):
+                await tcp_writer.wait_closed()
+
+
+async def hold_pair_window(
+    *,
+    relay_endpoint: str,
+    service_token: str,
+    rk: bytes,
+    timeout: float = _PAIR_WINDOW_TIMEOUT_SECONDS,
+    opener: RelayWsOpener | None = None,
+    stop: asyncio.Event | None = None,
+) -> None:
+    """Open /session/pair-window, hold it, bridge incoming pairing tunnels.
+
+    Terminates on: stop event (replacement/cancel), `timeout` (relay TTL backstop
+    mirror), or the relay closing the window socket. RK goes in the upgrade header
+    only (never the URL/query). NEVER log S, RK, the link, or the inner nonce.
+    """
+    connect = opener or websockets.connect
+    rk_hex = rk.hex()
+    ws_endpoint = _to_ws(relay_endpoint.rstrip("/"))
+    headers = {
+        "Authorization": f"Bearer {service_token}",
+        _PAIR_KEY_HEADER: rk_hex,
+    }
+    tunnels: dict[str, asyncio.Task[None]] = {}
+    log.info("opening pair-window")
+    try:
+        async with connect(
+            ws_endpoint + "/session/pair-window",
+            additional_headers=headers,
+            max_size=None,
+        ) as ws:
+            log.info("pair-window open")
+
+            async def _serve() -> None:
+                async for message in ws:
+                    control = _parse_control(message)
+                    tunnel_id = control.get("tunnel_id") if control else None
+                    if not (
+                        control and control.get("type") == "incoming" and tunnel_id
+                    ):
+                        continue
+                    tunnel_id = str(tunnel_id)
+                    log.info("pair-window incoming tunnel_id=%s", tunnel_id)
+                    task = asyncio.create_task(
+                        _bridge_pairing_tunnel(
+                            ws_endpoint,
+                            tunnel_id,
+                            service_token=service_token,
+                            rk_hex=rk_hex,
+                            opener=opener,
+                        ),
+                        name=f"pair-tunnel-{tunnel_id}",
+                    )
+                    tunnels[tunnel_id] = task
+                    task.add_done_callback(
+                        lambda _t, tid=tunnel_id: tunnels.pop(tid, None)
+                    )
+
+            serve_task = asyncio.create_task(_serve(), name="pair-window-serve")
+            waiters: list[asyncio.Task[Any]] = [serve_task]
+            if stop is not None:
+                waiters.append(
+                    asyncio.create_task(stop.wait(), name="pair-window-stop")
+                )
+            _done, pending = await asyncio.wait(
+                waiters,
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            for task in pending:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            if serve_task.done() and not serve_task.cancelled():
+                with contextlib.suppress(ConnectionClosed):
+                    serve_task.result()
+    except ConnectionClosed as exc:
+        log.info("pair-window closed: code=%s", exc.code)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("pair-window error: type=%s", type(exc).__name__)
+    finally:
+        for task in list(tunnels.values()):
+            task.cancel()
+        if tunnels:
+            await asyncio.gather(*tunnels.values(), return_exceptions=True)
+        log.info("pair-window closed")
+
+
+class PairWindowHandle:
+    """Handle to the single active convey-hosted pair-window thread."""
+
+    def __init__(
+        self,
+        *,
+        rk_hex: str,
+        loop: asyncio.AbstractEventLoop,
+        stop: asyncio.Event,
+    ) -> None:
+        self.rk_hex = rk_hex
+        self._loop = loop
+        self._stop = stop
+        self._thread: threading.Thread | None = None
+
+    def cancel(self) -> None:
+        self._loop.call_soon_threadsafe(self._stop.set)
+
+    def join(self, timeout: float | None = None) -> None:
+        if self._thread is not None:
+            self._thread.join(timeout)
+
+    def is_alive(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+
+_pair_window_lock = threading.Lock()
+_current_pair_window: PairWindowHandle | None = None
+
+
+def start_pair_window(
+    *,
+    rk: bytes,
+    service_token: str,
+    relay_endpoint: str,
+    opener: RelayWsOpener | None = None,
+    timeout: float = _PAIR_WINDOW_TIMEOUT_SECONDS,
+) -> PairWindowHandle:
+    """Open + hold a single pair-window in a background thread (fire-and-forget).
+
+    A new call replaces any prior window (single active window). The Flask handler
+    returns immediately; the window self-terminates on timeout / cancel / WS close.
+    """
+    global _current_pair_window
+    loop = asyncio.new_event_loop()
+    stop = asyncio.Event()
+    handle = PairWindowHandle(rk_hex=rk.hex(), loop=loop, stop=stop)
+
+    def _run() -> None:
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(
+                hold_pair_window(
+                    relay_endpoint=relay_endpoint,
+                    service_token=service_token,
+                    rk=rk,
+                    timeout=timeout,
+                    opener=opener,
+                    stop=stop,
+                )
+            )
+        except Exception:  # noqa: BLE001
+            log.warning("pair-window thread terminated abnormally")
+        finally:
+            with contextlib.suppress(Exception):
+                loop.close()
+            with _pair_window_lock:
+                global _current_pair_window
+                if _current_pair_window is handle:
+                    _current_pair_window = None
+
+    thread = threading.Thread(target=_run, name="spl-pair-window", daemon=True)
+    handle._thread = thread
+    with _pair_window_lock:
+        prior = _current_pair_window
+        _current_pair_window = handle
+    if prior is not None:
+        prior.cancel()
+    thread.start()
+    return handle
+
+
+def cancel_pair_window() -> None:
+    """Cancel the current pair-window, if any."""
+    global _current_pair_window
+    with _pair_window_lock:
+        handle = _current_pair_window
+        _current_pair_window = None
+    if handle is not None:
+        handle.cancel()
 
 
 async def _pipe_tunnel(

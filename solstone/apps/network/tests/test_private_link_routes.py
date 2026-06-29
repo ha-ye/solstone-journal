@@ -18,7 +18,6 @@ from solstone.think.link.paths import (
     authorized_clients_path,
     nonces_path,
     save_service_token,
-    save_totp_secret,
     service_token_path,
 )
 from solstone.think.services import operations
@@ -277,12 +276,9 @@ def test_private_link_status_secret_free(link_env):
     env = link_env()
     _set_posture(env, "spl")
     save_service_token("secret-service-token")
-    save_totp_secret("secret-totp-value")
 
     response = env.client.get("/app/network/api/private-link")
     serialized = json.dumps(response.get_json())
 
     assert response.status_code == 200
     assert "secret-service-token" not in serialized
-    assert "secret-totp-value" not in serialized
-    assert "totp" not in serialized.lower()

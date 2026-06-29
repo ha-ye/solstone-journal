@@ -19,7 +19,7 @@ from solstone.think.link.paths import (
     LinkState,
     authorized_clients_path,
     nonces_path,
-    save_totp_secret,
+    save_service_token,
 )
 from tests._baseline_harness import make_test_client
 
@@ -194,12 +194,22 @@ def test_pair_no_wait_mints_nonce_prints_payload_and_exits(runner, monkeypatch):
     assert nonces[0].role == "observer"
 
 
-def test_pair_no_wait_prints_relay_freshness_hint(journal, runner):
+def test_pair_no_wait_spl_prints_payload_without_relay_freshness_hint(
+    journal,
+    runner,
+    monkeypatch,
+):
     config_path = journal / "config" / "journal.json"
     config = json.loads(config_path.read_text("utf-8"))
     config["link"] = {"posture": "spl"}
     config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
-    save_totp_secret("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
+    save_service_token("svc-token")
+    pair_window_calls: list[dict] = []
+    monkeypatch.setattr(
+        link_routes,
+        "start_pair_window",
+        lambda **kwargs: pair_window_calls.append(kwargs),
+    )
 
     result = runner.invoke(
         link_call.app,
@@ -207,9 +217,10 @@ def test_pair_no_wait_prints_relay_freshness_hint(journal, runner):
     )
 
     assert result.exit_code == 0
-    hint = "pair-link freshness: use within about 30 seconds; relay codes rotate.\n"
-    assert hint in result.stdout
+    assert "pair-link: https://go.solstone.app/p#" in result.stdout
+    assert "pair-link freshness:" not in result.stdout
     assert "Waiting for linked system" not in result.stdout
+    assert len(pair_window_calls) == 1
 
 
 @pytest.mark.parametrize(

@@ -75,7 +75,7 @@ Werkzeug rules, including `<day>`.
 
 | Method | Path | operationId | Named request fields | Named success response fields | `x-reason-codes` |
 |---|---|---|---|---|---|
-| POST | `/app/network/pair-start` | `link.pairStart` | body: `device_label?`, `role?` (`solstone/apps/network/routes.py:530-535`) | `nonce`, `pair_link`, `expires_in`, `rotating`, `device_label`, `ca_fingerprint` (`routes.py:287-294`, `routes.py:594-602`) | `invalid_operation_for_state`, `pairing_request_invalid`, `pl_revoked` |
+| POST | `/app/network/pair-start` | `link.pairStart` | body: `device_label?`, `role?` (`solstone/apps/network/routes.py:530-535`) | `nonce`, `pair_link`, `expires_in`, `device_label`, `ca_fingerprint` (`routes.py:287-294`, `routes.py:594-602`) | `invalid_operation_for_state`, `pairing_request_invalid`, `pl_revoked` |
 | POST | `/app/network/pair` | `link.pair` | query: `token?`; body: `csr`, `nonce?`, `device_label?`, `sender_instance_id?` (`routes.py:704-724`) | `client_cert`, `ca_chain`, `instance_id`, `home_label`, `home_attestation`, `fingerprint`, `local_endpoints?` (`routes.py:622-633`) | `missing_required_field`, `operation_no_longer_available`, `pairing_key_invalid`, `pairing_request_invalid`, `pl_revoked` |
 | POST | `/app/network/unpair` | `link.unpair` | body: `fingerprint?`, `device_label?`; one is required (`routes.py:797-818`) | `unpaired` (`routes.py:861`) | `missing_required_field`, `paired_device_not_found`, `pl_revoked` |
 | GET | `/app/network/local-endpoints` | `link.localEndpoints` | none | `v`, `endpoints`, `ttl_s`, `generated_at` (`routes.py:507-513`, `solstone/think/link/local_endpoints.py:34-40`) | `pl_revoked` |

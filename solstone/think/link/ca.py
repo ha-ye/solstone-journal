@@ -297,12 +297,12 @@ def generate_nonce() -> str:
     return secrets.token_hex(DIRECT_NONCE_BYTES)
 
 
-RELAY_NONCE_BYTES = 16
+PAIR_WINDOW_NONCE_BYTES = 8
 
 
-def generate_relay_nonce() -> str:
-    """32-character hex nonce / 16 bytes for relay-form pair links."""
-    return secrets.token_hex(RELAY_NONCE_BYTES)
+def generate_pair_window_nonce() -> bytes:
+    """8-byte single-use pairing nonce S for the 0x06 pair-window."""
+    return secrets.token_bytes(PAIR_WINDOW_NONCE_BYTES)
 
 
 def _materialize(cert: x509.Certificate, key: ec.EllipticCurvePrivateKey) -> LoadedCa:

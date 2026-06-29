@@ -19,10 +19,6 @@ def test_copy_constants_are_locked() -> None:
         "this device needs to be on your network (or your VPN) to pair. "
         "expires in 5:00."
     )
-    assert (
-        copy.PAIR_ROTATE_NOTE
-        == "this code refreshes on its own — keep this page open while you pair."
-    )
     assert copy.DETAILS_DISCLOSURE == "verify this is really your home"
     assert copy.CA_FP_LABEL == "fingerprint"
     assert copy.CA_FP_NOTE == (

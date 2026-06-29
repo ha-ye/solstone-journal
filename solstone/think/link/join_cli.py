@@ -3,8 +3,10 @@
 
 """Caller-side `sol link join` implementation.
 
-The pair-link URL form decodes the embedded nonce and posts to
-`/app/network/pair?token=<nonce>` over the framed mTLS listener.
+The direct pair-link URL form decodes the embedded nonce and posts to
+`/app/network/pair?token=<nonce>` over the framed mTLS listener. The relay
+pair-window form (0x06) dials the relay, then runs the same inner pairing
+request through the pinned TLS tunnel.
 
 Role-less linked-system credentials are written under
 `$XDG_CONFIG_HOME/solstone-observer/spl/<label>/` when XDG_CONFIG_HOME is set,
@@ -43,23 +45,31 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import websockets
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
+from websockets.exceptions import InvalidStatus
 
 from solstone.apps.network.crockford32 import decode as crockford_decode
+from solstone.apps.network.relay_link import decode_pair_window_link, derive_rk
 from solstone.think.link.auth import is_peer
 from solstone.think.link.ca import ca_pin_matches
 from solstone.think.link.client import (
     _CONNECT_TIMEOUT_SECONDS,
+    Client,
+    ClientIdentity,
     StreamResetError,
     _open_pairing_session,
     _TcpEncryptedTransport,
+    _to_ws,
+    _WsEncryptedTransport,
 )
+from solstone.think.link.mark import jid_from_spki
 from solstone.think.link.observer_paths import observer_bundle_dir
-from solstone.think.link.paths import LinkState
+from solstone.think.link.paths import DEFAULT_RELAY_URL, LinkState
 from solstone.think.link.tls import TlsError
 from solstone.think.utils import get_journal
 
@@ -81,6 +91,15 @@ class PairRequest:
     url: str
     body_base: dict[str, str]
     ca_fingerprint_pin: str | None = None
+
+
+@dataclass(frozen=True)
+class RelayPairRequest:
+    relay_endpoint: str
+    rk: bytes
+    s: bytes
+    ca_fp_spki: bytes
+    inner_path: str
 
 
 @dataclass(frozen=True)
@@ -122,6 +141,9 @@ def main(args: argparse.Namespace) -> int:
         pair_request = _parse_pair_request(str(args.code).strip(), args.home)
     except ValueError as exc:
         return _fail(str(exc), code=1)
+
+    if isinstance(pair_request, RelayPairRequest):
+        return _join_via_relay(pair_request, label, as_role)
 
     if is_peer(as_role):
         private_key_pem, csr_pem = _build_csr(label)
@@ -193,7 +215,7 @@ def main(args: argparse.Namespace) -> int:
     return 0
 
 
-def _parse_pair_request(code: str, home: str | None) -> PairRequest:
+def _parse_pair_request(code: str, home: str | None) -> PairRequest | RelayPairRequest:
     from solstone.apps.network.copy import PAIR_LINK_HOST, PAIR_LINK_PATH
 
     if code.startswith(f"https://{PAIR_LINK_HOST}{PAIR_LINK_PATH}#"):
@@ -204,7 +226,9 @@ def _parse_pair_request(code: str, home: str | None) -> PairRequest:
     )
 
 
-def _parse_pair_link(pair_link: str, home: str | None) -> PairRequest:
+def _parse_pair_link(
+    pair_link: str, home: str | None
+) -> PairRequest | RelayPairRequest:
     from solstone.apps.network.copy import PAIR_LINK_HOST, PAIR_LINK_PATH
 
     parsed = urllib.parse.urlparse(pair_link)
@@ -217,6 +241,14 @@ def _parse_pair_link(pair_link: str, home: str | None) -> PairRequest:
             f"https://{PAIR_LINK_HOST}{PAIR_LINK_PATH}#... value from the pairing "
             f"output."
         ) from exc
+    if not blob:
+        raise ValueError(
+            f"Malformed pair-link. Use the full "
+            f"https://{PAIR_LINK_HOST}{PAIR_LINK_PATH}#... value from the pairing "
+            f"output."
+        )
+    if blob[0] == 0x06:
+        return _parse_relay_pair_link(pair_link)
     if len(blob) != 40 or blob[0] != 0x04 or blob[1] != 0x01:
         raise ValueError(
             f"Malformed pair-link. Use the full "
@@ -235,6 +267,18 @@ def _parse_pair_link(pair_link: str, home: str | None) -> PairRequest:
         url=f"{base_url}/app/network/pair?token={nonce_hex}",
         body_base={},
         ca_fingerprint_pin=ca_fingerprint_pin,
+    )
+
+
+def _parse_relay_pair_link(pair_link: str) -> RelayPairRequest:
+    parsed = decode_pair_window_link(pair_link)
+    relay_endpoint = parsed.relay_origin or DEFAULT_RELAY_URL
+    return RelayPairRequest(
+        relay_endpoint=relay_endpoint,
+        rk=derive_rk(parsed.s),
+        s=parsed.s,
+        ca_fp_spki=parsed.ca_fp_spki,
+        inner_path=f"/app/network/pair?token={parsed.s.hex()}",
     )
 
 
@@ -322,6 +366,167 @@ def _post_pair(pair_request: PairRequest, body: dict[str, str]) -> PairResponse:
         body,
         ca_fingerprint_pin=pair_request.ca_fingerprint_pin,
     )
+
+
+def _join_via_relay(req: RelayPairRequest, label: str, as_role: str) -> int:
+    # Keep the relay orchestration isolated instead of refactoring the working
+    # direct path: both tails intentionally mirror the same bundle contract.
+    private_key_pem, csr_pem = _build_csr(label)
+    body: dict[str, str] = {"csr": csr_pem, "device_label": label}
+    if is_peer(as_role):
+        body["sender_instance_id"] = LinkState.load_or_create().instance_id
+
+    try:
+        response = _post_pair_relay(req, body)
+    except ValueError as exc:
+        return _fail(str(exc), code=1)
+
+    if is_peer(as_role):
+        instance_id_error = _validate_instance_id(response.instance_id)
+        if instance_id_error is not None:
+            return _fail(instance_id_error, code=1)
+        bundle_dir = _peer_dir(response.instance_id)
+    else:
+        bundle_dir = observer_bundle_dir(label)
+    existing_error = _existing_dir_error(bundle_dir)
+    if existing_error is not None:
+        return _fail(existing_error, code=1)
+
+    chain_pem = _join_chain(response.ca_chain)
+    try:
+        ca_fp = _ca_fingerprint(chain_pem)
+    except ValueError as exc:
+        return _fail(str(exc), code=1)
+
+    identity = ClientIdentity(
+        private_key_pem=private_key_pem.decode("ascii"),
+        client_cert_pem=response.client_cert,
+        ca_chain_pem=chain_pem,
+        fingerprint=ca_fp,
+        home_instance_id=response.instance_id,
+        home_label=response.home_label,
+        home_attestation=response.home_attestation,
+        local_endpoints=tuple(response.local_endpoints),
+    )
+    try:
+        Client.enroll_device(req.relay_endpoint, identity)
+    except Exception as exc:  # noqa: BLE001 - fail loudly on any enroll rejection.
+        return _fail(f"Relay rejected device enrollment: {exc}", code=1)
+
+    peer = {
+        "label": label,
+        "paired_at": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "instance_id": response.instance_id,
+        "home_label": response.home_label,
+        "fingerprint": ca_fp,
+        "local_endpoints": response.local_endpoints,
+        "role": "peer" if is_peer(as_role) else "",
+    }
+    files = {
+        "private.pem": private_key_pem,
+        "cert.pem": response.client_cert.encode("utf-8"),
+        "chain.pem": chain_pem.encode("utf-8"),
+        "home_attestation.jwt": response.home_attestation.encode("utf-8"),
+        "peer.json": (json.dumps(peer, indent=2) + "\n").encode("utf-8"),
+    }
+    created_dir = not bundle_dir.exists()
+    try:
+        _write_bundle(bundle_dir, files, created_dir=created_dir)
+    except OSError as exc:
+        return _fail(str(exc), code=1)
+
+    suffix = " as peer" if is_peer(as_role) else ""
+    print(f"Linked {label}{suffix}.")
+    print(f"Credentials: {bundle_dir}")
+    return 0
+
+
+def _post_pair_relay(req: RelayPairRequest, body: dict[str, str]) -> PairResponse:
+    try:
+        return asyncio.run(_pair_exchange_relay(req, body))
+    except StreamResetError as exc:
+        raise ValueError(
+            "Pairing stream reset or closed before a response was received."
+        ) from exc
+    except TlsError as exc:
+        raise ValueError(f"Inner TLS handshake failed: {exc}") from exc
+    except InvalidStatus as exc:
+        raise ValueError(
+            "The pairing window is closed or was already used (relay declined the dial)."
+        ) from exc
+    except (asyncio.TimeoutError, TimeoutError) as exc:
+        raise ValueError("Timed out dialing the relay pairing window.") from exc
+    except (ConnectionError, OSError) as exc:
+        raise ValueError(f"Could not reach the relay: {exc}") from exc
+
+
+async def _pair_exchange_relay(
+    req: RelayPairRequest,
+    body: dict[str, str],
+) -> PairResponse:
+    ws_url = _to_ws(req.relay_endpoint.rstrip("/")) + "/session/pair-dial"
+    async with websockets.connect(
+        ws_url,
+        additional_headers={"Sec-Pair-Key": req.rk.hex()},
+        max_size=None,
+    ) as ws:
+        session = await _open_pairing_session(_WsEncryptedTransport(ws))
+        try:
+            status, _headers, body_bytes = await session.request(
+                "POST",
+                req.inner_path,
+                headers={"content-type": "application/json"},
+                body=json.dumps(body).encode("utf-8"),
+            )
+            if status != 200:
+                raise ValueError(
+                    f"Pairing failed (HTTP {status}): the pairing window is closed "
+                    "or the code was already used."
+                )
+            try:
+                payload = json.loads(body_bytes.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise ValueError("Pair response was not valid JSON") from exc
+            response = _parse_pair_response(payload)
+            _verify_relay_pair(response, session.peer_certificate(), req.ca_fp_spki)
+            return response
+        finally:
+            await session.close()
+
+
+def _verify_relay_pair(
+    response: PairResponse,
+    peer_leaf: x509.Certificate | None,
+    ca_fp_spki: bytes,
+) -> None:
+    """Fail closed unless the pinned CA, live TLS leaf, and jid all agree."""
+    chain_pem = _join_chain(response.ca_chain)
+    ca_cert, spki_der = _load_ca_cert_and_spki(chain_pem)
+    if hashlib.sha256(spki_der).digest()[:16] != ca_fp_spki:
+        raise ValueError(
+            "CA fingerprint mismatch: the pinned CA does not match the pair-link."
+        )
+    if peer_leaf is None:
+        raise ValueError(
+            "Pairing TLS peer presented no certificate to verify against the pinned CA."
+        )
+    _verify_leaf_signed_by_pinned_ca(peer_leaf, ca_cert)
+    expected = str(jid_from_spki(spki_der))
+    if response.instance_id != expected:
+        raise ValueError(
+            "Home instance_id does not match the pinned CA identity "
+            f"(got {response.instance_id!r}, expected {expected!r})."
+        )
+
+
+def _load_ca_cert_and_spki(chain_pem: str) -> tuple[x509.Certificate, bytes]:
+    cert_pem = _first_cert_pem(chain_pem)
+    ca_cert = x509.load_pem_x509_certificate(cert_pem.encode("ascii"))
+    spki_der = ca_cert.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return ca_cert, spki_der
 
 
 def _post_pair_framed(

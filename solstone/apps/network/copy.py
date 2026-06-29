@@ -18,9 +18,6 @@ STEP_3 = "tap the link to open solstone"
 PAIR_NETWORK_LINE = (
     "this device needs to be on your network (or your VPN) to pair. expires in 5:00."
 )
-PAIR_ROTATE_NOTE = (
-    "this code refreshes on its own — keep this page open while you pair."
-)
 DETAILS_DISCLOSURE = "verify this is really your home"
 CA_FP_LABEL = "fingerprint"
 CA_FP_NOTE = (

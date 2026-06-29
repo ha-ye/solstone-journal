@@ -8,21 +8,18 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
-import time
-import uuid
 
 from solstone.apps.network import routes as link_routes
 from solstone.apps.network.crockford32 import decode as crockford_decode
-from solstone.apps.network.relay_link import TOTP_STEP_SECONDS, compute_current_totp
+from solstone.apps.network.relay_link import decode_pair_window_link, derive_rk
 from solstone.think.link.ca import load_or_generate_ca
 from solstone.think.link.nonces import NONCE_TTL_SECONDS
-from solstone.think.link.paths import LinkState, ca_dir
+from solstone.think.link.paths import ca_dir
 
 PAIR_START_KEYS = [
     "nonce",
     "pair_link",
     "expires_in",
-    "rotating",
     "device_label",
     "ca_fingerprint",
 ]
@@ -45,7 +42,6 @@ def test_pair_start_shape_and_locked_order(link_env) -> None:
     )
     snap = link_routes._nonces().snapshot()
     assert payload["expires_in"] == NONCE_TTL_SECONDS
-    assert payload["rotating"] is False
     assert len(snap) == 1
     assert snap[0].expires_at - snap[0].issued_at == NONCE_TTL_SECONDS
     assert "pair_url" not in payload
@@ -182,8 +178,7 @@ def _decode_pair_link(pair_link: str) -> bytes:
 
 
 def test_pair_start_spl_mints_relay_form_pair_link(link_env) -> None:
-    secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
-    env = link_env(posture="spl", totp_secret=secret)
+    env = link_env(posture="spl", service_token="svc-token-xyz")
 
     response = env.client.post(
         "/app/network/pair-start",
@@ -193,24 +188,31 @@ def test_pair_start_spl_mints_relay_form_pair_link(link_env) -> None:
     assert response.status_code == 200
     payload = response.get_json()
     decoded = _decode_pair_link(payload["pair_link"])
-    instance_id = LinkState.load_or_create().instance_id
     ca = load_or_generate_ca(ca_dir())
-    now = int(time.time())
 
-    assert decoded[0] == 0x03
-    assert decoded[1:17] == uuid.UUID(instance_id).bytes
-    assert int.from_bytes(decoded[17:20], "big") in {
-        compute_current_totp(secret, now + delta) for delta in (-1, 0, 1)
-    }
-    assert len(decoded[20:36]) == 16
-    assert decoded[36] == 0x01
-    assert decoded[37:53] == bytes.fromhex(ca.spki_fingerprint_sha256())[:16]
-    assert decoded[53] == 0x00
-    assert len(decoded) == 54
+    assert decoded[0] == 0x06
+    assert len(decoded) == 27
+    assert decoded[9] == 0x01
+    assert decoded[10:26] == bytes.fromhex(ca.spki_fingerprint_sha256())[:16]
+    assert decoded[26] == 0x00
+
+    parsed = decode_pair_window_link(payload["pair_link"])
+    assert parsed.relay_origin is None
+    assert len(parsed.s) == 8
+
+    snap = link_routes._nonces().snapshot()
+    assert len(snap) == 1
+    assert snap[0].value == parsed.s.hex()
+
+    assert len(env.pair_window_calls) == 1
+    call = env.pair_window_calls[0]
+    assert call["rk"] == derive_rk(parsed.s)
+    assert call["service_token"] == "svc-token-xyz"
+    assert call["relay_endpoint"] == link_routes.relay_url()
 
 
-def test_pair_start_spl_uses_thirty_second_expiry_and_nonce_ttl(link_env) -> None:
-    env = link_env(posture="spl", totp_secret="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
+def test_pair_start_spl_uses_five_minute_expiry_and_nonce_ttl(link_env) -> None:
+    env = link_env(posture="spl", service_token="svc")
 
     response = env.client.post(
         "/app/network/pair-start",
@@ -220,14 +222,13 @@ def test_pair_start_spl_uses_thirty_second_expiry_and_nonce_ttl(link_env) -> Non
     assert response.status_code == 200
     payload = response.get_json()
     snap = link_routes._nonces().snapshot()
-    assert payload["expires_in"] == TOTP_STEP_SECONDS
+    assert payload["expires_in"] == NONCE_TTL_SECONDS
     assert len(snap) == 1
-    assert snap[0].expires_at - snap[0].issued_at == TOTP_STEP_SECONDS
+    assert snap[0].expires_at - snap[0].issued_at == NONCE_TTL_SECONDS
 
 
-def test_pair_start_spl_keeps_role_less_home_private(link_env, monkeypatch) -> None:
-    env = link_env(posture="spl", totp_secret="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
-    monkeypatch.setattr(link_routes, "generate_relay_nonce", lambda: "00" * 16)
+def test_pair_start_spl_keeps_role_less_home_private(link_env) -> None:
+    env = link_env(posture="spl", service_token="svc")
 
     response = env.client.post(
         "/app/network/pair-start",
@@ -241,7 +242,7 @@ def test_pair_start_spl_keeps_role_less_home_private(link_env, monkeypatch) -> N
     assert b"phone" not in _decode_pair_link(payload["pair_link"])
 
 
-def test_pair_start_spl_missing_totp_secret_errors_without_nonce(link_env) -> None:
+def test_pair_start_spl_missing_service_token_errors_without_nonce(link_env) -> None:
     env = link_env(posture="spl")
 
     response = env.client.post(
@@ -253,10 +254,11 @@ def test_pair_start_spl_missing_totp_secret_errors_without_nonce(link_env) -> No
     payload = response.get_json()
     assert payload["reason_code"] == "invalid_operation_for_state"
     assert link_routes._nonces().snapshot() == []
+    assert env.pair_window_calls == []
 
 
 def test_pair_start_spl_response_order_and_display_fingerprint(link_env) -> None:
-    env = link_env(posture="spl", totp_secret="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
+    env = link_env(posture="spl", service_token="svc")
 
     response = env.client.post(
         "/app/network/pair-start",
@@ -267,6 +269,5 @@ def test_pair_start_spl_response_order_and_display_fingerprint(link_env) -> None
     payload = response.get_json()
     ca = load_or_generate_ca(ca_dir())
     assert list(payload.keys()) == PAIR_START_KEYS
-    assert payload["rotating"] is True
     assert payload["ca_fingerprint"] == ca.fingerprint_sha256()
     assert payload["ca_fingerprint"] != ca.spki_fingerprint_sha256()

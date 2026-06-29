@@ -31,7 +31,6 @@ import json as _json
 import logging
 import re
 import socket
-import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from importlib import import_module
@@ -48,9 +47,8 @@ from solstone.apps.network.copy import (
 )
 from solstone.apps.network.crockford32 import encode as crockford_encode
 from solstone.apps.network.relay_link import (
-    TOTP_STEP_SECONDS,
-    compute_current_totp,
-    encode_relay_pair_link,
+    derive_rk,
+    encode_pair_window_link,
 )
 from solstone.apps.utils import log_app_action
 from solstone.convey import emit
@@ -73,7 +71,7 @@ from solstone.think.link import establish, interface_watcher
 from solstone.think.link.auth import AuthorizedClients, ClientEntry, is_peer
 from solstone.think.link.ca import (
     generate_nonce,
-    generate_relay_nonce,
+    generate_pair_window_nonce,
     load_or_generate_ca,
     mint_attestation,
     sign_csr,
@@ -92,7 +90,6 @@ from solstone.think.link.paths import (
     authorized_clients_path,
     ca_dir,
     load_service_token,
-    load_totp_secret,
     nonces_path,
     relay_url,
 )
@@ -107,6 +104,7 @@ from solstone.think.pairing.config import (
 from solstone.think.services import operations, spl, spl_handoff
 from solstone.think.services import status as service_status
 from solstone.think.spl.health import OFFLINE_TUNNEL_REASONS
+from solstone.think.spl.relay_client import start_pair_window
 from solstone.think.utils import get_journal, now_ms
 
 logger = logging.getLogger(__name__)
@@ -328,7 +326,6 @@ class PairStartResponse:
     nonce: str
     pair_link: str
     expires_in: int
-    rotating: bool
     device_label: str
     ca_fingerprint: str
 
@@ -646,33 +643,30 @@ def pair_start() -> Any:
     if not isinstance(role, str) or role not in VALID_ROLES:
         return error_response(PAIRING_REQUEST_INVALID, detail="invalid role")
 
-    nonce_ttl: int | None = None
     if read_posture() == "spl":
-        secret = load_totp_secret()
-        if secret is None:
+        service_token = load_service_token()
+        if service_token is None:
             return error_response(
                 INVALID_OPERATION_FOR_STATE,
-                detail="spl posture requires a relay TOTP secret; none is configured",
+                detail="spl posture requires a relay service token; none is configured",
             )
 
         ca = load_or_generate_ca(ca_dir())
         ca_fp = ca.fingerprint_sha256()
-        now = int(time.time())
-        totp = compute_current_totp(secret, now)
-        nonce = generate_relay_nonce()
+        s = generate_pair_window_nonce()
         origin = relay_url()
         relay_origin = None if origin == DEFAULT_RELAY_URL else origin
-        instance_id = LinkState.load_or_create().instance_id
-        pair_link = encode_relay_pair_link(
-            instance_id,
-            totp,
-            nonce,
+        pair_link = encode_pair_window_link(
+            s,
             ca.spki_fingerprint_sha256(),
             relay_origin=relay_origin,
         )
-        expires_in = TOTP_STEP_SECONDS
-        rotating = True
-        nonce_ttl = TOTP_STEP_SECONDS
+        nonce = s.hex()
+        start_pair_window(
+            rk=derive_rk(s),
+            service_token=service_token,
+            relay_endpoint=origin,
+        )
     else:
         ca_fp = _ca_fingerprint()
         port = _secure_listener_port()
@@ -691,23 +685,16 @@ def pair_start() -> Any:
             pair_link = _build_pair_link(candidates[0], port, nonce, ca_fp)
         else:
             pair_link = _build_pair_link_v05(candidates, port, nonce, ca_fp)
-        expires_in = 300
-        rotating = False
 
-    add_kwargs: dict[str, Any] = {}
-    if nonce_ttl is not None:
-        add_kwargs["ttl"] = nonce_ttl
     _nonces().add(
         nonce,
         device_label,
         role=role,
-        **add_kwargs,
     )
     response = PairStartResponse(
         nonce=nonce,
         pair_link=pair_link,
-        expires_in=expires_in,
-        rotating=rotating,
+        expires_in=300,
         device_label=device_label,
         ca_fingerprint=ca_fp,
     )

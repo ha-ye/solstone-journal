@@ -23,11 +23,9 @@ from solstone.think.link.ca import load_or_generate_ca
 from solstone.think.link.paths import (
     LinkState,
     ca_dir,
-    generate_totp_secret,
-    load_totp_secret,
+    load_service_token,
     relay_url,
     save_service_token,
-    save_totp_secret,
 )
 from solstone.think.link.window import read_posture
 from solstone.think.spl.relay_client import enroll_home
@@ -76,7 +74,7 @@ def _require_journal_config() -> None:
 
 
 def is_spl_enabled() -> bool:
-    return read_posture() == "spl" and load_totp_secret() is not None
+    return read_posture() == "spl" and load_service_token() is not None
 
 
 def _write_posture(value: str) -> None:
@@ -92,12 +90,6 @@ def _write_posture(value: str) -> None:
             write_journal_config(config)
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
-
-
-def _generate_and_store_secret() -> str:
-    secret = generate_totp_secret()
-    save_totp_secret(secret)
-    return secret
 
 
 def _relay_error_reason(exc: urllib.error.HTTPError) -> str | None:
@@ -120,7 +112,6 @@ def _relay_error_reason(exc: urllib.error.HTTPError) -> str | None:
 
 def enable_spl() -> None:
     _require_journal_config()
-    secret = load_totp_secret() or _generate_and_store_secret()
     state = LinkState.load_or_create()
     ca = load_or_generate_ca(ca_dir())
 
@@ -130,7 +121,6 @@ def enable_spl() -> None:
             instance_id=state.instance_id,
             ca_pubkey=ca.pubkey_spki_pem,
             home_label=state.home_label,
-            totp_secret=secret,
         )
     except urllib.error.HTTPError as exc:
         reason = _relay_error_reason(exc)
@@ -153,10 +143,9 @@ def disable_spl() -> SplDisableOutcome:
     cert-less pairing window remains bounded by live nonce existence, not
     posture. The supervised
     `journal spl` daemon observes the posture change and closes its listen WS
-    within its poll interval. It does NOT clear the local `totp.json` (kept for
-    quick re-enable) or revoke the relay-side copy of the secret (a later lode).
-    Direct (LAN/VPN) reach and existing paired-device bundles are untouched -
-    no re-pairing.
+    within its poll interval. It keeps the local service token and cert state
+    for quick re-enable. Direct (LAN/VPN) reach and existing paired-device
+    bundles are untouched - no re-pairing.
     """
     _require_journal_config()
 

@@ -2757,8 +2757,7 @@
                   "device_label": "Jer iPhone",
                   "expires_in": 300,
                   "nonce": "5f0d8c8b9f1e48b0a5f80b98f3d5e9b0",
-                  "pair_link": "https://solstone.link/pair#0ABCD...",
-                  "rotating": false
+                  "pair_link": "https://solstone.link/pair#0ABCD..."
                 },
                 "schema": {
                   "additionalProperties": true,
@@ -2777,16 +2776,12 @@
                     },
                     "pair_link": {
                       "type": "string"
-                    },
-                    "rotating": {
-                      "type": "boolean"
                     }
                   },
                   "required": [
                     "nonce",
                     "pair_link",
                     "expires_in",
-                    "rotating",
                     "device_label",
                     "ca_fingerprint"
                   ],

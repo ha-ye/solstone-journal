@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from solstone.think.journal_config import write_journal_config
-from solstone.think.link.paths import LinkState, load_service_token, load_totp_secret
+from solstone.think.link.paths import LinkState, load_service_token
 from solstone.think.link.window import read_posture
 from solstone.think.services import (
     operations,
@@ -149,7 +149,6 @@ def test_approved_handoff_enables_spl(journal_copy: Path, monkeypatch) -> None:
     [
         _approved_payload(service_token="x"),
         _approved_payload(instance_id="y"),
-        _approved_payload(totp="z"),
         {"service": "spl", "state": "approved"},
         {"service": "scout", "state": "approved", "approved_at": 1},
     ],
@@ -602,8 +601,7 @@ def test_run_spl_handoff_sets_posture_and_service_token(
 
     assert result.phase == "enabled"
     assert read_posture() == "spl"
-    assert load_service_token() is not None
-    assert load_totp_secret() is not None
+    assert load_service_token() == "fake-service-token"
 
 
 def test_run_spl_handoff_local_error_retryable_without_enabled_state(
