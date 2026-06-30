@@ -548,9 +548,12 @@ def run_task(
             in that day's health directory instead of today's.
 
     Returns:
-        (success, exit_code, log_path, timed_out) tuple where success =
-        (exit_code == 0), log_path points to the process output log file, and
-        timed_out is True only when the wall-clock ``timeout`` was exceeded.
+        (success, exit_code, log_path, timed_out) tuple. success is True
+        only when the process exited 0 AND did not exceed the wall-clock
+        ``timeout``; a timeout is always a failure regardless of the
+        post-termination exit code. log_path points to the process output
+        log file, and timed_out is True only when the wall-clock ``timeout``
+        was exceeded.
 
     Example:
         success, code, log, timed_out = run_task(
@@ -581,4 +584,4 @@ def run_task(
     if exit_code != 0:
         logger.warning(f"{managed.name} exited with code {exit_code}")
 
-    return (exit_code == 0, exit_code, log_path, timed_out)
+    return ((exit_code == 0) and not timed_out, exit_code, log_path, timed_out)

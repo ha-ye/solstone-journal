@@ -477,10 +477,16 @@ def run_bounded_phase(
             cmd, day=day, timeout=timeout
         )
         if not success:
-            logging.error(
-                "Command failed with exit code %s: %s", exit_code, " ".join(cmd)
-            )
-            day_log(day, f"{cmd_name} error {exit_code}")
+            if timed_out:
+                logging.error(
+                    "Command exceeded its %ss budget: %s", timeout, " ".join(cmd)
+                )
+                day_log(day, f"{cmd_name} timeout")
+            else:
+                logging.error(
+                    "Command failed with exit code %s: %s", exit_code, " ".join(cmd)
+                )
+                day_log(day, f"{cmd_name} error {exit_code}")
         return (success, timed_out)
     except subprocess.TimeoutExpired:
         logging.error("Command timed out and could not be reaped: %s", " ".join(cmd))

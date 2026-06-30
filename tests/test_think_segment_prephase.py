@@ -7,7 +7,9 @@ import asyncio
 import importlib
 import json
 import logging
+import subprocess
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -255,6 +257,31 @@ def test_daily_segment_prephase_failure_has_no_timeout_reason(
     assert "timeout_seconds" not in complete
     assert "bounded" not in complete
     assert daily_called
+
+
+def test_run_bounded_phase_timeout_with_exit_zero_propagates_failure(
+    journal_copy, monkeypatch
+):
+    mod = importlib.import_module("solstone.think.thinking")
+    log_path = journal_copy / "x.log"
+    fake = Mock()
+    fake.log_writer = Mock()
+    fake.log_writer.path = log_path
+    fake.name = "test"
+    fake.wait.side_effect = subprocess.TimeoutExpired(cmd=["x"], timeout=0.01)
+    fake.terminate.return_value = 0
+    fake.cleanup.return_value = None
+    monkeypatch.setattr(
+        "solstone.think.runner.ManagedProcess.spawn", lambda *a, **k: fake
+    )
+
+    result = mod.run_bounded_phase(
+        ["journal", "think", "--segments", "--day", DAY],
+        DAY,
+        timeout=0.01,
+    )
+
+    assert result == (False, True)
 
 
 def test_segment_health_log_receives_segment_talent_events(tmp_path, monkeypatch):

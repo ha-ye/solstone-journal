@@ -37,6 +37,17 @@ def _managed_for_process(process):
     )
 
 
+def _timed_out_managed(log_path, exit_code):
+    fake = Mock()
+    fake.log_writer = Mock()
+    fake.log_writer.path = log_path
+    fake.name = "test"
+    fake.wait.side_effect = subprocess.TimeoutExpired(cmd=["x"], timeout=0.01)
+    fake.terminate.return_value = exit_code
+    fake.cleanup.return_value = None
+    return fake
+
+
 def test_terminate_uses_process_group(monkeypatch):
     killpg = Mock()
     monkeypatch.setattr("solstone.think.runner.os.getpgid", lambda pid: 456)
@@ -292,6 +303,33 @@ def test_run_task_emits_logs_tract_events(journal_path, mock_callosum):
     assert "exit" in event_types
 
     listener.stop()
+
+
+def test_run_task_timeout_with_exit_zero_is_failure(journal_path, monkeypatch):
+    log_path = journal_path / "x.log"
+    fake = _timed_out_managed(log_path, 0)
+    monkeypatch.setattr(ManagedProcess, "spawn", lambda *a, **k: fake)
+
+    success, exit_code, returned_log_path, timed_out = run_task(
+        ["echo", "x"], timeout=0.01
+    )
+
+    assert success is False
+    assert exit_code == 0
+    assert returned_log_path == log_path
+    assert timed_out is True
+
+
+def test_run_task_timeout_with_signal_exit_is_failure(journal_path, monkeypatch):
+    log_path = journal_path / "x.log"
+    fake = _timed_out_managed(log_path, -15)
+    monkeypatch.setattr(ManagedProcess, "spawn", lambda *a, **k: fake)
+
+    success, exit_code, _log_path, timed_out = run_task(["echo", "x"], timeout=0.01)
+
+    assert success is False
+    assert exit_code == -15
+    assert timed_out is True
 
 
 def test_ref_links_to_task_tract(journal_path, mock_callosum):
