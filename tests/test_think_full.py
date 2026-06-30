@@ -18,6 +18,10 @@ def test_main_runs_with_mocked_prompts(journal_copy, monkeypatch):
         commands_run.append(cmd)
         return True
 
+    def mock_run_bounded_phase(cmd, day, timeout=None):
+        commands_run.append(cmd)
+        return (True, False)
+
     def mock_run_queued_command(cmd, day, timeout=600):
         commands_run.append(cmd)
         return True
@@ -28,6 +32,7 @@ def test_main_runs_with_mocked_prompts(journal_copy, monkeypatch):
         return (5, 0, [], set())  # 5 success, 0 failures, no failed names
 
     monkeypatch.setattr(mod, "run_command", mock_run_command)
+    monkeypatch.setattr(mod, "run_bounded_phase", mock_run_bounded_phase)
     monkeypatch.setattr(mod, "run_queued_command", mock_run_queued_command)
     monkeypatch.setattr(mod, "run_daily_prompts", mock_run_daily_prompts)
     monkeypatch.setattr(
@@ -62,6 +67,10 @@ def test_main_runs_segment_think_prephase_before_daily_synthesis(
         commands_run.append(cmd)
         return True
 
+    def mock_run_bounded_phase(cmd, day, timeout=None):
+        commands_run.append(cmd)
+        return (True, False)
+
     def mock_run_queued_command(cmd, day, timeout=600):
         commands_run.append(cmd)
         return True
@@ -71,6 +80,7 @@ def test_main_runs_segment_think_prephase_before_daily_synthesis(
         return (5, 0, [], set())
 
     monkeypatch.setattr(mod, "run_command", mock_run_command)
+    monkeypatch.setattr(mod, "run_bounded_phase", mock_run_bounded_phase)
     monkeypatch.setattr(mod, "run_queued_command", mock_run_queued_command)
     monkeypatch.setattr(mod, "run_daily_prompts", mock_run_daily_prompts)
     monkeypatch.setattr(
@@ -116,6 +126,10 @@ def test_from_scratch_refreshes_segment_think_prephase(
         commands_run.append(cmd)
         return True
 
+    def mock_run_bounded_phase(cmd, day, timeout=None):
+        commands_run.append(cmd)
+        return (True, False)
+
     def mock_run_queued_command(cmd, day, timeout=600):
         commands_run.append(cmd)
         return True
@@ -125,6 +139,7 @@ def test_from_scratch_refreshes_segment_think_prephase(
         return (5, 0, [], set())
 
     monkeypatch.setattr(mod, "run_command", mock_run_command)
+    monkeypatch.setattr(mod, "run_bounded_phase", mock_run_bounded_phase)
     monkeypatch.setattr(mod, "run_queued_command", mock_run_queued_command)
     monkeypatch.setattr(mod, "run_daily_prompts", mock_run_daily_prompts)
     monkeypatch.setattr(
@@ -155,9 +170,11 @@ def test_segment_think_prephase_failure_is_non_fatal(
 
     def mock_run_command(cmd, day):
         commands_run.append(cmd)
-        if len(cmd) >= 2 and cmd[:2] == ["journal", "think"] and "--segments" in cmd:
-            return False
         return True
+
+    def mock_run_bounded_phase(cmd, day, timeout=None):
+        commands_run.append(cmd)
+        return (False, False)
 
     def mock_run_queued_command(cmd, day, timeout=600):
         commands_run.append(cmd)
@@ -168,6 +185,7 @@ def test_segment_think_prephase_failure_is_non_fatal(
         return (5, 0, [], set())
 
     monkeypatch.setattr(mod, "run_command", mock_run_command)
+    monkeypatch.setattr(mod, "run_bounded_phase", mock_run_bounded_phase)
     monkeypatch.setattr(mod, "run_queued_command", mock_run_queued_command)
     monkeypatch.setattr(mod, "run_daily_prompts", mock_run_daily_prompts)
     monkeypatch.setattr(

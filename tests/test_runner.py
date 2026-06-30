@@ -275,12 +275,13 @@ def test_run_task_emits_logs_tract_events(journal_path, mock_callosum):
     listener.start(callback=lambda msg: received.append(msg))
 
     # Run task
-    success, exit_code, log_path = run_task(["echo", "run_task test"])
+    success, exit_code, log_path, timed_out = run_task(["echo", "run_task test"])
 
     # Verify success
     assert success is True
     assert exit_code == 0
     assert log_path.exists()
+    assert timed_out is False
 
     # Verify events were emitted
     logs_events = [msg for msg in received if msg.get("tract") == "logs"]
@@ -435,12 +436,15 @@ def test_process_day_override(journal_path, mock_callosum):
 def test_run_task_day_override(journal_path, mock_callosum):
     """Test that run_task passes day through to log placement."""
     target_day = "20240201"
-    success, exit_code, log_path = run_task(["echo", "task day test"], day=target_day)
+    success, exit_code, log_path, timed_out = run_task(
+        ["echo", "task day test"], day=target_day
+    )
 
     assert success
     assert exit_code == 0
     assert target_day in str(log_path)
     assert log_path.exists()
+    assert timed_out is False
 
 
 @pytest.mark.parametrize(

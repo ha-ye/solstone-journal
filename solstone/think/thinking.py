@@ -14,6 +14,7 @@ import argparse
 import fnmatch
 import json
 import logging
+import subprocess
 import sys
 import threading
 import time
@@ -53,7 +54,7 @@ from solstone.think.pipeline_health import (
     read_daily_deterministic_failures,
     read_segment_progress,
 )
-from solstone.think.runner import run_task
+from solstone.think.runner import DEFAULT_TASK_MAX_RUNTIME, run_task
 from solstone.think.sense_splitter import (
     write_change_detection,
     write_idle_stubs,
@@ -459,25 +460,42 @@ def _emit_periodic_status() -> None:
             logging.debug("Status emission failed", exc_info=True)
 
 
-def run_command(cmd: list[str], day: str) -> bool:
-    """Run a shell command synchronously."""
+def run_bounded_phase(
+    cmd: list[str], day: str, timeout: float | None
+) -> tuple[bool, bool]:
+    """Run a phase subprocess.
+
+    Returns (ok, timed_out). timed_out is True only when the wall-clock budget
+    was exceeded (covers the terminate-re-raise edge).
+    """
     logging.info("==> %s", " ".join(cmd))
     cmd_name = cmd[1] if cmd[0] in ("sol", "journal") and len(cmd) > 1 else cmd[0]
     cmd_name = cmd_name.replace("-", "_")
 
     try:
-        success, exit_code, _log_path = run_task(cmd, day=day)
+        success, exit_code, _log_path, timed_out = run_task(
+            cmd, day=day, timeout=timeout
+        )
         if not success:
             logging.error(
                 "Command failed with exit code %s: %s", exit_code, " ".join(cmd)
             )
             day_log(day, f"{cmd_name} error {exit_code}")
-            return False
-        return True
+        return (success, timed_out)
+    except subprocess.TimeoutExpired:
+        logging.error("Command timed out and could not be reaped: %s", " ".join(cmd))
+        day_log(day, f"{cmd_name} timeout")
+        return (False, True)
     except Exception as e:
         logging.error("Command exception: %s: %s", e, " ".join(cmd))
         day_log(day, f"{cmd_name} exception")
-        return False
+        return (False, False)
+
+
+def run_command(cmd: list[str], day: str) -> bool:
+    """Run a shell command synchronously (unbounded)."""
+    ok, _timed_out = run_bounded_phase(cmd, day, timeout=None)
+    return ok
 
 
 def run_queued_command(cmd: list[str], day: str, timeout: int = 600) -> bool:
@@ -3734,17 +3752,31 @@ def main() -> None:
             day_log(day, f"starting: {' '.join(cmd)}")
             _jsonl_log("phase.start", mode=_run_mode, day=day, phase="segment_think")
             _phase_start = time.time()
-            phase_ok = run_command(cmd, day)
-            _jsonl_log(
-                "phase.complete",
-                mode=_run_mode,
-                day=day,
-                phase="segment_think",
-                success=phase_ok,
-                duration_ms=int((time.time() - _phase_start) * 1000),
+            phase_ok, phase_timed_out = run_bounded_phase(
+                cmd, day, DEFAULT_TASK_MAX_RUNTIME
             )
+            phase_complete = {
+                "mode": _run_mode,
+                "day": day,
+                "phase": "segment_think",
+                "success": phase_ok,
+                "duration_ms": int((time.time() - _phase_start) * 1000),
+            }
+            if phase_timed_out:
+                phase_complete.update(
+                    reason_code="wall_clock_exceeded",
+                    timeout_seconds=DEFAULT_TASK_MAX_RUNTIME,
+                    bounded=True,
+                )
+            _jsonl_log("phase.complete", **phase_complete)
             if not phase_ok:
-                logging.warning("Segment-think repair failed, continuing anyway")
+                if phase_timed_out:
+                    logging.warning(
+                        "Segment-think repair exceeded its %ss budget, continuing anyway",
+                        DEFAULT_TASK_MAX_RUNTIME,
+                    )
+                else:
+                    logging.warning("Segment-think repair failed, continuing anyway")
 
         # MAIN PHASE: Run prompts
         resolved_stream = args.stream

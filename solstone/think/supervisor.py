@@ -52,8 +52,8 @@ from solstone.think.processing import (
 )
 from solstone.think.providers.mlx_server import MLX_SERVER_PROCESS_NAME
 from solstone.think.readiness import START_TIME_TOLERANCE_S, clear_ready, signal_ready
+from solstone.think.runner import DEFAULT_TASK_MAX_RUNTIME, _command_partition
 from solstone.think.runner import ManagedProcess as RunnerManagedProcess
-from solstone.think.runner import _command_partition
 from solstone.think.sync_check import (
     DEFAULT_INTERVAL_SECONDS,
     SyncCheckSnapshot,
@@ -80,9 +80,6 @@ from solstone.think.utils import (
     write_service_port,
 )
 
-DEFAULT_TASK_MAX_RUNTIME = (
-    1800  # 30m wall-clock default for any uncapped TaskQueue partition
-)
 REACTIVE_TASK_CAPS = {
     "daily": 21600,  # 6h daily/from-scratch reprocess
     "segment": 4500,  # 75m per-segment think

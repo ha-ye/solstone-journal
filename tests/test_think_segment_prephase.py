@@ -133,6 +133,9 @@ def test_daily_health_log_keeps_segment_events_out(journal_copy, monkeypatch):
 
     _patch_main_runtime(monkeypatch)
     monkeypatch.setattr(mod, "run_command", mock_run_command)
+    monkeypatch.setattr(
+        mod, "run_bounded_phase", lambda cmd, day, timeout=None: (True, False)
+    )
     monkeypatch.setattr(mod, "run_queued_command", mock_run_queued_command)
     monkeypatch.setattr(mod, "run_daily_prompts", mock_run_daily_prompts)
     monkeypatch.setattr("sys.argv", ["sol think", "--day", "20240101"])
@@ -154,6 +157,104 @@ def test_daily_health_log_keeps_segment_events_out(journal_copy, monkeypatch):
         for event in events
         if _event_name(event).startswith(("talent.", "activity."))
     ]
+
+
+def test_daily_segment_prephase_timeout_is_nonfatal(journal_copy, monkeypatch):
+    mod = importlib.import_module("solstone.think.thinking")
+    bounded_calls = []
+    command_calls = []
+    daily_called = []
+
+    def fake_bounded(cmd, day, timeout=None):
+        bounded_calls.append((cmd, day, timeout))
+        return (False, True)
+
+    def fake_command(cmd, day):
+        command_calls.append(cmd)
+        return True
+
+    def fake_daily(day, verbose, **kwargs):
+        daily_called.append(day)
+        return (5, 0, [], set())
+
+    _patch_main_runtime(monkeypatch)
+    monkeypatch.setattr(mod, "run_bounded_phase", fake_bounded)
+    monkeypatch.setattr(mod, "run_command", fake_command)
+    monkeypatch.setattr(mod, "run_queued_command", lambda cmd, day, timeout=600: True)
+    monkeypatch.setattr(mod, "run_daily_prompts", fake_daily)
+    monkeypatch.setattr("sys.argv", ["sol think", "--day", "20240101"])
+
+    mod.main()
+
+    health_dir = journal_copy / "chronicle" / "20240101" / "health"
+    daily_files = sorted(health_dir.glob("*_daily.jsonl"))
+    assert len(daily_files) == 1
+    events = _read_jsonl(daily_files[0])
+    segment_completes = [
+        event
+        for event in events
+        if _event_name(event) == "phase.complete"
+        and event.get("phase") == "segment_think"
+    ]
+    assert len(segment_completes) == 1
+    complete = segment_completes[0]
+    assert complete["success"] is False
+    assert complete["reason_code"] == "wall_clock_exceeded"
+    assert complete["timeout_seconds"] == 1800
+    assert complete["bounded"] is True
+
+    assert daily_called
+    assert bounded_calls == [
+        (
+            ["journal", "think", "--segments", "--day", "20240101"],
+            "20240101",
+            mod.DEFAULT_TASK_MAX_RUNTIME,
+        )
+    ]
+    assert mod.DEFAULT_TASK_MAX_RUNTIME == 1800
+    assert ["journal", "sense", "--day", "20240101"] in command_calls
+    assert ["journal", "journal-stats"] in command_calls
+    assert ["journal", "think", "--segments", "--day", "20240101"] not in command_calls
+
+
+def test_daily_segment_prephase_failure_has_no_timeout_reason(
+    journal_copy, monkeypatch
+):
+    mod = importlib.import_module("solstone.think.thinking")
+    daily_called = []
+
+    def fake_daily(day, verbose, **kwargs):
+        daily_called.append(day)
+        return (5, 0, [], set())
+
+    _patch_main_runtime(monkeypatch)
+    monkeypatch.setattr(
+        mod, "run_bounded_phase", lambda cmd, day, timeout=None: (False, False)
+    )
+    monkeypatch.setattr(mod, "run_command", lambda cmd, day: True)
+    monkeypatch.setattr(mod, "run_queued_command", lambda cmd, day, timeout=600: True)
+    monkeypatch.setattr(mod, "run_daily_prompts", fake_daily)
+    monkeypatch.setattr("sys.argv", ["sol think", "--day", "20240101"])
+
+    mod.main()
+
+    health_dir = journal_copy / "chronicle" / "20240101" / "health"
+    daily_files = sorted(health_dir.glob("*_daily.jsonl"))
+    assert len(daily_files) == 1
+    events = _read_jsonl(daily_files[0])
+    segment_completes = [
+        event
+        for event in events
+        if _event_name(event) == "phase.complete"
+        and event.get("phase") == "segment_think"
+    ]
+    assert len(segment_completes) == 1
+    complete = segment_completes[0]
+    assert complete["success"] is False
+    assert "reason_code" not in complete
+    assert "timeout_seconds" not in complete
+    assert "bounded" not in complete
+    assert daily_called
 
 
 def test_segment_health_log_receives_segment_talent_events(tmp_path, monkeypatch):

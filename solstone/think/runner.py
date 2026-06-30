@@ -33,6 +33,8 @@ from solstone.think.callosum import CallosumConnection
 from solstone.think.utils import CHRONICLE_DIR, get_journal, now_ms
 
 logger = logging.getLogger(__name__)
+# Default wall-clock budget (30m) for a task run with no explicit cap.
+DEFAULT_TASK_MAX_RUNTIME = 1800
 KILL_REAP_GRACE_S = 0.5
 
 
@@ -529,7 +531,7 @@ def run_task(
     ref: str | None = None,
     callosum: CallosumConnection | None = None,
     day: str | None = None,
-) -> tuple[bool, int, Path]:
+) -> tuple[bool, int, Path, bool]:
     """Run a task to completion with automatic logging (blocking).
 
     Spawns process, waits for completion, cleans up resources.
@@ -546,18 +548,19 @@ def run_task(
             in that day's health directory instead of today's.
 
     Returns:
-        (success, exit_code, log_path) tuple where success = (exit_code == 0)
-        and log_path points to the process output log file.
+        (success, exit_code, log_path, timed_out) tuple where success =
+        (exit_code == 0), log_path points to the process output log file, and
+        timed_out is True only when the wall-clock ``timeout`` was exceeded.
 
     Example:
-        success, code, log = run_task(
+        success, code, log, timed_out = run_task(
             ["sol", "generate", "20241101", "-f", "flow"],
             timeout=300,
         )
         # Logs to: {JOURNAL}/{YYYYMMDD}/health/{ref}_generate.log
 
         # With explicit correlation ID:
-        success, code, log = run_task(
+        success, code, log, timed_out = run_task(
             ["journal", "indexer", "--rescan"],
             ref="1730476800000",
         )
@@ -565,10 +568,12 @@ def run_task(
     """
     managed = ManagedProcess.spawn(cmd, env=env, ref=ref, callosum=callosum, day=day)
     log_path = managed.log_writer.path
+    timed_out = False
     try:
         exit_code = managed.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         logger.error(f"{managed.name} timed out after {timeout}s, terminating...")
+        timed_out = True
         exit_code = managed.terminate()
     finally:
         managed.cleanup()
@@ -576,4 +581,4 @@ def run_task(
     if exit_code != 0:
         logger.warning(f"{managed.name} exited with code {exit_code}")
 
-    return (exit_code == 0, exit_code, log_path)
+    return (exit_code == 0, exit_code, log_path, timed_out)
