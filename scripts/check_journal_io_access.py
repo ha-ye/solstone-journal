@@ -98,6 +98,8 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/apps/observer/utils.py",
         "solstone/think/activities.py",
         "solstone/think/awareness.py",
+        # One-shot backfill of empty processing records onto header-only native describe/transcribe outputs.
+        "solstone/think/backfill_processing_records.py",
         # Sole ops/runtime writer of health/catchup-state.json; uses hold_lock for cross-process RMW.
         "solstone/think/catchup_state.py",
         "solstone/think/day_accumulator.py",

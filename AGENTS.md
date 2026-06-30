@@ -188,6 +188,7 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Activities (`facets/*/activities/*.jsonl`) | `solstone/think/activities.py` |
 | Timeline (`chronicle/<day>/timeline.json`, `chronicle/**/<seg>/timeline.json`, root `timeline.json`) | `solstone/apps/timeline/maintenance.py` + `solstone/apps/timeline/talent/segment_summary.py` |
 | Per-segment sense outputs (`chronicle/**/<seg>/talents/{sense.json,facets.json,speakers.json,density.json,change.json,activity.md,sense.md}`) | `solstone/think/sense_splitter.py` |
+| Backfilled `_solstone_processing` records on header-only native describe/transcribe outputs (`chronicle/**/<seg>/{screen,*_screen,audio,*_audio}.jsonl`) | `solstone/think/backfill_processing_records.py` |
 | Awareness (`awareness/current.json`, `awareness/YYYYMMDD.jsonl`) | `solstone/think/awareness.py` |
 | Awareness activity state (`awareness/activity_state.json`) | `solstone/think/thinking.py` |
 | Identity (`identity/*.md`, `identity/history.jsonl` audit log) | `solstone/think/identity.py` |

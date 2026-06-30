@@ -45,14 +45,16 @@ def build_processing_record(
     handler: str,
     input_size: int,
     attempted_at: str | None = None,
+    source: str | None = None,
 ) -> dict:
     """Build a `_solstone_processing` header record for a determined outcome.
 
     `attempted_at` defaults to the current UTC instant; pass an explicit value
     only in tests. The outcome must be the one the handler *determined* while
-    running — never a pre-stamped guess.
+    running — never a pre-stamped guess. `source` is a provenance tag set only
+    by the backfill.
     """
-    return {
+    record = {
         "schema": SCHEMA,
         "state": state,
         "reason_code": reason_code,
@@ -60,3 +62,6 @@ def build_processing_record(
         "attempted_at": attempted_at or now_iso_utc(),
         "input_size": input_size,
     }
+    if source is not None:
+        record["source"] = source
+    return record

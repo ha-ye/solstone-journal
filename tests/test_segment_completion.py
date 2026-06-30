@@ -953,6 +953,28 @@ def test_empty_idle_segment_allows_daily_gate(
     assert (health / "daily.updated").exists()
 
 
+def test_backfill_unblocks_stuck_empty_day(segment_journal, monkeypatch):
+    day = "20990419"
+    _seed_segment(segment_journal, day, SEGMENT, state="pending")
+    _write_health(segment_journal, day, "001_daily.jsonl", [_daily_complete()])
+    _write_health(
+        segment_journal,
+        day,
+        "002_segment.jsonl",
+        _complete_segment_events(SEGMENT, density="idle"),
+    )
+
+    health = _run_daily_gate(segment_journal, day, monkeypatch)
+    assert not (health / "daily.updated").exists()
+
+    from solstone.think.backfill_processing_records import run_backfill
+
+    run_backfill(day, commit=True)
+
+    health = _run_daily_gate(segment_journal, day, monkeypatch)
+    assert (health / "daily.updated").exists()
+
+
 @pytest.mark.parametrize("state", ["pending", "analyzing"])
 def test_unfinished_sensing_states_still_block_daily_gate(
     segment_journal,
