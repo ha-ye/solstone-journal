@@ -169,6 +169,36 @@ def test_scan_day(tmp_path, monkeypatch):
     assert js.days["20240101"]["day_bytes"] > 0
 
 
+def test_scan_day_emits_range_counts(tmp_path, monkeypatch):
+    stats_mod = importlib.import_module("solstone.think.journal_stats")
+    from solstone.think.cluster import scan_day as cluster_scan_day
+
+    journal = tmp_path
+    day_name = "20240101"
+    day = journal / "chronicle" / day_name
+    day.mkdir(parents=True)
+
+    ts_dir = day / "default" / "123456_300"
+    ts_dir.mkdir(parents=True)
+    (ts_dir / "audio.jsonl").write_text(
+        '{"raw": "raw.flac"}\n{"start": "10:00:00", "text": "hello"}\n'
+    )
+    (ts_dir / "screen.jsonl").write_text(
+        '{"header": true}\n{"frame_id": 1, "timestamp": 36000.0}\n'
+    )
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    audio_ranges, screen_ranges, _segments = cluster_scan_day(day_name)
+
+    js = stats_mod.JournalStats()
+    day_data = js.scan_day(day_name, str(day))
+    stats = day_data["stats"]
+
+    assert stats["transcript_ranges"] == len(audio_ranges)
+    assert stats["percept_ranges"] == len(screen_ranges)
+    assert len(audio_ranges) + len(screen_ranges) > 0
+
+
 def test_segments_pending_think_fold_failure_logs_and_defaults_zero(
     tmp_path,
     monkeypatch,
@@ -190,7 +220,7 @@ def test_segments_pending_think_fold_failure_logs_and_defaults_zero(
     day_data = js.scan_day("20240101", str(day))
 
     assert day_data["stats"]["segments_pending_think"] == 0
-    assert "segments_pending_think under-reported" in caplog.text
+    assert "segments_pending_think and range counts under-reported" in caplog.text
 
 
 def test_cache_invalidates_on_health_event(tmp_path, monkeypatch):

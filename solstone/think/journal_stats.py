@@ -13,7 +13,7 @@ from typing import Dict
 from solstone.observe.sense import scan_day as sense_scan_day
 from solstone.observe.utils import VIDEO_EXTENSIONS, load_analysis_frames
 from solstone.think.activities import estimate_duration_minutes, load_activity_records
-from solstone.think.cluster import cluster_segments
+from solstone.think.cluster import scan_day as cluster_scan_day
 from solstone.think.facets import get_facets
 from solstone.think.pipeline_health import (
     BACKLOG_DEFAULT_WINDOW,
@@ -123,6 +123,65 @@ def _degraded_backlog_view() -> BacklogView:
     )
 
 
+def _day_input_mtime(day_dir: Path) -> float:
+    """Latest mtime of the bounded set of files treated as stats inputs."""
+    files = []
+    files.extend(day_dir.glob("*/*/*audio.jsonl"))
+    files.extend(day_dir.glob("*/*/*_transcript.jsonl"))
+    files.extend(day_dir.glob("*/*/*_transcript.md"))
+    files.extend(day_dir.glob("*/*/*screen.jsonl"))
+    files.extend(day_dir.glob("*.flac"))
+    files.extend(day_dir.glob("*.m4a"))
+    for ext in VIDEO_EXTENSIONS:
+        files.extend(day_dir.glob(f"*{ext}"))
+
+    talents_dir = day_dir / "talents"
+    if talents_dir.is_dir():
+        files.extend(talents_dir.glob("*.json"))
+        files.extend(talents_dir.glob("*.md"))
+        files.extend(talents_dir.glob("*/*.json"))
+        files.extend(talents_dir.glob("*/*.md"))
+
+    files.extend(day_dir.glob("health/*.jsonl"))
+    files.extend(day_dir.glob("health/*.updated"))
+
+    if not files:
+        return 0.0
+    return max(f.stat().st_mtime for f in files)
+
+
+def load_fresh_day_cache(day_dir: Path) -> dict | None:
+    """Read a per-day ``stats.json`` cache and return its payload iff fresh.
+
+    Fresh = cache mtime strictly newer than the bounded day-input mtime, the
+    payload's ``schema_version`` matches the current ``SCHEMA_VERSION``, and every
+    ``DAY_FIELD`` is present in its ``stats`` dict. Returns ``None`` on any of
+    missing / stale / corrupt / old-schema. Read-only: never writes, deletes, or
+    touches the cache file. Shared by the stats routine and the transcripts
+    calendar route so both honor a single freshness definition.
+    """
+    cache_file = day_dir / "stats.json"
+    if not cache_file.exists():
+        return None
+    try:
+        cache_mtime = cache_file.stat().st_mtime
+        if cache_mtime <= _day_input_mtime(day_dir):
+            return None
+        with open(cache_file, encoding="utf-8") as f:
+            payload = json.load(f)
+        if payload.get("schema_version") != SCHEMA_VERSION:
+            return None
+        stats = payload.get("stats")
+        if not isinstance(stats, dict):
+            return None
+        if any(field not in stats for field in DAY_FIELDS):
+            return None
+        return payload
+    except Exception as e:
+        logger.debug(f"Cache load failed for {day_dir.name}: {e}")
+        return None
+
+
 class JournalStats:
     def __init__(self) -> None:
         self.days: Dict[str, Dict[str, float | int]] = {}
@@ -143,60 +202,6 @@ class JournalStats:
         # Per-day facet counts: {day: {facet: count}}
         self.facet_counts_by_day: Dict[str, Dict[str, int]] = {}
         self.backlog_view: BacklogView | None = None
-
-    def _get_day_mtime(self, day_dir: Path) -> float:
-        """Get latest modification time of files we scan."""
-        files = []
-        # Check segment subdirectories for processed files (day/stream/segment/)
-        files.extend(day_dir.glob("*/*/*audio.jsonl"))
-        files.extend(day_dir.glob("*/*/*_transcript.jsonl"))
-        files.extend(day_dir.glob("*/*/*_transcript.md"))
-        files.extend(day_dir.glob("*/*/*screen.jsonl"))
-        # Check day root for unprocessed media files
-        files.extend(day_dir.glob("*.flac"))
-        files.extend(day_dir.glob("*.m4a"))
-        for ext in VIDEO_EXTENSIONS:
-            files.extend(day_dir.glob(f"*{ext}"))
-
-        talents_dir = day_dir / "talents"
-        if talents_dir.is_dir():
-            files.extend(talents_dir.glob("*.json"))
-            files.extend(talents_dir.glob("*.md"))
-            files.extend(talents_dir.glob("*/*.json"))
-            files.extend(talents_dir.glob("*/*.md"))
-
-        files.extend(day_dir.glob("health/*.jsonl"))
-        files.extend(day_dir.glob("health/*.updated"))
-
-        if not files:
-            return 0.0
-        return max(f.stat().st_mtime for f in files)
-
-    def _load_day_cache(self, day: str, day_dir: Path) -> dict | None:
-        """Load cached day stats if fresh."""
-        cache_file = day_dir / "stats.json"
-        if not cache_file.exists():
-            return None
-
-        try:
-            cache_mtime = cache_file.stat().st_mtime
-            day_mtime = self._get_day_mtime(day_dir)
-
-            if cache_mtime > day_mtime:
-                with open(cache_file, encoding="utf-8") as f:
-                    payload = json.load(f)
-                if payload.get("schema_version") != SCHEMA_VERSION:
-                    return None
-                stats = payload.get("stats")
-                if not isinstance(stats, dict):
-                    return None
-                if any(field not in stats for field in DAY_FIELDS):
-                    return None
-                return payload
-        except Exception as e:
-            logger.debug(f"Cache load failed for {day}: {e}")
-
-        return None
 
     def _save_day_cache(self, day_dir: Path, stats: dict) -> None:
         """Save day stats to cache."""
@@ -379,16 +384,21 @@ class JournalStats:
         stats["outputs_processed"] = len(output_info["processed"])
         stats["outputs_pending"] = len(output_info["repairable"])
 
+        stats["transcript_ranges"] = 0
+        stats["percept_ranges"] = 0
         try:
+            audio_ranges, screen_ranges, segments = cluster_scan_day(day)
+            stats["transcript_ranges"] = len(audio_ranges)
+            stats["percept_ranges"] = len(screen_ranges)
             completion = classify_segment_completion(
-                cluster_segments(day),
+                segments,
                 read_segment_progress(day),
             )
             stats["segments_pending_think"] = completion.not_thought
         except Exception:
             logger.warning(
-                "journal_stats: segment completion fold failed for %s; "
-                "segments_pending_think under-reported",
+                "journal_stats: segment scan/completion fold failed for %s; "
+                "segments_pending_think and range counts under-reported",
                 day,
                 exc_info=True,
             )
@@ -574,7 +584,7 @@ class JournalStats:
             # Try cache first
             cached_data = None
             if use_cache:
-                cached_data = self._load_day_cache(day, day_dir)
+                cached_data = load_fresh_day_cache(day_dir)
 
             if cached_data:
                 # Cache hit - apply cached data
