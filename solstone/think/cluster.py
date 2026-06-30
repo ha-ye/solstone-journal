@@ -565,6 +565,21 @@ def _detect_data_state(seg_path: Path) -> dict[str, str]:
     return state
 
 
+def read_segment_data_state(
+    day: str, segment: str, stream: str | None = None
+) -> dict[str, str]:
+    """Read-only per-modality data state for one segment; absent modalities omitted.
+
+    Resolves the segment directory (searching all streams when ``stream`` is None)
+    and returns ``_detect_data_state``'s mapping, e.g. ``{"screen": "empty"}``.
+    Returns an empty dict when the segment directory cannot be found.
+    """
+    seg_dir = _find_segment_dir(day, segment, stream)
+    if seg_dir is None:
+        return {}
+    return _detect_data_state(seg_dir)
+
+
 def scan_day(
     day: str,
 ) -> tuple[

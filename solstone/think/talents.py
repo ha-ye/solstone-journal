@@ -29,7 +29,13 @@ from typing import Any, Callable, Optional
 
 from jsonschema import Draft202012Validator
 
-from solstone.think.cluster import cluster, cluster_period, cluster_span
+from solstone.think.cluster import (
+    cluster,
+    cluster_period,
+    cluster_span,
+    read_segment_data_state,
+)
+from solstone.think.data_state import DataState
 from solstone.think.pipeline_health import (
     TERMINAL_COMPLETE,
     TerminalUnit,
@@ -476,7 +482,13 @@ def check_segment_has_no_input(
     sources: dict,
     stream: str | None = None,
 ) -> bool:
-    """Read-only: True when the talent's enabled sources cluster to no usable input.
+    """Read-only: True when the segment has no usable sense input.
+
+    Two additive rules, either sufficient:
+    - content emptiness: the talent's enabled sources cluster to nothing usable
+      (``_is_no_input`` — no clustered input, or below ``MIN_INPUT_CHARS``), or
+    - recorded-empty: every present (non-absent) modality derived ``DataState.EMPTY``
+      (header-only describe/transcribe outputs that analyzed to nothing).
 
     Returns False when no source is enabled (nothing to probe), so callers passing a
     source-less config treat the segment as not-gated.
@@ -486,7 +498,12 @@ def check_segment_has_no_input(
     transcript, source_counts = _load_transcript(
         day, segment, None, sources, stream=stream
     )
-    return _is_no_input(transcript, source_counts)
+    if _is_no_input(transcript, source_counts):
+        return True
+    data_state = read_segment_data_state(day, segment, stream)
+    return bool(data_state) and all(
+        value == DataState.EMPTY.value for value in data_state.values()
+    )
 
 
 def prepare_config(request: dict) -> dict:

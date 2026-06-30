@@ -10,6 +10,13 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator
 
+from solstone.observe.processing_record import (
+    HANDLER_DESCRIBE,
+    REASON_NO_DECODABLE_FRAMES,
+    STATE_EMPTY,
+    build_processing_record,
+)
+
 
 @pytest.fixture
 def segment_dir(tmp_path, monkeypatch):
@@ -91,6 +98,27 @@ def _write_sense_output(segment_dir: Path, sense_json: dict) -> None:
     (segment_dir / "talents" / "sense.json").write_text(
         json.dumps(sense_json),
         encoding="utf-8",
+    )
+
+
+def _seed_empty_screen(segment_dir: Path, name: str = "screen") -> None:
+    raw_path = segment_dir / f"{name}.webm"
+    raw_path.write_bytes(b"raw-screen")
+    header = {
+        "raw": f"{name}.webm",
+        "first_hash": None,
+        "last_hash": None,
+        "qualified_count": 0,
+    }
+    header["_solstone_processing"] = build_processing_record(
+        state=STATE_EMPTY,
+        reason_code=REASON_NO_DECODABLE_FRAMES,
+        handler=HANDLER_DESCRIBE,
+        input_size=raw_path.stat().st_size,
+        source="backfill",
+    )
+    (segment_dir / f"{name}.jsonl").write_text(
+        json.dumps(header) + "\n", encoding="utf-8"
     )
 
 
@@ -259,6 +287,106 @@ class TestLoadSegmentFacets:
 
 
 class TestRunSegmentSense:
+    def test_recorded_empty_gates_via_data_state(self, segment_dir):
+        from solstone.think.talents import (
+            MIN_INPUT_CHARS,
+            _is_no_input,
+            _load_transcript,
+            check_segment_has_no_input,
+        )
+
+        _seed_empty_screen(segment_dir)
+        sources = {"transcripts": True, "percepts": True, "talents": False}
+
+        transcript, counts = _load_transcript(
+            "20240115", "120000_300", None, sources, stream="default"
+        )
+
+        assert _is_no_input(transcript, counts) is False
+        assert len(transcript.strip()) >= MIN_INPUT_CHARS
+        assert (
+            check_segment_has_no_input(
+                "20240115", "120000_300", sources, stream="default"
+            )
+            is True
+        )
+
+    def test_recorded_empty_segment_is_gated_to_idle(self, segment_dir, monkeypatch):
+        from solstone.think import thinking as think
+        from solstone.think.pipeline_health import (
+            classify_segment_completion,
+            read_segment_progress,
+            segment_fully_thought,
+        )
+        from solstone.think.thinking import ThinkingJSONLWriter
+
+        _seed_empty_screen(segment_dir)
+        spawned = []
+        jsonl_path = (
+            segment_dir.parent.parent / "health" / "test_recorded_empty_gate.jsonl"
+        )
+        writer = ThinkingJSONLWriter(str(jsonl_path))
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _sense_config_with_load(
+                "sense", "documents", "screen"
+            ),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "_callosum", None)
+        monkeypatch.setattr(think, "_jsonl", writer)
+
+        result = think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+        writer.close()
+
+        assert spawned == []
+        assert result == (0, 0, [])
+
+        progress = read_segment_progress("20240115")
+        prog = progress[("default", "120000_300")]
+        assert segment_fully_thought(prog) == (True, None)
+
+        segments = [
+            {
+                "key": "120000_300",
+                "stream": "default",
+                "data_state": {"screen": "empty"},
+            }
+        ]
+        completion = classify_segment_completion(segments, progress)
+        assert completion.not_thought == 0
+
+        events = _read_jsonl_events(jsonl_path)
+        sense_completes = [
+            event for event in events if event["event"] == "sense.complete"
+        ]
+        assert len(sense_completes) == 1
+        assert sense_completes[0]["density"] == "idle"
+        assert sense_completes[0]["gated"] == "no_input"
+        assert any(event["event"] == "sense.change_detect" for event in events)
+        assert not any(
+            event["event"] in {"talent.complete", "talent.fail"}
+            and event.get("name") == "sense"
+            for event in events
+        )
+
     def test_no_input_segment_is_gated_to_idle(self, segment_dir, monkeypatch):
         from solstone.think import thinking as think
         from solstone.think.pipeline_health import (
@@ -456,6 +584,109 @@ class TestRunSegmentSense:
             True,
             None,
         )
+
+    def test_recorded_empty_gate_is_idempotent(self, segment_dir, monkeypatch):
+        from solstone.think import thinking as think
+        from solstone.think.pipeline_health import (
+            read_segment_progress,
+            segment_fully_thought,
+        )
+        from solstone.think.thinking import ThinkingJSONLWriter
+
+        _seed_empty_screen(segment_dir)
+        spawned = []
+        jsonl_path = (
+            segment_dir.parent.parent / "health" / "test_recorded_empty_repeat.jsonl"
+        )
+        writer = ThinkingJSONLWriter(str(jsonl_path))
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _sense_config_with_load("sense"),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "_callosum", None)
+        monkeypatch.setattr(think, "_jsonl", writer)
+
+        first = think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+        second = think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+        writer.close()
+
+        assert spawned == []
+        assert first == (0, 0, [])
+        assert second == (0, 0, [])
+        density = json.loads(
+            (segment_dir / "talents" / "density.json").read_text(encoding="utf-8")
+        )
+        assert density["classification"] == "idle"
+        progress = read_segment_progress("20240115")
+        assert segment_fully_thought(progress[("default", "120000_300")]) == (
+            True,
+            None,
+        )
+
+    def test_mixed_empty_and_analyzed_dispatches_sense(self, segment_dir, monkeypatch):
+        from solstone.think import thinking as think
+
+        _seed_empty_screen(segment_dir)
+        (segment_dir / "audio.jsonl").write_text(
+            "{}\n"
+            '{"start":"00:00:01","text":"This transcript sentence is well over '
+            'fifty characters so the gate must not fire."}\n',
+            encoding="utf-8",
+        )
+        _write_sense_output(segment_dir, _active_sense_json())
+        spawned = []
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _sense_config_with_load("sense"),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "_callosum", None)
+
+        result = think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+
+        assert spawned == ["sense"]
+        assert result == (1, 0, [])
 
     @pytest.mark.parametrize(
         ("filename", "body"),
