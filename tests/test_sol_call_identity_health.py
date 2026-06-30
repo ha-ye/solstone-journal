@@ -32,7 +32,7 @@ def _valid_body(*, generated_at: str = "2026-05-26T17:32:18Z") -> str:
         [
             "## Status",
             f"<!-- generated_at: {generated_at} -->",
-            "Sol is well.",
+            "sol is well.",
             "",
             "## Needs your attention",
             "",
@@ -57,7 +57,7 @@ def test_health_default_reads_file(health_journal):
     result = runner.invoke(app, ["health"])
 
     assert result.exit_code == 0
-    assert "Sol is well." in result.output
+    assert "sol is well." in result.output
 
 
 def test_health_refresh_success(health_journal, monkeypatch):

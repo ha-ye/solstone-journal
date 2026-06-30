@@ -649,7 +649,7 @@ def read_steward_health(journal: Path | None = None) -> dict | None:
     status_lines = sections[STEWARD_SECTION_STATUS]
     attention_lines = sections[STEWARD_SECTION_ATTENTION]
     status_lead = _first_status_body_line(status_lines) or ""
-    if status_lead.startswith("Sol is well.") and not _has_bullets(attention_lines):
+    if status_lead.startswith("sol is well.") and not _has_bullets(attention_lines):
         return None
 
     bullet = _first_bullet(attention_lines)
@@ -776,7 +776,7 @@ def _status_sentence(
 ) -> str:
     """Pick the single status sentence deterministically.
 
-    ``Sol is well.`` (byte-exact, so ``read_steward_health`` reads healthy) only
+    ``sol is well.`` (byte-exact, so ``read_steward_health`` reads healthy) only
     when nothing is wrong; otherwise one terse factual sentence by priority.
     """
     pd = pipeline_day if isinstance(pipeline_day, dict) else {}
@@ -795,10 +795,10 @@ def _status_sentence(
         and not recent_failures
         and not unverified
     ):
-        return "Sol is well."
+        return "sol is well."
     if data_source_errors:
         return (
-            "Sol has a partial health picture: some health sources could not be read."
+            "sol has a partial health picture: some health sources could not be read."
         )
     if escalated_targets:
         n = len(escalated_targets)
@@ -806,7 +806,7 @@ def _status_sentence(
         return f"{n} stale segment {noun} failed twice and need owner attention."
     if anomalies:
         return (
-            "Sol detected pipeline issues during yesterday's processing "
+            "sol detected pipeline issues during yesterday's processing "
             "that need attention."
         )
     if recent_failures:
@@ -982,8 +982,8 @@ def default_summary_from_body(body: str) -> dict:
     _headings, sections = _parse_sections(body)
     status_lines = sections.get(STEWARD_SECTION_STATUS, [])
     attention_lines = sections.get(STEWARD_SECTION_ATTENTION, [])
-    status = _first_status_body_line(status_lines) or "Sol is well."
-    if status.startswith("Sol is well."):
+    status = _first_status_body_line(status_lines) or "sol is well."
+    if status.startswith("sol is well."):
         return {
             "headline": "All clear",
             "summary_sentence": status,

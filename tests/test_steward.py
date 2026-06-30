@@ -43,7 +43,7 @@ def _set_journal(monkeypatch: pytest.MonkeyPatch, journal: Path) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
 
 
-def _valid_body(*, status: str = "Sol is well.", needs: str = "") -> str:
+def _valid_body(*, status: str = "sol is well.", needs: str = "") -> str:
     return "\n".join(
         [
             STEWARD_SECTION_STATUS,
@@ -553,6 +553,10 @@ def test_pre_process_renders_pass_event_into_health_body(tmp_path, monkeypatch):
     body = result["template_vars"]["health_state"]
     # Deterministic body folds in both the gathered and pass-event facts.
     assert (
+        "sol has a partial health picture: some health sources could not be read."
+        in body
+    )
+    assert (
         "escalating: stale-pending segment reprocess on 20260607/local/seg2:screen"
         in body
     )
@@ -573,7 +577,7 @@ def test_pre_process_fresh_journal_writes_well_health(tmp_path, monkeypatch):
 
     assert result is not None
     body = result["template_vars"]["health_state"]
-    assert "Sol is well." in body
+    assert "sol is well." in body
     assert validate_steward_health(body) is None
     # Healthy body → home widget hidden.
     assert read_steward_health(tmp_path) is None
@@ -609,7 +613,7 @@ def test_validator_rejects_wrong_order():
         [
             STEWARD_SECTION_STATUS,
             "<!-- generated_at: 2026-05-26T17:32:18Z -->",
-            "Sol is well.",
+            "sol is well.",
             "",
             STEWARD_SECTION_AUTO_REPAIRS,
             "",
@@ -662,7 +666,7 @@ def test_read_steward_health_surfaces_first_attention_bullet(tmp_path):
     path.parent.mkdir()
     path.write_text(
         _valid_body(
-            status="Sol found a pipeline gap.",
+            status="sol found a pipeline gap.",
             needs="- Foo bar\n- Baz",
         ),
         encoding="utf-8",
@@ -736,7 +740,7 @@ def test_render_health_body_healthy_is_valid_and_well():
 
     assert validate_steward_health(body) is None
     assert f"<!-- generated_at: {_GEN_AT} -->" in body
-    assert "Sol is well." in body
+    assert "sol is well." in body
 
 
 def test_render_health_body_healthy_reads_as_none(tmp_path):
@@ -770,7 +774,11 @@ def test_render_health_body_activity_gap_bullet():
     )
 
     assert validate_steward_health(body) is None
-    assert "Sol is well." not in body
+    assert "sol is well." not in body
+    assert (
+        "sol detected pipeline issues during yesterday's processing "
+        "that need attention." in body
+    )
     assert "3 activities ended yesterday" in body
 
 
@@ -819,8 +827,8 @@ def test_render_health_body_auto_repair_rollup():
     )
 
     assert validate_steward_health(body) is None
-    # A 7d rollup with a failure means Sol is not "well".
-    assert "Sol is well." not in body
+    # A 7d rollup with a failure means sol is not "well".
+    assert "sol is well." not in body
     assert (
         "stale-pending segment reprocess — 6x in 7d (2 verified-healed, "
         "2 in-flight, 2 failed), "
@@ -851,7 +859,7 @@ def test_render_health_body_inflight_rollup_is_not_well():
     )
 
     assert validate_steward_health(body) is None
-    assert "Sol is well." not in body
+    assert "sol is well." not in body
     assert "2 stale segment repairs in progress, not yet verified." in body
 
 
@@ -890,14 +898,14 @@ def test_read_steward_summary_returns_latest(tmp_path, monkeypatch):
         "20260607",
         {
             "headline": "All clear",
-            "summary_sentence": "Sol is well.",
+            "summary_sentence": "sol is well.",
             "suggested_action": "none",
         },
     )
 
     assert read_steward_summary(day="20260607") == {
         "headline": "All clear",
-        "summary_sentence": "Sol is well.",
+        "summary_sentence": "sol is well.",
         "suggested_action": "none",
     }
 
@@ -1028,7 +1036,7 @@ def test_read_steward_summary_preserves_open_support(tmp_path, monkeypatch):
         "20260607",
         {
             "headline": "Repairs failing",
-            "summary_sentence": "Sol couldn't fix two segments after retrying.",
+            "summary_sentence": "sol couldn't fix two segments after retrying.",
             "suggested_action": "open_support",
         },
     )

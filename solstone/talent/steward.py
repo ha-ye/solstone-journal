@@ -110,7 +110,7 @@ def post_process(result: str, config: dict) -> str:
     """Normalize the model's summary and append it to the day accumulator."""
     default = config.get("_steward_default_summary") or {
         "headline": "Health summary unavailable",
-        "summary_sentence": "Sol could not produce a health summary this run.",
+        "summary_sentence": "sol could not produce a health summary this run.",
         "suggested_action": "open_health_detail",
     }
     summary = normalize_summary(result, default)
