@@ -37,6 +37,17 @@ from solstone.observe.extract import (
     DEFAULT_MAX_EXTRACTIONS,
     select_frames_for_extraction,
 )
+from solstone.observe.processing_record import (
+    HANDLER_DESCRIBE,
+    REASON_ANALYSIS_FAILED,
+    REASON_CORRUPT_INPUT,
+    REASON_NO_DECODABLE_FRAMES,
+    REASON_OK,
+    STATE_ANALYZED,
+    STATE_EMPTY,
+    STATE_FAILED,
+    build_processing_record,
+)
 from solstone.observe.utils import get_segment_key, resize_for_vlm
 from solstone.think.callosum import callosum_send
 from solstone.think.journal_io import install_file
@@ -326,6 +337,7 @@ class VideoProcessor:
     first_hash: Optional[int] = None
     last_hash: Optional[int] = None
     qualified_count: int = 0
+    decode_failed: bool = False
 
     def __init__(self, video_path: Path):
         self.video_path = video_path
@@ -349,6 +361,7 @@ class VideoProcessor:
         self.first_hash = None
         self.last_hash = None
         self.qualified_count = 0
+        self.decode_failed = False
 
         # Imports deferred: av (PyAV) and cv2 (via observe.aruco) bundle
         # mismatched libavdevice majors. Keeping them out of module scope
@@ -471,6 +484,7 @@ class VideoProcessor:
                 f"Invalid video data error for {self.video_path}: {e}. Skipping video.",
                 exc_info=True,
             )
+            self.decode_failed = True
             return []
         except Exception as e:
             logger.error(
@@ -608,6 +622,7 @@ class VideoProcessor:
 
         # Process video to get qualified frames (synchronous)
         qualified_frames = self.process()
+        had_qualified_frames = len(qualified_frames) > 0
 
         # Create batch processor
         batch = Batch(max_concurrent=max_concurrent)
@@ -637,10 +652,6 @@ class VideoProcessor:
                 promoted = True
 
         try:
-            # Write metadata header to JSONL file with actual video filename
-            if output_file:
-                output_file.write(json.dumps(self._build_metadata_header()) + "\n")
-
             # Resolve model for frame description (tier from describe.md frontmatter)
             _, frame_model = resolve_provider(FRAME_CONTEXT, "generate")
 
@@ -765,8 +776,33 @@ class VideoProcessor:
                 f"({failed_frames} failed)"
             )
 
-            # Check if all frames failed
-            if total_frames > 0 and failed_frames == total_frames:
+            # Determine the processing outcome now that analysis has run, then
+            # write the metadata header (row 1) with the record before any chunk
+            # row or promote. Precedence: corrupt input -> no decodable frames
+            # -> all-frames-failed -> analyzed.
+            all_frames_failed = total_frames > 0 and failed_frames == total_frames
+            if self.decode_failed:
+                state, reason_code = STATE_FAILED, REASON_CORRUPT_INPUT
+            elif not had_qualified_frames:
+                state, reason_code = STATE_EMPTY, REASON_NO_DECODABLE_FRAMES
+            elif all_frames_failed:
+                state, reason_code = STATE_FAILED, REASON_ANALYSIS_FAILED
+            else:
+                state, reason_code = STATE_ANALYZED, REASON_OK
+
+            if output_file:
+                header = self._build_metadata_header()
+                header["_solstone_processing"] = build_processing_record(
+                    state=state,
+                    reason_code=reason_code,
+                    handler=HANDLER_DESCRIBE,
+                    input_size=self.video_path.stat().st_size,
+                )
+                output_file.write(json.dumps(header) + "\n")
+
+            # All frames failed: promote the header-only file then re-raise so the
+            # segment is left for retry (the sole write-then-reraise path).
+            if all_frames_failed:
                 error_detail = (
                     f"Error details in {output_path}"
                     if output_path

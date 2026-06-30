@@ -428,6 +428,29 @@ class TestFormatAudio:
         assert len(chunks) == 1
         assert "Test" in chunks[0]["markdown"]
 
+    def test_format_audio_skips_processing_record(self):
+        from solstone.observe.hear import format_audio
+
+        entries = [
+            {
+                "raw": "audio.flac",
+                "_solstone_processing": {
+                    "schema": "solstone.processing.v1",
+                    "state": "analyzed",
+                    "reason_code": "ok",
+                    "handler": "transcribe",
+                    "attempted_at": "2026-06-30T12:00:00Z",
+                    "input_size": 2048,
+                },
+            },
+            {"start": "00:00:01", "text": "Test"},
+        ]
+        chunks, meta = format_audio(entries)
+        header = meta.get("header", "")
+        assert "_solstone_processing" not in header
+        assert "solstone.processing" not in header
+        assert len(chunks) == 1
+
     def test_format_audio_imported_metadata(self):
         """Test audio formatting with imported metadata."""
         from solstone.observe.hear import format_audio

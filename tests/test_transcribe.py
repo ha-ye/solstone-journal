@@ -627,6 +627,121 @@ def test_process_audio_embeddings_write_round_trips_without_lock(tmp_path):
     assert list(embeddings_path.parent.glob("*.lock")) == []
 
 
+def test_process_audio_records_analyzed_processing(tmp_path):
+    from solstone.observe.transcribe.main import process_audio
+
+    raw_path = (
+        tmp_path / "chronicle" / "20260416" / "default" / "120000_300" / "audio.m4a"
+    )
+    raw_path.parent.mkdir(parents=True)
+    raw_path.write_bytes(b"\x00" * 2048)
+    audio_buffer = np.zeros(10 * SAMPLE_RATE, dtype=np.float32)
+    vad_result = VadResult(
+        duration=10.0,
+        speech_duration=5.0,
+        has_speech=True,
+        speech_segments=[(1.0, 6.0)],
+    )
+    statements = [{"id": 0, "start": 0.0, "end": 1.0, "text": "hi"}]
+    backend_module = MagicMock()
+    backend_module.get_model_info.return_value = {
+        "model": "unit",
+        "device": "cpu",
+        "compute_type": "int8",
+    }
+    embeddings_data = {
+        "embeddings": np.zeros((1, 256), dtype=np.float32),
+        "statement_ids": np.zeros((1,), dtype=np.int32),
+        "durations_s": np.zeros((1,), dtype=np.float32),
+        "encoder": np.array("test"),
+    }
+    with (
+        patch(
+            "solstone.observe.transcribe.main.get_journal",
+            return_value=str(raw_path.parents[4]),
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_config",
+            return_value={"transcribe": {"preserve_all": False, "enrich": False}},
+        ),
+        patch(
+            "solstone.observe.transcribe.main.stt_transcribe", return_value=statements
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_backend", return_value=backend_module
+        ),
+        patch(
+            "solstone.observe.transcribe.main._embed_statements",
+            return_value=embeddings_data,
+        ),
+        patch(
+            "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
+            return_value=(0.0, np.zeros((589, 7), dtype=np.float32)),
+        ),
+        patch(
+            "solstone.observe.processing_record.now_iso_utc",
+            return_value="2026-06-30T12:00:00Z",
+        ),
+        patch("solstone.observe.transcribe.main.callosum_send"),
+    ):
+        process_audio(raw_path, audio_buffer, vad_result, {}, backend="whisper")
+
+    jsonl_path = raw_path.with_suffix(".jsonl")
+    header = json.loads(jsonl_path.read_text().splitlines()[0])
+    assert header["_solstone_processing"] == {
+        "schema": "solstone.processing.v1",
+        "state": "analyzed",
+        "reason_code": "ok",
+        "handler": "transcribe",
+        "attempted_at": "2026-06-30T12:00:00Z",
+        "input_size": 2048,
+    }
+    assert len(jsonl_path.read_text().splitlines()) >= 2
+
+
+def test_process_audio_silent_filtered_writes_no_processing_record(tmp_path):
+    from solstone.observe.transcribe.main import process_audio
+
+    raw_path = (
+        tmp_path / "chronicle" / "20260416" / "default" / "120000_300" / "audio.m4a"
+    )
+    raw_path.parent.mkdir(parents=True)
+    raw_path.write_bytes(b"\x00" * 1024)
+    audio_buffer = np.zeros(10 * SAMPLE_RATE, dtype=np.float32)
+    vad_result = VadResult(
+        duration=10.0,
+        speech_duration=5.0,
+        has_speech=True,
+        speech_segments=[(1.0, 6.0)],
+    )
+    backend_module = MagicMock()
+    backend_module.get_model_info.return_value = {
+        "model": "unit",
+        "device": "cpu",
+        "compute_type": "int8",
+    }
+    with (
+        patch(
+            "solstone.observe.transcribe.main.get_journal",
+            return_value=str(raw_path.parents[4]),
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_config",
+            return_value={"transcribe": {"preserve_all": False, "enrich": False}},
+        ),
+        patch("solstone.observe.transcribe.main.stt_transcribe", return_value=[]),
+        patch(
+            "solstone.observe.transcribe.main.get_backend", return_value=backend_module
+        ),
+        patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
+    ):
+        process_audio(raw_path, audio_buffer, vad_result, {}, backend="whisper")
+
+    assert not raw_path.with_suffix(".jsonl").exists()
+    assert not raw_path.exists()
+    assert mock_send.call_args.kwargs["outcome"] == "filtered"
+
+
 def test_process_audio_diarizer_failure_is_fail_soft(tmp_path):
     from solstone.observe.transcribe.main import process_audio
 

@@ -73,6 +73,12 @@ from solstone.apps.speakers.encoder_config import (
     OVERLAP_DETECTOR_ID,
     OVERLAP_DETECTOR_SHA256,
 )
+from solstone.observe.processing_record import (
+    HANDLER_TRANSCRIBE,
+    REASON_OK,
+    STATE_ANALYZED,
+    build_processing_record,
+)
 from solstone.observe.transcribe import (
     BACKEND_REGISTRY,
     get_backend,
@@ -465,6 +471,7 @@ def _statements_to_jsonl(
     *,
     overlap_fraction: float | None = None,
     overlap_detector: str | None = None,
+    processing_record: dict | None = None,
 ) -> list[str]:
     """Convert statements to JSONL lines.
 
@@ -527,6 +534,9 @@ def _statements_to_jsonl(
     if segment_meta:
         for key, value in segment_meta.items():
             metadata[key] = value
+
+    if processing_record is not None:
+        metadata["_solstone_processing"] = processing_record
 
     lines = [json.dumps(metadata)]
 
@@ -776,6 +786,12 @@ def process_audio(
 
         # Convert to JSONL format (now with original timestamps)
         raw_filename = f"{raw_path.stem}{raw_path.suffix}"
+        processing_record = build_processing_record(
+            state=STATE_ANALYZED,
+            reason_code=REASON_OK,
+            handler=HANDLER_TRANSCRIBE,
+            input_size=raw_path.stat().st_size,
+        )
         jsonl_lines = _statements_to_jsonl(
             statements,
             raw_filename,
@@ -789,6 +805,7 @@ def process_audio(
             resolved_backend,
             overlap_fraction=overlap_fraction_value,
             overlap_detector=OVERLAP_DETECTOR_ID,
+            processing_record=processing_record,
         )
 
         # Write JSONL
