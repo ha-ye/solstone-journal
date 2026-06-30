@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import functools
 import json
 import logging
 import os
@@ -66,6 +65,7 @@ from solstone.think.data_state import (
 )
 from solstone.think.entities.journal import get_journal_principal, load_journal_entity
 from solstone.think.formatters import format_file
+from solstone.think.journal_stats import load_fresh_day_cache
 from solstone.think.media import MIME_TYPES
 from solstone.think.models import get_usage_cost
 from solstone.think.pipeline_health import (
@@ -97,43 +97,21 @@ transcripts_bp = Blueprint(
 )
 
 
-def _day_max_mtime(path: str) -> float:
-    """Return the latest mtime under a day directory, skipping delete races."""
-    day_dir = Path(path)
-    try:
-        max_mtime = day_dir.stat().st_mtime
-    except FileNotFoundError:
-        return 0.0
+def _day_range_count(day: str, day_dir: Path) -> int:
+    """Calendar range count for one day, read-only.
 
-    try:
-        for child in day_dir.rglob("*"):
-            try:
-                child_mtime = child.stat().st_mtime
-            except FileNotFoundError:
-                continue
-            if child_mtime > max_mtime:
-                max_mtime = child_mtime
-    except FileNotFoundError:
-        return max_mtime
-    return max_mtime
-
-
-@functools.lru_cache(maxsize=64)
-def _stats_for_month(month: str, mtime_key: float) -> dict[str, int]:
-    """Return cached transcript range counts for a month."""
-    del mtime_key
-
-    stats: dict[str, int] = {}
-    for day_name in day_dirs().keys():
-        if not day_name.startswith(month):
-            continue
-
-        audio_ranges, screen_ranges = cluster_scan(day_name)
-        total_ranges = len(audio_ranges) + len(screen_ranges)
-        if total_ranges > 0:
-            stats[day_name] = total_ranges
-
-    return stats
+    Reads the per-day ``stats.json`` cache via the stats routine's shared
+    freshness primitive; on a fresh hit returns
+    ``transcript_ranges + percept_ranges``. On miss/stale/corrupt/old-schema it
+    falls back to a fresh raw cluster scan for THIS day only. Never writes,
+    deletes, or mtime-touches ``stats.json``.
+    """
+    payload = load_fresh_day_cache(day_dir)
+    if payload is not None:
+        day_stats = payload["stats"]
+        return int(day_stats["transcript_ranges"]) + int(day_stats["percept_ranges"])
+    audio_ranges, screen_ranges = cluster_scan(day)
+    return len(audio_ranges) + len(screen_ranges)
 
 
 def _attach_think_to_segments(segments: list[dict[str, Any]], day: str) -> None:
@@ -352,22 +330,23 @@ def api_stats(month: str):
         month: YYYYMM format month string
 
     Returns:
-        JSON dict mapping day (YYYYMMDD) to transcript range count.
-        Transcripts app is not facet-aware, so returns simple {day: count} mapping.
+        JSON dict mapping day (YYYYMMDD) to transcript range count, zero-count
+        days omitted. Counts are served from the per-day ``stats.json`` cache
+        written by the journal-stats routine, falling back to a raw cluster scan
+        per day only when that day's cache is missing or stale. Transcripts app
+        is not facet-aware, so returns a simple {day: count} mapping.
     """
     if not MONTH_RE.fullmatch(month):
         return error_response(INVALID_MONTH, detail="Invalid month format")
 
-    matching = [
-        (day_name, path)
-        for day_name, path in day_dirs().items()
-        if day_name.startswith(month)
-    ]
-    if not matching:
-        return jsonify({})
-
-    mtime_key = max(_day_max_mtime(path) for _, path in matching)
-    return jsonify(_stats_for_month(month, mtime_key))
+    stats: dict[str, int] = {}
+    for day_name, path in day_dirs().items():
+        if not day_name.startswith(month):
+            continue
+        count = _day_range_count(day_name, Path(path))
+        if count > 0:
+            stats[day_name] = count
+    return jsonify(stats)
 
 
 def _load_jsonl(path: str) -> list[dict]:
