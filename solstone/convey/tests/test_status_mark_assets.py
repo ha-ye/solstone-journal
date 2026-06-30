@@ -17,7 +17,7 @@ def test_degraded_status_asset_uses_red_glyph_and_keeps_ring_rays():
     assert '<circle cx="16.0" cy="18.6" r="0.7" fill="#dc2626"/>' in text
     assert "#d97706" not in text
     assert "#E8923A" in text
-    assert "#F5C740" in text
+    assert "#FFCF33" in text
 
 
 def test_websocket_status_mark_degraded_wiring():
