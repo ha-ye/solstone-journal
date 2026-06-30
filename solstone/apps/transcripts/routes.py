@@ -62,6 +62,7 @@ from solstone.think.data_state import (
     DataState,
     create_analyzing_marker,
     derive_modality_state,
+    read_processing_record,
 )
 from solstone.think.entities.journal import get_journal_principal, load_journal_entity
 from solstone.think.formatters import format_file
@@ -435,6 +436,7 @@ def _segment_modality_signals(
     has_raw_file = False
     has_jsonl = False
     has_chunks = False
+    record: dict | None = None
     warning = False
 
     patterns = ("*audio.jsonl",) if modality == "audio" else ("*screen.jsonl",)
@@ -445,6 +447,7 @@ def _segment_modality_signals(
             has_jsonl = True
             try:
                 entries = _load_jsonl(str(jsonl_path))
+                record = record or read_processing_record(entries)
                 if modality == "audio":
                     formatted_chunks, _meta = format_audio(
                         entries, {"file_path": str(jsonl_path)}
@@ -479,6 +482,7 @@ def _segment_modality_signals(
             has_chunks=True,
             has_jsonl=has_jsonl,
             has_raw=has_raw_present,
+            record=record,
         )
     elif media_purged:
         state = DataState.PURGED.value
@@ -489,6 +493,7 @@ def _segment_modality_signals(
             has_chunks=False,
             has_jsonl=has_jsonl,
             has_raw=has_raw_present,
+            record=record,
         )
         if warning and state == DataState.PENDING.value:
             state = DataState.FAILED.value
@@ -552,7 +557,7 @@ def _watch_reprocess_completion(
             return
         if rc == 0:
             state = str(_segment_modality_signals(segment_dir_path, modality)["state"])
-            if state == DataState.ANALYZED.value:
+            if state in {DataState.ANALYZED.value, DataState.EMPTY.value}:
                 marker_path.unlink(missing_ok=True)
                 return
             _write_failed_reprocess_marker(
@@ -630,6 +635,7 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
     has_raw_file = {"audio": False, "screen": False}
     has_raw_present = {"audio": False, "screen": False}
     has_jsonl = {"audio": False, "screen": False}
+    processing_records: dict[str, dict | None] = {"audio": None, "screen": None}
     counted_media_paths: set[Path] = set()
     warning_details: list[dict[str, str]] = []
 
@@ -682,6 +688,8 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
         has_jsonl["audio"] = True
         try:
             entries = _load_jsonl(audio_path)
+            record = read_processing_record(entries)
+            processing_records["audio"] = processing_records["audio"] or record
             audio_duration = max(
                 audio_duration,
                 _read_audio_duration_seconds(entries, segment_key),
@@ -763,6 +771,8 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
         has_jsonl["screen"] = True
         try:
             entries = _load_jsonl(screen_path)
+            record = read_processing_record(entries)
+            processing_records["screen"] = processing_records["screen"] or record
             formatted_chunks, meta = format_screen(entries, {"file_path": screen_path})
 
             filename = os.path.basename(screen_path)
@@ -884,6 +894,7 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                 has_chunks=True,
                 has_jsonl=has_jsonl[modality],
                 has_raw=has_raw_present[modality],
+                record=processing_records[modality],
             )
         elif media_purged[modality]:
             data_state[modality] = DataState.PURGED.value
@@ -894,6 +905,7 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                 has_chunks=has_chunks,
                 has_jsonl=has_jsonl[modality],
                 has_raw=has_raw_present[modality],
+                record=processing_records[modality],
             )
             if state != DataState.ABSENT.value:
                 if modality in warning_types and state == DataState.PENDING.value:

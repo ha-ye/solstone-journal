@@ -20,9 +20,8 @@ STATE_ANALYZED = "analyzed"
 STATE_EMPTY = "empty"
 STATE_FAILED = "failed"
 
-# reason_code values (closed set). no_decodable_audio is part of the closed
-# contract but is reserved for the deferred audio-empty terminal record (a
-# later reader lode); this lode does not emit it.
+# reason_code values (closed set). Audio emits no_decodable_audio for terminal
+# preserved-empty outputs.
 REASON_OK = "ok"
 REASON_NO_DECODABLE_FRAMES = "no_decodable_frames"
 REASON_NO_DECODABLE_AUDIO = "no_decodable_audio"

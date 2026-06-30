@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from solstone.observe.processing_record import STATE_EMPTY
 from solstone.think.utils import day_path
 
 
@@ -795,6 +796,34 @@ def test_scan_day_marks_header_only_audio_pending(tmp_path, monkeypatch):
 
     assert audio_ranges == [("09:00", "09:15")]
     assert segments[0]["data_state"] == {"audio": "pending"}
+
+
+def test_detect_data_state_is_header_blind_to_empty_record(tmp_path):
+    mod = importlib.import_module("solstone.think.cluster")
+    plain_segment = tmp_path / "plain" / "090000_300"
+    empty_record_segment = tmp_path / "empty_record" / "090000_300"
+    plain_segment.mkdir(parents=True)
+    empty_record_segment.mkdir(parents=True)
+    (plain_segment / "screen.jsonl").write_text(
+        json.dumps({"raw": "screen.webm"}) + "\n",
+        encoding="utf-8",
+    )
+    (empty_record_segment / "screen.jsonl").write_text(
+        json.dumps(
+            {
+                "raw": "screen.webm",
+                "_solstone_processing": {"state": STATE_EMPTY},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    plain_state = mod._detect_data_state(plain_segment)
+    empty_record_state = mod._detect_data_state(empty_record_segment)
+
+    assert plain_state == {"screen": "pending"}
+    assert empty_record_state == plain_state
 
 
 def test_derive_modality_state_chunks_win_is_pure(tmp_path):

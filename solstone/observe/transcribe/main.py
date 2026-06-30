@@ -75,8 +75,10 @@ from solstone.apps.speakers.encoder_config import (
 )
 from solstone.observe.processing_record import (
     HANDLER_TRANSCRIBE,
+    REASON_NO_DECODABLE_AUDIO,
     REASON_OK,
     STATE_ANALYZED,
+    STATE_EMPTY,
     build_processing_record,
 )
 from solstone.observe.transcribe import (
@@ -581,6 +583,36 @@ def _statements_to_jsonl(
     return lines
 
 
+def _write_empty_processing_jsonl(
+    raw_path: Path,
+    jsonl_path: Path,
+    *,
+    model_info: dict,
+    observer: str | None,
+    vad_result: VadResult | None,
+    segment_meta: dict | None,
+    backend: str | None,
+) -> None:
+    record = build_processing_record(
+        state=STATE_EMPTY,
+        reason_code=REASON_NO_DECODABLE_AUDIO,
+        handler=HANDLER_TRANSCRIBE,
+        input_size=raw_path.stat().st_size,
+    )
+    lines = _statements_to_jsonl(
+        [],
+        f"{raw_path.stem}{raw_path.suffix}",
+        datetime.datetime.min,
+        model_info,
+        observer=observer,
+        vad_result=vad_result,
+        segment_meta=segment_meta,
+        backend=backend,
+        processing_record=record,
+    )
+    write_text(jsonl_path, "\n".join(lines) + "\n")
+
+
 def process_audio(
     raw_path: Path,
     audio_buffer: np.ndarray,
@@ -686,6 +718,15 @@ def process_audio(
             )
             if preserve_all:
                 event["outcome"] = "preserved"
+                _write_empty_processing_jsonl(
+                    raw_path,
+                    jsonl_path,
+                    model_info=model_info,
+                    observer=observer,
+                    vad_result=vad_result,
+                    segment_meta=segment_meta,
+                    backend=resolved_backend,
+                )
                 logging.info(
                     f"No speech detected in {raw_path}, preserving file "
                     f"(preserve_all=true, VAD: {vad_result.speech_duration:.1f}s "
@@ -905,6 +946,15 @@ def _process_one(
 
         if preserve_all:
             event["outcome"] = "preserved"
+            _write_empty_processing_jsonl(
+                audio_path,
+                _get_jsonl_path(audio_path),
+                model_info={},
+                observer=observer,
+                vad_result=vad_result,
+                segment_meta=None,
+                backend=None,
+            )
             logging.info(
                 f"Insufficient speech in {audio_path}, preserving file "
                 f"(preserve_all=true, VAD: {vad_result.speech_duration:.1f}s "

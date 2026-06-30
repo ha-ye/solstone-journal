@@ -18,6 +18,7 @@ import pytest
 
 from solstone.apps.transcripts.routes import (
     _attach_streams_to_ranges,
+    _segment_modality_signals,
     _watch_reprocess_completion,
 )
 from solstone.apps.transcripts.tests._media_helpers import (
@@ -26,6 +27,7 @@ from solstone.apps.transcripts.tests._media_helpers import (
     read_true_duration_seconds,
     top_level_atom_order,
 )
+from solstone.observe.processing_record import STATE_EMPTY
 
 # 20260304 is the canonical fully-analyzed reference day; see
 # tests/fixtures/journal/chronicle/20260304/README.md and
@@ -80,6 +82,10 @@ def _write_jsonl(path, entries: list[dict]) -> None:
         "\n".join(json.dumps(entry) for entry in entries) + "\n",
         encoding="utf-8",
     )
+
+
+def _empty_screen_header(raw: str = "screen.webm") -> dict:
+    return {"raw": raw, "_solstone_processing": {"state": STATE_EMPTY}}
 
 
 def _segment_event(
@@ -746,6 +752,45 @@ def test_segment_content_header_only_missing_raw_is_purged(client, journal_copy)
     assert data["media_purged"] == {"audio": True, "screen": True}
 
 
+def test_segment_content_empty_record_screen_is_empty(client, journal_copy):
+    day = "20990121"
+    stream = "default"
+    segment = "090000_300"
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    segment_dir.mkdir(parents=True)
+    (segment_dir / "screen.webm").write_bytes(b"screen")
+    _write_jsonl(segment_dir / "screen.jsonl", [_empty_screen_header()])
+
+    signals = _segment_modality_signals(segment_dir, "screen")
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert signals["state"] == "empty"
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["chunks"] == []
+    assert data["data_state"] == {"screen": "empty"}
+    assert data["media_purged"] == {"audio": False, "screen": False}
+
+
+def test_segment_content_purged_beats_empty_record(client, journal_copy):
+    day = "20990122"
+    stream = "default"
+    segment = "090000_300"
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    segment_dir.mkdir(parents=True)
+    _write_jsonl(segment_dir / "screen.jsonl", [_empty_screen_header()])
+
+    signals = _segment_modality_signals(segment_dir, "screen")
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert signals["state"] == "purged"
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["chunks"] == []
+    assert data["data_state"] == {"screen": "purged"}
+    assert data["media_purged"] == {"audio": False, "screen": True}
+
+
 def test_segment_content_analyzed_missing_raw_keeps_purged_flag(client, journal_copy):
     day = "20990113"
     stream = "default"
@@ -1267,6 +1312,20 @@ def test_reprocess_watcher_success_removes_marker(tmp_path):
         tmp_path / "screen.jsonl",
         [{"raw": "screen.webm"}, {"frame_id": 1, "timestamp": 1, "analysis": {}}],
     )
+    marker = _write_analyzing_marker(tmp_path)
+    failed = tmp_path / ".analyze_failed_screen"
+
+    _watch_reprocess_completion(
+        _ProcStub(rc=0), marker, failed, tmp_path, "screen", "req-1"
+    )
+
+    assert not marker.exists()
+    assert not failed.exists()
+
+
+def test_reprocess_watcher_success_empty_removes_marker_without_failed(tmp_path):
+    (tmp_path / "screen.webm").write_bytes(b"screen")
+    _write_jsonl(tmp_path / "screen.jsonl", [_empty_screen_header()])
     marker = _write_analyzing_marker(tmp_path)
     failed = tmp_path / ".analyze_failed_screen"
 

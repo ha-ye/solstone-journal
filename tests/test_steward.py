@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from solstone.observe.processing_record import STATE_EMPTY
 from solstone.think.day_accumulator import append_record
 from solstone.think.identity import (
     STEWARD_SECTION_ATTENTION,
@@ -95,6 +96,10 @@ def _seed_analyzed_screen_segment(
     return segment_dir
 
 
+def _empty_screen_header(raw: str = "screen.webm") -> dict:
+    return {"raw": raw, "_solstone_processing": {"state": STATE_EMPTY}}
+
+
 def _seed_steward_log(journal: Path, rows: list[dict]) -> None:
     path = journal / "health" / "steward.log"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -140,6 +145,24 @@ def test_recipe_detects_stale_pending_segment(tmp_path, monkeypatch):
     assert [target.target for target in targets] == ["20260526/archon/120000_300:audio"]
 
 
+def test_detect_stale_pending_segments_skips_empty_record(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+    segment_dir = tmp_path / "chronicle" / "20260526" / "archon" / "120000_300"
+    segment_dir.mkdir(parents=True)
+    raw_path = segment_dir / "screen.webm"
+    raw_path.write_bytes(b"raw")
+    old_time = time.time() - 7 * 60 * 60
+    os.utime(raw_path, (old_time, old_time))
+    (segment_dir / "screen.jsonl").write_text(
+        json.dumps(_empty_screen_header()) + "\n",
+        encoding="utf-8",
+    )
+
+    targets = detect_stale_pending_segments("20260526", "20260525")
+
+    assert targets == []
+
+
 def test_recipe_skips_fresh_pending_segment(tmp_path, monkeypatch):
     _set_journal(monkeypatch, tmp_path)
     _seed_stale_pending_segment(
@@ -157,6 +180,37 @@ def test_recipe_skips_already_analyzing(tmp_path, monkeypatch):
     (segment_dir / ".analyzing_audio").write_text("{}", encoding="utf-8")
 
     assert detect_stale_pending_segments("20260526", "20260525") == []
+
+
+def test_modality_signals_returns_empty_for_empty_record_screen(tmp_path):
+    segment_dir = tmp_path / "090000_300"
+    segment_dir.mkdir()
+    (segment_dir / "screen.webm").write_bytes(b"raw")
+    (segment_dir / "screen.jsonl").write_text(
+        json.dumps(_empty_screen_header()) + "\n",
+        encoding="utf-8",
+    )
+
+    signals = _modality_signals(segment_dir, "screen")
+
+    assert signals["state"] == "empty"
+    assert signals["has_jsonl"] is True
+    assert signals["has_chunks"] is False
+    assert signals["media_purged"] is False
+
+
+def test_modality_signals_purged_beats_empty_record(tmp_path):
+    segment_dir = tmp_path / "090000_300"
+    segment_dir.mkdir()
+    (segment_dir / "screen.jsonl").write_text(
+        json.dumps(_empty_screen_header()) + "\n",
+        encoding="utf-8",
+    )
+
+    signals = _modality_signals(segment_dir, "screen")
+
+    assert signals["state"] == "purged"
+    assert signals["media_purged"] is True
 
 
 def test_modality_signals_repairs_chunks_win_marker(tmp_path):
@@ -378,6 +432,35 @@ def test_reverification_marks_analyzed_target_verified_healed(tmp_path, monkeypa
 
     assert result["fired"] == []
     assert load_steward_log()[-1]["outcome"] == "verified_healed"
+
+
+def test_reverification_marks_empty_target_verified_healed(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+    target = "20260526/archon/120000_300:screen"
+    segment_dir = tmp_path / "chronicle" / "20260526" / "archon" / "120000_300"
+    segment_dir.mkdir(parents=True)
+    (segment_dir / "screen.webm").write_bytes(b"raw")
+    (segment_dir / "screen.jsonl").write_text(
+        json.dumps(_empty_screen_header()) + "\n",
+        encoding="utf-8",
+    )
+    _seed_steward_log(
+        tmp_path,
+        [_recipe_row(target, "accepted", now_ms() - 1000)],
+    )
+    monkeypatch.setattr(
+        "solstone.think.steward.fire_stale_pending_recipe",
+        lambda target, *, port: pytest.fail("verified target must not refire"),
+    )
+
+    result = run_recipe_pass("20260526")
+
+    rows = load_steward_log()
+    rollup = _recipe_outcomes_7d(rows)
+    assert result["fired"] == []
+    assert rows[-1]["outcome"] == "verified_healed"
+    assert rollup[0]["verified_healed"] == 1
+    assert rollup[0]["unverified"] == 0
 
 
 def test_reverification_leaves_active_inflight_bounded(tmp_path, monkeypatch):

@@ -25,6 +25,7 @@ from solstone.observe.utils import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
 from solstone.think.data_state import (
     DataState,
     derive_modality_state,
+    read_processing_record,
     repair_modality_markers,
 )
 from solstone.think.day_accumulator import read_latest
@@ -196,6 +197,7 @@ def _modality_signals(segment_dir: Path, modality: str) -> dict[str, bool | str]
     has_raw_file = False
     has_jsonl = False
     has_chunks = False
+    record: dict | None = None
     warning = False
     patterns = ("*audio.jsonl",) if modality == "audio" else ("*screen.jsonl",)
 
@@ -206,6 +208,7 @@ def _modality_signals(segment_dir: Path, modality: str) -> dict[str, bool | str]
             has_jsonl = True
             try:
                 entries = _load_jsonl(jsonl_path)
+                record = record or read_processing_record(entries)
                 if modality == "audio":
                     formatted_chunks, _meta = format_audio(
                         entries, {"file_path": str(jsonl_path)}
@@ -251,6 +254,7 @@ def _modality_signals(segment_dir: Path, modality: str) -> dict[str, bool | str]
             has_chunks=True,
             has_jsonl=has_jsonl,
             has_raw=bool(raw_files),
+            record=record,
         )
     elif media_purged:
         state = DataState.PURGED.value
@@ -268,6 +272,7 @@ def _modality_signals(segment_dir: Path, modality: str) -> dict[str, bool | str]
             has_chunks=False,
             has_jsonl=has_jsonl,
             has_raw=bool(raw_files),
+            record=record,
         )
         if warning and state == DataState.PENDING.value:
             state = DataState.FAILED.value
@@ -472,7 +477,7 @@ def _reverify_inflight_repairs(rows: list[dict]) -> list[RecipeOutcome]:
 
         state = str(_modality_signals(segment_dir, modality)["state"])
         outcome: str | None
-        if state == DataState.ANALYZED.value:
+        if state in {DataState.ANALYZED.value, DataState.EMPTY.value}:
             outcome = "verified_healed"
         elif state in {DataState.ANALYZING.value, DataState.PENDING.value}:
             outcome = None
