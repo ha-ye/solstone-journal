@@ -38,8 +38,6 @@ def _valid_body(*, generated_at: str = "2026-05-26T17:32:18Z") -> str:
             "",
             "## Auto-repairs (last 7d)",
             "",
-            "## Trends (last 7d)",
-            "",
         ]
     )
 

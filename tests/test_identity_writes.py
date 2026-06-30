@@ -17,7 +17,6 @@ from solstone.think.identity import (
     STEWARD_SECTION_ATTENTION,
     STEWARD_SECTION_AUTO_REPAIRS,
     STEWARD_SECTION_STATUS,
-    STEWARD_SECTION_TRENDS,
     ensure_identity_directory,
     update_identity_section,
     write_identity,
@@ -248,8 +247,6 @@ def test_health_md_bootstrap_creates_via_ensure_identity_directory(tmp_path):
             STEWARD_SECTION_ATTENTION,
             "",
             STEWARD_SECTION_AUTO_REPAIRS,
-            "",
-            STEWARD_SECTION_TRENDS,
             "",
         ]
     )

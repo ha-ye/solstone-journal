@@ -63,6 +63,7 @@ from solstone.think.data_state import (
     create_analyzing_marker,
     derive_modality_state,
     read_processing_record,
+    repair_modality_markers,
 )
 from solstone.think.entities.journal import get_journal_principal, load_journal_entity
 from solstone.think.formatters import format_file
@@ -1049,6 +1050,13 @@ def reprocess_segment(day: str, stream: str, segment_key: str) -> Any:
         )
 
     if state == DataState.FAILED.value:
+        repair_modality_markers(
+            segment_dir_path,
+            modality,
+            has_chunks=bool(signals["has_chunks"]),
+            has_jsonl=bool(signals["has_jsonl"]),
+            has_raw=has_raw,
+        )
         failed_path.unlink(missing_ok=True)
 
     try:

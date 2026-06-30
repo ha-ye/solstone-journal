@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import logging
 import os
 import sys
@@ -107,7 +106,7 @@ def main() -> None:
             result = run_recipe_pass(today)
             append_steward_event(
                 "pass",
-                fired=[dataclasses.asdict(o) for o in result["fired"]],
+                fired=result["fired"],
                 escalated_targets=result["escalated_targets"],
                 data_source_errors=result["data_source_errors"],
             )

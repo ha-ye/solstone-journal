@@ -182,11 +182,6 @@ def test_pipeline_open_support_action_routes_to_support():
         {
             "status": "warning",
             "headline": "processing needs attention",
-            "suggested_action": "reprocess_stale",
-        },
-        {
-            "status": "warning",
-            "headline": "processing needs attention",
             "suggested_action": "open_health_detail",
         },
         {

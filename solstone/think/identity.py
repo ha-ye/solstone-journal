@@ -81,7 +81,6 @@ responses. Nothing gets sent without their review.
 STEWARD_SECTION_STATUS = "## Status"
 STEWARD_SECTION_ATTENTION = "## Needs your attention"
 STEWARD_SECTION_AUTO_REPAIRS = "## Auto-repairs (last 7d)"
-STEWARD_SECTION_TRENDS = "## Trends (last 7d)"
 
 _LOCK_SENTINEL = ".identity"
 
@@ -285,8 +284,6 @@ def ensure_identity_directory() -> Path:
                 STEWARD_SECTION_ATTENTION,
                 "",
                 STEWARD_SECTION_AUTO_REPAIRS,
-                "",
-                STEWARD_SECTION_TRENDS,
                 "",
             ]
         ),

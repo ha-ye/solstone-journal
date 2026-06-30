@@ -5,6 +5,7 @@ import builtins
 import io
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -28,6 +29,7 @@ from solstone.apps.transcripts.tests._media_helpers import (
     top_level_atom_order,
 )
 from solstone.observe.processing_record import STATE_EMPTY
+from solstone.think.data_state import ANALYZING_STALE_SECONDS
 
 # 20260304 is the canonical fully-analyzed reference day; see
 # tests/fixtures/journal/chronicle/20260304/README.md and
@@ -1220,6 +1222,64 @@ def test_reprocess_segment_analyzing_is_idempotent(client, journal_copy, monkeyp
     assert data["data_state"]["screen"] == "analyzing"
     assert data["marker"] == {"started_at": "2026-05-20T09:00:00Z"}
     assert data["repair_status"] == "running"
+
+
+@pytest.mark.parametrize(
+    "marker_age_seconds",
+    [ANALYZING_STALE_SECONDS + 60, 3600, 6 * 3600],
+)
+def test_reprocess_segment_stale_analyzing_marker_respawns(
+    client, journal_copy, monkeypatch, marker_age_seconds
+):
+    day = "20990125"
+    segment = "090500_300"
+    segment_dir = _write_raw_pending_segment(journal_copy, day, "alpha", segment)
+    marker = _write_analyzing_marker(segment_dir, request_id="aged-req")
+    marker_time = time.time() - marker_age_seconds
+    os.utime(marker, (marker_time, marker_time))
+    popen_calls, _threads = _stub_reprocess_spawn(monkeypatch)
+
+    response = client.post(
+        f"/app/transcripts/api/segment/{day}/alpha/{segment}/reprocess",
+        json={"modality": "screen"},
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["repair_status"] == "accepted"
+    assert len(popen_calls) == 1
+    fresh_marker = segment_dir / ".analyzing_screen"
+    assert fresh_marker.exists()
+    marker_payload = json.loads(fresh_marker.read_text(encoding="utf-8"))
+    assert marker_payload["modality"] == "screen"
+    assert marker_payload["request_id"] != "aged-req"
+
+
+def test_reprocess_segment_fresh_analyzing_marker_does_not_respawn(
+    client, journal_copy, monkeypatch
+):
+    day = "20990125"
+    segment = "090700_300"
+    segment_dir = _write_raw_pending_segment(journal_copy, day, "alpha", segment)
+    marker = _write_analyzing_marker(segment_dir, request_id="fresh-req")
+    now = time.time()
+    os.utime(marker, (now, now))
+
+    def fail_popen(*args, **kwargs):
+        raise AssertionError("fresh analyzing request must not spawn")
+
+    monkeypatch.setattr("solstone.apps.transcripts.routes.subprocess.Popen", fail_popen)
+
+    response = client.post(
+        f"/app/transcripts/api/segment/{day}/alpha/{segment}/reprocess",
+        json={"modality": "screen"},
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["repair_status"] == "running"
+    marker_payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert marker_payload["request_id"] == "fresh-req"
 
 
 def test_reprocess_segment_file_exists_race_returns_running(
