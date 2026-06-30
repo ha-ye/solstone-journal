@@ -12,6 +12,18 @@ import pytest
 from solstone.think.link.local_endpoints import LocalEndpoint
 
 
+class _FakePairWindowHandle:
+    def __init__(self, opened: bool) -> None:
+        self._opened = opened
+        self.cancelled = False
+
+    def wait_open(self, timeout: float | None = None) -> bool:
+        return self._opened
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
 class _StubWatcher:
     def __init__(self, endpoints: list[LocalEndpoint]) -> None:
         self._endpoints = endpoints
@@ -30,6 +42,7 @@ def link_env(tmp_path, monkeypatch):
         service_token: str | None = None,
         provision: bool = True,
         local_endpoints: list[LocalEndpoint] | None = None,
+        pair_window_opens: bool = True,
     ):
         journal = tmp_path / "journal"
         journal.mkdir(exist_ok=True)
@@ -73,10 +86,13 @@ def link_env(tmp_path, monkeypatch):
             lambda: _StubWatcher(endpoints),
         )
         pair_window_calls: list[dict] = []
+        pair_window_handles: list[_FakePairWindowHandle] = []
 
-        def _record_start_pair_window(**kwargs):
+        def _record_start_pair_window(**kwargs: object) -> _FakePairWindowHandle:
             pair_window_calls.append(kwargs)
-            return None
+            handle = _FakePairWindowHandle(pair_window_opens)
+            pair_window_handles.append(handle)
+            return handle
 
         monkeypatch.setattr(
             link_routes,
@@ -90,6 +106,7 @@ def link_env(tmp_path, monkeypatch):
                 self.client = client
                 self.app = app
                 self.pair_window_calls = pair_window_calls
+                self.pair_window_handles = pair_window_handles
 
         return Env()
 

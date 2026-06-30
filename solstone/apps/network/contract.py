@@ -86,6 +86,11 @@ OPERATIONS: list[OperationSpec] = [
                 ("pl_revoked",),
                 "Access gate rejected a revoked paired-link identity.",
             ),
+            _json_error(
+                503,
+                ("pairing_relay_unavailable",),
+                "Pair-window could not be opened with the relay.",
+            ),
         ),
     ),
     OperationSpec(

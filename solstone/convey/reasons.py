@@ -36,6 +36,11 @@ PAIRING_KEY_INVALID = Reason(
     "I couldn't use that pairing key.",
     400,
 )
+PAIRING_RELAY_UNAVAILABLE = Reason(
+    "pairing_relay_unavailable",
+    "I couldn't open the pairing window with the relay right now. Try again in a moment.",
+    503,
+)
 
 # input validation
 INVALID_JSON_REQUEST = Reason(

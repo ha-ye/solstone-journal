@@ -62,6 +62,7 @@ from solstone.convey.reasons import (
     OPERATION_NO_LONGER_AVAILABLE,
     PAIRED_DEVICE_NOT_FOUND,
     PAIRING_KEY_INVALID,
+    PAIRING_RELAY_UNAVAILABLE,
     PAIRING_REQUEST_INVALID,
     SERVICE_BUSY,
     SERVICE_OPERATION_FAILED,
@@ -662,11 +663,17 @@ def pair_start() -> Any:
             relay_origin=relay_origin,
         )
         nonce = s.hex()
-        start_pair_window(
+        handle = start_pair_window(
             rk=derive_rk(s),
             service_token=service_token,
             relay_endpoint=origin,
         )
+        if not handle.wait_open():
+            handle.cancel()
+            return error_response(
+                PAIRING_RELAY_UNAVAILABLE,
+                detail="the pairing window couldn't be opened with the relay; try again",
+            )
     else:
         ca_fp = _ca_fingerprint()
         port = _secure_listener_port()

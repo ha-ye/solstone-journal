@@ -205,10 +205,19 @@ def test_pair_no_wait_spl_prints_payload_without_relay_freshness_hint(
     config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
     save_service_token("svc-token")
     pair_window_calls: list[dict] = []
+
+    class _FakePairWindowHandle:
+        def wait_open(self, timeout: float | None = None) -> bool:
+            return True
+
+    def _record_start_pair_window(**kwargs: object) -> _FakePairWindowHandle:
+        pair_window_calls.append(kwargs)
+        return _FakePairWindowHandle()
+
     monkeypatch.setattr(
         link_routes,
         "start_pair_window",
-        lambda **kwargs: pair_window_calls.append(kwargs),
+        _record_start_pair_window,
     )
 
     result = runner.invoke(

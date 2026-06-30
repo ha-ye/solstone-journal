@@ -207,6 +207,46 @@ class _BlockingOpener:
             raise AssertionError("pair-window did not open")
 
 
+class _NeverOpenPairWindowWS(_FakeWS):
+    async def __aenter__(self) -> "_NeverOpenPairWindowWS":
+        await asyncio.sleep(2.0)
+        return self
+
+    async def __anext__(self) -> str:
+        await asyncio.sleep(30)
+        raise StopAsyncIteration
+
+
+class _NeverOpenOpener:
+    def __call__(
+        self,
+        _url: str,
+        *,
+        additional_headers: object = None,
+        max_size: int | None = None,
+    ) -> _NeverOpenPairWindowWS:
+        return _NeverOpenPairWindowWS()
+
+
+class _FailingPairWindowWS:
+    async def __aenter__(self) -> "_FailingPairWindowWS":
+        raise OSError("connect refused")
+
+    async def __aexit__(self, *_args: Any) -> bool:
+        return False
+
+
+class _FailingOpener:
+    def __call__(
+        self,
+        _url: str,
+        *,
+        additional_headers: object = None,
+        max_size: int | None = None,
+    ) -> _FailingPairWindowWS:
+        return _FailingPairWindowWS()
+
+
 def _client(emitted: list[tuple[str, dict[str, Any]]]) -> relay_client.RelayClient:
     return relay_client.RelayClient(
         instance_id="instance.test",
@@ -392,6 +432,53 @@ async def test_hold_pair_window_bridges_incoming_tunnel(
     assert headers["Authorization"] == "Bearer tok"
     assert headers["Sec-Pair-Key"] == "00112233445566778899aabbccddeeff"
     assert max_size is None
+
+
+def test_start_pair_window_wait_open_true_after_window_opens() -> None:
+    opener = _BlockingOpener()
+    handle = relay_client.start_pair_window(
+        rk=b"0" * 16,
+        service_token="tok",
+        relay_endpoint="https://link.solstone.app",
+        opener=opener,
+        timeout=30.0,
+    )
+    try:
+        assert handle.wait_open(5.0) is True
+    finally:
+        relay_client.cancel_pair_window()
+        handle.join(5)
+
+
+def test_start_pair_window_wait_open_false_when_window_never_opens() -> None:
+    opener = _NeverOpenOpener()
+    handle = relay_client.start_pair_window(
+        rk=b"0" * 16,
+        service_token="tok",
+        relay_endpoint="https://link.solstone.app",
+        opener=opener,
+        timeout=30.0,
+    )
+    try:
+        assert handle.wait_open(0.3) is False
+    finally:
+        relay_client.cancel_pair_window()
+
+
+def test_start_pair_window_wait_open_false_on_connect_failure() -> None:
+    opener = _FailingOpener()
+    handle = relay_client.start_pair_window(
+        rk=b"0" * 16,
+        service_token="tok",
+        relay_endpoint="https://link.solstone.app",
+        opener=opener,
+        timeout=30.0,
+    )
+    try:
+        assert handle.wait_open(5.0) is False
+    finally:
+        relay_client.cancel_pair_window()
+        handle.join(5)
 
 
 def test_start_pair_window_replaces_prior_and_cancels() -> None:

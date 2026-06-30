@@ -281,7 +281,12 @@ class RelayClient:
 
 
 _PAIR_KEY_HEADER = "Sec-Pair-Key"
-_PAIR_WINDOW_TIMEOUT_SECONDS = 300.0
+_PAIR_WINDOW_TIMEOUT_SECONDS = (
+    300.0  # relay TTL backstop: how long an open window is held
+)
+_PAIR_WINDOW_OPEN_TIMEOUT_SECONDS = (
+    8.0  # how long pair_start blocks for the window to open
+)
 
 RelayWsOpener = Callable[..., Any]
 # Call-compatible with websockets.connect(url, additional_headers=..., max_size=...):
@@ -345,6 +350,7 @@ async def hold_pair_window(
     timeout: float = _PAIR_WINDOW_TIMEOUT_SECONDS,
     opener: RelayWsOpener | None = None,
     stop: asyncio.Event | None = None,
+    on_open: Callable[[bool], None] | None = None,
 ) -> None:
     """Open /session/pair-window, hold it, bridge incoming pairing tunnels.
 
@@ -361,6 +367,7 @@ async def hold_pair_window(
     }
     tunnels: dict[str, asyncio.Task[None]] = {}
     log.info("opening pair-window")
+    opened = False
     try:
         async with connect(
             ws_endpoint + "/session/pair-window",
@@ -368,6 +375,9 @@ async def hold_pair_window(
             max_size=None,
         ) as ws:
             log.info("pair-window open")
+            opened = True
+            if on_open is not None:
+                on_open(True)
 
             async def _serve() -> None:
                 async for message in ws:
@@ -418,6 +428,8 @@ async def hold_pair_window(
     except Exception as exc:  # noqa: BLE001
         log.warning("pair-window error: type=%s", type(exc).__name__)
     finally:
+        if not opened and on_open is not None:
+            on_open(False)
         for task in list(tunnels.values()):
             task.cancel()
         if tunnels:
@@ -439,6 +451,15 @@ class PairWindowHandle:
         self._loop = loop
         self._stop = stop
         self._thread: threading.Thread | None = None
+        self.opened: bool = False
+        self._ready = threading.Event()
+
+    def _signal_open(self, opened: bool) -> None:
+        self.opened = opened
+        self._ready.set()
+
+    def wait_open(self, timeout: float = _PAIR_WINDOW_OPEN_TIMEOUT_SECONDS) -> bool:
+        return self._ready.wait(timeout) and self.opened
 
     def cancel(self) -> None:
         self._loop.call_soon_threadsafe(self._stop.set)
@@ -465,8 +486,9 @@ def start_pair_window(
 ) -> PairWindowHandle:
     """Open + hold a single pair-window in a background thread (fire-and-forget).
 
-    A new call replaces any prior window (single active window). The Flask handler
-    returns immediately; the window self-terminates on timeout / cancel / WS close.
+    A new call replaces any prior window (single active window). The caller can
+    block via handle.wait_open() until the window is established, fails, or times
+    out; the window self-terminates on timeout / cancel / WS close.
     """
     global _current_pair_window
     loop = asyncio.new_event_loop()
@@ -484,6 +506,7 @@ def start_pair_window(
                     timeout=timeout,
                     opener=opener,
                     stop=stop,
+                    on_open=handle._signal_open,
                 )
             )
         except Exception:  # noqa: BLE001

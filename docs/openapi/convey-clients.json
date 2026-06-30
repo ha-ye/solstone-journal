@@ -89,6 +89,7 @@
               "operation_no_longer_available",
               "paired_device_not_found",
               "pairing_key_invalid",
+              "pairing_relay_unavailable",
               "pairing_request_invalid",
               "pl_revoked",
               "principal_entity_protected",
@@ -2816,6 +2817,19 @@
             "description": "Access gate rejected a revoked paired-link identity.",
             "x-reason-codes": [
               "pl_revoked"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Pair-window could not be opened with the relay.",
+            "x-reason-codes": [
+              "pairing_relay_unavailable"
             ]
           }
         },

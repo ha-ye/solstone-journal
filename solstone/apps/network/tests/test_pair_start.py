@@ -257,6 +257,23 @@ def test_pair_start_spl_missing_service_token_errors_without_nonce(link_env) -> 
     assert env.pair_window_calls == []
 
 
+def test_pair_start_spl_window_open_failure_errors_without_nonce(link_env) -> None:
+    env = link_env(posture="spl", service_token="svc", pair_window_opens=False)
+
+    response = env.client.post(
+        "/app/network/pair-start",
+        json={"device_label": "Test Phone"},
+    )
+
+    assert response.status_code == 503
+    payload = response.get_json()
+    assert payload["reason_code"] == "pairing_relay_unavailable"
+    assert "pair_link" not in payload
+    assert link_routes._nonces().snapshot() == []
+    assert len(env.pair_window_calls) == 1
+    assert env.pair_window_handles[0].cancelled is True
+
+
 def test_pair_start_spl_response_order_and_display_fingerprint(link_env) -> None:
     env = link_env(posture="spl", service_token="svc")
 
