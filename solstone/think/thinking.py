@@ -72,6 +72,7 @@ from solstone.think.talent_provenance import (
     read_activity_provenance,
     write_activity_provenance,
 )
+from solstone.think.talents import check_segment_has_no_input
 from solstone.think.utils import (
     day_input_summary,
     day_log,
@@ -763,6 +764,100 @@ def _segment_dir(day: str, segment: str, stream: str | None) -> Path:
     return day_path(day) / (stream or "default") / segment
 
 
+def _empty_input_sense_output() -> dict:
+    """Schema-valid minimal idle Sense output for a segment with no input to sense."""
+    return {
+        "density": "idle",
+        "content_type": "idle",
+        "activity_summary": "",
+        "entities": [],
+        "facets": [],
+        "speculative_facet": None,
+        "meeting_detected": False,
+        "speakers": [],
+        "recommend": {"screen_record": False, "speaker_attribution": False},
+        "emotional_register": "neutral",
+    }
+
+
+def _terminalize_idle_segment(
+    sense_json: dict,
+    seg_dir,
+    day: str,
+    segment: str,
+    target_schedule: str,
+    state_machine,
+    *,
+    verbose: bool,
+    max_concurrency: int,
+    skip_activity_prompts: bool,
+    start_time: float,
+    total_success: int,
+    total_failed: int,
+    all_failed_names: list[str],
+) -> tuple[int, int, list[str]]:
+    write_idle_stubs(seg_dir)
+    logging.info("Segment %s is idle, skipping remaining agents", segment)
+    _log_skip(
+        "*",
+        "density_idle",
+        f"Segment {segment} is idle, skipping remaining agents",
+        mode=target_schedule,
+        day=day,
+        segment=segment,
+    )
+    if state_machine is not None:
+        routing_day = state_machine.last_segment_day or day
+        idle_changes = state_machine.update(sense_json, segment, day)
+        # Persist completed activity records from idle transitions
+        ended_triples = [
+            (c["id"], c["facet"], c.get("_change"))
+            for c in idle_changes
+            if c.get("state") == "ended"
+        ]
+        _persist_and_maybe_run_activity_prompts(
+            routing_day=routing_day,
+            log_day=day,
+            segment=segment,
+            target_schedule=target_schedule,
+            ended_triples=ended_triples,
+            completed=state_machine.get_completed_activities(),
+            refresh=False,
+            verbose=verbose,
+            max_concurrency=max_concurrency,
+            skip_activity_prompts=skip_activity_prompts,
+        )
+        if state_machine.journal_root is not None:
+            try:
+                snapshot = {
+                    "last_segment_key": state_machine.last_segment_key,
+                    "last_segment_day": state_machine.last_segment_day,
+                    "active": {
+                        facet: {k: v for k, v in entry.items() if k != "_change"}
+                        for facet, entry in state_machine.state.items()
+                    },
+                }
+                atomic_replace(
+                    state_machine.journal_root / "awareness" / "activity_state.json",
+                    json.dumps(snapshot),
+                )
+            except Exception:
+                logging.debug("Failed to write activity state snapshot", exc_info=True)
+
+    duration_ms = int((time.time() - start_time) * 1000)
+    emit(
+        "completed",
+        mode=target_schedule,
+        day=day,
+        segment=segment,
+        success=total_success,
+        failed=total_failed,
+        failed_names=all_failed_names,
+        duration_ms=duration_ms,
+    )
+    return (total_success, total_failed, all_failed_names)
+
+
 def _resolve_segment_dir(
     day: str,
     segment: str,
@@ -948,6 +1043,60 @@ def run_segment_sense(
         groups=1,
     )
 
+    if check_segment_has_no_input(
+        day, segment, sense_config.get("load", {}), stream=stream
+    ):
+        logging.info(
+            "Segment %s has no sense input; gating to idle terminal without dispatch",
+            segment,
+        )
+        idle_sense_json = _empty_input_sense_output()
+        write_sense_outputs(idle_sense_json, seg_dir, stream=stream)
+        _jsonl_log(
+            "sense.complete",
+            mode=target_schedule,
+            day=day,
+            segment=segment,
+            density="idle",
+            gated="no_input",
+            recommend=idle_sense_json["recommend"],
+            **({"stream": stream} if stream else {}),
+        )
+        change_result = detect_segment_change(
+            day,
+            stream,
+            segment,
+            seg_dir,
+            predecessor=predecessor,
+            timestamp=datetime.now(tz=timezone.utc).isoformat(),
+        )
+        write_change_detection(seg_dir, change_result)
+        _jsonl_log(
+            "sense.change_detect",
+            mode=target_schedule,
+            day=day,
+            segment=segment,
+            change_class=change_result["change_class"],
+            changed_sensors=change_result["changed_sensors"],
+            predecessor=change_result["predecessor"],
+            **({"stream": stream} if stream else {}),
+        )
+        return _terminalize_idle_segment(
+            idle_sense_json,
+            seg_dir,
+            day,
+            segment,
+            target_schedule,
+            state_machine,
+            verbose=verbose,
+            max_concurrency=max_concurrency,
+            skip_activity_prompts=skip_activity_prompts,
+            start_time=start_time,
+            total_success=0,
+            total_failed=0,
+            all_failed_names=[],
+        )
+
     sense_agent_id = _dispatch_agent("sense", sense_config)
     if sense_agent_id is None:
         _log_skip(
@@ -1074,70 +1223,21 @@ def run_segment_sense(
     )
 
     if density == "idle" and not refresh:
-        write_idle_stubs(seg_dir)
-        logging.info("Segment %s is idle, skipping remaining agents", segment)
-        _log_skip(
-            "*",
-            "density_idle",
-            f"Segment {segment} is idle, skipping remaining agents",
-            mode=target_schedule,
-            day=day,
-            segment=segment,
+        return _terminalize_idle_segment(
+            sense_json,
+            seg_dir,
+            day,
+            segment,
+            target_schedule,
+            state_machine,
+            verbose=verbose,
+            max_concurrency=max_concurrency,
+            skip_activity_prompts=skip_activity_prompts,
+            start_time=start_time,
+            total_success=total_success,
+            total_failed=total_failed,
+            all_failed_names=all_failed_names,
         )
-        if state_machine is not None:
-            routing_day = state_machine.last_segment_day or day
-            idle_changes = state_machine.update(sense_json, segment, day)
-            # Persist completed activity records from idle transitions
-            ended_triples = [
-                (c["id"], c["facet"], c.get("_change"))
-                for c in idle_changes
-                if c.get("state") == "ended"
-            ]
-            _persist_and_maybe_run_activity_prompts(
-                routing_day=routing_day,
-                log_day=day,
-                segment=segment,
-                target_schedule=target_schedule,
-                ended_triples=ended_triples,
-                completed=state_machine.get_completed_activities(),
-                refresh=refresh,
-                verbose=verbose,
-                max_concurrency=max_concurrency,
-                skip_activity_prompts=skip_activity_prompts,
-            )
-            if state_machine.journal_root is not None:
-                try:
-                    snapshot = {
-                        "last_segment_key": state_machine.last_segment_key,
-                        "last_segment_day": state_machine.last_segment_day,
-                        "active": {
-                            facet: {k: v for k, v in entry.items() if k != "_change"}
-                            for facet, entry in state_machine.state.items()
-                        },
-                    }
-                    atomic_replace(
-                        state_machine.journal_root
-                        / "awareness"
-                        / "activity_state.json",
-                        json.dumps(snapshot),
-                    )
-                except Exception:
-                    logging.debug(
-                        "Failed to write activity state snapshot", exc_info=True
-                    )
-
-        duration_ms = int((time.time() - start_time) * 1000)
-        emit(
-            "completed",
-            mode=target_schedule,
-            day=day,
-            segment=segment,
-            success=total_success,
-            failed=total_failed,
-            failed_names=all_failed_names,
-            duration_ms=duration_ms,
-        )
-        return (total_success, total_failed, all_failed_names)
 
     if change_result["change_class"] == "redundant" and not refresh:
         from solstone.apps.timeline.talent.segment_summary import (

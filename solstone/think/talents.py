@@ -417,6 +417,7 @@ def _load_transcript(
     segment: str | None,
     span: list[str] | None,
     sources: dict,
+    stream: str | None = None,
 ) -> tuple[str, dict[str, int]]:
     """Load and cluster transcript for day/segment/span.
 
@@ -425,10 +426,14 @@ def _load_transcript(
         segment: Optional segment key
         span: Optional list of segment keys
         sources: Source config dict from frontmatter load
+        stream: Optional stream name; falls back to SOL_STREAM when omitted
 
     Returns:
         Tuple of (transcript text, source_counts dict)
     """
+    if stream is None:
+        stream = os.environ.get("SOL_STREAM")
+
     # Set segment key for token usage logging
     if segment:
         os.environ["SOL_SEGMENT"] = segment
@@ -451,14 +456,37 @@ def _load_transcript(
         else:
             cluster_sources[k] = source_is_enabled(v)
 
-    # Build transcript via clustering
-    stream = os.environ.get("SOL_STREAM")
     if span:
         return cluster_span(day, span, sources=cluster_sources, stream=stream)
     elif segment:
         return cluster_period(day, segment, sources=cluster_sources, stream=stream)
     else:
         return cluster(day, sources=cluster_sources)
+
+
+def _is_no_input(transcript: str, source_counts: dict[str, int]) -> bool:
+    """The framework's emptiness rule: no clustered input, or below MIN_INPUT_CHARS."""
+    total_count = sum(source_counts.values())
+    return total_count == 0 or len(transcript.strip()) < MIN_INPUT_CHARS
+
+
+def check_segment_has_no_input(
+    day: str,
+    segment: str,
+    sources: dict,
+    stream: str | None = None,
+) -> bool:
+    """Read-only: True when the talent's enabled sources cluster to no usable input.
+
+    Returns False when no source is enabled (nothing to probe), so callers passing a
+    source-less config treat the segment as not-gated.
+    """
+    if not any(source_is_enabled(v) for v in sources.values()):
+        return False
+    transcript, source_counts = _load_transcript(
+        day, segment, None, sources, stream=stream
+    )
+    return _is_no_input(transcript, source_counts)
 
 
 def prepare_config(request: dict) -> dict:
@@ -636,7 +664,7 @@ def prepare_config(request: dict) -> dict:
                     return config
 
             # Skip if no content
-            if total_count == 0 or len(transcript.strip()) < MIN_INPUT_CHARS:
+            if _is_no_input(transcript, source_counts):
                 config["skip_reason"] = "no_input"
                 return config
 
