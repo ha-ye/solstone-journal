@@ -12,7 +12,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from solstone.think.catchup_state import read_backoff_summary
+from solstone.think.catchup_state import (
+    read_backoff_summary,
+    read_segment_repair_summary,
+)
 from solstone.think.cluster import cluster_segments
 from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_REASON_CODES
 from solstone.think.utils import (
@@ -48,6 +51,9 @@ WHY_SENSED_NOT_THOUGHT = "sensed_not_thought"
 REASON_CORRUPT_RAW = "corrupt_raw"
 REASON_FAILING_STEP = "failing_step"
 REASON_CATCHUP_BACKOFF = "catchup_backoff"
+REASON_SEGMENT_REPAIR_DEGRADED = "segment_repair_degraded"
+REASON_SEGMENT_REPAIR_STUCK = "segment_repair_stuck"
+REASON_SEGMENT_REPAIR_UNKNOWN = "segment_repair_unknown"
 
 BACKLOG_STATE_COMPLETE = "complete"
 BACKLOG_STATE_PENDING = "pending"
@@ -186,6 +192,14 @@ class BacklogDay:
     backoff_consecutive_non_completion: int = 0
     backoff_last_outcome: str | None = None
     backoff_next_retry_at: float | None = None
+    segment_repair_status: str | None = None
+    segment_repair_attempts: int = 0
+    segment_repair_consecutive_non_completion: int = 0
+    segment_repair_last_outcome: str | None = None
+    segment_repair_next_retry_at: float | None = None
+    segment_repair_reason_code: str | None = None
+    segment_repair_timeout_seconds: int | None = None
+    segment_repair_bounded: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -1146,14 +1160,85 @@ def _complete_backlog_day(day: str) -> BacklogDay:
     )
 
 
+_SEGMENT_REPAIR_STATE = {
+    "degraded": (BACKLOG_STATE_PENDING, REASON_SEGMENT_REPAIR_DEGRADED),
+    "stuck": (BACKLOG_STATE_STUCK, REASON_SEGMENT_REPAIR_STUCK),
+    "unknown": (BACKLOG_STATE_UNKNOWN, REASON_SEGMENT_REPAIR_UNKNOWN),
+}
+_STATE_SEVERITY = {
+    BACKLOG_STATE_COMPLETE: 0,
+    BACKLOG_STATE_PENDING: 1,
+    BACKLOG_STATE_STUCK: 2,
+    BACKLOG_STATE_UNKNOWN: 3,
+}
+
+
+def _segment_repair_fields(repair: dict | None) -> dict:
+    if not repair:
+        return {}
+    return {
+        "segment_repair_status": repair["status"],
+        "segment_repair_attempts": int(repair.get("attempts") or 0),
+        "segment_repair_consecutive_non_completion": int(
+            repair.get("consecutive_non_completion") or 0
+        ),
+        "segment_repair_last_outcome": repair.get("last_outcome") or None,
+        "segment_repair_next_retry_at": repair.get("next_retry_at"),
+        "segment_repair_reason_code": repair.get("repair_reason_code"),
+        "segment_repair_timeout_seconds": repair.get("timeout_seconds"),
+        "segment_repair_bounded": repair.get("bounded"),
+    }
+
+
+def _escalate_for_repair(state, reason, reason_code, error, day, repair):
+    if not repair:
+        return state, reason, reason_code, error
+    sr_state, sr_reason = _SEGMENT_REPAIR_STATE[repair["status"]]
+    if _STATE_SEVERITY[sr_state] > _STATE_SEVERITY[state]:
+        state = sr_state
+    if reason_code is None:
+        reason = sr_reason
+        reason_code = sr_reason
+    if repair["status"] == "unknown" and error is None:
+        error = BacklogError(
+            day=day,
+            stage="segment_repair",
+            message="segment-repair state unreadable",
+        )
+    return state, reason, reason_code, error
+
+
+def _backlog_day_for_complete(day: str, repair: dict | None) -> BacklogDay:
+    if not repair:
+        return _complete_backlog_day(day)
+    state, reason, reason_code, error = _escalate_for_repair(
+        BACKLOG_STATE_COMPLETE, None, None, None, day, repair
+    )
+    return BacklogDay(
+        day=day,
+        state=state,
+        segments=0,
+        units=0,
+        not_sensed=0,
+        why=(),
+        reason=reason,
+        reason_code=reason_code,
+        provider=None,
+        model=None,
+        error=error,
+        **_segment_repair_fields(repair),
+    )
+
+
 def read_backlog_view(window: int = BACKLOG_DEFAULT_WINDOW) -> BacklogView:
     """Return a bounded cross-day backlog view."""
     backlog_days: list[BacklogDay] = []
     errors: list[BacklogError] = []
 
     for day in sorted(day_dirs().keys(), reverse=True)[:window]:
+        repair = read_segment_repair_summary(day)
         if day_is_complete(day):
-            backlog_days.append(_complete_backlog_day(day))
+            backlog_days.append(_backlog_day_for_complete(day, repair))
             continue
 
         try:
@@ -1237,6 +1322,9 @@ def read_backlog_view(window: int = BACKLOG_DEFAULT_WINDOW) -> BacklogView:
             state = BACKLOG_STATE_PENDING
         else:
             state = BACKLOG_STATE_COMPLETE
+        state, reason, reason_code, sr_error = _escalate_for_repair(
+            state, reason, reason_code, None, day, repair
+        )
 
         backlog_days.append(
             BacklogDay(
@@ -1250,7 +1338,7 @@ def read_backlog_view(window: int = BACKLOG_DEFAULT_WINDOW) -> BacklogView:
                 reason_code=reason_code,
                 provider=representative.provider if representative else None,
                 model=representative.model if representative else None,
-                error=None,
+                error=sr_error,
                 backoff_stuck=bool(backoff),
                 backoff_attempts=backoff["attempts"] if backoff else 0,
                 backoff_consecutive_non_completion=(
@@ -1258,6 +1346,7 @@ def read_backlog_view(window: int = BACKLOG_DEFAULT_WINDOW) -> BacklogView:
                 ),
                 backoff_last_outcome=backoff["last_outcome"] if backoff else None,
                 backoff_next_retry_at=backoff["next_retry_at"] if backoff else None,
+                **_segment_repair_fields(repair),
             )
         )
 
@@ -1275,6 +1364,8 @@ def read_backlog_view(window: int = BACKLOG_DEFAULT_WINDOW) -> BacklogView:
         stuck_days=stuck_days,
         oldest_pending_day=min(outstanding) if outstanding else None,
         errors=tuple(errors),
+        degraded=bool(errors)
+        or any(day.state == BACKLOG_STATE_UNKNOWN for day in backlog_days),
     )
 
 

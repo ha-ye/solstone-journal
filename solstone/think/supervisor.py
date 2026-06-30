@@ -33,6 +33,7 @@ from solstone.think.backup.engine import BACKUP_MAX_RUNTIME, BACKUP_RUN_CMD
 from solstone.think.callosum import CallosumConnection, CallosumServer
 from solstone.think.catchup_state import (
     KIND_DAILY_CATCHUP,
+    KIND_SEGMENT_REPAIR,
     STUCK_THRESHOLD,
     day_eligible_to_drain,
     reconcile_interrupted_attempts,
@@ -2222,7 +2223,9 @@ def run_catchup_drain(
 
     def _eligible(day: str) -> bool:
         try:
-            return day_eligible_to_drain(day, KIND_DAILY_CATCHUP)
+            return day_eligible_to_drain(
+                day, KIND_DAILY_CATCHUP
+            ) and day_eligible_to_drain(day, KIND_SEGMENT_REPAIR)
         except Exception:
             logging.warning(
                 "Catchup eligibility check failed for %s; treating as eligible",

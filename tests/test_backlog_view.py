@@ -160,6 +160,48 @@ def test_verdict_pending_only_copy_does_not_claim_caught_up():
     )
 
 
+def test_verdict_degraded_backlog_does_not_claim_caught_up():
+    assert (
+        verdict({"pending_days": 0, "stuck_days": 0, "degraded": True})
+        != backlog_copy.BACKLOG_VERDICT_CAUGHT_UP
+    )
+
+
+def test_stuck_rows_includes_segment_repair_stuck_day():
+    rows = stuck_rows(
+        {
+            "days": [
+                {
+                    "day": "20260601",
+                    "state": "stuck",
+                    "segments": 0,
+                    "units": 0,
+                    "reason": "segment_repair_stuck",
+                    "reason_code": "segment_repair_stuck",
+                    "segment_repair_status": "stuck",
+                    "segment_repair_attempts": 3,
+                    "segment_repair_consecutive_non_completion": 3,
+                    "segment_repair_last_outcome": "timeout",
+                    "segment_repair_next_retry_at": 1600.0,
+                    "segment_repair_reason_code": "wall_clock_exceeded",
+                    "segment_repair_timeout_seconds": 300,
+                    "segment_repair_bounded": True,
+                }
+            ],
+            "errors": [],
+        }
+    )
+
+    assert rows == [
+        {
+            "day": "20260601",
+            "reason": backlog_copy.BACKLOG_REASON_FAILING_STEP,
+            "depth": None,
+            "reason_code": "segment_repair_stuck",
+        }
+    ]
+
+
 def test_verdict_mixed_copy_uses_independent_arms():
     assert (
         verdict({"pending_days": 1, "stuck_days": 1})

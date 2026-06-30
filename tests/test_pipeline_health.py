@@ -16,8 +16,13 @@ import pytest
 
 from solstone.think import catchup_state
 from solstone.think.pipeline_health import (
+    BACKLOG_STATE_COMPLETE,
+    BACKLOG_STATE_PENDING,
     BACKLOG_STATE_STUCK,
+    BACKLOG_STATE_UNKNOWN,
     REASON_CATCHUP_BACKOFF,
+    REASON_SEGMENT_REPAIR_DEGRADED,
+    REASON_SEGMENT_REPAIR_STUCK,
     STUCK_FAIL_THRESHOLD,
     TERMINAL_FAIL,
     CompletionsSince,
@@ -165,6 +170,57 @@ def _touch_marker(
     return path
 
 
+def _seed_complete_day_with_raw(journal: Path, day: str) -> str:
+    _seed_screen_segment(journal, day, "090000_300")
+    _touch_marker(journal, day, "stream.updated", mtime_ms=100_000)
+    _touch_marker(journal, day, "daily.updated", mtime_ms=200_000)
+    return catchup_state.read_raw_input_fingerprint(day)
+
+
+def _write_segment_repair_state(
+    journal: Path,
+    day: str,
+    *,
+    fingerprint: str,
+    consecutive: int = 1,
+    entered_backoff_at: float | None = None,
+) -> None:
+    state_path = journal / "health" / "catchup-state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": catchup_state.STATE_VERSION,
+                "entries": {
+                    f"{day}:{catchup_state.KIND_SEGMENT_REPAIR}": {
+                        "day": day,
+                        "command_kind": catchup_state.KIND_SEGMENT_REPAIR,
+                        "attempts": 3,
+                        "consecutive_non_completion": consecutive,
+                        "last_attempt_at": 1000.0,
+                        "last_outcome": "timeout"
+                        if entered_backoff_at is not None
+                        else "error",
+                        "next_retry_at": 1600.0,
+                        "entered_backoff_at": entered_backoff_at,
+                        "notified_at": entered_backoff_at,
+                        "fingerprint": fingerprint,
+                        "active": None,
+                        "reason_code": "wall_clock_exceeded"
+                        if entered_backoff_at is not None
+                        else "repair_failed",
+                        "timeout_seconds": 300
+                        if entered_backoff_at is not None
+                        else None,
+                        "bounded": entered_backoff_at is not None,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 @pytest.fixture
 def pipeline_journal(tmp_path, monkeypatch):
     journal = tmp_path / "journal"
@@ -221,6 +277,80 @@ def test_read_backlog_view_marks_backoff_stuck_day(pipeline_journal):
     assert backlog_day.backoff_consecutive_non_completion == 3
     assert backlog_day.backoff_last_outcome == "timeout"
     assert backlog_day.backoff_next_retry_at == 1600.0
+
+
+def test_read_backlog_view_marks_complete_day_with_degraded_segment_repair_pending(
+    pipeline_journal,
+):
+    day = "20990302"
+    fingerprint = _seed_complete_day_with_raw(pipeline_journal, day)
+    _write_segment_repair_state(pipeline_journal, day, fingerprint=fingerprint)
+
+    view = read_backlog_view()
+
+    backlog_day = next(item for item in view.days if item.day == day)
+    assert backlog_day.state == BACKLOG_STATE_PENDING
+    assert backlog_day.reason_code == REASON_SEGMENT_REPAIR_DEGRADED
+    assert backlog_day.segment_repair_status == "degraded"
+    assert backlog_day.segment_repair_attempts == 3
+    assert view.pending_days == 1
+
+
+def test_read_backlog_view_marks_complete_day_with_stuck_segment_repair_stuck(
+    pipeline_journal,
+):
+    day = "20990303"
+    fingerprint = _seed_complete_day_with_raw(pipeline_journal, day)
+    _write_segment_repair_state(
+        pipeline_journal,
+        day,
+        fingerprint=fingerprint,
+        consecutive=3,
+        entered_backoff_at=1200.0,
+    )
+
+    view = read_backlog_view()
+
+    backlog_day = next(item for item in view.days if item.day == day)
+    assert backlog_day.state == BACKLOG_STATE_STUCK
+    assert backlog_day.reason_code == REASON_SEGMENT_REPAIR_STUCK
+    assert backlog_day.segment_repair_status == "stuck"
+    assert view.stuck_days == 1
+
+
+def test_read_backlog_view_marks_malformed_segment_repair_state_unknown(
+    pipeline_journal,
+):
+    day = "20990304"
+    _seed_complete_day_with_raw(pipeline_journal, day)
+    state_path = pipeline_journal / "health" / "catchup-state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_bytes(b"{not json")
+
+    view = read_backlog_view()
+
+    backlog_day = next(item for item in view.days if item.day == day)
+    assert backlog_day.state == BACKLOG_STATE_UNKNOWN
+    assert backlog_day.error is not None
+    assert backlog_day.error.stage == "segment_repair"
+    assert view.degraded is True
+    assert view.errors == ()
+
+
+def test_read_backlog_view_suppresses_stale_segment_repair_fingerprint(
+    pipeline_journal,
+):
+    day = "20990305"
+    _seed_complete_day_with_raw(pipeline_journal, day)
+    _write_segment_repair_state(pipeline_journal, day, fingerprint="stale")
+
+    view = read_backlog_view()
+
+    backlog_day = next(item for item in view.days if item.day == day)
+    assert backlog_day.state == BACKLOG_STATE_COMPLETE
+    assert backlog_day.segment_repair_status is None
+    assert view.pending_days == 0
+    assert view.stuck_days == 0
 
 
 def test_read_completed_units_terminal_presence(pipeline_journal):

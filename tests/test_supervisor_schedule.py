@@ -166,6 +166,29 @@ def test_run_catchup_drain_excludes_ineligible_days(
     assert submit_mock.call_args_list == _daily_think_calls(submitted)
 
 
+def test_run_catchup_drain_skips_segment_repair_poison_day(
+    mock_callosum, monkeypatch, submit_mock
+):
+    monkeypatch.setattr(
+        mod,
+        "updated_days",
+        lambda **kwargs: ["20250101", "20250102", "20250103"],
+    )
+    calls = []
+
+    def eligible(day, kind):
+        calls.append((day, kind))
+        return (day, kind) != ("20250102", mod.KIND_SEGMENT_REPAIR)
+
+    monkeypatch.setattr(mod, "day_eligible_to_drain", eligible)
+
+    submitted = mod.run_catchup_drain()
+
+    assert submitted == ["20250101", "20250103"]
+    assert submit_mock.call_args_list == _daily_think_calls(submitted)
+    assert ("20250102", mod.KIND_SEGMENT_REPAIR) in calls
+
+
 def test_force_day_blocked_when_not_eligible(mock_callosum, monkeypatch, submit_mock):
     monkeypatch.setattr(
         mod,

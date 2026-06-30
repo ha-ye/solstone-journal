@@ -29,6 +29,10 @@ from solstone.think.activities import (
 )
 from solstone.think.activity_state_machine import ActivityStateMachine
 from solstone.think.callosum import CallosumConnection
+from solstone.think.catchup_state import (
+    record_segment_repair_attempt,
+    record_segment_repair_outcome,
+)
 from solstone.think.change_detection import detect_segment_change, resolve_predecessor
 from solstone.think.cluster import cluster_segments
 from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_THRESHOLD
@@ -3758,6 +3762,7 @@ def main() -> None:
             day_log(day, f"starting: {' '.join(cmd)}")
             _jsonl_log("phase.start", mode=_run_mode, day=day, phase="segment_think")
             _phase_start = time.time()
+            record_segment_repair_attempt(day, started_at=_phase_start)
             phase_ok, phase_timed_out = run_bounded_phase(
                 cmd, day, DEFAULT_TASK_MAX_RUNTIME
             )
@@ -3775,6 +3780,13 @@ def main() -> None:
                     bounded=True,
                 )
             _jsonl_log("phase.complete", **phase_complete)
+            record_segment_repair_outcome(
+                day,
+                success=phase_ok,
+                timed_out=phase_timed_out,
+                timeout_seconds=DEFAULT_TASK_MAX_RUNTIME,
+                ended_at=time.time(),
+            )
             if not phase_ok:
                 if phase_timed_out:
                     logging.warning(

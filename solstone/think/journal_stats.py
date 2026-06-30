@@ -85,6 +85,17 @@ def _serialize_backlog_day(day: BacklogDay) -> dict:
         )
         data["backoff_last_outcome"] = day.backoff_last_outcome
         data["backoff_next_retry_at"] = day.backoff_next_retry_at
+    if day.segment_repair_status is not None:
+        data["segment_repair_status"] = day.segment_repair_status
+        data["segment_repair_attempts"] = day.segment_repair_attempts
+        data["segment_repair_consecutive_non_completion"] = (
+            day.segment_repair_consecutive_non_completion
+        )
+        data["segment_repair_last_outcome"] = day.segment_repair_last_outcome
+        data["segment_repair_next_retry_at"] = day.segment_repair_next_retry_at
+        data["segment_repair_reason_code"] = day.segment_repair_reason_code
+        data["segment_repair_timeout_seconds"] = day.segment_repair_timeout_seconds
+        data["segment_repair_bounded"] = day.segment_repair_bounded
     return data
 
 

@@ -115,6 +115,59 @@ def test_serialize_backlog_day_includes_backoff_fields_only_when_stuck():
     assert stuck_data["backoff_next_retry_at"] == 1600.0
 
 
+def test_serialize_backlog_day_includes_segment_repair_fields_only_when_present():
+    stats_mod = importlib.import_module("solstone.think.journal_stats")
+    health_mod = importlib.import_module("solstone.think.pipeline_health")
+
+    normal = health_mod.BacklogDay(
+        day="20240101",
+        state=health_mod.BACKLOG_STATE_COMPLETE,
+        segments=0,
+        units=0,
+        not_sensed=0,
+        why=(),
+        reason=None,
+        reason_code=None,
+        provider=None,
+        model=None,
+        error=None,
+    )
+    repair = health_mod.BacklogDay(
+        day="20240102",
+        state=health_mod.BACKLOG_STATE_STUCK,
+        segments=0,
+        units=0,
+        not_sensed=0,
+        why=(),
+        reason=health_mod.REASON_SEGMENT_REPAIR_STUCK,
+        reason_code=health_mod.REASON_SEGMENT_REPAIR_STUCK,
+        provider=None,
+        model=None,
+        error=None,
+        segment_repair_status="stuck",
+        segment_repair_attempts=3,
+        segment_repair_consecutive_non_completion=3,
+        segment_repair_last_outcome="timeout",
+        segment_repair_next_retry_at=1600.0,
+        segment_repair_reason_code="wall_clock_exceeded",
+        segment_repair_timeout_seconds=300,
+        segment_repair_bounded=True,
+    )
+
+    normal_data = stats_mod._serialize_backlog_day(normal)
+    repair_data = stats_mod._serialize_backlog_day(repair)
+
+    assert not any(key.startswith("segment_repair_") for key in normal_data)
+    assert repair_data["segment_repair_status"] == "stuck"
+    assert repair_data["segment_repair_attempts"] == 3
+    assert repair_data["segment_repair_consecutive_non_completion"] == 3
+    assert repair_data["segment_repair_last_outcome"] == "timeout"
+    assert repair_data["segment_repair_next_retry_at"] == 1600.0
+    assert repair_data["segment_repair_reason_code"] == "wall_clock_exceeded"
+    assert repair_data["segment_repair_timeout_seconds"] == 300
+    assert repair_data["segment_repair_bounded"] is True
+
+
 def test_scan_day(tmp_path, monkeypatch):
     stats_mod = importlib.import_module("solstone.think.journal_stats")
     journal = tmp_path
@@ -518,6 +571,48 @@ def test_root_stats_contains_backlog_contract_fields():
         "errors": [],
         "degraded": False,
     }
+
+
+def test_stats_schema_v7_accepts_segment_repair_backlog_day():
+    stats_mod = importlib.import_module("solstone.think.journal_stats")
+    schema_mod = importlib.import_module("solstone.think.stats_schema")
+
+    repair_day = stats_mod.BacklogDay(
+        day="20990410",
+        state="pending",
+        segments=0,
+        units=0,
+        not_sensed=0,
+        why=(),
+        reason="segment_repair_degraded",
+        reason_code="segment_repair_degraded",
+        provider=None,
+        model=None,
+        error=None,
+        segment_repair_status="degraded",
+        segment_repair_attempts=1,
+        segment_repair_consecutive_non_completion=1,
+        segment_repair_last_outcome="error",
+        segment_repair_next_retry_at=1600.0,
+        segment_repair_reason_code="repair_failed",
+        segment_repair_timeout_seconds=None,
+        segment_repair_bounded=False,
+    )
+    js = stats_mod.JournalStats()
+    js.backlog_view = stats_mod.BacklogView(
+        window=30,
+        days=(repair_day,),
+        pending_days=1,
+        stuck_days=0,
+        oldest_pending_day="20990410",
+        errors=(),
+    )
+
+    data = js.to_dict()
+
+    assert schema_mod.SCHEMA_VERSION == 7
+    assert schema_mod.validate(data) == []
+    assert data["backlog"]["days"][0]["segment_repair_status"] == "degraded"
 
 
 def test_backlog_day_serialization_includes_reason():

@@ -370,6 +370,40 @@ def test_backlog_degraded_renders_cant_tell_without_bucket(health_env):
     assert 'id="backlogNeedsHand"' not in rendered
 
 
+def test_backlog_segment_repair_stuck_day_renders_needs_hand(health_env):
+    rendered = _render_health_workspace_with_stats(
+        health_env,
+        {
+            "backlog": _backlog(
+                stuck_days=1,
+                days=[
+                    {
+                        "day": "20260323",
+                        "state": "stuck",
+                        "segments": 0,
+                        "units": 0,
+                        "reason": "segment_repair_stuck",
+                        "reason_code": "segment_repair_stuck",
+                        "segment_repair_status": "stuck",
+                        "segment_repair_attempts": 3,
+                        "segment_repair_consecutive_non_completion": 3,
+                        "segment_repair_last_outcome": "timeout",
+                        "segment_repair_next_retry_at": 1600.0,
+                        "segment_repair_reason_code": "wall_clock_exceeded",
+                        "segment_repair_timeout_seconds": 300,
+                        "segment_repair_bounded": True,
+                    }
+                ],
+            )
+        },
+    )
+
+    assert _verdict_text(rendered) != backlog_copy.BACKLOG_VERDICT_CAUGHT_UP
+    section = _section_by_id(rendered, "backlogNeedsHand")
+    assert "20260323" in section
+    assert "reason_code=segment_repair_stuck" in section
+
+
 def test_backlog_needs_hand_bucket_rows(health_env):
     rendered = _render_health_workspace_with_stats(
         health_env,
