@@ -786,3 +786,316 @@ def test_wait_for_agents_missed_event_recovery(tmp_path, monkeypatch, caplog):
         "completion event not received but use completed" in record.message
         for record in caplog.records
     )
+
+
+def test_wait_for_uses_renamed_terminal_via_polling(tmp_path, monkeypatch):
+    """Test polling recovers a use renamed terminal without Callosum."""
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr("solstone.think.cortex_client._POLL_INTERVAL_S", 0.02)
+    talents_dir = tmp_path / "talents"
+    talents_dir.mkdir()
+    unified_dir = talents_dir / "chat"
+    unified_dir.mkdir()
+    (tmp_path / "health").mkdir()
+
+    use_id = "1234567890128"
+    active_file = unified_dir / f"{use_id}_active.jsonl"
+    final_file = unified_dir / f"{use_id}.jsonl"
+    active_file.write_text('{"event": "start"}\n')
+
+    def complete_use():
+        time.sleep(0.05)
+        final_file.write_text('{"event": "finish"}\n')
+        active_file.unlink()
+
+    completer = threading.Thread(target=complete_use, daemon=True)
+    completer.start()
+
+    started_at = time.monotonic()
+    completed, timed_out = wait_for_uses([use_id], timeout=5)
+    elapsed = time.monotonic() - started_at
+    completer.join(timeout=5)
+
+    assert completed == {use_id: "finish"}
+    assert timed_out == []
+    assert elapsed < 2.0
+
+
+def test_wait_for_uses_terminal_before_rename_via_polling(tmp_path, monkeypatch):
+    """Test polling recovers terminal events appended to the active log."""
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr("solstone.think.cortex_client._POLL_INTERVAL_S", 0.02)
+    talents_dir = tmp_path / "talents"
+    talents_dir.mkdir()
+    unified_dir = talents_dir / "chat"
+    unified_dir.mkdir()
+    (tmp_path / "health").mkdir()
+
+    use_id = "1234567890129"
+    active_file = unified_dir / f"{use_id}_active.jsonl"
+    active_file.write_text('{"event": "start"}\n')
+
+    result = {"completed": None, "timed_out": None}
+
+    def wait_thread():
+        result["completed"], result["timed_out"] = wait_for_uses([use_id], timeout=5)
+
+    waiter = threading.Thread(target=wait_thread, daemon=True)
+    waiter.start()
+    time.sleep(0.05)
+
+    with open(active_file, "a") as f:
+        f.write('{"event": "finish"}\n')
+
+    waiter.join(timeout=5)
+
+    assert not waiter.is_alive()
+    assert result["completed"] == {use_id: "finish"}
+    assert result["timed_out"] == []
+
+
+def test_wait_for_uses_timeout_none_returns_on_terminal(tmp_path, monkeypatch):
+    """Test timeout=None returns when polling sees a terminal log."""
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr("solstone.think.cortex_client._POLL_INTERVAL_S", 0.02)
+    talents_dir = tmp_path / "talents"
+    talents_dir.mkdir()
+    unified_dir = talents_dir / "chat"
+    unified_dir.mkdir()
+    (tmp_path / "health").mkdir()
+
+    use_id = "1234567890130"
+    active_file = unified_dir / f"{use_id}_active.jsonl"
+    final_file = unified_dir / f"{use_id}.jsonl"
+    active_file.write_text('{"event": "start"}\n')
+
+    result = {"completed": None, "timed_out": None}
+
+    def wait_thread():
+        result["completed"], result["timed_out"] = wait_for_uses([use_id], timeout=None)
+
+    waiter = threading.Thread(target=wait_thread, daemon=True)
+    waiter.start()
+    time.sleep(0.05)
+
+    final_file.write_text('{"event": "finish"}\n')
+    active_file.unlink()
+
+    waiter.join(timeout=5)
+
+    assert not waiter.is_alive()
+    assert result["completed"] == {use_id: "finish"}
+    assert result["timed_out"] == []
+
+
+def test_wait_for_uses_timeout_none_no_deadline_and_no_busy_spin(
+    tmp_path,
+    monkeypatch,
+):
+    """Test timeout=None polls at the bounded interval until terminal."""
+    import solstone.think.cortex_client as cc
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(cc, "_POLL_INTERVAL_S", 0.05)
+    talents_dir = tmp_path / "talents"
+    talents_dir.mkdir()
+    unified_dir = talents_dir / "chat"
+    unified_dir.mkdir()
+    (tmp_path / "health").mkdir()
+
+    use_id = "1234567890131"
+    active_file = unified_dir / f"{use_id}_active.jsonl"
+    final_file = unified_dir / f"{use_id}.jsonl"
+    active_file.write_text('{"event": "start"}\n')
+
+    real = cc.get_use_end_state
+    calls = []
+
+    def spy(uid):
+        calls.append(uid)
+        return real(uid)
+
+    monkeypatch.setattr(cc, "get_use_end_state", spy)
+
+    result = {"completed": None, "timed_out": None}
+
+    def wait_thread():
+        result["completed"], result["timed_out"] = wait_for_uses([use_id], timeout=None)
+
+    waiter = threading.Thread(target=wait_thread, daemon=True)
+    waiter.start()
+    time.sleep(0.3)
+
+    calls_before_completion = len(calls)
+    assert calls_before_completion <= 20
+
+    final_file.write_text('{"event": "finish"}\n')
+    active_file.unlink()
+    waiter.join(timeout=5)
+
+    assert not waiter.is_alive()
+    assert result["completed"] == {use_id: "finish"}
+    assert result["timed_out"] == []
+
+
+def test_wait_for_uses_unreadable_log_returns_unknown(tmp_path, monkeypatch):
+    """Test get_use_end_state tolerates unreadable logs."""
+    import solstone.think.cortex_client as cc
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    talents_dir = tmp_path / "talents"
+    talents_dir.mkdir()
+    unified_dir = talents_dir / "chat"
+    unified_dir.mkdir()
+    (tmp_path / "health").mkdir()
+
+    use_id = "1234567890132"
+    (unified_dir / f"{use_id}_active.jsonl").write_text('{"event": "start"}\n')
+
+    def unreadable(_uid):
+        raise PermissionError("boom")
+
+    monkeypatch.setattr(cc, "read_use_events", unreadable)
+
+    assert get_use_end_state(use_id) == "unknown"
+
+
+def test_wait_for_uses_unreadable_sibling_does_not_block_terminal_sibling(
+    tmp_path,
+    monkeypatch,
+):
+    """Test an unreadable pending use does not block a terminal sibling."""
+    import solstone.think.cortex_client as cc
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(cc, "_POLL_INTERVAL_S", 0.02)
+    talents_dir = tmp_path / "talents"
+    talents_dir.mkdir()
+    unified_dir = talents_dir / "chat"
+    unified_dir.mkdir()
+    (tmp_path / "health").mkdir()
+
+    terminal_use = "1234567890133"
+    unreadable_use = "1234567890134"
+    (unified_dir / f"{terminal_use}_active.jsonl").write_text('{"event": "start"}\n')
+    (unified_dir / f"{unreadable_use}_active.jsonl").write_text('{"event": "start"}\n')
+    (unified_dir / f"{terminal_use}.jsonl").write_text('{"event": "finish"}\n')
+
+    real = cc.read_use_events
+
+    def spy(uid):
+        if uid == unreadable_use:
+            raise OSError("unreadable")
+        return real(uid)
+
+    monkeypatch.setattr(cc, "read_use_events", spy)
+
+    completed, timed_out = wait_for_uses([terminal_use, unreadable_use], timeout=1)
+
+    assert completed == {terminal_use: "finish"}
+    assert timed_out == [unreadable_use]
+
+
+def test_wait_for_uses_transient_read_error_then_recovery(tmp_path, monkeypatch):
+    """Test a transient read error stays pending and recovers later."""
+    import solstone.think.cortex_client as cc
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(cc, "_POLL_INTERVAL_S", 0.02)
+    talents_dir = tmp_path / "talents"
+    talents_dir.mkdir()
+    unified_dir = talents_dir / "chat"
+    unified_dir.mkdir()
+    (tmp_path / "health").mkdir()
+
+    use_id = "1234567890135"
+    (unified_dir / f"{use_id}_active.jsonl").write_text('{"event": "start"}\n')
+
+    n = {"c": 0}
+
+    def spy(_uid):
+        n["c"] += 1
+        if n["c"] == 1:
+            raise OSError("race")
+        return [{"event": "start"}, {"event": "finish"}]
+
+    monkeypatch.setattr(cc, "read_use_events", spy)
+
+    completed, timed_out = wait_for_uses([use_id], timeout=2)
+
+    assert completed == {use_id: "finish"}
+    assert timed_out == []
+
+
+def test_wait_for_uses_malformed_line_before_terminal(tmp_path, monkeypatch):
+    """Test polling skips malformed JSON and still recovers terminal events."""
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr("solstone.think.cortex_client._POLL_INTERVAL_S", 0.02)
+    talents_dir = tmp_path / "talents"
+    talents_dir.mkdir()
+    unified_dir = talents_dir / "chat"
+    unified_dir.mkdir()
+    (tmp_path / "health").mkdir()
+
+    use_id = "1234567890136"
+    active_file = unified_dir / f"{use_id}_active.jsonl"
+    active_file.write_text('{"event": "start"}\n')
+
+    result = {"completed": None, "timed_out": None}
+
+    def wait_thread():
+        result["completed"], result["timed_out"] = wait_for_uses([use_id], timeout=5)
+
+    waiter = threading.Thread(target=wait_thread, daemon=True)
+    waiter.start()
+    time.sleep(0.05)
+
+    with open(active_file, "a") as f:
+        f.write("not valid json\n")
+        f.write('{"event": "finish"}\n')
+
+    waiter.join(timeout=5)
+
+    assert not waiter.is_alive()
+    assert result["completed"] == {use_id: "finish"}
+    assert result["timed_out"] == []
+
+
+def test_wait_for_uses_recovery_logs_exactly_once(tmp_path, monkeypatch, caplog):
+    """Test missed-event recovery logs once, not once per poll."""
+    import logging
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr("solstone.think.cortex_client._POLL_INTERVAL_S", 0.05)
+    talents_dir = tmp_path / "talents"
+    talents_dir.mkdir()
+    unified_dir = talents_dir / "chat"
+    unified_dir.mkdir()
+    (tmp_path / "health").mkdir()
+
+    use_id = "1234567890137"
+    active_file = unified_dir / f"{use_id}_active.jsonl"
+    final_file = unified_dir / f"{use_id}.jsonl"
+    active_file.write_text('{"event": "start"}\n')
+
+    def complete_use():
+        time.sleep(0.2)
+        final_file.write_text('{"event": "finish"}\n')
+        active_file.unlink()
+
+    completer = threading.Thread(target=complete_use, daemon=True)
+    completer.start()
+
+    with caplog.at_level(logging.INFO):
+        completed, timed_out = wait_for_uses([use_id], timeout=2)
+
+    completer.join(timeout=5)
+
+    matching_records = [
+        record
+        for record in caplog.records
+        if "completion event not received but use completed" in record.message
+    ]
+    assert completed == {use_id: "finish"}
+    assert timed_out == []
+    assert len(matching_records) == 1

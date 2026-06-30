@@ -6,6 +6,7 @@
 import json
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -13,6 +14,10 @@ from solstone.think.callosum import CallosumConnection, callosum_send_classified
 from solstone.think.utils import get_journal, now_ms
 
 logger = logging.getLogger(__name__)
+
+# Bounded interval (seconds) for polling durable use logs in wait_for_uses()
+# while Callosum events remain the fast wake path. Monkeypatched small in tests.
+_POLL_INTERVAL_S = 0.5
 
 
 class CortexSpawnUnavailable(Exception):
@@ -129,6 +134,25 @@ def get_use_log_status(use_id: str) -> str:
     return status
 
 
+def _recover_completed_from_disk(pending: set[str], completed: dict[str, str]) -> None:
+    """Recover pending uses whose durable log is terminal but whose Callosum
+    finish/error broadcast was missed.
+
+    Moves each terminal use from ``pending`` into ``completed`` and logs the
+    recovery once per use. Callers running concurrently with the Callosum
+    listener must hold the shared lock; the post-stop backstop may call this
+    lock-free.
+    """
+    for use_id in list(pending):
+        end_state = get_use_end_state(use_id)
+        if end_state in ("finish", "error"):
+            logger.info(
+                f"Talent use {use_id} completion event not received but use completed"
+            )
+            completed[use_id] = end_state
+            pending.discard(use_id)
+
+
 def wait_for_uses(
     use_ids: list[str],
     timeout: int | None = 600,
@@ -186,22 +210,34 @@ def wait_for_uses(
             if not pending:
                 return completed, []
 
-        # Wait for all completions or timeout
-        all_done.wait(timeout=timeout)
+        # Block on the Callosum event for prompt wakeups, but also poll the
+        # durable use logs on a bounded interval so a missed finish/error
+        # broadcast still completes the wait. timeout=None imposes no overall
+        # deadline; the loop still blocks on the bounded interval each pass
+        # (never a zero-wait spin).
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while pending:
+            if timeout is None:
+                wait_time = _POLL_INTERVAL_S
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                wait_time = min(_POLL_INTERVAL_S, remaining)
+
+            all_done.wait(wait_time)
+
+            # Runs concurrently with the listener thread, so hold the lock for
+            # any completed/pending mutation.
+            with lock:
+                _recover_completed_from_disk(pending, completed)
 
     finally:
         listener.stop()
 
-    # Final file check for any remaining (backstop for missed events)
-    # Listener is stopped, so no lock needed
-    for use_id in list(pending):
-        end_state = get_use_end_state(use_id)
-        if end_state in ("finish", "error"):
-            logger.info(
-                f"Talent use {use_id} completion event not received but use completed"
-            )
-            completed[use_id] = end_state
-            pending.discard(use_id)
+    # Final durable backstop after the listener is stopped (no lock needed):
+    # catches a use that became terminal in the deadline-boundary window.
+    _recover_completed_from_disk(pending, completed)
 
     return completed, list(pending)
 
@@ -219,7 +255,7 @@ def get_use_end_state(use_id: str) -> str:
         "finish" - Use completed successfully
         "error" - Use ended with an error
         "running" - Use is still active (no terminal event in file)
-        "unknown" - Use file not found
+        "unknown" - Use file not found or unreadable
     """
     status = get_use_log_status(use_id)
     if status == "not_found":
@@ -238,7 +274,8 @@ def get_use_end_state(use_id: str) -> str:
                 return "error"
         # No terminal event found - still running
         return "running"
-    except FileNotFoundError:
+    except OSError as exc:
+        logger.debug("Unable to read use log for %s: %s", use_id, exc)
         return "unknown"
 
 
