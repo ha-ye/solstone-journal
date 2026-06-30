@@ -15,9 +15,11 @@ from solstone.think import convey_client
 from solstone.think.convey_client import (
     MALFORMED_RESPONSE_MESSAGE,
     SERVER_ERROR_MESSAGE,
+    TIMEOUT_MESSAGE,
     UNREACHABLE_MESSAGE,
     ConveyClient,
     ConveyClientError,
+    ConveyTimeoutError,
     ConveyUnreachableError,
     convey_cli,
     resolve_base_url,
@@ -55,6 +57,36 @@ class FakeSession:
         self.closed = True
 
     def _next(self) -> FakeResponse:
+        item = self.queued.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+class RecordingSession:
+    def __init__(self, queued: list[FakeResponse | Exception]) -> None:
+        self.queued = queued
+        self.headers: dict[str, str] = {}
+        self.calls: list[tuple[str, str, dict[str, Any]]] = []
+        self.closed = False
+
+    def get(self, url: str, **kwargs: Any) -> FakeResponse:
+        return self._record("GET", url, kwargs)
+
+    def delete(self, url: str, **kwargs: Any) -> FakeResponse:
+        return self._record("DELETE", url, kwargs)
+
+    def put(self, url: str, **kwargs: Any) -> FakeResponse:
+        return self._record("PUT", url, kwargs)
+
+    def post(self, url: str, **kwargs: Any) -> FakeResponse:
+        return self._record("POST", url, kwargs)
+
+    def close(self) -> None:
+        self.closed = True
+
+    def _record(self, method: str, url: str, kwargs: dict[str, Any]) -> FakeResponse:
+        self.calls.append((method, url, kwargs))
         item = self.queued.pop(0)
         if isinstance(item, Exception):
             raise item
@@ -225,6 +257,112 @@ def test_upload_posts_multipart_files_and_data(tmp_path) -> None:
     assert "headers" not in kwargs
 
 
+def test_default_session_applies_api_timeout_to_request_verbs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rec = RecordingSession([_json_response(200, {"ok": True}) for _ in range(4)])
+    monkeypatch.setattr(convey_client.requests, "Session", lambda: rec)
+    client = ConveyClient(base_url="http://localhost:5015")
+
+    client.request("GET", "/api/get")
+    client.request("POST", "/api/post", json={"x": 1})
+    client.request("PUT", "/api/put", json={"x": 2})
+    client.request("DELETE", "/api/delete")
+
+    assert [method for method, _url, _kwargs in rec.calls] == [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE",
+    ]
+    for _method, _url, kwargs in rec.calls:
+        assert kwargs["timeout"] is convey_client.API_TIMEOUT
+
+
+def test_default_session_applies_upload_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    file_path = tmp_path / "shot.png"
+    file_path.write_bytes(b"known image bytes")
+    rec = RecordingSession([_json_response(201, {"id": "att-1"})])
+    monkeypatch.setattr(convey_client.requests, "Session", lambda: rec)
+    client = ConveyClient(base_url="http://localhost:5015")
+
+    client.upload(
+        "/app/support/api/tickets/1/attachments",
+        files={"file": ("shot.png", str(file_path), "image/png")},
+        data={"k": "v"},
+    )
+
+    assert len(rec.calls) == 1
+    method, _url, kwargs = rec.calls[0]
+    assert method == "POST"
+    assert kwargs["timeout"] is convey_client.UPLOAD_TIMEOUT
+
+
+def test_injected_session_receives_no_timeout_kwargs(tmp_path) -> None:
+    file_path = tmp_path / "shot.png"
+    file_path.write_bytes(b"known image bytes")
+    rec = RecordingSession([_json_response(200, {"ok": True}) for _ in range(5)])
+    client = ConveyClient(session=rec, base_url="http://localhost:5015")
+
+    client.request("GET", "/api/get")
+    client.request("POST", "/api/post", json={"x": 1})
+    client.request("PUT", "/api/put", json={"x": 2})
+    client.request("DELETE", "/api/delete")
+    client.upload(
+        "/app/support/api/tickets/1/attachments",
+        files={"file": ("shot.png", str(file_path), "image/png")},
+        data={"k": "v"},
+    )
+
+    assert [method for method, _url, _kwargs in rec.calls] == [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE",
+        "POST",
+    ]
+    for _method, _url, kwargs in rec.calls:
+        assert "timeout" not in kwargs
+
+
+@pytest.mark.parametrize(
+    "transport_exc",
+    [
+        requests.exceptions.ConnectTimeout(),
+        requests.exceptions.ReadTimeout(),
+        requests.exceptions.Timeout(),
+    ],
+)
+def test_timeout_exceptions_raise_sanitized_timeout_error(
+    transport_exc: requests.exceptions.Timeout,
+) -> None:
+    client = ConveyClient(
+        session=RecordingSession([transport_exc]),
+        base_url="http://localhost:5015",
+        require_service=False,
+    )
+
+    with pytest.raises(ConveyTimeoutError) as excinfo:
+        client.request("GET", "/api/x")
+
+    err = excinfo.value
+    assert not isinstance(err, ConveyUnreachableError)
+    assert err.error == TIMEOUT_MESSAGE
+    assert err.reason_code == "local_convey_timeout"
+    assert err.status is None
+    assert (
+        err.detail == "GET /api/x exceeded local convey timeout "
+        "(connect=2s, read=20s, total=30s)"
+    )
+    assert "Traceback" not in err.detail
+    assert "ConnectTimeout" not in err.detail
+    assert "ReadTimeout" not in err.detail
+    assert "Timeout" not in err.detail
+
+
 def test_transport_failure_uses_require_solstone_message(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -285,6 +423,7 @@ def test_require_service_false_raises_unreachable_without_probe(
 
     assert probed == []
     assert excinfo.value.error == UNREACHABLE_MESSAGE
+    assert not isinstance(excinfo.value, ConveyTimeoutError)
 
 
 def test_convey_cli_preserves_typer_exit_code() -> None:

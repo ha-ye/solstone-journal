@@ -20,6 +20,7 @@ from urllib.parse import urlencode
 
 import requests
 import typer
+from requests.adapters import TimeoutSauce
 
 from solstone.think.pairing.config import get_host_url_override
 from solstone.think.service import DEFAULT_SERVICE_PORT
@@ -30,6 +31,12 @@ logger = logging.getLogger(__name__)
 MALFORMED_RESPONSE_MESSAGE = "I couldn't read the journal response."
 SERVER_ERROR_MESSAGE = "The journal returned an unreadable error."
 UNREACHABLE_MESSAGE = "I couldn't reach the journal over HTTP."
+TIMEOUT_MESSAGE = "The journal didn't answer in time."
+
+# Exact local-convey timeout policies (connect, read, total) in seconds.
+# urllib3 clones the Timeout per request, so these shared constants are never mutated.
+API_TIMEOUT = TimeoutSauce(connect=2, read=20, total=30)
+UPLOAD_TIMEOUT = TimeoutSauce(connect=2, read=120, total=180)
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
@@ -54,6 +61,22 @@ class ConveyUnreachableError(ConveyClientError):
     """Raised when the convey HTTP transport itself fails (service down/unreachable)."""
 
 
+class ConveyTimeoutError(ConveyClientError):
+    """Raised when a default-session local convey request exceeds its timeout policy.
+
+    Carries no raw transport text — only the owner message and a sanitized
+    method/path + policy detail.
+    """
+
+    def __init__(self, detail: str | None = None) -> None:
+        super().__init__(
+            TIMEOUT_MESSAGE,
+            reason_code="local_convey_timeout",
+            detail=detail,
+            status=None,
+        )
+
+
 def resolve_base_url() -> str:
     override = get_host_url_override()
     if override is not None:
@@ -71,6 +94,7 @@ class ConveyClient:
         require_service: bool = True,
     ) -> None:
         self._base_url = base_url or resolve_base_url()
+        self._apply_timeout = session is None
         self._session = session or requests.Session()
         self._require_service = require_service
 
@@ -78,6 +102,16 @@ class ConveyClient:
         if self._require_service:
             require_solstone()
         raise ConveyUnreachableError(UNREACHABLE_MESSAGE, detail=str(exc)) from exc
+
+    def _timeout_kwargs(self, policy: TimeoutSauce) -> dict[str, Any]:
+        return {"timeout": policy} if self._apply_timeout else {}
+
+    def _raise_timeout(self, method: str, path: str, policy: TimeoutSauce) -> NoReturn:
+        detail = (
+            f"{method} {path} exceeded local convey timeout "
+            f"(connect={policy.connect_timeout}s, read={policy._read}s, total={policy.total}s)"
+        )
+        raise ConveyTimeoutError(detail=detail)
 
     def request(
         self,
@@ -98,15 +132,18 @@ class ConveyClient:
             separator = "&" if "?" in url else "?"
             url += separator + urlencode(params, doseq=True)
 
+        timeout = self._timeout_kwargs(API_TIMEOUT)
         try:
             if method == "GET":
-                response = self._session.get(url)
+                response = self._session.get(url, **timeout)
             elif method == "DELETE":
-                response = self._session.delete(url)
+                response = self._session.delete(url, **timeout)
             elif method == "PUT":
-                response = self._session.put(url, json=json)
+                response = self._session.put(url, json=json, **timeout)
             else:
-                response = self._session.post(url, json=json)
+                response = self._session.post(url, json=json, **timeout)
+        except requests.exceptions.Timeout:
+            self._raise_timeout(method, path, API_TIMEOUT)
         except requests.exceptions.RequestException as exc:
             self._handle_unreachable(exc)
 
@@ -123,7 +160,14 @@ class ConveyClient:
                 handle = stack.enter_context(open(file_path, "rb"))
                 opened[field] = (filename, handle, content_type)
             try:
-                response = self._session.post(url, files=opened, data=data)
+                response = self._session.post(
+                    url,
+                    files=opened,
+                    data=data,
+                    **self._timeout_kwargs(UPLOAD_TIMEOUT),
+                )
+            except requests.exceptions.Timeout:
+                self._raise_timeout("POST", path, UPLOAD_TIMEOUT)
             except requests.exceptions.RequestException as exc:
                 self._handle_unreachable(exc)
         return self._decode(response)

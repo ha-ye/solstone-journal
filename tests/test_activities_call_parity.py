@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 import solstone.apps.activities.routes as activities_routes
 from solstone.apps.activities.call import app
 from solstone.convey.reasons import ACTIVITIES_BUSY
-from solstone.think.convey_client import ConveyClient
+from solstone.think.convey_client import TIMEOUT_MESSAGE, ConveyClient
 from solstone.think.journal_io import LockTimeout
 from tests._baseline_harness import make_test_client
 
@@ -833,4 +833,19 @@ def test_convey_down_prints_require_solstone_message(journal, monkeypatch):
         result.stderr
         == "sol: solstone isn't running. Start it with 'journal up' and retry.\n"
     )
+    assert result.stdout == ""
+
+
+def test_convey_timeout_prints_timeout_message(journal, monkeypatch):
+    class TimeoutSession:
+        def get(self, _url):
+            raise requests.exceptions.ReadTimeout()
+
+    client = ConveyClient(session=TimeoutSession(), base_url="http://localhost:5015")
+    monkeypatch.setattr("solstone.apps.activities.call.get_client", lambda: client)
+
+    result = CliRunner().invoke(app, ["list", "--day", DAY, "--facet", FACET])
+
+    assert result.exit_code == 1
+    assert result.stderr == f"{TIMEOUT_MESSAGE}\n"
     assert result.stdout == ""
