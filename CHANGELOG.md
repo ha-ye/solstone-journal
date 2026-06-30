@@ -4,6 +4,17 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.18] - 2026-06-30
+
+### Added
+- you can now pair a device to your journal over your private network from the command line, even when that device isn't on the same local network as your home. your home opens a brief pairing window directly to do it, instead of relying on a short code that kept rotating, so it's more reliable and there's no shared code sitting anywhere in between. if the window isn't ready yet, pairing waits for it and tells you plainly when it's unavailable, rather than failing with a confusing error.
+
+### Fixed
+- your private network's status now stays honest while it's running. it used to be able to read as connected while the link that reaches your journal from afar was actually failing. now it tells those apart, recovers on its own when the link goes stale, and never puts access tokens or connection secrets into its status or logs.
+- a local command that talks to your journal no longer waits forever if the journal stops responding. it now stops after a set wait and tells you "the journal didn't answer in time," instead of hanging.
+- status about finishing up your days is honest now too. when sol re-processes part of a day or re-analyzes a transcript, a step that had only started, or hadn't been verified, used to be able to read as done. your health could even read as well while it hadn't. anything that hasn't truly finished and produced a result now shows as still running or as a clear error, and a day that didn't finish re-processing no longer reads as fully caught up.
+- catching up on your days is steadier when something goes wrong. if sol gets stuck finishing one day, solstone now keeps working through the rest of your days instead of letting that one hold everything up, and a single stalled step can no longer tie up sol's daily work.
+
 ## [0.6.17] - 2026-06-29
 
 ### Added
