@@ -18,6 +18,7 @@ from solstone.think.catchup_state import (
 )
 from solstone.think.cluster import cluster_segments
 from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_REASON_CODES
+from solstone.think.data_state import DataState
 from solstone.think.utils import (
     DEFAULT_STREAM,
     day_dirs,
@@ -37,6 +38,13 @@ _MODES = ("segment", "daily", "activity", "weekly", "flush", "cadence")
 _FAILED_LIST_CAP = 20
 SEGMENT_FLOOR_TALENTS: tuple[str, ...] = ("documents",)
 SEGMENT_NONGATING_TALENTS: tuple[str, ...] = ("entities:detection",)
+SENSED_TERMINAL_STATES = frozenset(
+    {
+        DataState.ANALYZED.value,
+        DataState.PURGED.value,
+        DataState.EMPTY.value,
+    }
+)
 STUCK_FAIL_THRESHOLD = 3
 BACKLOG_DEFAULT_WINDOW = 30
 
@@ -789,11 +797,10 @@ def segment_fully_sensed(data_state: dict[str, str]) -> bool:
     """True when every non-absent modality has finished sensing.
 
     ``data_state`` is the per-segment dict from ``cluster_segments``; it already
-    omits absent modalities, so an absent modality cannot peg a segment. Note
-    cluster's ``_detect_data_state`` cannot emit ``purged`` today; ``purged`` is
-    kept here for ``DataState`` vocabulary alignment and forward-safety.
+    omits absent modalities, so an absent modality cannot peg a segment. Empty
+    outputs are terminal; failed outputs still block sensing completion.
     """
-    return all(state in {"analyzed", "purged"} for state in data_state.values())
+    return all(state in SENSED_TERMINAL_STATES for state in data_state.values())
 
 
 def segment_fully_thought(progress: SegmentProgress | None) -> tuple[bool, str | None]:
@@ -847,7 +854,7 @@ def classify_segment_completion(
             detail = ",".join(
                 f"{modality}={state}"
                 for modality, state in sorted(seg["data_state"].items())
-                if state not in {"analyzed", "purged"}
+                if state not in SENSED_TERMINAL_STATES
             )
             blockers.append(
                 {

@@ -798,7 +798,7 @@ def test_scan_day_marks_header_only_audio_pending(tmp_path, monkeypatch):
     assert segments[0]["data_state"] == {"audio": "pending"}
 
 
-def test_detect_data_state_is_header_blind_to_empty_record(tmp_path):
+def test_detect_data_state_reads_empty_processing_record(tmp_path):
     mod = importlib.import_module("solstone.think.cluster")
     plain_segment = tmp_path / "plain" / "090000_300"
     empty_record_segment = tmp_path / "empty_record" / "090000_300"
@@ -823,7 +823,7 @@ def test_detect_data_state_is_header_blind_to_empty_record(tmp_path):
     empty_record_state = mod._detect_data_state(empty_record_segment)
 
     assert plain_state == {"screen": "pending"}
-    assert empty_record_state == plain_state
+    assert empty_record_state == {"screen": "empty"}
 
 
 def test_derive_modality_state_chunks_win_is_pure(tmp_path):

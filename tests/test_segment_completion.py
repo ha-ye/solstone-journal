@@ -12,6 +12,11 @@ from pathlib import Path
 
 import pytest
 
+from solstone.observe.processing_record import (
+    REASON_NO_DECODABLE_FRAMES,
+    STATE_EMPTY,
+    build_processing_record,
+)
 from solstone.think.cluster import cluster_segments
 from solstone.think.pipeline_health import (
     SEGMENT_FLOOR_TALENTS,
@@ -196,6 +201,24 @@ def _seed_segment(
             json.dumps({"raw": "screen.webm", "type": "screencast"})
             + "\n"
             + json.dumps({"timestamp": 0, "content": {}})
+            + "\n",
+            encoding="utf-8",
+        )
+    elif state == "empty":
+        record = build_processing_record(
+            state=STATE_EMPTY,
+            reason_code=REASON_NO_DECODABLE_FRAMES,
+            handler="describe",
+            input_size=0,
+        )
+        (segment_dir / "screen.jsonl").write_text(
+            json.dumps(
+                {
+                    "raw": "screen.webm",
+                    "type": "screencast",
+                    "_solstone_processing": record,
+                }
+            )
             + "\n",
             encoding="utf-8",
         )
@@ -494,6 +517,7 @@ def test_segment_fully_sensed_rejects_unfinished_states(state):
 
 def test_segment_fully_sensed_accepts_done_states():
     assert segment_fully_sensed({"screen": "analyzed", "audio": "purged"}) is True
+    assert segment_fully_sensed({"screen": "empty"}) is True
 
 
 def test_segment_fully_thought_idle_short_circuits():
@@ -876,6 +900,19 @@ def test_not_fully_sensed_segment_withholds(segment_journal, monkeypatch, caplog
     assert "screen=pending" in caplog.text
 
 
+def test_empty_segment_is_not_counted_not_sensed(segment_journal):
+    day = "20990416"
+    _seed_segment(segment_journal, day, SEGMENT, state="empty")
+
+    completion = classify_segment_completion(
+        cluster_segments(day),
+        read_segment_progress(day),
+    )
+
+    assert completion.not_sensed == 0
+    assert all(blocker["dimension"] != "not_sensed" for blocker in completion.blockers)
+
+
 def test_idle_segment_does_not_block_day(segment_journal, monkeypatch):
     _seed_segment(segment_journal, DAY, SEGMENT)
     _write_health(segment_journal, DAY, "001_daily.jsonl", [_daily_complete()])
@@ -889,6 +926,49 @@ def test_idle_segment_does_not_block_day(segment_journal, monkeypatch):
     health = _run_daily_gate(segment_journal, DAY, monkeypatch)
 
     assert (health / "daily.updated").exists()
+
+
+def test_empty_idle_segment_allows_daily_gate(
+    segment_journal,
+    monkeypatch,
+):
+    day = "20990417"
+    _seed_segment(segment_journal, day, SEGMENT, state="empty")
+    _write_health(segment_journal, day, "001_daily.jsonl", [_daily_complete()])
+    _write_health(
+        segment_journal,
+        day,
+        "002_segment.jsonl",
+        _complete_segment_events(SEGMENT, density="idle"),
+    )
+
+    completion = classify_segment_completion(
+        cluster_segments(day),
+        read_segment_progress(day),
+    )
+    assert completion.blockers == []
+
+    health = _run_daily_gate(segment_journal, day, monkeypatch)
+
+    assert (health / "daily.updated").exists()
+
+
+@pytest.mark.parametrize("state", ["pending", "analyzing"])
+def test_unfinished_sensing_states_still_block_daily_gate(
+    segment_journal,
+    monkeypatch,
+    state,
+):
+    day = "20990418"
+    _seed_segment(segment_journal, day, SEGMENT, state=state)
+    _write_health(segment_journal, day, "001_daily.jsonl", [_daily_complete()])
+
+    segments = cluster_segments(day)
+    assert segments[0]["data_state"] == {"screen": state}
+
+    health = _run_daily_gate(segment_journal, day, monkeypatch)
+
+    assert not (health / "daily.updated").exists()
 
 
 def test_dropped_segment_directory_is_not_required(segment_journal, monkeypatch):
