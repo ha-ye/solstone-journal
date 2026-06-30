@@ -150,6 +150,27 @@ def _write_raw_pending_segment(
     return segment_dir
 
 
+def _write_analyzing_marker(
+    segment_dir: Path,
+    *,
+    modality: str = "screen",
+    request_id: str = "req-1",
+) -> Path:
+    marker = segment_dir / f".analyzing_{modality}"
+    marker.write_text(
+        json.dumps(
+            {
+                "started_at": "2026-05-20T09:00:00Z",
+                "modality": modality,
+                "request_id": request_id,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return marker
+
+
 class _ProcStub:
     def __init__(self, rc: int = 0, stderr: bytes = b"") -> None:
         self.rc = rc
@@ -1098,10 +1119,12 @@ def test_reprocess_segment_starts_sense_process(client, journal_copy, monkeypatc
     data = response.get_json()
     assert data["data_state"]["screen"] == "analyzing"
     assert data["marker"]["started_at"]
+    assert data["repair_status"] == "accepted"
     marker = segment_dir / ".analyzing_screen"
     assert marker.exists()
     marker_payload = json.loads(marker.read_text())
     assert marker_payload["modality"] == "screen"
+    assert marker_payload["request_id"]
     assert len(popen_calls) == 1
     argv, kwargs = popen_calls[0]
     assert argv == [
@@ -1124,16 +1147,18 @@ def test_reprocess_segment_starts_sense_process(client, journal_copy, monkeypatc
     assert len(threads) == 1
     assert threads[0].daemon is True
     assert threads[0].started is True
+    assert threads[0].args[1] == marker
+    assert threads[0].args[2] == segment_dir / ".analyze_failed_screen"
+    assert threads[0].args[3] == segment_dir
+    assert threads[0].args[4] == "screen"
+    assert threads[0].args[5] == marker_payload["request_id"]
 
 
 def test_reprocess_segment_analyzing_is_idempotent(client, journal_copy, monkeypatch):
     day = "20990125"
     segment = "090000_300"
     segment_dir = _write_raw_pending_segment(journal_copy, day, "alpha", segment)
-    (segment_dir / ".analyzing_screen").write_text(
-        '{"started_at": "2026-05-20T09:00:00Z", "modality": "screen"}\n',
-        encoding="utf-8",
-    )
+    _write_analyzing_marker(segment_dir)
 
     def fail_popen(*args, **kwargs):
         raise AssertionError("idempotent analyzing request must not spawn")
@@ -1149,6 +1174,39 @@ def test_reprocess_segment_analyzing_is_idempotent(client, journal_copy, monkeyp
     data = response.get_json()
     assert data["data_state"]["screen"] == "analyzing"
     assert data["marker"] == {"started_at": "2026-05-20T09:00:00Z"}
+    assert data["repair_status"] == "running"
+
+
+def test_reprocess_segment_file_exists_race_returns_running(
+    client, journal_copy, monkeypatch
+):
+    day = "20990125"
+    segment = "091000_300"
+    _write_raw_pending_segment(journal_copy, day, "alpha", segment)
+
+    def race_create(seg_path: Path, modality: str) -> Path:
+        _write_analyzing_marker(seg_path, modality=modality, request_id="race-req")
+        raise FileExistsError
+
+    def fail_popen(*args, **kwargs):
+        raise AssertionError("race request must not spawn")
+
+    monkeypatch.setattr(
+        "solstone.apps.transcripts.routes.create_analyzing_marker",
+        race_create,
+    )
+    monkeypatch.setattr("solstone.apps.transcripts.routes.subprocess.Popen", fail_popen)
+
+    response = client.post(
+        f"/app/transcripts/api/segment/{day}/alpha/{segment}/reprocess",
+        json={"modality": "screen"},
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["data_state"]["screen"] == "analyzing"
+    assert data["marker"] == {"started_at": "2026-05-20T09:00:00Z"}
+    assert data["repair_status"] == "running"
 
 
 def test_reprocess_segment_failed_unlinks_failed_marker(
@@ -1171,6 +1229,7 @@ def test_reprocess_segment_failed_unlinks_failed_marker(
     )
 
     assert response.status_code == 200
+    assert response.get_json()["repair_status"] == "accepted"
     assert not failed.exists()
     assert (segment_dir / ".analyzing_screen").exists()
 
@@ -1203,29 +1262,59 @@ def test_reprocess_segment_rolls_back_marker_when_spawn_fails(
 
 
 def test_reprocess_watcher_success_removes_marker(tmp_path):
-    marker = tmp_path / ".analyzing_screen"
-    failed = tmp_path / ".analyze_failed_screen"
-    marker.write_text(
-        '{"started_at": "2026-05-20T09:00:00Z", "modality": "screen"}\n',
-        encoding="utf-8",
+    (tmp_path / "screen.webm").write_bytes(b"screen")
+    _write_jsonl(
+        tmp_path / "screen.jsonl",
+        [{"raw": "screen.webm"}, {"frame_id": 1, "timestamp": 1, "analysis": {}}],
     )
+    marker = _write_analyzing_marker(tmp_path)
+    failed = tmp_path / ".analyze_failed_screen"
 
-    _watch_reprocess_completion(_ProcStub(rc=0), marker, failed)
+    _watch_reprocess_completion(
+        _ProcStub(rc=0), marker, failed, tmp_path, "screen", "req-1"
+    )
 
     assert not marker.exists()
     assert not failed.exists()
 
 
-def test_reprocess_watcher_failure_writes_failed_marker(tmp_path):
-    marker = tmp_path / ".analyzing_screen"
+def test_reprocess_watcher_success_without_chunks_writes_no_output(tmp_path):
+    (tmp_path / "screen.webm").write_bytes(b"screen")
+    _write_jsonl(tmp_path / "screen.jsonl", [{"raw": "screen.webm"}])
+    marker = _write_analyzing_marker(tmp_path)
     failed = tmp_path / ".analyze_failed_screen"
-    marker.write_text(
-        '{"started_at": "2026-05-20T09:00:00Z", "modality": "screen"}\n',
-        encoding="utf-8",
+
+    _watch_reprocess_completion(
+        _ProcStub(rc=0), marker, failed, tmp_path, "screen", "req-1"
     )
+
+    assert not marker.exists()
+    payload = json.loads(failed.read_text())
+    assert payload["reason"] == "no_output"
+    assert payload["reason_code"] == "no_output"
+    assert payload["detail"] == "worker exited 0 without analyzed chunks"
+
+
+def test_reprocess_watcher_request_id_mismatch_noops(tmp_path):
+    marker = _write_analyzing_marker(tmp_path, request_id="new-req")
+    failed = tmp_path / ".analyze_failed_screen"
+
+    _watch_reprocess_completion(
+        _ProcStub(rc=7, stderr=b"boom"), marker, failed, tmp_path, "screen", "old-req"
+    )
+
+    assert marker.exists()
+    assert not failed.exists()
+
+
+def test_reprocess_watcher_failure_writes_failed_marker(tmp_path):
+    marker = _write_analyzing_marker(tmp_path)
+    failed = tmp_path / ".analyze_failed_screen"
     stderr = b"x" * 600
 
-    _watch_reprocess_completion(_ProcStub(rc=7, stderr=stderr), marker, failed)
+    _watch_reprocess_completion(
+        _ProcStub(rc=7, stderr=stderr), marker, failed, tmp_path, "screen", "req-1"
+    )
 
     assert not marker.exists()
     payload = json.loads(failed.read_text())
@@ -1234,6 +1323,7 @@ def test_reprocess_watcher_failure_writes_failed_marker(tmp_path):
     assert payload["reason"] == "exit_7"
     assert payload["detail"] == "x" * 512
     assert payload["failed_at"]
+    assert "reason_code" not in payload
 
 
 def test_reprocess_segment_isolates_streams(client, journal_copy, monkeypatch):

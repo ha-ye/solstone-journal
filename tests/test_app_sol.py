@@ -347,6 +347,7 @@ def sol_listing_client(tmp_path, monkeypatch):
     talents_dir = tmp_path / "talents"
     talents_dir.mkdir()
 
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     monkeypatch.setattr(state, "journal_root", str(tmp_path))
     monkeypatch.setattr("solstone.apps.sol.routes.get_facets", lambda: {})
     monkeypatch.setattr("solstone.apps.sol.routes._build_talents_meta", lambda: {})
@@ -383,6 +384,7 @@ class TestApiTalentsDayListing:
             "tool_count": 2,
             "cost": 0.0123,
             "error_message": "rate limited",
+            "reason_code": "no_output",
             "output_file": "talents/flow.md",
             "prompt": "Summarize the day",
         }
@@ -408,6 +410,7 @@ class TestApiTalentsDayListing:
             "model": "gemini-2.5-flash",
             "provider": "google",
             "error_message": "rate limited",
+            "reason_code": "no_output",
             "output_file": "talents/flow.md",
         }
 
@@ -447,6 +450,7 @@ class TestApiTalentsDayListing:
             "tool_count",
             "cost",
             "error_message",
+            "reason_code",
             "output_file",
             "prompt",
         ):
@@ -488,11 +492,49 @@ class TestApiTalentsDayListing:
             "tool_count",
             "cost",
             "error_message",
+            "reason_code",
             "output_file",
             "prompt",
         ):
             assert use[field] is None
         assert index_path.read_bytes() == before
+
+    def test_run_detail_exposes_error_reason_code(self, sol_listing_client):
+        """Run detail exposes terminal error reason_code and keeps event payload."""
+        client, talents_dir = sol_listing_client
+        use_id = "4071168000001"
+        run_dir = talents_dir / "flow"
+        run_dir.mkdir()
+        events = [
+            {
+                "event": "request",
+                "ts": 4071168000000,
+                "name": "flow",
+                "day": "20990104",
+                "prompt": "Summarize the day",
+                "provider": "google",
+            },
+            {
+                "event": "error",
+                "ts": 4071168000100,
+                "error": "no_output: expects-output talent finished without producing a result",
+                "reason_code": "no_output",
+                "provider": "google",
+                "terminal": True,
+            },
+        ]
+        (run_dir / f"{use_id}.jsonl").write_text(
+            "".join(json.dumps(event) + "\n" for event in events),
+            encoding="utf-8",
+        )
+
+        resp = client.get(f"/app/sol/api/run/{use_id}")
+
+        assert resp.status_code == 200
+        payload = resp.get_json()
+        assert payload["failed"] is True
+        assert payload["reason_code"] == "no_output"
+        assert payload["events"][0]["reason_code"] == "no_output"
 
 
 class TestApiUpdatedDays:

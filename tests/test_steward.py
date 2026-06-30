@@ -22,9 +22,11 @@ from solstone.think.steward import (
     RecipeOutcome,
     StalePendingTarget,
     _modality_signals,
+    _recipe_outcomes_7d,
     append_steward_event,
     default_summary_from_body,
     detect_stale_pending_segments,
+    fire_stale_pending_recipe,
     load_steward_log,
     normalize_summary,
     read_steward_health,
@@ -74,6 +76,22 @@ def _seed_stale_pending_segment(
     raw_path.write_bytes(b"raw")
     mtime = time.time() - age_seconds
     os.utime(raw_path, (mtime, mtime))
+    return segment_dir
+
+
+def _seed_analyzed_screen_segment(
+    journal: Path,
+    day: str,
+    stream: str,
+    segment_key: str,
+) -> Path:
+    segment_dir = journal / "chronicle" / day / stream / segment_key
+    segment_dir.mkdir(parents=True, exist_ok=True)
+    (segment_dir / "screen.webm").write_bytes(b"raw")
+    (segment_dir / "screen.jsonl").write_text(
+        '{"raw": "screen.webm"}\n{"timestamp": 1, "content": {}}\n',
+        encoding="utf-8",
+    )
     return segment_dir
 
 
@@ -205,7 +223,7 @@ def test_modality_signals_does_not_repair_media_purged_marker(tmp_path):
     assert not failed.exists()
 
 
-def test_recipe_fire_success_appends_log_entry(tmp_path, monkeypatch):
+def test_recipe_fire_accepted_appends_log_entry(tmp_path, monkeypatch):
     _set_journal(monkeypatch, tmp_path)
     _seed_stale_pending_segment(
         tmp_path, "20260526", "archon", "120000_300", "audio", 7 * 60 * 60
@@ -215,7 +233,7 @@ def test_recipe_fire_success_appends_log_entry(tmp_path, monkeypatch):
         return RecipeOutcome(
             recipe="stale_pending_segment_reprocess",
             target=target.target,
-            outcome="success",
+            outcome="accepted",
             detail=None,
             ts=now_ms(),
         )
@@ -224,8 +242,42 @@ def test_recipe_fire_success_appends_log_entry(tmp_path, monkeypatch):
 
     result = run_recipe_pass("20260526")
 
-    assert result["fired"][0].outcome == "success"
-    assert load_steward_log()[0]["outcome"] == "success"
+    assert result["fired"][0].outcome == "accepted"
+    assert load_steward_log()[0]["outcome"] == "accepted"
+
+
+def test_recipe_fire_parses_running_repair_status(tmp_path, monkeypatch):
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def getcode(self):
+            return self.status
+
+        def read(self):
+            return b'{"repair_status":"running"}'
+
+    monkeypatch.setattr(
+        "solstone.think.steward.urllib.request.urlopen",
+        lambda request, timeout: Response(),
+    )
+    target = StalePendingTarget(
+        day="20260526",
+        stream="archon",
+        segment_key="120000_300",
+        modality="audio",
+        segment_dir=tmp_path,
+    )
+
+    outcome = fire_stale_pending_recipe(target, port=5015)
+
+    assert outcome.outcome == "running"
+    assert outcome.detail is None
 
 
 def test_recipe_fire_failure_appends_log_entry(tmp_path, monkeypatch):
@@ -238,7 +290,7 @@ def test_recipe_fire_failure_appends_log_entry(tmp_path, monkeypatch):
         return RecipeOutcome(
             recipe="stale_pending_segment_reprocess",
             target=target.target,
-            outcome="failure",
+            outcome="failed",
             detail="500",
             ts=now_ms(),
         )
@@ -248,7 +300,7 @@ def test_recipe_fire_failure_appends_log_entry(tmp_path, monkeypatch):
     run_recipe_pass("20260526")
 
     row = load_steward_log()[0]
-    assert row["outcome"] == "failure"
+    assert row["outcome"] == "failed"
     assert row["detail"] == "500"
 
 
@@ -261,8 +313,8 @@ def test_escalation_after_two_consecutive_failures(tmp_path, monkeypatch):
     _seed_steward_log(
         tmp_path,
         [
-            _recipe_row(target, "failure", now_ms() - 2000),
-            _recipe_row(target, "failure", now_ms() - 1000),
+            _recipe_row(target, "failed", now_ms() - 2000),
+            _recipe_row(target, "failed", now_ms() - 1000),
         ],
     )
     calls = []
@@ -277,7 +329,7 @@ def test_escalation_after_two_consecutive_failures(tmp_path, monkeypatch):
     assert calls == []
 
 
-def test_escalation_resets_after_success(tmp_path, monkeypatch):
+def test_escalation_resets_after_verified_healed(tmp_path, monkeypatch):
     _set_journal(monkeypatch, tmp_path)
     target = "20260526/archon/120000_300:audio"
     _seed_stale_pending_segment(
@@ -286,9 +338,9 @@ def test_escalation_resets_after_success(tmp_path, monkeypatch):
     _seed_steward_log(
         tmp_path,
         [
-            _recipe_row(target, "failure", now_ms() - 3000),
-            _recipe_row(target, "failure", now_ms() - 2000),
-            _recipe_row(target, "success", now_ms() - 1000),
+            _recipe_row(target, "failed", now_ms() - 3000),
+            _recipe_row(target, "failed", now_ms() - 2000),
+            _recipe_row(target, "verified_healed", now_ms() - 1000),
         ],
     )
 
@@ -296,7 +348,7 @@ def test_escalation_resets_after_success(tmp_path, monkeypatch):
         return RecipeOutcome(
             recipe="stale_pending_segment_reprocess",
             target=target.target,
-            outcome="success",
+            outcome="accepted",
             detail=None,
             ts=now_ms(),
         )
@@ -307,6 +359,120 @@ def test_escalation_resets_after_success(tmp_path, monkeypatch):
 
     assert result["escalated_targets"] == []
     assert result["fired"][0].target == target
+
+
+def test_reverification_marks_analyzed_target_verified_healed(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+    target = "20260526/archon/120000_300:screen"
+    _seed_analyzed_screen_segment(tmp_path, "20260526", "archon", "120000_300")
+    _seed_steward_log(
+        tmp_path,
+        [_recipe_row(target, "accepted", now_ms() - 1000)],
+    )
+    monkeypatch.setattr(
+        "solstone.think.steward.fire_stale_pending_recipe",
+        lambda target, *, port: pytest.fail("verified target must not refire"),
+    )
+
+    result = run_recipe_pass("20260526")
+
+    assert result["fired"] == []
+    assert load_steward_log()[-1]["outcome"] == "verified_healed"
+
+
+def test_reverification_leaves_active_inflight_bounded(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+    target = "20260526/archon/120000_300:screen"
+    segment_dir = _seed_stale_pending_segment(
+        tmp_path, "20260526", "archon", "120000_300", "screen", 7 * 60 * 60
+    )
+    (segment_dir / ".analyzing_screen").write_text(
+        '{"started_at": "2026-05-20T09:00:00Z", "modality": "screen"}\n',
+        encoding="utf-8",
+    )
+    _seed_steward_log(
+        tmp_path,
+        [
+            _recipe_row(target, "accepted", now_ms() - 2000),
+            _recipe_row(target, "running", now_ms() - 1000),
+        ],
+    )
+    monkeypatch.setattr(
+        "solstone.think.steward.fire_stale_pending_recipe",
+        lambda target, *, port: pytest.fail("active in-flight target must not refire"),
+    )
+
+    result = run_recipe_pass("20260526")
+
+    assert result["fired"] == []
+    assert [row["outcome"] for row in load_steward_log()] == ["accepted", "running"]
+
+
+def test_reverification_marks_stale_analyzing_target_failed(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+    target = "20260526/archon/120000_300:screen"
+    segment_dir = _seed_stale_pending_segment(
+        tmp_path, "20260526", "archon", "120000_300", "screen", 7 * 60 * 60
+    )
+    marker = segment_dir / ".analyzing_screen"
+    marker.write_text(
+        '{"started_at": "2026-05-20T09:00:00Z", "modality": "screen"}\n',
+        encoding="utf-8",
+    )
+    old_time = time.time() - 2000
+    os.utime(marker, (old_time, old_time))
+    _seed_steward_log(
+        tmp_path,
+        [_recipe_row(target, "accepted", now_ms() - 1000)],
+    )
+
+    result = run_recipe_pass("20260526")
+
+    assert result["fired"] == []
+    rows = load_steward_log()
+    assert rows[-1]["outcome"] == "failed"
+    assert (segment_dir / ".analyze_failed_screen").exists()
+
+
+def test_reverification_marks_no_output_failed_marker(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+    target = "20260526/archon/120000_300:screen"
+    segment_dir = _seed_stale_pending_segment(
+        tmp_path, "20260526", "archon", "120000_300", "screen", 7 * 60 * 60
+    )
+    (segment_dir / ".analyze_failed_screen").write_text(
+        json.dumps(
+            {
+                "started_at": "2026-05-20T09:00:00Z",
+                "modality": "screen",
+                "reason": "no_output",
+                "failed_at": "2026-05-20T09:00:10Z",
+                "detail": "worker exited 0 without analyzed chunks",
+                "reason_code": "no_output",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _seed_steward_log(
+        tmp_path,
+        [_recipe_row(target, "accepted", now_ms() - 1000)],
+    )
+
+    result = run_recipe_pass("20260526")
+
+    assert result["fired"] == []
+    assert load_steward_log()[-1]["outcome"] == "no_output"
+
+
+def test_recipe_rollup_folds_legacy_success_to_verified_healed(monkeypatch):
+    monkeypatch.setattr("solstone.think.steward.now_ms", lambda: 100_000)
+    target = "20260526/archon/120000_300:screen"
+    rollup = _recipe_outcomes_7d([_recipe_row(target, "success", 99_000)])
+
+    assert rollup[0]["verified_healed"] == 1
+    assert rollup[0]["failed"] == 0
+    assert rollup[0]["total"] == 1
 
 
 def test_pre_process_uses_pass_event_without_refiring_recipes(tmp_path, monkeypatch):
@@ -325,7 +491,7 @@ def test_pre_process_uses_pass_event_without_refiring_recipes(tmp_path, monkeypa
         return RecipeOutcome(
             recipe=STALE_PENDING_RECIPE,
             target=target.target,
-            outcome="success",
+            outcome="accepted",
             detail=None,
             ts=now_ms(),
         )
@@ -361,7 +527,7 @@ def test_pre_process_renders_pass_event_into_health_body(tmp_path, monkeypatch):
             RecipeOutcome(
                 recipe=STALE_PENDING_RECIPE,
                 target="20260607/local/seg1:audio",
-                outcome="failure",
+                outcome="failed",
                 detail="boom",
                 ts=123,
             )
@@ -634,9 +800,13 @@ def test_render_health_body_auto_repair_rollup():
     rollup = [
         {
             "recipe": STALE_PENDING_RECIPE,
-            "success": 2,
-            "failure": 1,
-            "total": 3,
+            "accepted": 1,
+            "running": 1,
+            "verified_healed": 2,
+            "failed": 1,
+            "no_output": 1,
+            "unverified": 2,
+            "total": 6,
             "last_iso": "2026-06-06T10:00:00Z",
         }
     ]
@@ -652,9 +822,37 @@ def test_render_health_body_auto_repair_rollup():
     # A 7d rollup with a failure means Sol is not "well".
     assert "Sol is well." not in body
     assert (
-        "stale-pending segment reprocess — 3x in 7d (2 succeeded, 1 failed), "
+        "stale-pending segment reprocess — 6x in 7d (2 verified-healed, "
+        "2 in-flight, 2 failed), "
         "last 2026-06-06T10:00:00Z" in body
     )
+
+
+def test_render_health_body_inflight_rollup_is_not_well():
+    rollup = [
+        {
+            "recipe": STALE_PENDING_RECIPE,
+            "accepted": 1,
+            "running": 1,
+            "verified_healed": 0,
+            "failed": 0,
+            "no_output": 0,
+            "unverified": 2,
+            "total": 2,
+            "last_iso": "2026-06-06T10:00:00Z",
+        }
+    ]
+    body = render_health_body(
+        generated_at=_GEN_AT,
+        pipeline_day={"anomalies": []},
+        recipe_outcomes_7d=rollup,
+        escalated_targets=[],
+        data_source_errors=[],
+    )
+
+    assert validate_steward_health(body) is None
+    assert "Sol is well." not in body
+    assert "2 stale segment repairs in progress, not yet verified." in body
 
 
 def test_render_health_body_first_attention_bullet_drives_widget(tmp_path):

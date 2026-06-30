@@ -790,6 +790,21 @@ def _run_post_hooks(result: str, config: dict) -> str:
     return result
 
 
+def _expected_output_blank(config: dict, raw_result: str, result: str) -> bool:
+    if not config.get("output_path"):
+        return False
+    if result and result.strip():
+        return False
+    if raw_result and raw_result.strip():
+        return False
+    return True
+
+
+_NO_OUTPUT_ERROR = (
+    "no_output: expects-output talent finished without producing a result"
+)
+
+
 # =============================================================================
 # Unified Talent Execution
 # =============================================================================
@@ -1190,11 +1205,23 @@ async def _execute_with_tools(
     # Wrapper to intercept finish event for post-processing
     def talent_emit_event(data: Event) -> None:
         if data.get("event") == "finish":
-            result = data.get("result", "")
-            result = _run_post_hooks(result, config)
+            raw_result = data.get("result", "")
+            result = _run_post_hooks(raw_result, config)
+            if _expected_output_blank(config, raw_result, result):
+                emit_event(
+                    {
+                        "event": "error",
+                        "error": _NO_OUTPUT_ERROR,
+                        "reason_code": "no_output",
+                        "provider": config.get("provider"),
+                        "terminal": True,
+                        "ts": now_ms(),
+                    }
+                )
+                return
 
             updates: dict[str, Any] = {}
-            if result != data.get("result", ""):
+            if result != raw_result:
                 updates["result"] = result
 
             degraded = _classify_degraded(data.get("usage"), config)
@@ -1430,11 +1457,23 @@ async def _execute_generate(
             request_health_recheck()
             config["health_stale"] = False
 
-    result = gen_result["text"]
+    raw_result = gen_result["text"]
     usage_data = gen_result.get("usage")
 
     # Run post-hooks
-    result = _run_post_hooks(result, config)
+    result = _run_post_hooks(raw_result, config)
+    if _expected_output_blank(config, raw_result, result):
+        emit_event(
+            {
+                "event": "error",
+                "error": _NO_OUTPUT_ERROR,
+                "reason_code": "no_output",
+                "provider": config.get("provider"),
+                "terminal": True,
+                "ts": now_ms(),
+            }
+        )
+        return
 
     # Write output
     output_changed = False

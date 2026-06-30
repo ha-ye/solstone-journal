@@ -516,6 +516,7 @@ def _write_failed_reprocess_marker(
     failed_path: Path,
     reason: str,
     detail: str,
+    reason_code: str | None = None,
 ) -> None:
     marker_payload = _read_marker_payload(marker_path)
     payload = {
@@ -525,6 +526,8 @@ def _write_failed_reprocess_marker(
         "failed_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "detail": detail,
     }
+    if reason_code is not None:
+        payload["reason_code"] = reason_code
     tmp = failed_path.with_suffix(failed_path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
     tmp.replace(failed_path)
@@ -535,14 +538,30 @@ def _watch_reprocess_completion(
     proc: subprocess.Popen,
     marker_path: Path,
     failed_path: Path,
+    segment_dir_path: Path,
+    modality: str,
+    request_id: str,
 ) -> None:
     try:
         rc = proc.wait()
         stderr_tail = ""
         if proc.stderr:
             stderr_tail = (proc.stderr.read() or b"")[-512:].decode("utf-8", "replace")
+        marker_payload = _read_marker_payload(marker_path)
+        if marker_payload.get("request_id") != request_id:
+            return
         if rc == 0:
-            marker_path.unlink(missing_ok=True)
+            state = str(_segment_modality_signals(segment_dir_path, modality)["state"])
+            if state == DataState.ANALYZED.value:
+                marker_path.unlink(missing_ok=True)
+                return
+            _write_failed_reprocess_marker(
+                marker_path,
+                failed_path,
+                "no_output",
+                "worker exited 0 without analyzed chunks",
+                reason_code="no_output",
+            )
             return
         _write_failed_reprocess_marker(
             marker_path,
@@ -1013,6 +1032,7 @@ def reprocess_segment(day: str, stream: str, segment_key: str) -> Any:
             {
                 "data_state": data_state,
                 "marker": {"started_at": marker.get("started_at", "")},
+                "repair_status": "running",
             }
         )
 
@@ -1029,8 +1049,11 @@ def reprocess_segment(day: str, stream: str, segment_key: str) -> Any:
             {
                 "data_state": data_state,
                 "marker": {"started_at": marker.get("started_at", "")},
+                "repair_status": "running",
             }
         )
+    marker = _read_marker_payload(marker_path)
+    request_id = str(marker.get("request_id", ""))
 
     argv = [
         sys.executable,
@@ -1063,18 +1086,25 @@ def reprocess_segment(day: str, stream: str, segment_key: str) -> Any:
 
     watcher = threading.Thread(
         target=_watch_reprocess_completion,
-        args=(proc, marker_path, failed_path),
+        args=(
+            proc,
+            marker_path,
+            failed_path,
+            segment_dir_path,
+            modality,
+            request_id,
+        ),
         daemon=True,
     )
     watcher.start()
 
     data_state = _segment_data_state(segment_dir_path)
     data_state[modality] = DataState.ANALYZING.value
-    marker = _read_marker_payload(marker_path)
     return jsonify(
         {
             "data_state": data_state,
             "marker": {"started_at": marker.get("started_at", "")},
+            "repair_status": "accepted",
         }
     )
 

@@ -188,7 +188,7 @@ def test_pass_event_persisted(journal_path, heartbeat_mocks, monkeypatch):
     outcome = RecipeOutcome(
         recipe="stale_pending_segment_reprocess",
         target="20260607/local/seg1:audio",
-        outcome="success",
+        outcome="accepted",
         detail=None,
         ts=123,
     )
@@ -214,7 +214,7 @@ def test_pass_event_persisted(journal_path, heartbeat_mocks, monkeypatch):
                     {
                         "recipe": "stale_pending_segment_reprocess",
                         "target": "20260607/local/seg1:audio",
-                        "outcome": "success",
+                        "outcome": "accepted",
                         "detail": None,
                         "ts": 123,
                     }

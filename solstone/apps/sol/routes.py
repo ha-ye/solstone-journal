@@ -159,6 +159,7 @@ def _parse_use_events(
         "finish_ts": None,
         "error_ts": None,
         "error_message": None,
+        "reason_code": None,
     }
     events: list[dict] = [] if collect_events else None
 
@@ -185,6 +186,7 @@ def _parse_use_events(
                 result["usage"] = event.get("usage")
             elif event_type == "error":
                 result["error_ts"] = event.get("ts", 0)
+                result["reason_code"] = event.get("reason_code")
                 msg = event.get("error", "")
                 if msg:
                     result["error_message"] = msg[:200]
@@ -351,6 +353,7 @@ def _get_uses_for_day(day: str, facet_filter: str | None = None) -> list[dict]:
                             "model": entry.get("model"),
                             "provider": entry.get("provider"),
                             "error_message": entry.get("error_message"),
+                            "reason_code": entry.get("reason_code"),
                             "output_file": entry.get("output_file"),
                         }
                     )
@@ -553,6 +556,7 @@ def api_agent_run(use_id: str) -> Any:
             "model": event_data["model"],
             "provider": request_event.get("provider") or event_data.get("provider"),
             "error_message": event_data["error_message"],
+            "reason_code": event_data.get("reason_code"),
             "output_file": output_file,
             "events": event_data.get("events", []),
         }

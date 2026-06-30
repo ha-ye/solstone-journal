@@ -9,6 +9,7 @@ Tests cover:
 - Hook error handling
 """
 
+import asyncio
 import importlib
 import io
 import json
@@ -207,6 +208,41 @@ def post_process(result, context):
     content = finish_events[0]["result"]
     assert "## Original Result" in content
     assert "## Hook was here" in content
+
+
+def test_tools_finish_blank_expected_output_emits_terminal_no_output(
+    tmp_path, monkeypatch
+):
+    """Tools providers that finish blank for an output-path talent emit error."""
+    from solstone.think.talents import _execute_with_tools
+
+    class FakeProvider:
+        @staticmethod
+        async def run_cogitate(config, on_event):
+            on_event({"event": "finish", "result": "   "})
+
+    output_path = tmp_path / "out.md"
+    monkeypatch.setattr(
+        "solstone.think.providers.get_provider_module",
+        lambda provider: FakeProvider,
+    )
+    events: list[dict] = []
+
+    asyncio.run(
+        _execute_with_tools(
+            {
+                "provider": "google",
+                "output": "md",
+                "output_path": str(output_path),
+            },
+            events.append,
+        )
+    )
+
+    assert [event["event"] for event in events] == ["error"]
+    assert events[0]["reason_code"] == "no_output"
+    assert events[0]["terminal"] is True
+    assert not output_path.exists()
 
 
 def test_output_hook_returns_none(tmp_path, monkeypatch):

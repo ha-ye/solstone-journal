@@ -42,6 +42,7 @@ from solstone.think.utils import (
     iter_segments,
     now_ms,
     read_service_port,
+    segment_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,15 @@ SUGGESTED_ACTIONS: tuple[str, ...] = (
 _HEADLINE_MAX = 80
 _SENTENCE_MAX = 280
 _RECIPE_LABELS = {STALE_PENDING_RECIPE: "stale-pending segment reprocess"}
+_RECIPE_OUTCOMES = {
+    "accepted",
+    "running",
+    "verified_healed",
+    "failed",
+    "no_output",
+}
+_INFLIGHT_RECIPE_OUTCOMES = {"accepted", "running"}
+_FAILED_RECIPE_OUTCOMES = {"failed", "no_output"}
 _GENERATED_AT_RE = re.compile(
     r"^<!-- generated_at: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) -->$"
 )
@@ -148,6 +158,16 @@ def load_latest_pass_event() -> dict | None:
     for row in reversed(load_steward_log()):
         if row.get("event") == "pass":
             return row
+    return None
+
+
+def _normalize_recipe_outcome(outcome: Any) -> str | None:
+    if outcome == "success":
+        return "verified_healed"
+    if outcome == "failure":
+        return "failed"
+    if isinstance(outcome, str) and outcome in _RECIPE_OUTCOMES:
+        return outcome
     return None
 
 
@@ -329,7 +349,7 @@ def fire_stale_pending_recipe(
         return RecipeOutcome(
             recipe=STALE_PENDING_RECIPE,
             target=target.target,
-            outcome="failure",
+            outcome="failed",
             detail=detail,
             ts=ts,
         )
@@ -337,17 +357,35 @@ def fire_stale_pending_recipe(
         return RecipeOutcome(
             recipe=STALE_PENDING_RECIPE,
             target=target.target,
-            outcome="failure",
+            outcome="failed",
             detail=str(exc),
             ts=ts,
         )
 
-    outcome = "success" if 200 <= int(status) < 300 else "failure"
+    if 200 <= int(status) < 300:
+        outcome = "accepted"
+        try:
+            payload = json.loads(detail or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        repair_status = (
+            payload.get("repair_status") if isinstance(payload, dict) else None
+        )
+        if repair_status in {"accepted", "running"}:
+            outcome = str(repair_status)
+        else:
+            logger.warning(
+                "steward: reprocess response missing repair_status for %s",
+                target.target,
+            )
+        detail = None
+    else:
+        outcome = "failed"
     return RecipeOutcome(
         recipe=STALE_PENDING_RECIPE,
         target=target.target,
         outcome=outcome,
-        detail=None if outcome == "success" else detail,
+        detail=detail,
         ts=ts,
     )
 
@@ -359,15 +397,108 @@ def _last_recipe_outcomes(rows: list[dict], *, recipe: str, target: str) -> list
             continue
         if row.get("recipe") != recipe or row.get("target") != target:
             continue
-        outcome = row.get("outcome")
-        if outcome in {"success", "failure"}:
-            outcomes.append(str(outcome))
+        outcome = _normalize_recipe_outcome(row.get("outcome"))
+        if outcome is not None:
+            outcomes.append(outcome)
     return outcomes
 
 
 def _is_escalated(rows: list[dict], *, recipe: str, target: str) -> bool:
     outcomes = _last_recipe_outcomes(rows, recipe=recipe, target=target)
-    return len(outcomes) >= 2 and outcomes[-2:] == ["failure", "failure"]
+    streak = 0
+    for outcome in outcomes:
+        if outcome == "verified_healed":
+            streak = 0
+        elif outcome in _FAILED_RECIPE_OUTCOMES:
+            streak += 1
+        elif outcome in _INFLIGHT_RECIPE_OUTCOMES:
+            continue
+    return streak >= 2
+
+
+def _latest_unverified_recipe_targets(rows: list[dict]) -> list[tuple[str, str]]:
+    latest: dict[tuple[str, str], str] = {}
+    for row in rows:
+        if row.get("event") != "recipe.outcome":
+            continue
+        recipe = str(row.get("recipe") or "")
+        target = str(row.get("target") or "")
+        if not recipe or not target:
+            continue
+        outcome = _normalize_recipe_outcome(row.get("outcome"))
+        if outcome is None:
+            continue
+        latest[(recipe, target)] = outcome
+    return [
+        key for key, outcome in latest.items() if outcome in _INFLIGHT_RECIPE_OUTCOMES
+    ]
+
+
+def _failed_marker_reason_code(segment_dir: Path, modality: str) -> str | None:
+    path = segment_dir / f".analyze_failed_{modality}"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.debug("steward: failed marker read failed for %s: %s", path, exc)
+        return None
+    if not isinstance(payload, dict):
+        logger.debug("steward: failed marker payload is not an object: %s", path)
+        return None
+    reason_code = payload.get("reason_code")
+    return str(reason_code) if isinstance(reason_code, str) else None
+
+
+def _reverify_inflight_repairs(rows: list[dict]) -> list[RecipeOutcome]:
+    outcomes: list[RecipeOutcome] = []
+    for recipe, target in _latest_unverified_recipe_targets(rows):
+        try:
+            left, modality = target.rsplit(":", 1)
+            day, stream, segment_key = left.split("/", 2)
+        except ValueError:
+            logger.debug("steward: malformed repair target %s", target)
+            continue
+        if modality not in {"audio", "screen"}:
+            logger.debug("steward: malformed repair target modality %s", target)
+            continue
+
+        try:
+            segment_dir = segment_path(day, segment_key, stream, create=False)
+        except Exception as exc:
+            logger.debug("steward: repair target path failed for %s: %s", target, exc)
+            continue
+        if not segment_dir.is_dir():
+            logger.debug("steward: repair target segment missing for %s", target)
+            continue
+
+        state = str(_modality_signals(segment_dir, modality)["state"])
+        outcome: str | None
+        if state == DataState.ANALYZED.value:
+            outcome = "verified_healed"
+        elif state in {DataState.ANALYZING.value, DataState.PENDING.value}:
+            outcome = None
+        elif state == DataState.FAILED.value:
+            outcome = (
+                "no_output"
+                if _failed_marker_reason_code(segment_dir, modality) == "no_output"
+                else "failed"
+            )
+        elif state in {DataState.PURGED.value, DataState.ABSENT.value}:
+            outcome = "failed"
+        else:
+            outcome = None
+
+        if outcome is None:
+            continue
+        outcomes.append(
+            RecipeOutcome(
+                recipe=recipe,
+                target=target,
+                outcome=outcome,
+                detail=None,
+                ts=now_ms(),
+            )
+        )
+    return outcomes
 
 
 def run_recipe_pass(today: str) -> dict:
@@ -376,6 +507,15 @@ def run_recipe_pass(today: str) -> dict:
     fired: list[RecipeOutcome] = []
     escalated_targets: list[str] = []
     data_source_errors: list[str] = []
+    rows = load_steward_log()
+
+    for outcome in _reverify_inflight_repairs(rows):
+        append_steward_event(
+            "recipe.outcome",
+            **dataclasses.asdict(outcome),
+        )
+        rows.append({"event": "recipe.outcome", **dataclasses.asdict(outcome)})
+
     try:
         targets = detect_stale_pending_segments(today, yesterday)
     except Exception as exc:
@@ -383,7 +523,6 @@ def run_recipe_pass(today: str) -> dict:
         data_source_errors.append(f"stale pending segment scan: {exc}")
         targets = []
 
-    rows = load_steward_log()
     try:
         port = read_service_port("convey") or 5015
     except Exception as exc:
@@ -521,7 +660,7 @@ def read_steward_health(journal: Path | None = None) -> dict | None:
 
 def _recipe_outcomes_7d(rows: list[dict]) -> list[dict]:
     cutoff = now_ms() - _SEVEN_DAYS_MS
-    groups: dict[str, dict[str, Any]] = {}
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
         if row.get("event") != "recipe.outcome":
             continue
@@ -532,23 +671,48 @@ def _recipe_outcomes_7d(rows: list[dict]) -> list[dict]:
         if ts < cutoff:
             continue
         recipe = str(row.get("recipe") or "")
-        if not recipe:
+        target = str(row.get("target") or "")
+        if not recipe or not target:
             continue
+        outcome = _normalize_recipe_outcome(row.get("outcome"))
+        if outcome is None:
+            continue
+        key = (recipe, target)
+        previous = latest.get(key)
+        if previous is None or ts >= int(previous["ts"]):
+            latest[key] = {
+                "recipe": recipe,
+                "target": target,
+                "outcome": outcome,
+                "ts": ts,
+            }
+
+    groups: dict[str, dict[str, Any]] = {}
+    for latest_row in latest.values():
+        recipe = str(latest_row["recipe"])
         group = groups.setdefault(
             recipe,
-            {"recipe": recipe, "success": 0, "failure": 0, "last_ts": ts},
+            {
+                "recipe": recipe,
+                "accepted": 0,
+                "running": 0,
+                "verified_healed": 0,
+                "failed": 0,
+                "no_output": 0,
+                "unverified": 0,
+                "last_ts": int(latest_row["ts"]),
+            },
         )
-        outcome = row.get("outcome")
-        if outcome == "success":
-            group["success"] += 1
-        elif outcome == "failure":
-            group["failure"] += 1
-        group["last_ts"] = max(int(group["last_ts"]), ts)
+        outcome = str(latest_row["outcome"])
+        group[outcome] += 1
+        if outcome in _INFLIGHT_RECIPE_OUTCOMES:
+            group["unverified"] += 1
+        group["last_ts"] = max(int(group["last_ts"]), int(latest_row["ts"]))
 
     result = []
     for group in groups.values():
         last_dt = datetime.fromtimestamp(int(group["last_ts"]) / 1000, tz=timezone.utc)
-        total = int(group["success"]) + int(group["failure"])
+        total = sum(int(group[outcome]) for outcome in _RECIPE_OUTCOMES)
         result.append(
             {
                 **group,
@@ -617,14 +781,19 @@ def _status_sentence(
     """
     pd = pipeline_day if isinstance(pipeline_day, dict) else {}
     anomalies = pd.get("anomalies", []) or []
-    rollup_failures = any(
-        int(row.get("failure", 0) or 0) for row in (recipe_outcomes_7d or [])
+    recent_failures = sum(
+        int(row.get("failed", 0) or 0) + int(row.get("no_output", 0) or 0)
+        for row in (recipe_outcomes_7d or [])
+    )
+    unverified = sum(
+        int(row.get("unverified", 0) or 0) for row in (recipe_outcomes_7d or [])
     )
     if (
         not data_source_errors
         and not anomalies
         and not escalated_targets
-        and not rollup_failures
+        and not recent_failures
+        and not unverified
     ):
         return "Sol is well."
     if data_source_errors:
@@ -640,7 +809,11 @@ def _status_sentence(
             "Sol detected pipeline issues during yesterday's processing "
             "that need attention."
         )
-    return "Recent auto-repairs include failures."
+    if recent_failures:
+        return "Recent auto-repairs include failures."
+    n = unverified
+    noun = "repair" if n == 1 else "repairs"
+    return f"{n} stale segment {noun} in progress, not yet verified."
 
 
 def _attention_bullets(
@@ -721,12 +894,13 @@ def _auto_repair_bullets(recipe_outcomes_7d: list) -> list[str]:
         recipe = str(row.get("recipe", ""))
         label = _RECIPE_LABELS.get(recipe, recipe.replace("_", " "))
         total = int(row.get("total", 0))
-        success = int(row.get("success", 0))
-        failure = int(row.get("failure", 0))
+        verified_healed = int(row.get("verified_healed", 0))
+        inflight = int(row.get("accepted", 0)) + int(row.get("running", 0))
+        failed = int(row.get("failed", 0)) + int(row.get("no_output", 0))
         last_iso = row.get("last_iso", "")
         bullets.append(
-            f"- {label} — {total}x in 7d ({success} succeeded, {failure} failed), "
-            f"last {last_iso}"
+            f"- {label} — {total}x in 7d ({verified_healed} verified-healed, "
+            f"{inflight} in-flight, {failed} failed), last {last_iso}"
         )
     return bullets
 

@@ -6,6 +6,7 @@
 import json
 import os
 import time
+import uuid
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
@@ -63,6 +64,7 @@ def create_analyzing_marker(seg_path: Path, modality: str) -> Path:
     payload = {
         "started_at": _iso_z_now(),
         "modality": modality,
+        "request_id": uuid.uuid4().hex,
     }
     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     try:
