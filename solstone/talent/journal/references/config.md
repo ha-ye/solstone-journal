@@ -160,7 +160,7 @@ The `transcribe` block configures audio transcription settings for `journal tran
 ```
 
 **Top-level fields:**
-- `backend` (string) – STT backend to use: `"parakeet"` (default local processing), `"whisper"` (local rollback path), `"revai"` (cloud with speaker diarization), or `"gemini"` (cloud with speaker diarization). Default: `"parakeet"`.
+- `backend` (string) – STT backend to use: `"parakeet"` (default local processing), `"parakeet-cpp"` (Linux-only, opt-in local processing via a supervised parakeet.cpp server), `"whisper"` (local rollback path), `"revai"` (cloud with speaker diarization), or `"gemini"` (cloud with speaker diarization). Default: `"parakeet"`.
 - `enrich` (boolean) – Enable LLM enrichment for topic extraction and transcript correction. Default: `true`.
 - `preserve_all` (boolean) – Keep audio files even when no speech is detected. When `false`, silent recordings are deleted to save disk space. Default: `false`.
 - `noise_upgrade_min_speech_ratio` (number) – Min speech/loud ratio required for noisy upgrade (default: `0.3`). Filters out music and other non-speech noise.
@@ -169,6 +169,9 @@ The `transcribe` block configures audio transcription settings for `journal tran
 - `model_version` (string) – Parakeet model version: `"v3"`. Default: `"v3"`.
 - `device` (string) – Runtime preference for Parakeet: `"auto"`, `"cpu"`, or `"cuda"`. Default: `"auto"`.
 - `timeout_sec` (number) – Helper/runtime timeout in seconds. Default: `120.0`.
+
+**Parakeet.cpp backend settings** (`transcribe.parakeet-cpp`):
+- `device` (string) – Runtime preference for the parakeet.cpp server: `"auto"` (use GPU if available, else CPU) or `"cpu"`. Default: `"auto"`.
 
 **Whisper backend settings** (`transcribe.whisper`):
 - `device` (string) – Device for inference: `"auto"` (detect GPU, fall back to CPU), `"cpu"`, or `"cuda"`. Default: `"auto"`.

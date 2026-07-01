@@ -1,8 +1,9 @@
 # third-party notices
 
-This file records third-party model weights bundled with solstone. The solstone
-source code remains AGPL-3.0-only; the notices below apply only to the listed
-model files.
+This file records third-party model weights bundled with solstone and
+provider artifacts downloaded at runtime into the journal provider cache. The
+solstone source code remains AGPL-3.0-only; the notices below apply only to the
+listed model files and runtime provider artifacts.
 
 ## bundled model weights
 
@@ -10,6 +11,36 @@ model files.
 |---|---|---|---|---|
 | `solstone/observe/transcribe/assets/wespeaker-resnet34-256.onnx` | WeSpeaker ResNet34 speaker embedding model trained on VoxCeleb | `wespeaker_en_voxceleb_resnet34.onnx` from the k2-fsa/sherpa-onnx `speaker-recongition-models` release | CC-BY-4.0 | `5ef208a9da1453335308a6b6f4e6dfbd7e183a38b604de0a57664f45d257fe94` |
 | `solstone/observe/transcribe/assets/pyannote-segmentation-3.0.onnx` | `pyannote/segmentation-3.0` speaker segmentation model | `onnx/model.onnx` from `onnx-community/pyannote-segmentation-3.0` | MIT | `057ee564753071c0b09b5b611648b50ac188d50846bff5f01e9f7bbf1591ea25` |
+
+## runtime-downloaded provider artifacts (parakeet-cpp)
+
+These artifacts are fetched on demand into the journal provider cache when an
+owner opts into the `parakeet-cpp` transcription backend; they are not bundled
+in this repository.
+
+### parakeet.cpp server binary
+
+Attribution: parakeet.cpp project (mudler).
+
+Source:
+
+- Release binaries: https://github.com/mudler/parakeet.cpp/releases/tag/v0.4.0
+- Project: https://github.com/mudler/parakeet.cpp
+
+License notice: MIT.
+
+### parakeet TDT 0.6B v3 GGUF model
+
+Attribution: parakeet-cpp-gguf (mudler), NVIDIA NeMo Parakeet TDT 0.6B v3.
+
+Source:
+
+- Model repository: https://huggingface.co/mudler/parakeet-cpp-gguf
+- Pinned revision: bf0af9f425fa01809cadec671b3cb672709d13e9
+- Downloaded file: tdt-0.6b-v3-q8_0.gguf
+
+License notice: Creative Commons Attribution 4.0 International (CC-BY-4.0).
+License text: https://creativecommons.org/licenses/by/4.0/legalcode.txt
 
 ## WeSpeaker ResNet34 / VoxCeleb
 

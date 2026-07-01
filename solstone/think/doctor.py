@@ -115,12 +115,22 @@ SERVICE_RUNNING_CHECK = Check("service_running", "blocker", ("linux", "darwin"))
 LAUNCHD_STALE_PLIST_CHECK = Check("launchd_stale_plist", "advisory", ("darwin",))
 JOURNAL_SYNC_CHECK = Check("journal_sync", "blocker", ("linux", "darwin"))
 DEFAULT_STT_READY_CHECK = Check("default_stt_ready", "advisory", ("linux", "darwin"))
+PARAKEET_CPP_STT_READY_CHECK = Check(
+    "parakeet_cpp_stt_ready", "advisory", ("linux", "darwin")
+)
 _DEFAULT_STT_RUNTIME_FIX = (
     "parakeet runtime (onnx-asr) is not installed — reinstall to add it: "
     "uv tool install --reinstall solstone"
 )
 _DEFAULT_STT_MODEL_FIX = (
     "parakeet model is not downloaded — fetch it with: journal install-models"
+)
+_PARAKEET_CPP_INSTALL_FIX = (
+    "parakeet-cpp artifacts are not installed — fetch them with: "
+    "journal install-provider parakeet"
+)
+_PARAKEET_CPP_START_FIX = (
+    "parakeet-server is not reachable — start the journal service: journal start"
 )
 JOURNAL_CAUGHT_UP_CHECK = Check("journal_caught_up", "advisory", ("linux", "darwin"))
 TASK_PACE_CHECK = Check("task_pace", "advisory", ("linux", "darwin"))
@@ -779,6 +789,43 @@ def default_stt_ready_check(args: Args) -> CheckResult:
     return make_result(check, "ok", f"parakeet model ready at {ready_cache}")
 
 
+def parakeet_cpp_stt_ready_check(args: Args) -> CheckResult:
+    del args
+    check = PARAKEET_CPP_STT_READY_CHECK
+    if _resolve_configured_backend() != "parakeet-cpp":
+        return make_result(
+            check,
+            "skip",
+            "configured backend is not parakeet-cpp; check not applicable",
+        )
+    os_name, arch = parakeet_readiness._platform_info()
+    if os_name != "linux":
+        return make_result(check, "skip", "parakeet-cpp is only supported on Linux")
+    path_text, _source = get_journal_info()
+    cache_root = parakeet_readiness.parakeet_cpp_cache_root(Path(path_text))
+    try:
+        artifact_key = parakeet_readiness.parakeet_cpp_artifact_key(os_name, arch)
+    except RuntimeError as exc:
+        return make_result(check, "warn", str(exc), _PARAKEET_CPP_INSTALL_FIX)
+    try:
+        parakeet_readiness.check_parakeet_cpp_files(cache_root, artifact_key)
+    except RuntimeError as exc:
+        return make_result(check, "warn", str(exc), _PARAKEET_CPP_INSTALL_FIX)
+    from solstone.think.providers import parakeet_server
+
+    state, error = parakeet_server.probe_state()
+    if state != parakeet_server.STATE_READY:
+        return make_result(
+            check,
+            "warn",
+            f"parakeet-server not reachable: {error}",
+            _PARAKEET_CPP_START_FIX,
+        )
+    return make_result(
+        check, "ok", "parakeet-cpp ready (binaries + model installed, server reachable)"
+    )
+
+
 def _make_feature_check(
     feat_name: str,
 ) -> tuple[Check, Runner]:
@@ -825,6 +872,7 @@ JOURNAL_CHECKS: list[tuple[Check, Runner]] = [
     (STALE_ALIAS_CHECK, partial(stale_alias_symlink_check, binary="journal")),
     (LAUNCHD_STALE_PLIST_CHECK, launchd_stale_plist_check),
     (DEFAULT_STT_READY_CHECK, default_stt_ready_check),
+    (PARAKEET_CPP_STT_READY_CHECK, parakeet_cpp_stt_ready_check),
     (SKILL_STATE_CHECK, skill_state_check),
     *FEATURE_CHECKS.values(),
 ]
@@ -842,6 +890,7 @@ JOURNAL_READINESS_CHECKS: list[tuple[Check, Runner]] = [
     (HOST_DEPENDENCIES_CHECK, host_dependencies_check),
     *READINESS_CHECKS,
     (DEFAULT_STT_READY_CHECK, default_stt_ready_check),
+    (PARAKEET_CPP_STT_READY_CHECK, parakeet_cpp_stt_ready_check),
     *FEATURE_CHECKS.values(),
 ]
 

@@ -16,7 +16,7 @@ Output files:
 - <stem>.npz: Sentence-level voice embeddings indexed by statement id
 
 Configuration (journal config transcribe section):
-- transcribe.backend: STT backend ("parakeet", "whisper", "revai", "gemini"). If unset, auto-selected by free memory.
+- transcribe.backend: STT backend ("parakeet", "parakeet-cpp", "whisper", "revai", "gemini"). If unset, auto-selected by free memory.
 - transcribe.enrich: Enable/disable LLM enrichment (default: true)
 - transcribe.preserve_all: Keep audio files even when no speech detected (default: false)
 - transcribe.min_speech_seconds: Minimum speech duration to proceed. Default: 1.0
@@ -110,6 +110,7 @@ from solstone.think.journal_io import write_text
 from solstone.think.journal_io.npz import write_npz
 from solstone.think.media import AUDIO_EXTENSIONS as SUPPORTED_AUDIO_FORMATS
 from solstone.think.providers.memory import gb, read_available_bytes
+from solstone.think.providers.parakeet_server import ParakeetServerNotReady
 from solstone.think.utils import (
     day_dirs,
     day_from_path,
@@ -925,6 +926,14 @@ def process_audio(
 
         callosum_send("observe", "transcribed", **event)
 
+    except ParakeetServerNotReady as e:
+        logging.info(
+            "Parakeet server not ready for %s; leaving audio for retry: %s",
+            raw_path,
+            e,
+        )
+        return
+
     except Exception as e:
         logging.error(f"Failed to transcribe {raw_path}: {e}", exc_info=True)
         try:
@@ -1130,6 +1139,9 @@ def _process_one(
                 "quantization",
             )
         }
+    elif backend == "parakeet-cpp":
+        parakeet_cpp_config = transcribe_config.get("parakeet-cpp", {})
+        backend_config = {k: v for k, v in parakeet_cpp_config.items() if k == "device"}
     elif backend == "gemini":
         # Gemini backend - model resolved by think.models based on context
         # Entity names handled by enrich step, not passed to transcription

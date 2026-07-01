@@ -65,6 +65,7 @@ BACKEND_REGISTRY: dict[str, str] = {
     "revai": "solstone.observe.transcribe.revai",
     "gemini": "solstone.observe.transcribe.gemini",
     "parakeet": "solstone.observe.transcribe.parakeet",
+    "parakeet-cpp": "solstone.observe.transcribe._parakeet_cpp",
 }
 
 # ---------------------------------------------------------------------------
@@ -98,6 +99,12 @@ BACKEND_METADATA: dict[str, dict] = {
         "description": "On-device speech recognition via Parakeet TDT; macOS uses a FluidAudio/CoreML helper, Linux uses onnx-asr + onnxruntime. Requires `make install`.",
         "env_key": None,
         "settings": ["model_version", "device", "timeout_sec"],
+    },
+    "parakeet-cpp": {
+        "label": "Parakeet.cpp - Local processing (Linux, selectable)",
+        "description": "On-device speech recognition via a supervised parakeet.cpp server (mudler/parakeet.cpp). Linux only; opt-in alongside the default Parakeet backend. Install with `journal install-provider parakeet`.",
+        "env_key": None,
+        "settings": ["device"],
     },
 }
 

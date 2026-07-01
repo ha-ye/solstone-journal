@@ -2557,6 +2557,22 @@ button:focus:not(:focus-visible) {
 
         <div class="form-help">Platform runtime: <span id="parakeet-runtime-label">unsupported</span></div>
       </fieldset>
+
+      <fieldset id="parakeet-cpp-settings" class="backend-settings" style="display:none">
+        <div class="settings-field">
+          <label for="field-parakeet-cpp-device">device</label>
+          <select id="field-parakeet-cpp-device">
+            <option value="auto" selected>Auto - Use GPU if available, else CPU</option>
+            <option value="cpu">CPU - Force processor runtime</option>
+          </select>
+          <small>Runtime preference for the parakeet.cpp server on this host</small>
+        </div>
+        <p class="settings-field-note">
+          Selecting this backend fetches two external artifacts into this journal's
+          provider cache: the parakeet.cpp server from github.com and the speech model
+          from huggingface.co. Install with <code>journal install-provider parakeet</code>.
+        </p>
+      </fieldset>
       <div class="form-help" id="transcribeResourceInfo"></div>
 
       <!-- Shared settings -->
@@ -3763,6 +3779,10 @@ function populateFields(config) {
   setValue('field-parakeet-model-version', parakeet.model_version || 'v3');
   setValue('field-parakeet-device', parakeet.device || 'auto');
   setValue('field-parakeet-timeout', parakeet.timeout_sec ?? 120);
+
+  // Parakeet.cpp settings (nested)
+  const parakeetCpp = transcribe['parakeet-cpp'] || {};
+  setValue('field-parakeet-cpp-device', parakeetCpp.device || 'auto');
 
   // Whisper settings (nested)
   const whisper = transcribe.whisper || {};
@@ -5178,6 +5198,7 @@ async function loadTranscribeBackends() {
 function switchTranscribeBackend(backend, config) {
   // Show/hide backend-specific fieldsets
   document.getElementById('parakeet-settings').style.display = backend === 'parakeet' ? 'block' : 'none';
+  document.getElementById('parakeet-cpp-settings').style.display = backend === 'parakeet-cpp' ? 'block' : 'none';
   document.getElementById('whisper-settings').style.display = backend === 'whisper' ? 'block' : 'none';
   document.getElementById('revai-settings').style.display = backend === 'revai' ? 'block' : 'none';
   document.getElementById('gemini-settings').style.display = backend === 'gemini' ? 'block' : 'none';
@@ -5332,6 +5353,28 @@ document.getElementById('field-revai-model')?.addEventListener('change', async (
       showFieldStatus(e.target, 'error', err.message);
     }
   });
+});
+
+document.getElementById('field-parakeet-cpp-device')?.addEventListener('change', async (e) => {
+  const value = e.target.value;
+
+  try {
+    const response = await fetch('api/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ section: 'transcribe', data: { 'parakeet-cpp': { device: value } } })
+    });
+    const result = await response.json();
+    if (result.success) {
+      configData = result.config;
+      showFieldStatus(e.target, 'saved');
+    } else {
+      throw new Error(result.error);
+    }
+  } catch (err) {
+    console.error('Error saving parakeet-cpp setting:', err);
+    showFieldStatus(e.target, 'error', err.message);
+  }
 });
 
 // ========== OBSERVER ==========

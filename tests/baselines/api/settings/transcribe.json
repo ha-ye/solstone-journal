@@ -2,6 +2,7 @@
   "api_keys": {
     "gemini": false,
     "parakeet": false,
+    "parakeet-cpp": false,
     "revai": false,
     "whisper": false
   },
@@ -42,6 +43,15 @@
         "model_version",
         "device",
         "timeout_sec"
+      ]
+    },
+    {
+      "description": "On-device speech recognition via a supervised parakeet.cpp server (mudler/parakeet.cpp). Linux only; opt-in alongside the default Parakeet backend. Install with `journal install-provider parakeet`.",
+      "env_key": null,
+      "label": "Parakeet.cpp - Local processing (Linux, selectable)",
+      "name": "parakeet-cpp",
+      "settings": [
+        "device"
       ]
     }
   ],

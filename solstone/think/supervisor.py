@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 from collections import OrderedDict, deque
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -44,6 +45,7 @@ from solstone.think.display_powersave import (
     poll_display_powersave,
     reset_display_powersave_monitor,
 )
+from solstone.think.journal_config import read_journal_config
 from solstone.think.maint import run_pending_tasks
 from solstone.think.models import LOCAL_MODEL, is_local_provider_needed
 from solstone.think.processing import (
@@ -107,6 +109,9 @@ LOCAL_WEDGE_RECYCLE_GRACE_S = 120.0
 LOCAL_WEDGE_PROVIDER_MAP_CAP = 512
 LOCAL_SERVER_READY_TIMEOUT_S = 300.0
 LOCAL_SERVER_HEALTH_POLL_INTERVAL_S = 1.0
+PARAKEET_SERVER_PROCESS_NAME = "parakeet-server"
+PARAKEET_SERVER_READY_TIMEOUT_S = 300.0
+PARAKEET_SERVER_HEALTH_POLL_INTERVAL_S = 1.0
 LOCAL_MODEL_WARMING_UP_COPY = "Local model is warming up..."
 # supervisor.log is size-rotated with a bounded on-disk footprint.
 # Hard ceiling = SUPERVISOR_LOG_MAX_BYTES * (SUPERVISOR_LOG_BACKUP_COUNT + 1)
@@ -114,6 +119,21 @@ LOCAL_MODEL_WARMING_UP_COPY = "Local model is warming up..."
 SUPERVISOR_LOG_MAX_BYTES = 16 * 1024 * 1024
 SUPERVISOR_LOG_BACKUP_COUNT = 5
 logger = logging.getLogger(__name__)
+
+
+def configured_stt_backend() -> str | None:
+    config = read_journal_config()
+    transcribe = config.get("transcribe", {})
+    backend = transcribe.get("backend") if isinstance(transcribe, dict) else None
+    return backend if isinstance(backend, str) else None
+
+
+def _configured_parakeet_device() -> str:
+    config = read_journal_config()
+    transcribe = config.get("transcribe", {})
+    nested = transcribe.get("parakeet-cpp", {}) if isinstance(transcribe, dict) else {}
+    device = nested.get("device") if isinstance(nested, dict) else None
+    return device if device in {"auto", "cpu"} else "auto"
 
 
 def _compact_log_if_oversized(log_path: Path, max_bytes: int) -> None:
@@ -399,13 +419,14 @@ def _candidate_journal(proc: "psutil.Process") -> Path | None:
 # (f"{binary}:{cmd}"). setproctitle is in-process and persists until the
 # process exits, so an orphaned service or task child still reports its title
 # via proc.name() after the supervisor dies, which is what lets the sweep find
-# it. The supervisor-owned `llama-server` reports its own bare binary name (no
-# colon prefix) and is included here so the sweep reaps it too.
+# it. Supervisor-owned local provider servers report their own bare binary names
+# (no colon prefix) and are included here so the sweep reaps them too.
 # The mlx-vlm server is a Python process, but our launcher sets the same
 # managed proctitle so proc.name() is stable for orphan sweeping.
 _LOCAL_SERVER_PROCTITLES = frozenset(
     {
         LOCAL_SERVER_PROCESS_NAME,
+        PARAKEET_SERVER_PROCESS_NAME,
         MLX_SERVER_PROCESS_NAME,
     }
 )
@@ -1814,6 +1835,108 @@ def _log_context_assertion(
         logging.info("llama-server slot count not reported; skipped")
 
 
+def parakeet_physical_thread_count() -> int:
+    physical = psutil.cpu_count(logical=False)
+    if isinstance(physical, int) and physical > 0:
+        return physical
+    return max(1, (os.cpu_count() or 2) // 2)
+
+
+@dataclass(frozen=True)
+class ParakeetServerLaunchPlan:
+    binary_backend: str
+    env_updates: dict[str, str]
+    gpu_index: int | None
+
+
+def resolve_parakeet_server_launch_plan(
+    config_device: str, selected_gpu: Any
+) -> ParakeetServerLaunchPlan:
+    if config_device not in {"auto", "cpu"}:
+        raise ValueError(
+            f"parakeet device must be 'auto' or 'cpu', got {config_device!r}"
+        )
+    if config_device == "cpu":
+        return ParakeetServerLaunchPlan("cpu", {}, None)
+    if selected_gpu is not None:
+        return ParakeetServerLaunchPlan(
+            "vulkan",
+            {"GGML_VK_VISIBLE_DEVICES": str(selected_gpu.index)},
+            selected_gpu.index,
+        )
+    return ParakeetServerLaunchPlan("cpu", {}, None)
+
+
+def _build_parakeet_cmd(
+    binary_path: Path, gguf_path: Path, port: int, threads: int
+) -> list[str]:
+    # Re-verify exact parakeet.cpp v0.4.0 CLI flag spellings at live bring-up.
+    cmd = [
+        str(binary_path),
+        "--model",
+        str(gguf_path),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--threads",
+        str(threads),
+    ]
+    if "0.0.0.0" in cmd:
+        raise RuntimeError("parakeet server may not bind 0.0.0.0.")
+    return cmd
+
+
+def _launch_and_warm_parakeet(
+    backend: str,
+    binary_path: Path,
+    gguf_path: Path,
+    port: int,
+    threads: int,
+    env: dict[str, str],
+) -> tuple[str, RunnerManagedProcess]:
+    """Launch one parakeet-server backend and warm it.
+
+    Returns (status, managed), where status is "ready", "crashed", or
+    "timeout". Does not clean up on failure; the caller owns termination.
+    """
+    from solstone.think.providers import parakeet_server
+
+    cmd = _build_parakeet_cmd(binary_path, gguf_path, port, threads)
+    managed = _launch_process(PARAKEET_SERVER_PROCESS_NAME, cmd, restart=True, env=env)
+    deadline = time.monotonic() + PARAKEET_SERVER_READY_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if managed.process.poll() is not None:
+            logging.warning(
+                "parakeet-server %s exited during warmup with code %s",
+                backend,
+                managed.process.returncode,
+            )
+            return "crashed", managed
+        state, error = parakeet_server.probe_state()
+        if state == parakeet_server.STATE_READY:
+            logging.info("parakeet-server ready on port %s", port)
+            return "ready", managed
+        if state == parakeet_server.STATE_FAILED and error:
+            logging.debug(
+                "parakeet-server health probe failed during warmup: %s", error
+            )
+        time.sleep(PARAKEET_SERVER_HEALTH_POLL_INTERVAL_S)
+    logging.warning(
+        "parakeet-server %s did not become ready within %.0fs",
+        backend,
+        PARAKEET_SERVER_READY_TIMEOUT_S,
+    )
+    return "timeout", managed
+
+
+def _cleanup_parakeet_launch(managed: RunnerManagedProcess, reason: str) -> None:
+    timeout = _SERVICE_STATE.get(managed.name, {}).get("shutdown_timeout", 15)
+    _SERVICE_STATE.pop(managed.name, None)
+    _terminate_managed(managed, timeout, reason=reason)
+    managed.cleanup()
+
+
 def start_local_server() -> RunnerManagedProcess | None:
     """Launch the supervisor-owned local llama-server when artifacts are present."""
     from solstone.think.providers.local_endpoint import resolve_local_endpoint
@@ -1961,6 +2084,110 @@ def start_local_server() -> RunnerManagedProcess | None:
         "llama-server did not become ready within %.0fs; continuing startup",
         LOCAL_SERVER_READY_TIMEOUT_S,
     )
+    return managed
+
+
+def start_parakeet_server() -> RunnerManagedProcess | None:
+    """Launch the supervisor-owned parakeet-server when STT opts into it."""
+    if not sys.platform.startswith("linux"):
+        return None
+    if configured_stt_backend() != "parakeet-cpp":
+        return None
+
+    from solstone.think.providers import local_vulkan, parakeet_install
+
+    config_device = _configured_parakeet_device()
+    selected = None
+    if config_device == "auto":
+        devices = local_vulkan.detect_gpus()
+        selected = local_vulkan.select_device(devices)
+        logging.info(
+            "Vulkan GPU probe: devices=%s; selected=%s",
+            _format_vulkan_devices(devices, local_vulkan),
+            (
+                f"raw_index={selected.index} name={selected.name!r} "
+                f"type={local_vulkan.classify(selected)}"
+                if selected is not None
+                else "none"
+            ),
+        )
+
+    plan = resolve_parakeet_server_launch_plan(config_device, selected)
+    try:
+        binary_path, gguf_path = parakeet_install.ensure_artifacts_installed(
+            plan.binary_backend
+        )
+    except Exception as exc:
+        logging.info(
+            "Parakeet artifacts not ready; skipping parakeet-server startup: %s", exc
+        )
+        return None
+
+    port = find_available_port()
+    write_service_port("parakeet-cpp", port)
+    threads = parakeet_physical_thread_count()
+    logging.info("parakeet-server threads=%d", threads)
+    env = os.environ | plan.env_updates
+    status, managed = _launch_and_warm_parakeet(
+        plan.binary_backend,
+        binary_path,
+        gguf_path,
+        port,
+        threads,
+        env,
+    )
+    if status == "ready":
+        return managed
+
+    if plan.binary_backend == "vulkan" and status in {"crashed", "timeout"}:
+        logging.warning("parakeet-server vulkan warmup %s; falling back to CPU", status)
+        _cleanup_parakeet_launch(
+            managed, reason=f"parakeet-server vulkan warmup {status}"
+        )
+        try:
+            cpu_binary, _ = parakeet_install.ensure_artifacts_installed("cpu")
+        except Exception as exc:
+            logging.info(
+                "Parakeet CPU artifacts not ready; skipping fallback startup: %s", exc
+            )
+            return None
+        cpu_status, cpu_managed = _launch_and_warm_parakeet(
+            "cpu",
+            cpu_binary,
+            gguf_path,
+            port,
+            threads,
+            os.environ | {},
+        )
+        if cpu_status == "crashed":
+            logging.warning("parakeet-server cpu exited during warmup")
+            _cleanup_parakeet_launch(
+                cpu_managed, reason="parakeet-server cpu warmup crashed"
+            )
+            return None
+        if cpu_status == "timeout":
+            logging.warning(
+                "parakeet-server cpu did not become ready within %.0fs; "
+                "continuing startup",
+                PARAKEET_SERVER_READY_TIMEOUT_S,
+            )
+        return cpu_managed
+
+    if plan.binary_backend == "cpu":
+        if status == "crashed":
+            logging.warning("parakeet-server cpu exited during warmup")
+            _cleanup_parakeet_launch(
+                managed, reason="parakeet-server cpu warmup crashed"
+            )
+            return None
+        if status == "timeout":
+            logging.warning(
+                "parakeet-server cpu did not become ready within %.0fs; "
+                "continuing startup",
+                PARAKEET_SERVER_READY_TIMEOUT_S,
+            )
+            return managed
+
     return managed
 
 
@@ -2997,6 +3224,13 @@ def main() -> None:
             proc = start_local_server()
             if proc is not None:
                 procs.append(proc)
+        if (
+            sys.platform.startswith("linux")
+            and configured_stt_backend() == "parakeet-cpp"
+        ):
+            parakeet_proc = start_parakeet_server()
+            if parakeet_proc is not None:
+                procs.append(parakeet_proc)
         # Sense handles file processing
         print("  Starting sense...", flush=True)
         procs.append(start_sense())
