@@ -139,4 +139,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution terms.
 ## license
 
 AGPL-3.0-only. See [LICENSE](LICENSE) for details.
+Bundled third-party model notices: [solstone/THIRD_PARTY_NOTICES.md](solstone/THIRD_PARTY_NOTICES.md).
 Maintained by [sol pbc](https://solpbc.org).
