@@ -51,7 +51,45 @@ DAY = "20990501"
 STREAM = "default"
 SEGMENT = "120000_300"
 FIXED_NOW = "2026-06-30T12:00:00Z"
-pytest_plugins = ("solstone.apps.observer.tests.conftest",)
+
+
+@pytest.fixture
+def observer_env(tmp_path, monkeypatch):
+    """Temp journal + Flask test client factory.
+
+    Self-contained mirror of the observer app-test fixture. Defined inline
+    rather than reused via ``pytest_plugins`` pointing at
+    ``solstone/apps/observer/tests/conftest.py``: that conftest is also
+    auto-registered by path during a full-suite run, so naming it as a plugin
+    double-registers the same module under two names and aborts collection
+    (passes in isolation, fails the full ``make ci``).
+    """
+
+    def _create():
+        journal = tmp_path / "journal"
+        journal.mkdir()
+
+        config_dir = journal / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "journal.json").write_text(
+            json.dumps({"setup": {"completed_at": 1700000000000}}, indent=2)
+        )
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+
+        from solstone.convey import create_app
+
+        app = create_app(journal=str(journal))
+
+        class Env:
+            def __init__(self):
+                self.journal = journal
+                self.client = app.test_client()
+                self.app = app
+
+        return Env()
+
+    return _create
 
 
 @pytest.fixture
