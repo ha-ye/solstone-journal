@@ -7,7 +7,11 @@ import asyncio
 import importlib
 import json
 import logging
+import subprocess
+import threading
+import time
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -84,6 +88,21 @@ def _seed_segment(
     return segment_dir
 
 
+def _complete_segment_progress():
+    from solstone.think.pipeline_health import SEGMENT_FLOOR_TALENTS, SegmentProgress
+
+    floor = frozenset(SEGMENT_FLOOR_TALENTS)
+    return SegmentProgress(
+        sensed=True,
+        density="active",
+        change_class=None,
+        dispatched=floor,
+        completed=floor,
+        unconfigured=frozenset(),
+        capped=frozenset(),
+    )
+
+
 def _append_segment_terminal(
     journal: Path,
     *,
@@ -133,6 +152,9 @@ def test_daily_health_log_keeps_segment_events_out(journal_copy, monkeypatch):
 
     _patch_main_runtime(monkeypatch)
     monkeypatch.setattr(mod, "run_command", mock_run_command)
+    monkeypatch.setattr(
+        mod, "run_bounded_phase", lambda cmd, day, timeout=None: (True, False)
+    )
     monkeypatch.setattr(mod, "run_queued_command", mock_run_queued_command)
     monkeypatch.setattr(mod, "run_daily_prompts", mock_run_daily_prompts)
     monkeypatch.setattr("sys.argv", ["sol think", "--day", "20240101"])
@@ -154,6 +176,129 @@ def test_daily_health_log_keeps_segment_events_out(journal_copy, monkeypatch):
         for event in events
         if _event_name(event).startswith(("talent.", "activity."))
     ]
+
+
+def test_daily_segment_prephase_timeout_is_nonfatal(journal_copy, monkeypatch):
+    mod = importlib.import_module("solstone.think.thinking")
+    bounded_calls = []
+    command_calls = []
+    daily_called = []
+
+    def fake_bounded(cmd, day, timeout=None):
+        bounded_calls.append((cmd, day, timeout))
+        return (False, True)
+
+    def fake_command(cmd, day):
+        command_calls.append(cmd)
+        return True
+
+    def fake_daily(day, verbose, **kwargs):
+        daily_called.append(day)
+        return (5, 0, [], set())
+
+    _patch_main_runtime(monkeypatch)
+    monkeypatch.setattr(mod, "run_bounded_phase", fake_bounded)
+    monkeypatch.setattr(mod, "run_command", fake_command)
+    monkeypatch.setattr(mod, "run_queued_command", lambda cmd, day, timeout=600: True)
+    monkeypatch.setattr(mod, "run_daily_prompts", fake_daily)
+    monkeypatch.setattr("sys.argv", ["sol think", "--day", "20240101"])
+
+    mod.main()
+
+    health_dir = journal_copy / "chronicle" / "20240101" / "health"
+    daily_files = sorted(health_dir.glob("*_daily.jsonl"))
+    assert len(daily_files) == 1
+    events = _read_jsonl(daily_files[0])
+    segment_completes = [
+        event
+        for event in events
+        if _event_name(event) == "phase.complete"
+        and event.get("phase") == "segment_think"
+    ]
+    assert len(segment_completes) == 1
+    complete = segment_completes[0]
+    assert complete["success"] is False
+    assert complete["reason_code"] == "wall_clock_exceeded"
+    assert complete["timeout_seconds"] == 1800
+    assert complete["bounded"] is True
+
+    assert daily_called
+    assert bounded_calls == [
+        (
+            ["journal", "think", "--segments", "--day", "20240101"],
+            "20240101",
+            mod.DEFAULT_TASK_MAX_RUNTIME,
+        )
+    ]
+    assert mod.DEFAULT_TASK_MAX_RUNTIME == 1800
+    assert ["journal", "sense", "--day", "20240101"] in command_calls
+    assert ["journal", "journal-stats"] in command_calls
+    assert ["journal", "think", "--segments", "--day", "20240101"] not in command_calls
+
+
+def test_daily_segment_prephase_failure_has_no_timeout_reason(
+    journal_copy, monkeypatch
+):
+    mod = importlib.import_module("solstone.think.thinking")
+    daily_called = []
+
+    def fake_daily(day, verbose, **kwargs):
+        daily_called.append(day)
+        return (5, 0, [], set())
+
+    _patch_main_runtime(monkeypatch)
+    monkeypatch.setattr(
+        mod, "run_bounded_phase", lambda cmd, day, timeout=None: (False, False)
+    )
+    monkeypatch.setattr(mod, "run_command", lambda cmd, day: True)
+    monkeypatch.setattr(mod, "run_queued_command", lambda cmd, day, timeout=600: True)
+    monkeypatch.setattr(mod, "run_daily_prompts", fake_daily)
+    monkeypatch.setattr("sys.argv", ["sol think", "--day", "20240101"])
+
+    mod.main()
+
+    health_dir = journal_copy / "chronicle" / "20240101" / "health"
+    daily_files = sorted(health_dir.glob("*_daily.jsonl"))
+    assert len(daily_files) == 1
+    events = _read_jsonl(daily_files[0])
+    segment_completes = [
+        event
+        for event in events
+        if _event_name(event) == "phase.complete"
+        and event.get("phase") == "segment_think"
+    ]
+    assert len(segment_completes) == 1
+    complete = segment_completes[0]
+    assert complete["success"] is False
+    assert "reason_code" not in complete
+    assert "timeout_seconds" not in complete
+    assert "bounded" not in complete
+    assert daily_called
+
+
+def test_run_bounded_phase_timeout_with_exit_zero_propagates_failure(
+    journal_copy, monkeypatch
+):
+    mod = importlib.import_module("solstone.think.thinking")
+    log_path = journal_copy / "x.log"
+    fake = Mock()
+    fake.log_writer = Mock()
+    fake.log_writer.path = log_path
+    fake.name = "test"
+    fake.wait.side_effect = subprocess.TimeoutExpired(cmd=["x"], timeout=0.01)
+    fake.terminate.return_value = 0
+    fake.cleanup.return_value = None
+    monkeypatch.setattr(
+        "solstone.think.runner.ManagedProcess.spawn", lambda *a, **k: fake
+    )
+
+    result = mod.run_bounded_phase(
+        ["journal", "think", "--segments", "--day", DAY],
+        DAY,
+        timeout=0.01,
+    )
+
+    assert result == (False, True)
 
 
 def test_segment_health_log_receives_segment_talent_events(tmp_path, monkeypatch):
@@ -198,6 +343,247 @@ def test_segment_health_log_receives_segment_talent_events(tmp_path, monkeypatch
     assert not list(health_dir.glob("*_daily.jsonl"))
 
 
+def test_select_segment_repair_targets_skips_complete_and_unsensed(monkeypatch):
+    from solstone.think import thinking as think
+
+    complete = {
+        "key": "090000_300",
+        "stream": STREAM,
+        "data_state": {"screen": "analyzed"},
+    }
+    incomplete = {
+        "key": "090500_300",
+        "stream": STREAM,
+        "data_state": {"screen": "analyzed"},
+    }
+    raw_blocked = {
+        "key": "091000_300",
+        "stream": STREAM,
+        "data_state": {"screen": "pending"},
+    }
+    segments = [complete, incomplete, raw_blocked]
+    monkeypatch.setattr(
+        think,
+        "read_segment_progress",
+        lambda day: {(STREAM, complete["key"]): _complete_segment_progress()},
+    )
+
+    selected, counts = think._select_segment_repair_targets(
+        DAY,
+        segments,
+        force_all=False,
+    )
+
+    assert selected == [incomplete]
+    assert counts == {
+        "total": 3,
+        "selected": 1,
+        "complete": 1,
+        "raw_blocked": 1,
+    }
+
+
+def test_select_segment_repair_targets_force_all_preserves_refresh_semantics(
+    monkeypatch,
+):
+    from solstone.think import thinking as think
+
+    segments = [
+        {
+            "key": "090000_300",
+            "stream": STREAM,
+            "data_state": {"screen": "analyzed"},
+        },
+        {
+            "key": "090500_300",
+            "stream": STREAM,
+            "data_state": {"screen": "pending"},
+        },
+    ]
+    monkeypatch.setattr(think, "read_segment_progress", lambda day: {})
+
+    selected, counts = think._select_segment_repair_targets(
+        DAY,
+        segments,
+        force_all=True,
+    )
+
+    assert selected == segments
+    assert counts == {
+        "total": 2,
+        "selected": 2,
+        "complete": 0,
+        "raw_blocked": 0,
+    }
+
+
+def test_run_segment_repair_batch_respects_worker_bound(monkeypatch):
+    from solstone.think import thinking as think
+
+    segments = [
+        {"key": f"090{i}00_300", "stream": STREAM, "start": "09:00", "end": "09:05"}
+        for i in range(4)
+    ]
+    lock = threading.Lock()
+    barrier = threading.Barrier(2, timeout=1.0)
+    current = 0
+    peak = 0
+
+    def fake_run_segment_sense(**kwargs):
+        nonlocal current, peak
+        with lock:
+            current += 1
+            peak = max(peak, current)
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:
+            pass
+        time.sleep(0.02)
+        with lock:
+            current -= 1
+        return (1, 0, [])
+
+    monkeypatch.setattr(think, "run_segment_sense", fake_run_segment_sense)
+    monkeypatch.setattr(think, "resolve_predecessor", lambda *args: None)
+
+    success, failed = think._run_segment_repair_batch(
+        day=DAY,
+        segments=segments,
+        refresh=False,
+        verbose=False,
+        max_concurrency=2,
+        segment_workers=2,
+        timeout=None,
+        skip_activity_prompts=False,
+        skip_talents=frozenset(),
+    )
+
+    assert (success, failed) == (4, 0)
+    assert peak == 2
+
+
+def test_segments_mode_targets_incomplete_tail_and_replays_full_day(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.think import thinking as think
+    from solstone.think import utils as think_utils
+
+    day = "20240117"
+    journal = tmp_path / "journal"
+    (journal / "chronicle" / day).mkdir(parents=True)
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    monkeypatch.setenv("SOL_SKIP_SUPERVISOR_CHECK", "1")
+    think_utils._journal_path_cache = None
+    _patch_main_runtime(monkeypatch)
+
+    complete = {
+        "key": "090000_300",
+        "stream": STREAM,
+        "start": "09:00",
+        "end": "09:05",
+        "data_state": {"screen": "analyzed"},
+    }
+    incomplete = {
+        "key": "090500_300",
+        "stream": STREAM,
+        "start": "09:05",
+        "end": "09:10",
+        "data_state": {"screen": "analyzed"},
+    }
+    raw_blocked = {
+        "key": "091000_300",
+        "stream": STREAM,
+        "start": "09:10",
+        "end": "09:15",
+        "data_state": {"screen": "pending"},
+    }
+    segments = [complete, incomplete, raw_blocked]
+    calls: list[dict] = []
+    replay_calls: list[dict] = []
+
+    def fake_run_segment_sense(**kwargs):
+        calls.append(kwargs)
+        return (1, 0, [])
+
+    monkeypatch.setattr(think, "cluster_segments", lambda day: segments)
+    monkeypatch.setattr(
+        think,
+        "read_segment_progress",
+        lambda day: {(STREAM, complete["key"]): _complete_segment_progress()},
+    )
+    monkeypatch.setattr(think, "run_segment_sense", fake_run_segment_sense)
+    monkeypatch.setattr(think, "resolve_predecessor", lambda *args: None)
+    monkeypatch.setattr(
+        think,
+        "_replay_activity_state_for_segments",
+        lambda **kwargs: replay_calls.append(kwargs),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        ["sol think", "--segments", "--day", day, "--segment-workers", "1"],
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        think.main()
+
+    assert excinfo.value.code == 0
+    assert [call["segment"] for call in calls] == [incomplete["key"]]
+    assert calls[0]["state_machine"] is None
+    assert calls[0]["skip_activity_prompts"] is True
+    assert replay_calls[0]["segments"] == segments
+
+
+def test_segments_mode_complete_day_noops_without_dispatch(tmp_path, monkeypatch):
+    from solstone.think import thinking as think
+    from solstone.think import utils as think_utils
+
+    day = "20240118"
+    journal = tmp_path / "journal"
+    (journal / "chronicle" / day).mkdir(parents=True)
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    monkeypatch.setenv("SOL_SKIP_SUPERVISOR_CHECK", "1")
+    think_utils._journal_path_cache = None
+    _patch_main_runtime(monkeypatch)
+
+    segment = {
+        "key": "090000_300",
+        "stream": STREAM,
+        "start": "09:00",
+        "end": "09:05",
+        "data_state": {"screen": "analyzed"},
+    }
+    calls: list[dict] = []
+    replay_calls: list[dict] = []
+    monkeypatch.setattr(think, "cluster_segments", lambda day: [segment])
+    monkeypatch.setattr(
+        think,
+        "read_segment_progress",
+        lambda day: {(STREAM, segment["key"]): _complete_segment_progress()},
+    )
+    monkeypatch.setattr(
+        think,
+        "run_segment_sense",
+        lambda **kwargs: calls.append(kwargs) or (1, 0, []),
+    )
+    monkeypatch.setattr(
+        think,
+        "_replay_activity_state_for_segments",
+        lambda **kwargs: replay_calls.append(kwargs),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        ["sol think", "--segments", "--day", day, "--segment-workers", "1"],
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        think.main()
+
+    assert excinfo.value.code == 0
+    assert calls == []
+    assert replay_calls == []
+
+
 def test_existing_segment_talent_output_prevents_second_llm_run(
     tmp_path,
     monkeypatch,
@@ -206,15 +592,7 @@ def test_existing_segment_talent_output_prevents_second_llm_run(
 
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    out = (
-        journal
-        / "chronicle"
-        / DAY
-        / STREAM
-        / ACTIVE_SEGMENT
-        / "talents"
-        / "entities.md"
-    )
+    out = journal / "chronicle" / DAY / STREAM / ACTIVE_SEGMENT / "talents" / "flow.md"
     events: list[dict] = []
     called: list[str] = []
 
@@ -227,7 +605,7 @@ def test_existing_segment_talent_output_prevents_second_llm_run(
 
     config = {
         "type": "generate",
-        "name": "entities",
+        "name": "flow",
         "provider": "google",
         "model": "x",
         "prompt": "think about this segment",
@@ -246,7 +624,7 @@ def test_existing_segment_talent_output_prevents_second_llm_run(
     assert len(called) == 1
     assert out.exists()
 
-    _append_segment_terminal(journal, name="entities")
+    _append_segment_terminal(journal, name="flow")
 
     second_events: list[dict] = []
     asyncio.run(talents._run_talent(config, second_events.append, dry_run=False))

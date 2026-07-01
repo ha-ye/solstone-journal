@@ -301,7 +301,7 @@ def _compute_ai_key_validation(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _provider_payload(config: dict[str, Any], local_model_id: str) -> dict[str, Any]:
-    from solstone.think.models import get_context_registry
+    from solstone.think.models import get_context_registry, resolve_effective_route
     from solstone.think.talent import get_talent_configs, key_to_context
 
     providers_config = config.get("providers", {})
@@ -348,6 +348,26 @@ def _provider_payload(config: dict[str, Any], local_model_id: str) -> dict[str, 
         local_model_id=local_model_id,
         include_local=True,
     )
+    effective_contexts: dict[str, dict[str, Any]] = {}
+    for pattern, raw_ctx in contexts.items():
+        try:
+            interface, provider, model = resolve_effective_route(pattern)
+            raw_provider = (
+                raw_ctx.get("provider") if isinstance(raw_ctx, dict) else None
+            )
+            raw_model = raw_ctx.get("model") if isinstance(raw_ctx, dict) else None
+            effective_contexts[pattern] = {
+                "interface": interface,
+                "provider": provider,
+                "model": model,
+                "differs_from_raw": (
+                    (raw_provider is not None and raw_provider != provider)
+                    or (raw_model is not None and raw_model != model)
+                ),
+            }
+        except Exception:
+            logger.exception("error resolving effective route for context %s", pattern)
+            effective_contexts[pattern] = {"unavailable": True}
 
     return {
         "providers": providers_list,
@@ -360,6 +380,7 @@ def _provider_payload(config: dict[str, Any], local_model_id: str) -> dict[str, 
         "generate": type_settings["generate"],
         "cogitate": type_settings["cogitate"],
         "contexts": contexts,
+        "effective_contexts": effective_contexts,
         "context_defaults": context_defaults,
         "api_keys": _api_key_status(config),
         "key_validation": _filtered_ai_key_validation(config),
@@ -980,6 +1001,14 @@ def update_providers() -> Any:
                         INVALID_CONFIG_VALUE,
                         detail=f"extract for {pattern} must be a boolean",
                     )
+                if "model" in ctx_config:
+                    model_value = ctx_config["model"]
+                    if not isinstance(model_value, str) or not model_value.strip():
+                        return error_response(
+                            INVALID_CONFIG_VALUE,
+                            detail=f"model for {pattern} must be a non-empty string",
+                        )
+                    ctx_config["model"] = model_value.strip()
                 if ctx_config:
                     if old_ctx != ctx_config:
                         changed_fields[f"contexts.{pattern}"] = {

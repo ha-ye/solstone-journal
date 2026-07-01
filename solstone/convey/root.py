@@ -18,6 +18,7 @@ from typing import Any
 from flask import (
     Blueprint,
     Response,
+    current_app,
     g,
     jsonify,
     redirect,
@@ -42,8 +43,13 @@ from .config import (
     locked_modify_convey_config,
     seed_default_app_navigation,
 )
-from .reasons import INVALID_CONFIG_VALUE, PL_REVOKED
-from .secure_listener import get_authorized_clients
+from .reasons import (
+    IDENTITY_NOT_LOCKED,
+    INVALID_CONFIG_VALUE,
+    INVALID_OPERATION_FOR_STATE,
+    PL_REVOKED,
+)
+from .secure_listener import get_authorized_clients, start_secure_listener
 from .secure_listener.wsgi import CERTLESS_PAIR_ENDPOINTS
 from .utils import error_response, error_response_with_reason
 
@@ -75,6 +81,9 @@ def require_access() -> Any:
 
     if request.endpoint in {
         "root.init",
+        "root.init_mark",
+        "root.init_mark_regenerate",
+        "root.init_mark_lock",
         "root.init_validate_provider",
         "root.init_observers",
         "root.init_finalize",
@@ -243,8 +252,50 @@ def init_observers() -> Any:
     )
 
 
+@bp.route("/init/mark")
+def init_mark() -> Any:
+    from solstone.think.link import establish
+
+    if establish.is_committed():
+        mark = establish.committed_mark()
+        locked = True
+    else:
+        mark = establish.current_candidate_mark()
+        locked = False
+    return jsonify({"mark": mark.to_render_spec(), "locked": locked})
+
+
+@bp.route("/init/mark/regenerate", methods=["POST"])
+def init_mark_regenerate() -> Any:
+    from solstone.think.link import establish
+
+    if establish.is_committed():
+        return error_response_with_reason(
+            INVALID_OPERATION_FOR_STATE,
+            detail="journal id already locked",
+        )
+    mark = establish.regenerate_candidate()
+    return jsonify({"mark": mark.to_render_spec(), "locked": False})
+
+
+@bp.route("/init/mark/lock", methods=["POST"])
+def init_mark_lock() -> Any:
+    from solstone.think.link import establish
+
+    mark = establish.lock_in()
+    return jsonify({"mark": mark.to_render_spec(), "locked": True})
+
+
 @bp.route("/init/finalize", methods=["POST"])
 def init_finalize() -> Any:
+    from solstone.think.link import establish
+
+    if not establish.is_committed():
+        return error_response_with_reason(
+            IDENTITY_NOT_LOCKED,
+            detail="journal id must be locked before setup can finish",
+        )
+
     data = request.get_json(silent=True) or {}
 
     from solstone.think.utils import now_ms
@@ -291,6 +342,11 @@ def init_finalize() -> Any:
         locked_modify_convey_config(_seed)
     except Exception:
         logger.error("default app navigation seed convey-config PERSIST failed")
+
+    try:
+        start_secure_listener(current_app._get_current_object())
+    except Exception:
+        logger.error("secure listener start after finalize FAILED")
 
     return jsonify({"success": True, "redirect": url_for("app:thinking.index")})
 

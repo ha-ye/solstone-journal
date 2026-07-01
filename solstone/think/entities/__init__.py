@@ -103,6 +103,7 @@ from solstone.think.entities.observations import (
     count_observations,
     load_observations,
     observations_file_path,
+    record_observation_ops,
     save_observations,
 )
 
@@ -221,6 +222,7 @@ __all__ = [
     "count_observations",
     "load_observations",
     "observations_file_path",
+    "record_observation_ops",
     "save_observations",
     "load_entity_voiceprints_file",
     "load_existing_voiceprint_keys",

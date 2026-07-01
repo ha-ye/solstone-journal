@@ -161,6 +161,49 @@ def read_import_metadata(
     raise FileNotFoundError(f"Import metadata not found for {timestamp}")
 
 
+def find_staged_by_client_item_id(
+    journal_root: Path, client_item_id: str
+) -> dict | None:
+    """Return staged import metadata with matching client_item_id, else None."""
+    for timestamp in list_import_timestamps(journal_root):
+        try:
+            metadata = read_import_metadata(journal_root, timestamp)
+        except (FileNotFoundError, json.JSONDecodeError):
+            continue
+        if not isinstance(metadata, dict):
+            continue
+        if metadata.get("client_item_id") == client_item_id:
+            result = dict(metadata)
+            result["timestamp"] = timestamp
+            return result
+
+    return None
+
+
+def find_staged_by_source_hash(
+    journal_root: Path,
+    source_hash: str,
+    *,
+    exclude_timestamp: str | None = None,
+) -> dict | None:
+    """Return staged import metadata with matching source_hash, else None."""
+    for timestamp in list_import_timestamps(journal_root):
+        if timestamp == exclude_timestamp:
+            continue
+        try:
+            metadata = read_import_metadata(journal_root, timestamp)
+        except (FileNotFoundError, json.JSONDecodeError):
+            continue
+        if not isinstance(metadata, dict):
+            continue
+        if metadata.get("source_hash") == source_hash:
+            result = dict(metadata)
+            result["timestamp"] = timestamp
+            return result
+
+    return None
+
+
 def update_import_metadata_fields(
     journal_root: Path,
     timestamp: str,

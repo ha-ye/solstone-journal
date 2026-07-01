@@ -61,12 +61,11 @@ def pre_process(config: dict) -> dict | None:
         return {"skip_reason": "steward already in flight"}
     try:
         pass_event = load_latest_pass_event()
-        if pass_event is None:
-            escalated_targets: list = []
-            pass_errors: list = []
-        else:
-            escalated_targets = list(pass_event.get("escalated_targets", []))
-            pass_errors = list(pass_event.get("data_source_errors", []))
+        pass_errors = (
+            list(pass_event.get("data_source_errors", []))
+            if pass_event is not None
+            else []
+        )
 
         facts = gather_health_facts(today)
         data_source_errors = list(facts.get("data_source_errors") or []) + pass_errors
@@ -75,7 +74,6 @@ def pre_process(config: dict) -> dict | None:
             generated_at=facts["generated_at"],
             pipeline_day=facts.get("pipeline_day"),
             recipe_outcomes_7d=facts.get("recipe_outcomes_7d") or [],
-            escalated_targets=escalated_targets,
             data_source_errors=data_source_errors,
         )
 
@@ -110,7 +108,7 @@ def post_process(result: str, config: dict) -> str:
     """Normalize the model's summary and append it to the day accumulator."""
     default = config.get("_steward_default_summary") or {
         "headline": "Health summary unavailable",
-        "summary_sentence": "Sol could not produce a health summary this run.",
+        "summary_sentence": "sol could not produce a health summary this run.",
         "suggested_action": "open_health_detail",
     }
     summary = normalize_summary(result, default)

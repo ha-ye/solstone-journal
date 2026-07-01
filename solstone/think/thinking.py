@@ -14,9 +14,12 @@ import argparse
 import fnmatch
 import json
 import logging
+import os
+import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -28,6 +31,10 @@ from solstone.think.activities import (
 )
 from solstone.think.activity_state_machine import ActivityStateMachine
 from solstone.think.callosum import CallosumConnection
+from solstone.think.catchup_state import (
+    record_segment_repair_attempt,
+    record_segment_repair_outcome,
+)
 from solstone.think.change_detection import detect_segment_change, resolve_predecessor
 from solstone.think.cluster import cluster_segments
 from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_THRESHOLD
@@ -48,12 +55,16 @@ from solstone.think.pipeline_health import (
     SEGMENT_FLOOR_TALENTS,
     DeterministicFailure,
     classify_segment_completion,
+    is_floor_talent_capped,
+    lookup_segment_progress,
     read_completed_since,
     read_completed_units,
     read_daily_deterministic_failures,
     read_segment_progress,
+    segment_fully_sensed,
+    segment_fully_thought,
 )
-from solstone.think.runner import run_task
+from solstone.think.runner import DEFAULT_TASK_MAX_RUNTIME, run_task
 from solstone.think.sense_splitter import (
     write_change_detection,
     write_idle_stubs,
@@ -67,6 +78,7 @@ from solstone.think.talent_provenance import (
     read_activity_provenance,
     write_activity_provenance,
 )
+from solstone.think.talents import check_segment_has_no_input
 from solstone.think.utils import (
     day_input_summary,
     day_log,
@@ -97,6 +109,7 @@ class ThinkingJSONLWriter:
     def __init__(self, path: str | None = None) -> None:
         self.file = None
         self.skip_count = 0
+        self.lock = threading.Lock()
         if path:
             try:
                 Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -108,27 +121,32 @@ class ThinkingJSONLWriter:
         if not self.file:
             return
         data = {"event": event, "ts": now_ms(), **fields}
-        if event == "talent.skip":
-            self.skip_count += 1
-        try:
-            self.file.write(json.dumps(data, ensure_ascii=False) + "\n")
-            self.file.flush()
-        except OSError as exc:
-            logging.warning(
-                "Failed to write think JSONL sidecar %s: %s", self.file.name, exc
-            )
+        with self.lock:
+            if event == "talent.skip":
+                self.skip_count += 1
+            try:
+                self.file.write(json.dumps(data, ensure_ascii=False) + "\n")
+                self.file.flush()
+            except OSError as exc:
+                logging.warning(
+                    "Failed to write think JSONL sidecar %s: %s", self.file.name, exc
+                )
 
     def close(self) -> None:
         if self.file:
-            try:
-                self.file.close()
-            except OSError as exc:
-                logging.warning(
-                    "Failed to close think JSONL sidecar %s: %s", self.file.name, exc
-                )
+            with self.lock:
+                try:
+                    self.file.close()
+                except OSError as exc:
+                    logging.warning(
+                        "Failed to close think JSONL sidecar %s: %s",
+                        self.file.name,
+                        exc,
+                    )
 
 
 _jsonl: ThinkingJSONLWriter | None = None
+SEGMENT_WORKERS_MAX = 32
 
 
 def _jsonl_log(event: str, **fields) -> None:
@@ -222,12 +240,16 @@ def _persist_and_maybe_run_activity_prompts(
     segment: str,
     target_schedule: str,
     ended_triples: list[tuple[object, object, object]],
-    completed_lookup: dict[object, dict],
+    completed: list[dict],
     refresh: bool,
     verbose: bool,
     max_concurrency: int,
     skip_activity_prompts: bool,
 ) -> None:
+    completed_by_key: dict[tuple[str, str], dict] = {}
+    for rec in completed:
+        completed_by_key.setdefault((str(rec["facet"]), str(rec["id"])), rec)
+
     written_by: dict[tuple[str, str], bool] = {}
     record_by: dict[tuple[str, str], dict] = {}
 
@@ -245,7 +267,7 @@ def _persist_and_maybe_run_activity_prompts(
             state="ended",
             change=change,
         )
-        rec = completed_lookup.get(activity_id)
+        rec = completed_by_key.get(key)
         if rec:
             record_by[key] = rec
             written_by[key] = append_activity_record(facet_str, routing_day, rec)
@@ -348,9 +370,6 @@ def _run_activity_state_tail(
         for c in changes
         if c.get("state") == "ended"
     ]
-    completed_lookup = {}
-    for rec in state_machine.get_completed_activities():
-        completed_lookup.setdefault(rec["id"], rec)
     if state_machine.journal_root is not None:
         try:
             snapshot = {
@@ -373,7 +392,7 @@ def _run_activity_state_tail(
         segment=segment,
         target_schedule=target_schedule,
         ended_triples=ended_triples,
-        completed_lookup=completed_lookup,
+        completed=state_machine.get_completed_activities(),
         refresh=refresh,
         verbose=verbose,
         max_concurrency=max_concurrency,
@@ -412,21 +431,205 @@ def _flush_batch_state_machines(
         ]
         if not ended_triples:
             continue
-        completed_lookup: dict = {}
-        for rec in sm.get_completed_activities():
-            completed_lookup.setdefault(rec["id"], rec)
         _persist_and_maybe_run_activity_prompts(
             routing_day=sm.last_segment_day or day,
             log_day=day,
             segment=sm.last_segment_key,
             target_schedule="segment",
             ended_triples=ended_triples,
-            completed_lookup=completed_lookup,
+            completed=sm.get_completed_activities(),
             refresh=refresh,
             verbose=verbose,
             max_concurrency=max_concurrency,
             skip_activity_prompts=skip_activity_prompts,
         )
+
+
+def _default_segment_workers() -> int:
+    """Return the default segment-level worker count for repair mode."""
+    cpu_count = os.cpu_count() or 2
+    return max(1, min(8, cpu_count // 2))
+
+
+def _select_segment_repair_targets(
+    day: str,
+    segments: list[dict],
+    *,
+    force_all: bool,
+) -> tuple[list[dict], dict[str, int]]:
+    """Select runnable segment-thinking repair targets.
+
+    Normal repair mode targets only fully-sensed segments whose thinking is not
+    complete. ``force_all`` preserves refresh/from-scratch semantics.
+    """
+    counts = {
+        "total": len(segments),
+        "selected": 0,
+        "complete": 0,
+        "raw_blocked": 0,
+    }
+    if force_all:
+        selected = list(segments)
+        counts["selected"] = len(selected)
+        return selected, counts
+
+    progress = read_segment_progress(day)
+    selected: list[dict] = []
+    for seg in segments:
+        if not segment_fully_sensed(seg.get("data_state", {})):
+            counts["raw_blocked"] += 1
+            continue
+
+        key = seg["key"]
+        stream = seg.get("stream")
+        segment_progress = lookup_segment_progress(progress, stream, key)
+        complete, _reason = segment_fully_thought(segment_progress)
+        if complete:
+            counts["complete"] += 1
+            continue
+
+        selected.append(seg)
+
+    counts["selected"] = len(selected)
+    return selected, counts
+
+
+def _read_segment_sense_json(day: str, stream: str | None, segment: str) -> dict | None:
+    path = get_output_path(
+        day_path(day),
+        "sense",
+        segment=segment,
+        output_format="json",
+        stream=stream,
+    )
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        logging.debug(
+            "No sense output for %s/%s/%s during activity replay", day, stream, segment
+        )
+        return None
+    except (json.JSONDecodeError, OSError):
+        logging.warning(
+            "Failed to load sense output for %s/%s/%s during activity replay",
+            day,
+            stream,
+            segment,
+            exc_info=True,
+        )
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _replay_activity_state_for_segments(
+    *,
+    day: str,
+    segments: list[dict],
+    refresh: bool,
+    verbose: bool,
+    max_concurrency: int,
+    skip_activity_prompts: bool,
+) -> None:
+    """Replay activity state chronologically from persisted Sense outputs."""
+    batch_state_machines: dict[str | None, ActivityStateMachine] = {}
+    for seg in segments:
+        stream = seg.get("stream")
+        segment = seg["key"]
+        sense_json = _read_segment_sense_json(day, stream, segment)
+        if sense_json is None:
+            continue
+        sm = batch_state_machines.get(stream)
+        if sm is None:
+            sm = ActivityStateMachine()
+            batch_state_machines[stream] = sm
+        _run_activity_state_tail(
+            sm,
+            sense_json,
+            segment,
+            day,
+            "segment",
+            refresh=refresh,
+            verbose=verbose,
+            max_concurrency=max_concurrency,
+            skip_activity_prompts=skip_activity_prompts,
+        )
+
+    _flush_batch_state_machines(
+        batch_state_machines,
+        day,
+        refresh=refresh,
+        verbose=verbose,
+        max_concurrency=max_concurrency,
+        skip_activity_prompts=skip_activity_prompts,
+    )
+
+
+def _run_segment_repair_batch(
+    *,
+    day: str,
+    segments: list[dict],
+    refresh: bool,
+    verbose: bool,
+    max_concurrency: int,
+    segment_workers: int,
+    timeout: int | None,
+    skip_activity_prompts: bool,
+    skip_talents: frozenset[str],
+) -> tuple[int, int]:
+    """Run selected segment repairs with bounded segment-level parallelism."""
+    if not segments:
+        return (0, 0)
+
+    workers = max(1, min(segment_workers, len(segments)))
+    batch_success = 0
+    batch_failed = 0
+    completed = 0
+    total = len(segments)
+    status_lock = threading.Lock()
+
+    def _run_one(seg: dict) -> tuple[int, int]:
+        seg_key = seg["key"]
+        seg_stream = seg.get("stream")
+        logging.info(
+            "Processing repair segment: %s (%s-%s)",
+            seg_key,
+            seg.get("start", "?"),
+            seg.get("end", "?"),
+        )
+        success, failed, _fn = run_segment_sense(
+            day=day,
+            segment=seg_key,
+            refresh=refresh,
+            verbose=verbose,
+            max_concurrency=max_concurrency,
+            stream=seg_stream,
+            timeout=timeout,
+            state_machine=None,
+            # Activity state is replayed once across the full chronological day
+            # after parallel repairs; worker threads must not mutate rolling state.
+            skip_activity_prompts=True,
+            skip_talents=skip_talents,
+            live=False,
+            predecessor=resolve_predecessor(day, seg_stream, seg_key),
+        )
+        return success, failed
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_segment = {executor.submit(_run_one, seg): seg for seg in segments}
+        for future in as_completed(future_to_segment):
+            seg = future_to_segment[future]
+            try:
+                success, failed = future.result()
+            except Exception:
+                logging.exception("Segment %s failed with exception", seg["key"])
+                success, failed = 0, 1
+            with status_lock:
+                completed += 1
+                batch_success += success
+                batch_failed += failed
+                _update_status(segments_completed=completed, segments_total=total)
+
+    return batch_success, batch_failed
 
 
 def _log_skip(name: str, reason: str, detail: str, **extra) -> None:
@@ -461,25 +664,48 @@ def _emit_periodic_status() -> None:
             logging.debug("Status emission failed", exc_info=True)
 
 
-def run_command(cmd: list[str], day: str) -> bool:
-    """Run a shell command synchronously."""
+def run_bounded_phase(
+    cmd: list[str], day: str, timeout: float | None
+) -> tuple[bool, bool]:
+    """Run a phase subprocess.
+
+    Returns (ok, timed_out). timed_out is True only when the wall-clock budget
+    was exceeded (covers the terminate-re-raise edge).
+    """
     logging.info("==> %s", " ".join(cmd))
     cmd_name = cmd[1] if cmd[0] in ("sol", "journal") and len(cmd) > 1 else cmd[0]
     cmd_name = cmd_name.replace("-", "_")
 
     try:
-        success, exit_code, _log_path = run_task(cmd, day=day)
+        success, exit_code, _log_path, timed_out = run_task(
+            cmd, day=day, timeout=timeout
+        )
         if not success:
-            logging.error(
-                "Command failed with exit code %s: %s", exit_code, " ".join(cmd)
-            )
-            day_log(day, f"{cmd_name} error {exit_code}")
-            return False
-        return True
+            if timed_out:
+                logging.error(
+                    "Command exceeded its %ss budget: %s", timeout, " ".join(cmd)
+                )
+                day_log(day, f"{cmd_name} timeout")
+            else:
+                logging.error(
+                    "Command failed with exit code %s: %s", exit_code, " ".join(cmd)
+                )
+                day_log(day, f"{cmd_name} error {exit_code}")
+        return (success, timed_out)
+    except subprocess.TimeoutExpired:
+        logging.error("Command timed out and could not be reaped: %s", " ".join(cmd))
+        day_log(day, f"{cmd_name} timeout")
+        return (False, True)
     except Exception as e:
         logging.error("Command exception: %s: %s", e, " ".join(cmd))
         day_log(day, f"{cmd_name} exception")
-        return False
+        return (False, False)
+
+
+def run_command(cmd: list[str], day: str) -> bool:
+    """Run a shell command synchronously (unbounded)."""
+    ok, _timed_out = run_bounded_phase(cmd, day, timeout=None)
+    return ok
 
 
 def run_queued_command(cmd: list[str], day: str, timeout: int = 600) -> bool:
@@ -737,6 +963,100 @@ def _segment_dir(day: str, segment: str, stream: str | None) -> Path:
     return day_path(day) / (stream or "default") / segment
 
 
+def _empty_input_sense_output() -> dict:
+    """Schema-valid minimal idle Sense output for a segment with no input to sense."""
+    return {
+        "density": "idle",
+        "content_type": "idle",
+        "activity_summary": "",
+        "entities": [],
+        "facets": [],
+        "speculative_facet": None,
+        "meeting_detected": False,
+        "speakers": [],
+        "recommend": {"screen_record": False, "speaker_attribution": False},
+        "emotional_register": "neutral",
+    }
+
+
+def _terminalize_idle_segment(
+    sense_json: dict,
+    seg_dir,
+    day: str,
+    segment: str,
+    target_schedule: str,
+    state_machine,
+    *,
+    verbose: bool,
+    max_concurrency: int,
+    skip_activity_prompts: bool,
+    start_time: float,
+    total_success: int,
+    total_failed: int,
+    all_failed_names: list[str],
+) -> tuple[int, int, list[str]]:
+    write_idle_stubs(seg_dir)
+    logging.info("Segment %s is idle, skipping remaining agents", segment)
+    _log_skip(
+        "*",
+        "density_idle",
+        f"Segment {segment} is idle, skipping remaining agents",
+        mode=target_schedule,
+        day=day,
+        segment=segment,
+    )
+    if state_machine is not None:
+        routing_day = state_machine.last_segment_day or day
+        idle_changes = state_machine.update(sense_json, segment, day)
+        # Persist completed activity records from idle transitions
+        ended_triples = [
+            (c["id"], c["facet"], c.get("_change"))
+            for c in idle_changes
+            if c.get("state") == "ended"
+        ]
+        _persist_and_maybe_run_activity_prompts(
+            routing_day=routing_day,
+            log_day=day,
+            segment=segment,
+            target_schedule=target_schedule,
+            ended_triples=ended_triples,
+            completed=state_machine.get_completed_activities(),
+            refresh=False,
+            verbose=verbose,
+            max_concurrency=max_concurrency,
+            skip_activity_prompts=skip_activity_prompts,
+        )
+        if state_machine.journal_root is not None:
+            try:
+                snapshot = {
+                    "last_segment_key": state_machine.last_segment_key,
+                    "last_segment_day": state_machine.last_segment_day,
+                    "active": {
+                        facet: {k: v for k, v in entry.items() if k != "_change"}
+                        for facet, entry in state_machine.state.items()
+                    },
+                }
+                atomic_replace(
+                    state_machine.journal_root / "awareness" / "activity_state.json",
+                    json.dumps(snapshot),
+                )
+            except Exception:
+                logging.debug("Failed to write activity state snapshot", exc_info=True)
+
+    duration_ms = int((time.time() - start_time) * 1000)
+    emit(
+        "completed",
+        mode=target_schedule,
+        day=day,
+        segment=segment,
+        success=total_success,
+        failed=total_failed,
+        failed_names=all_failed_names,
+        duration_ms=duration_ms,
+    )
+    return (total_success, total_failed, all_failed_names)
+
+
 def _resolve_segment_dir(
     day: str,
     segment: str,
@@ -922,6 +1242,60 @@ def run_segment_sense(
         groups=1,
     )
 
+    if check_segment_has_no_input(
+        day, segment, sense_config.get("load", {}), stream=stream
+    ):
+        logging.info(
+            "Segment %s has no sense input; gating to idle terminal without dispatch",
+            segment,
+        )
+        idle_sense_json = _empty_input_sense_output()
+        write_sense_outputs(idle_sense_json, seg_dir, stream=stream)
+        _jsonl_log(
+            "sense.complete",
+            mode=target_schedule,
+            day=day,
+            segment=segment,
+            density="idle",
+            gated="no_input",
+            recommend=idle_sense_json["recommend"],
+            **({"stream": stream} if stream else {}),
+        )
+        change_result = detect_segment_change(
+            day,
+            stream,
+            segment,
+            seg_dir,
+            predecessor=predecessor,
+            timestamp=datetime.now(tz=timezone.utc).isoformat(),
+        )
+        write_change_detection(seg_dir, change_result)
+        _jsonl_log(
+            "sense.change_detect",
+            mode=target_schedule,
+            day=day,
+            segment=segment,
+            change_class=change_result["change_class"],
+            changed_sensors=change_result["changed_sensors"],
+            predecessor=change_result["predecessor"],
+            **({"stream": stream} if stream else {}),
+        )
+        return _terminalize_idle_segment(
+            idle_sense_json,
+            seg_dir,
+            day,
+            segment,
+            target_schedule,
+            state_machine,
+            verbose=verbose,
+            max_concurrency=max_concurrency,
+            skip_activity_prompts=skip_activity_prompts,
+            start_time=start_time,
+            total_success=0,
+            total_failed=0,
+            all_failed_names=[],
+        )
+
     sense_agent_id = _dispatch_agent("sense", sense_config)
     if sense_agent_id is None:
         _log_skip(
@@ -1048,73 +1422,21 @@ def run_segment_sense(
     )
 
     if density == "idle" and not refresh:
-        write_idle_stubs(seg_dir)
-        logging.info("Segment %s is idle, skipping remaining agents", segment)
-        _log_skip(
-            "*",
-            "density_idle",
-            f"Segment {segment} is idle, skipping remaining agents",
-            mode=target_schedule,
-            day=day,
-            segment=segment,
+        return _terminalize_idle_segment(
+            sense_json,
+            seg_dir,
+            day,
+            segment,
+            target_schedule,
+            state_machine,
+            verbose=verbose,
+            max_concurrency=max_concurrency,
+            skip_activity_prompts=skip_activity_prompts,
+            start_time=start_time,
+            total_success=total_success,
+            total_failed=total_failed,
+            all_failed_names=all_failed_names,
         )
-        if state_machine is not None:
-            routing_day = state_machine.last_segment_day or day
-            idle_changes = state_machine.update(sense_json, segment, day)
-            # Persist completed activity records from idle transitions
-            ended_triples = [
-                (c["id"], c["facet"], c.get("_change"))
-                for c in idle_changes
-                if c.get("state") == "ended"
-            ]
-            completed_lookup = {}
-            for rec in state_machine.get_completed_activities():
-                completed_lookup.setdefault(rec["id"], rec)
-            _persist_and_maybe_run_activity_prompts(
-                routing_day=routing_day,
-                log_day=day,
-                segment=segment,
-                target_schedule=target_schedule,
-                ended_triples=ended_triples,
-                completed_lookup=completed_lookup,
-                refresh=refresh,
-                verbose=verbose,
-                max_concurrency=max_concurrency,
-                skip_activity_prompts=skip_activity_prompts,
-            )
-            if state_machine.journal_root is not None:
-                try:
-                    snapshot = {
-                        "last_segment_key": state_machine.last_segment_key,
-                        "last_segment_day": state_machine.last_segment_day,
-                        "active": {
-                            facet: {k: v for k, v in entry.items() if k != "_change"}
-                            for facet, entry in state_machine.state.items()
-                        },
-                    }
-                    atomic_replace(
-                        state_machine.journal_root
-                        / "awareness"
-                        / "activity_state.json",
-                        json.dumps(snapshot),
-                    )
-                except Exception:
-                    logging.debug(
-                        "Failed to write activity state snapshot", exc_info=True
-                    )
-
-        duration_ms = int((time.time() - start_time) * 1000)
-        emit(
-            "completed",
-            mode=target_schedule,
-            day=day,
-            segment=segment,
-            success=total_success,
-            failed=total_failed,
-            failed_names=all_failed_names,
-            duration_ms=duration_ms,
-        )
-        return (total_success, total_failed, all_failed_names)
 
     if change_result["change_class"] == "redundant" and not refresh:
         from solstone.apps.timeline.talent.segment_summary import (
@@ -1167,9 +1489,7 @@ def run_segment_sense(
 
     for floor_name in SEGMENT_FLOOR_TALENTS:
         floor_config = _cfg(floor_name)
-        if floor_config:
-            agents_to_run.append((floor_name, floor_config))
-        else:
+        if not floor_config:
             _log_skip(
                 floor_name,
                 "no_config",
@@ -1179,6 +1499,19 @@ def run_segment_sense(
                 segment=segment,
                 **({"stream": stream} if stream else {}),
             )
+            continue
+        if not refresh and is_floor_talent_capped(day, stream, segment, floor_name):
+            _log_skip(
+                floor_name,
+                "capped",
+                f"{floor_name} skipped after repeated failures; reprocess to retry",
+                mode=target_schedule,
+                day=day,
+                segment=segment,
+                **({"stream": stream} if stream else {}),
+            )
+            continue
+        agents_to_run.append((floor_name, floor_config))
 
     summary_name = "timeline:segment_summary"
     summary_config = _cfg(summary_name)
@@ -1189,6 +1522,21 @@ def run_segment_sense(
             summary_name,
             "no_config",
             f"{summary_name} config not found",
+            mode=target_schedule,
+            day=day,
+            segment=segment,
+            **({"stream": stream} if stream else {}),
+        )
+
+    detection_name = "entities:detection"
+    detection_config = _cfg(detection_name)
+    if detection_config:
+        agents_to_run.append((detection_name, detection_config))
+    else:
+        _log_skip(
+            detection_name,
+            "no_config",
+            f"{detection_name} config not found",
             mode=target_schedule,
             day=day,
             segment=segment,
@@ -3327,6 +3675,16 @@ def parse_args() -> argparse.ArgumentParser:
         help="Disable per-batch agent wait timeout in --segments mode",
     )
     parser.add_argument(
+        "--segment-workers",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Max concurrent segment repair workers in --segments mode "
+            "(default: half CPU capped at 8; valid 1-32)"
+        ),
+    )
+    parser.add_argument(
         "--no-activity-prompts",
         action="store_true",
         help=(
@@ -3442,6 +3800,11 @@ def main() -> None:
     if args.no_activity_prompts and args.activity:
         parser.error("--no-activity-prompts cannot be combined with --activity")
 
+    if args.segment_workers is not None and not (
+        1 <= args.segment_workers <= SEGMENT_WORKERS_MAX
+    ):
+        parser.error(f"--segment-workers must be between 1 and {SEGMENT_WORKERS_MAX}")
+
     skip_talents: frozenset[str] = frozenset(
         name.strip() for name in (args.skip_talents or "").split(",") if name.strip()
     )
@@ -3471,6 +3834,14 @@ def main() -> None:
         parser.error(
             "--cadence is incompatible with --segment, --segments, --activity, --flush, and --weekly"
         )
+
+    if args.segments:
+        segment_workers = args.segment_workers or _default_segment_workers()
+        if args.jobs == 0 and segment_workers > 1:
+            parser.error(
+                "--jobs 0 is incompatible with multi-worker --segments; "
+                "set --jobs to a positive bound or --segment-workers 1"
+            )
 
     if args.dry_run:
         dry_run(
@@ -3560,51 +3931,92 @@ def main() -> None:
                 sys.exit(0)
 
             total = len(segments)
-            logging.info(f"Processing {total} segments for {day}")
-            emit("segments_started", day=day, count=total)
-            _update_status(segments_total=total, segments_completed=0)
-
             batch_start = time.time()
-            batch_success = 0
-            batch_failed = 0
-            batch_state_machines: dict = {}
-
-            for i, seg in enumerate(segments, 1):
-                seg_key = seg["key"]
-                seg_stream = seg.get("stream")
-                sm = batch_state_machines.get(seg_stream)
-                if sm is None:
-                    sm = ActivityStateMachine()
-                    batch_state_machines[seg_stream] = sm
-                logging.info(
-                    f"Processing segment {i}/{total}: {seg_key} ({seg['start']}-{seg['end']})"
+            force_all_segments = args.refresh or args.from_scratch
+            try:
+                selected_segments, repair_counts = _select_segment_repair_targets(
+                    day,
+                    segments,
+                    force_all=force_all_segments,
                 )
-                try:
-                    success, failed, _fn = run_segment_sense(
-                        day=day,
-                        segment=seg_key,
-                        refresh=args.refresh,
-                        verbose=args.verbose,
-                        max_concurrency=args.jobs,
-                        stream=seg_stream,
-                        timeout=None if args.no_timeout else 610,
-                        state_machine=sm,
-                        skip_activity_prompts=args.no_activity_prompts,
-                        skip_talents=skip_talents,
-                        live=False,
-                        predecessor=resolve_predecessor(day, seg_stream, seg_key),
-                    )
-                    batch_success += success
-                    batch_failed += failed
-                    _update_status(segments_completed=i, segments_total=total)
-                except Exception:
-                    logging.exception(f"Segment {seg_key} failed with exception")
-                    batch_failed += 1
-                    _update_status(segments_completed=i, segments_total=total)
+            except Exception:
+                logging.exception("Failed to select segment repair targets for %s", day)
+                _run_result["failed"] = 1
+                sys.exit(1)
 
-            _flush_batch_state_machines(
-                batch_state_machines,
+            selected = len(selected_segments)
+            segment_workers = args.segment_workers or _default_segment_workers()
+            logging.info(
+                "Segment repair targets for %s: selected=%d complete=%d "
+                "raw_blocked=%d total=%d workers=%d jobs=%s",
                 day,
+                selected,
+                repair_counts["complete"],
+                repair_counts["raw_blocked"],
+                total,
+                min(segment_workers, max(selected, 1)),
+                args.jobs,
+            )
+            emit(
+                "segments_started",
+                day=day,
+                count=selected,
+                total=total,
+                complete=repair_counts["complete"],
+                raw_blocked=repair_counts["raw_blocked"],
+                workers=min(segment_workers, max(selected, 1)),
+            )
+            _update_status(segments_total=selected, segments_completed=0)
+
+            if selected == 0:
+                duration_ms = int((time.time() - batch_start) * 1000)
+                if repair_counts["raw_blocked"]:
+                    logging.info(
+                        "No runnable segment repair targets for %s: "
+                        "%d complete, %d raw-media-blocked, %d total",
+                        day,
+                        repair_counts["complete"],
+                        repair_counts["raw_blocked"],
+                        total,
+                    )
+                else:
+                    logging.info(
+                        "All %d segment(s) already fully thought for %s", total, day
+                    )
+                emit(
+                    "segments_completed",
+                    day=day,
+                    count=0,
+                    total=total,
+                    success=0,
+                    failed=0,
+                    duration_ms=duration_ms,
+                )
+                day_log(
+                    day,
+                    "think --segments selected=0 "
+                    f"complete={repair_counts['complete']} "
+                    f"raw_blocked={repair_counts['raw_blocked']} failed=0",
+                )
+                _run_result["success"] = 0
+                _run_result["failed"] = 0
+                sys.exit(0)
+
+            batch_success, batch_failed = _run_segment_repair_batch(
+                day=day,
+                segments=selected_segments,
+                refresh=args.refresh,
+                verbose=args.verbose,
+                max_concurrency=args.jobs,
+                segment_workers=segment_workers,
+                timeout=None if args.no_timeout else 610,
+                skip_activity_prompts=args.no_activity_prompts,
+                skip_talents=skip_talents,
+            )
+
+            _replay_activity_state_for_segments(
+                day=day,
+                segments=segments,
                 refresh=args.refresh,
                 verbose=args.verbose,
                 max_concurrency=args.jobs,
@@ -3614,21 +4026,39 @@ def main() -> None:
             duration_ms = int((time.time() - batch_start) * 1000)
             logging.info(
                 f"All segments completed in {duration_ms}ms: "
-                f"{batch_success} succeeded, {batch_failed} failed across {total} segments"
+                f"{batch_success} succeeded, {batch_failed} failed across "
+                f"{selected}/{total} selected segments"
             )
             emit(
                 "segments_completed",
                 day=day,
-                count=total,
+                count=selected,
+                total=total,
                 success=batch_success,
                 failed=batch_failed,
+                complete=repair_counts["complete"],
+                raw_blocked=repair_counts["raw_blocked"],
                 duration_ms=duration_ms,
             )
 
             if args.refresh:
-                day_log(day, f"think --segments --refresh failed={batch_failed}")
+                day_log(
+                    day,
+                    f"think --segments --refresh selected={selected} failed={batch_failed}",
+                )
+            elif args.from_scratch:
+                day_log(
+                    day,
+                    "think --segments --from-scratch "
+                    f"selected={selected} failed={batch_failed}",
+                )
             else:
-                day_log(day, f"think --segments failed={batch_failed}")
+                day_log(
+                    day,
+                    f"think --segments selected={selected} "
+                    f"complete={repair_counts['complete']} "
+                    f"raw_blocked={repair_counts['raw_blocked']} failed={batch_failed}",
+                )
 
             _run_result["success"] = batch_success
             _run_result["failed"] = batch_failed
@@ -3724,17 +4154,39 @@ def main() -> None:
             day_log(day, f"starting: {' '.join(cmd)}")
             _jsonl_log("phase.start", mode=_run_mode, day=day, phase="segment_think")
             _phase_start = time.time()
-            phase_ok = run_command(cmd, day)
-            _jsonl_log(
-                "phase.complete",
-                mode=_run_mode,
-                day=day,
-                phase="segment_think",
+            record_segment_repair_attempt(day, started_at=_phase_start)
+            phase_ok, phase_timed_out = run_bounded_phase(
+                cmd, day, DEFAULT_TASK_MAX_RUNTIME
+            )
+            phase_complete = {
+                "mode": _run_mode,
+                "day": day,
+                "phase": "segment_think",
+                "success": phase_ok,
+                "duration_ms": int((time.time() - _phase_start) * 1000),
+            }
+            if phase_timed_out:
+                phase_complete.update(
+                    reason_code="wall_clock_exceeded",
+                    timeout_seconds=DEFAULT_TASK_MAX_RUNTIME,
+                    bounded=True,
+                )
+            _jsonl_log("phase.complete", **phase_complete)
+            record_segment_repair_outcome(
+                day,
                 success=phase_ok,
-                duration_ms=int((time.time() - _phase_start) * 1000),
+                timed_out=phase_timed_out,
+                timeout_seconds=DEFAULT_TASK_MAX_RUNTIME,
+                ended_at=time.time(),
             )
             if not phase_ok:
-                logging.warning("Segment-think repair failed, continuing anyway")
+                if phase_timed_out:
+                    logging.warning(
+                        "Segment-think repair exceeded its %ss budget, continuing anyway",
+                        DEFAULT_TASK_MAX_RUNTIME,
+                    )
+                else:
+                    logging.warning("Segment-think repair failed, continuing anyway")
 
         # MAIN PHASE: Run prompts
         resolved_stream = args.stream

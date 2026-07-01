@@ -201,6 +201,7 @@ def _patch_minimal_pulse_context(monkeypatch, pipeline_status):
         "solstone.apps.home.routes.read_steward_summary",
         lambda *a, **k: None,
     )
+    monkeypatch.setattr("solstone.apps.home.routes._thinking_blocked", lambda: False)
     monkeypatch.setattr(
         "solstone.apps.home.routes._summarize_yesterday_processing",
         lambda yesterday, journal_age_days: {
@@ -368,7 +369,7 @@ def test_yesterdays_card_healthy_expanded_with_framing_on_days_1_to_7(
     assert summary["default_collapsed"] is False
     assert (
         summary["first_week_framing"]
-        == "Most of what I learn becomes useful in the third or fourth week, when I've seen enough patterns to surface them. For now, here's what's already happening:"
+        == "Most of what I learn becomes useful after about a week, when I've seen enough patterns to surface them. For now, here's what's already happening:"
     )
 
 
@@ -665,6 +666,7 @@ def test_build_pulse_context_includes_yesterday_processing(monkeypatch):
         "solstone.apps.home.routes._collect_activities", lambda today: []
     )
     monkeypatch.setattr("solstone.apps.home.routes.read_steward_health", lambda: None)
+    monkeypatch.setattr("solstone.apps.home.routes._thinking_blocked", lambda: False)
     monkeypatch.setattr(
         "solstone.apps.home.routes._summarize_yesterday_processing",
         lambda yesterday, journal_age_days: {
@@ -722,3 +724,16 @@ def test_build_pulse_context_pipeline_status_enriched_with_summary(monkeypatch):
     assert ctx["pipeline_status"]["suggested_action"] == "open_health_detail"
     # The deterministic warning signal is preserved.
     assert ctx["pipeline_status"]["message"] == "Foo bar"
+
+
+def test_build_pulse_context_surfaces_thinking_chip_when_blocked(monkeypatch):
+    _patch_minimal_pulse_context(monkeypatch, None)
+    monkeypatch.setattr("solstone.apps.home.routes._thinking_blocked", lambda: True)
+
+    ctx = _build_pulse_context()
+
+    assert {
+        "text": "sol needs a way to think",
+        "severity": "amber",
+        "href": "/app/thinking/",
+    } in ctx["health_glance"]["issues"]

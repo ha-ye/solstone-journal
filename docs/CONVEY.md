@@ -151,7 +151,7 @@ facet or scope set before forwarding any event.
 | Tract | Events |
 |---|---|
 | `activity` | `live`, `recorded` |
-| `chat` | `owner_message`, `sol_message`, `talent_spawned`, `talent_finished`, `talent_errored`, `reflection_ready`, `chat_queue_depth`, `chat_error`, `sol_chat_request`, `sol_chat_request_superseded`, `owner_chat_open`, `owner_chat_dismissed`, `support_draft`, `result`, `support_submit_claim` |
+| `chat` | `owner_message`, `sol_message`, `talent_queued`, `talent_spawned`, `talent_finished`, `talent_errored`, `reflection_ready`, `chat_queue_depth`, `chat_error`, `sol_chat_request`, `sol_chat_request_superseded`, `owner_chat_open`, `owner_chat_dismissed`, `support_draft`, `result`, `support_submit_claim` |
 | `cortex` | `request`, `start`, `thinking`, `tool_start`, `tool_end`, `finish`, `error`, `talent_updated`, `info`, `status` |
 | `importer` | `started`, `status`, `completed`, `error` |
 | `logs` | `exec`, `line`, `exit` |

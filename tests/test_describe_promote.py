@@ -10,6 +10,7 @@ import pytest
 from PIL import Image
 
 from solstone.observe import describe as describe_module
+from solstone.observe import processing_record as processing_record_module
 
 
 def _video_path(tmp_path: Path) -> Path:
@@ -67,6 +68,9 @@ def _install_fakes(monkeypatch, outcomes: dict[int, dict]) -> list[tuple]:
         "resolve_provider",
         lambda _context, _interface: ("google", "gemini-test"),
     )
+    monkeypatch.setattr(
+        processing_record_module, "now_iso_utc", lambda: "2026-06-30T12:00:00Z"
+    )
     emitted = []
     monkeypatch.setattr(
         describe_module,
@@ -94,6 +98,24 @@ def test_build_metadata_header_includes_static_single_frame_hash(tmp_path, monke
         "last_hash": "0000000000001234",
         "qualified_count": 1,
     }
+
+
+def test_describe_header_raw_is_producer_invariant(tmp_path, monkeypatch):
+    video_path = _video_path(tmp_path)
+    processor = describe_module.VideoProcessor.__new__(describe_module.VideoProcessor)
+    processor.video_path = video_path
+    processor.first_hash = None
+    processor.last_hash = None
+    processor.qualified_count = 1
+    monkeypatch.delenv("OBSERVER_NAME", raising=False)
+    monkeypatch.delenv("SEGMENT_META", raising=False)
+
+    header = processor._build_metadata_header()
+
+    # raw is the producer's invariant (relaxed from the shared floor), so the
+    # describer must keep emitting it.
+    assert "raw" in header
+    assert header["raw"] == video_path.name
 
 
 class FakeBatch:
@@ -137,7 +159,7 @@ class FakeBatch:
             outcome = FakeBatch.outcomes.get(request.frame_id, {})
             if outcome.get("fail"):
                 request.error = outcome.get("error", "boom")
-                request.reason_code = None
+                request.reason_code = outcome.get("reason_code")
                 request.retry_count = 4
             else:
                 request.error = None
@@ -191,6 +213,14 @@ async def test_success_with_mixed_results_promotes_byte_identical_jsonl(
             "first_hash": None,
             "last_hash": None,
             "qualified_count": 2,
+            "_solstone_processing": {
+                "schema": "solstone.processing.v1",
+                "state": "analyzed",
+                "reason_code": "ok",
+                "handler": "describe",
+                "attempted_at": "2026-06-30T12:00:00Z",
+                "input_size": 5,
+            },
         }
     )
     frame1 = json.dumps(
@@ -256,6 +286,14 @@ async def test_empty_run_promotes_header_only_file_for_event_precondition(
                 "first_hash": None,
                 "last_hash": None,
                 "qualified_count": 0,
+                "_solstone_processing": {
+                    "schema": "solstone.processing.v1",
+                    "state": "empty",
+                    "reason_code": "no_decodable_frames",
+                    "handler": "describe",
+                    "attempted_at": "2026-06-30T12:00:00Z",
+                    "input_size": 5,
+                },
             }
         )
         + "\n"
@@ -287,6 +325,14 @@ async def test_all_frames_failed_promotes_header_only_then_raises(
                 "first_hash": None,
                 "last_hash": None,
                 "qualified_count": 1,
+                "_solstone_processing": {
+                    "schema": "solstone.processing.v1",
+                    "state": "failed",
+                    "reason_code": "analysis_failed",
+                    "handler": "describe",
+                    "attempted_at": "2026-06-30T12:00:00Z",
+                    "input_size": 5,
+                },
             }
         )
         + "\n"
@@ -321,3 +367,89 @@ async def test_unexpected_mid_job_exception_removes_temp_without_promoting(
 
     assert not output_path.exists()
     _assert_no_describe_temp(output_path.parent)
+
+
+@pytest.mark.asyncio
+async def test_provider_blocked_promotes_nothing_and_records_nothing(
+    tmp_path, monkeypatch
+):
+    import solstone.convey.provider_readiness as provider_readiness
+    from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED
+
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    processor = _processor(video_path, [_frame(1, 0.0, _png_bytes())], monkeypatch)
+    _install_fakes(
+        monkeypatch,
+        {1: {"fail": True, "error": "blocked", "reason_code": "rate_limited"}},
+    )
+    monkeypatch.setattr(provider_readiness, "is_blocking_reason", lambda _code: True)
+    monkeypatch.setattr(provider_readiness, "present_for_reason", lambda *a, **k: {})
+    monkeypatch.setattr(
+        describe_module, "_emit_blocked_notification", lambda _view: None
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        await processor.process_with_vision(
+            max_concurrent=1,
+            output_path=output_path,
+            work_key="20250101/143022_300/screen",
+        )
+
+    assert exc.value.code == EXIT_PROVIDER_BLOCKED
+    assert not output_path.exists()
+    _assert_no_describe_temp(output_path.parent)
+
+
+@pytest.mark.asyncio
+async def test_corrupt_input_records_failed_distinct_from_empty(tmp_path, monkeypatch):
+    pytest.importorskip("av")
+
+    seg = tmp_path / "chronicle" / "20250101" / "default" / "143022_300"
+    seg.mkdir(parents=True)
+    bad = seg / "screen.mp4"
+    bad.write_bytes(b"not a real mp4 file at all")
+    output_path = bad.with_suffix(".jsonl")
+    processor = describe_module.VideoProcessor(bad)
+    _install_fakes(monkeypatch, {})
+    monkeypatch.setattr(
+        describe_module,
+        "select_frames_for_extraction",
+        lambda *a, **k: [],
+    )
+
+    await processor.process_with_vision(
+        max_concurrent=1,
+        output_path=output_path,
+        work_key="20250101/143022_300/screen",
+    )
+
+    corrupt_meta = json.loads(output_path.read_text().splitlines()[0])[
+        "_solstone_processing"
+    ]
+    assert (corrupt_meta["state"], corrupt_meta["reason_code"]) == (
+        "failed",
+        "corrupt_input",
+    )
+
+    empty_video = _video_path(tmp_path / "empty")
+    empty_output_path = empty_video.with_suffix(".jsonl")
+    empty_processor = _processor(empty_video, [], monkeypatch)
+
+    await empty_processor.process_with_vision(
+        max_concurrent=1,
+        output_path=empty_output_path,
+        work_key="20250101/143022_300/screen",
+    )
+
+    empty_meta = json.loads(empty_output_path.read_text().splitlines()[0])[
+        "_solstone_processing"
+    ]
+    assert (empty_meta["state"], empty_meta["reason_code"]) == (
+        "empty",
+        "no_decodable_frames",
+    )
+    assert (corrupt_meta["state"], corrupt_meta["reason_code"]) != (
+        empty_meta["state"],
+        empty_meta["reason_code"],
+    )

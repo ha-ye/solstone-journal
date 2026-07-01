@@ -13,6 +13,7 @@ import shutil
 import threading
 import time
 from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -283,25 +284,38 @@ def _apply_brain_result(app: Any, session_id: str, instruction: str) -> None:
     _BRAIN_STATE.last_error = None
 
 
+def _settle_future(
+    app: Any,
+    attr_name: str,
+    future: Future[tuple[str, str]],
+) -> bool:
+    try:
+        session_id, instruction = future.result()
+    except Exception as exc:
+        with _BRAIN_STATE.lock:
+            if getattr(_BRAIN_STATE, attr_name) is not future:
+                return False
+            setattr(_BRAIN_STATE, attr_name, None)
+            _BRAIN_STATE.last_error = str(exc)
+            if not getattr(app, "voice_brain_instruction", ""):
+                _BRAIN_STATE.ready_event.clear()
+        logger.exception("voice brain task failed")
+        return False
+
+    with _BRAIN_STATE.lock:
+        if getattr(_BRAIN_STATE, attr_name) is not future:
+            return bool(getattr(app, "voice_brain_instruction", ""))
+        setattr(_BRAIN_STATE, attr_name, None)
+        _apply_brain_result(app, session_id, instruction)
+        return True
+
+
 def _complete_future(
     app: Any,
     attr_name: str,
     future: Future[tuple[str, str]],
 ) -> None:
-    try:
-        session_id, instruction = future.result()
-    except Exception as exc:
-        logger.exception("voice brain task failed")
-        with _BRAIN_STATE.lock:
-            setattr(_BRAIN_STATE, attr_name, None)
-            _BRAIN_STATE.last_error = str(exc)
-            if not getattr(app, "voice_brain_instruction", ""):
-                _BRAIN_STATE.ready_event.clear()
-        return
-
-    with _BRAIN_STATE.lock:
-        setattr(_BRAIN_STATE, attr_name, None)
-        _apply_brain_result(app, session_id, instruction)
+    _settle_future(app, attr_name, future)
 
 
 def _runtime_loop():
@@ -324,10 +338,8 @@ def schedule_start(app: Any) -> Future[tuple[str, str]]:
             _start_or_resume_brain(app), _runtime_loop()
         )
         _BRAIN_STATE.start_future = future
-        future.add_done_callback(
-            lambda done: _complete_future(app, "start_future", done)
-        )
-        return future
+    future.add_done_callback(lambda done: _complete_future(app, "start_future", done))
+    return future
 
 
 def schedule_refresh(app: Any, *, force: bool = False) -> Future[tuple[str, str]]:
@@ -351,19 +363,26 @@ def schedule_refresh(app: Any, *, force: bool = False) -> Future[tuple[str, str]
             _runtime_loop(),
         )
         _BRAIN_STATE.refresh_future = future
-        future.add_done_callback(
-            lambda done: _complete_future(app, "refresh_future", done)
-        )
-        return future
+    future.add_done_callback(lambda done: _complete_future(app, "refresh_future", done))
+    return future
 
 
 def wait_until_ready(app: Any, timeout: float) -> bool:
     if getattr(app, "voice_brain_instruction", ""):
         _BRAIN_STATE.ready_event.set()
         return True
-    schedule_start(app)
-    ready = _BRAIN_STATE.ready_event.wait(timeout)
-    return ready and bool(getattr(app, "voice_brain_instruction", ""))
+    future = schedule_start(app)
+    try:
+        future.result(timeout=timeout)
+    except FutureTimeoutError:
+        ready = _BRAIN_STATE.ready_event.is_set()
+        return ready and bool(getattr(app, "voice_brain_instruction", ""))
+    except Exception:
+        _settle_future(app, "start_future", future)
+        return False
+    return _settle_future(app, "start_future", future) or bool(
+        getattr(app, "voice_brain_instruction", "")
+    )
 
 
 def clear_brain_state() -> None:

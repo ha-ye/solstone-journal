@@ -62,13 +62,13 @@ Describe what $preferred did during this segment using action verbs. Be specific
 ### entities
 Extract ALL named entities mentioned in the content. Be thorough — extract every entity you can identify, not just the most prominent ones. Four types only:
 - **Person**: Individual people by name. Prefer full names. Consolidate variants ("JB" + "John Borthwick" → one entity "John Borthwick"). ALWAYS skip first-name-only references unless the same segment locks the identity with surrounding context (role, organization, or full-name introduction). NEVER include generic speaker labels like "Speaker 1", "Speaker 2", "Colleague", "Person A" — these belong only in the `speakers` array when `meeting_detected=true`. Include historical figures, authors, scientists, politicians — anyone mentioned by full name.
-- **Company**: Businesses and organizations. Include companies, government agencies (NASA, NOAA), universities, media outlets.
+- **Company**: Businesses and organizations. Include companies, government agencies (NASA, NOAA), universities, media outlets. Use the official or most common name, consolidating variants ("MS" / "MSFT" → "Microsoft").
 - **Project**: Named projects, products, or codebases. Include missions (OSIRIS-REx), initiatives, specific product models. EXCLUDE generic git/file identifiers ("main", "dev", "staging", "src", "tmp"), file extensions, path components, and one-word lowercase tokens that are likely branch or directory names rather than named projects.
 - **Tool**: Software applications and services. Include websites (Fox News, Wikipedia, Amazon), browser extensions, developer tools, hardware products mentioned by name.
 
 **For screen content specifically:** Extract entities from visible text in screen descriptions — article headlines, page titles, product names, people mentioned in articles, organizations referenced. If the user is browsing a website about the Renaissance, extract the specific historical figures, art movements, and institutions mentioned.
 
-Skip URLs, domains, filenames, paths. Each entity needs type, name, and context (brief description of the entity's role in this segment).
+Skip URLs, domains, filenames, paths. Each entity needs type, name, and **context** — a brief description of **what it did, or what happened with it, in this segment**: the action or involvement, not its title or who it is in general. For a person, what they did or said here ("presented the launch schedule", "asked about the budget"); for a company, project, or tool, what was done with it or how it was used ("used to build the imager", "reviewed in the design discussion"). Capture the activity the content actually shows; fall back to a bare identifier only when no action is evident.
 
 #### role
 - **attendee**: The entity was directly participating in the live interaction during this segment. Use only for people who were actively present in the meeting or call.
@@ -82,6 +82,14 @@ Contamination guard: tool or product names visible on screen must be `source: sc
 - **transcript**: Use when the entity appears in transcript text but not as an actively speaking participant signal.
 - **screen**: Use when the entity is visible in screen content such as UI, documents, headlines, or app chrome.
 - **other**: Use only when the entity is grounded in another clear signal that does not fit the categories above.
+
+#### level
+How central the entity was to this segment — distinct from `role`. `role` is whether it was present in the interaction; `level` is how much the segment was actually about it.
+- **high**: central to the segment — the subject of the activity, or heavily involved in what happened.
+- **medium**: meaningfully involved, but not the focus.
+- **low**: a brief or peripheral mention.
+
+Centrality is independent of `role`: an entity can be `role: mentioned` yet `level: high` (the whole segment was about it, though it wasn't present), or `role: attendee` yet `level: low` (present but barely involved). Judge centrality from what the segment was actually about, not from whether the entity was attending.
 
 ### facets
 Classify into the owner's configured facets. Always include at least one facet — pick the closest configured facet. If multiple facets fit, include the dominant one as `level: high` and others at `level: medium` or `level: low`. For each:

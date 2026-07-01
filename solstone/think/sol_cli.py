@@ -99,6 +99,9 @@ COMMANDS: dict[str, Command] = {
     "segment": Command("solstone.think.segment", "service"),
     "journal-stats": Command("solstone.think.journal_stats", "service"),
     "reprocess": Command("solstone.think.reprocess", "service"),
+    "backfill-processing-records": Command(
+        "solstone.think.backfill_processing_records", "service"
+    ),
     "warm": Command("solstone.think.warm", "service"),
     # observe package - multimodal capture
     "transcribe": Command("solstone.observe.transcribe", "service"),

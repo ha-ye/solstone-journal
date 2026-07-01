@@ -183,22 +183,14 @@ def test_pass_runs_once_and_no_cortex_path(journal_path, heartbeat_mocks):
 def test_pass_event_persisted(journal_path, heartbeat_mocks, monkeypatch):
     """A successful run records the deterministic pass result."""
     import solstone.think.heartbeat as mod
-    from solstone.think.steward import RecipeOutcome
 
-    outcome = RecipeOutcome(
-        recipe="stale_pending_segment_reprocess",
-        target="20260607/local/seg1:audio",
-        outcome="success",
-        detail=None,
-        ts=123,
-    )
     monkeypatch.setattr(
         mod,
         "run_recipe_pass",
         lambda today: {
-            "fired": [outcome],
-            "escalated_targets": ["20260607/local/seg2:screen"],
-            "data_source_errors": ["convey port: x"],
+            "fired": [],
+            "escalated_targets": [],
+            "data_source_errors": [],
         },
     )
 
@@ -210,17 +202,9 @@ def test_pass_event_persisted(journal_path, heartbeat_mocks, monkeypatch):
         (
             "pass",
             {
-                "fired": [
-                    {
-                        "recipe": "stale_pending_segment_reprocess",
-                        "target": "20260607/local/seg1:audio",
-                        "outcome": "success",
-                        "detail": None,
-                        "ts": 123,
-                    }
-                ],
-                "escalated_targets": ["20260607/local/seg2:screen"],
-                "data_source_errors": ["convey port: x"],
+                "fired": [],
+                "escalated_targets": [],
+                "data_source_errors": [],
             },
         )
     ]

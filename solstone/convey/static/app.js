@@ -66,9 +66,9 @@
 
     if (isSelected) {
       pill.classList.add('selected');
-      pill.style.background = facet.color || 'var(--status-inactive)';
-      pill.style.color = 'white';
-      pill.style.borderColor = facet.color || 'var(--status-inactive)';
+      pill.style.background = '';
+      pill.style.color = '';
+      pill.style.borderColor = '';
       pill.title = 'Click to show all facets';
     } else {
       pill.classList.remove('selected');
@@ -184,13 +184,17 @@
       const pill = document.createElement('button');
       pill.className = 'facet-pill';
 
-      if (facet.emoji) {
+      if (facet.icon_svg || facet.emoji) {
         const emojiContainer = document.createElement('div');
         emojiContainer.className = 'emoji-container';
 
         const emoji = document.createElement('span');
         emoji.className = 'emoji';
-        emoji.textContent = facet.emoji;
+        if (facet.icon_svg) {
+          emoji.innerHTML = facet.icon_svg;
+        } else {
+          emoji.textContent = facet.emoji;
+        }
         emojiContainer.appendChild(emoji);
 
         // Add badge if count > 0

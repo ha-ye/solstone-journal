@@ -47,6 +47,11 @@ def format_date(date_str: str) -> str:
         return date_str
 
 
+def format_month_day(ts_ms: int | float) -> str:
+    """Lowercase 'mon d' from the local date of an epoch-ms timestamp."""
+    return datetime.fromtimestamp(ts_ms / 1000).strftime("%b %-d").lower()
+
+
 def format_date_short(date_str: str) -> str:
     """Convert YYYYMMDD to smart relative/short format.
 
@@ -271,6 +276,7 @@ def error_response(
     status: int | None = None,
     *,
     detail: str | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> tuple[Response, int]:
     """Create a standard JSON error response.
 
@@ -280,6 +286,7 @@ def error_response(
         reason: Reason constant
         status: Optional HTTP status override
         detail: Optional implementation-specific context
+        extra: Optional additional JSON fields
 
     Returns:
         Tuple of (jsonify response, status_code) ready for Flask return
@@ -288,6 +295,7 @@ def error_response(
     return (
         jsonify(
             {
+                **(extra or {}),
                 "error": reason.message,
                 "reason_code": reason.code,
                 "detail": detail or "",

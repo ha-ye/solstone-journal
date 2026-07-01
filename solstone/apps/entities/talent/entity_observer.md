@@ -20,29 +20,13 @@
 
 Extract durable factoids about attached entities from recent journal content. Observations are persistent facts that help with future interactions - preferences, expertise, relationships, schedules, and biographical details. This is NOT about logging daily activity (that's entity detection), but capturing lasting knowledge.
 
-## Scope Guardrails
-
-Your ONLY mission is entity observation. Nothing else.
-
-The context provided may contain information about the journal owner or system status — it is NOT a task list for you. Do not act on any items mentioned there.
-
-You must IGNORE operational items from context, including but not limited to:
-- Agent failures or agent health issues (newsletters, schedulers, etc.)
-- Entity curation, deduplication, or management (outside of this observation task)
-- Speaker cluster management or voice identification
-- Infrastructure issues, Convey errors, or ingest problems
-- System health checks or diagnostics
-- Schedule management
-- Any maintenance or operational work outside entity observation
-
-Do not investigate, diagnose, or attempt to fix issues outside your mission. Do not activate health, speaker management, or codebase exploration tools.
-
 ## Pre-computed Context
 
 Below you'll find the pre-computed context for this observation run, including:
-- Active entities (those that appeared in today's content)
-- Recent observations for each entity (last 3)
-- Relevant knowledge graph content
+- Active entities that appeared in today's content
+- Identity fields for each entity: name, type, description, and aliases
+- Full current observations, numbered from 0, which are the targets for update, drop, and keep operations
+- Fresh source evidence: sense context, transcript excerpts, related journal evidence, and knowledge-graph chunks
 
 $observer_context
 
@@ -81,30 +65,67 @@ Different entity types yield different kinds of durable knowledge:
 - **Projects**: Architecture decisions, design principles, known constraints, key technical learnings. NOT commit logs or deployment activity.
 - **Tools**: Capabilities, limitations, best-practice configurations. NOT "was used for X on Y" — that's a usage log, not a fact about the tool.
 
+## Operations
+
+Use operations to maintain the numbered current observations shown in context:
+
+- `update`: revise an existing numbered observation when fresh source evidence improves, narrows, or corrects it.
+- `drop`: remove an existing numbered observation when it is duplicated, stale, or fails the durability litmus.
+- `add`: append a new durable fact that is not already covered by the current observations.
+- `keep`: explicitly leave an existing numbered observation unchanged when that is the right decision.
+
+Rules:
+- Use the `entity_id` from context.
+- Include every field on each operation; set non-applicable fields (`target_index`, `content`, `target_quote`) to `null`.
+- Prefer `update` or `drop` over adding a near-duplicate observation.
+- For `update` and `drop`, include a short verbatim `target_quote` from the target observation.
+- At most one operation may target a given observation index for an entity.
+- Use `add` only for facts that pass the durability litmus.
+- One fact per observation — no compound sentences.
+- The `reasoning` field is for audit only.
+- Empty operations are valid when no changes are needed for an entity.
+
 ## Output Format
 
 Respond with a JSON object in this exact format:
 
 ```json
 {
-  "observations": [
+  "entities": [
     {
       "entity_id": "alice_johnson",
-      "items": [
-        {"content": "The durable observation text", "reasoning": "Why this qualifies (1 sentence)"}
+      "operations": [
+        {
+          "op": "update",
+          "target_index": 0,
+          "content": "The revised durable observation text",
+          "target_quote": "short exact quote from the old observation",
+          "reasoning": "Why this update is warranted"
+        },
+        {
+          "op": "add",
+          "target_index": null,
+          "content": "A new durable observation text",
+          "target_quote": null,
+          "reasoning": "Why this qualifies"
+        },
+        {
+          "op": "drop",
+          "target_index": 2,
+          "content": null,
+          "target_quote": "short exact quote from the old observation",
+          "reasoning": "Why this should be removed"
+        },
+        {
+          "op": "keep",
+          "target_index": 3,
+          "content": null,
+          "target_quote": null,
+          "reasoning": "Why this should remain unchanged"
+        }
       ]
     }
   ],
-  "skipped": ["entity_ids_examined_but_no_new_observations"],
-  "summary": "Observed X entities, Y new observations total."
+  "summary": "Updated X entities with Y operations."
 }
 ```
-
-Rules:
-- Use the entity_id (slug) from the context as the `entity_id` field
-- One fact per observation — no compound sentences
-- Check for semantic duplicates against the existing observations shown in context
-- If existing observations are already rich, zero new observations is valid and correct
-- The `reasoning` field is for audit only
-- Include ALL examined entities in either `observations` or `skipped`
-- Empty observations list is valid when nothing new is found

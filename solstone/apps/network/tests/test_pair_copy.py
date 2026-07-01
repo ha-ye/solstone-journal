@@ -34,10 +34,24 @@ U4_COPY_VALUES = [
 ]
 
 U8_COPY_VALUES = [
-    copy.PAIR_ROTATE_NOTE,
     copy.WINDOW_CLOSED_BUTTON,
     copy.SUCCESS_VERIFY_NOTE_ANYWHERE,
     copy.RECENT_NETWORK_LABEL_ANYWHERE,
+]
+
+PRESENTATION_COPY_VALUES = [
+    copy.PRESENTATION_SELECTOR_LABEL,
+    copy.PRESENTATION_PHONE_LABEL,
+    copy.PRESENTATION_COMPUTER_LABEL,
+    copy.PRESENTATION_GLASSES_LABEL,
+    copy.PAIR_LINK_FIELD_LABEL,
+    copy.PAIR_LINK_COPY_LABEL,
+    copy.PAIR_LINK_COPY_SUCCESS_TOAST,
+    copy.PAIR_LINK_COPY_FAIL_TOAST,
+    copy.REACH_HOME_CANDIDATES_LABEL,
+    copy.REACH_HOME_CANDIDATES_REFRESH_FAIL,
+    copy.REACH_HOME_CANDIDATES_UNAVAILABLE,
+    copy.HOME_CANDIDATES_ERROR,
 ]
 
 
@@ -92,16 +106,36 @@ def test_u4_copy_values_are_locked() -> None:
 
 
 def test_u8_copy_values_are_locked() -> None:
-    assert (
-        copy.PAIR_ROTATE_NOTE
-        == "this code refreshes on its own — keep this page open while you pair."
-    )
     assert copy.WINDOW_CLOSED_BUTTON == "pairing window closed — open a new one"
     assert copy.SUCCESS_VERIFY_NOTE_ANYWHERE == (
         "this device can now reach home from anywhere. check it now — "
         "this fingerprint should match what it shows. didn't do this?"
     )
     assert copy.RECENT_NETWORK_LABEL_ANYWHERE == "from anywhere"
+
+
+def test_presentation_and_home_candidate_copy_values_are_locked() -> None:
+    assert copy.PRESENTATION_SELECTOR_LABEL == "pairing display"
+    assert copy.PRESENTATION_PHONE_LABEL == "phone"
+    assert copy.PRESENTATION_COMPUTER_LABEL == "computer"
+    assert copy.PRESENTATION_GLASSES_LABEL == "glasses"
+    assert copy.PAIR_LINK_FIELD_LABEL == "pairing link"
+    assert copy.PAIR_LINK_COPY_LABEL == "copy link"
+    assert copy.PAIR_LINK_COPY_SUCCESS_TOAST == "pairing link copied"
+    assert copy.PAIR_LINK_COPY_FAIL_TOAST == "couldn't copy pairing link"
+    assert copy.REACH_HOME_CANDIDATES_LABEL == "choose a home address"
+    assert (
+        copy.REACH_HOME_CANDIDATES_REFRESH_FAIL
+        == "saved, but couldn't refresh. showing the last confirmed address."
+    )
+    assert (
+        copy.REACH_HOME_CANDIDATES_UNAVAILABLE
+        == "couldn't check home addresses. you can still type one below."
+    )
+    assert copy.HOME_CANDIDATES_ERROR == "couldn't check home addresses"
+
+    for value in PRESENTATION_COPY_VALUES:
+        assert value == value.lower()
 
 
 def test_u4_copy_stays_in_bounds() -> None:
@@ -144,4 +178,17 @@ def test_u4_copy_matches_rendered_body(link_env) -> None:
     body_text = _normalized_body(response.get_data(as_text=True))
 
     for value in U4_COPY_VALUES:
+        assert value in body_text
+
+
+def test_presentation_copy_matches_rendered_body(link_env) -> None:
+    env = link_env()
+    response = env.client.get("/app/network/")
+
+    assert response.status_code == 200
+    body_text = _normalized_body(response.get_data(as_text=True))
+
+    for value in PRESENTATION_COPY_VALUES:
+        if value == copy.HOME_CANDIDATES_ERROR:
+            continue
         assert value in body_text

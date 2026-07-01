@@ -3,6 +3,16 @@
 <main class="link-dashboard">
   <p class="link-brandlock"><span class="link-lockdot" aria-hidden="true"></span>{{ link_copy.BRANDLOCK_LINE }}</p>
 
+  <section id="link-identity-header" class="link-identity" hidden>
+    <p class="link-identity-title">{{ link_copy.IDENTITY_HEADER_LABEL }}</p>
+    <div id="link-identity-mark" class="link-identity-mark" aria-hidden="true"></div>
+    <div class="link-identity-id">
+      <span class="link-identity-id-label">{{ link_copy.IDENTITY_ID_LABEL }}</span>
+      <code id="link-identity-id-value" class="link-identity-id-value"></code>
+      <button type="button" id="link-identity-id-copy" class="link-identity-id-copy">{{ link_copy.IDENTITY_ID_COPY_LABEL }}</button>
+    </div>
+  </section>
+
   <header class="link-header">
     <div id="link-status-panel" class="link-status-panel" aria-live="polite" aria-atomic="true">
       <span id="link-status-dot" class="link-dot is-amber" aria-hidden="true"></span>
@@ -95,6 +105,17 @@
           ></dd>
         </div>
       </dl>
+      <div
+        id="link-home-candidates-picker"
+        class="link-home-candidates-picker"
+        data-refresh-fail="{{ link_copy.REACH_HOME_CANDIDATES_REFRESH_FAIL }}"
+        data-unavailable="{{ link_copy.REACH_HOME_CANDIDATES_UNAVAILABLE }}"
+        hidden
+      >
+        <p class="link-home-candidates-label">{{ link_copy.REACH_HOME_CANDIDATES_LABEL }}</p>
+        <div id="link-home-candidates-list" class="link-home-candidates-list"></div>
+        <p id="link-home-candidates-problem" class="link-home-candidates-problem" role="status" hidden></p>
+      </div>
       <details id="link-host-address-override" class="link-host-address-override">
         <summary>{{ link_copy.REACH_HOST_ADDRESS_DISCLOSURE }}</summary>
         <div class="link-host-address-controls">
@@ -173,6 +194,21 @@
     <div class="link-modal-box">
       <h3 id="link-pair-modal-title">{{ link_copy.MODAL_TITLE }}</h3>
 
+      <div id="link-present-selector" class="link-present-selector" role="radiogroup" aria-label="{{ link_copy.PRESENTATION_SELECTOR_LABEL }}">
+        <button type="button" id="link-present-phone" class="link-present-seg is-selected" role="radio" aria-checked="true" data-presentation-mode="phone">
+          <span class="link-present-radio" aria-hidden="true"></span>
+          <span>{{ link_copy.PRESENTATION_PHONE_LABEL }}</span>
+        </button>
+        <button type="button" id="link-present-computer" class="link-present-seg" role="radio" aria-checked="false" data-presentation-mode="computer">
+          <span class="link-present-radio" aria-hidden="true"></span>
+          <span>{{ link_copy.PRESENTATION_COMPUTER_LABEL }}</span>
+        </button>
+        <button type="button" id="link-present-glasses" class="link-present-seg" role="radio" aria-checked="false" data-presentation-mode="glasses">
+          <span class="link-present-radio" aria-hidden="true"></span>
+          <span>{{ link_copy.PRESENTATION_GLASSES_LABEL }}</span>
+        </button>
+      </div>
+
       <div id="link-pair-code" class="link-pair-grid">
         <div class="link-pair-qr-cell">
           <div id="link-qr-container" class="link-qr-container" aria-label="pair QR code"></div>
@@ -193,16 +229,15 @@
           <li>{{ link_copy.STEP_3 }}</li>
         </ol>
 
-        <div id="link-pair-rotation" class="link-pair-rotation" hidden>
-          <span id="link-pair-rotation-ring" class="link-pair-rotation-ring" aria-hidden="true">
-            <svg viewBox="0 0 40 40" focusable="false">
-              <circle class="link-pair-rotation-track" cx="20" cy="20" r="17"></circle>
-              <circle class="link-pair-rotation-arc" cx="20" cy="20" r="17" pathLength="100"></circle>
-            </svg>
-          </span>
-          <span class="link-pair-rotate-note">{{ link_copy.PAIR_ROTATE_NOTE }}</span>
-        </div>
         <p id="link-pair-network" class="link-pair-network" hidden>{{ link_copy.PAIR_NETWORK_LINE }}</p>
+
+        <div class="link-modal-label link-pair-computer-panel" aria-labelledby="link-pair-link-label">
+          <span id="link-pair-link-label">{{ link_copy.PAIR_LINK_FIELD_LABEL }}</span>
+          <div class="link-pair-link-row">
+            <input type="text" id="link-pair-link-input" aria-labelledby="link-pair-link-label" class="link-pair-link-input" readonly />
+            <button type="button" id="link-pair-link-copy" class="link-pair-link-copy">{{ link_copy.PAIR_LINK_COPY_LABEL }}</button>
+          </div>
+        </div>
 
         <label class="link-modal-label link-pair-label-edit">
           {{ link_copy.DEVICE_LABEL_FIELD_LABEL }}
@@ -279,9 +314,13 @@
       UNPAIR_TITLE_FORMAT: {{ link_copy.UNPAIR_TITLE_FORMAT|tojson }},
       FINGERPRINT_COPY_SUCCESS_TOAST: {{ link_copy.FINGERPRINT_COPY_SUCCESS_TOAST|tojson }},
       FINGERPRINT_COPY_FAIL_TOAST: {{ link_copy.FINGERPRINT_COPY_FAIL_TOAST|tojson }},
+      PAIR_LINK_COPY_SUCCESS_TOAST: {{ link_copy.PAIR_LINK_COPY_SUCCESS_TOAST|tojson }},
+      PAIR_LINK_COPY_FAIL_TOAST: {{ link_copy.PAIR_LINK_COPY_FAIL_TOAST|tojson }},
       RENAME_FAIL_TOAST: {{ link_copy.RENAME_FAIL_TOAST|tojson }},
       UNPAIR_SUCCESS_TOAST: {{ link_copy.UNPAIR_SUCCESS_TOAST|tojson }},
-      UNPAIR_FAIL_TOAST: {{ link_copy.UNPAIR_FAIL_TOAST|tojson }}
+      UNPAIR_FAIL_TOAST: {{ link_copy.UNPAIR_FAIL_TOAST|tojson }},
+      IDENTITY_ID_COPY_SUCCESS_TOAST: {{ link_copy.IDENTITY_ID_COPY_SUCCESS_TOAST|tojson }},
+      IDENTITY_ID_COPY_FAIL_TOAST: {{ link_copy.IDENTITY_ID_COPY_FAIL_TOAST|tojson }}
     };
   </script>
 
@@ -317,6 +356,18 @@
   @keyframes skeleton-pulse { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
   .link-status-skeleton { display: inline-block; width: 14em; max-width: 60vw; height: 1em; }
   #link-status-text[hidden], #link-status-skeleton[hidden] { display: none; }
+
+  .link-identity { margin: 0 0 1.5em; padding: 1.15em 1.3em; border: 1px solid #e7d8c6; border-radius: 12px; background: #fffdf9; text-align: center; }
+  .link-identity-title { margin: 0 0 0.7em; font-size: 0.95rem; font-weight: 600; color: #B06A1A; }
+  .link-identity-mark { min-height: 48px; }
+  .link-mark-chips { display: flex; gap: 0.7em; justify-content: center; }
+  .link-mark-chip { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; border: 2px solid #ccc; border-radius: 12px; box-sizing: border-box; }
+  .link-mark-chip svg { width: 28px; height: 28px; display: block; }
+  .link-mark-words { display: flex; align-items: center; justify-content: center; gap: 0.5em; margin-top: 0.55em; font-family: var(--font-display); font-size: 1.1rem; letter-spacing: .3px; color: #222; }
+  .link-mark-words .link-mark-sep { color: #c2b9a6; }
+  .link-identity-id { display: flex; align-items: center; justify-content: center; gap: 0.5em; margin-top: 0.9em; font-size: 0.9rem; color: #555; flex-wrap: wrap; }
+  .link-identity-id-value { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #222; word-break: break-all; }
+  .link-identity-id-copy { border: 1px solid #d9c4ab; background: #fff; color: #B06A1A; border-radius: 7px; padding: 0.2em 0.6em; cursor: pointer; font-size: 0.85rem; }
 
   .link-hero { border: 1px solid #e4ded4; border-radius: 8px; background: #fffdfa; padding: 2em 1.5em; margin-bottom: 1.5em; text-align: center; }
   .link-hero[hidden] { display: none; }
@@ -374,6 +425,15 @@
   .link-host-address-controls button { border: 1px solid #E2D7BF; background: #FEFCF8; color: #B06A1A; border-radius: 5px; padding: 0.55em 0.8em; cursor: pointer; font-weight: 500; }
   .link-host-address-error { color: #8a2d1c; font-weight: 500; margin: 0.5em 0 0; }
   .link-host-address-error[hidden] { display: none; }
+  .link-home-candidates-picker { margin-top: 0.85em; border: 1px solid #ECE3D0; border-radius: 8px; background: #fffdfa; padding: 0.8em; }
+  .link-home-candidates-picker[hidden] { display: none; }
+  .link-home-candidates-label { margin: 0 0 0.55em; color: #555; font-weight: 600; font-size: 0.9em; }
+  .link-home-candidates-list { display: flex; flex-direction: column; gap: 0.45em; }
+  .link-home-candidate-row { display: flex; align-items: center; gap: 0.55em; min-height: 34px; color: #444; }
+  .link-home-candidate-row input { flex: none; }
+  .link-home-candidate-row code { font-family: ui-monospace, monospace; color: #555; word-break: break-all; }
+  .link-home-candidates-problem { margin: 0; color: #8a2d1c; font-weight: 500; }
+  .link-home-candidates-problem[hidden] { display: none; }
   .link-vpn-candidates { display: flex; flex-direction: column; gap: 0.4em; }
   .link-vpn-candidate { display: flex; gap: 0.45em; align-items: baseline; flex-wrap: wrap; }
   .link-vpn-candidate-label { color: #555; font-weight: 500; }
@@ -443,6 +503,13 @@
   .link-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 1000; }
   .link-modal-box { background: #fff; border-radius: 10px; padding: 1.5em; max-width: 480px; width: 92%; box-shadow: 0 10px 40px rgba(0,0,0,0.2); }
   .link-modal-box h3 { margin-top: 0; margin-bottom: 1em; }
+  .link-present-selector { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 0 0 1em; }
+  .link-present-selector[hidden] { display: none; }
+  .link-present-seg { min-height: 44px; border: 1.5px solid #E2D7BF; border-radius: 8px; background: #FEFCF8; color: #1A1A1A; cursor: pointer; font: inherit; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 0.55em 0.65em; }
+  .link-present-seg.is-selected { border-color: #E8923A; background: #FFFFFF; box-shadow: 0 0 0 3px rgba(232,146,58,0.14); }
+  .link-present-seg:focus-visible { outline: 2px solid #b06a1a; outline-offset: 2px; }
+  .link-present-radio { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #E2D7BF; flex: none; }
+  .link-present-seg.is-selected .link-present-radio { border-color: #E8923A; background: radial-gradient(circle at center, #E8923A 0 4px, #FFFFFF 4px 6px); }
   .link-modal-label { display: flex; flex-direction: column; gap: 0.35em; margin-bottom: 1em; font-size: 0.9em; }
   .link-modal-label input { padding: 0.5em; border: 1px solid #ccc; border-radius: 5px; font-size: 1em; }
   .link-modal-actions { display: flex; gap: 0.5em; justify-content: flex-end; }
@@ -468,17 +535,6 @@
   .link-pair-network { grid-column: 1 / -1; margin: 0; }
   .link-pair-network[hidden] { display: none; }
   .link-pair-network { color: #555; }
-  .link-pair-rotation { grid-column: 1 / -1; display: flex; align-items: center; gap: 0.65em; margin: 0; color: #555; }
-  .link-pair-rotation[hidden] { display: none; }
-  .link-pair-rotation-ring { width: 28px; height: 28px; flex: 0 0 28px; color: #B06A1A; }
-  .link-pair-rotation-ring svg { display: block; width: 100%; height: 100%; transform: rotate(-90deg); }
-  .link-pair-rotation-track,
-  .link-pair-rotation-arc { fill: none; stroke-width: 4; }
-  .link-pair-rotation-track { stroke: #ECE3D0; }
-  .link-pair-rotation-arc { stroke: currentColor; stroke-linecap: round; stroke-dasharray: 100; stroke-dashoffset: 0; }
-  .link-pair-rotation-ring.is-running .link-pair-rotation-arc { animation: link-pair-ring-drain var(--link-pair-rotation-duration, 300s) linear forwards; }
-  @keyframes link-pair-ring-drain { from { stroke-dashoffset: 0; } to { stroke-dashoffset: 100; } }
-  .link-pair-rotate-note { line-height: 1.45; }
   .link-pair-details { grid-column: 1 / -1; color: #777; font-size: 0.82em; }
   .link-pair-details summary { color: #777; cursor: pointer; }
   .link-pair-details code { word-break: break-all; }
@@ -486,6 +542,25 @@
   .link-pair-fp-label { color: #777; margin-right: 0.4em; }
   .link-pair-fp-note { color: #888; }
   .link-pair-label-edit { grid-column: 1 / -1; }
+  .link-pair-computer-panel { display: none; grid-column: 1 / -1; }
+  .link-pair-link-row { display: flex; gap: 0.5em; flex-wrap: wrap; align-items: center; }
+  .link-pair-link-input { flex: 1 1 18em; min-width: min(100%, 18em); }
+  .link-pair-link-copy { min-height: 44px; border: 1px solid #E2D7BF; border-radius: 5px; background: #FEFCF8; color: #B06A1A; cursor: pointer; font-weight: 500; padding: 0.55em 0.8em; }
+  .link-pair-grid.is-computer { grid-template-columns: 1fr; }
+  .link-pair-grid.is-computer .link-pair-qr-cell,
+  .link-pair-grid.is-computer .link-pair-steps,
+  .link-pair-grid.is-computer #link-pair-network { display: none; }
+  .link-pair-grid.is-computer .link-pair-computer-panel { display: flex; }
+  .link-pair-grid.is-glasses { grid-template-columns: 1fr; }
+  .link-pair-grid.is-glasses .link-pair-qr-cell { grid-row: auto; width: 100%; }
+  .link-pair-grid.is-glasses .link-qr-container { box-sizing: border-box; width: 100%; justify-content: center; }
+  .link-pair-grid.is-glasses .link-qr-container svg,
+  .link-pair-grid.is-glasses .link-qr-container img { width: 100%; max-width: 100%; height: auto; }
+  .link-pair-grid.is-glasses .link-pair-steps,
+  .link-pair-grid.is-glasses #link-pair-network,
+  .link-pair-grid.is-glasses .link-pair-label-edit,
+  .link-pair-grid.is-glasses .link-pair-details,
+  .link-pair-grid.is-glasses .link-pair-computer-panel { display: none; }
   .link-pair-error { padding: 1.5em 0.5em; text-align: center; }
   .link-pair-error[hidden] { display: none; }
   .link-pair-error p { color: #555; margin: 0 0 1.25em; }
@@ -547,6 +622,10 @@
   const hostAddressApply = document.getElementById('link-host-address-apply');
   const hostAddressClear = document.getElementById('link-host-address-clear');
   const hostAddressError = document.getElementById('link-host-address-error');
+  const hostAddressOverride = document.getElementById('link-host-address-override');
+  const homeCandidatesPicker = document.getElementById('link-home-candidates-picker');
+  const homeCandidatesList = document.getElementById('link-home-candidates-list');
+  const homeCandidatesProblem = document.getElementById('link-home-candidates-problem');
   const vpnCandidatesRow = document.getElementById('link-vpn-candidates-row');
   const vpnCandidatesEl = document.getElementById('link-vpn-candidates');
   const privateLinkSetup = document.getElementById('link-private-link-setup');
@@ -572,12 +651,14 @@
   const pairModal = document.getElementById('link-pair-modal');
   const pairCancel = document.getElementById('link-pair-cancel');
   const deviceLabelInput = document.getElementById('link-device-label');
+  const presentSelector = document.getElementById('link-present-selector');
+  const presentButtons = Array.from(document.querySelectorAll('[data-presentation-mode]'));
   const pairCodeBox = document.getElementById('link-pair-code');
   const qrContainer = document.getElementById('link-qr-container');
   const qrExpired = document.getElementById('link-qr-expired');
+  const pairLinkInput = document.getElementById('link-pair-link-input');
+  const pairLinkCopy = document.getElementById('link-pair-link-copy');
   const pairRegenerate = document.getElementById('link-pair-regenerate');
-  const rotationRing = document.getElementById('link-pair-rotation-ring');
-  const pairRotation = document.getElementById('link-pair-rotation');
   const pairNetwork = document.getElementById('link-pair-network');
   const caFpEl = document.getElementById('link-pair-ca-fp');
   const pairError = document.getElementById('link-pair-error');
@@ -591,11 +672,13 @@
   const pairDone = document.getElementById('link-pair-done');
   let pairEventsCleanup = null;
   let expiryTimer = null;
-  let rotationTimer = null;
   let windowTimer = null;
   let splWindowActive = false;
   let autoRefreshFired = false;
   let lastPairedFingerprint = '';
+  let currentPair = null;
+  let presentationMode = 'phone';
+  let lastPairLinkInputCopyAt = 0;
 
   const unpairModal = document.getElementById('link-unpair-modal');
   const unpairTitle = document.getElementById('link-unpair-title');
@@ -617,9 +700,60 @@
     setTimeout(() => { toast.hidden = true; }, 2500);
   }
 
-  function setPairCopy(rotating) {
-    if (pairRotation) pairRotation.hidden = !rotating;
-    if (pairNetwork) pairNetwork.hidden = rotating;
+  async function clipboardWriteText(text) {
+    if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
+      return false;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (err) {
+      window.logError?.(err, { context: 'link: clipboard write failed' });
+      return false;
+    }
+  }
+
+  function renderIdentityMark(spec) {
+    const markEl = document.getElementById('link-identity-mark');
+    if (!markEl) return false;
+    const icons = spec ? [spec.icon1, spec.icon2] : [];
+    const words = Array.isArray(spec && spec.words) ? spec.words : [];
+    const validIcons = icons.length === 2 && icons.every(icon => icon && icon.svg && icon.color && icon.color.hex);
+    if (!validIcons || words.length !== 2) return false;
+    markEl.innerHTML = '<div class="link-mark-chips"><div class="link-mark-chip"></div><div class="link-mark-chip"></div></div><div class="link-mark-words"><span></span><span class="link-mark-sep">·</span><span></span></div>';
+    const chips = markEl.querySelectorAll('.link-mark-chip');
+    chips.forEach((chip, index) => {
+      const icon = icons[index];
+      chip.style.borderColor = icon.color.hex;
+      chip.style.background = icon.color.hex + '1f';
+      if (icon.rot === 45) chip.style.transform = 'rotate(45deg)';
+      chip.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="${icon.color.hex}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icon.svg}</svg>`;
+    });
+    const wordSpans = markEl.querySelectorAll('.link-mark-words span:not(.link-mark-sep)');
+    wordSpans[0].textContent = words[0];
+    wordSpans[1].textContent = words[1];
+    return true;
+  }
+
+  async function loadIdentity() {
+    const section = document.getElementById('link-identity-header');
+    if (!section) return;
+    let data;
+    try {
+      data = await window.apiJson('/app/network/api/identity');
+    } catch (err) {
+      window.logError?.(err, { context: 'link: identity load failed' });
+      return; // stays hidden/empty — quiet failure
+    }
+    if (!data || !data.committed || !data.mark) return; // quiet not-committed branch
+    if (!renderIdentityMark(data.mark)) return;          // malformed spec → stays hidden
+    const idValue = document.getElementById('link-identity-id-value');
+    if (idValue && typeof data.instance_id === 'string') idValue.textContent = data.instance_id;
+    section.hidden = false;
+  }
+
+  function setPairCopy() {
+    if (pairNetwork) pairNetwork.hidden = false;
   }
 
   function relativeTime(iso) {
@@ -721,6 +855,87 @@
     vpnCandidatesRow.hidden = rendered === 0;
   }
 
+  function setHomeCandidateRadiosDisabled(disabled) {
+    if (!homeCandidatesList) return;
+    homeCandidatesList.querySelectorAll('input[type="radio"]').forEach((radio) => {
+      radio.disabled = disabled;
+    });
+  }
+
+  function showHomeCandidateWriteError(message) {
+    setHostAddressError(message || '');
+    if (hostAddressOverride) hostAddressOverride.open = true;
+  }
+
+  function restoreHomeCandidatesFromStatus() {
+    renderHomeCandidates(latestStatus || {});
+  }
+
+  async function selectHomeCandidate(address) {
+    setHomeCandidateRadiosDisabled(true);
+    try {
+      const refreshed = await submitHostAddress(address);
+      if (!refreshed) {
+        showHomeCandidateWriteError(homeCandidatesPicker?.dataset.refreshFail || '');
+        restoreHomeCandidatesFromStatus();
+      }
+    } catch (err) {
+      showHomeCandidateWriteError(err?.rawDetail || err?.serverMessage || err?.message || '');
+      restoreHomeCandidatesFromStatus();
+      window.logError?.(err, { context: 'link: home candidate select failed' });
+    } finally {
+      setHomeCandidateRadiosDisabled(false);
+    }
+  }
+
+  function renderHomeCandidates(data) {
+    if (!homeCandidatesPicker || !homeCandidatesList || !homeCandidatesProblem) return;
+    homeCandidatesList.textContent = '';
+    homeCandidatesProblem.textContent = '';
+    homeCandidatesProblem.hidden = true;
+    homeCandidatesList.hidden = true;
+
+    if (data?.home_candidates_state === 'unavailable') {
+      homeCandidatesPicker.hidden = false;
+      homeCandidatesProblem.textContent =
+        data?.home_candidates_error || homeCandidatesPicker.dataset.unavailable || '';
+      homeCandidatesProblem.hidden = false;
+      return;
+    }
+
+    const candidates = Array.isArray(data?.home_candidates) ? data.home_candidates : [];
+    if (candidates.length < 2) {
+      homeCandidatesPicker.hidden = true;
+      return;
+    }
+
+    homeCandidatesPicker.hidden = false;
+    homeCandidatesList.hidden = false;
+    candidates.forEach((candidate) => {
+      const address = typeof candidate?.address === 'string' ? candidate.address : '';
+      if (!address) return;
+      const row = document.createElement('label');
+      row.className = 'link-home-candidate-row';
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = 'link-home-candidate';
+      radio.value = address;
+      radio.checked = Boolean(candidate.selected);
+      radio.addEventListener('change', () => {
+        if (radio.checked) selectHomeCandidate(address);
+      });
+      const code = document.createElement('code');
+      code.textContent = address;
+      row.appendChild(radio);
+      row.appendChild(code);
+      homeCandidatesList.appendChild(row);
+    });
+
+    if (!homeCandidatesList.children.length) {
+      homeCandidatesPicker.hidden = true;
+    }
+  }
+
   function renderSplState(data) {
     const isSpl = data?.posture === 'spl';
     const reachability = data?.reachability;
@@ -778,17 +993,17 @@
 
     const candidates = Array.isArray(data?.vpn?.candidates) ? data.vpn.candidates : [];
     renderVpnCandidates(candidates);
+    renderHomeCandidates(data || {});
   }
 
   async function submitHostAddress(address) {
-    const result = await window.apiJson('/app/network/host-address', {
+    await window.apiJson('/app/network/host-address', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ address }),
     });
     setHostAddressError('');
-    await refreshStatus();
-    return result;
+    return await refreshStatus();
   }
 
   async function applyHostAddressOverride() {
@@ -840,6 +1055,7 @@
     try {
       const data = await window.apiJson('/app/network/api/status', { headers: { accept: 'application/json' } });
       applyStatus(data || {});
+      return true;
     } catch (err) {
       window.logError(err, { context: 'link: refreshStatus failed' });
       revealStatusPanel();
@@ -849,6 +1065,7 @@
         serverMessage: err.serverMessage,
         detail: err,
       }));
+      return false;
     }
   }
 
@@ -1485,13 +1702,6 @@
     }
   }
 
-  function clearRotationTimer() {
-    if (rotationTimer !== null) {
-      clearTimeout(rotationTimer);
-      rotationTimer = null;
-    }
-  }
-
   function clearWindowTimer() {
     if (windowTimer !== null) {
       clearTimeout(windowTimer);
@@ -1499,33 +1709,15 @@
     }
   }
 
-  function resetRotationRing() {
-    if (!rotationRing) return;
-    rotationRing.classList.remove('is-running');
-    rotationRing.style.removeProperty('--link-pair-rotation-duration');
-  }
-
-  function startRotationRing(expiresIn) {
-    if (!rotationRing) return;
-    rotationRing.style.setProperty('--link-pair-rotation-duration', `${expiresIn}s`);
-    rotationRing.classList.remove('is-running');
-    void rotationRing.offsetWidth;
-    rotationRing.classList.add('is-running');
-  }
-
   function clearPairTimers() {
     clearExpiryTimer();
-    clearRotationTimer();
     clearWindowTimer();
-    resetRotationRing();
   }
 
   function closeSplPairWindow() {
     splWindowActive = false;
     clearExpiryTimer();
-    clearRotationTimer();
     clearWindowTimer();
-    resetRotationRing();
     qrContainer.classList.add('is-expired');
     qrExpired.hidden = false;
   }
@@ -1552,11 +1744,14 @@
     clearPairTimers();
     splWindowActive = false;
     autoRefreshFired = false;
+    currentPair = null;
     pairCodeBox.hidden = false;
     pairError.hidden = true;
     pairSuccess.hidden = true;
+    if (presentSelector) presentSelector.hidden = false;
     qrExpired.hidden = true;
     qrContainer.classList.remove('is-expired');
+    pairCodeBox.classList.remove('is-computer', 'is-glasses');
   }
 
   function renderQr(pairLink) {
@@ -1579,10 +1774,84 @@
     qrContainer.querySelector('svg').setAttribute('data-module-count', qr.getModuleCount());
   }
 
+  function updatePresentationSelector() {
+    presentButtons.forEach((button) => {
+      const selected = button.dataset.presentationMode === presentationMode;
+      button.classList.toggle('is-selected', selected);
+      button.setAttribute('aria-checked', String(selected));
+    });
+  }
+
+  function renderPairPresentation() {
+    if (!currentPair) return;
+    pairCodeBox.classList.toggle('is-computer', presentationMode === 'computer');
+    pairCodeBox.classList.toggle('is-glasses', presentationMode === 'glasses');
+    renderQr(currentPair.pair_link);
+    caFpEl.textContent = currentPair.ca_fingerprint;
+    if (pairLinkInput) pairLinkInput.value = currentPair.pair_link;
+    setPairCopy();
+    updatePresentationSelector();
+  }
+
+  function setPresentationMode(mode) {
+    presentationMode = mode;
+    renderPairPresentation();
+  }
+
+  function selectedPresentationIndex() {
+    return Math.max(0, presentButtons.findIndex((button) => button.dataset.presentationMode === presentationMode));
+  }
+
+  function handlePresentationSelectorKey(event) {
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', ' ', 'Enter'].includes(event.key)) {
+      return;
+    }
+    event.preventDefault();
+    if (event.key === ' ' || event.key === 'Enter') {
+      const mode = event.target?.dataset?.presentationMode;
+      if (mode) setPresentationMode(mode);
+      return;
+    }
+    let nextIndex = selectedPresentationIndex();
+    if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = presentButtons.length - 1;
+    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      nextIndex = (nextIndex - 1 + presentButtons.length) % presentButtons.length;
+    } else {
+      nextIndex = (nextIndex + 1) % presentButtons.length;
+    }
+    const next = presentButtons[nextIndex];
+    if (!next) return;
+    setPresentationMode(next.dataset.presentationMode);
+    next.focus();
+  }
+
+  function selectPairLinkInput() {
+    if (!pairLinkInput) return;
+    pairLinkInput.focus();
+    pairLinkInput.select();
+  }
+
+  async function copyCurrentPairLink() {
+    if (!currentPair?.pair_link) return;
+    const copied = await clipboardWriteText(currentPair.pair_link);
+    showToast(copied
+      ? (window.LinkCopy.PAIR_LINK_COPY_SUCCESS_TOAST || 'pairing link copied')
+      : (window.LinkCopy.PAIR_LINK_COPY_FAIL_TOAST || "couldn't copy pairing link"));
+  }
+
+  async function selectAndCopyPairLink() {
+    selectPairLinkInput();
+    const now = Date.now();
+    if (now - lastPairLinkInputCopyAt < 250) return;
+    lastPairLinkInputCopyAt = now;
+    await copyCurrentPairLink();
+  }
+
   async function requestPairCode({ restart = false } = {}) {
     clearExpiryTimer();
-    clearRotationTimer();
-    resetRotationRing();
     pairError.hidden = true;
     qrExpired.hidden = true;
     qrContainer.classList.remove('is-expired');
@@ -1595,29 +1864,20 @@
     if (!r.ok) throw new Error(`pair-start failed: ${r.status}`);
 
     const data = await r.json();
-    renderQr(data.pair_link);
-    caFpEl.textContent = data.ca_fingerprint;
+    currentPair = {
+      pair_link: data.pair_link,
+      ca_fingerprint: data.ca_fingerprint,
+      device_label: data.device_label,
+      expires_in: Number(data.expires_in) || 300,
+    };
     deviceLabelInput.value = data.device_label;
-
-    const rotating = Boolean(data.rotating);
-    setPairCopy(rotating);  // authoritative copy toggle from the live response
+    renderPairPresentation();
 
     const expiresIn = Number(data.expires_in) || 300;
-    if (rotating) {
-      if (!splWindowActive) {
-        // Mid-session rotation re-fetch that finished after the 5-min window
-        // closed: bail without re-arming. A fresh start opens the window.
-        if (!restart) return;
+    if (latestStatus?.posture === 'spl') {
+      if (restart) {
         startSplPairWindow();
       }
-      startRotationRing(expiresIn);
-      rotationTimer = setTimeout(() => {
-        if (!splWindowActive || pairModal.hidden) return;
-        requestPairCode().catch((err) => {
-          showPairError();
-          window.logError(err, { context: 'link: rotate pair code failed' });
-        });
-      }, expiresIn * 1000);
       return;
     }
 
@@ -1648,6 +1908,7 @@
     splWindowActive = false;
     lastPairedFingerprint = payload.fingerprint || '';
     pairCodeBox.hidden = true;
+    if (presentSelector) presentSelector.hidden = true;
     pairError.hidden = true;
     pairSuccess.hidden = false;
     pairSuccessHeading.textContent = window.LinkCopy.SUCCESS_HEADING.replace('{label}', payload.device_label || '');
@@ -1673,6 +1934,7 @@
     clearPairTimers();
     splWindowActive = false;
     pairCodeBox.hidden = true;
+    if (presentSelector) presentSelector.hidden = true;
     pairSuccess.hidden = true;
     pairError.hidden = false;
   }
@@ -1684,7 +1946,9 @@
     pairModal.hidden = false;
     cleanupPairEvents();
     resetPairCodeState();
-    setPairCopy(latestStatus?.posture === 'spl');
+    presentationMode = 'phone';
+    updatePresentationSelector();
+    setPairCopy();
     if (window.appEvents) {
       pairEventsCleanup = window.appEvents.listen('link', (payload) => {
         if (payload.event === 'pair_complete') {
@@ -1738,10 +2002,21 @@
   heroHowReach.addEventListener('click', revealReachSelector);
   segByo?.addEventListener('click', () => selectReachMode('byo'));
   segHosted?.addEventListener('click', () => selectReachMode('hosted'));
+  presentButtons.forEach((button) => {
+    button.addEventListener('click', () => setPresentationMode(button.dataset.presentationMode));
+  });
+  presentSelector?.addEventListener('keydown', handlePresentationSelectorKey);
   privateLinkSetup?.addEventListener('click', startPrivateLinkSetup);
   privateLinkDisable?.addEventListener('click', disablePrivateLink);
   privateLinkOperationRetry?.addEventListener('click', () => {
     if (privateLinkRetryAction) privateLinkRetryAction();
+  });
+  pairLinkInput?.addEventListener('focus', selectAndCopyPairLink);
+  pairLinkInput?.addEventListener('click', selectAndCopyPairLink);
+  pairLinkCopy?.addEventListener('click', () => {
+    lastPairLinkInputCopyAt = Date.now();
+    selectPairLinkInput();
+    copyCurrentPairLink();
   });
   pairCancel.addEventListener('click', closePairModal);
   pairErrorCancel.addEventListener('click', closePairModal);
@@ -1854,6 +2129,18 @@
     refreshStatus();
     refreshPrivateLinkStatus();
     refreshDevices();
+    loadIdentity();
+    const identityCopyBtn = document.getElementById('link-identity-id-copy');
+    if (identityCopyBtn) {
+      identityCopyBtn.addEventListener('click', async () => {
+        const idValue = document.getElementById('link-identity-id-value');
+        const text = idValue ? idValue.textContent : '';
+        if (!text) return;
+        const ok = await clipboardWriteText(text);
+        showToast(ok ? (window.LinkCopy.IDENTITY_ID_COPY_SUCCESS_TOAST || 'journal id copied')
+                     : (window.LinkCopy.IDENTITY_ID_COPY_FAIL_TOAST || "couldn't copy journal id"));
+      });
+    }
     if (window.appEvents) {
       window.appEvents.listen('link', (payload) => {
         if (payload.event === 'pair_complete') refreshDevices();

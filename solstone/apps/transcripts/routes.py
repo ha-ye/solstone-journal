@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import functools
 import json
 import logging
 import os
@@ -63,8 +62,12 @@ from solstone.think.data_state import (
     DataState,
     create_analyzing_marker,
     derive_modality_state,
+    read_processing_record,
+    repair_modality_markers,
 )
 from solstone.think.entities.journal import get_journal_principal, load_journal_entity
+from solstone.think.formatters import format_file
+from solstone.think.journal_stats import load_fresh_day_cache
 from solstone.think.media import MIME_TYPES
 from solstone.think.models import get_usage_cost
 from solstone.think.pipeline_health import (
@@ -96,43 +99,21 @@ transcripts_bp = Blueprint(
 )
 
 
-def _day_max_mtime(path: str) -> float:
-    """Return the latest mtime under a day directory, skipping delete races."""
-    day_dir = Path(path)
-    try:
-        max_mtime = day_dir.stat().st_mtime
-    except FileNotFoundError:
-        return 0.0
+def _day_range_count(day: str, day_dir: Path) -> int:
+    """Calendar range count for one day, read-only.
 
-    try:
-        for child in day_dir.rglob("*"):
-            try:
-                child_mtime = child.stat().st_mtime
-            except FileNotFoundError:
-                continue
-            if child_mtime > max_mtime:
-                max_mtime = child_mtime
-    except FileNotFoundError:
-        return max_mtime
-    return max_mtime
-
-
-@functools.lru_cache(maxsize=64)
-def _stats_for_month(month: str, mtime_key: float) -> dict[str, int]:
-    """Return cached transcript range counts for a month."""
-    del mtime_key
-
-    stats: dict[str, int] = {}
-    for day_name in day_dirs().keys():
-        if not day_name.startswith(month):
-            continue
-
-        audio_ranges, screen_ranges = cluster_scan(day_name)
-        total_ranges = len(audio_ranges) + len(screen_ranges)
-        if total_ranges > 0:
-            stats[day_name] = total_ranges
-
-    return stats
+    Reads the per-day ``stats.json`` cache via the stats routine's shared
+    freshness primitive; on a fresh hit returns
+    ``transcript_ranges + percept_ranges``. On miss/stale/corrupt/old-schema it
+    falls back to a fresh raw cluster scan for THIS day only. Never writes,
+    deletes, or mtime-touches ``stats.json``.
+    """
+    payload = load_fresh_day_cache(day_dir)
+    if payload is not None:
+        day_stats = payload["stats"]
+        return int(day_stats["transcript_ranges"]) + int(day_stats["percept_ranges"])
+    audio_ranges, screen_ranges = cluster_scan(day)
+    return len(audio_ranges) + len(screen_ranges)
 
 
 def _attach_think_to_segments(segments: list[dict[str, Any]], day: str) -> None:
@@ -351,22 +332,23 @@ def api_stats(month: str):
         month: YYYYMM format month string
 
     Returns:
-        JSON dict mapping day (YYYYMMDD) to transcript range count.
-        Transcripts app is not facet-aware, so returns simple {day: count} mapping.
+        JSON dict mapping day (YYYYMMDD) to transcript range count, zero-count
+        days omitted. Counts are served from the per-day ``stats.json`` cache
+        written by the journal-stats routine, falling back to a raw cluster scan
+        per day only when that day's cache is missing or stale. Transcripts app
+        is not facet-aware, so returns a simple {day: count} mapping.
     """
     if not MONTH_RE.fullmatch(month):
         return error_response(INVALID_MONTH, detail="Invalid month format")
 
-    matching = [
-        (day_name, path)
-        for day_name, path in day_dirs().items()
-        if day_name.startswith(month)
-    ]
-    if not matching:
-        return jsonify({})
-
-    mtime_key = max(_day_max_mtime(path) for _, path in matching)
-    return jsonify(_stats_for_month(month, mtime_key))
+    stats: dict[str, int] = {}
+    for day_name, path in day_dirs().items():
+        if not day_name.startswith(month):
+            continue
+        count = _day_range_count(day_name, Path(path))
+        if count > 0:
+            stats[day_name] = count
+    return jsonify(stats)
 
 
 def _load_jsonl(path: str) -> list[dict]:
@@ -558,6 +540,7 @@ def _segment_modality_signals(
     has_raw_file = False
     has_jsonl = False
     has_chunks = False
+    record: dict | None = None
     warning = False
 
     patterns = ("*audio.jsonl",) if modality == "audio" else ("*screen.jsonl",)
@@ -568,6 +551,7 @@ def _segment_modality_signals(
             has_jsonl = True
             try:
                 entries = _load_jsonl(str(jsonl_path))
+                record = record or read_processing_record(entries)
                 if modality == "audio":
                     formatted_chunks, _meta = format_audio(
                         entries, {"file_path": str(jsonl_path)}
@@ -602,6 +586,7 @@ def _segment_modality_signals(
             has_chunks=True,
             has_jsonl=has_jsonl,
             has_raw=has_raw_present,
+            record=record,
         )
     elif media_purged:
         state = DataState.PURGED.value
@@ -612,6 +597,7 @@ def _segment_modality_signals(
             has_chunks=False,
             has_jsonl=has_jsonl,
             has_raw=has_raw_present,
+            record=record,
         )
         if warning and state == DataState.PENDING.value:
             state = DataState.FAILED.value
@@ -639,6 +625,7 @@ def _write_failed_reprocess_marker(
     failed_path: Path,
     reason: str,
     detail: str,
+    reason_code: str | None = None,
 ) -> None:
     marker_payload = _read_marker_payload(marker_path)
     payload = {
@@ -648,6 +635,8 @@ def _write_failed_reprocess_marker(
         "failed_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "detail": detail,
     }
+    if reason_code is not None:
+        payload["reason_code"] = reason_code
     tmp = failed_path.with_suffix(failed_path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
     tmp.replace(failed_path)
@@ -658,14 +647,30 @@ def _watch_reprocess_completion(
     proc: subprocess.Popen,
     marker_path: Path,
     failed_path: Path,
+    segment_dir_path: Path,
+    modality: str,
+    request_id: str,
 ) -> None:
     try:
         rc = proc.wait()
         stderr_tail = ""
         if proc.stderr:
             stderr_tail = (proc.stderr.read() or b"")[-512:].decode("utf-8", "replace")
+        marker_payload = _read_marker_payload(marker_path)
+        if marker_payload.get("request_id") != request_id:
+            return
         if rc == 0:
-            marker_path.unlink(missing_ok=True)
+            state = str(_segment_modality_signals(segment_dir_path, modality)["state"])
+            if state in {DataState.ANALYZED.value, DataState.EMPTY.value}:
+                marker_path.unlink(missing_ok=True)
+                return
+            _write_failed_reprocess_marker(
+                marker_path,
+                failed_path,
+                "no_output",
+                "worker exited 0 without analyzed chunks",
+                reason_code="no_output",
+            )
             return
         _write_failed_reprocess_marker(
             marker_path,
@@ -737,6 +742,7 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
     has_raw_file = {"audio": False, "screen": False}
     has_raw_present = {"audio": False, "screen": False}
     has_jsonl = {"audio": False, "screen": False}
+    processing_records: dict[str, dict | None] = {"audio": None, "screen": None}
     counted_media_paths: set[Path] = set()
     warning_details: list[dict[str, str]] = []
 
@@ -789,6 +795,8 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
         has_jsonl["audio"] = True
         try:
             entries = _load_jsonl(audio_path)
+            record = read_processing_record(entries)
+            processing_records["audio"] = processing_records["audio"] or record
             audio_duration = max(
                 audio_duration,
                 _read_audio_duration_seconds(entries, segment_key),
@@ -871,6 +879,11 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
     for screen_path in sorted(screen_files):
         has_jsonl["screen"] = True
         try:
+            entries = _load_jsonl(screen_path)
+            record = read_processing_record(entries)
+            processing_records["screen"] = processing_records["screen"] or record
+            formatted_chunks, meta = format_screen(entries, {"file_path": screen_path})
+
             filename = os.path.basename(screen_path)
             monitor = (
                 filename.replace("_screen.jsonl", "")
@@ -1098,6 +1111,7 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                 has_chunks=True,
                 has_jsonl=has_jsonl[modality],
                 has_raw=has_raw_present[modality],
+                record=processing_records[modality],
             )
         elif media_purged[modality]:
             data_state[modality] = DataState.PURGED.value
@@ -1108,6 +1122,7 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                 has_chunks=has_chunks,
                 has_jsonl=has_jsonl[modality],
                 has_raw=has_raw_present[modality],
+                record=processing_records[modality],
             )
             if state != DataState.ABSENT.value:
                 if modality in warning_types and state == DataState.PENDING.value:
@@ -1137,6 +1152,22 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
         md_files.pop("screen", None)
     if "audio" in data_state:
         md_files.pop("audio", None)
+
+    md_files.pop("sense", None)
+    sense_json = talents_dir / "sense.json"
+    if sense_json.is_file():
+        try:
+            chunks, _meta = format_file(sense_json)
+            rendered = "\n".join(
+                chunk["markdown"] for chunk in chunks if chunk.get("markdown")
+            )
+            if rendered:
+                md_files["sense"] = rendered
+        except Exception:
+            logger.warning(
+                "segment detail: failed to render sense.json",
+                exc_info=True,
+            )
 
     signals = _load_segment_signals(segment_dir_path)
 
@@ -1234,10 +1265,18 @@ def reprocess_segment(day: str, stream: str, segment_key: str) -> Any:
             {
                 "data_state": data_state,
                 "marker": {"started_at": marker.get("started_at", "")},
+                "repair_status": "running",
             }
         )
 
     if state == DataState.FAILED.value:
+        repair_modality_markers(
+            segment_dir_path,
+            modality,
+            has_chunks=bool(signals["has_chunks"]),
+            has_jsonl=bool(signals["has_jsonl"]),
+            has_raw=has_raw,
+        )
         failed_path.unlink(missing_ok=True)
 
     try:
@@ -1250,8 +1289,11 @@ def reprocess_segment(day: str, stream: str, segment_key: str) -> Any:
             {
                 "data_state": data_state,
                 "marker": {"started_at": marker.get("started_at", "")},
+                "repair_status": "running",
             }
         )
+    marker = _read_marker_payload(marker_path)
+    request_id = str(marker.get("request_id", ""))
 
     argv = [
         sys.executable,
@@ -1284,18 +1326,25 @@ def reprocess_segment(day: str, stream: str, segment_key: str) -> Any:
 
     watcher = threading.Thread(
         target=_watch_reprocess_completion,
-        args=(proc, marker_path, failed_path),
+        args=(
+            proc,
+            marker_path,
+            failed_path,
+            segment_dir_path,
+            modality,
+            request_id,
+        ),
         daemon=True,
     )
     watcher.start()
 
     data_state = _segment_data_state(segment_dir_path)
     data_state[modality] = DataState.ANALYZING.value
-    marker = _read_marker_payload(marker_path)
     return jsonify(
         {
             "data_state": data_state,
             "marker": {"started_at": marker.get("started_at", "")},
+            "repair_status": "accepted",
         }
     )
 

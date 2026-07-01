@@ -4,6 +4,81 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.19] - 2026-07-01
+
+### Fixed
+- a stretch of your day with nothing for sol to think about, like a quiet passage with no speech or one where your phone only had your location, used to keep the day from finishing. sol would keep re-trying that stretch and never mark the day done. now sol recognizes there's nothing there to read, marks that stretch done, and moves on, so the day completes.
+- if one step sol runs on a stretch of your day kept failing, it could hold the whole day open, re-attempted each time solstone caught up and never finishing. now sol sets a step aside after it fails enough times in a row, so the day completes, and leaves it there to try again later. your transcript and media stay in your journal the whole time.
+- asking sol to re-process part of a day is steadier now. it used to be able to get wedged partway and not restart, and now it recovers. and if an earlier version already left days stuck this way, running `journal backfill-processing-records` clears them so they can finish, previewing the change before you apply it.
+
+## [0.6.18] - 2026-06-30
+
+### Added
+- you can now pair a device to your journal over your private network from the command line, even when that device isn't on the same local network as your home. your home opens a brief pairing window directly to do it, instead of relying on a short code that kept rotating, so it's more reliable and there's no shared code sitting anywhere in between. if the window isn't ready yet, pairing waits for it and tells you plainly when it's unavailable, rather than failing with a confusing error.
+
+### Fixed
+- your private network's status now stays honest while it's running. it used to be able to read as connected while the link that reaches your journal from afar was actually failing. now it tells those apart, recovers on its own when the link goes stale, and never puts access tokens or connection secrets into its status or logs.
+- a local command that talks to your journal no longer waits forever if the journal stops responding. it now stops after a set wait and tells you "the journal didn't answer in time," instead of hanging.
+- status about finishing up your days is honest now too. when sol re-processes part of a day or re-analyzes a transcript, a step that had only started, or hadn't been verified, used to be able to read as done. your health could even read as well while it hadn't. anything that hasn't truly finished and produced a result now shows as still running or as a clear error, and a day that didn't finish re-processing no longer reads as fully caught up.
+- catching up on your days is steadier when something goes wrong. if sol gets stuck finishing one day, solstone now keeps working through the rest of your days instead of letting that one hold everything up, and a single stalled step can no longer tie up sol's daily work.
+
+## [0.6.17] - 2026-06-29
+
+### Added
+- you can now begin pairing over your private network without waiting for the whole pairing to finish first. start it and carry on while it completes.
+
+### Changed
+- your home screen now shows your solstone's health as a single honest verdict. it rolls every signal into one line, always reflects the most serious thing happening, and never reads "everything's working" while something is failing or can't be checked. anything it flags is now a link you can follow to learn more or fix it, and it will tell you if sol has no working way to think. day-to-day activity counts moved off the glance so it stays focused on what needs your attention.
+
+### Fixed
+- deleting a location source now also removes location data that was bundled inside mixed mobile observations, where it used to be left behind.
+- if an observer was running but its observations were silently never reaching your journal, solstone used to show it as fine, unknown, or stale. that state now shows up clearly wherever you check on solstone, in red, with what went wrong and how to recover.
+- observations from a terminal or screen-only observer, which have no separate media to send, were being turned away and set aside. they're now accepted into your journal.
+- when turning on your private network runs into a problem, you now get the specific reason and what to do about it, instead of one generic error message.
+
+## [0.6.16] - 2026-06-28
+
+### Added
+- setting up solstone now gives your journal its own identity. you'll see your journal's mark, a small visual of two icons and two words derived from your journal's own key, and you can regenerate it until you like the one you get, then lock it in. your journal id comes from that same key, so it's unique to your journal and the same wherever it appears. after setup, your mark and journal id also stay visible where your devices connect to your journal.
+
+### Changed
+- if you run solstone fully on your own device, sol's local work, like summarizing your day and your weekly reflection, now stays on your device as intended even when no cloud key is set up. before, some of it could stop with a setup error. this keeps more of sol's work on your device.
+- re-registering an observer after a restart or reinstall no longer creates a duplicate entry; it reuses the one already there. a new `observer reconcile` command also collapses any duplicate observer entries you already have.
+
+### Fixed
+- re-pairing a device after a reinstall or restore used to leave its previous credential active, so old credentials could accumulate over time. re-pairing now retires the credential it replaces, leaving one current credential per device.
+- a chat reply that took too long to finish could later appear as the answer to a different message. that no longer happens. a reply that times out is now closed out cleanly and can't carry into your next message.
+- when sol prepared a message to solstone support for you to review, it could be described as a failure to reach support even though the draft was ready. the wording now matches what happened: your draft is prepared for you to review and send.
+
+## [0.6.15] - 2026-06-26
+
+### Added
+- you can now give any facet its own icon. open a facet's appearance settings, search the icon set, see each option in your facet's color, and apply the one you want. your emoji stays the default, so you can switch back to it anytime.
+
+### Changed
+- the menu in your journal's web app and your facets now show clean, consistent icons. each facet's icon comes from its emoji by default; the icons are simply a crisper way to render it.
+- for new owners, the welcome now sets a more accurate expectation: sol's insight starts to feel useful after about a week, not the third or fourth week.
+
+## [0.6.14] - 2026-06-25
+
+### Added
+- pairing a new device to your journal now matches how you're pairing it. pick phone, computer, or glasses, and solstone shows the right hand-off for each: a large QR code for glasses to point at, a copy-to-clipboard link for a computer, and the usual flow for a phone. and when your journal can be reached more than one way, you can pick which to use.
+- solstone can now tidy up its own behind-the-scenes logs and caches on a schedule, so they don't pile up over time. in your storage settings there's a cleanup that removes only these dated housekeeping files (health logs, run logs, and similar caches) once they age out, on by default at 30 days. it never touches what sol has taken in or anything in your memories, only solstone's own bookkeeping. you can preview exactly what a cleanup would remove before anything is deleted, and run it by hand anytime.
+
+### Changed
+- your journal's web app is easier to read. text that used to sit on bright facet-colored fills (a selected facet, your chat bubble, the active settings tab) now has stronger contrast, the app matches sol pbc's current look, and a spot where the home screen could get clipped on a narrow window is fixed.
+- sol now scopes each lookup in your journal to just the part it needs, rather than reaching across the whole journal at once. this keeps what sol reads tightly scoped, and keeps sol quick to respond even when your journal has grown large.
+
+### Fixed
+- a piece of work sol finished could show as failed even though it completed and saved its result. that's resolved; each run now reflects its true outcome.
+- when a single activity spanned several facets, each of those facets' history could end up showing the same description copied from one of them. each facet now keeps its own accurate activity history.
+
+## [0.6.13] - 2026-06-24
+
+### Changed
+- importing the same thing twice no longer doubles it up in your journal. when you import a file or paste text, whether from the web import page or `sol import`, solstone now recognizes content it has already taken in and skips it instead of creating a second copy. re-running an import that got interrupted picks up where it left off rather than starting over.
+- imported items now get the right date straight from the file when solstone can tell. for filenames that already carry a full timestamp, exports from tools that stamp their own times, and media that carries the time it was taken, solstone reads the date directly instead of asking a model to guess it. anything ambiguous still falls back to a best guess as before.
+
 ## [0.6.12] - 2026-06-23
 
 ### Added

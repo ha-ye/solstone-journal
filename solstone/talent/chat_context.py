@@ -21,6 +21,10 @@ STOP_AND_REPORT_CONTRACT = (
     "another talent for it. Stop here and report to the owner directly using the "
     "{result_field_label} below."
 )
+CHAT_ERROR_TURN_MARKER = (
+    "[internal: my previous reply to the message above didn't complete. Treat it "
+    "as background -- the owner's latest message below is the active request.]"
+)
 
 
 def pre_process(context: dict) -> dict:
@@ -53,6 +57,14 @@ def pre_process(context: dict) -> dict:
                 messages.append({"role": "user", "content": event["text"]})
             elif event["kind"] == "sol_message":
                 messages.append({"role": "assistant", "content": event["text"]})
+            elif (
+                event["kind"] == "chat_error"
+                and messages
+                and messages[-1].get("role") == "user"
+            ):
+                messages.append(
+                    {"role": "assistant", "content": CHAT_ERROR_TURN_MARKER}
+                )
 
         if latest_owner_message and "source" in latest_owner_message:
             source = latest_owner_message["source"]

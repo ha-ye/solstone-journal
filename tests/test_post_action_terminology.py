@@ -34,13 +34,23 @@ def _minimal_home_context() -> dict:
     return {
         "today": "20260524",
         "now": datetime(2026, 5, 24, 12, 0),
-        "capture_status": "offline",
-        "capture_display_text": "observer offline",
-        "last_observe_relative": None,
+        "health_glance": {
+            "verdict": "attention",
+            "severity": "red",
+            "headline": "1 thing needs your attention",
+            "last_observation": None,
+            "cta": None,
+            "issues": [
+                {
+                    "text": "no observer is reaching your journal",
+                    "severity": "red",
+                    "href": "/app/health",
+                }
+            ],
+        },
         "attention": None,
         "pipeline_status": None,
         "segment_count": 0,
-        "duration_minutes": 0,
         "facet_data": {},
         "narrative_content": None,
         "narrative_updated_at": None,
@@ -117,6 +127,22 @@ def test_home_needs_you_strings_use_allowed_terms(journal_copy, monkeypatch):
     start = html.index('<div class="pulse-needs"')
     end = html.index("<script>", start)
     _assert_clean(html[start:end])
+    v_start = html.index('<div class="pulse-vitals"')
+    v_end = html.index("</div>", html.index("pulse-vitals-health-link", v_start))
+    _assert_clean(html[v_start:v_end])
+
+
+def test_home_vitals_strip_green_is_contrast_passing():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "solstone"
+        / "apps"
+        / "home"
+        / "workspace.html"
+    ).read_text(encoding="utf-8")
+
+    assert "#166534" in source
+    assert "#16a34a" not in source
 
 
 def test_dashboard_truthfulness_strings_use_allowed_terms():

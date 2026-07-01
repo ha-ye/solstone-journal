@@ -12,8 +12,17 @@ from pathlib import Path
 
 import pytest
 
+from solstone.observe.processing_record import (
+    REASON_NO_DECODABLE_FRAMES,
+    STATE_EMPTY,
+    build_processing_record,
+)
 from solstone.think.cluster import cluster_segments
 from solstone.think.pipeline_health import (
+    CAP,
+    MIN_SPAN_MS,
+    SEGMENT_FLOOR_TALENTS,
+    SEGMENT_NONGATING_TALENTS,
     SegmentProgress,
     classify_segment_completion,
     lookup_segment_progress,
@@ -165,10 +174,8 @@ def _complete_segment_events(
     if density != "idle":
         events.extend(
             [
-                _dispatch(segment, "entities", 13, stream=stream),
-                _complete(segment, "entities", 14, stream=stream),
-                _dispatch(segment, "documents", 15, stream=stream),
-                _complete(segment, "documents", 16, stream=stream),
+                _dispatch(segment, "documents", 13, stream=stream),
+                _complete(segment, "documents", 14, stream=stream),
             ]
         )
     return events
@@ -196,6 +203,24 @@ def _seed_segment(
             json.dumps({"raw": "screen.webm", "type": "screencast"})
             + "\n"
             + json.dumps({"timestamp": 0, "content": {}})
+            + "\n",
+            encoding="utf-8",
+        )
+    elif state == "empty":
+        record = build_processing_record(
+            state=STATE_EMPTY,
+            reason_code=REASON_NO_DECODABLE_FRAMES,
+            handler="describe",
+            input_size=0,
+        )
+        (segment_dir / "screen.jsonl").write_text(
+            json.dumps(
+                {
+                    "raw": "screen.webm",
+                    "type": "screencast",
+                    "_solstone_processing": record,
+                }
+            )
             + "\n",
             encoding="utf-8",
         )
@@ -272,13 +297,13 @@ def test_read_segment_progress_folds_latest_terminal_and_segments(
         "001_segment.jsonl",
         [
             _sense_complete(SEGMENT, "active", 1),
-            _dispatch(SEGMENT, "entities", 2),
-            _complete(SEGMENT, "entities", 3),
-            _skip(SEGMENT, "entities", "not_recommended", 4),
-            _fail(SEGMENT, "entities", 5),
+            _dispatch(SEGMENT, "documents", 2),
+            _complete(SEGMENT, "documents", 3),
+            _skip(SEGMENT, "documents", "not_recommended", 4),
+            _fail(SEGMENT, "documents", 5),
             _sense_complete(SEGMENT_B, "active", 1),
-            _dispatch(SEGMENT_B, "entities", 2),
-            _complete(SEGMENT_B, "entities", 3),
+            _dispatch(SEGMENT_B, "documents", 2),
+            _complete(SEGMENT_B, "documents", 3),
         ],
     )
 
@@ -286,9 +311,9 @@ def test_read_segment_progress_folds_latest_terminal_and_segments(
 
     assert progress[(None, SEGMENT)].sensed is True
     assert progress[(None, SEGMENT)].density == "active"
-    assert "entities" not in progress[(None, SEGMENT)].completed
-    assert progress[(None, SEGMENT)].dispatched == frozenset({"entities"})
-    assert progress[(None, SEGMENT_B)].completed == frozenset({"entities"})
+    assert "documents" not in progress[(None, SEGMENT)].completed
+    assert progress[(None, SEGMENT)].dispatched == frozenset({"documents"})
+    assert progress[(None, SEGMENT_B)].completed == frozenset({"documents"})
 
 
 def test_read_segment_progress_tracks_latest_sense_density(segment_journal):
@@ -341,8 +366,6 @@ def test_stream_keyed_progress_separates_duplicate_segment_ids(segment_journal):
             _dispatch(SEGMENT, "sense", 20, stream="beta"),
             _complete(SEGMENT, "sense", 21, stream="beta"),
             _sense_complete(SEGMENT, "active", 22, stream="beta"),
-            _dispatch(SEGMENT, "entities", 23, stream="beta"),
-            _complete(SEGMENT, "entities", 24, stream="beta"),
         ],
     )
 
@@ -350,10 +373,8 @@ def test_stream_keyed_progress_separates_duplicate_segment_ids(segment_journal):
 
     assert ("alpha", SEGMENT) in progress
     assert ("beta", SEGMENT) in progress
-    assert progress[("alpha", SEGMENT)].completed == frozenset(
-        {"sense", "entities", "documents"}
-    )
-    assert progress[("beta", SEGMENT)].completed == frozenset({"sense", "entities"})
+    assert progress[("alpha", SEGMENT)].completed == frozenset({"sense", "documents"})
+    assert progress[("beta", SEGMENT)].completed == frozenset({"sense"})
     assert segment_fully_thought(
         lookup_segment_progress(progress, "alpha", SEGMENT)
     ) == (True, None)
@@ -385,7 +406,7 @@ def test_stream_lookup_does_not_borrow_from_other_stream(segment_journal):
     ) == (True, None)
     assert segment_fully_thought(
         lookup_segment_progress(progress, "beta", SEGMENT)
-    ) == (False, "floor:entities")
+    ) == (False, "floor:documents")
 
     completion = classify_segment_completion(cluster_segments(day), progress)
     assert completion.not_thought == 1
@@ -401,14 +422,13 @@ def test_stream_keyed_no_config_floor_allows_completion(segment_journal):
         "001_segment.jsonl",
         [
             _sense_complete(SEGMENT, "active", 1, stream="gamma"),
-            _complete(SEGMENT, "documents", 2, stream="gamma"),
-            _skip(SEGMENT, "entities", "no_config", 3, stream="gamma"),
+            _skip(SEGMENT, "documents", "no_config", 3, stream="gamma"),
         ],
     )
 
     progress = read_segment_progress(day)
 
-    assert progress[("gamma", SEGMENT)].unconfigured == frozenset({"entities"})
+    assert progress[("gamma", SEGMENT)].unconfigured == frozenset({"documents"})
     assert segment_fully_thought(
         lookup_segment_progress(progress, "gamma", SEGMENT)
     ) == (True, None)
@@ -432,6 +452,27 @@ def test_stream_keyed_dispatch_blocks_without_terminal(segment_journal):
     assert segment_fully_thought(
         lookup_segment_progress(progress, "delta", SEGMENT)
     ) == (False, "dispatched:screen")
+
+
+@pytest.mark.parametrize("emit_fail", [False, True])
+def test_stream_keyed_detection_dispatch_is_nongating(segment_journal, emit_fail):
+    day = "20990414"
+    stream = "delta"
+    _seed_segment(segment_journal, day, SEGMENT, stream=stream)
+    events = _complete_segment_events(SEGMENT, stream=stream) + [
+        _dispatch(SEGMENT, "entities:detection", 30, stream=stream)
+    ]
+    if emit_fail:
+        events.append(_fail(SEGMENT, "entities:detection", 31, stream=stream))
+    _write_health(segment_journal, day, "001_segment.jsonl", events)
+
+    progress = read_segment_progress(day)
+
+    assert "entities:detection" in progress[(stream, SEGMENT)].dispatched
+    assert "entities:detection" not in progress[(stream, SEGMENT)].completed
+    assert segment_fully_thought(
+        lookup_segment_progress(progress, stream, SEGMENT)
+    ) == (True, None)
 
 
 def test_primary_segment_uses_legacy_progress_fallback(segment_journal):
@@ -478,6 +519,7 @@ def test_segment_fully_sensed_rejects_unfinished_states(state):
 
 def test_segment_fully_sensed_accepts_done_states():
     assert segment_fully_sensed({"screen": "analyzed", "audio": "purged"}) is True
+    assert segment_fully_sensed({"screen": "empty"}) is True
 
 
 def test_segment_fully_thought_idle_short_circuits():
@@ -488,6 +530,7 @@ def test_segment_fully_thought_idle_short_circuits():
         dispatched=frozenset({"sense"}),
         completed=frozenset({"sense"}),
         unconfigured=frozenset(),
+        capped=frozenset(),
     )
 
     assert segment_fully_thought(progress) == (True, None)
@@ -501,6 +544,7 @@ def test_segment_fully_thought_redundant_short_circuits():
         dispatched=frozenset({"sense"}),
         completed=frozenset({"sense"}),
         unconfigured=frozenset(),
+        capped=frozenset(),
     )
 
     assert segment_fully_thought(progress) == (True, None)
@@ -514,9 +558,14 @@ def test_segment_fully_thought_requires_floor_after_sense():
         dispatched=frozenset({"sense"}),
         completed=frozenset({"sense"}),
         unconfigured=frozenset(),
+        capped=frozenset(),
     )
 
-    assert segment_fully_thought(progress) == (False, "floor:entities")
+    assert segment_fully_thought(progress) == (False, "floor:documents")
+
+
+def test_segment_floor_and_nongating_talents_are_disjoint():
+    assert set(SEGMENT_NONGATING_TALENTS).isdisjoint(SEGMENT_FLOOR_TALENTS)
 
 
 def test_segment_fully_thought_ignores_skipped_not_dispatched_conditionals(
@@ -536,14 +585,29 @@ def test_segment_fully_thought_ignores_skipped_not_dispatched_conditionals(
     assert segment_fully_thought(progress) == (True, None)
 
 
+def test_segment_fully_thought_does_not_require_detection_before_activation():
+    progress = SegmentProgress(
+        sensed=True,
+        density="active",
+        change_class=None,
+        dispatched=frozenset({"sense", "documents"}),
+        completed=frozenset({"sense", "documents"}),
+        unconfigured=frozenset(),
+        capped=frozenset(),
+    )
+
+    assert segment_fully_thought(progress) == (True, None)
+
+
 def test_segment_fully_thought_does_not_require_rolling_talents():
     progress = SegmentProgress(
         sensed=True,
         density="active",
         change_class=None,
-        dispatched=frozenset({"sense", "entities", "documents"}),
-        completed=frozenset({"sense", "entities", "documents"}),
+        dispatched=frozenset({"sense", "documents"}),
+        completed=frozenset({"sense", "documents"}),
         unconfigured=frozenset(),
+        capped=frozenset(),
     )
 
     assert segment_fully_thought(progress) == (True, None)
@@ -554,9 +618,10 @@ def test_segment_fully_thought_allows_unconfigured_floor_talent():
         sensed=True,
         density="active",
         change_class=None,
-        dispatched=frozenset({"sense", "documents"}),
-        completed=frozenset({"sense", "documents"}),
-        unconfigured=frozenset({"entities"}),
+        dispatched=frozenset({"sense"}),
+        completed=frozenset({"sense"}),
+        unconfigured=frozenset({"documents"}),
+        capped=frozenset(),
     )
 
     assert segment_fully_thought(progress) == (True, None)
@@ -567,12 +632,27 @@ def test_segment_fully_thought_requires_dispatched_completion():
         sensed=True,
         density="active",
         change_class=None,
-        dispatched=frozenset({"sense", "entities", "documents", "screen"}),
-        completed=frozenset({"sense", "entities", "documents"}),
+        dispatched=frozenset({"sense", "documents", "screen"}),
+        completed=frozenset({"sense", "documents"}),
         unconfigured=frozenset(),
+        capped=frozenset(),
     )
 
     assert segment_fully_thought(progress) == (False, "dispatched:screen")
+
+
+def test_segment_fully_thought_allows_nongating_detection_without_completion():
+    progress = SegmentProgress(
+        sensed=True,
+        density="active",
+        change_class=None,
+        dispatched=frozenset({"sense", "documents", "entities:detection"}),
+        completed=frozenset({"sense", "documents"}),
+        unconfigured=frozenset(),
+        capped=frozenset(),
+    )
+
+    assert segment_fully_thought(progress) == (True, None)
 
 
 def test_classifier_stats_and_gate_agree_on_all_gate_states(
@@ -602,7 +682,7 @@ def test_classifier_stats_and_gate_agree_on_all_gate_states(
         {
             "segment": SEGMENT_C,
             "dimension": "not_thought",
-            "detail": "floor:entities",
+            "detail": "floor:documents",
         },
         {
             "segment": SEGMENT_D,
@@ -641,15 +721,13 @@ def test_classify_segment_completion_latest_terminal_wins(segment_journal):
         "001_segment.jsonl",
         [
             _sense_complete(fail_then_complete, "active", 1),
-            _complete(fail_then_complete, "documents", 4),
-            _dispatch(fail_then_complete, "entities", 4),
-            _fail(fail_then_complete, "entities", 5),
-            _complete(fail_then_complete, "entities", 6),
+            _dispatch(fail_then_complete, "documents", 4),
+            _fail(fail_then_complete, "documents", 5),
+            _complete(fail_then_complete, "documents", 6),
             _sense_complete(complete_then_fail, "active", 1),
-            _complete(complete_then_fail, "documents", 4),
-            _dispatch(complete_then_fail, "entities", 4),
-            _complete(complete_then_fail, "entities", 5),
-            _fail(complete_then_fail, "entities", 6),
+            _dispatch(complete_then_fail, "documents", 4),
+            _complete(complete_then_fail, "documents", 5),
+            _fail(complete_then_fail, "documents", 6),
         ],
     )
 
@@ -663,9 +741,91 @@ def test_classify_segment_completion_latest_terminal_wins(segment_journal):
         {
             "segment": complete_then_fail,
             "dimension": "not_thought",
-            "detail": "floor:entities",
+            "detail": "floor:documents",
         }
     ]
+
+
+def test_capped_floor_talent_unblocks_segment_completion(segment_journal):
+    day = "20990420"
+    _seed_segment(segment_journal, day, SEGMENT)
+    first_ts = 1_000
+    fail_events = [
+        _fail(
+            SEGMENT,
+            "documents",
+            first_ts + idx * (MIN_SPAN_MS // (CAP - 1)),
+            stream=STREAM,
+        )
+        for idx in range(CAP)
+    ]
+    _write_health(
+        segment_journal,
+        day,
+        "001_segment.jsonl",
+        [
+            _sense_complete(SEGMENT, "active", 10, stream=STREAM),
+            _dispatch(SEGMENT, "documents", 20, stream=STREAM),
+            *fail_events,
+            _skip(
+                SEGMENT,
+                "documents",
+                "capped",
+                first_ts + MIN_SPAN_MS + 1,
+                stream=STREAM,
+            ),
+        ],
+    )
+
+    progress = read_segment_progress(day)
+    segment_progress = progress[(STREAM, SEGMENT)]
+    completion = classify_segment_completion(cluster_segments(day), progress)
+
+    assert segment_progress.capped == frozenset({"documents"})
+    assert segment_fully_thought(segment_progress) == (True, None)
+    assert completion.blockers == []
+    assert completion.capped == 1
+
+
+def test_capped_fold_resets_with_later_terminal_events(segment_journal):
+    day = "20990421"
+    _seed_segment(segment_journal, day, SEGMENT)
+    _write_health(
+        segment_journal,
+        day,
+        "001_segment.jsonl",
+        [
+            _sense_complete(SEGMENT, "active", 10, stream=STREAM),
+            _dispatch(SEGMENT, "documents", 20, stream=STREAM),
+            _skip(SEGMENT, "documents", "capped", 30, stream=STREAM),
+        ],
+    )
+
+    capped_progress = read_segment_progress(day)[(STREAM, SEGMENT)]
+    assert capped_progress.capped == frozenset({"documents"})
+    assert segment_fully_thought(capped_progress) == (True, None)
+
+    _write_health(
+        segment_journal,
+        day,
+        "002_segment.jsonl",
+        [_complete(SEGMENT, "documents", 40, stream=STREAM)],
+    )
+    complete_progress = read_segment_progress(day)[(STREAM, SEGMENT)]
+    assert complete_progress.capped == frozenset()
+    assert "documents" in complete_progress.completed
+    assert segment_fully_thought(complete_progress) == (True, None)
+
+    _write_health(
+        segment_journal,
+        day,
+        "003_segment.jsonl",
+        [_fail(SEGMENT, "documents", 50, stream=STREAM)],
+    )
+    failed_progress = read_segment_progress(day)[(STREAM, SEGMENT)]
+    assert failed_progress.capped == frozenset()
+    assert "documents" not in failed_progress.completed
+    assert segment_fully_thought(failed_progress) == (False, "floor:documents")
 
 
 def test_dropped_empty_modality_segment_is_not_counted(segment_journal):
@@ -685,6 +845,27 @@ def test_dropped_empty_modality_segment_is_not_counted(segment_journal):
     )
 
     assert completion.total == 1
+    assert completion.blockers == []
+
+
+def test_classify_segment_completion_ignores_missing_pre_activation_detection(
+    segment_journal,
+):
+    day = "20990415"
+    _seed_segment(segment_journal, day, SEGMENT)
+    _write_health(
+        segment_journal,
+        day,
+        "001_segment.jsonl",
+        _complete_segment_events(SEGMENT),
+    )
+
+    completion = classify_segment_completion(
+        cluster_segments(day),
+        read_segment_progress(day),
+    )
+
+    assert completion.not_thought == 0
     assert completion.blockers == []
 
 
@@ -760,6 +941,25 @@ def test_daily_marker_written_when_daily_and_segments_complete(
     assert (health / "daily.updated").exists()
 
 
+def test_daily_marker_written_when_floor_talent_capped(segment_journal, monkeypatch):
+    _seed_segment(segment_journal, DAY, SEGMENT)
+    _write_health(segment_journal, DAY, "001_daily.jsonl", [_daily_complete()])
+    _write_health(
+        segment_journal,
+        DAY,
+        "002_segment.jsonl",
+        [
+            _sense_complete(SEGMENT, "active", 10, stream=STREAM),
+            _dispatch(SEGMENT, "documents", 20, stream=STREAM),
+            _skip(SEGMENT, "documents", "capped", 30, stream=STREAM),
+        ],
+    )
+
+    health = _run_daily_gate(segment_journal, DAY, monkeypatch)
+
+    assert (health / "daily.updated").exists()
+
+
 def test_downstream_failure_withholds_until_later_complete(
     segment_journal,
     monkeypatch,
@@ -811,6 +1011,19 @@ def test_not_fully_sensed_segment_withholds(segment_journal, monkeypatch, caplog
     assert "screen=pending" in caplog.text
 
 
+def test_empty_segment_is_not_counted_not_sensed(segment_journal):
+    day = "20990416"
+    _seed_segment(segment_journal, day, SEGMENT, state="empty")
+
+    completion = classify_segment_completion(
+        cluster_segments(day),
+        read_segment_progress(day),
+    )
+
+    assert completion.not_sensed == 0
+    assert all(blocker["dimension"] != "not_sensed" for blocker in completion.blockers)
+
+
 def test_idle_segment_does_not_block_day(segment_journal, monkeypatch):
     _seed_segment(segment_journal, DAY, SEGMENT)
     _write_health(segment_journal, DAY, "001_daily.jsonl", [_daily_complete()])
@@ -824,6 +1037,71 @@ def test_idle_segment_does_not_block_day(segment_journal, monkeypatch):
     health = _run_daily_gate(segment_journal, DAY, monkeypatch)
 
     assert (health / "daily.updated").exists()
+
+
+def test_empty_idle_segment_allows_daily_gate(
+    segment_journal,
+    monkeypatch,
+):
+    day = "20990417"
+    _seed_segment(segment_journal, day, SEGMENT, state="empty")
+    _write_health(segment_journal, day, "001_daily.jsonl", [_daily_complete()])
+    _write_health(
+        segment_journal,
+        day,
+        "002_segment.jsonl",
+        _complete_segment_events(SEGMENT, density="idle"),
+    )
+
+    completion = classify_segment_completion(
+        cluster_segments(day),
+        read_segment_progress(day),
+    )
+    assert completion.blockers == []
+
+    health = _run_daily_gate(segment_journal, day, monkeypatch)
+
+    assert (health / "daily.updated").exists()
+
+
+def test_backfill_unblocks_stuck_empty_day(segment_journal, monkeypatch):
+    day = "20990419"
+    _seed_segment(segment_journal, day, SEGMENT, state="pending")
+    _write_health(segment_journal, day, "001_daily.jsonl", [_daily_complete()])
+    _write_health(
+        segment_journal,
+        day,
+        "002_segment.jsonl",
+        _complete_segment_events(SEGMENT, density="idle"),
+    )
+
+    health = _run_daily_gate(segment_journal, day, monkeypatch)
+    assert not (health / "daily.updated").exists()
+
+    from solstone.think.backfill_processing_records import run_backfill
+
+    run_backfill(day, commit=True)
+
+    health = _run_daily_gate(segment_journal, day, monkeypatch)
+    assert (health / "daily.updated").exists()
+
+
+@pytest.mark.parametrize("state", ["pending", "analyzing"])
+def test_unfinished_sensing_states_still_block_daily_gate(
+    segment_journal,
+    monkeypatch,
+    state,
+):
+    day = "20990418"
+    _seed_segment(segment_journal, day, SEGMENT, state=state)
+    _write_health(segment_journal, day, "001_daily.jsonl", [_daily_complete()])
+
+    segments = cluster_segments(day)
+    assert segments[0]["data_state"] == {"screen": state}
+
+    health = _run_daily_gate(segment_journal, day, monkeypatch)
+
+    assert not (health / "daily.updated").exists()
 
 
 def test_dropped_segment_directory_is_not_required(segment_journal, monkeypatch):
@@ -860,7 +1138,6 @@ def test_all_skip_rerun_writes_marker_and_leaves_updated_days(
         "002_segment.jsonl",
         _complete_segment_events(SEGMENT)
         + [
-            _skip(SEGMENT, "entities", "already_complete", 30),
             _skip(SEGMENT, "documents", "already_complete", 31),
         ],
     )

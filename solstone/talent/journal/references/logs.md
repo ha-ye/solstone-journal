@@ -31,7 +31,7 @@ The `logs/` directory within each facet records facet-scoped actions. Logs are o
 {
   "timestamp": "2025-12-16T07:33:05.135587+00:00",
   "source": "tool",
-  "actor": "entities:entities",
+  "actor": "entities:entities_review",
   "action": "entity_attach",
   "params": {
     "type": "Person",

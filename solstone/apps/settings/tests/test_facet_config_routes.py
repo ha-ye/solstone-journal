@@ -7,6 +7,7 @@ import json
 
 from solstone.apps.settings import routes as settings_routes
 from solstone.convey import create_app
+from solstone.convey.icons import _lucide_tags
 from solstone.think import facets
 
 
@@ -88,6 +89,26 @@ def test_create_facet_route_maps_owner_value_error(settings_env, monkeypatch):
     assert _reason_code(response) == "invalid_request_value"
 
 
+def test_create_facet_route_with_icon_persists_and_returns_config(settings_env):
+    journal, client = _settings_client(settings_env)
+    payload = {
+        "title": "Treasury",
+        "emoji": "\U0001fa99",
+        "color": "#007bff",
+        "icon": "coins",
+    }
+
+    response = client.post("/app/settings/api/facet", json=payload)
+
+    assert response.status_code == 201
+    body = response.get_json()
+    assert body["config"]["icon"] == "coins"
+    facet_payload = json.loads(
+        (journal / "facets" / "treasury" / "facet.json").read_text(encoding="utf-8")
+    )
+    assert facet_payload["icon"] == "coins"
+
+
 def test_update_facet_route_updates_field_and_returns_config_without_path(settings_env):
     journal, client = _settings_client(settings_env)
     slug = facets.create_facet("Research", emoji="R", color="#667eea")
@@ -113,6 +134,79 @@ def test_update_facet_route_updates_field_and_returns_config_without_path(settin
     assert (journal / "facets" / slug / "facet.json").read_text(
         encoding="utf-8"
     ) == _facet_json_bytes(expected_file)
+
+
+def test_update_facet_route_icon_round_trip(settings_env):
+    _journal, client = _settings_client(settings_env)
+    slug = facets.create_facet("Research", emoji="📚", color="#667eea")
+
+    response = client.put(
+        f"/app/settings/api/facet/{slug}",
+        json={"icon": "brain"},
+    )
+    reload_response = client.get(f"/app/settings/api/facet/{slug}")
+
+    assert response.status_code == 200
+    assert response.get_json()["config"]["icon"] == "brain"
+    assert reload_response.status_code == 200
+    assert reload_response.get_json()["config"]["icon"] == "brain"
+
+
+def test_update_facet_route_invalid_icon_maps_value_error(settings_env):
+    journal, client = _settings_client(settings_env)
+    slug = facets.create_facet("Stable", emoji="S", color="#667eea")
+    facet_path = journal / "facets" / slug / "facet.json"
+    before = facet_path.read_text(encoding="utf-8")
+
+    response = client.put(
+        f"/app/settings/api/facet/{slug}",
+        json={"title": "Changed", "icon": "bogus"},
+    )
+
+    assert response.status_code == 400
+    assert _reason_code(response) == "invalid_request_value"
+    assert "open the picker or see lucide.dev/icons" in response.get_json()["detail"]
+    assert facet_path.read_text(encoding="utf-8") == before
+
+
+def test_update_facet_route_icon_clear_removes_key(settings_env):
+    journal, client = _settings_client(settings_env)
+    slug = facets.create_facet("Clearable", emoji="C", color="#667eea", icon="brain")
+
+    response = client.put(
+        f"/app/settings/api/facet/{slug}",
+        json={"icon": ""},
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert "icon" not in body["config"]
+    facet_payload = json.loads(
+        (journal / "facets" / slug / "facet.json").read_text(encoding="utf-8")
+    )
+    assert "icon" not in facet_payload
+
+
+def test_icons_route_search_and_limit(settings_env):
+    _journal, client = _settings_client(settings_env)
+    tags = _lucide_tags()
+
+    lock = client.get("/app/settings/api/icons?q=lock")
+    default = client.get("/app/settings/api/icons")
+    limited = client.get("/app/settings/api/icons?limit=5")
+
+    assert lock.status_code == 200
+    lock_icons = lock.get_json()["icons"]
+    assert lock_icons
+    assert all(
+        "lock" in icon["name"]
+        or any("lock" in tag for tag in tags.get(icon["name"], []))
+        for icon in lock_icons
+    )
+    assert default.status_code == 200
+    assert len(default.get_json()["icons"]) <= 80
+    assert limited.status_code == 200
+    assert len(limited.get_json()["icons"]) <= 5
 
 
 def test_update_facet_route_muted_only_regression(settings_env, monkeypatch):

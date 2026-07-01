@@ -1337,6 +1337,12 @@ def test_run_cogitate_passes_outbound_approval_to_policy(
     ("name", "expected_access_tier", "expected_agent_tools", "expected_default_tools"),
     [
         (
+            "partner",
+            "synthesis",
+            {"sol", "emit_final"},
+            [],
+        ),
+        (
             "support:support",
             "outbound",
             {"sol"},
@@ -1409,8 +1415,8 @@ def test_schedule_gated_cogitate_prompts_use_emit_final():
         if config.get("schedule") in {"daily", "weekly", "activity"}
         and "output" not in config
     }
-    # steward and facet_newsletter are generate talents now, not cogitate prompts.
-    assert len(converted) == 3
+    # Daily review talents are generate hooks now; partner remains schedule-gated cogitate.
+    assert set(converted) == {"partner"}
 
     for name, config in converted.items():
         body = Path(config["path"]).read_text(encoding="utf-8")

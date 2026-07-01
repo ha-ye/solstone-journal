@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import json
 import logging
 import queue
 import sys
@@ -18,8 +19,10 @@ from typing import NamedTuple, Protocol, cast
 from urllib.parse import urlsplit
 
 from solstone.think.link.bundle import load_client_identity
+from solstone.think.link.client import RECOMMENDED_CHUNK, BodySource
 from solstone.think.link.dialer import (
     TunnelClient,
+    TunnelLifecycleError,
     TunnelRequestError,
     TunnelResponseHead,
 )
@@ -29,6 +32,9 @@ from solstone.think.link.paths import relay_url
 LOG = logging.getLogger(__name__)
 LOOPBACK_HOST = "127.0.0.1"
 DEFAULT_PORT = 5015
+RESPONSE_QUEUE_MAX_ITEMS = 8
+RESPONSE_HEAD_TIMEOUT_SECONDS = 30.0
+STATUS_PATH = "/_solstone/link/status"
 REQUEST_HOP_BY_HOP = {
     "connection",
     "keep-alive",
@@ -57,9 +63,11 @@ class _ProxyTunnel(Protocol):
         path: str,
         *,
         headers: dict[str, str] | None = None,
-        body: bytes = b"",
+        body: bytes | BodySource = b"",
         chunks: queue.Queue[TunnelResponseHead | bytes | Exception | None],
     ) -> Future[None]: ...
+
+    def status(self) -> dict[str, object]: ...
 
 
 class _BundleSelection(NamedTuple):
@@ -104,6 +112,7 @@ def main(args: argparse.Namespace) -> int:
         None if getattr(args, "direct", False) else _resolve_relay_url(args.relay_url)
     )
     tunnel = TunnelClient(identity, relay)
+    tunnel.start()
     try:
         server = _build_server(args.port, tunnel)
     except OSError as exc:
@@ -228,30 +237,42 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         self._handle()
 
     def _handle(self) -> None:
-        body = self._read_body()
+        if _origin_path(self.path) == STATUS_PATH:
+            self._send_status()
+            return
+
+        body = self._read_body_source()
         if body is None:
             return
 
         chunks: queue.Queue[TunnelResponseHead | bytes | Exception | None] = (
-            queue.Queue()
+            queue.Queue(maxsize=RESPONSE_QUEUE_MAX_ITEMS)
         )
         server = cast(_ProxyServer, self.server)
         future = server.tunnel.proxy_stream_request(
             self.command,
             _origin_path(self.path),
-            headers=_forward_request_headers(self.headers.items(), len(body)),
+            headers=_forward_request_headers(self.headers.items(), body.length),
             body=body,
             chunks=chunks,
         )
 
-        first = chunks.get()
+        try:
+            first = chunks.get(timeout=RESPONSE_HEAD_TIMEOUT_SECONDS)
+        except queue.Empty:
+            future.cancel()
+            self._send_gateway_error(TimeoutError("response head timed out"))
+            return
+
         if isinstance(first, Exception):
             self._send_gateway_error(first)
             return
         if first is None:
+            future.cancel()
             self._send_gateway_error(RuntimeError("empty response from link tunnel"))
             return
         if not isinstance(first, TunnelResponseHead):
+            future.cancel()
             self._send_gateway_error(RuntimeError("bad response from link tunnel"))
             return
 
@@ -268,10 +289,12 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             if item is None:
                 return
             if isinstance(item, Exception):
+                future.cancel()
                 LOG.warning("link proxy stream failed after response head: %s", item)
                 self.close_connection = True
                 return
             if not isinstance(item, bytes):
+                future.cancel()
                 LOG.warning("link proxy stream returned unexpected item: %r", item)
                 self.close_connection = True
                 return
@@ -280,38 +303,92 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             try:
                 self.wfile.write(item)
                 self.wfile.flush()
-            except (BrokenPipeError, ConnectionError):
+            except (BrokenPipeError, ConnectionError, OSError):
                 future.cancel()
                 self.close_connection = True
                 return
 
-    def _read_body(self) -> bytes | None:
+    def _read_body_source(self) -> BodySource | None:
         if self.headers.get("Transfer-Encoding") is not None:
-            self.send_error(400, "Transfer-Encoding is not supported")
+            LOG.warning("link proxy rejected request with Transfer-Encoding")
+            self._send_bad_request("Transfer-Encoding is not supported")
             self.close_connection = True
             return None
 
         content_length = self.headers.get("Content-Length")
         if content_length is None:
-            return b""
+            return BodySource(0, ())
         try:
             length = int(content_length)
         except ValueError:
-            self.send_error(400, "Bad Content-Length")
+            self._send_bad_request("Bad Content-Length")
             self.close_connection = True
             return None
         if length < 0:
-            self.send_error(400, "Bad Content-Length")
+            self._send_bad_request("Bad Content-Length")
             self.close_connection = True
             return None
-        return self.rfile.read(length)
+        return BodySource(length, self._body_chunks(length))
+
+    def _body_chunks(self, length: int) -> Iterable[bytes]:
+        remaining = length
+        while remaining > 0:
+            chunk = self.rfile.read(min(RECOMMENDED_CHUNK, remaining))
+            if not chunk:
+                raise ConnectionError("client closed request body early")
+            remaining -= len(chunk)
+            yield chunk
+
+    def _send_bad_request(self, message: str) -> None:
+        try:
+            self.send_error(400, message)
+        except (BrokenPipeError, ConnectionError, OSError) as exc:
+            LOG.debug("link proxy could not send bad request response: %s", exc)
 
     def _send_gateway_error(self, exc: Exception) -> None:
+        if isinstance(exc, TunnelLifecycleError):
+            self._send_lifecycle_error(exc)
+            return
         if isinstance(exc, TunnelRequestError):
             detail = exc.reason
         else:
             detail = type(exc).__name__
-        self.send_error(502, f"Link tunnel failed: {detail}")
+        try:
+            self.send_error(502, f"Link tunnel failed: {detail}")
+        except (BrokenPipeError, ConnectionError, OSError) as send_exc:
+            LOG.debug("link proxy could not send gateway error response: %s", send_exc)
+        self.close_connection = True
+
+    def _send_lifecycle_error(self, exc: TunnelLifecycleError) -> None:
+        body = json.dumps(exc.as_dict(), sort_keys=True).encode("utf-8")
+        try:
+            self.send_response_only(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionError, OSError) as send_exc:
+            LOG.debug(
+                "link proxy could not send lifecycle error response: %s", send_exc
+            )
+        self.close_connection = True
+
+    def _send_status(self) -> None:
+        server = cast(_ProxyServer, self.server)
+        status = server.tunnel.status()
+        body = json.dumps(status, sort_keys=True).encode("utf-8")
+        try:
+            self.send_response_only(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionError, OSError) as exc:
+            LOG.debug("link proxy could not send status response: %s", exc)
         self.close_connection = True
 
     def log_message(self, fmt: str, *args: object) -> None:

@@ -18,7 +18,7 @@ from typing import Any, Iterator
 
 from solstone.think.entities.journal import load_all_journal_entities
 from solstone.think.entities.relationships import entity_memory_path
-from solstone.think.journal_io import atomic_replace, hold_lock
+from solstone.think.journal_io import LockTimeout, atomic_replace, hold_lock
 from solstone.think.utils import get_journal, now_ms
 
 
@@ -231,6 +231,140 @@ def add_observation(
         except ValueError:
             raise  # Logical errors — don't retry
         except OSError as exc:
+            last_error = exc
+            if attempt < max_retries - 1:
+                time.sleep(random.uniform(0.05, 0.3) * (attempt + 1))
+
+    raise last_error  # type: ignore[misc]
+
+
+def _operation_counts() -> dict[str, int]:
+    return {"update": 0, "add": 0, "drop": 0, "keep": 0, "skipped": 0}
+
+
+def _target_index_in_snapshot(index: Any, snapshot: list[dict[str, Any]]) -> bool:
+    return (
+        isinstance(index, int)
+        and not isinstance(index, bool)
+        and 0 <= index < len(snapshot)
+    )
+
+
+def _target_quote_matches(observation: dict[str, Any], target_quote: Any) -> bool:
+    if not isinstance(target_quote, str) or not target_quote.strip():
+        return True
+    content = str(observation.get("content") or "")
+    return target_quote.strip().casefold() in content.casefold()
+
+
+def _new_observation(content: str, source_day: str | None) -> dict[str, Any]:
+    observation: dict[str, Any] = {
+        "content": content,
+        "observed_at": now_ms(),
+    }
+    if source_day is not None:
+        observation["source_day"] = source_day
+    return observation
+
+
+def _apply_observation_ops(
+    snapshot: list[dict[str, Any]],
+    ops: list[dict],
+    source_day: str | None,
+) -> tuple[list[dict[str, Any]], dict[str, int], bool]:
+    counts = _operation_counts()
+    updates: dict[int, dict[str, Any]] = {}
+    drops: set[int] = set()
+    additions: list[dict[str, Any]] = []
+    changed = False
+
+    for op in ops:
+        if not isinstance(op, dict):
+            counts["skipped"] += 1
+            continue
+
+        action = op.get("op")
+        if action == "add":
+            content = op.get("content")
+            if not isinstance(content, str) or not content.strip():
+                counts["skipped"] += 1
+                continue
+            additions.append(_new_observation(content.strip(), source_day))
+            counts["add"] += 1
+            changed = True
+            continue
+
+        if action not in {"update", "drop", "keep"}:
+            counts["skipped"] += 1
+            continue
+
+        target_index = op.get("target_index")
+        if not _target_index_in_snapshot(target_index, snapshot):
+            counts["skipped"] += 1
+            continue
+
+        if not _target_quote_matches(snapshot[target_index], op.get("target_quote")):
+            counts["skipped"] += 1
+            continue
+
+        if action == "keep":
+            counts["keep"] += 1
+            continue
+
+        if action == "drop":
+            drops.add(target_index)
+            updates.pop(target_index, None)
+            counts["drop"] += 1
+            changed = True
+            continue
+
+        content = op.get("content")
+        if not isinstance(content, str) or not content.strip():
+            counts["skipped"] += 1
+            continue
+        updates[target_index] = _new_observation(content.strip(), source_day)
+        drops.discard(target_index)
+        counts["update"] += 1
+        changed = True
+
+    if not changed:
+        return snapshot, counts, False
+
+    observations: list[dict[str, Any]] = []
+    for index, observation in enumerate(snapshot):
+        if index in drops:
+            continue
+        if index in updates:
+            observations.append(updates[index])
+        else:
+            observations.append(observation)
+    observations.extend(additions)
+
+    return observations, counts, True
+
+
+def record_observation_ops(
+    facet: str,
+    name: str,
+    ops: list[dict],
+    source_day: str | None = None,
+    max_retries: int = 3,
+) -> dict[str, int]:
+    """Apply observation update/drop/add/keep operations under a file lock."""
+    path = observations_file_path(facet, name)
+
+    last_error: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            with hold_lock(path):
+                snapshot = load_observations(facet, name)
+                observations, counts, changed = _apply_observation_ops(
+                    snapshot, ops, source_day
+                )
+                if changed:
+                    save_observations(facet, name, observations)
+                return counts
+        except (LockTimeout, OSError) as exc:
             last_error = exc
             if attempt < max_retries - 1:
                 time.sleep(random.uniform(0.05, 0.3) * (attempt + 1))

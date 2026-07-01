@@ -218,6 +218,11 @@ FORMATTERS: dict[str, tuple[str, str, bool]] = {
     "*/*/*/screen.jsonl": ("solstone.observe.screen", "format_screen", False),
     "*/*/*/*_screen.jsonl": ("solstone.observe.screen", "format_screen", False),
     "*/chat/*/chat.jsonl": ("solstone.think.chat_formatter", "format_chat", True),
+    "*/*/*/talents/sense.json": (
+        "solstone.think.entities.formatting",
+        "format_sense",
+        True,
+    ),
     "*/talents/*.jsonl": (
         "solstone.think.day_accumulator",
         "format_day_accumulator",

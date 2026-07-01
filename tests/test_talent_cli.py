@@ -291,12 +291,12 @@ def test_show_prompt_context_segment_validation(capsys):
     assert "segment-scheduled" in output.lower()
 
 
-def test_show_prompt_context_multi_facet_validation(capsys):
+def test_show_prompt_context_entities_review_multi_facet_validation(capsys):
     """Multi-facet prompts require --facet."""
     from solstone.think.talent_cli import show_prompt_context
 
     with pytest.raises(SystemExit):
-        show_prompt_context("entities:entities")
+        show_prompt_context("entities:entities_review")
 
     output = capsys.readouterr().err
     assert "multi-facet" in output.lower()

@@ -9,6 +9,7 @@ Tests cover:
 - Generators without hooks
 """
 
+import asyncio
 import importlib
 import io
 import json
@@ -123,6 +124,72 @@ def test_generate_output_ndjson(tmp_path, monkeypatch):
     finish_events = [e for e in events if e["event"] == "finish"]
     assert len(finish_events) == 1
     assert finish_events[0]["result"] == MOCK_RESULT["text"]
+
+
+def test_execute_generate_blank_expected_output_emits_terminal_no_output(
+    tmp_path, monkeypatch
+):
+    """Blank provider output for an output-path talent emits error, not finish."""
+    from solstone.think import models
+    from solstone.think.talents import _execute_generate
+
+    output_path = tmp_path / "out.md"
+    output_path.write_text("old output", encoding="utf-8")
+    monkeypatch.setattr(
+        models,
+        "generate_with_result",
+        lambda **kwargs: {"text": "   ", "usage": {"input_tokens": 1}},
+    )
+    events: list[dict] = []
+
+    asyncio.run(
+        _execute_generate(
+            {
+                "provider": "google",
+                "model": "gemini-2.0-flash",
+                "name": "blank_gen",
+                "prompt": "x",
+                "output": "md",
+                "output_path": str(output_path),
+            },
+            events.append,
+        )
+    )
+
+    assert [event["event"] for event in events] == ["error"]
+    assert events[0]["reason_code"] == "no_output"
+    assert events[0]["terminal"] is True
+    assert output_path.read_text(encoding="utf-8") == "old output"
+
+
+def test_execute_generate_blank_without_output_path_still_finishes(
+    tmp_path, monkeypatch
+):
+    """Non-output-path generate runs preserve the old blank-finish behavior."""
+    from solstone.think import models
+    from solstone.think.talents import _execute_generate
+
+    monkeypatch.setattr(
+        models,
+        "generate_with_result",
+        lambda **kwargs: {"text": "", "usage": {"input_tokens": 1}},
+    )
+    events: list[dict] = []
+
+    asyncio.run(
+        _execute_generate(
+            {
+                "provider": "google",
+                "model": "gemini-2.0-flash",
+                "name": "blank_no_output_path",
+                "prompt": "x",
+            },
+            events.append,
+        )
+    )
+
+    assert [event["event"] for event in events] == ["finish"]
+    assert events[0]["result"] == ""
 
 
 def test_dispatcher_passes_json_schema(tmp_path, monkeypatch):

@@ -73,6 +73,16 @@ from solstone.apps.speakers.encoder_config import (
     OVERLAP_DETECTOR_ID,
     OVERLAP_DETECTOR_SHA256,
 )
+from solstone.observe.processing_record import (
+    HANDLER_TRANSCRIBE,
+    REASON_CORRUPT_INPUT,
+    REASON_NO_DECODABLE_AUDIO,
+    REASON_OK,
+    STATE_ANALYZED,
+    STATE_EMPTY,
+    STATE_FAILED,
+    build_processing_record,
+)
 from solstone.observe.transcribe import (
     BACKEND_REGISTRY,
     get_backend,
@@ -89,7 +99,12 @@ from solstone.observe.transcribe.whisper import (
     DEFAULT_DEVICE,
     DEFAULT_MODEL,
 )
-from solstone.observe.utils import SAMPLE_RATE, get_segment_key, load_audio
+from solstone.observe.utils import (
+    SAMPLE_RATE,
+    AudioDecodeError,
+    get_segment_key,
+    load_audio,
+)
 from solstone.think.callosum import callosum_send
 from solstone.think.journal_io import write_text
 from solstone.think.journal_io.npz import write_npz
@@ -465,6 +480,7 @@ def _statements_to_jsonl(
     *,
     overlap_fraction: float | None = None,
     overlap_detector: str | None = None,
+    processing_record: dict | None = None,
 ) -> list[str]:
     """Convert statements to JSONL lines.
 
@@ -528,6 +544,9 @@ def _statements_to_jsonl(
         for key, value in segment_meta.items():
             metadata[key] = value
 
+    if processing_record is not None:
+        metadata["_solstone_processing"] = processing_record
+
     lines = [json.dumps(metadata)]
 
     # Get enriched statements list (positional matching)
@@ -569,6 +588,58 @@ def _statements_to_jsonl(
         lines.append(json.dumps(entry))
 
     return lines
+
+
+def _write_empty_processing_jsonl(
+    raw_path: Path,
+    jsonl_path: Path,
+    *,
+    model_info: dict,
+    observer: str | None,
+    vad_result: VadResult | None,
+    segment_meta: dict | None,
+    backend: str | None,
+) -> None:
+    record = build_processing_record(
+        state=STATE_EMPTY,
+        reason_code=REASON_NO_DECODABLE_AUDIO,
+        handler=HANDLER_TRANSCRIBE,
+        input_size=raw_path.stat().st_size,
+    )
+    lines = _statements_to_jsonl(
+        [],
+        f"{raw_path.stem}{raw_path.suffix}",
+        datetime.datetime.min,
+        model_info,
+        observer=observer,
+        vad_result=vad_result,
+        segment_meta=segment_meta,
+        backend=backend,
+        processing_record=record,
+    )
+    write_text(jsonl_path, "\n".join(lines) + "\n")
+
+
+def _write_failed_processing_jsonl(
+    raw_path: Path,
+    jsonl_path: Path,
+    *,
+    reason_code: str,
+) -> None:
+    record = build_processing_record(
+        state=STATE_FAILED,
+        reason_code=reason_code,
+        handler=HANDLER_TRANSCRIBE,
+        input_size=raw_path.stat().st_size,
+    )
+    lines = _statements_to_jsonl(
+        [],
+        f"{raw_path.stem}{raw_path.suffix}",
+        datetime.datetime.min,
+        {},
+        processing_record=record,
+    )
+    write_text(jsonl_path, "\n".join(lines) + "\n")
 
 
 def process_audio(
@@ -676,6 +747,15 @@ def process_audio(
             )
             if preserve_all:
                 event["outcome"] = "preserved"
+                _write_empty_processing_jsonl(
+                    raw_path,
+                    jsonl_path,
+                    model_info=model_info,
+                    observer=observer,
+                    vad_result=vad_result,
+                    segment_meta=segment_meta,
+                    backend=resolved_backend,
+                )
                 logging.info(
                     f"No speech detected in {raw_path}, preserving file "
                     f"(preserve_all=true, VAD: {vad_result.speech_duration:.1f}s "
@@ -776,6 +856,12 @@ def process_audio(
 
         # Convert to JSONL format (now with original timestamps)
         raw_filename = f"{raw_path.stem}{raw_path.suffix}"
+        processing_record = build_processing_record(
+            state=STATE_ANALYZED,
+            reason_code=REASON_OK,
+            handler=HANDLER_TRANSCRIBE,
+            input_size=raw_path.stat().st_size,
+        )
         jsonl_lines = _statements_to_jsonl(
             statements,
             raw_filename,
@@ -789,6 +875,7 @@ def process_audio(
             resolved_backend,
             overlap_fraction=overlap_fraction_value,
             overlap_detector=OVERLAP_DETECTOR_ID,
+            processing_record=processing_record,
         )
 
         # Write JSONL
@@ -872,10 +959,47 @@ def _process_one(
 
     logging.info(f"Processing audio: {audio_path}")
 
+    jsonl_path = _get_jsonl_path(audio_path)
+    if not getattr(args, "redo", False) and jsonl_path.exists():
+        logging.info(f"Already processed: {audio_path}")
+        return
+
     from solstone.observe.vad import reduce_audio, run_vad
 
     # Load audio once - handles M4A multi-stream mixing
-    audio_buffer = load_audio(audio_path)
+    try:
+        audio_buffer = load_audio(audio_path)
+    except AudioDecodeError as e:
+        logging.error("Failed to decode %s: %s", audio_path, e)
+        _write_failed_processing_jsonl(
+            audio_path,
+            jsonl_path,
+            reason_code=REASON_CORRUPT_INPUT,
+        )
+        try:
+            journal_path = Path(get_journal())
+            try:
+                rel_input = journal_relative_path(journal_path, audio_path)
+            except ValueError:
+                rel_input = audio_path
+            event = {
+                "input": str(rel_input),
+                "outcome": "failed",
+                "error": f"{type(e).__name__}: {e}",
+            }
+            segment = get_segment_key(audio_path)
+            day = day_from_path(audio_path)
+            observer = os.getenv("OBSERVER_NAME")
+            if day:
+                event["day"] = day
+            if segment:
+                event["segment"] = segment
+            if observer:
+                event["observer"] = observer
+            callosum_send("observe", "transcribed", **event)
+        except Exception:
+            logging.exception("Failed to emit decode failure event")
+        return
 
     # Stage 1: Run VAD to detect speech (lightweight, before loading STT model)
     vad_result = run_vad(audio_buffer, min_speech_seconds=min_speech_seconds)
@@ -888,6 +1012,15 @@ def _process_one(
 
         if preserve_all:
             event["outcome"] = "preserved"
+            _write_empty_processing_jsonl(
+                audio_path,
+                _get_jsonl_path(audio_path),
+                model_info={},
+                observer=observer,
+                vad_result=vad_result,
+                segment_meta=None,
+                backend=None,
+            )
             logging.info(
                 f"Insufficient speech in {audio_path}, preserving file "
                 f"(preserve_all=true, VAD: {vad_result.speech_duration:.1f}s "

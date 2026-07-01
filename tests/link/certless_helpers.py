@@ -14,7 +14,7 @@ import pytest
 
 from solstone.convey.secure_listener.identity import ConveyIdentity
 from solstone.convey.secure_listener.wsgi import DispatchResult, dispatch_stream
-from solstone.think.link.client import _http_request_bytes, _parse_http_response
+from solstone.think.link.client import _http_head_bytes, _parse_http_response
 
 
 @dataclass(frozen=True)
@@ -33,6 +33,9 @@ class FakeStreamWriter:
         self.data = bytearray()
         self.closed = False
         self.reset_called = False
+        self.reset_reason: int | None = None
+        self.reset_context: str | None = None
+        self.drain_context: str | None = None
 
     async def write(self, data: bytes) -> None:
         self.data.extend(data)
@@ -40,9 +43,14 @@ class FakeStreamWriter:
     async def close(self) -> None:
         self.closed = True
 
-    async def reset(self) -> None:
+    async def reset(self, reason: int, context: str) -> None:
         self.reset_called = True
+        self.reset_reason = reason
+        self.reset_context = context
         self.closed = True
+
+    def begin_drain(self, context: str) -> None:
+        self.drain_context = context
 
 
 def make_convey_app(
@@ -117,7 +125,15 @@ async def dispatch_request(
     body: bytes = b"",
     headers: dict[str, str] | None = None,
 ) -> DispatchResponse:
-    request_bytes = _http_request_bytes(method, path, headers=headers, body=body)
+    request_bytes = (
+        _http_head_bytes(
+            method,
+            path,
+            headers=headers,
+            content_length=len(body),
+        )
+        + body
+    )
     reader = asyncio.StreamReader()
     reader.feed_data(request_bytes)
     reader.feed_eof()

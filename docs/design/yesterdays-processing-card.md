@@ -386,7 +386,7 @@ All three gate items resolved. Proceed to `implement` stage.
 - **Q3 knowledge-graph freshness:** Use the **relaxed rule**: fresh when `knowledge_graph.md` exists and `st_mtime >= start_of_yesterday_local`. Overnight-after-midnight completions count. Use local time boundaries. Don't use birth/ctime.
 - **First-week framing copy (verbatim):** The exact copy IS in the scope (top-level note) and in the approved CPO spec. Use this text, unchanged, when `journal_age_days <= 7` and `mode != "sparse"`:
 
-  > Most of what I learn becomes useful in the third or fourth week, when I've seen enough patterns to surface them. For now, here's what's already happening:
+  > Most of what I learn becomes useful after about a week, when I've seen enough patterns to surface them. For now, here's what's already happening:
 
   Render as one `<p class="pulse-yesterday-framing">` at the top of the expanded body. Omit entirely in sparse mode.
 

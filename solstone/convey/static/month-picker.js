@@ -26,6 +26,7 @@ window.MonthPicker = (function() {
 
   // Cache: {YYYYMM: {data, error, facet}}
   const cache = {};
+  const inflight = {};   // `${ym}|${facet}` -> Promise<monthState>, cleared on settle
   const providers = {};
 
   // Constants
@@ -163,29 +164,41 @@ window.MonthPicker = (function() {
     }
   }
 
-  async function getMonthData(ym, options = {}) {
+  async function getMonthData(ym) {
     const facet = window.selectedFacet || null;
-    const cacheKey = ym;
-    const cached = cache[cacheKey];
+    const cached = cache[ym];
 
-    if (!options.refresh && cached?.facet === facet && !cached.error) {
+    if (cached?.facet === facet && !cached.error) {
       return cached;
     }
 
-    const result = await fetchMonthData(ym, facet);
-    if (result.error) {
-      logMonthStatsError(result.error);
-      const staleData = cached?.facet === facet ? cached.data : null;
-      cache[cacheKey] = {
-        data: staleData || result.data || null,
-        error: result.error,
-        facet
-      };
-      return cache[cacheKey];
+    const key = `${ym}|${facet ?? ''}`;
+    if (inflight[key]) {
+      return inflight[key];
     }
 
-    cache[cacheKey] = { data: result.data || {}, error: null, facet };
-    return cache[cacheKey];
+    const promise = (async () => {
+      const result = await fetchMonthData(ym, facet);
+      if (result.error) {
+        logMonthStatsError(result.error);
+        const staleData = cache[ym]?.facet === facet ? cache[ym].data : null;
+        cache[ym] = {
+          data: staleData || result.data || null,
+          error: result.error,
+          facet
+        };
+        return cache[ym];
+      }
+      cache[ym] = { data: result.data || {}, error: null, facet };
+      return cache[ym];
+    })();
+
+    inflight[key] = promise;
+    try {
+      return await promise;
+    } finally {
+      delete inflight[key];
+    }
   }
 
   function preloadAdjacentMonths(ym) {
@@ -323,7 +336,7 @@ window.MonthPicker = (function() {
 
   async function showMonth(ym) {
     currentMonth = ym;
-    await getMonthData(ym, { refresh: true });
+    await getMonthData(ym);
     render();
     preloadAdjacentMonths(ym);
   }

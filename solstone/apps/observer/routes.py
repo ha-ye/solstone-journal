@@ -77,12 +77,17 @@ from .share_delete import DELETABLE_SOURCE_STREAMS, delete_source_stream
 from .utils import (
     ObserverRegistry,
     append_history_record,
+    clear_ingest_rejection,
+    find_oldest_unrevoked_by_name,
     find_segment_by_sha256,
+    get_active_ingest_rejection,
     get_hist_dir,
     get_observers_dir,
     list_observers,
     load_history,
     observer_filename_prefix,
+    record_ingest_rejection,
+    record_status_beacon,
     resolve_observer_identity,
     revoke_observer_record,
     save_observer,
@@ -251,27 +256,43 @@ def _classify_observer_freshness(
 
 def _serialize_observer(observer: dict[str, Any], current_now: int) -> dict[str, Any]:
     """Serialize a registered observer for management API consumers."""
+    revoked = observer.get("revoked", False)
+    enabled = observer.get("enabled", True)
+    rejection = get_active_ingest_rejection(observer)
+    failing = bool(rejection) and not revoked and enabled
     freshness = _classify_observer_freshness(
         observer.get("last_seen"),
-        observer.get("revoked", False),
+        revoked,
         current_now,
     )
     key_prefix = observer_filename_prefix(observer)
-    return {
+    data = {
         "prefix": key_prefix,
         "name": observer.get("name", ""),
         "created_at": observer.get("created_at", 0),
         "last_seen": observer.get("last_seen"),
         "last_segment": observer.get("last_segment"),
-        "enabled": observer.get("enabled", True),
-        "revoked": observer.get("revoked", False),
+        "enabled": enabled,
+        "revoked": revoked,
         "revoked_at": observer.get("revoked_at"),
         "stats": observer.get("stats", {}),
         "live": convey_bridge.subscription_count(key_prefix) > 0,
         "last_chat_request_at": convey_bridge.last_chat_request_at(key_prefix),
         **freshness,
         "label": OBSERVER_STATE_LABELS[str(freshness["state"])],
+        "failing": failing,
     }
+    if failing:
+        data["ingest_rejection"] = {
+            "reason_code": rejection.get("reason_code"),
+            "active_count": rejection.get("active_count"),
+            "first_ts": rejection.get("first_ts"),
+            "latest_ts": rejection.get("latest_ts"),
+            "summary": rejection.get("summary"),
+            "stream": rejection.get("stream"),
+            "version": rejection.get("version"),
+        }
+    return data
 
 
 # === Management API (session-protected) ===
@@ -426,18 +447,7 @@ def api_create() -> Any:
         params={"name": name, "key_prefix": key[:8]},
     )
 
-    # Build ingest URL
-    ingest_url = "/app/observer/ingest"
-
-    return jsonify(
-        {
-            "key": key,
-            "prefix": key[:8],
-            "name": name,
-            "ingest_url": ingest_url,
-            "protocol_version": protocol.OBSERVER_PROTOCOL_VERSION,
-        }
-    )
+    return jsonify(_register_descriptor(observer_data))
 
 
 _REGISTER_REQUIRED_FIELDS = ("platform", "hostname", "stream_type", "version")
@@ -467,6 +477,18 @@ def _is_authorized_pl_identity() -> bool:
 
 def _is_trusted_register_caller() -> bool:
     return _is_trusted_localhost() or _is_authorized_pl_identity()
+
+
+def _register_descriptor(record: dict) -> dict:
+    """Build the pinned register/ingest response body from a saved record."""
+    key = record["key"]
+    return {
+        "key": key,
+        "prefix": key[:8],
+        "name": record["name"],
+        "ingest_url": "/app/observer/ingest",
+        "protocol_version": protocol.OBSERVER_PROTOCOL_VERSION,
+    }
 
 
 @observer_bp.route("/register", methods=["POST"])
@@ -503,6 +525,27 @@ def register() -> Any:
     except ValueError as exc:
         return error_response(INVALID_SEGMENT_OR_STREAM, detail=str(exc))
 
+    existing = find_oldest_unrevoked_by_name(stream)
+    if existing is not None:
+        # Idempotent re-register: reuse the prior key/record, refresh the
+        # mutable descriptor fields, preserve key/created_at/stats/last_seen.
+        existing["platform"] = data["platform"].strip()
+        existing["stream_type"] = stream_type
+        existing["label"] = data.get("label")
+        existing["version"] = data["version"].strip()
+        if not save_observer(existing):
+            return error_response(
+                SETTINGS_OPERATION_FAILED,
+                detail="Failed to save observer",
+            )
+        log_app_action(
+            app="observer",
+            facet=None,
+            action="observer_register_reused",
+            params={"name": stream, "key_prefix": existing["key"][:8]},
+        )
+        return jsonify(_register_descriptor(existing))
+
     key = _generate_key()
     observer_data = {
         "key": key,
@@ -536,15 +579,7 @@ def register() -> Any:
         params={"name": stream, "key_prefix": key[:8]},
     )
 
-    return jsonify(
-        {
-            "key": key,
-            "prefix": key[:8],
-            "name": stream,
-            "ingest_url": "/app/observer/ingest",
-            "protocol_version": protocol.OBSERVER_PROTOCOL_VERSION,
-        }
-    )
+    return jsonify(_register_descriptor(observer_data))
 
 
 @observer_bp.route("/api/<key_prefix>", methods=["DELETE"])
@@ -805,6 +840,20 @@ def _process_ingest_files(
         day_dir = day_path(day)
         day_dir.mkdir(parents=True, exist_ok=True)
         failed_dir = _save_to_failed(day_dir, file_data, segment)
+        try:
+            record_ingest_rejection(
+                observer,
+                reason_code=INGEST_CONTRACT_INVALID.code,
+                segment=segment,
+                stream=stream,
+                version=observer.get("version"),
+                issues=contract_issues,
+            )
+            save_observer(observer)
+        except Exception:
+            logger.exception(
+                "Failed to record ingest rejection for %s", observer.get("name")
+            )
         return (
             {
                 "status": "failed",
@@ -834,6 +883,7 @@ def _process_ingest_files(
         observer["stats"]["duplicates_rejected"] = (
             observer["stats"].get("duplicates_rejected", 0) + 1
         )
+        clear_ingest_rejection(observer)
         save_observer(observer)
 
         return (
@@ -953,6 +1003,7 @@ def _process_ingest_files(
     observer["stats"]["bytes_received"] = (
         observer["stats"].get("bytes_received", 0) + total_bytes
     )
+    clear_ingest_rejection(observer)
     save_observer(observer)
 
     status = "collision" if segment != original_segment else "ok"
@@ -1201,9 +1252,22 @@ def ingest_event() -> Any:
 
     # Update last_seen on status events
     if tract == "observe" and event == "status":
-        observer["last_seen"] = now_ms()
+        record_status_beacon(observer, data)
         save_observer(observer)
 
+    return jsonify({"status": "ok"})
+
+
+@observer_bp.route("/health", methods=["POST"])
+def ingest_health() -> Any:
+    """Record a diagnostics-only observer health beacon."""
+    observer, _key_prefix, error = resolve_observer_identity()
+    if error is not None:
+        return error
+
+    data = request.get_json(force=True) if request.is_json else {}
+    record_status_beacon(observer, data)
+    save_observer(observer)
     return jsonify({"status": "ok"})
 
 

@@ -212,27 +212,6 @@ def list_entities(
         )
 
 
-@app.command("digest")
-def digest(
-    facet: str | None = typer.Argument(None, help="Facet name (or set SOL_FACET)."),
-    facet_opt: str | None = typer.Option(
-        None, "--facet", "-f", help="Facet name (or set SOL_FACET)."
-    ),
-    day: str | None = typer.Option(
-        None, "--day", "-d", help="Day (YYYYMMDD, or set SOL_DAY)."
-    ),
-) -> None:
-    """Print deterministic entity-detection digest for a facet day."""
-    facet = _resolve_sol_facet(facet or facet_opt)
-    day = _resolve_sol_day(day)
-    try:
-        body = _request("GET", f"/app/entities/api/{facet}/digest", params={"day": day})
-    except ConveyClientError as err:
-        _handle_entity_error(err)
-    content = body.get("content", "") if isinstance(body, dict) else ""
-    typer.echo(content)
-
-
 @app.command("move")
 def move_entity(
     entity: str = typer.Argument(help="Entity name or partial match."),
@@ -447,23 +426,6 @@ def add_aka(
     except ConveyClientError as err:
         _handle_entity_error(err, entity=resolved_name)
     typer.echo(f"Added alias '{aka_value}' to '{resolved_name}'.")
-
-
-@app.command()
-def consolidate(
-    full: bool = typer.Option(False, "--full", help="Scan all days, not just today."),
-) -> None:
-    """Consolidate segment-detected entities into journal identities."""
-    try:
-        body = _request(
-            "POST",
-            "/app/entities/api/consolidate",
-            json_body={"full": full},
-        )
-    except ConveyClientError as err:
-        _handle_entity_error(err)
-    count = body.get("count", 0) if isinstance(body, dict) else 0
-    typer.echo(f"Wrote {count} new entities.")
 
 
 @app.command("record-merge-candidate")

@@ -86,8 +86,7 @@ adapt its responses, timing, and initiative to how this person actually works.
         "## Status\n\n"
         "not yet generated\n\n"
         "## Needs your attention\n\n"
-        "## Auto-repairs (last 7d)\n\n"
-        "## Trends (last 7d)\n",
+        "## Auto-repairs (last 7d)\n",
         encoding="utf-8",
     )
 

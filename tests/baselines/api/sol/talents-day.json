@@ -82,38 +82,27 @@
       "title": "Document Analysis",
       "type": "generate"
     },
-    "entities": {
-      "app": null,
-      "color": "#2e7d32",
-      "description": "Extracts people, companies, projects, and tools from segment content",
-      "multi_facet": false,
-      "output_format": "md",
-      "schedule": "segment",
-      "source": "system",
-      "title": "Entity Extraction",
-      "type": "generate"
-    },
-    "entities:entities": {
+    "entities:detection": {
       "app": "entities",
-      "color": "#00897b",
-      "description": "Mines journal for entity mentions and records facet-scoped detections with day-specific context",
-      "multi_facet": true,
-      "output_format": null,
-      "schedule": "daily",
+      "color": "#00695c",
+      "description": "Per-segment, per-entity facet-relevance judgment feeding the living detection substrate",
+      "multi_facet": false,
+      "output_format": "json",
+      "schedule": "segment",
       "source": "app",
-      "title": "Entity Detector",
-      "type": "cogitate"
+      "title": "Entity Detection",
+      "type": "generate"
     },
     "entities:entities_review": {
       "app": "entities",
       "color": "#00796b",
       "description": "Reviews detected entities and promotes recurring ones to attached status",
       "multi_facet": true,
-      "output_format": null,
+      "output_format": "json",
       "schedule": "daily",
       "source": "app",
       "title": "Entity Reviewer",
-      "type": "cogitate"
+      "type": "generate"
     },
     "entities:entity_assist": {
       "app": "entities",
@@ -294,7 +283,7 @@
     "support:support": {
       "app": "support",
       "color": "#0288d1",
-      "description": "Drafts support requests and feedback to sol pbc for owner review, searches help articles, and runs local diagnostics.",
+      "description": "Drafts support requests and feedback to solstone support for owner review, searches help articles, and runs local diagnostics.",
       "multi_facet": false,
       "output_format": null,
       "schedule": null,

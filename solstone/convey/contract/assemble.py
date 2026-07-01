@@ -31,6 +31,7 @@ CALLOSUM_REGISTRY: dict[str, list[str]] = {
     "chat": [
         "owner_message",
         "sol_message",
+        "talent_queued",
         "talent_spawned",
         "talent_finished",
         "talent_errored",
@@ -198,9 +199,17 @@ def _response(response: ResponseSpec) -> dict[str, Any]:
     result: dict[str, Any] = {"description": response.description}
 
     if response.reason_codes:
+        schema: dict[str, Any] = {"$ref": "#/components/schemas/Error"}
+        if response.named_fields:
+            schema = {
+                "allOf": [
+                    {"$ref": "#/components/schemas/Error"},
+                    _object_schema(response.named_fields),
+                ]
+            }
         result["content"] = {
             "application/json": {
-                "schema": {"$ref": "#/components/schemas/Error"},
+                "schema": schema,
             }
         }
         result["x-reason-codes"] = sorted(set(response.reason_codes))

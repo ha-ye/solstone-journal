@@ -77,6 +77,9 @@ def _record(
     entered_backoff_at: float | None = None,
     active: dict | None = None,
     fingerprint: str | None = None,
+    reason_code: str | None = None,
+    timeout_seconds: float | None = None,
+    bounded: bool | None = None,
 ) -> dict:
     return {
         "day": day,
@@ -90,6 +93,9 @@ def _record(
         "notified_at": entered_backoff_at,
         "fingerprint": fingerprint,
         "active": active,
+        "reason_code": reason_code,
+        "timeout_seconds": timeout_seconds,
+        "bounded": bounded,
     }
 
 
@@ -352,6 +358,253 @@ def test_day_eligible_to_drain(journal, monkeypatch):
     assert catchup_state.day_eligible_to_drain(DAY, catchup_state.KIND_DAILY_CATCHUP)
 
 
+def test_record_segment_repair_attempt_sets_active_and_resets_on_fingerprint_change(
+    journal,
+):
+    raw = _segment(journal).joinpath("audio.jsonl")
+    raw.write_text("one\n", encoding="utf-8")
+    key = f"{DAY}:{catchup_state.KIND_SEGMENT_REPAIR}"
+
+    catchup_state.record_segment_repair_attempt(DAY, started_at=10)
+
+    record = catchup_state.read_day_record(DAY, catchup_state.KIND_SEGMENT_REPAIR)
+    fingerprint = catchup_state.read_raw_input_fingerprint(DAY)
+    assert record["attempts"] == 1
+    assert record["fingerprint"] == fingerprint
+    assert record["active"] == {"ref": "segment-repair", "started_at": 10}
+
+    record.update(
+        consecutive_non_completion=2,
+        entered_backoff_at=100,
+        notified_at=100,
+        next_retry_at=999,
+        reason_code=catchup_state.SEGMENT_REPAIR_TIMEOUT_REASON,
+        timeout_seconds=600,
+        bounded=True,
+        active=None,
+    )
+    _write_state(journal, {key: record})
+    raw.write_text("two\n", encoding="utf-8")
+
+    catchup_state.record_segment_repair_attempt(DAY, started_at=20)
+
+    reset_record = catchup_state.read_day_record(DAY, catchup_state.KIND_SEGMENT_REPAIR)
+    assert reset_record["attempts"] == 2
+    assert reset_record["fingerprint"] != fingerprint
+    assert reset_record["consecutive_non_completion"] == 0
+    assert reset_record["entered_backoff_at"] is None
+    assert reset_record["notified_at"] is None
+    assert reset_record["next_retry_at"] == 0
+    assert reset_record["reason_code"] is None
+    assert reset_record["timeout_seconds"] is None
+    assert reset_record["bounded"] is None
+    assert reset_record["active"] == {"ref": "segment-repair", "started_at": 20}
+
+
+def test_record_segment_repair_outcome_records_failure_metadata_and_backoff(journal):
+    _segment(journal).joinpath("audio.jsonl").write_text("one\n", encoding="utf-8")
+
+    catchup_state.record_segment_repair_attempt(DAY, started_at=10)
+    catchup_state.record_segment_repair_outcome(
+        DAY,
+        success=False,
+        timed_out=True,
+        timeout_seconds=300,
+        ended_at=1000,
+    )
+
+    timeout_record = catchup_state.read_day_record(
+        DAY, catchup_state.KIND_SEGMENT_REPAIR
+    )
+    assert timeout_record["active"] is None
+    assert timeout_record["last_outcome"] == "timeout"
+    assert timeout_record["reason_code"] == catchup_state.SEGMENT_REPAIR_TIMEOUT_REASON
+    assert timeout_record["timeout_seconds"] == 300
+    assert timeout_record["bounded"] is True
+    assert timeout_record["consecutive_non_completion"] == 1
+    assert timeout_record["next_retry_at"] == 1600
+    assert timeout_record["entered_backoff_at"] is None
+
+    catchup_state.record_segment_repair_attempt(DAY, started_at=20)
+    catchup_state.record_segment_repair_outcome(
+        DAY,
+        success=False,
+        timed_out=False,
+        timeout_seconds=300,
+        ended_at=2000,
+    )
+    error_record = catchup_state.read_day_record(DAY, catchup_state.KIND_SEGMENT_REPAIR)
+    assert error_record["last_outcome"] == "error"
+    assert error_record["reason_code"] == catchup_state.SEGMENT_REPAIR_FAILED_REASON
+    assert error_record["timeout_seconds"] is None
+    assert error_record["bounded"] is False
+    assert error_record["consecutive_non_completion"] == 2
+
+    catchup_state.record_segment_repair_attempt(DAY, started_at=30)
+    catchup_state.record_segment_repair_outcome(
+        DAY,
+        success=False,
+        timed_out=False,
+        timeout_seconds=300,
+        ended_at=3000,
+    )
+    stuck_record = catchup_state.read_day_record(DAY, catchup_state.KIND_SEGMENT_REPAIR)
+    assert stuck_record["consecutive_non_completion"] == catchup_state.STUCK_THRESHOLD
+    assert stuck_record["entered_backoff_at"] == 3000
+    assert stuck_record["notified_at"] == 3000
+
+
+def test_record_segment_repair_outcome_success_pops_record(journal):
+    _segment(journal).joinpath("audio.jsonl").write_text("one\n", encoding="utf-8")
+    catchup_state.record_segment_repair_attempt(DAY, started_at=10)
+    catchup_state.record_segment_repair_outcome(
+        DAY,
+        success=False,
+        timed_out=False,
+        timeout_seconds=None,
+        ended_at=1000,
+    )
+    assert catchup_state.read_segment_repair_summary(DAY) is not None
+
+    catchup_state.record_segment_repair_outcome(
+        DAY,
+        success=True,
+        timed_out=False,
+        timeout_seconds=None,
+        ended_at=2000,
+    )
+
+    assert catchup_state.read_day_record(DAY, catchup_state.KIND_SEGMENT_REPAIR) is None
+    assert catchup_state.read_segment_repair_summary(DAY) is None
+
+
+def test_read_segment_repair_summary_states(journal):
+    raw = _segment(journal).joinpath("audio.jsonl")
+    raw.write_text("one\n", encoding="utf-8")
+    fingerprint = catchup_state.read_raw_input_fingerprint(DAY)
+    key = f"{DAY}:{catchup_state.KIND_SEGMENT_REPAIR}"
+
+    assert catchup_state.read_segment_repair_summary(DAY) is None
+
+    _write_state(
+        journal,
+        {key: _record(DAY, catchup_state.KIND_SEGMENT_REPAIR, fingerprint=fingerprint)},
+    )
+    assert catchup_state.read_segment_repair_summary(DAY) is None
+
+    _write_state(
+        journal,
+        {
+            key: _record(
+                DAY,
+                catchup_state.KIND_SEGMENT_REPAIR,
+                consecutive=1,
+                fingerprint="stale",
+            )
+        },
+    )
+    assert catchup_state.read_segment_repair_summary(DAY) is None
+
+    _write_state(
+        journal,
+        {
+            key: _record(
+                DAY,
+                catchup_state.KIND_SEGMENT_REPAIR,
+                attempts=2,
+                consecutive=1,
+                last_outcome="error",
+                next_retry_at=999,
+                fingerprint=fingerprint,
+                reason_code=catchup_state.SEGMENT_REPAIR_FAILED_REASON,
+                bounded=False,
+            )
+        },
+    )
+    degraded = catchup_state.read_segment_repair_summary(DAY)
+    assert degraded == {
+        "status": "degraded",
+        "attempts": 2,
+        "consecutive_non_completion": 1,
+        "last_outcome": "error",
+        "next_retry_at": 999,
+        "repair_reason_code": catchup_state.SEGMENT_REPAIR_FAILED_REASON,
+        "timeout_seconds": None,
+        "bounded": False,
+    }
+
+    _write_state(
+        journal,
+        {
+            key: _record(
+                DAY,
+                catchup_state.KIND_SEGMENT_REPAIR,
+                attempts=3,
+                consecutive=3,
+                last_outcome="timeout",
+                next_retry_at=1200,
+                entered_backoff_at=600,
+                fingerprint=fingerprint,
+                reason_code=catchup_state.SEGMENT_REPAIR_TIMEOUT_REASON,
+                timeout_seconds=300,
+                bounded=True,
+            )
+        },
+    )
+    stuck = catchup_state.read_segment_repair_summary(DAY)
+    assert stuck["status"] == "stuck"
+    assert stuck["repair_reason_code"] == catchup_state.SEGMENT_REPAIR_TIMEOUT_REASON
+    assert stuck["timeout_seconds"] == 300
+    assert stuck["bounded"] is True
+
+    _state_file(journal).write_text("{not json", encoding="utf-8")
+    assert catchup_state.read_segment_repair_summary(DAY) == {"status": "unknown"}
+
+
+def test_day_eligible_to_drain_segment_repair(journal, monkeypatch):
+    raw = _segment(journal).joinpath("audio.jsonl")
+    raw.write_text("one\n", encoding="utf-8")
+    fingerprint = catchup_state.read_raw_input_fingerprint(DAY)
+    key = f"{DAY}:{catchup_state.KIND_SEGMENT_REPAIR}"
+    monkeypatch.setattr(catchup_state.time, "time", lambda: 100)
+
+    assert catchup_state.day_eligible_to_drain(DAY, catchup_state.KIND_SEGMENT_REPAIR)
+
+    _write_state(
+        journal,
+        {
+            key: _record(
+                DAY,
+                catchup_state.KIND_SEGMENT_REPAIR,
+                next_retry_at=1000,
+                fingerprint=fingerprint,
+                active={"ref": "segment-repair", "started_at": 1},
+            )
+        },
+    )
+    assert not catchup_state.day_eligible_to_drain(
+        DAY, catchup_state.KIND_SEGMENT_REPAIR
+    )
+
+    _write_state(
+        journal,
+        {
+            key: _record(
+                DAY,
+                catchup_state.KIND_SEGMENT_REPAIR,
+                next_retry_at=1000,
+                fingerprint=fingerprint,
+            )
+        },
+    )
+    assert not catchup_state.day_eligible_to_drain(
+        DAY, catchup_state.KIND_SEGMENT_REPAIR
+    )
+
+    raw.write_text("two\n", encoding="utf-8")
+    assert catchup_state.day_eligible_to_drain(DAY, catchup_state.KIND_SEGMENT_REPAIR)
+
+
 def test_reconcile_interrupted_attempts(journal, monkeypatch):
     incomplete = "20260101"
     complete = "20260102"
@@ -403,6 +656,132 @@ def test_reconcile_interrupted_attempts(journal, monkeypatch):
     assert entries[incomplete_key]["consecutive_non_completion"] == 3
     assert entries[incomplete_key]["active"] is None
     assert complete_key not in entries
+
+
+def test_reconcile_interrupted_segment_repair_on_complete_day_is_not_popped(
+    journal, monkeypatch
+):
+    incomplete_daily = "20260101"
+    complete_day = "20260102"
+    _segment(journal, day=incomplete_daily).joinpath("audio.jsonl").write_text(
+        "{}\n", encoding="utf-8"
+    )
+    _touch_marker(journal, incomplete_daily, "stream.updated", 100)
+    _segment(journal, day=complete_day).joinpath("audio.jsonl").write_text(
+        "{}\n", encoding="utf-8"
+    )
+    _touch_marker(journal, complete_day, "stream.updated", 100)
+    _touch_marker(journal, complete_day, "daily.updated", 200)
+    daily_incomplete_key = f"{incomplete_daily}:{catchup_state.KIND_DAILY_CATCHUP}"
+    daily_complete_key = f"{complete_day}:{catchup_state.KIND_DAILY_CATCHUP}"
+    repair_key = f"{complete_day}:{catchup_state.KIND_SEGMENT_REPAIR}"
+    _write_state(
+        journal,
+        {
+            daily_incomplete_key: _record(
+                incomplete_daily,
+                catchup_state.KIND_DAILY_CATCHUP,
+                attempts=3,
+                consecutive=2,
+                active={
+                    "ref": "daily-incomplete",
+                    "started_at": 1,
+                    "marker_mtime_at_start": None,
+                },
+            ),
+            daily_complete_key: _record(
+                complete_day,
+                catchup_state.KIND_DAILY_CATCHUP,
+                attempts=1,
+                active={
+                    "ref": "daily-complete",
+                    "started_at": 1,
+                    "marker_mtime_at_start": None,
+                },
+            ),
+            repair_key: _record(
+                complete_day,
+                catchup_state.KIND_SEGMENT_REPAIR,
+                attempts=2,
+                consecutive=2,
+                active={"ref": "segment-repair", "started_at": 1},
+            ),
+        },
+    )
+    monkeypatch.setattr(catchup_state.time, "time", lambda: 1000)
+
+    transitions = catchup_state.reconcile_interrupted_attempts()
+
+    entries = _read_entries(journal)
+    assert daily_complete_key not in entries
+    assert entries[repair_key]["last_outcome"] == "interrupted"
+    assert entries[repair_key]["consecutive_non_completion"] == 3
+    assert entries[repair_key]["entered_backoff_at"] == 1000
+    assert entries[repair_key]["active"] is None
+    assert len(transitions) == 1
+    assert transitions[0].day == incomplete_daily
+    assert transitions[0].command_kind == catchup_state.KIND_DAILY_CATCHUP
+
+
+def test_daily_completion_and_clear_day_backoff_leave_segment_repair_record(journal):
+    raw = _segment(journal).joinpath("audio.jsonl")
+    raw.write_text("{}\n", encoding="utf-8")
+    _touch_marker(journal, DAY, "stream.updated", 100)
+    _touch_marker(journal, DAY, "daily.updated", 100)
+    fingerprint = catchup_state.read_raw_input_fingerprint(DAY)
+    daily_key = f"{DAY}:{catchup_state.KIND_DAILY_CATCHUP}"
+    scratch_key = f"{DAY}:{catchup_state.KIND_DAILY_FROM_SCRATCH}"
+    repair_key = f"{DAY}:{catchup_state.KIND_SEGMENT_REPAIR}"
+    repair_record = _record(
+        DAY,
+        catchup_state.KIND_SEGMENT_REPAIR,
+        consecutive=1,
+        last_outcome="error",
+        next_retry_at=999,
+        fingerprint=fingerprint,
+        reason_code=catchup_state.SEGMENT_REPAIR_FAILED_REASON,
+    )
+    _write_state(
+        journal,
+        {
+            daily_key: _record(
+                DAY,
+                catchup_state.KIND_DAILY_CATCHUP,
+                active={
+                    "ref": "daily",
+                    "started_at": 1,
+                    "marker_mtime_at_start": 100,
+                },
+            ),
+            repair_key: repair_record,
+        },
+    )
+    _touch_marker(journal, DAY, "daily.updated", 200)
+
+    result = catchup_state.record_outcome(
+        CMD_DAILY, DAY, "daily", exit_status="ok", ended_at=300
+    )
+
+    entries = _read_entries(journal)
+    assert result.completed is True
+    assert daily_key not in entries
+    assert entries[repair_key]["command_kind"] == catchup_state.KIND_SEGMENT_REPAIR
+
+    _write_state(
+        journal,
+        {
+            daily_key: _record(DAY, catchup_state.KIND_DAILY_CATCHUP),
+            scratch_key: _record(DAY, catchup_state.KIND_DAILY_FROM_SCRATCH),
+            repair_key: entries[repair_key],
+        },
+    )
+
+    catchup_state.clear_day_backoff(DAY)
+
+    entries = _read_entries(journal)
+    assert daily_key not in entries
+    assert scratch_key not in entries
+    assert repair_key in entries
 
 
 def test_prune_removes_old_cleared_entries_but_keeps_old_stuck(journal):

@@ -4,9 +4,10 @@
 """Live capture-health derivation.
 
 Read-time pull from `apps.observer.utils.list_observers()`. No cache, no
-write path -- every call returns fresh state. On any exception below the
-observer layer, returns ``{"status": "unknown", "observers": []}`` rather
-than propagating; callers render a neutral UI instead of crashing.
+write path -- every call returns fresh state. Status is one of active, stale,
+offline, degraded, no_observers, unknown. On any exception below the observer
+layer, returns ``{"status": "unknown", "observers": []}`` rather than
+propagating; callers render a neutral UI instead of crashing.
 """
 
 from __future__ import annotations
@@ -15,16 +16,22 @@ from solstone.think.utils import now_ms
 
 _CONNECTED_MS = 30_000
 _STALE_MS = 120_000
+CAPTURE_STATUS_DEGRADED = "degraded"
 
 
 def get_capture_health() -> dict:
     """Return {"status": ..., "observers": [...]}.
 
-    status ∈ {"active", "stale", "offline", "no_observers", "unknown"}.
-    Overall rollup: active if any observer is active, else stale if any is
-    stale, else offline. "no_observers" when the filtered list is empty.
+    status ∈ {"active", "stale", "offline", "degraded", "no_observers", "unknown"}.
+    Overall rollup: degraded if any observer is degraded, else active if any
+    observer is active, else stale if any is stale, else offline.
+    "no_observers" when the filtered list is empty.
     """
-    from solstone.apps.observer.utils import list_observers
+    from solstone.apps.observer.utils import (
+        get_active_ingest_rejection,
+        get_health_beacon,
+        list_observers,
+    )
 
     try:
         observers = list_observers()
@@ -58,17 +65,37 @@ def get_capture_health() -> dict:
                 else:
                     obs_status = "offline"
 
-            statuses.append(obs_status)
-            observer_summaries.append(
-                {
-                    "name": o.get("name", "unknown"),
-                    "last_seen": last_seen,
-                    "status": obs_status,
+            summary = {
+                "name": o.get("name", "unknown"),
+                "last_seen": last_seen,
+                "status": obs_status,
+            }
+
+            rejection = get_active_ingest_rejection(o)
+            if rejection is not None:
+                obs_status = CAPTURE_STATUS_DEGRADED
+                summary["status"] = obs_status
+                summary["ingest_rejection"] = {
+                    "reason_code": rejection.get("reason_code"),
+                    "active_count": rejection.get("active_count"),
+                    "first_ts": rejection.get("first_ts"),
+                    "latest_ts": rejection.get("latest_ts"),
+                    "summary": rejection.get("summary"),
+                    "stream": rejection.get("stream"),
+                    "version": rejection.get("version"),
                 }
-            )
+
+            beacon = get_health_beacon(o)
+            if beacon is not None:
+                summary["beacon"] = beacon
+
+            statuses.append(obs_status)
+            observer_summaries.append(summary)
 
         # Overall status is best healthy state across observers.
-        if "active" in statuses:
+        if CAPTURE_STATUS_DEGRADED in statuses:
+            overall = CAPTURE_STATUS_DEGRADED
+        elif "active" in statuses:
             overall = "active"
         elif "stale" in statuses:
             overall = "stale"

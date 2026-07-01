@@ -19,6 +19,7 @@ from solstone.think.link.paths import (
     LinkState,
     authorized_clients_path,
     nonces_path,
+    save_service_token,
 )
 from tests._baseline_harness import make_test_client
 
@@ -167,6 +168,68 @@ def test_pair_mints_nonce_prints_payload_and_times_out(runner, monkeypatch):
     assert len(nonces) == 1
     assert nonces[0].device_label == "Test Phone"
     assert nonces[0].role == "observer"
+
+
+def test_pair_no_wait_mints_nonce_prints_payload_and_exits(runner, monkeypatch):
+    _install_pair_watcher(monkeypatch)
+
+    result = runner.invoke(
+        link_call.app,
+        ["pair", "--device-label", "Headless", "--as", "observer", "--no-wait"],
+    )
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    assert "pair-link: https://go.solstone.app/p#" in result.stdout
+    assert "link this device with:\n" in result.stdout
+    assert "  sol link join --code " in result.stdout
+    assert "CA fingerprint: sha256:" in result.stdout
+    assert "Device: Headless\n" in result.stdout
+    assert "pair-link freshness:" not in result.stdout
+    assert "Waiting for linked system" not in result.stdout
+    assert "Timed out. Pair code expired." not in result.stdout
+    nonces = _nonces().snapshot()
+    assert len(nonces) == 1
+    assert nonces[0].device_label == "Headless"
+    assert nonces[0].role == "observer"
+
+
+def test_pair_no_wait_spl_prints_payload_without_relay_freshness_hint(
+    journal,
+    runner,
+    monkeypatch,
+):
+    config_path = journal / "config" / "journal.json"
+    config = json.loads(config_path.read_text("utf-8"))
+    config["link"] = {"posture": "spl"}
+    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    save_service_token("svc-token")
+    pair_window_calls: list[dict] = []
+
+    class _FakePairWindowHandle:
+        def wait_open(self, timeout: float | None = None) -> bool:
+            return True
+
+    def _record_start_pair_window(**kwargs: object) -> _FakePairWindowHandle:
+        pair_window_calls.append(kwargs)
+        return _FakePairWindowHandle()
+
+    monkeypatch.setattr(
+        link_routes,
+        "start_pair_window",
+        _record_start_pair_window,
+    )
+
+    result = runner.invoke(
+        link_call.app,
+        ["pair", "--device-label", "Relay Phone", "--no-wait"],
+    )
+
+    assert result.exit_code == 0
+    assert "pair-link: https://go.solstone.app/p#" in result.stdout
+    assert "pair-link freshness:" not in result.stdout
+    assert "Waiting for linked system" not in result.stdout
+    assert len(pair_window_calls) == 1
 
 
 @pytest.mark.parametrize(

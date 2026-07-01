@@ -124,6 +124,9 @@ _DEFAULT_STT_MODEL_FIX = (
 )
 JOURNAL_CAUGHT_UP_CHECK = Check("journal_caught_up", "advisory", ("linux", "darwin"))
 TASK_PACE_CHECK = Check("task_pace", "advisory", ("linux", "darwin"))
+OBSERVER_INGEST_HEALTH_CHECK = Check(
+    "observer_ingest_health", "advisory", ("linux", "darwin")
+)
 _CAUGHT_UP_BACKLOG_FIX = (
     "solstone catches up on its own; reprocess a day from the health surface "
     "to prioritize it"
@@ -132,6 +135,9 @@ _CAUGHT_UP_CANT_TELL_FIX = "re-run journal doctor; check the health logs if it p
 _TASK_PACE_FIX = (
     "a job is running long; it will be stopped automatically if it passes its cap "
     "— no action needed unless it persists"
+)
+_OBSERVER_INGEST_FIX = (
+    "update or restart the observer, then confirm a valid upload clears the rejection"
 )
 
 
@@ -671,6 +677,54 @@ def task_pace_check(args: Args) -> CheckResult:
     return make_result(check, "warn", f"running long: {names}", _TASK_PACE_FIX)
 
 
+def observer_ingest_health_check(args: Args) -> CheckResult:
+    del args
+    check = OBSERVER_INGEST_HEALTH_CHECK
+    try:
+        from solstone.apps.observer.utils import (
+            get_active_ingest_rejection,
+            list_observers,
+        )
+
+        observers = list_observers()
+    except Exception as exc:
+        return make_result(
+            check,
+            "skip",
+            f"observer records unavailable: {type(exc).__name__}: {exc}",
+        )
+    enabled = [
+        observer
+        for observer in observers
+        if not observer.get("revoked", False) and observer.get("enabled", True)
+    ]
+    if not enabled:
+        return make_result(check, "skip", "no registered observers")
+    failing = [
+        (observer, get_active_ingest_rejection(observer)) for observer in enabled
+    ]
+    failing = [(observer, rejection) for (observer, rejection) in failing if rejection]
+    if not failing:
+        return make_result(check, "ok", "no observers failing ingest")
+    clauses = []
+    for observer, rejection in failing:
+        version = rejection.get("version")
+        vtext = f"v{version}" if version else "version unknown"
+        first_ts = rejection.get("first_ts")
+        when = (
+            time.strftime("%Y-%m-%d", time.gmtime(first_ts / 1000))
+            if isinstance(first_ts, (int, float))
+            else "unknown"
+        )
+        clauses.append(
+            f"observer {observer.get('name', 'unknown')} ({vtext}) failing ingest: "
+            f"{rejection.get('summary', '')}, "
+            f"{rejection.get('active_count', 0)}x since {when}"
+        )
+    detail = "; ".join(clauses)
+    return make_result(check, "warn", detail[:400], _OBSERVER_INGEST_FIX)
+
+
 def _resolve_configured_backend() -> str | None:
     """Read transcribe.backend from an existing journal config without creating anything.
 
@@ -767,6 +821,7 @@ JOURNAL_CHECKS: list[tuple[Check, Runner]] = [
     (JOURNAL_SYNC_CHECK, journal_sync_check),
     (JOURNAL_CAUGHT_UP_CHECK, journal_caught_up_check),
     (TASK_PACE_CHECK, task_pace_check),
+    (OBSERVER_INGEST_HEALTH_CHECK, observer_ingest_health_check),
     (STALE_ALIAS_CHECK, partial(stale_alias_symlink_check, binary="journal")),
     (LAUNCHD_STALE_PLIST_CHECK, launchd_stale_plist_check),
     (DEFAULT_STT_READY_CHECK, default_stt_ready_check),

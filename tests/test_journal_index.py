@@ -400,6 +400,67 @@ def test_search_journal_outputs(journal_fixture):
     assert found
 
 
+def test_segment_sense_json_searchable_and_exact(journal_copy):
+    """Segment sense JSON is indexed with its dedicated formatter."""
+    from solstone.think.formatters import find_formattable_files
+    from solstone.think.indexer.journal import scan_journal, search_journal
+
+    day = "20990115"
+    segment_dir = journal_copy / "chronicle" / day / "default" / "120000_300"
+    talents_dir = segment_dir / "talents"
+    talents_dir.mkdir(parents=True, exist_ok=True)
+    (talents_dir / "sense.json").write_text(
+        json.dumps(
+            {
+                "density": "active",
+                "content_type": "coding",
+                "activity_summary": (
+                    "Discussed the Monazite Comet Handoff unique regression seed."
+                ),
+                "entities": [
+                    {
+                        "type": "Project",
+                        "name": "Zephyr Quartz Index",
+                        "role": "mentioned",
+                        "source": "screen",
+                        "context": "Anchored the Monazite Comet Handoff.",
+                    }
+                ],
+                "facets": [
+                    {"facet": "work", "activity": "search indexing", "level": "high"}
+                ],
+                "speculative_facet": None,
+                "meeting_detected": True,
+                "speakers": ["Alice Smith", "Bob Chen"],
+                "recommend": {"screen_record": True, "speaker_attribution": True},
+                "emotional_register": "focused",
+            }
+        ),
+        encoding="utf-8",
+    )
+    rel_path = f"{day}/default/120000_300/talents/sense.json"
+
+    formattable = find_formattable_files(str(journal_copy))
+    assert rel_path in formattable
+
+    scan_journal(str(journal_copy), full=True)
+
+    total, name_results = search_journal("Zephyr Quartz Index")
+    assert total >= 1
+    assert any(result["metadata"]["path"] == rel_path for result in name_results)
+
+    total, description_results = search_journal("Monazite Comet Handoff")
+    assert total >= 1
+    matching = [
+        result
+        for result in description_results
+        if result["metadata"]["path"] == rel_path
+    ]
+    assert matching
+    assert any("Monazite Comet Handoff" in result["text"] for result in matching)
+    assert all(result["metadata"]["agent"] == "sense" for result in matching)
+
+
 def test_search_journal_events(journal_fixture):
     """Test searching returns event chunks."""
     from solstone.think.indexer.journal import scan_journal, search_journal
@@ -1531,8 +1592,31 @@ def test_scan_journal_is_pure_wrt_entity_state(journal_copy):
         journal_path / "chronicle" / today / "default" / "120000_300" / "talents"
     )
     segment_dir.mkdir(parents=True)
-    (segment_dir / "entities.jsonl").write_text(
-        '{"name":"Zephyr Quartz Index","type":"Project","description":"Unique regression seed"}\n',
+    (segment_dir / "sense.json").write_text(
+        json.dumps(
+            {
+                "density": "active",
+                "content_type": "coding",
+                "activity_summary": "Unique regression seed for pure indexing.",
+                "entities": [
+                    {
+                        "name": "Zephyr Quartz Index",
+                        "type": "Project",
+                        "role": "mentioned",
+                        "source": "screen",
+                        "context": "Used only for indexer purity coverage.",
+                    }
+                ],
+                "facets": [
+                    {"facet": "work", "activity": "search indexing", "level": "high"}
+                ],
+                "speculative_facet": None,
+                "meeting_detected": False,
+                "speakers": [],
+                "recommend": {"screen_record": False, "speaker_attribution": False},
+                "emotional_register": "focused",
+            }
+        ),
         encoding="utf-8",
     )
 

@@ -3,6 +3,8 @@
 
 import asyncio
 import contextlib
+import json
+import logging
 import socket
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -12,13 +14,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from solstone.convey.secure_listener import runtime as rt
 from solstone.convey.secure_listener.accept import (
     CERTLESS_TUNNEL_CAP,
     SecureListener,
     certless_admission_mode,
 )
+from solstone.think.link.ca import load_or_generate_ca
 from solstone.think.link.nonces import NONCE_TTL_SECONDS, NonceStore
-from solstone.think.link.paths import nonces_path
+from solstone.think.link.paths import ca_dir, nonces_path, state_path
 from tests.link.certless_helpers import write_config
 
 
@@ -91,6 +95,151 @@ def test_stop_all_after_loop_closed_does_not_raise():
         rt._runtime = previous_runtime
         s.close()
         executor.shutdown(wait=True, cancel_futures=True)
+
+
+def test_start_secure_listener_setup_incomplete_does_not_establish_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous_runtime = rt._runtime
+    try:
+        rt._runtime = None
+        _runtime_journal(tmp_path, monkeypatch, {"setup": {}})
+        app = _enabled_listener_app()
+
+        rt.start_secure_listener(app)
+
+        assert rt._runtime is None
+        assert not getattr(app, "secure_listener_started", False)
+        ca_path = ca_dir()
+        assert not (ca_path / "cert.pem").exists()
+        assert not (ca_path / "private.pem").exists()
+        state_file = state_path()
+        if state_file.exists():
+            state = json.loads(state_file.read_text("utf-8"))
+            assert not state.get("instance_id")
+    finally:
+        rt._runtime = previous_runtime
+
+
+def test_start_secure_listener_setup_incomplete_no_thread_no_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    previous_runtime = rt._runtime
+    try:
+        rt._runtime = None
+        _runtime_journal(tmp_path, monkeypatch, {"setup": {}})
+        app = _enabled_listener_app()
+
+        with caplog.at_level(
+            logging.WARNING,
+            logger="convey.secure_listener.runtime",
+        ):
+            rt.start_secure_listener(app)
+
+        assert rt._runtime is None
+        assert not getattr(app, "secure_listener_started", False)
+        assert not any(
+            record.name == "convey.secure_listener.runtime" for record in caplog.records
+        )
+    finally:
+        rt._runtime = previous_runtime
+
+
+def test_start_secure_listener_setup_complete_starts_in_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous_runtime = rt._runtime
+    try:
+        rt._runtime = None
+        _runtime_journal(
+            tmp_path,
+            monkeypatch,
+            {"setup": {"completed_at": 1700000000000}},
+        )
+        load_or_generate_ca(ca_dir())
+        app = _enabled_listener_app()
+
+        rt.start_secure_listener(app)
+
+        runtime = rt._runtime
+        assert runtime is not None
+        assert runtime.started_event.is_set()
+        assert runtime.start_error is None
+        assert runtime.sockets
+        assert app.secure_listener_started is True
+    finally:
+        rt.stop_all_secure_listener()
+        rt._runtime = previous_runtime
+
+
+def test_start_secure_listener_committed_but_setup_incomplete_warns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    previous_runtime = rt._runtime
+    try:
+        rt._runtime = None
+        _runtime_journal(tmp_path, monkeypatch, {"setup": {}})
+        load_or_generate_ca(ca_dir())
+        app = _enabled_listener_app()
+
+        with caplog.at_level(
+            logging.WARNING,
+            logger="convey.secure_listener.runtime",
+        ):
+            rt.start_secure_listener(app)
+
+        assert any(
+            "identity is committed but setup" in record.getMessage()
+            for record in caplog.records
+        )
+        assert rt._runtime is None
+        assert not getattr(app, "secure_listener_started", False)
+    finally:
+        rt._runtime = previous_runtime
+
+
+def test_start_secure_listener_setup_complete_idempotent_identity_untouched(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous_runtime = rt._runtime
+    try:
+        rt._runtime = None
+        _runtime_journal(
+            tmp_path,
+            monkeypatch,
+            {"setup": {"completed_at": 1700000000000}},
+        )
+        load_or_generate_ca(ca_dir())
+        ca_path = ca_dir()
+        cert_before = (ca_path / "cert.pem").read_bytes()
+        key_before = (ca_path / "private.pem").read_bytes()
+        state_file = state_path()
+        state_before = state_file.read_bytes() if state_file.exists() else None
+        app = _enabled_listener_app()
+
+        rt.start_secure_listener(app)
+        rt.start_secure_listener(app)
+
+        runtime = rt._runtime
+        assert runtime is not None
+        assert runtime.started_event.is_set()
+        assert runtime.start_error is None
+        assert runtime.sockets
+        assert runtime.apps.count(app) == 1
+        assert (ca_path / "cert.pem").read_bytes() == cert_before
+        assert (ca_path / "private.pem").read_bytes() == key_before
+        if state_before is not None:
+            assert state_file.read_bytes() == state_before
+    finally:
+        rt.stop_all_secure_listener()
+        rt._runtime = previous_runtime
 
 
 @pytest.mark.parametrize(
@@ -212,6 +361,27 @@ def _listener() -> SecureListener:
         host="127.0.0.1",
         port=0,
     )
+
+
+def _enabled_listener_app() -> SimpleNamespace:
+    return SimpleNamespace(config={"SECURE_LISTENER_ENABLED": True})
+
+
+def _runtime_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config: dict[str, object],
+) -> Path:
+    journal = tmp_path / "journal"
+    journal.mkdir()
+    config_dir = journal / "config"
+    config_dir.mkdir()
+    (config_dir / "journal.json").write_text(
+        json.dumps(config, indent=2),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    return journal
 
 
 def _journal(

@@ -31,6 +31,13 @@ def _make_empty_client(tmp_path, monkeypatch, *, timezone="America/Denver"):
     return app.test_client(), journal
 
 
+def _commit_journal_identity() -> None:
+    from solstone.think.link.ca import load_or_generate_ca
+    from solstone.think.link.paths import ca_dir
+
+    load_or_generate_ca(ca_dir())
+
+
 def _clear_setup(journal_dir):
     config = _read_config(journal_dir)
     config.pop("setup", None)
@@ -349,6 +356,84 @@ class TestInitDetection:
         assert config_path.read_bytes() == before
 
 
+class TestInitMark:
+    def test_mark_section_scaffold(self, fresh_client):
+        resp = fresh_client.get("/init")
+        assert resp.status_code == 200
+        assert b'id="section-journal-mark"' in resp.data
+        assert b"this is your journal" in resp.data
+        assert b'id="journal-mark-display"' in resp.data
+
+    def test_mark_routes_referenced(self, fresh_client):
+        resp = fresh_client.get("/init")
+        assert b"/init/mark/regenerate" in resp.data
+        assert b"/init/mark/lock" in resp.data
+        assert b"/init/mark" in resp.data
+
+    def test_mark_svg_wrapper_present(self, fresh_client):
+        resp = fresh_client.get("/init")
+        assert b'viewBox="0 0 24 24"' in resp.data
+        assert b'stroke-width="2"' in resp.data
+
+    def test_mark_error_branches_present(self, fresh_client):
+        resp = fresh_client.get("/init")
+        assert b'id="journal-mark-error"' in resp.data
+        assert b'id="journal-mark-retry"' in resp.data
+        assert resp.data.count(b"showMarkError(") >= 4
+
+    def test_mark_copy_verbatim(self, fresh_client):
+        resp = fresh_client.get("/init")
+        for text in (
+            "this is your journal",
+            "every journal has its own mark — two symbols and two words, unique to yours. you'll recognize it whenever you connect a device.",
+            "try another",
+            "lock it in",
+            "lock it in and this mark is your journal's, for good — it can't be changed later. try as many as you like first.",
+            "locked in · this is your journal's mark, for good.",
+        ):
+            assert text.encode() in resp.data
+
+    def test_no_jid_token(self, fresh_client):
+        resp = fresh_client.get("/init")
+        assert re.search(r"\bjid\b", resp.data.decode()) is None
+
+    def test_finalize_blocked_when_unlocked(self, fresh_client):
+        resp = fresh_client.post(
+            "/init/finalize",
+            json={"name": "X"},
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
+        assert resp.get_json()["reason_code"] == "identity_not_locked"
+
+    def test_finalize_catch_routes_server_error(self, fresh_client):
+        resp = fresh_client.get("/init")
+        assert b"err.serverMessage" in resp.data
+        assert b"showFinalizeError" in resp.data
+
+    def test_mark_locked_on_commit(self, fresh_client):
+        _commit_journal_identity()
+        resp = fresh_client.get("/init/mark")
+        assert resp.get_json()["locked"] is True
+
+    def test_regenerate_blocked_when_locked(self, fresh_client):
+        _commit_journal_identity()
+        resp = fresh_client.post("/init/mark/regenerate")
+        assert resp.status_code == 400
+        assert resp.get_json()["reason_code"] == "invalid_operation_for_state"
+
+    def test_linked_assets_load(self, fresh_client):
+        resp = fresh_client.get("/init")
+        assert resp.status_code == 200
+        text = resp.data.decode()
+        urls = re.findall(r'<script src="([^"]+)"', text)
+        urls.extend(re.findall(r'<link [^>]*href="([^"]+)"', text))
+        assert urls
+        for url in urls:
+            asset_resp = fresh_client.get(url)
+            assert asset_resp.status_code == 200, url
+
+
 class TestInitValidateProvider:
     """Tests for the validate-only provider endpoint."""
 
@@ -528,6 +613,7 @@ class TestInitFinalize:
     """Tests for the atomic finalize endpoint."""
 
     def test_finalize_saves_all_config(self, fresh_client, journal_copy):
+        _commit_journal_identity()
         resp = fresh_client.post(
             "/init/finalize",
             json={
@@ -555,6 +641,7 @@ class TestInitFinalize:
         assert "completed_at" in config["setup"]
 
     def test_finalize_succeeds(self, fresh_client, journal_copy):
+        _commit_journal_identity()
         resp = fresh_client.post(
             "/init/finalize",
             json={"name": "Jane"},
@@ -570,6 +657,7 @@ class TestInitFinalize:
 
     def test_finalize_minimal(self, fresh_client, journal_copy):
         """Finalize with optional fields omitted."""
+        _commit_journal_identity()
         resp = fresh_client.post(
             "/init/finalize",
             json={},
@@ -586,6 +674,7 @@ class TestInitFinalize:
             tmp_path, monkeypatch, timezone="America/Denver"
         )
         client.get("/init")
+        _commit_journal_identity()
 
         resp = client.post(
             "/init/finalize",
@@ -611,6 +700,7 @@ class TestInitFinalize:
             tmp_path, monkeypatch, timezone="America/Denver"
         )
         client.get("/init")
+        _commit_journal_identity()
 
         resp = client.post(
             "/init/finalize",
@@ -626,6 +716,7 @@ class TestInitFinalize:
         assert "completed_at" in config["setup"]
 
     def test_finalize_completes_setup_access(self, fresh_client, journal_copy):
+        _commit_journal_identity()
         response = fresh_client.post(
             "/init/finalize",
             json={},
@@ -643,6 +734,7 @@ class TestInitFinalize:
 
     def test_post_init_redirect(self, fresh_client, journal_copy):
         """After finalize, /init redirects away."""
+        _commit_journal_identity()
         fresh_client.post(
             "/init/finalize",
             json={},
@@ -653,6 +745,7 @@ class TestInitFinalize:
 
     def test_finalize_with_retention_config(self, fresh_client, journal_copy):
         """Finalize with explicit retention config writes correct values."""
+        _commit_journal_identity()
         resp = fresh_client.post(
             "/init/finalize",
             json={
@@ -668,6 +761,7 @@ class TestInitFinalize:
 
     def test_finalize_default_retention(self, fresh_client, journal_copy):
         """Finalize without retention fields writes default (keep/null)."""
+        _commit_journal_identity()
         resp = fresh_client.post(
             "/init/finalize",
             json={},
@@ -681,6 +775,7 @@ class TestInitFinalize:
     def test_finalize_corrupt_config_returns_reason_without_writing(
         self, fresh_client, journal_copy
     ):
+        _commit_journal_identity()
         config_path = journal_copy / "config" / "journal.json"
         config_path.write_bytes(b"{ invalid json }")
         before = config_path.read_bytes()

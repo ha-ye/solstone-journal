@@ -1,7 +1,22 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Build and validate the journal at-rest contract bundle."""
+"""Build and validate the journal at-rest contract bundle.
+
+Floor model
+-----------
+Each schema's ``$defs.header`` and ``$defs.record`` ``required`` arrays define
+the universal at-rest floor every producer of that format must meet. ``raw`` is
+not part of that floor. It is a producer-owned invariant emitted by the screen
+describer (``solstone.observe.describe.VideoProcessor``) and the audio
+transcriber (``solstone.observe.transcribe.main``), pinned by producer tests
+rather than the shared floor.
+
+Producers with no source media, such as a terminal/tmux observer, legitimately
+omit ``raw`` and must still validate. ``raw`` remains in each schema's
+``properties`` so a present value must type-check as a string, and it remains in
+``key_fields``, but it is no longer ``required``.
+"""
 
 from __future__ import annotations
 

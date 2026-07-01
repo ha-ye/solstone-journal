@@ -69,6 +69,7 @@
       font-family: 'Comfortaa', system-ui, sans-serif; text-transform: lowercase;
     }
     .cta-button:hover { background: #d17e2e; }
+    .cta-button[hidden] { display: none; }
     .lanes { display: grid; grid-template-columns: 1fr; gap: 10px; }
     .lane {
       border: 1.5px solid #E2D7BF;
@@ -158,6 +159,23 @@
     }
     .password-toggle:hover { color: #333; }
     .password-toggle:active { color: #111; transform: translateY(-50%) scale(0.9); }
+    .mark-display { display: flex; justify-content: center; min-height: 64px; margin: 0 0 0.85rem; }
+    .mark-card { display: inline-flex; flex-direction: column; align-items: center; gap: 0.55rem; background: #fffdf9; border: 1px solid #e7d8c6; border-radius: 12px; padding: 1.15rem 1.4rem; }
+    .mark-card.locked { border-color: #cfe3d3; box-shadow: 0 0 0 3px rgba(63,157,106,0.08); }
+    .mark-chips { display: flex; gap: 0.7rem; }
+    .mark-chip { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; border: 2px solid #ccc; border-radius: 12px; box-sizing: border-box; }
+    .mark-chip svg { width: 28px; height: 28px; display: block; }
+    .mark-words { display: flex; align-items: center; gap: 0.5rem; font-family: 'Comfortaa', system-ui, sans-serif; font-size: 1.1rem; letter-spacing: .3px; color: #222; }
+    .mark-words .mark-sep { color: #c2b9a6; }
+    .mark-actions { display: flex; align-items: center; justify-content: center; gap: 0.75rem; margin-top: 0.25rem; }
+    .mark-permanence { text-align: center; }
+    .mark-locked { display: flex; align-items: center; justify-content: center; gap: 0.4rem; color: #166534; font-size: 0.92rem; margin-top: 0.5rem; font-weight: 600; }
+    .mark-locked svg { width: 16px; height: 16px; flex: none; }
+    @media (prefers-reduced-motion: no-preference) {
+      .mark-card.pop { animation: mark-pop .26s ease-out; }
+      @keyframes mark-pop { from { opacity: 0; transform: translateY(4px) scale(.98); } to { opacity: 1; transform: none; } }
+    }
+    .cta-button:disabled { opacity: 0.5; cursor: not-allowed; }
   </style>
   <script src="{{ url_for('root.static', filename='error-handler.js') }}"></script>
   <script src="{{ url_for('root.static', filename='api.js') }}"></script>
@@ -168,7 +186,7 @@
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="2.5 2.5 27 27" role="img" aria-label="sol logo">
       <title>sol</title>
       <!-- Sun rays: 10 floating wedges with curved inner arc matching the ring -->
-      <path fill="#F5C740" d="M16.0 2.5 L18.6 7.3 A9.1 9.1 0 0 0 13.4 7.3 Z M23.9 5.1 L23.2 10.5 A9.1 9.1 0 0 0 19.0 7.4 Z M28.8 11.8 L25.1 15.8 A9.1 9.1 0 0 0 23.5 10.9 Z M28.8 20.2 L23.5 21.1 A9.1 9.1 0 0 0 25.1 16.2 Z M23.9 26.9 L19.0 24.6 A9.1 9.1 0 0 0 23.2 21.5 Z M16.0 29.5 L13.4 24.7 A9.1 9.1 0 0 0 18.6 24.7 Z M8.1 26.9 L8.8 21.5 A9.1 9.1 0 0 0 13.0 24.6 Z M3.2 20.2 L6.9 16.2 A9.1 9.1 0 0 0 8.5 21.1 Z M3.2 11.8 L8.5 10.9 A9.1 9.1 0 0 0 6.9 15.8 Z M8.1 5.1 L13.0 7.4 A9.1 9.1 0 0 0 8.8 10.5 Z"/>
+      <path fill="#FFCF33" d="M16.0 2.5 L18.6 7.3 A9.1 9.1 0 0 0 13.4 7.3 Z M23.9 5.1 L23.2 10.5 A9.1 9.1 0 0 0 19.0 7.4 Z M28.8 11.8 L25.1 15.8 A9.1 9.1 0 0 0 23.5 10.9 Z M28.8 20.2 L23.5 21.1 A9.1 9.1 0 0 0 25.1 16.2 Z M23.9 26.9 L19.0 24.6 A9.1 9.1 0 0 0 23.2 21.5 Z M16.0 29.5 L13.4 24.7 A9.1 9.1 0 0 0 18.6 24.7 Z M8.1 26.9 L8.8 21.5 A9.1 9.1 0 0 0 13.0 24.6 Z M3.2 20.2 L6.9 16.2 A9.1 9.1 0 0 0 8.5 21.1 Z M3.2 11.8 L8.5 10.9 A9.1 9.1 0 0 0 6.9 15.8 Z M8.1 5.1 L13.0 7.4 A9.1 9.1 0 0 0 8.8 10.5 Z"/>
       <!-- Sun ring: open annulus -->
       <circle cx="16" cy="16" r="8.0" fill="none" stroke="#E8923A" stroke-width="1.2"/>
       <!-- sol — Comfortaa Bold, scale=0.01 SVG/fu, letter-spacing=-100fu, 12.54 wide -->
@@ -181,6 +199,20 @@
     <section id="section-machine-card" class="section machine-card">
       <h2 class="machine-card-headline">solstone runs on your device.</h2>
       <p>your observers, your journal, and sol — all right here. nothing else is required to start.</p>
+    </section>
+
+    <section class="init-section" id="section-journal-mark">
+      <h3>this is your journal</h3>
+      <p class="section-hint">every journal has its own mark — two symbols and two words, unique to yours. you'll recognize it whenever you connect a device.</p>
+      <div id="journal-mark-display" class="mark-display" aria-live="polite"></div>
+      <div id="journal-mark-error" class="error-message" hidden></div>
+      <button type="button" id="journal-mark-retry" class="settings-preset-btn" hidden>try again</button>
+      <div class="mark-actions">
+        <button type="button" id="journal-mark-regenerate" class="settings-preset-btn">try another</button>
+        <button type="button" id="journal-mark-lock" class="cta-button">lock it in</button>
+      </div>
+      <p class="section-hint mark-permanence">lock it in and this mark is your journal's, for good — it can't be changed later. try as many as you like first.</p>
+      <p id="journal-mark-locked" class="mark-locked" hidden><svg viewBox="0 0 24 24" fill="none" stroke="#166534" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>locked in · this is your journal's mark, for good.</p>
     </section>
 
     <form id="init-form" onsubmit="finalize(event); return false;">
@@ -274,7 +306,7 @@
       </div>
     </section>
 
-    <button type="submit" class="cta-button">finish welcome setup</button>
+    <button type="submit" class="cta-button" disabled>finish welcome setup</button>
     </form>
     <div id="finalize-error" class="error-message" hidden></div>
 
@@ -464,6 +496,130 @@
       });
       document.getElementById('retention-days-input').addEventListener('input', updateRetentionUI);
       updateRetentionUI();
+    });
+
+    let journalMarkLocked = false;
+
+    function showMarkError(message) {
+      const errorEl = document.getElementById('journal-mark-error');
+      if (!errorEl) return;
+      errorEl.textContent = message;
+      errorEl.hidden = false;
+    }
+
+    function applyLockState(locked) {
+      journalMarkLocked = locked === true;
+      const regenerateButton = document.getElementById('journal-mark-regenerate');
+      const lockButton = document.getElementById('journal-mark-lock');
+      const permanence = document.querySelector('.mark-permanence');
+      const lockedMessage = document.getElementById('journal-mark-locked');
+      const finishButton = document.querySelector('button[type="submit"].cta-button');
+
+      if (regenerateButton) regenerateButton.hidden = journalMarkLocked;
+      if (lockButton) lockButton.hidden = journalMarkLocked;
+      if (permanence) permanence.hidden = journalMarkLocked;
+      if (lockedMessage) lockedMessage.hidden = !journalMarkLocked;
+      if (finishButton) finishButton.disabled = !journalMarkLocked;
+    }
+
+    function renderMark(spec, locked) {
+      const display = document.getElementById('journal-mark-display');
+      const errorEl = document.getElementById('journal-mark-error');
+      const retryButton = document.getElementById('journal-mark-retry');
+      const icons = spec ? [spec.icon1, spec.icon2] : [];
+      const words = Array.isArray(spec && spec.words) ? spec.words : [];
+      const validIcons = icons.length === 2 && icons.every(icon => icon && icon.svg && icon.color && icon.color.hex);
+
+      if (!display || !validIcons || words.length !== 2) {
+        showMarkError("couldn't draw your mark — try again.");
+        return;
+      }
+
+      display.innerHTML = '<div class="mark-card' + (locked ? ' locked' : '') + ' pop"><div class="mark-chips"><div class="mark-chip"></div><div class="mark-chip"></div></div><div class="mark-words"><span></span><span class="mark-sep">·</span><span></span></div></div>';
+      const chips = display.querySelectorAll('.mark-chip');
+      chips.forEach((chip, index) => {
+        const icon = icons[index];
+        chip.style.borderColor = icon.color.hex;
+        chip.style.background = icon.color.hex + '1f';
+        if (icon.rot === 45) chip.style.transform = 'rotate(45deg)';
+        chip.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="${icon.color.hex}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icon.svg}</svg>`;
+      });
+
+      const wordSpans = display.querySelectorAll('.mark-words span:not(.mark-sep)');
+      wordSpans[0].textContent = words[0];
+      wordSpans[1].textContent = words[1];
+      if (errorEl) {
+        errorEl.textContent = '';
+        errorEl.hidden = true;
+      }
+      if (retryButton) retryButton.hidden = true;
+      applyLockState(locked);
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      const retryButton = document.getElementById('journal-mark-retry');
+      const regenerateButton = document.getElementById('journal-mark-regenerate');
+      const lockButton = document.getElementById('journal-mark-lock');
+      const finishButton = document.querySelector('button[type="submit"].cta-button');
+
+      async function loadMark() {
+        const originalLabel = retryButton ? retryButton.textContent : '';
+        if (retryButton && !retryButton.hidden) {
+          retryButton.disabled = true;
+          retryButton.textContent = 'trying…';
+        }
+        try {
+          const data = await window.apiJson('/init/mark');
+          renderMark(data.mark, data.locked);
+        } catch (err) {
+          showMarkError((err && err.serverMessage) || "couldn't load your mark — try again.");
+          if (retryButton) retryButton.hidden = false;
+          if (finishButton) finishButton.disabled = true;
+        } finally {
+          if (retryButton && !retryButton.hidden) {
+            retryButton.textContent = originalLabel || 'try again';
+            retryButton.disabled = false;
+          }
+        }
+      }
+
+      if (retryButton) retryButton.addEventListener('click', loadMark);
+      if (regenerateButton) {
+        regenerateButton.addEventListener('click', async () => {
+          const originalLabel = regenerateButton.textContent;
+          regenerateButton.disabled = true;
+          regenerateButton.textContent = 'trying…';
+          try {
+            const data = await window.apiJson('/init/mark/regenerate', {method: 'POST'});
+            renderMark(data.mark, false);
+          } catch (err) {
+            showMarkError((err && err.serverMessage) || "couldn't regenerate — try again.");
+          } finally {
+            regenerateButton.textContent = originalLabel;
+            regenerateButton.disabled = false;
+          }
+        });
+      }
+      if (lockButton) {
+        lockButton.addEventListener('click', async () => {
+          const originalLabel = lockButton.textContent;
+          lockButton.disabled = true;
+          lockButton.textContent = 'locking…';
+          try {
+            const data = await window.apiJson('/init/mark/lock', {method: 'POST'});
+            renderMark(data.mark, true);
+          } catch (err) {
+            showMarkError((err && err.serverMessage) || "couldn't lock it in — try again.");
+            applyLockState(false);
+          } finally {
+            if (!lockButton.hidden) {
+              lockButton.textContent = originalLabel;
+              lockButton.disabled = false;
+            }
+          }
+        });
+      }
+      loadMark();
     });
 
     function showFinalizeError(errorEl, message) {

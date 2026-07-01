@@ -89,9 +89,7 @@
                 "type": "string"
               }
             },
-            "required": [
-              "raw"
-            ],
+            "required": [],
             "type": "object"
           },
           "record": {
@@ -284,9 +282,7 @@
                 "type": "string"
               }
             },
-            "required": [
-              "raw"
-            ],
+            "required": [],
             "type": "object"
           },
           "record": {

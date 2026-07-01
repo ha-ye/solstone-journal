@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
+from __future__ import annotations
+
 import json
 from pathlib import Path
 
@@ -18,8 +20,12 @@ SCHEMA_PATH = (
 )
 
 
+def _schema_text() -> str:
+    return SCHEMA_PATH.read_text(encoding="utf-8")
+
+
 def _load_schema() -> dict:
-    return json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    return json.loads(_schema_text())
 
 
 def test_schema_is_valid_draft_2020_12():
@@ -30,67 +36,47 @@ def test_talent_exposes_json_schema():
     assert get_talent("entities:entity_observer")["json_schema"] == _load_schema()
 
 
-def test_valid_payload_empty_observations():
-    validator = Draft202012Validator(_load_schema())
-
-    assert validator.is_valid(
-        {"observations": [], "skipped": [], "summary": "nothing today"}
-    )
-
-
-def test_valid_payload_single_group_single_item():
+def test_valid_operations_payload():
     validator = Draft202012Validator(_load_schema())
 
     assert validator.is_valid(
         {
-            "observations": [
+            "entities": [
                 {
                     "entity_id": "alice_johnson",
-                    "items": [
+                    "operations": [
                         {
-                            "content": "Prefers async communication",
-                            "reasoning": "Durable working style preference.",
-                        }
+                            "op": "update",
+                            "target_index": 0,
+                            "content": "Prefers concise morning planning meetings",
+                            "target_quote": "morning meetings",
+                            "reasoning": "Fresh source narrows the preference.",
+                        },
+                        {
+                            "op": "add",
+                            "target_index": None,
+                            "content": "Has deep knowledge of distributed systems",
+                            "target_quote": None,
+                            "reasoning": "Durable expertise.",
+                        },
+                        {
+                            "op": "drop",
+                            "target_index": 2,
+                            "content": None,
+                            "target_quote": "legacy planning",
+                            "reasoning": "Stale duplicate.",
+                        },
+                        {
+                            "op": "keep",
+                            "target_index": 3,
+                            "content": None,
+                            "target_quote": None,
+                            "reasoning": "Still useful.",
+                        },
                     ],
                 }
             ],
-            "skipped": [],
-            "summary": "one observation",
-        }
-    )
-
-
-def test_valid_payload_multi_group():
-    validator = Draft202012Validator(_load_schema())
-
-    assert validator.is_valid(
-        {
-            "observations": [
-                {
-                    "entity_id": "alice_johnson",
-                    "items": [
-                        {
-                            "content": "Prefers async communication",
-                            "reasoning": "Durable working style preference.",
-                        },
-                        {
-                            "content": "Works Pacific time hours",
-                            "reasoning": "Stable schedule pattern.",
-                        },
-                    ],
-                },
-                {
-                    "entity_id": "verona_platform",
-                    "items": [
-                        {
-                            "content": "Uses event sourcing in core workflows",
-                            "reasoning": "Architectural constraint.",
-                        }
-                    ],
-                },
-            ],
-            "skipped": ["bob_smith"],
-            "summary": "three observations across two entities",
+            "summary": "four operations",
         }
     )
 
@@ -98,65 +84,64 @@ def test_valid_payload_multi_group():
 def test_invalid_missing_top_required():
     validator = Draft202012Validator(_load_schema())
 
-    assert not validator.is_valid({"observations": [], "skipped": []})
+    assert not validator.is_valid({"entities": []})
+    assert not validator.is_valid({"summary": "missing entities"})
 
 
-def test_invalid_missing_group_entity_id():
+def test_invalid_extra_property_at_each_level():
     validator = Draft202012Validator(_load_schema())
 
     assert not validator.is_valid(
+        {"entities": [], "summary": "extra top", "extra": True}
+    )
+    assert not validator.is_valid(
         {
-            "observations": [
+            "entities": [
+                {"entity_id": "alice_johnson", "operations": [], "extra": True}
+            ],
+            "summary": "extra entity",
+        }
+    )
+    assert not validator.is_valid(
+        {
+            "entities": [
                 {
-                    "items": [
-                        {
-                            "content": "Prefers async communication",
-                            "reasoning": "Durable working style preference.",
-                        }
-                    ]
+                    "entity_id": "alice_johnson",
+                    "operations": [{"op": "keep", "reasoning": "audit", "extra": True}],
                 }
             ],
-            "skipped": [],
-            "summary": "missing entity id",
+            "summary": "extra operation",
         }
     )
 
 
-def test_invalid_empty_content():
+def test_invalid_unknown_op_enum():
     validator = Draft202012Validator(_load_schema())
 
     assert not validator.is_valid(
         {
-            "observations": [
+            "entities": [
                 {
                     "entity_id": "alice_johnson",
-                    "items": [{"content": 7, "reasoning": "Durable preference."}],
-                }
-            ],
-            "skipped": [],
-            "summary": "invalid content",
-        }
-    )
-
-
-def test_invalid_extra_property_on_group():
-    validator = Draft202012Validator(_load_schema())
-
-    assert not validator.is_valid(
-        {
-            "observations": [
-                {
-                    "entity_id": "alice_johnson",
-                    "items": [
+                    "operations": [
                         {
-                            "content": "Prefers async communication",
-                            "reasoning": "Durable working style preference.",
+                            "op": "replace",
+                            "target_index": None,
+                            "content": None,
+                            "target_quote": None,
+                            "reasoning": "unknown op",
                         }
                     ],
-                    "extra": True,
                 }
             ],
-            "skipped": [],
-            "summary": "extra property",
+            "summary": "unknown op",
         }
     )
+
+
+def test_schema_has_no_conditional_keywords():
+    schema = _schema_text()
+
+    assert '"if"' not in schema
+    assert '"then"' not in schema
+    assert '"oneOf"' not in schema

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import fields
+from datetime import datetime
 from pathlib import Path
 
 from solstone.apps.home.needs_you import (
@@ -13,7 +14,37 @@ from solstone.apps.home.needs_you import (
     _chat_item,
     _normalize_route_payload,
     classify_needs_you,
+    format_degraded_capture_line,
 )
+
+
+def _june_22_ms() -> float:
+    return datetime(2026, 6, 22, 12, 0, 0).timestamp() * 1000
+
+
+def _degraded_capture(
+    *,
+    name: str = "fedora",
+    active_count=79,
+    first_ts=None,
+    include_rejection: bool = True,
+) -> dict:
+    observer = {
+        "name": name,
+        "status": "degraded",
+    }
+    if include_rejection:
+        observer["ingest_rejection"] = {
+            "reason_code": "ingest_contract_invalid",
+            "active_count": active_count,
+            "first_ts": _june_22_ms() if first_ts is None else first_ts,
+            "latest_ts": _june_22_ms(),
+            "summary": "/tmp/private/screen.jsonl:2: value is invalid",
+            "stream": "fedora",
+            "version": "0.3.1",
+            "segment": "20260622/120000_300",
+        }
+    return {"status": "degraded", "observers": [observer]}
 
 
 def test_classify_needs_you_locked_shape_and_order():
@@ -38,6 +69,69 @@ def test_classify_needs_you_locked_shape_and_order():
         assert data["kind"] in ["chat", "confirm", "route"]
         assert data["disabled"] is False
         assert data["reason"] == ""
+
+
+def test_format_degraded_capture_line_single_named_full():
+    line = format_degraded_capture_line(_degraded_capture())
+
+    assert line == "fedora isn't reaching your journal — 79 rejected since jun 22"
+    assert "segment" not in line
+    assert "screen.jsonl" not in line
+    assert "/tmp/private" not in line
+
+
+def test_format_degraded_capture_line_multiple_combines_first_and_count():
+    capture = _degraded_capture()
+    capture["observers"].append(
+        {
+            "name": "phone",
+            "status": "degraded",
+            "ingest_rejection": {
+                "reason_code": "ingest_contract_invalid",
+                "active_count": 2,
+                "first_ts": _june_22_ms(),
+                "latest_ts": _june_22_ms(),
+                "summary": "screen.jsonl:2: value is invalid",
+                "stream": "phone",
+                "version": None,
+            },
+        }
+    )
+
+    assert (
+        format_degraded_capture_line(capture)
+        == "fedora isn't reaching your journal — 79 rejected since jun 22, and 1 more"
+    )
+
+
+def test_format_degraded_capture_line_named_without_required_count_or_date():
+    missing_ts = _degraded_capture()
+    del missing_ts["observers"][0]["ingest_rejection"]["first_ts"]
+    assert (
+        format_degraded_capture_line(missing_ts) == "fedora isn't reaching your journal"
+    )
+    assert (
+        format_degraded_capture_line(_degraded_capture(active_count=None))
+        == "fedora isn't reaching your journal"
+    )
+
+
+def test_format_degraded_capture_line_fallbacks_and_non_degraded():
+    assert (
+        format_degraded_capture_line(_degraded_capture(include_rejection=False))
+        == "an observer isn't reaching your journal"
+    )
+    assert (
+        format_degraded_capture_line({"status": "degraded", "observers": []})
+        == "an observer isn't reaching your journal"
+    )
+    assert format_degraded_capture_line({"status": "active", "observers": []}) is None
+
+
+def test_classify_needs_you_no_longer_emits_capture_route():
+    items = classify_needs_you({"placeholder_text": "x"}, ["y"])
+
+    assert all(item.payload != {"href": "/app/health"} for item in items)
 
 
 def test_classify_needs_you_warns_and_omits_malformed(caplog):

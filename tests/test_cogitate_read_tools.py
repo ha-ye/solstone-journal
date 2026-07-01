@@ -27,8 +27,25 @@ def read_tools_journal(tmp_path):
 
     write("chronicle/20260608/session/090000_300/evidence.md", "x evidence\n")
     write("chronicle/20260608/session/090000_300/nested/deep.txt", "deep x\n")
+    write(
+        "chronicle/20260608/session/090000_300/talents/sense.json",
+        '{"activity_summary":"rohan"}\n',
+    )
     write("chronicle/20260608/foo", "date redirected\n")
+    write("chronicle/20260608/.git/config", "git-secret x\n")
+    write("chronicle/20260608/.cache/x", "cache-secret x\n")
+    write("chronicle/20260608/node_modules/pkg/index.js", "node-secret x\n")
+    write(
+        "chronicle/20260608/.venv/lib/python3.12/site-packages/pkg.py",
+        "venv-secret x\n",
+    )
+    write("chronicle/20260608/id_rsa", "credential-secret x\n")
+    write("chronicle/20260608/private.pem", "credential-secret x\n")
+    write("chronicle/20260608/.env", "credential-secret x\n")
     write("notes/nested/a.txt", "note x\n")
+    write("entities/rohan/entity.json", '{"name":"Rohan"}\n')
+    write("facets/work/facet.json", '{"facet":"work"}\n')
+    write("facets/work/activities/20260608.jsonl", '{"activity":"standup"}\n')
     write(".agents/skills/journal/SKILL.md", "# Journal Skill\n")
     write(".git/config", "git-secret x\n")
     write(".cache/x", "cache-secret x\n")
@@ -55,6 +72,8 @@ def read_tools_journal(tmp_path):
 
     os.symlink(journal / ".git", journal / "logs")
     os.symlink(journal / "real", journal / "alias")
+    os.symlink(".git", journal / "chronicle" / "20260608" / "logs")
+    os.symlink("..", journal / "chronicle" / "loop")
 
     env = SimpleNamespace(journal=journal, denied=denied)
     try:
@@ -75,6 +94,15 @@ def _payload_paths(result: crt.ReadResult) -> list[str]:
         elif isinstance(item, crt.Entry | crt.GrepMatch):
             paths.append(item.path)
     return paths
+
+
+def _assert_refusal(result: crt.ReadResult, refusal: str) -> None:
+    assert result.ok is False
+    assert result.refusal == refusal
+
+
+def _assert_broad_root(result: crt.ReadResult) -> None:
+    _assert_refusal(result, crt.REFUSAL_BROAD_ROOT)
 
 
 def test_module_docstring_declares_security_contract():
@@ -99,16 +127,18 @@ def test_ac01_non_root_paths_use_contained_path_for_escape(read_tools_journal):
     assert {result.refusal for result in results} == {crt.REFUSAL_PATH_ESCAPE}
 
 
-def test_ac02_journal_root_defaults_succeed(read_tools_journal):
+def test_ac02_journal_root_recursive_scans_refuse_broad(read_tools_journal):
     journal = read_tools_journal.journal
 
     listed = crt.list_directory(journal)
+    listed_recursive = crt.list_directory(journal, recursive=True)
     globbed = crt.glob(journal, "*")
     grepped = crt.grep_search(journal, "x")
 
     assert listed.ok is True
-    assert globbed.ok is True
-    assert grepped.ok is True
+    for result in [listed_recursive, globbed, grepped]:
+        assert result.ok is False
+        assert result.refusal == crt.REFUSAL_BROAD_ROOT
 
 
 def test_ac03_read_file_date_prefix_redirects_to_chronicle(read_tools_journal):
@@ -149,15 +179,36 @@ def test_ac05_symlink_escape_explicit_target_refused_by_all_tools(read_tools_jou
 def test_ac06_logs_symlink_to_git_is_pruned_from_traversal(read_tools_journal):
     journal = read_tools_journal.journal
 
-    listed = crt.list_directory(journal, recursive=True, include_hidden=True)
-    globbed = crt.glob(journal, "*", include_hidden=True)
-    grepped = crt.grep_search(journal, "git-secret", include_hidden=True)
+    listed = crt.list_directory(
+        journal,
+        "chronicle/20260608",
+        recursive=True,
+        include_hidden=True,
+    )
+    globbed = crt.glob(
+        journal,
+        "*",
+        root="chronicle/20260608",
+        include_hidden=True,
+    )
+    grepped = crt.grep_search(
+        journal,
+        "git-secret",
+        path="chronicle/20260608",
+        include_hidden=True,
+    )
 
-    assert all("logs" not in path for path in _payload_paths(listed))
-    assert all("logs" not in path for path in _payload_paths(globbed))
-    assert all("logs" not in path for path in _payload_paths(grepped))
-    assert all(".git/config" not in path for path in _payload_paths(listed))
-    assert ".git/config" not in _payload_paths(globbed)
+    assert all("chronicle/20260608/logs" not in path for path in _payload_paths(listed))
+    assert all(
+        "chronicle/20260608/logs" not in path for path in _payload_paths(globbed)
+    )
+    assert all(
+        "chronicle/20260608/logs" not in path for path in _payload_paths(grepped)
+    )
+    assert all(
+        "chronicle/20260608/.git/config" not in path for path in _payload_paths(listed)
+    )
+    assert "chronicle/20260608/.git/config" not in _payload_paths(globbed)
     assert grepped.payload == []
 
 
@@ -177,11 +228,33 @@ def test_ac07_component_denylist_loud_for_read_silent_for_traversal(
         assert result.ok is False
         assert result.refusal == crt.REFUSAL_DENIED_COMPONENT
 
-    listed = crt.list_directory(journal, recursive=True, include_hidden=True)
-    globbed = crt.glob(journal, "*", include_hidden=True)
-    grepped = crt.grep_search(journal, "secret", include_hidden=True)
+    listed_root = crt.list_directory(journal)
+    assert all(
+        rel not in _payload_paths(listed_root)
+        for rel in [".git", ".cache", "node_modules", ".venv"]
+    )
 
-    for rel in denied:
+    listed = crt.list_directory(
+        journal,
+        "chronicle/20260608",
+        recursive=True,
+        include_hidden=True,
+    )
+    globbed = crt.glob(
+        journal,
+        "*",
+        root="chronicle/20260608",
+        include_hidden=True,
+    )
+    grepped = crt.grep_search(
+        journal,
+        "secret",
+        path="chronicle/20260608",
+        include_hidden=True,
+    )
+
+    bounded_denied = [f"chronicle/20260608/{rel}" for rel in denied]
+    for rel in bounded_denied:
         assert rel not in _payload_paths(listed)
         assert rel not in _payload_paths(globbed)
         assert rel not in _payload_paths(grepped)
@@ -198,11 +271,178 @@ def test_ac08_credential_denylist_loud_for_read_excluded_from_search(
         assert result.ok is False
         assert result.refusal == crt.REFUSAL_CREDENTIAL_FILE
 
-    globbed = crt.glob(journal, "*", include_hidden=True)
-    grepped = crt.grep_search(journal, "credential-secret", include_hidden=True)
-    for rel in denied:
+    globbed = crt.glob(
+        journal,
+        "*",
+        root="chronicle/20260608",
+        include_hidden=True,
+    )
+    grepped = crt.grep_search(
+        journal,
+        "credential-secret",
+        path="chronicle/20260608",
+        include_hidden=True,
+    )
+    for rel in [f"chronicle/20260608/{item}" for item in denied]:
         assert rel not in _payload_paths(globbed)
         assert rel not in _payload_paths(grepped)
+
+
+def test_broad_glob_refuses_root_chronicle_and_facets(read_tools_journal):
+    journal = read_tools_journal.journal
+    cases = [
+        ("*", "."),
+        ("*", ""),
+        ("*", "./"),
+        ("chronicle/x", "."),
+        ("20260608/**", "chronicle"),
+        ("*/x", "facets"),
+    ]
+
+    for pattern, root in cases:
+        _assert_broad_root(crt.glob(journal, pattern, root=root))
+
+
+def test_broad_grep_directory_refuses_even_with_file_glob(read_tools_journal):
+    journal = read_tools_journal.journal
+    cases = [
+        (".", "entities.txt"),
+        (".", "*.py"),
+        ("chronicle", None),
+        ("facets", None),
+    ]
+
+    for path, file_glob in cases:
+        _assert_broad_root(
+            crt.grep_search(journal, "x", path=path, file_glob=file_glob)
+        )
+
+
+def test_broad_recursive_list_directory_refuses_root_chronicle_facets(
+    read_tools_journal,
+):
+    journal = read_tools_journal.journal
+
+    for path in [".", "chronicle", "facets"]:
+        _assert_broad_root(crt.list_directory(journal, path, recursive=True))
+
+
+def test_broad_refusal_happens_before_walk_allowed(read_tools_journal, monkeypatch):
+    journal = read_tools_journal.journal
+    called = False
+
+    def fail_walk(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("_walk_allowed should not be called")
+
+    monkeypatch.setattr(crt, "_walk_allowed", fail_walk)
+
+    _assert_broad_root(crt.glob(journal, "*"))
+    _assert_broad_root(crt.list_directory(journal, recursive=True))
+    _assert_broad_root(crt.grep_search(journal, "x"))
+    assert called is False
+
+
+def test_broad_root_normalization_and_symlink_back_to_root(read_tools_journal):
+    journal = read_tools_journal.journal
+
+    for root in ["", ".", "./"]:
+        _assert_broad_root(crt.glob(journal, "*", root=root))
+
+    _assert_broad_root(crt.glob(journal, "*", root="chronicle/loop"))
+    _assert_broad_root(crt.list_directory(journal, "chronicle/loop", recursive=True))
+
+
+def test_broad_specific_pattern_never_rescues_root(read_tools_journal):
+    journal = read_tools_journal.journal
+
+    _assert_broad_root(crt.glob(journal, "entities/rohan/entity.json", root="."))
+    _assert_broad_root(
+        crt.grep_search(
+            journal,
+            "Rohan",
+            path=".",
+            file_glob="entities/rohan/entity.json",
+        )
+    )
+
+
+def test_allowed_bounded_recursive_roots_succeed(read_tools_journal):
+    journal = read_tools_journal.journal
+
+    root_list = crt.list_directory(journal)
+    day_glob = crt.glob(journal, "*090000*", root="chronicle/20260608")
+    sense_json = crt.glob(
+        journal,
+        "*/talents/sense.json",
+        root="chronicle/20260608/session/090000_300",
+    )
+    facet_glob = crt.glob(journal, "*", root="facets/work")
+    facet_list = crt.list_directory(journal, "facets/work", recursive=True)
+    day_grep = crt.grep_search(journal, "evidence", path="chronicle/20260608")
+    file_grep = crt.grep_search(
+        journal,
+        "Rohan",
+        path="entities/rohan/entity.json",
+    )
+
+    assert root_list.ok is True
+    assert _payload_paths(root_list)
+    assert day_glob.ok is True
+    assert any("090000_300" in path for path in _payload_paths(day_glob))
+    assert sense_json.ok is True
+    assert _payload_paths(sense_json) == [
+        "chronicle/20260608/session/090000_300/talents/sense.json"
+    ]
+    assert facet_glob.ok is True
+    assert "facets/work/facet.json" in _payload_paths(facet_glob)
+    assert facet_list.ok is True
+    assert "facets/work/activities/20260608.jsonl" in _payload_paths(facet_list)
+    assert day_grep.ok is True
+    assert [match.path for match in day_grep.payload] == [
+        "chronicle/20260608/session/090000_300/evidence.md"
+    ]
+    assert file_grep.ok is True
+    assert [match.path for match in file_grep.payload] == ["entities/rohan/entity.json"]
+
+
+def test_entities_top_level_recursive_exemption_succeeds(read_tools_journal):
+    journal = read_tools_journal.journal
+
+    globbed = crt.glob(journal, "*rohan*", root="entities")
+    listed = crt.list_directory(journal, "entities", recursive=True)
+    grepped = crt.grep_search(
+        journal,
+        "Rohan",
+        path="entities",
+        file_glob="*/entity.json",
+    )
+
+    assert globbed.ok is True
+    assert "entities/rohan/entity.json" in _payload_paths(globbed)
+    assert listed.ok is True
+    assert "entities/rohan/entity.json" in _payload_paths(listed)
+    assert grepped.ok is True
+    assert [match.path for match in grepped.payload] == ["entities/rohan/entity.json"]
+
+
+def test_security_refusals_win_before_broad_guard(read_tools_journal):
+    journal = read_tools_journal.journal
+
+    _assert_refusal(
+        crt.glob(journal, "*", root="escape"),
+        crt.REFUSAL_PATH_ESCAPE,
+    )
+    # Denial runs before the broad guard; denied components are not broad roots.
+    _assert_refusal(
+        crt.list_directory(journal, ".git", recursive=True),
+        crt.REFUSAL_DENIED_COMPONENT,
+    )
+    _assert_refusal(
+        crt.glob(journal, "*", root=".git"),
+        crt.REFUSAL_DENIED_COMPONENT,
+    )
 
 
 def test_ac09_hidden_agents_skill_readable_by_explicit_read(read_tools_journal):
@@ -247,7 +487,7 @@ def test_ac11_caps_and_budget_truncate_or_exhaust(read_tools_journal):
     line_read = crt.read_file(journal, "many-lines.txt", max_lines=3)
     byte_read = crt.read_file(journal, "big-bytes.txt", max_bytes=5)
     listed = crt.list_directory(journal, "capdir", max_entries=2)
-    globbed = crt.glob(journal, "capdir/*", max_matches=2)
+    globbed = crt.glob(journal, "*", root="capdir", max_matches=2)
     grepped = crt.grep_search(journal, "needle", path="many-grep.txt", max_matches=2)
 
     assert line_read.truncated is True
@@ -347,9 +587,14 @@ def test_ac14_reads_do_not_mutate_and_imports_stay_read_only(read_tools_journal)
 
     crt.read_file(journal, "notes/nested/a.txt")
     crt.read_file(journal, "binary.bin")
-    crt.list_directory(journal, recursive=True, include_hidden=True)
-    crt.glob(journal, "*", include_hidden=True)
-    crt.grep_search(journal, "x", include_hidden=True)
+    crt.list_directory(
+        journal,
+        "chronicle/20260608",
+        recursive=True,
+        include_hidden=True,
+    )
+    crt.glob(journal, "*", root="chronicle/20260608", include_hidden=True)
+    crt.grep_search(journal, "x", path="chronicle/20260608", include_hidden=True)
 
     assert _journal_snapshot(journal) == before
 

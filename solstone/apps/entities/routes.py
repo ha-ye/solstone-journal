@@ -20,7 +20,6 @@ logger = logging.getLogger(__name__)
 
 import solstone.think.deferred_deletes as deferred_deletes
 from solstone.apps.entities.copy import entities_copy_payload
-from solstone.apps.entities.talent.entity_digest import assemble_facet_day_digest
 from solstone.apps.utils import log_app_action
 from solstone.convey import state
 from solstone.convey.reasons import (
@@ -84,7 +83,6 @@ from solstone.think.entities import (
     update_facet_entity_description,
     update_facet_entity_identity,
 )
-from solstone.think.entities.consolidation import consolidate_detected_entities
 from solstone.think.entities.journal import delete_journal_entity, load_journal_entity
 from solstone.think.entities.relationships import move_facet_entity
 from solstone.think.entities.review_candidates import (
@@ -245,19 +243,6 @@ def get_detected_entities(facet_name: str) -> Any:
     if not day:
         return error_response(MISSING_REQUIRED_FIELD, detail="day is required")
     return respond_collection(load_entities(facet_name, day))
-
-
-@entities_bp.route("/api/<facet_name>/digest", methods=["GET"])
-def get_facet_day_digest(facet_name: str) -> Any:
-    """Return deterministic digest evidence for one facet day."""
-    day = request.args.get("day", "")
-    if not day:
-        return error_response(MISSING_REQUIRED_FIELD, detail="day is required")
-    return jsonify(
-        content=assemble_facet_day_digest(facet_name, day),
-        facet=facet_name,
-        day=day,
-    )
 
 
 @entities_bp.route("/api/<facet_name>/detected", methods=["POST"])
@@ -551,18 +536,6 @@ def add_aka_for_call(facet_name: str) -> Any:
         params={"entity": original_query, "name": exclude_name, "aka": aka},
     )
     return success_response({"aka": aka_list})
-
-
-@entities_bp.route("/api/consolidate", methods=["POST"])
-def consolidate_entities_for_call() -> Any:
-    """Consolidate detected entities for the CLI."""
-    data = _json_body()
-    full = _body_bool(data, "full")
-    try:
-        count = consolidate_detected_entities(state.journal_root, full=full)
-    except Exception as exc:
-        return error_response(ENTITY_OPERATION_FAILED, detail=str(exc))
-    return success_response({"count": count})
 
 
 @entities_bp.route("/api/record-merge-candidate", methods=["POST"])

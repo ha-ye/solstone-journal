@@ -9,10 +9,11 @@ from importlib.metadata import version as _pkg_version
 
 from solstone.log_policy import apply_http_logging_policy
 
-# HuggingFace Hub reads this at import time. Default telemetry off before any
-# optional provider path can import huggingface_hub.
+# HuggingFace Hub and OpenTelemetry-compatible SDKs read these at import/init
+# time. Default telemetry off before any optional provider path can import them.
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 os.environ.setdefault("DO_NOT_TRACK", "1")
+os.environ.setdefault("OTEL_SDK_DISABLED", "true")
 
 try:
     __version__ = _pkg_version("solstone")

@@ -1,0 +1,23 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["detections"],
+  "properties": {
+    "detections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "facet", "description"],
+        "properties": {
+          "name": {"type": "string"},
+          "facet": {
+            "type": "string",
+            "enum": ["__RUNTIME_FACETS__"]
+          },
+          "description": {"type": "string"}
+        }
+      }
+    }
+  }
+}

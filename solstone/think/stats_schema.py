@@ -1,15 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 DAY_FIELDS = (
     "transcript_sessions",
     "transcript_segments",
     "transcript_duration",
+    "transcript_ranges",
     "percept_sessions",
     "percept_frames",
     "percept_duration",
+    "percept_ranges",
     "pending_segments",
     "segments_pending_think",
     "outputs_processed",
@@ -21,9 +23,11 @@ TOTAL_FIELDS = (
     "transcript_sessions",
     "transcript_segments",
     "transcript_duration",
+    "transcript_ranges",
     "percept_sessions",
     "percept_frames",
     "percept_duration",
+    "percept_ranges",
     "pending_segments",
     "segments_pending_think",
     "outputs_processed",
@@ -50,7 +54,7 @@ REQUIRED_TOP_LEVEL = (
 
 
 def validate(data: dict) -> list[str]:
-    """Validate stats output against schema v6. Returns list of error strings (empty = valid)."""
+    """Validate stats output against schema v7. Returns list of error strings (empty = valid)."""
     errors = []
 
     # Check schema_version

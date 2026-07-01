@@ -98,8 +98,11 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/apps/observer/utils.py",
         "solstone/think/activities.py",
         "solstone/think/awareness.py",
+        # One-shot backfill of empty processing records onto header-only native describe/transcribe outputs.
+        "solstone/think/backfill_processing_records.py",
+        # Sole ops/runtime writer of health/catchup-state.json; uses hold_lock for cross-process RMW.
+        "solstone/think/catchup_state.py",
         "solstone/think/day_accumulator.py",
-        "solstone/think/entities/consolidation.py",
         "solstone/think/entities/journal.py",
         "solstone/think/entities/merge.py",
         "solstone/think/entities/observations.py",
@@ -112,6 +115,7 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/think/facets.py",
         "solstone/think/identity.py",
         "solstone/think/journal_config.py",
+        "solstone/think/log_retention.py",
         "solstone/think/schedule_config.py",
         "solstone/think/push/devices.py",
         # Backup hosted-tier binding (0600 broker-token cache).
@@ -119,6 +123,7 @@ OWNER_FILES: frozenset[str] = frozenset(
         # Link domain — device-pairing service state.
         "solstone/think/link/auth.py",
         "solstone/think/link/ca.py",
+        "solstone/think/link/establish.py",
         "solstone/think/link/nonces.py",
         "solstone/think/link/paths.py",
         "solstone/think/sense_splitter.py",

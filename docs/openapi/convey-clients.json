@@ -63,6 +63,8 @@
               "file_read_failed",
               "health_report_failed",
               "identity_busy",
+              "identity_not_locked",
+              "import_client_id_conflict",
               "import_conflict",
               "import_metadata_failed",
               "import_not_found",
@@ -87,6 +89,7 @@
               "operation_no_longer_available",
               "paired_device_not_found",
               "pairing_key_invalid",
+              "pairing_relay_unavailable",
               "pairing_request_invalid",
               "pl_revoked",
               "principal_entity_protected",
@@ -267,12 +270,16 @@
             "content": {
               "application/json": {
                 "example": {
+                  "queue_depth": 0,
                   "queued": false,
                   "use_id": "1781803200000"
                 },
                 "schema": {
                   "additionalProperties": true,
                   "properties": {
+                    "queue_depth": {
+                      "type": "integer"
+                    },
                     "queued": {
                       "type": "boolean"
                     },
@@ -282,7 +289,8 @@
                   },
                   "required": [
                     "use_id",
-                    "queued"
+                    "queued",
+                    "queue_depth"
                   ],
                   "type": "object"
                 }
@@ -320,7 +328,23 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "additionalProperties": true,
+                      "properties": {
+                        "queue_depth": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "queue_depth"
+                      ],
+                      "type": "object"
+                    }
+                  ]
                 }
               }
             },
@@ -1240,7 +1264,7 @@
                 "example": {
                   "home_state": "welcome",
                   "journal_age_days": 0,
-                  "welcome_framing": "Most of what I learn becomes useful in the third or fourth week, when I've seen enough patterns to surface them. For now, here's what's already happening:"
+                  "welcome_framing": "Most of what I learn becomes useful after about a week, when I've seen enough patterns to surface them. For now, here's what's already happening:"
                 },
                 "schema": {
                   "additionalProperties": true,
@@ -1283,9 +1307,160 @@
         ]
       }
     },
+    "/app/import/api/meta": {
+      "post": {
+        "description": "Update allowlisted metadata fields on a not-yet-started import.",
+        "operationId": "import.meta",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "facet": "work",
+                "path": "/journal/imports/20260618_143022/source.m4a"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "client": {
+                    "type": "object"
+                  },
+                  "facet": {
+                    "type": "string"
+                  },
+                  "imported_via": {
+                    "type": "string"
+                  },
+                  "mime_type": {
+                    "type": "string"
+                  },
+                  "observer_handle": {
+                    "type": "string"
+                  },
+                  "original_filename": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "setting": {
+                    "type": "string"
+                  },
+                  "source_hint": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "path": "/journal/imports/20260618_143022/source.m4a",
+                  "status": "ok",
+                  "timestamp": "20260618_143022",
+                  "updated": {
+                    "facet": "work"
+                  }
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string"
+                    },
+                    "updated": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "path",
+                    "timestamp",
+                    "updated"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Import metadata updated."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The import path was missing or the import state is terminal.",
+            "x-reason-codes": [
+              "invalid_operation_for_state",
+              "missing_required_field"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Import metadata was not found.",
+            "x-reason-codes": [
+              "import_not_found"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Import metadata could not be read or updated.",
+            "x-reason-codes": [
+              "import_metadata_failed"
+            ]
+          }
+        },
+        "summary": "Update import metadata",
+        "tags": [
+          "import"
+        ]
+      }
+    },
     "/app/import/api/save": {
       "post": {
-        "description": "Save an uploaded import file or pasted text into imports staging. Submit either file or text.",
+        "description": "Save an uploaded import file or pasted text into imports staging. Submit either file or text. client_item_id is required for idempotent native-client staging.",
         "operationId": "import.save",
         "requestBody": {
           "content": {
@@ -1293,6 +1468,15 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "client": {
+                    "type": "object"
+                  },
+                  "client_item_id": {
+                    "type": "string"
+                  },
+                  "deterministic_only": {
+                    "type": "boolean"
+                  },
                   "facet": {
                     "type": "string"
                   },
@@ -1309,37 +1493,194 @@
                   "setting": {
                     "type": "string"
                   },
+                  "source_hint": {
+                    "type": "string"
+                  },
                   "text": {
                     "type": "string"
                   }
                 },
+                "required": [
+                  "client_item_id"
+                ],
                 "type": "object"
               }
             }
           },
-          "description": "Multipart body with either file or text."
+          "description": "Multipart body with either file or text.",
+          "required": true
         },
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "example": {
+                  "client_item_id": "ios-item-4f8b",
+                  "diagnostics": {
+                    "source_inference": "extension",
+                    "timestamp_detection_method": "upload_fallback",
+                    "timestamp_detection_model_called": false,
+                    "timestamp_detection_no_match_reason": null
+                  },
                   "facet": null,
-                  "path": "/journal/imports/20260618_143022/source.txt",
+                  "metadata": {
+                    "client": {},
+                    "imported_via": "ios",
+                    "mime_type": "audio/mp4",
+                    "observer_handle": null,
+                    "original_filename": "source.m4a",
+                    "source_hint": null
+                  },
+                  "path": "/journal/imports/20260618_143022/source.m4a",
+                  "recommended_action": "start",
+                  "replay": false,
+                  "schema_version": 1,
                   "setting": null,
+                  "source": "audio",
+                  "status": "staged",
                   "timestamp": "20260618_143022"
                 },
                 "schema": {
                   "additionalProperties": true,
                   "properties": {
+                    "client_item_id": {
+                      "type": "string"
+                    },
+                    "diagnostics": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "source_inference": {
+                          "enum": [
+                            "extension",
+                            "content_type",
+                            "default"
+                          ],
+                          "type": "string"
+                        },
+                        "timestamp_detection_method": {
+                          "type": "string"
+                        },
+                        "timestamp_detection_model_called": {
+                          "type": "boolean"
+                        },
+                        "timestamp_detection_no_match_reason": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "timestamp_detection_method",
+                        "timestamp_detection_model_called",
+                        "timestamp_detection_no_match_reason",
+                        "source_inference"
+                      ],
+                      "type": "object"
+                    },
+                    "duplicate": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "entry_count": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "import_id": {
+                          "type": "string"
+                        },
+                        "imported_at": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "state": {
+                          "enum": [
+                            "imported",
+                            "staged"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "import_id",
+                        "imported_at",
+                        "entry_count",
+                        "state"
+                      ],
+                      "type": "object"
+                    },
                     "facet": {
                       "type": [
                         "string",
                         "null"
                       ]
                     },
+                    "metadata": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "client": {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        "imported_via": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "mime_type": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "observer_handle": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "original_filename": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "source_hint": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "original_filename",
+                        "mime_type",
+                        "imported_via",
+                        "observer_handle",
+                        "source_hint",
+                        "client"
+                      ],
+                      "type": "object"
+                    },
                     "path": {
                       "type": "string"
+                    },
+                    "recommended_action": {
+                      "enum": [
+                        "start",
+                        "do_not_start"
+                      ],
+                      "type": "string"
+                    },
+                    "replay": {
+                      "type": "boolean"
+                    },
+                    "schema_version": {
+                      "type": "integer"
                     },
                     "setting": {
                       "type": [
@@ -1347,21 +1688,45 @@
                         "null"
                       ]
                     },
+                    "source": {
+                      "enum": [
+                        "audio",
+                        "image",
+                        "document",
+                        "text"
+                      ],
+                      "type": "string"
+                    },
+                    "status": {
+                      "enum": [
+                        "staged",
+                        "duplicate"
+                      ],
+                      "type": "string"
+                    },
                     "timestamp": {
                       "type": "string"
                     }
                   },
                   "required": [
+                    "schema_version",
+                    "status",
+                    "replay",
                     "path",
                     "timestamp",
+                    "client_item_id",
+                    "source",
                     "facet",
-                    "setting"
+                    "setting",
+                    "recommended_action",
+                    "metadata",
+                    "diagnostics"
                   ],
                   "type": "object"
                 }
               }
             },
-            "description": "Import source saved."
+            "description": "Import source staged, replayed, or identified as a duplicate."
           },
           "400": {
             "content": {
@@ -1371,9 +1736,10 @@
                 }
               }
             },
-            "description": "Neither file nor text was supplied.",
+            "description": "Required fields were missing or neither file nor text was supplied.",
             "x-reason-codes": [
-              "ingest_no_files"
+              "ingest_no_files",
+              "missing_required_field"
             ]
           },
           "403": {
@@ -1388,6 +1754,19 @@
             "x-reason-codes": [
               "pl_revoked"
             ]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "client_item_id already names different staged content.",
+            "x-reason-codes": [
+              "import_client_id_conflict"
+            ]
           }
         },
         "summary": "Save import source",
@@ -1396,9 +1775,337 @@
         ]
       }
     },
+    "/app/import/api/save-path": {
+      "post": {
+        "description": "Register a local filesystem path for import staging using the same idempotent summary response as import.save.",
+        "operationId": "import.savePath",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "client": {},
+                "client_item_id": "ios-path-1357",
+                "path": "/Users/sol/Documents/Notes",
+                "source_hint": "obsidian"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "client": {
+                    "type": "object"
+                  },
+                  "client_item_id": {
+                    "type": "string"
+                  },
+                  "facet": {
+                    "type": "string"
+                  },
+                  "imported_via": {
+                    "type": "string"
+                  },
+                  "observer_handle": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "setting": {
+                    "type": "string"
+                  },
+                  "source_hint": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "client_item_id",
+                  "path"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "client_item_id": "ios-path-1357",
+                  "diagnostics": {
+                    "source_inference": "extension",
+                    "timestamp_detection_method": "upload_fallback",
+                    "timestamp_detection_model_called": false,
+                    "timestamp_detection_no_match_reason": null
+                  },
+                  "facet": null,
+                  "metadata": {
+                    "client": {},
+                    "imported_via": "ios",
+                    "mime_type": null,
+                    "observer_handle": null,
+                    "original_filename": "Notes",
+                    "source_hint": "obsidian"
+                  },
+                  "path": "/Users/sol/Documents/Notes",
+                  "recommended_action": "start",
+                  "replay": false,
+                  "schema_version": 1,
+                  "setting": null,
+                  "source": "text",
+                  "status": "staged",
+                  "timestamp": "20260618_143022"
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "client_item_id": {
+                      "type": "string"
+                    },
+                    "diagnostics": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "source_inference": {
+                          "enum": [
+                            "extension",
+                            "content_type",
+                            "default"
+                          ],
+                          "type": "string"
+                        },
+                        "timestamp_detection_method": {
+                          "type": "string"
+                        },
+                        "timestamp_detection_model_called": {
+                          "type": "boolean"
+                        },
+                        "timestamp_detection_no_match_reason": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "timestamp_detection_method",
+                        "timestamp_detection_model_called",
+                        "timestamp_detection_no_match_reason",
+                        "source_inference"
+                      ],
+                      "type": "object"
+                    },
+                    "duplicate": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "entry_count": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "import_id": {
+                          "type": "string"
+                        },
+                        "imported_at": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "state": {
+                          "enum": [
+                            "imported",
+                            "staged"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "import_id",
+                        "imported_at",
+                        "entry_count",
+                        "state"
+                      ],
+                      "type": "object"
+                    },
+                    "facet": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "metadata": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "client": {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        "imported_via": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "mime_type": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "observer_handle": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "original_filename": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "source_hint": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "original_filename",
+                        "mime_type",
+                        "imported_via",
+                        "observer_handle",
+                        "source_hint",
+                        "client"
+                      ],
+                      "type": "object"
+                    },
+                    "path": {
+                      "type": "string"
+                    },
+                    "recommended_action": {
+                      "enum": [
+                        "start",
+                        "do_not_start"
+                      ],
+                      "type": "string"
+                    },
+                    "replay": {
+                      "type": "boolean"
+                    },
+                    "schema_version": {
+                      "type": "integer"
+                    },
+                    "setting": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "source": {
+                      "enum": [
+                        "audio",
+                        "image",
+                        "document",
+                        "text"
+                      ],
+                      "type": "string"
+                    },
+                    "status": {
+                      "enum": [
+                        "staged",
+                        "duplicate"
+                      ],
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "schema_version",
+                    "status",
+                    "replay",
+                    "path",
+                    "timestamp",
+                    "client_item_id",
+                    "source",
+                    "facet",
+                    "setting",
+                    "recommended_action",
+                    "metadata",
+                    "diagnostics"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Import path staged, replayed, or identified as a duplicate."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "client_item_id or path was missing.",
+            "x-reason-codes": [
+              "missing_required_field"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The local path did not exist.",
+            "x-reason-codes": [
+              "file_not_found"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "client_item_id already names different staged content.",
+            "x-reason-codes": [
+              "import_client_id_conflict"
+            ]
+          }
+        },
+        "summary": "Save import source path",
+        "tags": [
+          "import"
+        ]
+      }
+    },
     "/app/import/api/start": {
       "post": {
-        "description": "Start processing a previously saved import source.",
+        "description": "Start processing a previously saved import source. Saved import metadata is authoritative for facet, setting, and source routing.",
         "operationId": "import.start",
         "requestBody": {
           "content": {
@@ -1406,7 +2113,6 @@
               "example": {
                 "force": false,
                 "path": "/journal/imports/20260618_143022/source.txt",
-                "source": "manual",
                 "timestamp": "20260618_143022"
               },
               "schema": {
@@ -1416,9 +2122,6 @@
                     "type": "boolean"
                   },
                   "path": {
-                    "type": "string"
-                  },
-                  "source": {
                     "type": "string"
                   },
                   "timestamp": {
@@ -1471,8 +2174,9 @@
                 }
               }
             },
-            "description": "Path or timestamp was missing.",
+            "description": "Path or timestamp was missing, or the import is terminal.",
             "x-reason-codes": [
+              "invalid_operation_for_state",
               "missing_required_field"
             ]
           },
@@ -1547,11 +2251,19 @@
                   "ca_fingerprint": "9c5f2e0c8e6a42f0a32e55e5cf7f5b4a",
                   "enrolled": true,
                   "home_address": null,
+                  "home_candidates": [],
+                  "home_candidates_error": null,
+                  "home_candidates_state": "ready",
                   "home_label": "home",
                   "instance_id": "4d1f3d57-4f39-4930-b8f8-5e6f2a84d51a",
                   "lan_accessible": true,
+                  "last_link_event_at": null,
+                  "last_relay_tunnel_error": null,
+                  "last_relay_tunnel_error_at": null,
+                  "last_successful_relay_tunnel_at": null,
                   "posture": "lan",
                   "reachability": "local",
+                  "relay_listen_generation": null,
                   "relay_state": "not_configured",
                   "relay_url": "https://relay.solstone.local",
                   "vpn": {
@@ -1577,6 +2289,46 @@
                         "null"
                       ]
                     },
+                    "home_candidates": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "address": {
+                            "type": "string"
+                          },
+                          "selected": {
+                            "type": "boolean"
+                          },
+                          "source": {
+                            "enum": [
+                              "detected",
+                              "override"
+                            ],
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "address",
+                          "selected",
+                          "source"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "home_candidates_error": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "home_candidates_state": {
+                      "enum": [
+                        "ready",
+                        "unavailable"
+                      ],
+                      "type": "string"
+                    },
                     "home_label": {
                       "type": [
                         "string",
@@ -1592,11 +2344,41 @@
                     "lan_accessible": {
                       "type": "boolean"
                     },
+                    "last_link_event_at": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "last_relay_tunnel_error": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "last_relay_tunnel_error_at": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "last_successful_relay_tunnel_at": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
                     "posture": {
                       "type": "string"
                     },
                     "reachability": {
                       "type": "string"
+                    },
+                    "relay_listen_generation": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
                     },
                     "relay_state": {
                       "type": "string"
@@ -1633,8 +2415,16 @@
                     "posture",
                     "reachability",
                     "relay_state",
+                    "last_link_event_at",
+                    "relay_listen_generation",
+                    "last_successful_relay_tunnel_at",
+                    "last_relay_tunnel_error",
+                    "last_relay_tunnel_error_at",
                     "home_address",
-                    "vpn"
+                    "vpn",
+                    "home_candidates",
+                    "home_candidates_state",
+                    "home_candidates_error"
                   ],
                   "type": "object"
                 }
@@ -1968,8 +2758,7 @@
                   "device_label": "Jer iPhone",
                   "expires_in": 300,
                   "nonce": "5f0d8c8b9f1e48b0a5f80b98f3d5e9b0",
-                  "pair_link": "https://solstone.link/pair#0ABCD...",
-                  "rotating": false
+                  "pair_link": "https://solstone.link/pair#0ABCD..."
                 },
                 "schema": {
                   "additionalProperties": true,
@@ -1988,16 +2777,12 @@
                     },
                     "pair_link": {
                       "type": "string"
-                    },
-                    "rotating": {
-                      "type": "boolean"
                     }
                   },
                   "required": [
                     "nonce",
                     "pair_link",
                     "expires_in",
-                    "rotating",
                     "device_label",
                     "ca_fingerprint"
                   ],
@@ -2032,6 +2817,19 @@
             "description": "Access gate rejected a revoked paired-link identity.",
             "x-reason-codes": [
               "pl_revoked"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Pair-window could not be opened with the relay.",
+            "x-reason-codes": [
+              "pairing_relay_unavailable"
             ]
           }
         },
@@ -2206,6 +3004,134 @@
           }
         },
         "summary": "Stream Callosum events",
+        "tags": [
+          "observer"
+        ]
+      }
+    },
+    "/app/observer/health": {
+      "post": {
+        "description": "Record a diagnostics-only observer health beacon on the observer registry record.",
+        "operationId": "observer.health",
+        "parameters": [
+          {
+            "description": "Observer handle. Preferred over Authorization when present.",
+            "in": "header",
+            "name": "X-Solstone-Observer",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Bearer observer handle.",
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "last_error_reason": null,
+                "last_successful_sync": 1767100000000,
+                "name": "phone",
+                "pending_queue_depth": 3,
+                "recent_error_count": 0,
+                "stream_type": "phone",
+                "uptime": 42,
+                "version": "1.2.3"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "last_error_reason": {
+                    "type": "string"
+                  },
+                  "last_successful_sync": {
+                    "type": "integer"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "pending_queue_depth": {
+                    "type": "integer"
+                  },
+                  "recent_error_count": {
+                    "type": "integer"
+                  },
+                  "stream_type": {
+                    "type": "string"
+                  },
+                  "uptime": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": "ok"
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Health beacon recorded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Observer handle missing or invalid.",
+            "x-reason-codes": [
+              "auth_key_invalid",
+              "auth_required"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Observer is disabled or revoked.",
+            "x-reason-codes": [
+              "feature_unavailable",
+              "pl_revoked"
+            ]
+          }
+        },
+        "summary": "Record observer health beacon",
         "tags": [
           "observer"
         ]
@@ -3161,6 +4087,7 @@
                     "history_rows": 0,
                     "in_segment_derived": 0,
                     "index_chunks": 0,
+                    "mixed_segments": 0,
                     "originals": 0,
                     "segments": 0,
                     "stream_identity": 0
@@ -3271,7 +4198,21 @@
                 }
               }
             },
-            "description": "Callosum event stream. Heartbeat frames are comments `: heartbeat\\n\\n`; data frames are `data: {json}\\n\\n` and carry CallosumEvent JSON for all tracts, including chat."
+            "description": "Callosum event stream. Heartbeat frames are comments `: heartbeat\\n\\n`; data frames are `data: {json}\\n\\n` and carry CallosumEvent JSON for all tracts, including chat.",
+            "x-chat-events": {
+              "description": "CallosumEvent kinds on tract 'chat' a native client branches on. Payloads remain open (CallosumEvent.additionalProperties).",
+              "kinds": [
+                "owner_message",
+                "sol_message",
+                "talent_queued",
+                "talent_spawned",
+                "talent_finished",
+                "talent_errored",
+                "chat_queue_depth",
+                "result",
+                "chat_error"
+              ]
+            }
           },
           "403": {
             "content": {
@@ -3302,6 +4243,7 @@
     "chat": [
       "owner_message",
       "sol_message",
+      "talent_queued",
       "talent_spawned",
       "talent_finished",
       "talent_errored",

@@ -31,7 +31,6 @@ import json as _json
 import logging
 import re
 import socket
-import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from importlib import import_module
@@ -48,9 +47,8 @@ from solstone.apps.network.copy import (
 )
 from solstone.apps.network.crockford32 import encode as crockford_encode
 from solstone.apps.network.relay_link import (
-    TOTP_STEP_SECONDS,
-    compute_current_totp,
-    encode_relay_pair_link,
+    derive_rk,
+    encode_pair_window_link,
 )
 from solstone.apps.utils import log_app_action
 from solstone.convey import emit
@@ -64,16 +62,17 @@ from solstone.convey.reasons import (
     OPERATION_NO_LONGER_AVAILABLE,
     PAIRED_DEVICE_NOT_FOUND,
     PAIRING_KEY_INVALID,
+    PAIRING_RELAY_UNAVAILABLE,
     PAIRING_REQUEST_INVALID,
     SERVICE_BUSY,
     SERVICE_OPERATION_FAILED,
 )
 from solstone.convey.utils import error_response
-from solstone.think.link import interface_watcher
+from solstone.think.link import establish, interface_watcher
 from solstone.think.link.auth import AuthorizedClients, ClientEntry, is_peer
 from solstone.think.link.ca import (
     generate_nonce,
-    generate_relay_nonce,
+    generate_pair_window_nonce,
     load_or_generate_ca,
     mint_attestation,
     sign_csr,
@@ -92,7 +91,6 @@ from solstone.think.link.paths import (
     authorized_clients_path,
     ca_dir,
     load_service_token,
-    load_totp_secret,
     nonces_path,
     relay_url,
 )
@@ -106,6 +104,8 @@ from solstone.think.pairing.config import (
 )
 from solstone.think.services import operations, spl, spl_handoff
 from solstone.think.services import status as service_status
+from solstone.think.spl.health import OFFLINE_TUNNEL_REASONS
+from solstone.think.spl.relay_client import start_pair_window
 from solstone.think.utils import get_journal, now_ms
 
 logger = logging.getLogger(__name__)
@@ -113,6 +113,7 @@ _SENDER_INSTANCE_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,256}$")
 VALID_ROLES = {"", "phone", "observer", "peer"}
 # The watcher emits only lan/ula today; vpn stays empty until a scope is wired.
 VPN_SCOPES = {"vpn"}
+_HEALTH_FRESHNESS_MS = 90_000
 journal_sources = import_module("solstone.apps.import.journal_sources")
 create_state_directory = journal_sources.create_state_directory
 load_journal_source_by_fingerprint = journal_sources.load_journal_source_by_fingerprint
@@ -176,9 +177,9 @@ def _is_loopback_request() -> bool:
     return request.remote_addr in {"127.0.0.1", "::1"}
 
 
-def _read_link_connection_event() -> str | None:
-    event = get_cached_state().get("link_connection")
-    return event if isinstance(event, str) else None
+def _read_link_health() -> dict[str, Any] | None:
+    health = get_cached_state().get("link_health")
+    return health if isinstance(health, dict) else None
 
 
 def _current_local_endpoints() -> list[LocalEndpoint]:
@@ -216,6 +217,31 @@ def _secure_listener_port() -> int:
     path, so do not read it from _current_local_endpoints().
     """
     return interface_watcher.LINK_DIRECT_PORT
+
+
+def _home_candidate_entries() -> list[dict[str, Any]]:
+    port = _secure_listener_port()
+    detected = [f"{ip}:{port}" for ip in _list_pair_link_candidates()]
+    override = override_host_port()
+    selected = override or (detected[0] if detected else None)
+
+    entries: list[dict[str, Any]] = [
+        {
+            "address": address,
+            "selected": address == selected,
+            "source": "detected",
+        }
+        for address in detected
+    ]
+    if override is not None and override not in detected:
+        entries.append(
+            {
+                "address": override,
+                "selected": True,
+                "source": "override",
+            }
+        )
+    return entries
 
 
 def _effective_home_address() -> tuple[bool, str | None]:
@@ -301,7 +327,6 @@ class PairStartResponse:
     nonce: str
     pair_link: str
     expires_in: int
-    rotating: bool
     device_label: str
     ca_fingerprint: str
 
@@ -331,21 +356,39 @@ def _derive_relay_state(token_present: bool) -> str:
     return "offline" if token_present else "not-enrolled"
 
 
+def _link_health_is_fresh(health: dict[str, Any], now_ms_val: int) -> bool:
+    ts = health.get("ts")
+    return isinstance(ts, int) and now_ms_val - ts <= _HEALTH_FRESHNESS_MS
+
+
+def _current_tunnel_error(health: dict[str, Any]) -> str | None:
+    error = health.get("last_relay_tunnel_error")
+    if not isinstance(error, str):
+        return None
+    error_at = health.get("last_relay_tunnel_error_at") or 0
+    success_at = health.get("last_successful_relay_tunnel_at") or 0
+    return error if error_at >= success_at else None
+
+
 def _derive_spl_relay_state(
     token_present: bool,
-    connection_event: str | None,
+    health: dict[str, Any] | None,
+    now_ms_val: int,
 ) -> str:
     if not token_present:
         return "not-enrolled"
-    # A missing event usually means convey restarted before observing the link
-    # service transition. Treat it as connecting; a genuinely down relay can
-    # read as finishing setup briefly until a disconnect event arrives.
-    if connection_event == "connected":
-        # Connected has no freshness bound. A hard service crash can leave this
-        # parked until convey restarts, which resets the cache to connecting.
-        return "parked"
-    if connection_event == "disconnect":
+    if health is None:
+        return "connecting"
+    if not _link_health_is_fresh(health, now_ms_val):
         return "offline"
+    current_error = _current_tunnel_error(health)
+    if current_error in OFFLINE_TUNNEL_REASONS:
+        return "offline"
+    state = health.get("state")
+    if state == "reconnecting":
+        return "reconnecting"
+    if state == "connected":
+        return "parked"
     return "connecting"
 
 
@@ -358,10 +401,11 @@ def _derive_reachability(
         return "lan-unreachable"
     if posture == "direct":
         return "online"
-    # posture == "spl": map relay_state. "reconnecting" is reserved.
+    # posture == "spl": map relay_state.
     return {
         "connecting": "finishing-setup",
         "parked": "online",
+        "reconnecting": "reconnecting",
         "offline": "offline",
         "not-enrolled": "finishing-setup",
     }[relay_state]
@@ -413,6 +457,8 @@ def api_devices() -> Any:
 @network_bp.route("/api/status")
 def api_status() -> Any:
     """Snapshot of link-service state for the dashboard header."""
+    now_ms_val = now_ms()
+    health = _read_link_health()
     state = LinkState.load()
     token = load_service_token()
     token_present = token is not None
@@ -420,7 +466,7 @@ def api_status() -> Any:
     lan_accessible, home_address = _effective_home_address()
     posture = read_posture()
     relay_state = (
-        _derive_spl_relay_state(token_present, _read_link_connection_event())
+        _derive_spl_relay_state(token_present, health, now_ms_val)
         if posture == "spl"
         else _derive_relay_state(token_present)
     )
@@ -430,6 +476,15 @@ def api_status() -> Any:
         for ep in _current_local_endpoints()
         if ep.scope in VPN_SCOPES
     ]
+    try:
+        home_candidates = _home_candidate_entries()
+        home_candidates_state = "ready"
+        home_candidates_error = None
+    except Exception:
+        logger.exception("link home candidate collection failed")
+        home_candidates = []
+        home_candidates_state = "unavailable"
+        home_candidates_error = link_copy.HOME_CANDIDATES_ERROR
     return jsonify(
         {
             "instance_id": state.instance_id if state else None,
@@ -441,10 +496,53 @@ def api_status() -> Any:
             "posture": posture,
             "reachability": reachability,
             "relay_state": relay_state,
+            "last_link_event_at": health["ts"] if health else None,
+            "relay_listen_generation": health["listen_generation"] if health else None,
+            "last_successful_relay_tunnel_at": (
+                health["last_successful_relay_tunnel_at"] if health else None
+            ),
+            "last_relay_tunnel_error": (
+                health["last_relay_tunnel_error"] if health else None
+            ),
+            "last_relay_tunnel_error_at": (
+                health["last_relay_tunnel_error_at"] if health else None
+            ),
             "home_address": home_address,
             "vpn": {"active": None, "candidates": vpn_candidates},
+            "home_candidates": home_candidates,
+            "home_candidates_state": home_candidates_state,
+            "home_candidates_error": home_candidates_error,
         }
     )
+
+
+@network_bp.route("/api/identity")
+def api_identity() -> Any:
+    """Read-only committed journal mark + id for the identity header.
+
+    Display-only. Derives the immutable mark once per request (argon2id is
+    deliberately costly — never put this on a poll). Any failure degrades to a
+    neutral not-committed payload at HTTP 200; the exception is logged but the
+    client never sees a 500.
+    """
+    neutral = {"committed": False, "instance_id": None, "mark": None}
+    try:
+        if not establish.is_committed():
+            return jsonify(neutral)
+        state = LinkState.load()
+        if state is None:
+            return jsonify(neutral)
+        mark = establish.committed_mark()
+        return jsonify(
+            {
+                "committed": True,
+                "instance_id": state.instance_id,
+                "mark": mark.to_render_spec(),
+            }
+        )
+    except Exception:
+        logger.exception("network identity derivation failed")
+        return jsonify(neutral)
 
 
 @network_bp.route("/api/private-link")
@@ -546,33 +644,36 @@ def pair_start() -> Any:
     if not isinstance(role, str) or role not in VALID_ROLES:
         return error_response(PAIRING_REQUEST_INVALID, detail="invalid role")
 
-    nonce_ttl: int | None = None
     if read_posture() == "spl":
-        secret = load_totp_secret()
-        if secret is None:
+        service_token = load_service_token()
+        if service_token is None:
             return error_response(
                 INVALID_OPERATION_FOR_STATE,
-                detail="spl posture requires a relay TOTP secret; none is configured",
+                detail="spl posture requires a relay service token; none is configured",
             )
 
         ca = load_or_generate_ca(ca_dir())
         ca_fp = ca.fingerprint_sha256()
-        now = int(time.time())
-        totp = compute_current_totp(secret, now)
-        nonce = generate_relay_nonce()
+        s = generate_pair_window_nonce()
         origin = relay_url()
         relay_origin = None if origin == DEFAULT_RELAY_URL else origin
-        instance_id = LinkState.load_or_create().instance_id
-        pair_link = encode_relay_pair_link(
-            instance_id,
-            totp,
-            nonce,
+        pair_link = encode_pair_window_link(
+            s,
             ca.spki_fingerprint_sha256(),
             relay_origin=relay_origin,
         )
-        expires_in = TOTP_STEP_SECONDS
-        rotating = True
-        nonce_ttl = TOTP_STEP_SECONDS
+        nonce = s.hex()
+        handle = start_pair_window(
+            rk=derive_rk(s),
+            service_token=service_token,
+            relay_endpoint=origin,
+        )
+        if not handle.wait_open():
+            handle.cancel()
+            return error_response(
+                PAIRING_RELAY_UNAVAILABLE,
+                detail="the pairing window couldn't be opened with the relay; try again",
+            )
     else:
         ca_fp = _ca_fingerprint()
         port = _secure_listener_port()
@@ -591,23 +692,16 @@ def pair_start() -> Any:
             pair_link = _build_pair_link(candidates[0], port, nonce, ca_fp)
         else:
             pair_link = _build_pair_link_v05(candidates, port, nonce, ca_fp)
-        expires_in = 300
-        rotating = False
 
-    add_kwargs: dict[str, Any] = {}
-    if nonce_ttl is not None:
-        add_kwargs["ttl"] = nonce_ttl
     _nonces().add(
         nonce,
         device_label,
         role=role,
-        **add_kwargs,
     )
     response = PairStartResponse(
         nonce=nonce,
         pair_link=pair_link,
-        expires_in=expires_in,
-        rotating=rotating,
+        expires_in=300,
         device_label=device_label,
         ca_fingerprint=ca_fp,
     )
@@ -669,6 +763,44 @@ def _complete_pairing(
             except FileNotFoundError:
                 pass
         raise
+
+    # Auto-retire a superseded device cert when a device re-pairs after losing
+    # its local identity (reinstall / data-clear / restore). The returning
+    # device sends a new keypair → new fingerprint, just appended above.
+    # Recognize it by home-assigned device label and revoke the prior entry
+    # (removal == cert revocation) so exactly one entry per label remains.
+    # Best-effort: any failure is logged and swallowed — the new pair stands and
+    # the prior orphan persists (status quo), never rolled back. Peers are never
+    # retired, and a blank label never collapses unlabeled devices.
+    if not is_peer(consumed.role) and assigned_label.strip():
+        try:
+            authorized = _authorized()
+            superseded = [
+                entry
+                for entry in authorized.snapshot()
+                if entry.device_label
+                and entry.device_label == assigned_label
+                and entry.fingerprint != fingerprint
+                and entry.role == ""
+                and entry.instance_id == state.instance_id
+            ]
+            for entry in superseded:
+                if authorized.remove(entry.fingerprint):
+                    emit(
+                        "link",
+                        "device_superseded",
+                        device_label=assigned_label,
+                        retired_fingerprint=entry.fingerprint,
+                        retired_fingerprint_short=entry.fingerprint.replace(
+                            "sha256:", ""
+                        )[:16],
+                        replaced_by=fingerprint,
+                        network=network,
+                    )
+        except Exception as exc:
+            logger.warning(
+                "pair: auto-retire failed for label %r: %s", assigned_label, exc
+            )
 
     return response, fingerprint, paired_at
 

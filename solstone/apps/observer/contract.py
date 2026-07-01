@@ -305,6 +305,48 @@ OPERATIONS: list[OperationSpec] = [
         ),
     ),
     OperationSpec(
+        operation_id="observer.health",
+        method="POST",
+        rule="/app/observer/health",
+        summary="Record observer health beacon",
+        description=(
+            "Record a diagnostics-only observer health beacon on the observer "
+            "registry record."
+        ),
+        parameters=_OBSERVER_AUTH_PARAMS,
+        request=RequestSpec(
+            fields=(
+                FieldSpec("name", "string", required=False),
+                FieldSpec("stream_type", "string", required=False),
+                FieldSpec("version", "string", required=False),
+                FieldSpec("uptime", "integer", required=False),
+                FieldSpec("last_successful_sync", "integer", required=False),
+                FieldSpec("pending_queue_depth", "integer", required=False),
+                FieldSpec("recent_error_count", "integer", required=False),
+                FieldSpec("last_error_reason", "string", required=False),
+            ),
+            example={
+                "name": "phone",
+                "stream_type": "phone",
+                "version": "1.2.3",
+                "uptime": 42,
+                "last_successful_sync": 1767100000000,
+                "pending_queue_depth": 3,
+                "recent_error_count": 0,
+                "last_error_reason": None,
+            },
+        ),
+        responses=(
+            ResponseSpec(
+                status=200,
+                description="Health beacon recorded.",
+                named_fields=(FieldSpec("status", "string", required=True),),
+                example={"status": "ok"},
+            ),
+            *_observer_auth_errors(),
+        ),
+    ),
+    OperationSpec(
         operation_id="observer.ingestManifest",
         method="GET",
         rule="/app/observer/ingest/manifest",
@@ -534,6 +576,7 @@ OPERATIONS: list[OperationSpec] = [
                     "removed": {
                         "originals": 0,
                         "segments": 0,
+                        "mixed_segments": 0,
                         "in_segment_derived": 0,
                         "index_chunks": 0,
                         "stream_identity": 0,

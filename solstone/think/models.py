@@ -615,6 +615,23 @@ def resolve_provider(context: str, agent_type: str) -> tuple[str, str]:
     # Resolve provider (from match or default)
     provider = match_config.get("provider", default_provider)
 
+    # Local type-default is a hard promise: a cloud context provider pin cannot
+    # override it — its cloud model string is neutralized. An *explicit* local
+    # context pin (provider: local + model) is honored verbatim; otherwise only
+    # the context's tier feeds local model selection.
+    if type_default_is_local(agent_type, config):
+        pinned = match_config.get("model")
+        if (
+            match_config.get("provider") == "local"
+            and isinstance(pinned, str)
+            and pinned.strip()
+        ):
+            return ("local", pinned)
+        tier = match_config.get("tier", default_tier)
+        if not isinstance(tier, int) or tier < 1 or tier > 3:
+            tier = default_tier
+        return ("local", _resolve_model("local", tier, config_models))
+
     # Resolve model: explicit model takes precedence over tier
     if "model" in match_config:
         model = match_config["model"]
@@ -632,6 +649,23 @@ def resolve_provider(context: str, agent_type: str) -> tuple[str, str]:
         model = _resolve_model(provider, default_tier, config_models)
 
     return (provider, model)
+
+
+def resolve_effective_route(context: str) -> tuple[str, str, str]:
+    """Return (interface, provider, model) for a context's effective route.
+
+    Interface is the talent context's registry ``type`` when it is one of
+    generate/cogitate, else "generate" — never pass any other value to
+    resolve_provider (TYPE_DEFAULTS is keyed only on generate/cogitate).
+    """
+    registry_entry = get_context_registry().get(context)
+    interface = (
+        registry_entry["type"]
+        if registry_entry and registry_entry.get("type") in ("generate", "cogitate")
+        else "generate"
+    )
+    provider, model = resolve_provider(context, interface)
+    return (interface, provider, model)
 
 
 def is_local_provider_needed(config: dict[str, Any] | None = None) -> bool:
@@ -653,6 +687,23 @@ def is_local_provider_needed(config: dict[str, Any] | None = None) -> bool:
         isinstance(context_config, dict) and context_config.get("provider") == "local"
         for context_config in contexts.values()
     )
+
+
+def type_default_is_local(
+    agent_type: str, config: dict[str, Any] | None = None
+) -> bool:
+    """Return True when the per-type provider default for agent_type is local.
+
+    This is the authority for the local-lane hard promise: when a type's default
+    provider is local, no cloud context override or cloud frontmatter/request pin
+    may route a talent of that type onto a cloud provider.
+    """
+    journal_config = config if config is not None else get_config()
+    providers = journal_config.get("providers", {})
+    if not isinstance(providers, dict):
+        return False
+    type_config = providers.get(agent_type, {})
+    return isinstance(type_config, dict) and type_config.get("provider") == "local"
 
 
 def log_token_usage(
@@ -760,6 +811,24 @@ def log_token_usage(
     except Exception:
         # Silently fail - logging shouldn't break the main flow
         pass
+
+
+_CLOUD_MODEL_FAMILIES = {"openai", "google", "anthropic"}
+
+
+def _reject_local_cloud_model_override(
+    provider: str, model_override: str | None
+) -> None:
+    """Fail loudly when a local provider is paired with an explicit cloud model override."""
+    if (
+        provider == "local"
+        and model_override
+        and get_model_provider(model_override) in _CLOUD_MODEL_FAMILIES
+    ):
+        raise ValueError(
+            f"local provider cannot serve cloud model override {model_override!r}: "
+            "remove the model override or select a matching cloud provider."
+        )
 
 
 def get_model_provider(model: str) -> str:
@@ -1199,6 +1268,8 @@ def generate(
     if model_override:
         model = model_override
 
+    _reject_local_cloud_model_override(provider, model_override)
+
     # Get provider module via registry (raises ValueError for unknown providers)
     provider_mod = get_provider_module(provider)
 
@@ -1409,6 +1480,8 @@ def generate_with_result(
     if model_override:
         model = model_override
 
+    _reject_local_cloud_model_override(provider, model_override)
+
     provider_mod = get_provider_module(provider)
 
     timeout_s = DEFAULT_PROVIDER_TIMEOUT_S if timeout_s is None else timeout_s
@@ -1514,6 +1587,8 @@ async def agenerate(
     if model_override:
         model = model_override
 
+    _reject_local_cloud_model_override(provider, model_override)
+
     # Get provider module via registry (raises ValueError for unknown providers)
     provider_mod = get_provider_module(provider)
 
@@ -1574,7 +1649,9 @@ __all__ = [
     "generate_with_result",
     "agenerate",
     "resolve_provider",
+    "resolve_effective_route",
     "is_local_provider_needed",
+    "type_default_is_local",
     # Utilities
     "log_token_usage",
     "calc_token_cost",

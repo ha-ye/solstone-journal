@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from solstone.observe.screen import format_screen_text
-from solstone.think.data_state import DataState, derive_modality_state
+from solstone.think.data_state import (
+    DataState,
+    derive_modality_state,
+    read_processing_record,
+)
 from solstone.think.media import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
 
 from .streams import read_segment_stream
@@ -463,6 +467,29 @@ def _jsonl_has_marker_row(path: Path, marker_key: str) -> bool:
     return False
 
 
+def _read_processing_record(jsonl_files: list[Path]) -> dict | None:
+    """Return the first processing header record from sorted JSONL files."""
+    for path in jsonl_files:
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    parsed = json.loads(line)
+                    break
+                else:
+                    continue
+        except OSError:
+            continue
+        except ValueError:
+            continue
+
+        record = read_processing_record([parsed])
+        if record is not None:
+            return record
+    return None
+
+
 def _has_nonempty_text(path: Path) -> bool:
     try:
         return path.stat().st_size > 0
@@ -498,6 +525,7 @@ def _detect_data_state(seg_path: Path) -> dict[str, str]:
     audio_analyzed = any(
         _jsonl_has_marker_row(path, "start") for path in audio_jsonl_files
     ) or any(_has_nonempty_text(path) for path in audio_md_files)
+    audio_record = _read_processing_record(audio_jsonl_files)
     audio_has_raw = _has_raw_media(raw_media_paths, AUDIO_EXTENSIONS)
     audio_state = derive_modality_state(
         seg_path,
@@ -505,6 +533,7 @@ def _detect_data_state(seg_path: Path) -> dict[str, str]:
         has_chunks=audio_analyzed,
         has_jsonl=bool(audio_jsonl_files),
         has_raw=audio_has_raw,
+        record=audio_record,
     )
     if audio_state != DataState.ABSENT.value:
         state["audio"] = audio_state
@@ -520,6 +549,7 @@ def _detect_data_state(seg_path: Path) -> dict[str, str]:
     screen_analyzed = any(
         _jsonl_has_marker_row(path, "timestamp") for path in screen_jsonl_files
     )
+    screen_record = _read_processing_record(screen_jsonl_files)
     screen_has_raw = _has_raw_media(raw_media_paths, VIDEO_EXTENSIONS)
     screen_state = derive_modality_state(
         seg_path,
@@ -527,11 +557,27 @@ def _detect_data_state(seg_path: Path) -> dict[str, str]:
         has_chunks=screen_analyzed,
         has_jsonl=bool(screen_jsonl_files),
         has_raw=screen_has_raw,
+        record=screen_record,
     )
     if screen_state != DataState.ABSENT.value:
         state["screen"] = screen_state
 
     return state
+
+
+def read_segment_data_state(
+    day: str, segment: str, stream: str | None = None
+) -> dict[str, str]:
+    """Read-only per-modality data state for one segment; absent modalities omitted.
+
+    Resolves the segment directory (searching all streams when ``stream`` is None)
+    and returns ``_detect_data_state``'s mapping, e.g. ``{"screen": "empty"}``.
+    Returns an empty dict when the segment directory cannot be found.
+    """
+    seg_dir = _find_segment_dir(day, segment, stream)
+    if seg_dir is None:
+        return {}
+    return _detect_data_state(seg_dir)
 
 
 def scan_day(

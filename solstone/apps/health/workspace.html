@@ -638,6 +638,9 @@
 .registered-observer-label.stale { background: #fef3c7; color: #b45309; }
 .registered-observer-label.disconnected,
 .registered-observer-label.revoked { background: #e5e7eb; color: #4b5563; }
+.registered-observer-label.failing { background: #fee2e2; color: #b91c1c; }
+.registered-observer-detail { color: #b91c1c; font-size: 0.78em; margin-left: 0.5em; }
+.registered-observer-recovery { color: #6b7280; font-size: 0.78em; margin-left: 0.5em; }
 
 .registered-observer-meta { color: #6b7280; font-size: 0.78em; margin-left: auto; }
 .registered-observer-skew { background: #fef3c7; color: #b45309; }
@@ -3092,6 +3095,10 @@
     }
   }
 
+	  function monthDay(ms) {
+	    return new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toLowerCase();
+	  }
+
 	  function registeredObserverMeta(observer) {
 	    if (!observer.last_seen) return 'never seen';
 	    const deltaMs = Date.now() - observer.last_seen;
@@ -3183,9 +3190,14 @@
     elements.registeredObserversCard.classList.remove('hidden');
     elements.registeredObserversStrip.innerHTML = '';
     for (const observer of observers) {
-      const stateClass = ['connected', 'stale', 'disconnected', 'revoked'].includes(observer.state)
+      let stateClass = ['connected', 'stale', 'disconnected', 'revoked'].includes(observer.state)
         ? observer.state
         : 'disconnected';
+      let labelText = observer.label || stateClass;
+      if (observer.failing) {
+        stateClass = 'failing';
+        labelText = 'failing';
+      }
       const row = document.createElement('div');
       row.className = 'registered-observer-row';
 
@@ -3196,8 +3208,28 @@
 
       const labelEl = document.createElement('span');
       labelEl.className = `registered-observer-label ${stateClass}`;
-      labelEl.textContent = observer.label || stateClass;
+      labelEl.textContent = labelText;
       row.appendChild(labelEl);
+
+      if (observer.failing && observer.ingest_rejection) {
+        const rej = observer.ingest_rejection;
+        const parts = [];
+        if (typeof rej.active_count === 'number' && isFinite(rej.active_count)
+            && typeof rej.first_ts === 'number' && isFinite(rej.first_ts)) {
+          parts.push(rej.active_count + ' rejected since ' + monthDay(rej.first_ts));
+        }
+        if (rej.version) parts.push('v' + rej.version);
+        if (parts.length) {
+          const detailEl = document.createElement('span');
+          detailEl.className = 'registered-observer-detail';
+          detailEl.textContent = parts.join(' · ');
+          row.appendChild(detailEl);
+        }
+        const recoveryEl = document.createElement('span');
+        recoveryEl.className = 'registered-observer-recovery';
+        recoveryEl.textContent = 'update or restart ' + (observer.name || 'that observer') + ' on that device';
+        row.appendChild(recoveryEl);
+      }
 
       const metaEl = document.createElement('span');
       metaEl.className = 'registered-observer-meta';

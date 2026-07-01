@@ -36,6 +36,11 @@ PAIRING_KEY_INVALID = Reason(
     "I couldn't use that pairing key.",
     400,
 )
+PAIRING_RELAY_UNAVAILABLE = Reason(
+    "pairing_relay_unavailable",
+    "I couldn't open the pairing window with the relay right now. Try again in a moment.",
+    503,
+)
 
 # input validation
 INVALID_JSON_REQUEST = Reason(
@@ -94,6 +99,11 @@ CORRUPT_CONFIG = Reason(
     "corrupt_config",
     "I couldn't read your settings.",
     500,
+)
+IDENTITY_NOT_LOCKED = Reason(
+    "identity_not_locked",
+    "I couldn't finish setup because the journal id is not locked.",
+    400,
 )
 INVALID_CONFIG_VALUE = Reason(
     "invalid_config_value",
@@ -295,6 +305,11 @@ IMPORT_NOT_FOUND = Reason("import_not_found", "I couldn't find that import.", 40
 IMPORT_CONFLICT = Reason(
     "import_conflict",
     "I couldn't start that import because it already exists.",
+    409,
+)
+IMPORT_CLIENT_ID_CONFLICT = Reason(
+    "import_client_id_conflict",
+    "That client_item_id is already staged for different content.",
     409,
 )
 IMPORT_METADATA_FAILED = Reason(

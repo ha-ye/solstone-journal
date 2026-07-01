@@ -6,9 +6,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
 from typer.testing import CliRunner
 
+import solstone.convey.bridge as convey_bridge
 from solstone.apps.network import call as link_call
+from solstone.apps.network import copy as link_copy
 from solstone.apps.network import routes as link_routes
 from solstone.apps.network.tests.conftest import _StubWatcher
 from solstone.convey import create_app
@@ -16,8 +19,63 @@ from solstone.think.convey_client import ConveyClient
 from solstone.think.link.local_endpoints import LocalEndpoint
 from solstone.think.link.paths import LinkState
 from solstone.think.link.window import read_posture
+from solstone.think.spl.health import (
+    REASON_HOME_MISSING_MOBILE,
+    REASON_LOCAL_PRIVATE_LISTENER_UNREACHABLE,
+    REASON_RELAY_TUNNEL_REJECTED,
+    REASON_RELAY_TUNNEL_UNREACHABLE,
+    REASON_SERVICE_TOKEN_REJECTED,
+)
 
-TOTP_SECRET = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+NOW = 1_700_000_000_000
+STATUS_FIELD_SET = {
+    "instance_id",
+    "home_label",
+    "enrolled",
+    "relay_url",
+    "ca_fingerprint",
+    "lan_accessible",
+    "posture",
+    "reachability",
+    "relay_state",
+    "last_link_event_at",
+    "relay_listen_generation",
+    "last_successful_relay_tunnel_at",
+    "last_relay_tunnel_error",
+    "last_relay_tunnel_error_at",
+    "home_address",
+    "vpn",
+    "home_candidates",
+    "home_candidates_state",
+    "home_candidates_error",
+}
+
+
+@pytest.fixture(autouse=True)
+def clear_link_health_cache() -> None:
+    convey_bridge._STATE_CACHE["link_health"] = None
+    yield
+    convey_bridge._STATE_CACHE["link_health"] = None
+
+
+def _health(
+    *,
+    state: str = "connected",
+    ts: int = NOW,
+    generation: int = 1,
+    success_at: int | None = None,
+    error: str | None = None,
+    error_at: int | None = None,
+) -> dict[str, Any]:
+    return {
+        "state": state,
+        "listen_generation": generation,
+        "last_successful_relay_tunnel_at": success_at,
+        "last_relay_tunnel_error": error,
+        "last_relay_tunnel_error_at": error_at,
+        "relay_tunnel_error_status": None,
+        "ts": ts,
+    }
 
 
 def _write_config(env: Any, *, link: Any = None, include_link: bool = True) -> None:
@@ -39,6 +97,13 @@ def _write_service_token(env: Any, token: str = "secret-token-xyz") -> None:
         json.dumps({"service_token": token}),
         encoding="utf-8",
     )
+
+
+def _write_host_override(env: Any, address: str) -> None:
+    config_path = env.journal / "config" / "journal.json"
+    config = json.loads(config_path.read_text("utf-8"))
+    config["pairing"] = {"host_url": f"http://{address}"}
+    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
 
 def _get_status(env: Any) -> dict[str, Any]:
@@ -129,13 +194,12 @@ def test_lan_unreachable_precedence_over_spl(link_env, monkeypatch) -> None:
     _write_config(env, link={"posture": "spl"})
     _write_service_token(env)
     monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: None)
-    monkeypatch.setattr(
-        link_routes, "_read_link_connection_event", lambda: "disconnect"
-    )
+    monkeypatch.setattr(link_routes, "now_ms", lambda: NOW)
+    monkeypatch.setattr(link_routes, "_read_link_health", lambda: _health())
 
     data = _get_status(env)
 
-    assert data["relay_state"] == "offline"
+    assert data["relay_state"] == "parked"
     assert data["reachability"] == "lan-unreachable"
 
 
@@ -149,6 +213,9 @@ def test_spl_reachability_mapping() -> None:
         link_routes._derive_reachability(True, "spl", "connecting") == "finishing-setup"
     )
     assert link_routes._derive_reachability(True, "spl", "parked") == "online"
+    assert (
+        link_routes._derive_reachability(True, "spl", "reconnecting") == "reconnecting"
+    )
     assert link_routes._derive_reachability(True, "spl", "offline") == "offline"
     assert (
         link_routes._derive_reachability(True, "spl", "not-enrolled")
@@ -159,79 +226,126 @@ def test_spl_reachability_mapping() -> None:
 
 
 def test_spl_relay_state_never_parks_without_connected() -> None:
-    assert link_routes._derive_spl_relay_state(False, "connected") == "not-enrolled"
-    for event in (None, "connecting", "disconnect", "enrolled", "tunnel_pair"):
-        assert link_routes._derive_spl_relay_state(True, event) != "parked"
-    assert link_routes._derive_spl_relay_state(True, "connected") == "parked"
+    assert link_routes._derive_spl_relay_state(False, _health(), NOW) == "not-enrolled"
+    assert link_routes._derive_spl_relay_state(True, None, NOW) == "connecting"
+    assert (
+        link_routes._derive_spl_relay_state(
+            True,
+            _health(ts=NOW - 200_000),
+            NOW,
+        )
+        == "offline"
+    )
+    assert (
+        link_routes._derive_spl_relay_state(
+            True,
+            _health(state="reconnecting"),
+            NOW,
+        )
+        == "reconnecting"
+    )
+    assert link_routes._derive_spl_relay_state(True, _health(), NOW) == "parked"
 
 
-def test_spl_status_without_token_reports_not_enrolled(link_env, monkeypatch) -> None:
-    env = link_env(posture="spl", totp_secret=TOTP_SECRET)
-    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
-    monkeypatch.setattr(link_routes, "_read_link_connection_event", lambda: "connected")
-
-    data = _get_status(env)
-
-    assert data["enrolled"] is False
-    assert data["relay_state"] == "not-enrolled"
-    assert data["reachability"] == "finishing-setup"
-
-
-def test_spl_status_without_cached_event_reports_connecting(
+@pytest.mark.parametrize(
+    (
+        "token_present",
+        "health",
+        "expected_relay_state",
+        "expected_reachability",
+    ),
+    [
+        (False, _health(), "not-enrolled", "finishing-setup"),
+        (True, None, "connecting", "finishing-setup"),
+        (True, _health(state="connecting"), "connecting", "finishing-setup"),
+        (True, _health(), "parked", "online"),
+        (True, _health(state="reconnecting"), "reconnecting", "reconnecting"),
+        (True, _health(ts=NOW - 200_000), "offline", "offline"),
+        (
+            True,
+            _health(
+                success_at=NOW - 10,
+                error=REASON_SERVICE_TOKEN_REJECTED,
+                error_at=NOW,
+            ),
+            "offline",
+            "offline",
+        ),
+        (
+            True,
+            _health(
+                success_at=NOW - 10,
+                error=REASON_LOCAL_PRIVATE_LISTENER_UNREACHABLE,
+                error_at=NOW,
+            ),
+            "offline",
+            "offline",
+        ),
+    ],
+)
+def test_spl_status_health_matrix(
     link_env,
     monkeypatch,
+    token_present: bool,
+    health: dict[str, Any] | None,
+    expected_relay_state: str,
+    expected_reachability: str,
 ) -> None:
-    env = link_env(posture="spl", totp_secret=TOTP_SECRET)
-    _write_service_token(env)
+    env = link_env(posture="spl")
+    if token_present:
+        _write_service_token(env)
     monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
-    monkeypatch.setattr(link_routes, "_read_link_connection_event", lambda: None)
+    monkeypatch.setattr(link_routes, "now_ms", lambda: NOW)
+    monkeypatch.setattr(link_routes, "_read_link_health", lambda: health)
 
     data = _get_status(env)
 
-    assert data["relay_state"] == "connecting"
-    assert data["reachability"] == "finishing-setup"
+    assert data["enrolled"] is token_present
+    assert data["relay_state"] == expected_relay_state
+    assert data["reachability"] == expected_reachability
+    if health is None:
+        assert data["last_link_event_at"] is None
+        assert data["relay_listen_generation"] is None
+        assert data["last_successful_relay_tunnel_at"] is None
+        assert data["last_relay_tunnel_error"] is None
+        assert data["last_relay_tunnel_error_at"] is None
+    else:
+        assert data["last_link_event_at"] == health["ts"]
+        assert data["relay_listen_generation"] == health["listen_generation"]
+        assert (
+            data["last_successful_relay_tunnel_at"]
+            == health["last_successful_relay_tunnel_at"]
+        )
+        assert data["last_relay_tunnel_error"] == health["last_relay_tunnel_error"]
+        assert (
+            data["last_relay_tunnel_error_at"] == health["last_relay_tunnel_error_at"]
+        )
 
 
-def test_spl_status_connecting_event_reports_connecting(link_env, monkeypatch) -> None:
-    env = link_env(posture="spl", totp_secret=TOTP_SECRET)
-    _write_service_token(env)
-    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
-    monkeypatch.setattr(
-        link_routes, "_read_link_connection_event", lambda: "connecting"
+def test_current_tunnel_error_ignores_error_older_than_success() -> None:
+    health = _health(
+        success_at=NOW,
+        error=REASON_SERVICE_TOKEN_REJECTED,
+        error_at=NOW - 1,
     )
 
-    data = _get_status(env)
-
-    assert data["relay_state"] == "connecting"
-    assert data["reachability"] == "finishing-setup"
+    assert link_routes._current_tunnel_error(health) is None
+    assert link_routes._derive_spl_relay_state(True, health, NOW) == "parked"
 
 
-def test_spl_status_connected_event_reports_parked_online(
-    link_env, monkeypatch
-) -> None:
-    env = link_env(posture="spl", totp_secret=TOTP_SECRET)
-    _write_service_token(env)
-    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
-    monkeypatch.setattr(link_routes, "_read_link_connection_event", lambda: "connected")
+@pytest.mark.parametrize(
+    "reason",
+    [
+        REASON_HOME_MISSING_MOBILE,
+        REASON_RELAY_TUNNEL_REJECTED,
+        REASON_RELAY_TUNNEL_UNREACHABLE,
+    ],
+)
+def test_non_forcing_tunnel_errors_do_not_force_offline(reason: str) -> None:
+    health = _health(success_at=NOW - 10, error=reason, error_at=NOW)
 
-    data = _get_status(env)
-
-    assert data["relay_state"] == "parked"
-    assert data["reachability"] == "online"
-
-
-def test_spl_status_disconnect_event_reports_offline(link_env, monkeypatch) -> None:
-    env = link_env(posture="spl", totp_secret=TOTP_SECRET)
-    _write_service_token(env)
-    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
-    monkeypatch.setattr(
-        link_routes, "_read_link_connection_event", lambda: "disconnect"
-    )
-
-    data = _get_status(env)
-
-    assert data["relay_state"] == "offline"
-    assert data["reachability"] == "offline"
+    assert link_routes._current_tunnel_error(health) == reason
+    assert link_routes._derive_spl_relay_state(True, health, NOW) == "parked"
 
 
 def test_relay_state_flips_with_real_token(link_env, monkeypatch) -> None:
@@ -284,9 +398,129 @@ def test_vpn_maps_synthetic_vpn_endpoint(link_env, monkeypatch) -> None:
     assert data["vpn"]["active"] is None
 
 
+def test_home_candidates_ready_empty_when_no_detected_addresses(
+    link_env,
+    monkeypatch,
+) -> None:
+    env = link_env(local_endpoints=[])
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: None)
+
+    data = _get_status(env)
+
+    assert data["home_candidates"] == []
+    assert data["home_candidates_state"] == "ready"
+    assert data["home_candidates_error"] is None
+
+
+def test_home_candidates_single_detected_selected(link_env, monkeypatch) -> None:
+    env = link_env(
+        local_endpoints=[LocalEndpoint(ip="192.168.1.50", port=1111, scope="lan")]
+    )
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+
+    data = _get_status(env)
+
+    assert data["home_candidates"] == [
+        {"address": "192.168.1.50:7657", "selected": True, "source": "detected"}
+    ]
+    assert data["home_candidates_state"] == "ready"
+    assert data["home_candidates_error"] is None
+
+
+def test_home_candidates_route_first_dedupes_and_excludes_ipv6(
+    link_env,
+    monkeypatch,
+) -> None:
+    env = link_env(
+        local_endpoints=[
+            LocalEndpoint(ip="192.0.2.10", port=1111, scope="lan"),
+            LocalEndpoint(ip="fd00::1", port=7657, scope="ula"),
+            LocalEndpoint(ip="192.0.2.11", port=2222, scope="lan"),
+            LocalEndpoint(ip="192.0.2.10", port=3333, scope="lan"),
+        ]
+    )
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.0.2.11")
+
+    data = _get_status(env)
+
+    assert data["home_candidates"] == [
+        {"address": "192.0.2.11:7657", "selected": True, "source": "detected"},
+        {"address": "192.0.2.10:7657", "selected": False, "source": "detected"},
+    ]
+
+
+def test_home_candidates_override_in_detected_selects_detected(
+    link_env,
+    monkeypatch,
+) -> None:
+    env = link_env(
+        local_endpoints=[
+            LocalEndpoint(ip="192.168.1.50", port=7657, scope="lan"),
+            LocalEndpoint(ip="192.168.1.51", port=7657, scope="lan"),
+        ]
+    )
+    _write_host_override(env, "192.168.1.51:7657")
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+
+    data = _get_status(env)
+
+    assert data["home_candidates"] == [
+        {"address": "192.168.1.50:7657", "selected": False, "source": "detected"},
+        {"address": "192.168.1.51:7657", "selected": True, "source": "detected"},
+    ]
+
+
+def test_home_candidates_override_not_detected_appends_override(
+    link_env,
+    monkeypatch,
+) -> None:
+    env = link_env(
+        local_endpoints=[LocalEndpoint(ip="192.168.1.50", port=7657, scope="lan")]
+    )
+    _write_host_override(env, "192.168.1.44:7657")
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+
+    data = _get_status(env)
+
+    assert data["home_candidates"] == [
+        {"address": "192.168.1.50:7657", "selected": False, "source": "detected"},
+        {"address": "192.168.1.44:7657", "selected": True, "source": "override"},
+    ]
+
+
+def test_home_candidates_unavailable_keeps_status_200(
+    link_env,
+    monkeypatch,
+) -> None:
+    env = link_env()
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+
+    def fail_candidates() -> list[str]:
+        raise RuntimeError("watcher exploded")
+
+    monkeypatch.setattr(link_routes, "_list_pair_link_candidates", fail_candidates)
+
+    data = _get_status(env)
+
+    assert data["home_candidates"] == []
+    assert data["home_candidates_state"] == "unavailable"
+    assert data["home_candidates_error"] == link_copy.HOME_CANDIDATES_ERROR
+    assert data["reachability"] == "online"
+
+
+def test_api_status_does_not_mint_pairing_nonces(link_env, monkeypatch) -> None:
+    env = link_env()
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+    nonce_path = env.journal / "link" / "nonces.json"
+    assert not nonce_path.exists()
+
+    _get_status(env)
+
+    assert not nonce_path.exists()
+
+
 def test_no_secrets_in_response(link_env, monkeypatch) -> None:
     env = link_env()
-    _write_config(env, link={"totp": "TOPSECRET_TOTP_VALUE"})
     _write_service_token(env, "TOPSECRET_TOKEN_VALUE")
     monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
 
@@ -296,7 +530,6 @@ def test_no_secrets_in_response(link_env, monkeypatch) -> None:
     for forbidden in (
         "topsecret_token_value",
         "token",
-        "totp",
         "attestation",
         "account_token",
         "service_token",
@@ -310,19 +543,7 @@ def test_back_compat_field_set(link_env, monkeypatch) -> None:
 
     data = _get_status(env)
 
-    assert set(data) == {
-        "instance_id",
-        "home_label",
-        "enrolled",
-        "relay_url",
-        "ca_fingerprint",
-        "lan_accessible",
-        "posture",
-        "reachability",
-        "relay_state",
-        "home_address",
-        "vpn",
-    }
+    assert set(data) == STATUS_FIELD_SET
     assert isinstance(data["instance_id"], str)
     assert isinstance(data["home_label"], str)
     assert isinstance(data["enrolled"], bool)
@@ -343,19 +564,7 @@ def test_api_status_unprovisioned(link_env, monkeypatch) -> None:
 
     data = _get_status(env)
 
-    assert set(data) == {
-        "instance_id",
-        "home_label",
-        "enrolled",
-        "relay_url",
-        "ca_fingerprint",
-        "lan_accessible",
-        "posture",
-        "reachability",
-        "relay_state",
-        "home_address",
-        "vpn",
-    }
+    assert set(data) == STATUS_FIELD_SET
     assert data["instance_id"] is None
     assert data["home_label"] is None
     assert not (env.journal / "link" / "state.json").exists()

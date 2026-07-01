@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-import dataclasses
 import json
 import os
 import time
@@ -14,17 +13,13 @@ from solstone.think.identity import (
     STEWARD_SECTION_ATTENTION,
     STEWARD_SECTION_AUTO_REPAIRS,
     STEWARD_SECTION_STATUS,
-    STEWARD_SECTION_TRENDS,
     ensure_identity_directory,
 )
 from solstone.think.steward import (
     STALE_PENDING_RECIPE,
-    RecipeOutcome,
-    StalePendingTarget,
-    _modality_signals,
+    _recipe_outcomes_7d,
     append_steward_event,
     default_summary_from_body,
-    detect_stale_pending_segments,
     load_steward_log,
     normalize_summary,
     read_steward_health,
@@ -41,7 +36,7 @@ def _set_journal(monkeypatch: pytest.MonkeyPatch, journal: Path) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
 
 
-def _valid_body(*, status: str = "Sol is well.", needs: str = "") -> str:
+def _valid_body(*, status: str = "sol is well.", needs: str = "") -> str:
     return "\n".join(
         [
             STEWARD_SECTION_STATUS,
@@ -52,8 +47,6 @@ def _valid_body(*, status: str = "Sol is well.", needs: str = "") -> str:
             needs,
             "",
             STEWARD_SECTION_AUTO_REPAIRS,
-            "",
-            STEWARD_SECTION_TRENDS,
             "",
         ]
     )
@@ -104,272 +97,50 @@ def _fixed_facts(
 ) -> dict:
     return {
         "generated_at": "2026-06-07T00:00:00Z",
-        "health_report": {},
         "pipeline_day": pipeline_day if pipeline_day is not None else {"anomalies": []},
         "recipe_outcomes_7d": recipe_outcomes_7d or [],
         "data_source_errors": list(errors) if errors else [],
     }
 
 
-def test_recipe_detects_stale_pending_segment(tmp_path, monkeypatch):
-    _set_journal(monkeypatch, tmp_path)
-    _seed_stale_pending_segment(
-        tmp_path, "20260526", "archon", "120000_300", "audio", 7 * 60 * 60
-    )
+def test_recipe_rollup_folds_legacy_success_to_verified_healed(monkeypatch):
+    monkeypatch.setattr("solstone.think.steward.now_ms", lambda: 100_000)
+    target = "20260526/archon/120000_300:screen"
+    rollup = _recipe_outcomes_7d([_recipe_row(target, "success", 99_000)])
 
-    targets = detect_stale_pending_segments("20260526", "20260525")
-
-    assert [target.target for target in targets] == ["20260526/archon/120000_300:audio"]
-
-
-def test_recipe_skips_fresh_pending_segment(tmp_path, monkeypatch):
-    _set_journal(monkeypatch, tmp_path)
-    _seed_stale_pending_segment(
-        tmp_path, "20260526", "archon", "120000_300", "audio", 60
-    )
-
-    assert detect_stale_pending_segments("20260526", "20260525") == []
-
-
-def test_recipe_skips_already_analyzing(tmp_path, monkeypatch):
-    _set_journal(monkeypatch, tmp_path)
-    segment_dir = _seed_stale_pending_segment(
-        tmp_path, "20260526", "archon", "120000_300", "audio", 7 * 60 * 60
-    )
-    (segment_dir / ".analyzing_audio").write_text("{}", encoding="utf-8")
-
-    assert detect_stale_pending_segments("20260526", "20260525") == []
-
-
-def test_modality_signals_repairs_chunks_win_marker(tmp_path):
-    segment_dir = tmp_path / "090000_300"
-    segment_dir.mkdir()
-    marker = segment_dir / ".analyzing_screen"
-    marker.write_text(
-        '{"started_at": "2026-05-20T09:00:00Z", "modality": "screen"}\n',
-        encoding="utf-8",
-    )
-    (segment_dir / "screen.jsonl").write_text(
-        '{"raw": "screen.webm"}\n{"timestamp": 1, "content": {}}\n',
-        encoding="utf-8",
-    )
-
-    signals = _modality_signals(segment_dir, "screen")
-
-    assert signals["state"] == "analyzed"
-    assert not marker.exists()
-
-
-def test_modality_signals_repairs_stale_pending_marker(tmp_path):
-    segment_dir = tmp_path / "090000_300"
-    segment_dir.mkdir()
-    marker = segment_dir / ".analyzing_screen"
-    failed = segment_dir / ".analyze_failed_screen"
-    (segment_dir / "screen.webm").write_bytes(b"raw")
-    marker.write_text(
-        '{"started_at": "2026-05-20T09:00:00Z", "modality": "screen"}\n',
-        encoding="utf-8",
-    )
-    old_time = time.time() - 2000
-    os.utime(marker, (old_time, old_time))
-
-    signals = _modality_signals(segment_dir, "screen")
-
-    assert signals["state"] == "failed"
-    assert not marker.exists()
-    payload = json.loads(failed.read_text(encoding="utf-8"))
-    assert payload["reason"] == "stale"
-    assert payload["modality"] == "screen"
-
-
-def test_modality_signals_does_not_repair_media_purged_marker(tmp_path):
-    segment_dir = tmp_path / "090000_300"
-    segment_dir.mkdir()
-    marker = segment_dir / ".analyzing_screen"
-    failed = segment_dir / ".analyze_failed_screen"
-    marker.write_text(
-        '{"started_at": "2026-05-20T09:00:00Z", "modality": "screen"}\n',
-        encoding="utf-8",
-    )
-    old_time = time.time() - 2000
-    os.utime(marker, (old_time, old_time))
-    (segment_dir / "screen.jsonl").write_text(
-        '{"raw": "screen.webm"}\n',
-        encoding="utf-8",
-    )
-
-    signals = _modality_signals(segment_dir, "screen")
-
-    assert signals["state"] == "purged"
-    assert marker.exists()
-    assert not failed.exists()
-
-
-def test_recipe_fire_success_appends_log_entry(tmp_path, monkeypatch):
-    _set_journal(monkeypatch, tmp_path)
-    _seed_stale_pending_segment(
-        tmp_path, "20260526", "archon", "120000_300", "audio", 7 * 60 * 60
-    )
-
-    def fake_fire(target: StalePendingTarget, *, port: int) -> RecipeOutcome:
-        return RecipeOutcome(
-            recipe="stale_pending_segment_reprocess",
-            target=target.target,
-            outcome="success",
-            detail=None,
-            ts=now_ms(),
-        )
-
-    monkeypatch.setattr("solstone.think.steward.fire_stale_pending_recipe", fake_fire)
-
-    result = run_recipe_pass("20260526")
-
-    assert result["fired"][0].outcome == "success"
-    assert load_steward_log()[0]["outcome"] == "success"
-
-
-def test_recipe_fire_failure_appends_log_entry(tmp_path, monkeypatch):
-    _set_journal(monkeypatch, tmp_path)
-    _seed_stale_pending_segment(
-        tmp_path, "20260526", "archon", "120000_300", "audio", 7 * 60 * 60
-    )
-
-    def fake_fire(target: StalePendingTarget, *, port: int) -> RecipeOutcome:
-        return RecipeOutcome(
-            recipe="stale_pending_segment_reprocess",
-            target=target.target,
-            outcome="failure",
-            detail="500",
-            ts=now_ms(),
-        )
-
-    monkeypatch.setattr("solstone.think.steward.fire_stale_pending_recipe", fake_fire)
-
-    run_recipe_pass("20260526")
-
-    row = load_steward_log()[0]
-    assert row["outcome"] == "failure"
-    assert row["detail"] == "500"
-
-
-def test_escalation_after_two_consecutive_failures(tmp_path, monkeypatch):
-    _set_journal(monkeypatch, tmp_path)
-    target = "20260526/archon/120000_300:audio"
-    _seed_stale_pending_segment(
-        tmp_path, "20260526", "archon", "120000_300", "audio", 7 * 60 * 60
-    )
-    _seed_steward_log(
-        tmp_path,
-        [
-            _recipe_row(target, "failure", now_ms() - 2000),
-            _recipe_row(target, "failure", now_ms() - 1000),
-        ],
-    )
-    calls = []
-    monkeypatch.setattr(
-        "solstone.think.steward.fire_stale_pending_recipe",
-        lambda target, *, port: calls.append(target),
-    )
-
-    result = run_recipe_pass("20260526")
-
-    assert result["escalated_targets"] == [target]
-    assert calls == []
-
-
-def test_escalation_resets_after_success(tmp_path, monkeypatch):
-    _set_journal(monkeypatch, tmp_path)
-    target = "20260526/archon/120000_300:audio"
-    _seed_stale_pending_segment(
-        tmp_path, "20260526", "archon", "120000_300", "audio", 7 * 60 * 60
-    )
-    _seed_steward_log(
-        tmp_path,
-        [
-            _recipe_row(target, "failure", now_ms() - 3000),
-            _recipe_row(target, "failure", now_ms() - 2000),
-            _recipe_row(target, "success", now_ms() - 1000),
-        ],
-    )
-
-    def fake_fire(target: StalePendingTarget, *, port: int) -> RecipeOutcome:
-        return RecipeOutcome(
-            recipe="stale_pending_segment_reprocess",
-            target=target.target,
-            outcome="success",
-            detail=None,
-            ts=now_ms(),
-        )
-
-    monkeypatch.setattr("solstone.think.steward.fire_stale_pending_recipe", fake_fire)
-
-    result = run_recipe_pass("20260526")
-
-    assert result["escalated_targets"] == []
-    assert result["fired"][0].target == target
+    assert rollup[0]["verified_healed"] == 1
+    assert rollup[0]["failed"] == 0
+    assert rollup[0]["total"] == 1
 
 
 def test_pre_process_uses_pass_event_without_refiring_recipes(tmp_path, monkeypatch):
     _set_journal(monkeypatch, tmp_path)
     today = "20260607"
+    target = f"{today}/local/120000_300:audio"
     _seed_stale_pending_segment(
         tmp_path, today, "local", "120000_300", "audio", 7 * 60 * 60
     )
-    _seed_stale_pending_segment(
-        tmp_path, today, "local", "130000_300", "screen", 7 * 60 * 60
-    )
-    fired_targets = []
+    _seed_steward_log(tmp_path, [_recipe_row(target, "accepted", now_ms() - 1000)])
+    before = load_steward_log()
 
-    def fake_fire(target: StalePendingTarget, *, port: int) -> RecipeOutcome:
-        fired_targets.append(target.target)
-        return RecipeOutcome(
-            recipe=STALE_PENDING_RECIPE,
-            target=target.target,
-            outcome="success",
-            detail=None,
-            ts=now_ms(),
-        )
+    import urllib.request
 
-    monkeypatch.setattr("solstone.think.steward.fire_stale_pending_recipe", fake_fire)
+    def fail_urlopen(*args, **kwargs):
+        raise AssertionError("report-only recipe pass must not make HTTP requests")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fail_urlopen)
 
     result = run_recipe_pass(today)
-    append_steward_event(
-        "pass",
-        fired=[dataclasses.asdict(outcome) for outcome in result["fired"]],
-        escalated_targets=result["escalated_targets"],
-        data_source_errors=result["data_source_errors"],
-    )
 
-    assert len(fired_targets) == 2
-
-    import solstone.talent.steward as steward_hook
-
-    monkeypatch.setattr(steward_hook, "gather_health_facts", lambda day: _fixed_facts())
-    hook_result = steward_hook.pre_process({"day": today})
-
-    assert hook_result is not None
-    assert "template_vars" in hook_result
-    assert "health_state" in hook_result["template_vars"]
-    # The talent never fires repair — only the deterministic heartbeat does.
-    assert len(fired_targets) == 2
+    assert result == {"fired": [], "escalated_targets": [], "data_source_errors": []}
+    assert load_steward_log() == before
 
 
 def test_pre_process_renders_pass_event_into_health_body(tmp_path, monkeypatch):
     _set_journal(monkeypatch, tmp_path)
-    fired = [
-        dataclasses.asdict(
-            RecipeOutcome(
-                recipe=STALE_PENDING_RECIPE,
-                target="20260607/local/seg1:audio",
-                outcome="failure",
-                detail="boom",
-                ts=123,
-            )
-        )
-    ]
     append_steward_event(
         "pass",
-        fired=fired,
+        fired=[],
         escalated_targets=["20260607/local/seg2:screen"],
         data_source_errors=["convey port: x"],
     )
@@ -379,7 +150,7 @@ def test_pre_process_renders_pass_event_into_health_body(tmp_path, monkeypatch):
     monkeypatch.setattr(
         steward_hook,
         "gather_health_facts",
-        lambda day: _fixed_facts(["health_report: y"]),
+        lambda day: _fixed_facts(["pipeline_day: y"]),
     )
     result = steward_hook.pre_process({"day": "20260607"})
 
@@ -387,10 +158,11 @@ def test_pre_process_renders_pass_event_into_health_body(tmp_path, monkeypatch):
     body = result["template_vars"]["health_state"]
     # Deterministic body folds in both the gathered and pass-event facts.
     assert (
-        "escalating: stale-pending segment reprocess on 20260607/local/seg2:screen"
+        "sol has a partial health picture: some health sources could not be read."
         in body
     )
-    assert "could not read health_report: y" in body
+    assert "escalating: stale-pending segment reprocess" not in body
+    assert "could not read pipeline_day: y" in body
     assert "could not read convey port: x" in body
     assert validate_steward_health(body) is None
     # health.md is written deterministically (no model call in that path).
@@ -407,7 +179,7 @@ def test_pre_process_fresh_journal_writes_well_health(tmp_path, monkeypatch):
 
     assert result is not None
     body = result["template_vars"]["health_state"]
-    assert "Sol is well." in body
+    assert "sol is well." in body
     assert validate_steward_health(body) is None
     # Healthy body → home widget hidden.
     assert read_steward_health(tmp_path) is None
@@ -422,7 +194,7 @@ def test_pre_process_dry_run_does_not_write_health(tmp_path, monkeypatch):
     monkeypatch.setattr(
         steward_hook,
         "gather_health_facts",
-        lambda day: _fixed_facts(["health_report: y"]),
+        lambda day: _fixed_facts(["pipeline_day: y"]),
     )
     result = steward_hook.pre_process({"day": "20260607", "dry_run": True})
 
@@ -433,9 +205,12 @@ def test_pre_process_dry_run_does_not_write_health(tmp_path, monkeypatch):
 
 
 def test_validator_rejects_missing_section():
-    body = _valid_body().replace(f"\n{STEWARD_SECTION_TRENDS}\n", "\n")
+    body = _valid_body().replace(f"\n{STEWARD_SECTION_AUTO_REPAIRS}\n", "\n")
 
-    assert validate_steward_health(body) == f"missing section: {STEWARD_SECTION_TRENDS}"
+    assert (
+        validate_steward_health(body)
+        == f"missing section: {STEWARD_SECTION_AUTO_REPAIRS}"
+    )
 
 
 def test_validator_rejects_wrong_order():
@@ -443,18 +218,22 @@ def test_validator_rejects_wrong_order():
         [
             STEWARD_SECTION_STATUS,
             "<!-- generated_at: 2026-05-26T17:32:18Z -->",
-            "Sol is well.",
+            "sol is well.",
             "",
             STEWARD_SECTION_AUTO_REPAIRS,
             "",
             STEWARD_SECTION_ATTENTION,
             "",
-            STEWARD_SECTION_TRENDS,
-            "",
         ]
     )
 
     assert validate_steward_health(body) == "sections out of order"
+
+
+def test_validator_rejects_trends_section():
+    body = _valid_body() + "## Trends (last 7d)\n"
+
+    assert validate_steward_health(body) == "unexpected section: ## Trends (last 7d)"
 
 
 def test_validator_rejects_extra_section():
@@ -496,7 +275,7 @@ def test_read_steward_health_surfaces_first_attention_bullet(tmp_path):
     path.parent.mkdir()
     path.write_text(
         _valid_body(
-            status="Sol found a pipeline gap.",
+            status="sol found a pipeline gap.",
             needs="- Foo bar\n- Baz",
         ),
         encoding="utf-8",
@@ -564,13 +343,12 @@ def test_render_health_body_healthy_is_valid_and_well():
         generated_at=_GEN_AT,
         pipeline_day={"anomalies": []},
         recipe_outcomes_7d=[],
-        escalated_targets=[],
         data_source_errors=[],
     )
 
     assert validate_steward_health(body) is None
     assert f"<!-- generated_at: {_GEN_AT} -->" in body
-    assert "Sol is well." in body
+    assert "sol is well." in body
 
 
 def test_render_health_body_healthy_reads_as_none(tmp_path):
@@ -581,7 +359,6 @@ def test_render_health_body_healthy_reads_as_none(tmp_path):
             generated_at=_GEN_AT,
             pipeline_day={"anomalies": []},
             recipe_outcomes_7d=[],
-            escalated_targets=[],
             data_source_errors=[],
         ),
         encoding="utf-8",
@@ -599,12 +376,15 @@ def test_render_health_body_activity_gap_bullet():
         generated_at=_GEN_AT,
         pipeline_day=pipeline_day,
         recipe_outcomes_7d=[],
-        escalated_targets=[],
         data_source_errors=[],
     )
 
     assert validate_steward_health(body) is None
-    assert "Sol is well." not in body
+    assert "sol is well." not in body
+    assert (
+        "sol detected pipeline issues during yesterday's processing "
+        "that need attention." in body
+    )
     assert "3 activities ended yesterday" in body
 
 
@@ -620,7 +400,6 @@ def test_render_health_body_talent_failure_timed_out():
         generated_at=_GEN_AT,
         pipeline_day=pipeline_day,
         recipe_outcomes_7d=[],
-        escalated_targets=[],
         data_source_errors=[],
     )
 
@@ -634,9 +413,13 @@ def test_render_health_body_auto_repair_rollup():
     rollup = [
         {
             "recipe": STALE_PENDING_RECIPE,
-            "success": 2,
-            "failure": 1,
-            "total": 3,
+            "accepted": 1,
+            "running": 1,
+            "verified_healed": 2,
+            "failed": 1,
+            "no_output": 1,
+            "unverified": 2,
+            "total": 6,
             "last_iso": "2026-06-06T10:00:00Z",
         }
     ]
@@ -644,17 +427,43 @@ def test_render_health_body_auto_repair_rollup():
         generated_at=_GEN_AT,
         pipeline_day={"anomalies": []},
         recipe_outcomes_7d=rollup,
-        escalated_targets=[],
         data_source_errors=[],
     )
 
     assert validate_steward_health(body) is None
-    # A 7d rollup with a failure means Sol is not "well".
-    assert "Sol is well." not in body
+    # A 7d rollup with a failure means sol is not "well".
+    assert "sol is well." not in body
     assert (
-        "stale-pending segment reprocess — 3x in 7d (2 succeeded, 1 failed), "
+        "stale-pending segment reprocess — 6x in 7d (2 verified-healed, "
+        "2 in-flight, 2 failed), "
         "last 2026-06-06T10:00:00Z" in body
     )
+
+
+def test_render_health_body_inflight_rollup_is_not_well():
+    rollup = [
+        {
+            "recipe": STALE_PENDING_RECIPE,
+            "accepted": 1,
+            "running": 1,
+            "verified_healed": 0,
+            "failed": 0,
+            "no_output": 0,
+            "unverified": 2,
+            "total": 2,
+            "last_iso": "2026-06-06T10:00:00Z",
+        }
+    ]
+    body = render_health_body(
+        generated_at=_GEN_AT,
+        pipeline_day={"anomalies": []},
+        recipe_outcomes_7d=rollup,
+        data_source_errors=[],
+    )
+
+    assert validate_steward_health(body) is None
+    assert "sol is well." not in body
+    assert "2 stale segment repairs in progress, not yet verified." in body
 
 
 def test_render_health_body_first_attention_bullet_drives_widget(tmp_path):
@@ -665,7 +474,6 @@ def test_render_health_body_first_attention_bullet_drives_widget(tmp_path):
             generated_at=_GEN_AT,
             pipeline_day={"anomalies": [{"kind": "daily_agents_missing"}]},
             recipe_outcomes_7d=[],
-            escalated_targets=[],
             data_source_errors=[],
         ),
         encoding="utf-8",
@@ -692,14 +500,14 @@ def test_read_steward_summary_returns_latest(tmp_path, monkeypatch):
         "20260607",
         {
             "headline": "All clear",
-            "summary_sentence": "Sol is well.",
+            "summary_sentence": "sol is well.",
             "suggested_action": "none",
         },
     )
 
     assert read_steward_summary(day="20260607") == {
         "headline": "All clear",
-        "summary_sentence": "Sol is well.",
+        "summary_sentence": "sol is well.",
         "suggested_action": "none",
     }
 
@@ -760,14 +568,14 @@ def test_normalize_summary_passthrough():
             {
                 "headline": "Repairs failing",
                 "summary_sentence": "Two repairs failed twice.",
-                "suggested_action": "reprocess_stale",
+                "suggested_action": "open_support",
             }
         ),
         default,
     )
 
     assert summary["headline"] == "Repairs failing"
-    assert summary["suggested_action"] == "reprocess_stale"
+    assert summary["suggested_action"] == "open_support"
 
 
 def test_normalize_summary_falls_back_on_garbage():
@@ -801,7 +609,6 @@ def test_default_summary_from_body_healthy():
         generated_at=_GEN_AT,
         pipeline_day={"anomalies": []},
         recipe_outcomes_7d=[],
-        escalated_targets=[],
         data_source_errors=[],
     )
 
@@ -810,18 +617,16 @@ def test_default_summary_from_body_healthy():
     assert summary["suggested_action"] == "none"
 
 
-def test_default_summary_from_body_escalation_suggests_support():
+def test_default_summary_from_body_not_healthy_opens_detail():
     body = render_health_body(
         generated_at=_GEN_AT,
-        pipeline_day={"anomalies": []},
+        pipeline_day={"anomalies": [{"kind": "daily_agents_missing"}]},
         recipe_outcomes_7d=[],
-        escalated_targets=["20260607/local/seg2:screen"],
         data_source_errors=[],
     )
 
     summary = default_summary_from_body(body)
-    # An escalated repair already failed twice → point at support, not retry.
-    assert summary["suggested_action"] == "open_support"
+    assert summary["suggested_action"] == "open_health_detail"
 
 
 def test_read_steward_summary_preserves_open_support(tmp_path, monkeypatch):
@@ -830,7 +635,7 @@ def test_read_steward_summary_preserves_open_support(tmp_path, monkeypatch):
         "20260607",
         {
             "headline": "Repairs failing",
-            "summary_sentence": "Sol couldn't fix two segments after retrying.",
+            "summary_sentence": "sol couldn't fix two segments after retrying.",
             "suggested_action": "open_support",
         },
     )

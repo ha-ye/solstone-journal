@@ -19,7 +19,11 @@ from werkzeug.exceptions import HTTPException
 from solstone.think.link.window import window_open
 
 from .identity import ConveyIdentity
-from .mux import StreamWriter
+from .mux import (
+    RESET_CTX_APP_CANCELLATION,
+    RESET_CTX_BODY_DISCARD_CANCELLATION,
+    StreamWriter,
+)
 
 _HEAD_LIMIT = 64 * 1024
 _BODY_METHODS = {"POST", "PUT", "PATCH"}
@@ -127,6 +131,10 @@ class MuxWSGIInput:
         self._loop = loop
         self._remaining = content_length or 0
 
+    @property
+    def remaining(self) -> int:
+        return self._remaining
+
     def read(self, size: int = -1) -> bytes:
         if self._remaining <= 0:
             return b""
@@ -183,24 +191,32 @@ async def dispatch_stream(
     try:
         request = await parse_http_head(stream_reader)
     except HttpBadRequest as exc:
-        await write_simple_response(stream_writer, 400, "Bad Request", str(exc))
+        await _finish_early(
+            stream_writer,
+            400,
+            "Bad Request",
+            str(exc),
+            context=RESET_CTX_BODY_DISCARD_CANCELLATION,
+        )
         return DispatchResult(endpoint=None, status=400)
 
     transfer_encoding = (request.transfer_encoding or "").lower()
     if transfer_encoding:
-        await write_simple_response(
+        await _finish_early(
             stream_writer,
             400,
             "Bad Request",
             "unsupported transfer-encoding",
+            context=RESET_CTX_BODY_DISCARD_CANCELLATION,
         )
         return DispatchResult(endpoint=None, status=400)
     if request.method in _BODY_METHODS and request.content_length is None:
-        await write_simple_response(
+        await _finish_early(
             stream_writer,
             411,
             "Length Required",
             "content-length required",
+            context=RESET_CTX_BODY_DISCARD_CANCELLATION,
         )
         return DispatchResult(endpoint=None, status=411)
 
@@ -209,28 +225,31 @@ async def dispatch_stream(
     if identity.fingerprint is None:
         # Request-level confinement: a cert-less request after the window closes is refused immediately (property 3), not served by a /pair that would 410. The 5s poll only reaps the idle socket.
         if not window_open():
-            await write_simple_response(
+            await _finish_early(
                 stream_writer,
                 403,
                 "Forbidden",
                 "pairing window closed",
+                context=RESET_CTX_BODY_DISCARD_CANCELLATION,
             )
             return DispatchResult(endpoint=None, status=403)
         if request.path != path_info:
-            await write_simple_response(
+            await _finish_early(
                 stream_writer,
                 403,
                 "Forbidden",
                 "pairing tunnel may only use /app/network/pair",
+                context=RESET_CTX_BODY_DISCARD_CANCELLATION,
             )
             return DispatchResult(endpoint=None, status=403)
         endpoint = _match_endpoint(app, path_info, request.method)
         if endpoint not in CERTLESS_PAIR_ENDPOINTS:
-            await write_simple_response(
+            await _finish_early(
                 stream_writer,
                 403,
                 "Forbidden",
                 "pairing tunnel may only use /app/network/pair",
+                context=RESET_CTX_BODY_DISCARD_CANCELLATION,
             )
             return DispatchResult(endpoint=endpoint, status=403)
 
@@ -254,6 +273,9 @@ async def dispatch_stream(
     )
     try:
         status = await future
+        wsgi_input = environ["wsgi.input"]
+        if wsgi_input.remaining > 0:
+            stream_writer.begin_drain(RESET_CTX_APP_CANCELLATION)
     except asyncio.CancelledError:
         disconnect_event.set()
         raise
@@ -337,6 +359,18 @@ async def write_simple_response(
     ).encode("ascii")
     await writer.write(head + body)
     await writer.close()
+
+
+async def _finish_early(
+    stream_writer: StreamWriter,
+    status_code: int,
+    reason: str,
+    text: str,
+    *,
+    context: str,
+) -> None:
+    await write_simple_response(stream_writer, status_code, reason, text)
+    stream_writer.begin_drain(context)
 
 
 def _run_wsgi(

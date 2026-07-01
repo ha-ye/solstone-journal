@@ -6,13 +6,23 @@
 import os
 import signal
 import subprocess
+import sys
 import time
 from io import StringIO
 from unittest.mock import Mock, call
 
+import psutil
 import pytest
 
-from solstone.think.runner import KILL_REAP_GRACE_S, ManagedProcess, run_task
+from solstone.think import runner
+from solstone.think.runner import (
+    KILL_REAP_GRACE_S,
+    DescendantRef,
+    ManagedProcess,
+    ProcessTreeNotReaped,
+    run_task,
+    snapshot_descendants,
+)
 
 
 @pytest.fixture
@@ -37,8 +47,110 @@ def _managed_for_process(process):
     )
 
 
+def _timed_out_managed(log_path, exit_code):
+    fake = Mock()
+    fake.log_writer = Mock()
+    fake.log_writer.path = log_path
+    fake.name = "test"
+    fake.wait.side_effect = subprocess.TimeoutExpired(cmd=["x"], timeout=0.01)
+    fake.terminate.return_value = exit_code
+    fake.cleanup.return_value = None
+    return fake
+
+
+@pytest.fixture
+def process_cleanup():
+    refs = []
+    yield refs
+
+    own_pid = os.getpid()
+    own_pgid = os.getpgrp()
+    seen_pgids = set()
+    for pid, pgid in reversed(refs):
+        if pgid not in seen_pgids and _safe_test_target(pgid, own_pid, own_pgid):
+            seen_pgids.add(pgid)
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                pass
+        if _safe_test_target(pid, own_pid, own_pgid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                pass
+
+    deadline = time.monotonic() + 2
+    for pid, _pgid in refs:
+        while _pid_alive_non_zombie(pid) and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+
+def _safe_test_target(value, own_pid, own_pgid):
+    return value is not None and value > 1 and value not in (own_pid, own_pgid)
+
+
+def _register_pid(cleanup_refs, pid):
+    try:
+        pgid = os.getpgid(pid)
+    except (ProcessLookupError, OSError):
+        pgid = None
+    cleanup_refs.append((pid, pgid))
+
+
+def _pid_alive_non_zombie(pid):
+    try:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+    except (psutil.AccessDenied, OSError):
+        return True
+
+
+def _wait_for_marker(marker_path, *keys):
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if marker_path.exists():
+            values = {}
+            for line in marker_path.read_text().splitlines():
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    values[key] = int(value)
+            if all(key in values for key in keys):
+                return values
+        time.sleep(0.01)
+    raise AssertionError(f"marker {marker_path} did not contain {keys}")
+
+
+def _spawn_parent(script, marker_path):
+    return subprocess.Popen(
+        [sys.executable, "-c", script, str(marker_path)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        process_group=0,
+    )
+
+
+def _assert_descendant(parent_pid, descendant_pid):
+    descendants = psutil.Process(parent_pid).children(recursive=True)
+    assert descendant_pid in {child.pid for child in descendants}
+
+
+def _ignores_sigterm_loop():
+    return (
+        "import signal, time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "while True:\n"
+        "    time.sleep(1)\n"
+    )
+
+
 def test_terminate_uses_process_group(monkeypatch):
     killpg = Mock()
+    monkeypatch.setattr("solstone.think.runner.snapshot_descendants", lambda pid: [])
+    monkeypatch.setattr("solstone.think.runner.os.getpid", lambda: 9999)
+    monkeypatch.setattr("solstone.think.runner.os.getpgrp", lambda: 9998)
     monkeypatch.setattr("solstone.think.runner.os.getpgid", lambda pid: 456)
     monkeypatch.setattr("solstone.think.runner.os.killpg", killpg)
 
@@ -81,6 +193,9 @@ def test_terminate_uses_process_group(monkeypatch):
 
 def test_terminate_abandons_unreaped_child_after_sigkill(monkeypatch):
     killpg = Mock()
+    monkeypatch.setattr("solstone.think.runner.snapshot_descendants", lambda pid: [])
+    monkeypatch.setattr("solstone.think.runner.os.getpid", lambda: 9999)
+    monkeypatch.setattr("solstone.think.runner.os.getpgrp", lambda: 9998)
     monkeypatch.setattr("solstone.think.runner.os.getpgid", lambda pid: 456)
     monkeypatch.setattr("solstone.think.runner.os.killpg", killpg)
 
@@ -108,6 +223,327 @@ def test_terminate_abandons_unreaped_child_after_sigkill(monkeypatch):
         call(456, signal.SIGTERM),
         call(456, signal.SIGKILL),
     ]
+
+
+def test_terminate_clears_separate_session_child_after_parent_exits(
+    tmp_path, process_cleanup
+):
+    marker = tmp_path / "child.marker"
+    child_code = _ignores_sigterm_loop()
+    parent_script = f"""
+import signal
+import subprocess
+import sys
+import time
+
+marker = sys.argv[1]
+
+def exit_on_term(_signum, _frame):
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, exit_on_term)
+child = subprocess.Popen([sys.executable, "-c", {child_code!r}], start_new_session=True)
+with open(marker, "w", encoding="utf-8") as fh:
+    fh.write(f"child={{child.pid}}\\n")
+    fh.flush()
+while True:
+    time.sleep(1)
+"""
+    parent = _spawn_parent(parent_script, marker)
+    _register_pid(process_cleanup, parent.pid)
+    managed = _managed_for_process(parent)
+    values = _wait_for_marker(marker, "child")
+    child_pid = values["child"]
+    _register_pid(process_cleanup, child_pid)
+    _assert_descendant(parent.pid, child_pid)
+
+    assert managed.terminate(timeout=0.2) == 0
+    assert not _pid_alive_non_zombie(child_pid)
+
+
+def test_terminate_clears_recursive_grandchild_outside_parent_group(
+    tmp_path, process_cleanup
+):
+    marker = tmp_path / "grandchild.marker"
+    grandchild_code = _ignores_sigterm_loop()
+    child_script = f"""
+import os
+import signal
+import subprocess
+import sys
+import time
+
+marker = sys.argv[1]
+
+def exit_on_term(_signum, _frame):
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, exit_on_term)
+grandchild = subprocess.Popen(
+    [sys.executable, "-c", {grandchild_code!r}],
+    start_new_session=True,
+)
+with open(marker, "w", encoding="utf-8") as fh:
+    fh.write(f"child={{os.getpid()}}\\n")
+    fh.write(f"grandchild={{grandchild.pid}}\\n")
+    fh.flush()
+while True:
+    time.sleep(1)
+"""
+    parent_script = f"""
+import signal
+import subprocess
+import sys
+import time
+
+marker = sys.argv[1]
+
+def exit_on_term(_signum, _frame):
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, exit_on_term)
+child = subprocess.Popen([sys.executable, "-c", {child_script!r}, marker])
+while True:
+    time.sleep(1)
+"""
+    parent = _spawn_parent(parent_script, marker)
+    _register_pid(process_cleanup, parent.pid)
+    managed = _managed_for_process(parent)
+    values = _wait_for_marker(marker, "child", "grandchild")
+    child_pid = values["child"]
+    grandchild_pid = values["grandchild"]
+    _register_pid(process_cleanup, child_pid)
+    _register_pid(process_cleanup, grandchild_pid)
+    _assert_descendant(parent.pid, child_pid)
+    _assert_descendant(parent.pid, grandchild_pid)
+
+    assert managed.terminate(timeout=0.2) == 0
+    assert not _pid_alive_non_zombie(grandchild_pid)
+
+
+def test_terminate_raises_for_surviving_descendant(monkeypatch):
+    descendant = DescendantRef(222, 333)
+    process = Mock()
+    process.pid = 125
+    process.wait.return_value = -15
+    process.returncode = -15
+    managed = _managed_for_process(process)
+
+    monkeypatch.setattr(
+        "solstone.think.runner.snapshot_descendants", lambda pid: [descendant]
+    )
+    monkeypatch.setattr("solstone.think.runner.os.getpid", lambda: 9999)
+    monkeypatch.setattr("solstone.think.runner.os.getpgrp", lambda: 9998)
+    monkeypatch.setattr("solstone.think.runner.os.getpgid", lambda pid: 456)
+    monkeypatch.setattr("solstone.think.runner.os.kill", Mock())
+    monkeypatch.setattr("solstone.think.runner.os.killpg", Mock())
+    monkeypatch.setattr("solstone.think.runner.KILL_REAP_GRACE_S", 0)
+    monkeypatch.setattr(
+        "solstone.think.runner._alive_descendants",
+        lambda descendants: list(descendants),
+    )
+
+    with pytest.raises(ProcessTreeNotReaped) as exc_info:
+        managed.terminate(timeout=0)
+
+    err = exc_info.value
+    assert isinstance(err, subprocess.TimeoutExpired)
+    assert err.reason == "survived_sigkill"
+    assert err.survivors == [descendant]
+    assert "pid=222 pgid=333" in str(err)
+
+
+def test_descendant_poll_uses_bounded_deadline(monkeypatch):
+    descendant = DescendantRef(222, 333)
+    sleeps = []
+    times = iter([10.0, 10.05])
+
+    monkeypatch.setattr(
+        "solstone.think.runner._alive_descendants",
+        lambda descendants: list(descendants),
+    )
+    monkeypatch.setattr("solstone.think.runner.time.monotonic", lambda: next(times))
+    monkeypatch.setattr(
+        "solstone.think.runner.time.sleep", lambda amount: sleeps.append(amount)
+    )
+
+    survivors = runner._poll_descendants_until_gone([descendant], 10.05)
+
+    assert survivors == [descendant]
+    assert sleeps == [runner.DESCENDANT_POLL_INTERVAL_S]
+
+
+def test_terminate_skips_unsafe_signal_targets(monkeypatch, caplog):
+    process = Mock()
+    process.pid = 1000
+    process.wait.return_value = -15
+    process.returncode = -15
+    managed = _managed_for_process(process)
+    kill = Mock()
+    killpg = Mock()
+
+    monkeypatch.setattr("solstone.think.runner.os.getpid", lambda: 900)
+    monkeypatch.setattr("solstone.think.runner.os.getpgrp", lambda: 901)
+    monkeypatch.setattr("solstone.think.runner.os.getpgid", lambda pid: 456)
+    monkeypatch.setattr(
+        "solstone.think.runner.snapshot_descendants",
+        lambda pid: [
+            DescendantRef(900, 700),
+            DescendantRef(701, 901),
+            DescendantRef(1, 1),
+            DescendantRef(702, 703),
+        ],
+    )
+    monkeypatch.setattr("solstone.think.runner.os.kill", kill)
+    monkeypatch.setattr("solstone.think.runner.os.killpg", killpg)
+    monkeypatch.setattr(
+        "solstone.think.runner._alive_descendants", lambda descendants: []
+    )
+    caplog.set_level("WARNING")
+
+    assert managed.terminate(timeout=2) == -15
+
+    unsafe_ids = {900, 901, 1}
+    assert all(args[0] not in unsafe_ids for args, _kwargs in kill.call_args_list)
+    assert all(args[0] not in unsafe_ids for args, _kwargs in killpg.call_args_list)
+    kill.assert_any_call(702, signal.SIGTERM)
+    killpg.assert_any_call(703, signal.SIGTERM)
+    assert "refusing unsafe" in caplog.text
+
+
+def test_terminate_tolerates_already_dead_descendant(monkeypatch):
+    descendant = DescendantRef(222, 333)
+    process = Mock()
+    process.pid = 125
+    process.wait.return_value = -15
+    process.returncode = -15
+    managed = _managed_for_process(process)
+
+    def kill(pid, sig):
+        if pid == descendant.pid:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(
+        "solstone.think.runner.snapshot_descendants", lambda pid: [descendant]
+    )
+    monkeypatch.setattr("solstone.think.runner.os.getpid", lambda: 9999)
+    monkeypatch.setattr("solstone.think.runner.os.getpgrp", lambda: 9998)
+    monkeypatch.setattr("solstone.think.runner.os.getpgid", lambda pid: 456)
+    monkeypatch.setattr("solstone.think.runner.os.kill", kill)
+    monkeypatch.setattr("solstone.think.runner.os.killpg", Mock())
+    monkeypatch.setattr(
+        "solstone.think.runner._alive_descendants", lambda descendants: []
+    )
+
+    assert managed.terminate(timeout=2) == -15
+    process.terminate.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        psutil.AccessDenied(pid=123),
+        psutil.Error("boom"),
+        OSError("boom"),
+    ],
+)
+def test_terminate_raises_cleanup_unproven_after_snapshot_uncertainty(
+    monkeypatch, caplog, error
+):
+    process = Mock()
+    process.pid = 125
+    process.wait.return_value = -15
+    process.returncode = -15
+    managed = _managed_for_process(process)
+
+    def fail_snapshot(pid):
+        raise error
+
+    monkeypatch.setattr("solstone.think.runner.snapshot_descendants", fail_snapshot)
+    monkeypatch.setattr("solstone.think.runner.os.getpid", lambda: 9999)
+    monkeypatch.setattr("solstone.think.runner.os.getpgrp", lambda: 9998)
+    monkeypatch.setattr("solstone.think.runner.os.getpgid", lambda pid: 456)
+    monkeypatch.setattr("solstone.think.runner.os.killpg", Mock())
+    caplog.set_level("WARNING")
+
+    with pytest.raises(ProcessTreeNotReaped) as exc_info:
+        managed.terminate(timeout=2)
+
+    assert exc_info.value.reason == "cleanup_unproven"
+    process.terminate.assert_called_once_with()
+    process.wait.assert_called_once_with(timeout=2)
+    assert "descendant snapshot uncertain" in caplog.text
+    assert "cleanup_unproven" in caplog.text
+
+
+def test_snapshot_descendants_returns_empty_when_parent_gone(monkeypatch):
+    def process_gone(pid):
+        raise psutil.NoSuchProcess(pid=pid)
+
+    monkeypatch.setattr("solstone.think.runner.psutil.Process", process_gone)
+
+    assert snapshot_descendants(123) == []
+
+
+def test_snapshot_descendants_preserves_pid_when_pgid_lookup_fails(monkeypatch):
+    child = Mock()
+    child.pid = 222
+    proc = Mock()
+    proc.children.return_value = [child]
+
+    monkeypatch.setattr("solstone.think.runner.psutil.Process", lambda pid: proc)
+    monkeypatch.setattr(
+        "solstone.think.runner.os.getpgid",
+        Mock(side_effect=OSError("gone")),
+    )
+
+    assert snapshot_descendants(123) == [DescendantRef(222, None)]
+
+
+def test_descendant_liveness_is_zombie_aware(monkeypatch):
+    class FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def status(self):
+            if self.pid == 1:
+                return psutil.STATUS_ZOMBIE
+            if self.pid == 2:
+                raise psutil.NoSuchProcess(pid=self.pid)
+            if self.pid == 3:
+                raise psutil.AccessDenied(pid=self.pid)
+            if self.pid == 4:
+                raise OSError("status failed")
+            return psutil.STATUS_SLEEPING
+
+    monkeypatch.setattr("solstone.think.runner.psutil.Process", FakeProcess)
+
+    descendants = [
+        DescendantRef(1, None),
+        DescendantRef(2, None),
+        DescendantRef(3, None),
+        DescendantRef(4, None),
+        DescendantRef(5, None),
+    ]
+
+    assert runner._alive_descendants(descendants) == [
+        DescendantRef(3, None),
+        DescendantRef(4, None),
+        DescendantRef(5, None),
+    ]
+
+
+def test_process_tree_not_reaped_is_timeout_expired():
+    err = ProcessTreeNotReaped(
+        ["test"],
+        2,
+        reason="survived_sigkill",
+        survivors=[DescendantRef(222, 333)],
+    )
+
+    assert isinstance(err, subprocess.TimeoutExpired)
+    assert "survived_sigkill" in str(err)
+    assert "pid=222 pgid=333" in str(err)
 
 
 def test_managed_process_has_ref_and_pid(journal_path, mock_callosum):
@@ -275,12 +711,13 @@ def test_run_task_emits_logs_tract_events(journal_path, mock_callosum):
     listener.start(callback=lambda msg: received.append(msg))
 
     # Run task
-    success, exit_code, log_path = run_task(["echo", "run_task test"])
+    success, exit_code, log_path, timed_out = run_task(["echo", "run_task test"])
 
     # Verify success
     assert success is True
     assert exit_code == 0
     assert log_path.exists()
+    assert timed_out is False
 
     # Verify events were emitted
     logs_events = [msg for msg in received if msg.get("tract") == "logs"]
@@ -291,6 +728,33 @@ def test_run_task_emits_logs_tract_events(journal_path, mock_callosum):
     assert "exit" in event_types
 
     listener.stop()
+
+
+def test_run_task_timeout_with_exit_zero_is_failure(journal_path, monkeypatch):
+    log_path = journal_path / "x.log"
+    fake = _timed_out_managed(log_path, 0)
+    monkeypatch.setattr(ManagedProcess, "spawn", lambda *a, **k: fake)
+
+    success, exit_code, returned_log_path, timed_out = run_task(
+        ["echo", "x"], timeout=0.01
+    )
+
+    assert success is False
+    assert exit_code == 0
+    assert returned_log_path == log_path
+    assert timed_out is True
+
+
+def test_run_task_timeout_with_signal_exit_is_failure(journal_path, monkeypatch):
+    log_path = journal_path / "x.log"
+    fake = _timed_out_managed(log_path, -15)
+    monkeypatch.setattr(ManagedProcess, "spawn", lambda *a, **k: fake)
+
+    success, exit_code, _log_path, timed_out = run_task(["echo", "x"], timeout=0.01)
+
+    assert success is False
+    assert exit_code == -15
+    assert timed_out is True
 
 
 def test_ref_links_to_task_tract(journal_path, mock_callosum):
@@ -435,12 +899,15 @@ def test_process_day_override(journal_path, mock_callosum):
 def test_run_task_day_override(journal_path, mock_callosum):
     """Test that run_task passes day through to log placement."""
     target_day = "20240201"
-    success, exit_code, log_path = run_task(["echo", "task day test"], day=target_day)
+    success, exit_code, log_path, timed_out = run_task(
+        ["echo", "task day test"], day=target_day
+    )
 
     assert success
     assert exit_code == 0
     assert target_day in str(log_path)
     assert log_path.exists()
+    assert timed_out is False
 
 
 @pytest.mark.parametrize(

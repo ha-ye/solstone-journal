@@ -17,7 +17,9 @@ logger = logging.getLogger(__name__)
 import frontmatter
 from flask import Blueprint, jsonify, render_template
 
+from solstone.apps.home.health_glance import build_health_glance
 from solstone.apps.home.needs_you import classify_needs_you
+from solstone.apps.home.thinking_readiness import _thinking_blocked
 from solstone.convey.apps import _resolve_attention
 from solstone.convey.bridge import get_cached_state
 from solstone.convey.utils import DATE_RE, format_date, relative_time
@@ -49,7 +51,7 @@ home_bp = Blueprint(
     url_prefix="/app/home",
 )
 
-_FIRST_WEEK_FRAMING = "Most of what I learn becomes useful in the third or fourth week, when I've seen enough patterns to surface them. For now, here's what's already happening:"
+_FIRST_WEEK_FRAMING = "Most of what I learn becomes useful after about a week, when I've seen enough patterns to surface them. For now, here's what's already happening:"
 
 
 def _today() -> str:
@@ -652,48 +654,6 @@ def _format_heatmap_summary(stats_data: dict[str, Any]) -> str | None:
     return "I watched most closely during " + " · ".join(ranges) + "."
 
 
-def _format_capture_vitals_text(capture: dict[str, Any], now: datetime) -> str:
-    """Return compact owner-facing observer status for the home vitals strip."""
-    status = capture.get("status")
-    if status == "no_observers":
-        return "observer no observers"
-
-    observers = [
-        observer
-        for observer in capture.get("observers", [])
-        if observer.get("status") in {"stale", "offline"}
-    ]
-    seen_observers = [
-        observer
-        for observer in observers
-        if isinstance(observer.get("last_seen"), (int, float))
-    ]
-    if seen_observers:
-        names = [
-            str(observer.get("name") or "observer").strip() or "observer"
-            for observer in seen_observers
-        ]
-        last_seen = max(float(observer["last_seen"]) for observer in seen_observers)
-        delta_seconds = max(0.0, (now.timestamp() * 1000 - last_seen) / 1000)
-        label = "observer" if len(names) == 1 else "observers"
-        joined_names = ", ".join(names[:2])
-        if len(names) > 2:
-            joined_names += f", +{len(names) - 2}"
-        return (
-            f"{label} {joined_names} last reported {relative_time(delta_seconds)} ago"
-        )
-
-    if observers:
-        names = [
-            str(observer.get("name") or "observer").strip() or "observer"
-            for observer in observers
-        ]
-        label = "observer" if len(names) == 1 else "observers"
-        return f"{label} {', '.join(names[:2])} has not reported yet"
-
-    return f"observer {status or 'unknown'}"
-
-
 def _format_gap_links(
     pipeline_summary: dict[str, Any],
     knowledge_graph: dict[str, Any],
@@ -917,8 +877,6 @@ def _build_pulse_context() -> dict[str, Any]:
     journal_age_days = _count_journal_age_days(today)
 
     capture_health = get_capture_health()
-    capture_status = capture_health["status"]
-    capture_display_text = _format_capture_vitals_text(capture_health, now)
     cached = get_cached_state()
     last_observe_ts = cached.get("last_observe_ts")
     attention = _resolve_attention(get_current())
@@ -926,8 +884,6 @@ def _build_pulse_context() -> dict[str, Any]:
     stats_data = _load_stats(today)
     stats = stats_data.get("stats", {})
     segment_count = stats.get("transcript_segments", 0)
-    duration_seconds = stats.get("transcript_duration", 0)
-    duration_minutes = round(duration_seconds / 60) if duration_seconds else 0
     facet_data = stats_data.get("facet_data", {})
 
     flow_content, flow_mtime = _load_flow_md(today)
@@ -1033,19 +989,23 @@ def _build_pulse_context() -> dict[str, Any]:
         summary = read_steward_summary()
         if summary:
             pipeline_status = {**pipeline_status, **summary}
+    thinking_blocked = _thinking_blocked()
+    health_glance = build_health_glance(
+        capture_health,
+        pipeline_status,
+        last_observe_relative,
+        thinking_blocked=thinking_blocked,
+    )
 
     yesterday_processing = _summarize_yesterday_processing(yesterday, journal_age_days)
 
     return {
         "today": today,
         "now": now,
-        "capture_status": capture_status,
-        "capture_display_text": capture_display_text,
-        "last_observe_relative": last_observe_relative,
+        "health_glance": health_glance,
         "attention": attention,
         "pipeline_status": pipeline_status,
         "segment_count": segment_count,
-        "duration_minutes": duration_minutes,
         "facet_data": facet_data,
         "narrative_content": narrative_content,
         "narrative_updated_at": narrative_updated_at,

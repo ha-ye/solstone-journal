@@ -497,6 +497,73 @@ def _locked_modify_detected(
     raise last_error  # type: ignore[misc]
 
 
+def _normalized_detection_segments(existing: object, segment: str) -> list[str]:
+    segments: set[str] = {segment}
+    if isinstance(existing, list):
+        for item in existing:
+            if isinstance(item, str):
+                value = item
+            elif isinstance(item, dict):
+                value = item.get("segment")
+            else:
+                continue
+            if isinstance(value, str) and value:
+                segments.add(value)
+    return sorted(segments)
+
+
+def upsert_detection_segment(
+    facet: str,
+    day: str,
+    segment: str,
+    detections: list[EntityDict],
+) -> dict:
+    """Reconcile one segment's kept detections into the facet/day detected store.
+
+    Idempotently upserts kept entities for this facet+segment. Existing entity
+    keys are preserved, while detection provenance lives in the additive
+    ``segments`` key as sorted composite segment id strings.
+    """
+    kept = {entity_slug(str(d["name"])): d for d in detections}
+    wrote = 0
+
+    def _modify(entities: list[EntityDict]) -> list[EntityDict]:
+        nonlocal wrote
+        out: list[EntityDict] = []
+
+        for ent in entities:
+            slug = str(ent.get("id") or entity_slug(str(ent.get("name", ""))))
+            if slug in kept:
+                detection = kept.pop(slug)
+                ent["type"] = detection["type"]
+                ent["name"] = detection["name"]
+                ent["description"] = detection["description"]
+                ent["segments"] = _normalized_detection_segments(
+                    ent.get("segments"), segment
+                )
+                ent["updated_at"] = now_ms()
+                wrote += 1
+
+            out.append(ent)
+
+        for slug, detection in kept.items():
+            new_entity: EntityDict = {
+                "id": slug,
+                "type": detection["type"],
+                "name": detection["name"],
+                "description": detection["description"],
+                "segments": [segment],
+                "updated_at": now_ms(),
+            }
+            out.append(new_entity)
+            wrote += 1
+
+        return out
+
+    _locked_modify_detected(facet, day, _modify)
+    return {"wrote": wrote}
+
+
 def save_detected_entity(
     facet: str,
     day: str,

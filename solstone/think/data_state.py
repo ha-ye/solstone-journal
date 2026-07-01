@@ -6,9 +6,12 @@
 import json
 import os
 import time
+import uuid
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
+
+from solstone.observe.processing_record import STATE_EMPTY, STATE_FAILED
 
 ANALYZING_STALE_SECONDS = 1800
 
@@ -17,6 +20,7 @@ class DataState(StrEnum):
     """Read-only visibility state for modality data."""
 
     ANALYZED = "analyzed"
+    EMPTY = "empty"
     PENDING = "pending"
     ANALYZING = "analyzing"
     FAILED = "failed"
@@ -36,6 +40,14 @@ def _analyzing_path(seg_path: Path, modality: str) -> Path:
 
 def _failed_path(seg_path: Path, modality: str) -> Path:
     return seg_path / f".analyze_failed_{modality}"
+
+
+def read_processing_record(entries: list[dict]) -> dict | None:
+    """Return the metadata-header processing record when present."""
+    if not entries or not isinstance(entries[0], dict):
+        return None
+    record = entries[0].get("_solstone_processing")
+    return record if isinstance(record, dict) else None
 
 
 def _write_failed_marker(
@@ -63,6 +75,7 @@ def create_analyzing_marker(seg_path: Path, modality: str) -> Path:
     payload = {
         "started_at": _iso_z_now(),
         "modality": modality,
+        "request_id": uuid.uuid4().hex,
     }
     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     try:
@@ -107,6 +120,7 @@ def derive_modality_state(
     has_chunks: bool,
     has_jsonl: bool,
     has_raw: bool,
+    record: dict | None = None,
 ) -> str:
     """Purely resolve per-modality data state without writing sidecar markers.
 
@@ -118,6 +132,12 @@ def derive_modality_state(
     verdict, _payload, _detail = _classify_marker(marker_path, has_chunks=has_chunks)
     if verdict == "chunks_win":
         return DataState.ANALYZED.value
+    if record is not None:
+        state = record.get("state")
+        if state == STATE_EMPTY:
+            return DataState.EMPTY.value
+        if state == STATE_FAILED:
+            return DataState.FAILED.value
     if verdict in {"corrupt", "stale"}:
         return DataState.FAILED.value
     if verdict == "active":

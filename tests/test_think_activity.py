@@ -809,6 +809,54 @@ class TestActivityPersistenceRoundTrip:
             )
         return sm
 
+    def _distinct_same_id_facets(self):
+        return [
+            {"facet": "work", "activity": "deep parser work", "level": "high"},
+            {"facet": "personal", "activity": "reading docs", "level": "medium"},
+        ]
+
+    def _shared_entities(self):
+        return [
+            {"type": "Person", "name": "Alice", "context": "pairing"},
+            {"type": "Tool", "name": "VS Code", "context": "editor"},
+        ]
+
+    def _same_id_multi_facet_machine(self, segments, day):
+        from solstone.think.activity_state_machine import ActivityStateMachine
+
+        sm = ActivityStateMachine()
+        for segment in segments:
+            sm.update(
+                self._sense(
+                    facets=self._distinct_same_id_facets(),
+                    entities=self._shared_entities(),
+                ),
+                segment,
+                day,
+            )
+        return sm
+
+    def _assert_distinct_same_id_records(
+        self, load_activity_records, day, expected_segments
+    ):
+        work_records = load_activity_records("work", day)
+        personal_records = load_activity_records("personal", day)
+        assert len(work_records) == 1
+        assert len(personal_records) == 1
+
+        work = work_records[0]
+        personal = personal_records[0]
+        assert work["description"] == "deep parser work"
+        assert work["level_avg"] == 1.0
+        assert work["segments"] == expected_segments
+        assert work["active_entities"] == ["Alice", "VS Code"]
+        assert personal["description"] == "reading docs"
+        assert personal["level_avg"] == 0.5
+        assert personal["segments"] == expected_segments
+        assert personal["active_entities"] == ["Alice", "VS Code"]
+        assert work["description"] != personal["description"]
+        assert work["level_avg"] != personal["level_avg"]
+
     def test_multi_segment_round_trip(self, monkeypatch):
         """Multi-segment activity persists and loads with all segments intact."""
         from solstone.think.activities import (
@@ -994,53 +1042,44 @@ class TestActivityPersistenceRoundTrip:
             assert loaded["created_at"] == rec["created_at"]
 
     def test_multi_facet_ending_persists_both(self, monkeypatch):
-        """Multiple facets ending simultaneously all persist correctly.
-
-        This tests the ended_pairs fix: the old facet_by_id dict would overwrite
-        duplicate IDs, dropping all but one facet. The list-based approach preserves
-        all (id, facet) pairs.
-        """
-        from solstone.think.activities import (
-            append_activity_record,
-            load_activity_records,
-        )
-        from solstone.think.activity_state_machine import ActivityStateMachine
+        """Tail persistence keeps same-id sibling records facet-specific."""
+        from solstone.think import thinking as think
+        from solstone.think.activities import load_activity_records
 
         with tempfile.TemporaryDirectory() as tmpdir:
             monkeypatch.setenv("SOLSTONE_JOURNAL", tmpdir)
 
-            two = [
-                {"facet": "work", "activity": "coding", "level": "high"},
-                {"facet": "personal", "activity": "browsing", "level": "medium"},
-            ]
-            sm = ActivityStateMachine()
-            sm.update(self._sense(facets=two), "090000_300", "20260304")
-            sm.update(self._sense(facets=two), "090500_300", "20260304")
-            # Both end via idle
-            changes = sm.update(self._sense(density="idle"), "091000_300", "20260304")
+            day = "20260304"
+            sm = self._same_id_multi_facet_machine(["090000_300", "090500_300"], day)
+            missing_facets = self._sense(facets=[], entities=self._shared_entities())
+            think._run_activity_state_tail(
+                sm,
+                missing_facets,
+                "091000_300",
+                day,
+                "segment",
+                refresh=False,
+                verbose=False,
+                max_concurrency=1,
+                skip_activity_prompts=True,
+            )
+            think._run_activity_state_tail(
+                sm,
+                missing_facets,
+                "091500_300",
+                day,
+                "segment",
+                refresh=False,
+                verbose=False,
+                max_concurrency=1,
+                skip_activity_prompts=True,
+            )
 
-            # Use the fixed ended_pairs approach (matches thinking.py)
-            ended_pairs = [
-                (c["id"], c["facet"]) for c in changes if c.get("state") == "ended"
-            ]
-            completed_lookup = {}
-            for rec in sm.get_completed_activities():
-                completed_lookup.setdefault(rec["id"], rec)
-            for activity_id, facet in ended_pairs:
-                rec = completed_lookup.get(activity_id)
-                if rec:
-                    append_activity_record(facet, "20260304", rec)
-
-            work_records = load_activity_records("work", "20260304")
-            personal_records = load_activity_records("personal", "20260304")
-            assert len(work_records) == 1
-            assert len(personal_records) == 1
-            # Both facets use top-level content_type as activity
-            assert work_records[0]["activity"] == "coding"
-            assert personal_records[0]["activity"] == "coding"
-            # Both have 2 segments
-            assert work_records[0]["segments"] == ["090000_300", "090500_300"]
-            assert personal_records[0]["segments"] == ["090000_300", "090500_300"]
+            self._assert_distinct_same_id_records(
+                load_activity_records,
+                day,
+                ["090000_300", "090500_300", "091000_300"],
+            )
 
     def test_close_active_flushes_dangling_activity(self, monkeypatch):
         """Dangling active state closes to one persisted clustered record."""
@@ -1098,6 +1137,33 @@ class TestActivityPersistenceRoundTrip:
             records = load_activity_records("solstone", "20260412")
             assert len(records) == 1
             assert records[0]["segments"] == segments
+
+    def test_flush_same_id_siblings_persist_independent_records(self, monkeypatch):
+        """Batch flush writes each same-id sibling's own completed record."""
+        from solstone.think.activities import load_activity_records
+        from solstone.think.thinking import _flush_batch_state_machines
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            monkeypatch.setenv("SOLSTONE_JOURNAL", tmpdir)
+
+            day = "20260412"
+            segments = ["162416_300", "162916_300"]
+            for _ in range(2):
+                sm = self._same_id_multi_facet_machine(segments, day)
+                _flush_batch_state_machines(
+                    {"import.audio": sm},
+                    day,
+                    refresh=False,
+                    verbose=False,
+                    max_concurrency=1,
+                    skip_activity_prompts=True,
+                )
+
+            self._assert_distinct_same_id_records(
+                load_activity_records,
+                day,
+                segments,
+            )
 
     def test_flush_is_idempotent(self, monkeypatch):
         """Equivalent batch flushes for the same import day dedupe by id."""

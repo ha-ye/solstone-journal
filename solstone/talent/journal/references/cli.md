@@ -65,13 +65,14 @@ sol call journal facet show         # uses SOL_FACET
 ## facet create
 
 ```bash
-sol call journal facet create <title> [--emoji EMOJI] [--color COLOR] [--description DESC] [--consent]
+sol call journal facet create <title> [--emoji EMOJI] [--icon ICON] [--color COLOR] [--description DESC] [--consent]
 ```
 
 Create a new facet directory and initial `facet.json`.
 
 - `title`: display title used for the facet.
 - `--emoji`: optional icon emoji (default: `📦`).
+- `--icon`: optional Lucide icon name that overrides the emoji-derived interface icon.
 - `--color`: optional hex color (default: `#667eea`).
 - `--description`: optional description text.
 - `--consent`: asserts that the agent has received a direct owner request or explicit owner approval before calling this command. Pass when acting proactively (cogitate, suggestion flows) rather than in direct response to an owner instruction. Adds `"consent": true` to the audit log entry.
@@ -81,12 +82,13 @@ Examples:
 ```bash
 sol call journal facet create "Acme Project"
 sol call journal facet create "Personal" --emoji "🏠" --color "#ff6f61" --description "Life admin"
+sol call journal facet create "Research" --emoji "📚" --icon library
 ```
 
 ## facet update
 
 ```bash
-sol call journal facet update <name> [--title T] [--description D] [--emoji E] [--color C]
+sol call journal facet update <name> [--title T] [--description D] [--emoji E] [--icon ICON] [--color C]
 ```
 
 Update facet metadata fields.
@@ -95,12 +97,14 @@ Update facet metadata fields.
 - `--title`: optional new display title.
 - `--description`: optional new description.
 - `--emoji`: optional new icon emoji.
+- `--icon`: optional Lucide icon name; pass an empty string to clear and use the emoji-derived icon.
 - `--color`: optional new hex color.
 
 Example:
 
 ```bash
 sol call journal facet update work --description "Client work and planning" --emoji "🛠"
+sol call journal facet update work --icon brain
 ```
 
 ## facet rename

@@ -176,7 +176,7 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 
 | Domain | Write-owning module(s) |
 |--------|------------------------|
-| Entities (`entities/*/entity.json`, `entities/*/*.npz`) | `solstone/think/entities/journal.py` + `solstone/think/entities/relationships.py` + `solstone/think/entities/consolidation.py` + `solstone/think/entities/saving.py` + `solstone/think/entities/merge.py` + `solstone/think/entities/voiceprints.py` + `solstone/apps/speakers/owner.py` + `solstone/apps/speakers/routes.py` |
+| Entities (`entities/*/entity.json`, `entities/*/*.npz`) | `solstone/think/entities/journal.py` + `solstone/think/entities/relationships.py` + `solstone/think/entities/saving.py` + `solstone/think/entities/merge.py` + `solstone/think/entities/voiceprints.py` + `solstone/apps/speakers/owner.py` + `solstone/apps/speakers/routes.py` |
 | Owner voice candidate (`awareness/owner_candidate.npz`) | `solstone/apps/speakers/owner.py` |
 | Speaker discovery clusters (`awareness/discovery_clusters.json`, `awareness/discovery_clusters.resolved.json`) | `solstone/apps/speakers/discovery.py` |
 | Speaker candidate pool (`awareness/speaker_candidates.json`) | `solstone/apps/speakers/candidate_tracker.py` |
@@ -188,6 +188,7 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Activities (`facets/*/activities/*.jsonl`) | `solstone/think/activities.py` |
 | Timeline (`chronicle/<day>/timeline.json`, `chronicle/**/<seg>/timeline.json`, root `timeline.json`) | `solstone/apps/timeline/maintenance.py` + `solstone/apps/timeline/talent/segment_summary.py` |
 | Per-segment sense outputs (`chronicle/**/<seg>/talents/{sense.json,facets.json,speakers.json,density.json,change.json,activity.md,sense.md}`) | `solstone/think/sense_splitter.py` |
+| Backfilled `_solstone_processing` records on header-only native describe/transcribe outputs (`chronicle/**/<seg>/{screen,*_screen,audio,*_audio}.jsonl`) | `solstone/think/backfill_processing_records.py` |
 | Awareness (`awareness/current.json`, `awareness/YYYYMMDD.jsonl`) | `solstone/think/awareness.py` |
 | Awareness activity state (`awareness/activity_state.json`) | `solstone/think/thinking.py` |
 | Identity (`identity/*.md`, `identity/history.jsonl` audit log) | `solstone/think/identity.py` |
@@ -205,11 +206,12 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Speaker labels (`chronicle/**/talents/speaker_labels.json`) | `solstone/apps/speakers/attribution.py` |
 | Speaker corrections (`chronicle/**/talents/speaker_corrections.json`) | `solstone/apps/speakers/attribution.py` |
 | Stream identity (`chronicle/**/<seg>/stream.json` marker + `streams/<name>.json` state) | `solstone/think/streams.py` |
-| Link service state (`link/ca/cert.pem`, `link/ca/private.pem`, `link/nonces.json`, `link/authorized_clients.json`, `link/state.json`, `link/tokens/account.json`, `link/totp.json`) | `solstone/think/link/ca.py` + `solstone/think/link/nonces.py` + `solstone/think/link/auth.py` + `solstone/think/link/paths.py` |
+| Link service state (`link/ca/cert.pem`, `link/ca/private.pem`, `link/ca-staging/**`, `link/nonces.json`, `link/authorized_clients.json`, `link/state.json` including optional `locked_at`, `link/tokens/account.json`, `link/totp.json`) | `solstone/think/link/ca.py` + `solstone/think/link/establish.py` + `solstone/think/link/nonces.py` + `solstone/think/link/auth.py` + `solstone/think/link/paths.py` |
 | Chronicle day content (`chronicle/YYYYMMDD/**`) | The capturing module (observer, importer) per its declared outputs |
 | Index (SQLite, `indexer/*`) | `solstone/think/indexer/*` |
 | Observer registry and sync history (`apps/observer/observers/*.json`, `apps/observer/observers/*/hist/*.jsonl`) | `solstone/apps/observer/utils.py` |
 | Import ingest/resolve staging (`imports/**`) | `solstone/apps/import/ingest.py` + `solstone/apps/import/resolve.py` + `solstone/apps/import/facet_ingest.py` + `solstone/apps/import/journal_sources.py` — HTTP-ingest + resolve staging state, plus the remote-ingest bundle under `imports/<id>/`. `journal_sources.py` owns only its `create_state_directory` `imports/` initializers; its source registry is app-storage. Import-bundle and sync-cursor content under `imports/<id>/` and `imports/<backend>.json` is written by `solstone/think/importers/{utils,cli,shared,sync}.py` (local/CLI import flows + sync cursor), and `solstone/think/importers/plaud.py` installs streamed imported audio onto `imports/<id>/<name>` via journal_io's `install_file` primitive, as importer declared outputs (L7). |
+| Operational-log/cache pruning and root task-log compaction — deletion/compaction only, across the dated allowlist (`chronicle/<day>/health/*.{log,jsonl}`, top-level `talents/<talent>/<epoch_ms>.jsonl` run logs + `talents/<YYYYMMDD>.jsonl` day indexes, `tokens/`, `awareness/`, `config/actions/`, `facets/*/logs/`, `apps/observer/observers/*/hist/`, `.cache/cogitate-history/`) plus root `task_log.txt` epoch lines older than the same retention window | `solstone/think/log_retention.py` — prunes derived/operational artifacts by retention age and rewrites only root `task_log.txt` during compaction, preserving recent and unparseable lines. Routes its own deletes/compaction; does not write through each domain's owner. |
 
 If you're about to write to a domain from a module not in this table, stop and route through the owner.
 

@@ -29,7 +29,13 @@ from typing import Any, Callable, Optional
 
 from jsonschema import Draft202012Validator
 
-from solstone.think.cluster import cluster, cluster_period, cluster_span
+from solstone.think.cluster import (
+    cluster,
+    cluster_period,
+    cluster_span,
+    read_segment_data_state,
+)
+from solstone.think.data_state import DataState
 from solstone.think.pipeline_health import (
     TERMINAL_COMPLETE,
     TerminalUnit,
@@ -49,6 +55,7 @@ from solstone.think.talent import (
     source_is_required,
 )
 from solstone.think.talent_provenance import (
+    UnsupportedProvenancePath,
     compute_identity_hash,
     output_digest,
     read_provenance,
@@ -416,6 +423,7 @@ def _load_transcript(
     segment: str | None,
     span: list[str] | None,
     sources: dict,
+    stream: str | None = None,
 ) -> tuple[str, dict[str, int]]:
     """Load and cluster transcript for day/segment/span.
 
@@ -424,10 +432,14 @@ def _load_transcript(
         segment: Optional segment key
         span: Optional list of segment keys
         sources: Source config dict from frontmatter load
+        stream: Optional stream name; falls back to SOL_STREAM when omitted
 
     Returns:
         Tuple of (transcript text, source_counts dict)
     """
+    if stream is None:
+        stream = os.environ.get("SOL_STREAM")
+
     # Set segment key for token usage logging
     if segment:
         os.environ["SOL_SEGMENT"] = segment
@@ -450,14 +462,48 @@ def _load_transcript(
         else:
             cluster_sources[k] = source_is_enabled(v)
 
-    # Build transcript via clustering
-    stream = os.environ.get("SOL_STREAM")
     if span:
         return cluster_span(day, span, sources=cluster_sources, stream=stream)
     elif segment:
         return cluster_period(day, segment, sources=cluster_sources, stream=stream)
     else:
         return cluster(day, sources=cluster_sources)
+
+
+def _is_no_input(transcript: str, source_counts: dict[str, int]) -> bool:
+    """The framework's emptiness rule: no clustered input, or below MIN_INPUT_CHARS."""
+    total_count = sum(source_counts.values())
+    return total_count == 0 or len(transcript.strip()) < MIN_INPUT_CHARS
+
+
+def check_segment_has_no_input(
+    day: str,
+    segment: str,
+    sources: dict,
+    stream: str | None = None,
+) -> bool:
+    """Read-only: True when the segment has no usable sense input.
+
+    Two additive rules, either sufficient:
+    - content emptiness: the talent's enabled sources cluster to nothing usable
+      (``_is_no_input`` — no clustered input, or below ``MIN_INPUT_CHARS``), or
+    - recorded-empty: every present (non-absent) modality derived ``DataState.EMPTY``
+      (header-only describe/transcribe outputs that analyzed to nothing).
+
+    Returns False when no source is enabled (nothing to probe), so callers passing a
+    source-less config treat the segment as not-gated.
+    """
+    if not any(source_is_enabled(v) for v in sources.values()):
+        return False
+    transcript, source_counts = _load_transcript(
+        day, segment, None, sources, stream=stream
+    )
+    if _is_no_input(transcript, source_counts):
+        return True
+    data_state = read_segment_data_state(day, segment, stream)
+    return bool(data_state) and all(
+        value == DataState.EMPTY.value for value in data_state.values()
+    )
 
 
 def prepare_config(request: dict) -> dict:
@@ -488,6 +534,7 @@ def prepare_config(request: dict) -> dict:
         _resolve_tier,
         resolve_model_for_provider,
         resolve_provider,
+        type_default_is_local,
     )
     from solstone.think.talent import get_talent, key_to_context
 
@@ -558,13 +605,25 @@ def prepare_config(request: dict) -> dict:
     talent_type = config["type"]
     default_provider, default_model = resolve_provider(context, talent_type)
 
-    provider = config.get("provider") or default_provider
-    model = config.get("model")
-    if not model:
-        if provider != default_provider:
-            model = resolve_model_for_provider(context, provider, talent_type)
+    if type_default_is_local(talent_type):
+        # Local type-default is a hard runtime promise: a frontmatter/request
+        # cloud provider pin may not force a local-lane talent onto cloud. An
+        # explicit local pin (provider: local + model) at the talent/request
+        # level is honored verbatim; otherwise the local model comes from
+        # resolve_provider (which already carries any context-level local pin).
+        provider = default_provider  # "local" (resolve_provider already forced it)
+        if config.get("provider") == "local" and config.get("model"):
+            model = config["model"]
         else:
             model = default_model
+    else:
+        provider = config.get("provider") or default_provider
+        model = config.get("model")
+        if not model:
+            if provider != default_provider:
+                model = resolve_model_for_provider(context, provider, talent_type)
+            else:
+                model = default_model
 
     config["provider"] = provider
     config["model"] = model
@@ -622,7 +681,7 @@ def prepare_config(request: dict) -> dict:
                     return config
 
             # Skip if no content
-            if total_count == 0 or len(transcript.strip()) < MIN_INPUT_CHARS:
+            if _is_no_input(transcript, source_counts):
                 config["skip_reason"] = "no_input"
                 return config
 
@@ -774,6 +833,21 @@ def _run_post_hooks(result: str, config: dict) -> str:
         LOG.error("Post-hook failed: %s", exc)
 
     return result
+
+
+def _expected_output_blank(config: dict, raw_result: str, result: str) -> bool:
+    if not config.get("output_path"):
+        return False
+    if result and result.strip():
+        return False
+    if raw_result and raw_result.strip():
+        return False
+    return True
+
+
+_NO_OUTPUT_ERROR = (
+    "no_output: expects-output talent finished without producing a result"
+)
 
 
 # =============================================================================
@@ -1028,20 +1102,38 @@ def _write_clean_provenance(
 ) -> None:
     if not output_path or not result:
         return
-    output_sha256, output_size = output_digest(output_path)
-    write_provenance(
-        output_path,
-        identity_hash=_identity_hash(config, runtime_json_schema),
-        output_sha256=output_sha256,
-        output_size=output_size,
-        provider=config.get("provider"),
-        model=config.get("model"),
-        fallback_from=config.get("fallback_from"),
-        generation_params=_generation_params(config),
-        completed_at_ms=completed_at_ms,
-        use_id=config.get("use_id"),
-        identity_fields=_identity_fields(config),
-    )
+    # Provenance is an observability sidecar, never the run's success
+    # contract: a sidecar failure must not flip a saved output to "error".
+    # Mirrors the non-fatal read path in _try_reuse_output. The unsupported-
+    # path sentinel is the benign "this output shape has no day-rooted
+    # provenance home" signal (logged at WARNING); any other failure is
+    # unexpected and logged LOUDLY at ERROR (not a silent swallow).
+    try:
+        output_sha256, output_size = output_digest(output_path)
+        write_provenance(
+            output_path,
+            identity_hash=_identity_hash(config, runtime_json_schema),
+            output_sha256=output_sha256,
+            output_size=output_size,
+            provider=config.get("provider"),
+            model=config.get("model"),
+            fallback_from=config.get("fallback_from"),
+            generation_params=_generation_params(config),
+            completed_at_ms=completed_at_ms,
+            use_id=config.get("use_id"),
+            identity_fields=_identity_fields(config),
+        )
+    except UnsupportedProvenancePath:
+        LOG.warning(
+            "skipping talent provenance for unmapped output path %s",
+            output_path,
+        )
+    except Exception:
+        LOG.error(
+            "failed to write talent provenance for %s",
+            output_path,
+            exc_info=True,
+        )
 
 
 def _build_dry_run_event(config: dict, before_values: dict) -> dict:
@@ -1158,11 +1250,23 @@ async def _execute_with_tools(
     # Wrapper to intercept finish event for post-processing
     def talent_emit_event(data: Event) -> None:
         if data.get("event") == "finish":
-            result = data.get("result", "")
-            result = _run_post_hooks(result, config)
+            raw_result = data.get("result", "")
+            result = _run_post_hooks(raw_result, config)
+            if _expected_output_blank(config, raw_result, result):
+                emit_event(
+                    {
+                        "event": "error",
+                        "error": _NO_OUTPUT_ERROR,
+                        "reason_code": "no_output",
+                        "provider": config.get("provider"),
+                        "terminal": True,
+                        "ts": now_ms(),
+                    }
+                )
+                return
 
             updates: dict[str, Any] = {}
-            if result != data.get("result", ""):
+            if result != raw_result:
                 updates["result"] = result
 
             degraded = _classify_degraded(data.get("usage"), config)
@@ -1398,11 +1502,23 @@ async def _execute_generate(
             request_health_recheck()
             config["health_stale"] = False
 
-    result = gen_result["text"]
+    raw_result = gen_result["text"]
     usage_data = gen_result.get("usage")
 
     # Run post-hooks
-    result = _run_post_hooks(result, config)
+    result = _run_post_hooks(raw_result, config)
+    if _expected_output_blank(config, raw_result, result):
+        emit_event(
+            {
+                "event": "error",
+                "error": _NO_OUTPUT_ERROR,
+                "reason_code": "no_output",
+                "provider": config.get("provider"),
+                "terminal": True,
+                "ts": now_ms(),
+            }
+        )
+        return
 
     # Write output
     output_changed = False

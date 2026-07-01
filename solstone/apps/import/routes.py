@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 import json
-import logging
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,10 +17,12 @@ from solstone.apps.utils import log_app_action
 from solstone.convey import emit, state
 from solstone.convey.reasons import (
     FILE_NOT_FOUND,
+    IMPORT_CLIENT_ID_CONFLICT,
     IMPORT_CONFLICT,
     IMPORT_METADATA_FAILED,
     IMPORT_NOT_FOUND,
     INGEST_NO_FILES,
+    INVALID_OPERATION_FOR_STATE,
     INVALID_REQUEST_VALUE,
     JOURNAL_SOURCE_PROBLEM,
     MISSING_REQUIRED_FIELD,
@@ -31,9 +33,12 @@ from solstone.convey.utils import (
     respond_collection,
     success_response,
 )
-from solstone.think.detect_created import detect_created
+from solstone.think.detect_created import detect_created, resolve_created_deterministic
+from solstone.think.importers.shared import find_manifest_by_hash, hash_source
 from solstone.think.importers.utils import (
     build_import_info,
+    find_staged_by_client_item_id,
+    find_staged_by_source_hash,
     generate_content_manifest,
     get_import_details,
     list_import_timestamps,
@@ -44,7 +49,11 @@ from solstone.think.importers.utils import (
     update_import_metadata_fields,
     write_import_metadata,
 )
-from solstone.think.media import MEDIA_EXTENSIONS
+from solstone.think.media import (
+    MEDIA_EXTENSIONS,
+    canonical_source,
+    canonical_source_signal,
+)
 from solstone.think.utils import day_path, now_ms
 
 from .journal_sources import (
@@ -218,14 +227,237 @@ def _link_id_from_identity() -> str | None:
     )
 
 
+def _form_bool(value: str | None) -> bool:
+    return value.strip().lower() in {"true", "1", "yes"} if value else False
+
+
+CANONICAL_IMPORT_SOURCES = {"audio", "image", "document", "text"}
+
+
+def _clean_optional(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        cleaned = value.strip()
+    else:
+        cleaned = str(value).strip()
+    return cleaned or None
+
+
+def _client_bag(value: Any) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _build_save_summary(
+    metadata: dict,
+    *,
+    status: str,
+    replay: bool,
+    duplicate: dict | None,
+    recommended_action: str | None = None,
+) -> dict:
+    """Build the versioned import staging summary response."""
+    client = metadata.get("client")
+    if not isinstance(client, dict):
+        client = {}
+    action = recommended_action
+    if action is None:
+        action = "do_not_start" if status == "duplicate" else "start"
+
+    summary: dict[str, Any] = {
+        "schema_version": 1,
+        "status": status,
+        "replay": replay,
+        "path": str(metadata.get("file_path", "")),
+        "timestamp": str(metadata.get("user_timestamp", "")),
+        "client_item_id": str(metadata.get("client_item_id", "")),
+        "source": metadata.get("source", "text"),
+        "facet": metadata.get("facet"),
+        "setting": metadata.get("setting"),
+        "recommended_action": action,
+        "metadata": {
+            "original_filename": metadata.get("original_filename"),
+            "mime_type": metadata.get("mime_type"),
+            "imported_via": metadata.get("imported_via"),
+            "observer_handle": metadata.get("observer_handle"),
+            "source_hint": metadata.get("source_hint"),
+            "client": client,
+        },
+        "diagnostics": {
+            "timestamp_detection_method": metadata.get(
+                "timestamp_detection_method", "duplicate"
+            ),
+            "timestamp_detection_model_called": metadata.get(
+                "timestamp_detection_model_called", False
+            ),
+            "timestamp_detection_no_match_reason": metadata.get(
+                "timestamp_detection_no_match_reason"
+            ),
+            "source_inference": metadata.get("source_inference", "default"),
+        },
+    }
+    if duplicate is not None:
+        summary["duplicate"] = {
+            "import_id": duplicate.get("import_id"),
+            "imported_at": duplicate.get("imported_at"),
+            "entry_count": duplicate.get("entry_count"),
+            "state": duplicate.get("state"),
+        }
+    return summary
+
+
+def _load_import_metadata_or_none(journal_root: Path, timestamp: str) -> dict | None:
+    try:
+        metadata = read_import_metadata(journal_root, timestamp)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    return metadata if isinstance(metadata, dict) else None
+
+
+def _duplicate_summary_metadata(
+    journal_root: Path,
+    *,
+    client_item_id: str,
+    source: str,
+    source_inference: str,
+    duplicate: dict,
+    existing_metadata: dict | None = None,
+) -> dict:
+    import_id = str(duplicate.get("import_id") or "")
+    metadata = dict(existing_metadata or {})
+    if not metadata and import_id:
+        metadata = dict(_load_import_metadata_or_none(journal_root, import_id) or {})
+
+    metadata.setdefault("file_path", str(journal_root / "imports" / import_id))
+    metadata.setdefault("user_timestamp", import_id)
+    metadata.setdefault("original_filename", None)
+    metadata.setdefault("mime_type", None)
+    metadata.setdefault("imported_via", duplicate.get("imported_via"))
+    metadata.setdefault("observer_handle", duplicate.get("observer_handle"))
+    metadata.setdefault("source_hint", None)
+    metadata.setdefault("client", {})
+    metadata.setdefault("facet", None)
+    metadata.setdefault("setting", None)
+    metadata.setdefault("timestamp_detection_method", "duplicate")
+    metadata.setdefault("timestamp_detection_model_called", False)
+    metadata.setdefault("timestamp_detection_no_match_reason", None)
+    metadata["client_item_id"] = client_item_id
+    metadata["source_inference"] = metadata.get("source_inference") or source_inference
+    if metadata.get("source") not in CANONICAL_IMPORT_SOURCES:
+        metadata["source"] = source
+    return metadata
+
+
+def _duplicate_or_replay_response(
+    journal_root: Path,
+    *,
+    client_item_id: str,
+    source_hash: str,
+    source: str,
+    source_inference: str,
+) -> Any | None:
+    existing = find_staged_by_client_item_id(journal_root, client_item_id)
+    if existing:
+        if existing.get("source_hash") == source_hash:
+            replay_action = (
+                "do_not_start"
+                if existing.get("task_id") or existing.get("processing_completed")
+                else None
+            )
+            return jsonify(
+                _build_save_summary(
+                    existing,
+                    status="staged",
+                    replay=True,
+                    duplicate=None,
+                    recommended_action=replay_action,
+                )
+            )
+        return error_response(
+            IMPORT_CLIENT_ID_CONFLICT,
+            detail=(
+                "client_item_id already staged for different content; use a new "
+                "client_item_id or re-fetch the existing item"
+            ),
+        )
+
+    imported = find_manifest_by_hash(journal_root, source_hash)
+    if imported:
+        duplicate = {
+            "import_id": imported.get("import_id"),
+            "imported_at": imported.get("imported_at"),
+            "entry_count": imported.get("entry_count"),
+            "state": "imported",
+            "imported_via": imported.get("imported_via"),
+            "observer_handle": imported.get("observer_handle"),
+        }
+        metadata = _duplicate_summary_metadata(
+            journal_root,
+            client_item_id=client_item_id,
+            source=source,
+            source_inference=source_inference,
+            duplicate=duplicate,
+        )
+        return jsonify(
+            _build_save_summary(
+                metadata,
+                status="duplicate",
+                replay=False,
+                duplicate=duplicate,
+            )
+        )
+
+    staged_duplicate = find_staged_by_source_hash(journal_root, source_hash)
+    if staged_duplicate:
+        duplicate = {
+            "import_id": staged_duplicate.get("timestamp"),
+            "imported_at": None,
+            "entry_count": None,
+            "state": "staged",
+        }
+        metadata = _duplicate_summary_metadata(
+            journal_root,
+            client_item_id=client_item_id,
+            source=source,
+            source_inference=source_inference,
+            duplicate=duplicate,
+            existing_metadata=staged_duplicate,
+        )
+        return jsonify(
+            _build_save_summary(
+                metadata,
+                status="duplicate",
+                replay=False,
+                duplicate=duplicate,
+            )
+        )
+
+    return None
+
+
 @import_bp.route("/api/save", methods=["POST"])
 def import_save() -> Any:
-    from datetime import datetime
-
     upload = request.files.get("file")
     text = request.form.get("text", "").strip()
+    client_item_id = request.form.get("client_item_id", "").strip()
     facet = request.form.get("facet", "").strip() or None
     setting = request.form.get("setting", "").strip() or None
+    source_hint = request.form.get("source_hint", "").strip() or None
+    imported_via = request.form.get("imported_via", "").strip() or "web_dashboard"
+    observer_handle = request.form.get("observer_handle", "").strip() or None
+    deterministic_only = _form_bool(request.form.get("deterministic_only"))
+    client = _client_bag(request.form.get("client"))
+
+    if not client_item_id:
+        return error_response(MISSING_REQUIRED_FIELD, detail="Missing client_item_id")
 
     # Generate timestamp for folder name
     timestamp_ms = now_ms()
@@ -238,9 +470,21 @@ def import_save() -> Any:
     else:
         return error_response(INGEST_NO_FILES, detail="No input")
 
+    original_filename = upload.filename if upload else "paste.txt"
+    mime_type = upload.content_type if upload else "text/plain"
+    source = canonical_source(filename=original_filename, content_type=mime_type)
+    source_inference = canonical_source_signal(
+        filename=original_filename,
+        content_type=mime_type,
+    )
+    journal_root = Path(state.journal_root)
+
     # Detect timestamp from content first (need temporary save for detection)
     ts = None
     detection_result = None
+    timestamp_detection_method = "upload_fallback"
+    timestamp_detection_model_called = False
+    timestamp_detection_no_match_reason = None
 
     # Create temporary file for detection if needed
     if upload:
@@ -264,116 +508,145 @@ def import_save() -> Any:
             temp_path = tmp.name
 
     try:
-        # Pass original filename for better timestamp detection
-        original_name = upload.filename if upload else None
-        detection_result = detect_created(temp_path, original_filename=original_name)
-        if (
-            detection_result
-            and detection_result.get("day")
-            and detection_result.get("time")
-        ):
-            ts = f"{detection_result['day']}_{detection_result['time']}"
-    except Exception:
-        ts = None
-    finally:
-        # Clean up temporary file
-        Path(temp_path).unlink(missing_ok=True)
-
-    # Use detected timestamp or fall back to upload timestamp
-    folder_timestamp = (
-        ts
-        if ts
-        else f"{datetime.fromtimestamp(timestamp_ms / 1000).strftime('%Y%m%d_%H%M%S')}"
-    )
-
-    # Save the actual file using utility function
-    if upload:
-        # Save uploaded file to temp location first, then move to import dir
-        import tempfile
-
-        with tempfile.NamedTemporaryFile(delete=False) as tmp:
-            upload.save(tmp.name)
-            temp_source = Path(tmp.name)
+        temp_source = Path(temp_path)
+        source_hash = hash_source(temp_source)
+        duplicate_or_replay = _duplicate_or_replay_response(
+            journal_root,
+            client_item_id=client_item_id,
+            source_hash=source_hash,
+            source=source,
+            source_inference=source_inference,
+        )
+        if duplicate_or_replay is not None:
+            return duplicate_or_replay
 
         try:
+            original_name = upload.filename if upload else None
+            detection_result = resolve_created_deterministic(
+                temp_path,
+                original_filename=original_name,
+            )
+            if (
+                detection_result
+                and detection_result.get("day")
+                and detection_result.get("time")
+            ):
+                ts = f"{detection_result['day']}_{detection_result['time']}"
+                timestamp_detection_method = "deterministic"
+        except Exception:
+            detection_result = None
+
+        if not ts:
+            if deterministic_only:
+                timestamp_detection_no_match_reason = "no_deterministic_match"
+            else:
+                try:
+                    # Pass original filename for better timestamp detection
+                    original_name = upload.filename if upload else None
+                    detection_result = detect_created(
+                        temp_path,
+                        original_filename=original_name,
+                    )
+                    timestamp_detection_model_called = True
+                    if (
+                        detection_result
+                        and detection_result.get("day")
+                        and detection_result.get("time")
+                    ):
+                        ts = f"{detection_result['day']}_{detection_result['time']}"
+                        timestamp_detection_method = "model"
+                    else:
+                        timestamp_detection_no_match_reason = "model_no_match"
+                except Exception:
+                    detection_result = None
+                    timestamp_detection_model_called = True
+                    timestamp_detection_no_match_reason = "model_no_match"
+
+        # Use detected timestamp or fall back to upload timestamp
+        folder_timestamp = (
+            ts
+            if ts
+            else datetime.fromtimestamp(timestamp_ms / 1000).strftime("%Y%m%d_%H%M%S")
+        )
+
+        # Save the actual file using utility function
+        if upload:
             file_path = save_import_file(
-                journal_root=Path(state.journal_root),
+                journal_root=journal_root,
                 timestamp=folder_timestamp,
                 source_path=temp_source,
                 filename=filename,
             )
-        finally:
-            temp_source.unlink(missing_ok=True)
-    else:
-        file_path = save_import_text(
-            journal_root=Path(state.journal_root),
+        else:
+            file_path = save_import_text(
+                journal_root=journal_root,
+                timestamp=folder_timestamp,
+                content=text,
+                filename=filename,
+            )
+
+        # Build metadata dict
+        metadata = {
+            "original_filename": original_filename,
+            "upload_timestamp": timestamp_ms,
+            "upload_datetime": datetime.fromtimestamp(timestamp_ms / 1000).isoformat(),
+            "detection_result": detection_result,
+            "detected_timestamp": ts,
+            "user_timestamp": folder_timestamp,
+            "timestamp_detection_method": timestamp_detection_method,
+            "timestamp_detection_model_called": timestamp_detection_model_called,
+            "timestamp_detection_no_match_reason": timestamp_detection_no_match_reason,
+            "source_inference": source_inference,
+            "file_size": file_path.stat().st_size if file_path.exists() else 0,
+            "mime_type": mime_type,
+            "facet": facet,
+            "setting": setting,
+            "file_path": str(file_path),
+            "imported_via": imported_via,
+            "link_id": _link_id_from_identity(),
+            "observer_handle": observer_handle,
+            "client_item_id": client_item_id,
+            "source_hash": source_hash,
+            "source": source,
+            "source_hint": source_hint,
+            "client": client,
+        }
+
+        # Write metadata using utility function
+        write_import_metadata(
+            journal_root=journal_root,
             timestamp=folder_timestamp,
-            content=text,
-            filename=filename,
+            metadata=metadata,
         )
 
-    # Build metadata dict
-    metadata = {
-        "original_filename": upload.filename if upload else "paste.txt",
-        "upload_timestamp": timestamp_ms,
-        "upload_datetime": datetime.fromtimestamp(timestamp_ms / 1000).isoformat(),
-        "detection_result": detection_result,
-        "detected_timestamp": ts,
-        "user_timestamp": folder_timestamp,  # The timestamp used for the folder
-        "file_size": file_path.stat().st_size if file_path.exists() else 0,
-        "mime_type": upload.content_type if upload else "text/plain",
-        "facet": facet,  # Include selected facet
-        "setting": setting,
-        "file_path": str(file_path),  # Store the actual file path
-        "imported_via": request.form.get("imported_via", "").strip() or "web_dashboard",
-        "link_id": _link_id_from_identity(),
-        "observer_handle": request.form.get("observer_handle", "").strip() or None,
-    }
-
-    # Write metadata using utility function
-    write_import_metadata(
-        journal_root=Path(state.journal_root),
-        timestamp=folder_timestamp,
-        metadata=metadata,
-    )
-
-    # Check for dedup — has this exact file been imported before?
-    dedup = None
-    try:
-        from solstone.think.importers.shared import find_manifest_by_hash, hash_source
-
-        source_hash = hash_source(file_path)
-        existing = find_manifest_by_hash(Path(state.journal_root), source_hash)
-        if existing:
-            dedup = {
-                "imported_at": existing.get("imported_at", "unknown"),
-                "entry_count": existing.get("entry_count", 0),
-                "import_id": existing.get("import_id", ""),
-            }
-    except OSError as exc:
-        logging.warning("Dedup check failed for %s: %s", file_path, exc)
-
-    result: dict[str, Any] = {
-        "path": str(file_path),
-        "timestamp": folder_timestamp,
-        "facet": facet,
-        "setting": setting,
-    }
-    if dedup:
-        result["dedup"] = dedup
-
-    return jsonify(result)
+        return jsonify(
+            _build_save_summary(
+                metadata,
+                status="staged",
+                replay=False,
+                duplicate=None,
+            )
+        )
+    finally:
+        # Clean up temporary file
+        Path(temp_path).unlink(missing_ok=True)
 
 
 @import_bp.route("/api/save-path", methods=["POST"])
 def import_save_path() -> Any:
     """Register a local filesystem path for import (e.g. Obsidian vault)."""
-    from datetime import datetime
-
     data = request.get_json(force=True)
+    client_item_id = data.get("client_item_id", "").strip()
     local_path = data.get("path", "").strip()
     facet = data.get("facet", "").strip() or None
     setting = data.get("setting", "").strip() or None
+    source_hint = data.get("source_hint", "").strip() or None
+    imported_via = data.get("imported_via", "").strip() or "web_dashboard"
+    observer_handle = data.get("observer_handle", "").strip() or None
+    client = _client_bag(data.get("client"))
+
+    if not client_item_id:
+        return error_response(MISSING_REQUIRED_FIELD, detail="Missing client_item_id")
 
     if not local_path:
         return error_response(MISSING_REQUIRED_FIELD, detail="Missing path")
@@ -387,23 +660,42 @@ def import_save_path() -> Any:
         f"{datetime.fromtimestamp(timestamp_ms / 1000).strftime('%Y%m%d_%H%M%S')}"
     )
 
-    # Create import directory and metadata
     journal_root = Path(state.journal_root)
-    import_dir = journal_root / "imports" / folder_timestamp
-    import_dir.mkdir(parents=True, exist_ok=True)
+    source_hash = hash_source(local)
+    source = canonical_source(filename=local.name)
+    source_inference = canonical_source_signal(filename=local.name)
+    duplicate_or_replay = _duplicate_or_replay_response(
+        journal_root,
+        client_item_id=client_item_id,
+        source_hash=source_hash,
+        source=source,
+        source_inference=source_inference,
+    )
+    if duplicate_or_replay is not None:
+        return duplicate_or_replay
 
     metadata = {
         "original_filename": local.name,
         "upload_timestamp": timestamp_ms,
         "upload_datetime": datetime.fromtimestamp(timestamp_ms / 1000).isoformat(),
         "user_timestamp": folder_timestamp,
+        "timestamp_detection_method": "path_fallback",
+        "timestamp_detection_model_called": False,
+        "timestamp_detection_no_match_reason": None,
+        "source_inference": source_inference,
         "file_path": local_path,
         "facet": facet,
         "setting": setting,
         "is_local_path": True,
-        "imported_via": data.get("imported_via", "").strip() or "web_dashboard",
+        "mime_type": None,
+        "imported_via": imported_via,
         "link_id": _link_id_from_identity(),
-        "observer_handle": data.get("observer_handle", "").strip() or None,
+        "observer_handle": observer_handle,
+        "client_item_id": client_item_id,
+        "source_hash": source_hash,
+        "source": source,
+        "source_hint": source_hint,
+        "client": client,
     }
 
     write_import_metadata(
@@ -413,37 +705,83 @@ def import_save_path() -> Any:
     )
 
     return jsonify(
-        {
-            "path": local_path,
-            "timestamp": folder_timestamp,
-            "facet": facet,
-            "setting": setting,
-        }
+        _build_save_summary(
+            metadata,
+            status="staged",
+            replay=False,
+            duplicate=None,
+        )
     )
 
 
-@import_bp.route("/api/facet", methods=["POST"])
+@import_bp.route("/api/meta", methods=["POST"])
 def import_update_metadata() -> Any:
-    """Update stored metadata (facet/setting) for a saved import."""
+    """Update stored metadata for a saved import."""
     data = request.get_json(force=True)
     raw_path = data.get("path", "").strip()
     if not raw_path:
         return error_response(MISSING_REQUIRED_FIELD, detail="Missing import path")
 
-    facet = data.get("facet", "").strip() or None
-    setting = data.get("setting", "").strip() or None
-
     # Extract timestamp from path
     # Path format: .../imports/{timestamp}/{filename}
     file_path = Path(raw_path)
     timestamp = file_path.parent.name
+    journal_root = Path(state.journal_root)
 
     try:
-        # Use utility function to update metadata
-        metadata, updated = update_import_metadata_fields(
-            journal_root=Path(state.journal_root),
+        metadata = read_import_metadata(journal_root=journal_root, timestamp=timestamp)
+    except FileNotFoundError:
+        return error_response(IMPORT_NOT_FOUND, detail="Import metadata not found")
+    except Exception as exc:
+        return error_response(
+            IMPORT_METADATA_FAILED,
+            detail=f"Failed to read metadata: {exc}",
+        )
+
+    if metadata.get("task_id") or metadata.get("processing_completed"):
+        return error_response(
+            INVALID_OPERATION_FOR_STATE,
+            detail="import already started or processed",
+        )
+
+    source_hash = metadata.get("source_hash")
+    if source_hash and find_manifest_by_hash(journal_root, source_hash):
+        return error_response(
+            INVALID_OPERATION_FOR_STATE,
+            detail="content already imported",
+        )
+
+    updates: dict[str, Any] = {}
+    for key in (
+        "facet",
+        "setting",
+        "original_filename",
+        "mime_type",
+        "source_hint",
+        "observer_handle",
+        "imported_via",
+        "client",
+    ):
+        if key not in data:
+            continue
+        if key in {"facet", "setting", "source_hint", "observer_handle"}:
+            updates[key] = _clean_optional(data.get(key))
+        elif key == "client":
+            updates[key] = _client_bag(data.get(key))
+        else:
+            updates[key] = data.get(key)
+
+    changed = {
+        key: value
+        for key, value in updates.items()
+        if key not in metadata or metadata.get(key) != value
+    }
+
+    try:
+        update_import_metadata_fields(
+            journal_root=journal_root,
             timestamp=timestamp,
-            updates={"facet": facet, "setting": setting},
+            updates=updates,
         )
     except FileNotFoundError:
         return error_response(IMPORT_NOT_FOUND, detail="Import metadata not found")
@@ -456,9 +794,9 @@ def import_update_metadata() -> Any:
     return jsonify(
         {
             "status": "ok",
-            "facet": facet,
-            "setting": setting,
-            "updated": updated,
+            "path": raw_path,
+            "timestamp": timestamp,
+            "updated": changed,
         }
     )
 
@@ -810,13 +1148,9 @@ def import_start() -> Any:
     data = request.get_json(force=True)
     path = data.get("path")
     ts = data.get("timestamp")
-    source = data.get("source")
     force = data.get("force", False)
     if not path or not ts:
         return error_response(MISSING_REQUIRED_FIELD, detail="missing params")
-
-    # Generate task ID
-    task_id = str(now_ms())
 
     # Extract original timestamp from path and handle timestamp changes
     file_path = Path(path)
@@ -824,6 +1158,34 @@ def import_start() -> Any:
     imports_dir = journal_root / "imports"
     is_local_path = not str(file_path).startswith(str(imports_dir))
     original_timestamp = file_path.parent.name if not is_local_path else ts
+
+    # Read import metadata before any move. Saved metadata is the authority for
+    # facet, setting, and source routing.
+    try:
+        metadata = read_import_metadata(
+            journal_root=journal_root,
+            timestamp=original_timestamp,
+        )
+    except FileNotFoundError:
+        return error_response(
+            IMPORT_NOT_FOUND,
+            detail=f"Import metadata not found for {original_timestamp}",
+        )
+    except Exception as e:
+        return error_response(
+            IMPORT_METADATA_FAILED,
+            detail=f"Failed to read metadata: {str(e)}",
+        )
+
+    source_hash = metadata.get("source_hash")
+    if source_hash and find_manifest_by_hash(journal_root, source_hash):
+        return error_response(
+            INVALID_OPERATION_FOR_STATE,
+            detail="content already imported; will not start",
+        )
+
+    # Generate task ID
+    task_id = str(now_ms())
 
     # If timestamp changed, move the import directory through the imports/ owner
     if not is_local_path and original_timestamp != ts:
@@ -855,20 +1217,6 @@ def import_start() -> Any:
         # Update file_path in metadata (need to update after reading)
         # We'll handle this after reading the metadata below
 
-    # Read import metadata to get facet and setting
-    try:
-        metadata = read_import_metadata(journal_root=journal_root, timestamp=ts)
-    except FileNotFoundError:
-        return error_response(
-            IMPORT_NOT_FOUND,
-            detail=f"Import metadata not found for {ts}",
-        )
-    except Exception as e:
-        return error_response(
-            IMPORT_METADATA_FAILED,
-            detail=f"Failed to read metadata: {str(e)}",
-        )
-
     # Update file_path in metadata if timestamp changed
     if not is_local_path and original_timestamp != ts:
         try:
@@ -877,6 +1225,7 @@ def import_start() -> Any:
                 timestamp=ts,
                 updates={"file_path": path},
             )
+            metadata["file_path"] = path
         except Exception as e:
             return error_response(
                 IMPORT_METADATA_FAILED,
@@ -885,6 +1234,7 @@ def import_start() -> Any:
 
     facet = metadata.get("facet")
     setting = metadata.get("setting")
+    source_hint = _clean_optional(metadata.get("source_hint"))
 
     # Build command
     cmd = ["journal", "importer", path, ts]
@@ -892,8 +1242,8 @@ def import_start() -> Any:
         cmd.extend(["--facet", facet])
     if setting:
         cmd.extend(["--setting", setting])
-    if source:
-        cmd.extend(["--source", source])
+    if source_hint:
+        cmd.extend(["--source", source_hint])
     if force:
         cmd.append("--force")
 
@@ -902,7 +1252,7 @@ def import_start() -> Any:
         update_import_metadata_fields(
             journal_root=journal_root,
             timestamp=ts,
-            updates={"task_id": task_id, "source": source},
+            updates={"task_id": task_id, "source_hint": source_hint},
         )
     except Exception as e:
         return error_response(

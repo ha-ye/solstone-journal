@@ -12,9 +12,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from solstone.think.catchup_state import read_backoff_summary
+from solstone.think.catchup_state import (
+    read_backoff_summary,
+    read_segment_repair_summary,
+)
 from solstone.think.cluster import cluster_segments
 from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_REASON_CODES
+from solstone.think.data_state import DataState
 from solstone.think.utils import (
     DEFAULT_STREAM,
     day_dirs,
@@ -32,7 +36,18 @@ _now = datetime.now
 
 _MODES = ("segment", "daily", "activity", "weekly", "flush", "cadence")
 _FAILED_LIST_CAP = 20
-SEGMENT_FLOOR_TALENTS: tuple[str, ...] = ("entities", "documents")
+SEGMENT_FLOOR_TALENTS: tuple[str, ...] = ("documents",)
+SEGMENT_NONGATING_TALENTS: tuple[str, ...] = ("entities:detection",)
+# Floor talents are capped after repeated failures spanning at least two hours.
+CAP = 5
+MIN_SPAN_MS = 7_200_000
+SENSED_TERMINAL_STATES = frozenset(
+    {
+        DataState.ANALYZED.value,
+        DataState.PURGED.value,
+        DataState.EMPTY.value,
+    }
+)
 STUCK_FAIL_THRESHOLD = 3
 BACKLOG_DEFAULT_WINDOW = 30
 
@@ -47,6 +62,9 @@ WHY_SENSED_NOT_THOUGHT = "sensed_not_thought"
 REASON_CORRUPT_RAW = "corrupt_raw"
 REASON_FAILING_STEP = "failing_step"
 REASON_CATCHUP_BACKOFF = "catchup_backoff"
+REASON_SEGMENT_REPAIR_DEGRADED = "segment_repair_degraded"
+REASON_SEGMENT_REPAIR_STUCK = "segment_repair_stuck"
+REASON_SEGMENT_REPAIR_UNKNOWN = "segment_repair_unknown"
 
 BACKLOG_STATE_COMPLETE = "complete"
 BACKLOG_STATE_PENDING = "pending"
@@ -64,6 +82,7 @@ class SegmentProgress:
     dispatched: frozenset[str]
     completed: frozenset[str]
     unconfigured: frozenset[str]
+    capped: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -74,6 +93,7 @@ class SegmentCompletion:
     not_sensed: int
     not_thought: int
     total: int
+    capped: int
 
 
 @dataclass(frozen=True)
@@ -113,6 +133,7 @@ class TerminalState:
     reason_code: str | None
     provider: str | None
     model: str | None
+    oldest_trailing_fail_ts: int | None
 
 
 @dataclass(frozen=True)
@@ -185,6 +206,14 @@ class BacklogDay:
     backoff_consecutive_non_completion: int = 0
     backoff_last_outcome: str | None = None
     backoff_next_retry_at: float | None = None
+    segment_repair_status: str | None = None
+    segment_repair_attempts: int = 0
+    segment_repair_consecutive_non_completion: int = 0
+    segment_repair_last_outcome: str | None = None
+    segment_repair_next_retry_at: float | None = None
+    segment_repair_reason_code: str | None = None
+    segment_repair_timeout_seconds: int | None = None
+    segment_repair_bounded: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -213,6 +242,7 @@ def summarize_pipeline_day(day: str) -> dict:
             "completed": 0,
             "failed": 0,
             "skipped": 0,
+            "capped": 0,
             "failed_list": [],
             "failed_list_truncated": False,
         },
@@ -276,7 +306,10 @@ def summarize_pipeline_day(day: str) -> dict:
                         else:
                             summary["talents"]["failed_list_truncated"] = True
                     elif event == "talent.skip":
-                        summary["talents"]["skipped"] += 1
+                        if rec.get("reason") == "capped":
+                            summary["talents"]["capped"] += 1
+                        else:
+                            summary["talents"]["skipped"] += 1
                     elif event == "activity.detected":
                         summary["activities"]["detected"] += 1
                     elif event == "activity.persisted":
@@ -464,8 +497,9 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
         ]
         last_real_complete_ts = max(real_complete_ts) if real_complete_ts else None
         trailing_fail_count = 0
+        oldest_trailing_fail_ts = None
         for (
-            _ts,
+            ts,
             _seq,
             event,
             _reason_code,
@@ -476,6 +510,7 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
             if event != TERMINAL_FAIL:
                 break
             trailing_fail_count += 1
+            oldest_trailing_fail_ts = ts
         deterministic_fail_count = 0
         for (
             _ts,
@@ -507,8 +542,32 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
             reason_code=last_fail[3] if last_fail else None,
             provider=last_fail[4] if last_fail else None,
             model=last_fail[5] if last_fail else None,
+            oldest_trailing_fail_ts=oldest_trailing_fail_ts,
         )
     return states
+
+
+def is_floor_talent_capped(
+    day: str, stream: str | None, segment: str, name: str
+) -> bool:
+    """Return True when a segment floor talent has hit the failure cap."""
+    state = read_terminal_states(day).get(
+        TerminalUnit(
+            mode="segment",
+            name=name,
+            facet=None,
+            stream=stream,
+            segment=segment,
+            activity=None,
+        )
+    )
+    if state is None:
+        return False
+    if state.trailing_fail_count < CAP:
+        return False
+    if state.oldest_trailing_fail_ts is None or state.last_fail_ts is None:
+        return False
+    return state.last_fail_ts - state.oldest_trailing_fail_ts >= MIN_SPAN_MS
 
 
 def read_completed_units(day: str) -> set[tuple[str, str, str | None]]:
@@ -627,17 +686,18 @@ def read_segment_progress(day: str) -> dict[tuple[str | None, str], SegmentProgr
     Folds the day's health JSONL files read-only. Progress is keyed by
     ``(stream, segment)``. Untagged historical records use a legacy ``None``
     stream bucket. Segment-scoped records are records with ``mode == "segment"``
-    and a truthy string ``segment`` field. Terminal events are only
-    ``talent.complete`` and ``talent.fail``; the latest terminal per
-    ``((stream, segment), name)`` wins by ``ts``. ``talent.skip`` is
-    non-terminal, except ``reason="no_config"`` is tracked for floor verdicts.
+    and a truthy string ``segment`` field. Terminal fold states are
+    ``talent.complete``, ``talent.fail``, and ``talent.skip`` with
+    ``reason="capped"``; the latest terminal per ``((stream, segment), name)``
+    wins by ``ts``. Other ``talent.skip`` records are non-terminal, except
+    ``reason="no_config"`` is tracked for floor verdicts.
 
     This function does not create, modify, or delete journal state.
     """
     latest_sense: dict[tuple[str | None, str], tuple[int, str | None]] = {}
     latest_change: dict[tuple[str | None, str], tuple[int, str | None]] = {}
     dispatched: dict[tuple[str | None, str], set[str]] = {}
-    terminals: dict[tuple[str | None, str], dict[str, tuple[int, bool]]] = {}
+    terminals: dict[tuple[str | None, str], dict[str, tuple[int, str]]] = {}
     unconfigured: dict[tuple[str | None, str], set[str]] = {}
 
     try:
@@ -731,8 +791,32 @@ def read_segment_progress(day: str) -> dict[tuple[str | None, str], SegmentProgr
                         ):
                             segment_terminals[name] = (
                                 ts,
-                                event == "talent.complete",
+                                "complete" if event == "talent.complete" else "fail",
                             )
+                    elif event == "talent.skip" and rec.get("reason") == "capped":
+                        name = rec.get("name")
+                        if not isinstance(name, str):
+                            logger.debug(
+                                "pipeline_health: skipping capped segment terminal "
+                                "missing name in %s",
+                                path,
+                            )
+                            continue
+                        try:
+                            ts = int(rec["ts"])
+                        except (KeyError, TypeError, ValueError):
+                            logger.debug(
+                                "pipeline_health: skipping capped segment terminal "
+                                "with invalid ts in %s",
+                                path,
+                            )
+                            continue
+                        segment_terminals = terminals.setdefault(key, {})
+                        if (
+                            name not in segment_terminals
+                            or ts >= segment_terminals[name][0]
+                        ):
+                            segment_terminals[name] = (ts, "capped")
                     elif event == "talent.skip" and rec.get("reason") == "no_config":
                         name = rec.get("name")
                         if isinstance(name, str):
@@ -762,10 +846,15 @@ def read_segment_progress(day: str) -> dict[tuple[str | None, str], SegmentProgr
             dispatched=frozenset(dispatched.get(key, set())),
             completed=frozenset(
                 name
-                for name, (_ts, is_complete) in segment_terminals.items()
-                if is_complete
+                for name, (_ts, state) in segment_terminals.items()
+                if state == "complete"
             ),
             unconfigured=frozenset(unconfigured.get(key, set())),
+            capped=frozenset(
+                name
+                for name, (_ts, state) in segment_terminals.items()
+                if state == "capped"
+            ),
         )
     return progress
 
@@ -774,11 +863,10 @@ def segment_fully_sensed(data_state: dict[str, str]) -> bool:
     """True when every non-absent modality has finished sensing.
 
     ``data_state`` is the per-segment dict from ``cluster_segments``; it already
-    omits absent modalities, so an absent modality cannot peg a segment. Note
-    cluster's ``_detect_data_state`` cannot emit ``purged`` today; ``purged`` is
-    kept here for ``DataState`` vocabulary alignment and forward-safety.
+    omits absent modalities, so an absent modality cannot peg a segment. Empty
+    outputs are terminal; failed outputs still block sensing completion.
     """
-    return all(state in {"analyzed", "purged"} for state in data_state.values())
+    return all(state in SENSED_TERMINAL_STATES for state in data_state.values())
 
 
 def segment_fully_thought(progress: SegmentProgress | None) -> tuple[bool, str | None]:
@@ -790,10 +878,16 @@ def segment_fully_thought(progress: SegmentProgress | None) -> tuple[bool, str |
     if progress.change_class == "redundant":
         return True, None
     for name in SEGMENT_FLOOR_TALENTS:
-        if name not in progress.completed and name not in progress.unconfigured:
+        if (
+            name not in progress.completed
+            and name not in progress.unconfigured
+            and name not in progress.capped
+        ):
             return False, f"floor:{name}"
     for name in sorted(progress.dispatched):
-        if name not in progress.completed:
+        if name in SEGMENT_NONGATING_TALENTS:
+            continue
+        if name not in progress.completed and name not in progress.capped:
             return False, f"dispatched:{name}"
     return True, None
 
@@ -823,14 +917,18 @@ def classify_segment_completion(
     blockers: list[dict[str, str]] = []
     not_sensed = 0
     not_thought = 0
+    capped = 0
 
     for seg in segments:
         key = seg["key"]
+        segment_progress = lookup_segment_progress(progress, seg["stream"], key)
+        if segment_progress is not None and segment_progress.capped:
+            capped += 1
         if not segment_fully_sensed(seg["data_state"]):
             detail = ",".join(
                 f"{modality}={state}"
                 for modality, state in sorted(seg["data_state"].items())
-                if state not in {"analyzed", "purged"}
+                if state not in SENSED_TERMINAL_STATES
             )
             blockers.append(
                 {
@@ -842,9 +940,7 @@ def classify_segment_completion(
             not_sensed += 1
             continue
 
-        ok, reason = segment_fully_thought(
-            lookup_segment_progress(progress, seg["stream"], key)
-        )
+        ok, reason = segment_fully_thought(segment_progress)
         if not ok:
             blockers.append(
                 {
@@ -860,6 +956,7 @@ def classify_segment_completion(
         not_sensed=not_sensed,
         not_thought=not_thought,
         total=len(segments),
+        capped=capped,
     )
 
 
@@ -1143,14 +1240,85 @@ def _complete_backlog_day(day: str) -> BacklogDay:
     )
 
 
+_SEGMENT_REPAIR_STATE = {
+    "degraded": (BACKLOG_STATE_PENDING, REASON_SEGMENT_REPAIR_DEGRADED),
+    "stuck": (BACKLOG_STATE_STUCK, REASON_SEGMENT_REPAIR_STUCK),
+    "unknown": (BACKLOG_STATE_UNKNOWN, REASON_SEGMENT_REPAIR_UNKNOWN),
+}
+_STATE_SEVERITY = {
+    BACKLOG_STATE_COMPLETE: 0,
+    BACKLOG_STATE_PENDING: 1,
+    BACKLOG_STATE_STUCK: 2,
+    BACKLOG_STATE_UNKNOWN: 3,
+}
+
+
+def _segment_repair_fields(repair: dict | None) -> dict:
+    if not repair:
+        return {}
+    return {
+        "segment_repair_status": repair["status"],
+        "segment_repair_attempts": int(repair.get("attempts") or 0),
+        "segment_repair_consecutive_non_completion": int(
+            repair.get("consecutive_non_completion") or 0
+        ),
+        "segment_repair_last_outcome": repair.get("last_outcome") or None,
+        "segment_repair_next_retry_at": repair.get("next_retry_at"),
+        "segment_repair_reason_code": repair.get("repair_reason_code"),
+        "segment_repair_timeout_seconds": repair.get("timeout_seconds"),
+        "segment_repair_bounded": repair.get("bounded"),
+    }
+
+
+def _escalate_for_repair(state, reason, reason_code, error, day, repair):
+    if not repair:
+        return state, reason, reason_code, error
+    sr_state, sr_reason = _SEGMENT_REPAIR_STATE[repair["status"]]
+    if _STATE_SEVERITY[sr_state] > _STATE_SEVERITY[state]:
+        state = sr_state
+    if reason_code is None:
+        reason = sr_reason
+        reason_code = sr_reason
+    if repair["status"] == "unknown" and error is None:
+        error = BacklogError(
+            day=day,
+            stage="segment_repair",
+            message="segment-repair state unreadable",
+        )
+    return state, reason, reason_code, error
+
+
+def _backlog_day_for_complete(day: str, repair: dict | None) -> BacklogDay:
+    if not repair:
+        return _complete_backlog_day(day)
+    state, reason, reason_code, error = _escalate_for_repair(
+        BACKLOG_STATE_COMPLETE, None, None, None, day, repair
+    )
+    return BacklogDay(
+        day=day,
+        state=state,
+        segments=0,
+        units=0,
+        not_sensed=0,
+        why=(),
+        reason=reason,
+        reason_code=reason_code,
+        provider=None,
+        model=None,
+        error=error,
+        **_segment_repair_fields(repair),
+    )
+
+
 def read_backlog_view(window: int = BACKLOG_DEFAULT_WINDOW) -> BacklogView:
     """Return a bounded cross-day backlog view."""
     backlog_days: list[BacklogDay] = []
     errors: list[BacklogError] = []
 
     for day in sorted(day_dirs().keys(), reverse=True)[:window]:
+        repair = read_segment_repair_summary(day)
         if day_is_complete(day):
-            backlog_days.append(_complete_backlog_day(day))
+            backlog_days.append(_backlog_day_for_complete(day, repair))
             continue
 
         try:
@@ -1234,6 +1402,9 @@ def read_backlog_view(window: int = BACKLOG_DEFAULT_WINDOW) -> BacklogView:
             state = BACKLOG_STATE_PENDING
         else:
             state = BACKLOG_STATE_COMPLETE
+        state, reason, reason_code, sr_error = _escalate_for_repair(
+            state, reason, reason_code, None, day, repair
+        )
 
         backlog_days.append(
             BacklogDay(
@@ -1247,7 +1418,7 @@ def read_backlog_view(window: int = BACKLOG_DEFAULT_WINDOW) -> BacklogView:
                 reason_code=reason_code,
                 provider=representative.provider if representative else None,
                 model=representative.model if representative else None,
-                error=None,
+                error=sr_error,
                 backoff_stuck=bool(backoff),
                 backoff_attempts=backoff["attempts"] if backoff else 0,
                 backoff_consecutive_non_completion=(
@@ -1255,6 +1426,7 @@ def read_backlog_view(window: int = BACKLOG_DEFAULT_WINDOW) -> BacklogView:
                 ),
                 backoff_last_outcome=backoff["last_outcome"] if backoff else None,
                 backoff_next_retry_at=backoff["next_retry_at"] if backoff else None,
+                **_segment_repair_fields(repair),
             )
         )
 
@@ -1272,6 +1444,8 @@ def read_backlog_view(window: int = BACKLOG_DEFAULT_WINDOW) -> BacklogView:
         stuck_days=stuck_days,
         oldest_pending_day=min(outstanding) if outstanding else None,
         errors=tuple(errors),
+        degraded=bool(errors)
+        or any(day.state == BACKLOG_STATE_UNKNOWN for day in backlog_days),
     )
 
 

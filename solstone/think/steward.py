@@ -5,48 +5,27 @@
 
 from __future__ import annotations
 
-import dataclasses
 import fcntl
 import json
 import logging
 import os
 import re
-import urllib.error
-import urllib.parse
-import urllib.request
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from solstone.observe.hear import format_audio
-from solstone.observe.screen import format_screen
-from solstone.observe.utils import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
-from solstone.think.data_state import (
-    DataState,
-    derive_modality_state,
-    repair_modality_markers,
-)
 from solstone.think.day_accumulator import read_latest
 from solstone.think.identity import (
     STEWARD_SECTION_ATTENTION,
     STEWARD_SECTION_AUTO_REPAIRS,
     STEWARD_SECTION_STATUS,
-    STEWARD_SECTION_TRENDS,
     write_identity,
 )
 from solstone.think.pipeline_health import summarize_pipeline_day
-from solstone.think.utils import (
-    day_path,
-    get_journal,
-    iter_segments,
-    now_ms,
-    read_service_port,
-)
+from solstone.think.utils import day_path, get_journal, now_ms
 
 logger = logging.getLogger(__name__)
 
-STALE_PENDING_AGE_MS = 6 * 60 * 60 * 1000
 STALE_PENDING_RECIPE = "stale_pending_segment_reprocess"
 _SEVEN_DAYS_MS = 7 * 86_400_000
 
@@ -55,39 +34,24 @@ _SEVEN_DAYS_MS = 7 * 86_400_000
 # UI can map each value to a button/link.
 SUGGESTED_ACTIONS: tuple[str, ...] = (
     "none",
-    "reprocess_stale",
     "open_health_detail",
     "open_support",
 )
 _HEADLINE_MAX = 80
 _SENTENCE_MAX = 280
 _RECIPE_LABELS = {STALE_PENDING_RECIPE: "stale-pending segment reprocess"}
+_RECIPE_OUTCOMES = {
+    "accepted",
+    "running",
+    "verified_healed",
+    "failed",
+    "no_output",
+}
+_INFLIGHT_RECIPE_OUTCOMES = {"accepted", "running"}
 _GENERATED_AT_RE = re.compile(
     r"^<!-- generated_at: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) -->$"
 )
 _SECTION_RE = re.compile(r"^## .+$")
-
-
-@dataclass(frozen=True)
-class RecipeOutcome:
-    recipe: str
-    target: str
-    outcome: str
-    detail: str | None
-    ts: int
-
-
-@dataclass(frozen=True)
-class StalePendingTarget:
-    day: str
-    stream: str
-    segment_key: str
-    modality: str
-    segment_dir: Path
-
-    @property
-    def target(self) -> str:
-        return f"{self.day}/{self.stream}/{self.segment_key}:{self.modality}"
 
 
 def _utc_now_iso_z() -> str:
@@ -151,263 +115,24 @@ def load_latest_pass_event() -> dict | None:
     return None
 
 
-def _load_jsonl(path: Path) -> list[dict]:
-    rows: list[dict] = []
-    with path.open(encoding="utf-8") as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
-
-
-def _raw_files(segment_dir: Path, modality: str) -> list[Path]:
-    extensions = AUDIO_EXTENSIONS if modality == "audio" else VIDEO_EXTENSIONS
-    return [
-        path
-        for path in segment_dir.iterdir()
-        if path.is_file() and path.suffix.lower() in extensions
-    ]
-
-
-def _modality_signals(segment_dir: Path, modality: str) -> dict[str, bool | str]:
-    raw_files = _raw_files(segment_dir, modality)
-    has_raw_reference = False
-    has_raw_file = False
-    has_jsonl = False
-    has_chunks = False
-    warning = False
-    patterns = ("*audio.jsonl",) if modality == "audio" else ("*screen.jsonl",)
-
-    for pattern in patterns:
-        for jsonl_path in sorted(segment_dir.glob(pattern)):
-            if not jsonl_path.is_file():
-                continue
-            has_jsonl = True
-            try:
-                entries = _load_jsonl(jsonl_path)
-                if modality == "audio":
-                    formatted_chunks, _meta = format_audio(
-                        entries, {"file_path": str(jsonl_path)}
-                    )
-                    for entry in entries:
-                        if "start" not in entry and "raw" in entry:
-                            raw_name = entry["raw"]
-                            if isinstance(raw_name, str) and raw_name.endswith(
-                                AUDIO_EXTENSIONS
-                            ):
-                                has_raw_reference = True
-                                has_raw_file = (segment_dir / raw_name).is_file()
-                            break
-                else:
-                    formatted_chunks, _meta = format_screen(
-                        entries, {"file_path": str(jsonl_path)}
-                    )
-                    for entry in entries:
-                        if "frame_id" not in entry and "raw" in entry:
-                            raw_name = entry["raw"]
-                            if isinstance(raw_name, str) and raw_name.endswith(
-                                VIDEO_EXTENSIONS
-                            ):
-                                has_raw_reference = True
-                                has_raw_file = (segment_dir / raw_name).is_file()
-                            break
-                has_chunks = has_chunks or bool(formatted_chunks)
-            except Exception:
-                warning = True
-
-    media_purged = has_raw_reference and not has_raw_file
-    if has_chunks:
-        repair_modality_markers(
-            segment_dir,
-            modality,
-            has_chunks=True,
-            has_jsonl=has_jsonl,
-            has_raw=bool(raw_files),
-        )
-        state = derive_modality_state(
-            segment_dir,
-            modality,
-            has_chunks=True,
-            has_jsonl=has_jsonl,
-            has_raw=bool(raw_files),
-        )
-    elif media_purged:
-        state = DataState.PURGED.value
-    else:
-        repair_modality_markers(
-            segment_dir,
-            modality,
-            has_chunks=False,
-            has_jsonl=has_jsonl,
-            has_raw=bool(raw_files),
-        )
-        state = derive_modality_state(
-            segment_dir,
-            modality,
-            has_chunks=False,
-            has_jsonl=has_jsonl,
-            has_raw=bool(raw_files),
-        )
-        if warning and state == DataState.PENDING.value:
-            state = DataState.FAILED.value
-
-    return {
-        "state": state,
-        "has_raw": bool(raw_files),
-        "has_jsonl": has_jsonl,
-        "has_chunks": has_chunks,
-        "media_purged": media_purged,
-    }
-
-
-def _oldest_raw_mtime_ms(segment_dir: Path, modality: str) -> int | None:
-    raw_files = _raw_files(segment_dir, modality)
-    if not raw_files:
-        return None
-    mtimes = []
-    for path in raw_files:
-        try:
-            mtimes.append(int(path.stat().st_mtime * 1000))
-        except OSError:
-            continue
-    return min(mtimes) if mtimes else None
-
-
-def detect_stale_pending_segments(
-    today: str, yesterday: str
-) -> list[StalePendingTarget]:
-    """Return stale pending audio/screen targets in the two-day scan window."""
-    cutoff_ms = now_ms() - STALE_PENDING_AGE_MS
-    targets: list[StalePendingTarget] = []
-    for day in (today, yesterday):
-        for stream, segment_key, segment_dir in iter_segments(day):
-            for modality in ("audio", "screen"):
-                signals = _modality_signals(segment_dir, modality)
-                if str(signals["state"]) != DataState.PENDING.value:
-                    continue
-                oldest_raw_mtime = _oldest_raw_mtime_ms(segment_dir, modality)
-                if oldest_raw_mtime is None or oldest_raw_mtime > cutoff_ms:
-                    continue
-                targets.append(
-                    StalePendingTarget(
-                        day=day,
-                        stream=stream,
-                        segment_key=segment_key,
-                        modality=modality,
-                        segment_dir=segment_dir,
-                    )
-                )
-    return targets
-
-
-def fire_stale_pending_recipe(
-    target: StalePendingTarget, *, port: int
-) -> RecipeOutcome:
-    """Request a reprocess for one stale pending target."""
-    ts = now_ms()
-    day = urllib.parse.quote(target.day, safe="")
-    stream = urllib.parse.quote(target.stream, safe="")
-    segment_key = urllib.parse.quote(target.segment_key, safe="")
-    url = (
-        f"http://127.0.0.1:{port}/app/transcripts/api/segment/"
-        f"{day}/{stream}/{segment_key}/reprocess"
-    )
-    body = json.dumps({"modality": target.modality}).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            status = getattr(response, "status", response.getcode())
-            detail = response.read().decode("utf-8", errors="replace").strip() or None
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace").strip() or str(exc)
-        return RecipeOutcome(
-            recipe=STALE_PENDING_RECIPE,
-            target=target.target,
-            outcome="failure",
-            detail=detail,
-            ts=ts,
-        )
-    except (OSError, urllib.error.URLError) as exc:
-        return RecipeOutcome(
-            recipe=STALE_PENDING_RECIPE,
-            target=target.target,
-            outcome="failure",
-            detail=str(exc),
-            ts=ts,
-        )
-
-    outcome = "success" if 200 <= int(status) < 300 else "failure"
-    return RecipeOutcome(
-        recipe=STALE_PENDING_RECIPE,
-        target=target.target,
-        outcome=outcome,
-        detail=None if outcome == "success" else detail,
-        ts=ts,
-    )
-
-
-def _last_recipe_outcomes(rows: list[dict], *, recipe: str, target: str) -> list[str]:
-    outcomes: list[str] = []
-    for row in rows:
-        if row.get("event") != "recipe.outcome":
-            continue
-        if row.get("recipe") != recipe or row.get("target") != target:
-            continue
-        outcome = row.get("outcome")
-        if outcome in {"success", "failure"}:
-            outcomes.append(str(outcome))
-    return outcomes
-
-
-def _is_escalated(rows: list[dict], *, recipe: str, target: str) -> bool:
-    outcomes = _last_recipe_outcomes(rows, recipe=recipe, target=target)
-    return len(outcomes) >= 2 and outcomes[-2:] == ["failure", "failure"]
+def _normalize_recipe_outcome(outcome: Any) -> str | None:
+    if outcome == "success":
+        return "verified_healed"
+    if outcome == "failure":
+        return "failed"
+    if isinstance(outcome, str) and outcome in _RECIPE_OUTCOMES:
+        return outcome
+    return None
 
 
 def run_recipe_pass(today: str) -> dict:
-    """Run the registered steward recipes for today's two-day scan window."""
-    yesterday = _previous_day(today)
-    fired: list[RecipeOutcome] = []
-    escalated_targets: list[str] = []
-    data_source_errors: list[str] = []
-    try:
-        targets = detect_stale_pending_segments(today, yesterday)
-    except Exception as exc:
-        logger.warning("steward: stale pending detection failed", exc_info=True)
-        data_source_errors.append(f"stale pending segment scan: {exc}")
-        targets = []
+    """Report-only health pass retained for the heartbeat pass-event contract.
 
-    rows = load_steward_log()
-    try:
-        port = read_service_port("convey") or 5015
-    except Exception as exc:
-        logger.warning("steward: convey port read failed", exc_info=True)
-        data_source_errors.append(f"convey port: {exc}")
-        port = 5015
-
-    for target in targets:
-        if _is_escalated(rows, recipe=STALE_PENDING_RECIPE, target=target.target):
-            escalated_targets.append(target.target)
-            continue
-        outcome = fire_stale_pending_recipe(target, port=port)
-        fired.append(outcome)
-        append_steward_event(
-            "recipe.outcome",
-            **dataclasses.asdict(outcome),
-        )
-        rows.append({"event": "recipe.outcome", **dataclasses.asdict(outcome)})
-
-    return {
-        "fired": fired,
-        "escalated_targets": escalated_targets,
-        "data_source_errors": data_source_errors,
-    }
+    The deterministic steward no longer fires reprocesses; genuinely-pending
+    segments are re-run by the daily sensing pre-phase. Returns the three keys
+    heartbeat.py logs, all empty.
+    """
+    return {"fired": [], "escalated_targets": [], "data_source_errors": []}
 
 
 def _parse_sections(body: str) -> tuple[list[str], dict[str, list[str]]]:
@@ -435,7 +160,6 @@ def validate_steward_health(body: str) -> str | None:
         STEWARD_SECTION_STATUS,
         STEWARD_SECTION_ATTENTION,
         STEWARD_SECTION_AUTO_REPAIRS,
-        STEWARD_SECTION_TRENDS,
     ]
     headings, sections = _parse_sections(body)
     if headings != expected:
@@ -510,7 +234,7 @@ def read_steward_health(journal: Path | None = None) -> dict | None:
     status_lines = sections[STEWARD_SECTION_STATUS]
     attention_lines = sections[STEWARD_SECTION_ATTENTION]
     status_lead = _first_status_body_line(status_lines) or ""
-    if status_lead.startswith("Sol is well.") and not _has_bullets(attention_lines):
+    if status_lead.startswith("sol is well.") and not _has_bullets(attention_lines):
         return None
 
     bullet = _first_bullet(attention_lines)
@@ -521,7 +245,7 @@ def read_steward_health(journal: Path | None = None) -> dict | None:
 
 def _recipe_outcomes_7d(rows: list[dict]) -> list[dict]:
     cutoff = now_ms() - _SEVEN_DAYS_MS
-    groups: dict[str, dict[str, Any]] = {}
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
         if row.get("event") != "recipe.outcome":
             continue
@@ -532,23 +256,48 @@ def _recipe_outcomes_7d(rows: list[dict]) -> list[dict]:
         if ts < cutoff:
             continue
         recipe = str(row.get("recipe") or "")
-        if not recipe:
+        target = str(row.get("target") or "")
+        if not recipe or not target:
             continue
+        outcome = _normalize_recipe_outcome(row.get("outcome"))
+        if outcome is None:
+            continue
+        key = (recipe, target)
+        previous = latest.get(key)
+        if previous is None or ts >= int(previous["ts"]):
+            latest[key] = {
+                "recipe": recipe,
+                "target": target,
+                "outcome": outcome,
+                "ts": ts,
+            }
+
+    groups: dict[str, dict[str, Any]] = {}
+    for latest_row in latest.values():
+        recipe = str(latest_row["recipe"])
         group = groups.setdefault(
             recipe,
-            {"recipe": recipe, "success": 0, "failure": 0, "last_ts": ts},
+            {
+                "recipe": recipe,
+                "accepted": 0,
+                "running": 0,
+                "verified_healed": 0,
+                "failed": 0,
+                "no_output": 0,
+                "unverified": 0,
+                "last_ts": int(latest_row["ts"]),
+            },
         )
-        outcome = row.get("outcome")
-        if outcome == "success":
-            group["success"] += 1
-        elif outcome == "failure":
-            group["failure"] += 1
-        group["last_ts"] = max(int(group["last_ts"]), ts)
+        outcome = str(latest_row["outcome"])
+        group[outcome] += 1
+        if outcome in _INFLIGHT_RECIPE_OUTCOMES:
+            group["unverified"] += 1
+        group["last_ts"] = max(int(group["last_ts"]), int(latest_row["ts"]))
 
     result = []
     for group in groups.values():
         last_dt = datetime.fromtimestamp(int(group["last_ts"]) / 1000, tz=timezone.utc)
-        total = int(group["success"]) + int(group["failure"])
+        total = sum(int(group[outcome]) for outcome in _RECIPE_OUTCOMES)
         result.append(
             {
                 **group,
@@ -566,20 +315,10 @@ def gather_health_facts(today: str) -> dict:
     """Gather the deterministic facts the steward surfaces consume.
 
     Returns parsed (not JSON-encoded) objects so the deterministic renderer and
-    the summary helpers can use them directly. ``escalated_targets`` is supplied
-    separately by the caller from the latest deterministic repair pass event.
+    the summary helpers can use them directly.
     """
     yesterday = _previous_day(today)
     errors: list[str] = []
-
-    try:
-        from solstone.think.surfaces import health as health_surface
-
-        health_report = dataclasses.asdict(health_surface.for_range(yesterday, today))
-    except Exception as exc:
-        logger.warning("steward: health report failed", exc_info=True)
-        health_report = None
-        errors.append(f"health_report: {exc}")
 
     try:
         pipeline_day = summarize_pipeline_day(yesterday)
@@ -591,7 +330,6 @@ def gather_health_facts(today: str) -> dict:
     rollup = _recipe_outcomes_7d(load_steward_log())
     return {
         "generated_at": _utc_now_iso_z(),
-        "health_report": health_report,
         "pipeline_day": pipeline_day,
         "recipe_outcomes_7d": rollup,
         "data_source_errors": errors,
@@ -606,47 +344,49 @@ def gather_health_facts(today: str) -> dict:
 def _status_sentence(
     *,
     pipeline_day: dict | None,
-    escalated_targets: list,
     data_source_errors: list,
     recipe_outcomes_7d: list,
 ) -> str:
     """Pick the single status sentence deterministically.
 
-    ``Sol is well.`` (byte-exact, so ``read_steward_health`` reads healthy) only
+    ``sol is well.`` (byte-exact, so ``read_steward_health`` reads healthy) only
     when nothing is wrong; otherwise one terse factual sentence by priority.
     """
     pd = pipeline_day if isinstance(pipeline_day, dict) else {}
     anomalies = pd.get("anomalies", []) or []
-    rollup_failures = any(
-        int(row.get("failure", 0) or 0) for row in (recipe_outcomes_7d or [])
+    recent_failures = sum(
+        int(row.get("failed", 0) or 0) + int(row.get("no_output", 0) or 0)
+        for row in (recipe_outcomes_7d or [])
+    )
+    unverified = sum(
+        int(row.get("unverified", 0) or 0) for row in (recipe_outcomes_7d or [])
     )
     if (
         not data_source_errors
         and not anomalies
-        and not escalated_targets
-        and not rollup_failures
+        and not recent_failures
+        and not unverified
     ):
-        return "Sol is well."
+        return "sol is well."
     if data_source_errors:
         return (
-            "Sol has a partial health picture: some health sources could not be read."
+            "sol has a partial health picture: some health sources could not be read."
         )
-    if escalated_targets:
-        n = len(escalated_targets)
-        noun = "repair" if n == 1 else "repairs"
-        return f"{n} stale segment {noun} failed twice and need owner attention."
     if anomalies:
         return (
-            "Sol detected pipeline issues during yesterday's processing "
+            "sol detected pipeline issues during yesterday's processing "
             "that need attention."
         )
-    return "Recent auto-repairs include failures."
+    if recent_failures:
+        return "Recent auto-repairs include failures."
+    n = unverified
+    noun = "repair" if n == 1 else "repairs"
+    return f"{n} stale segment {noun} in progress, not yet verified."
 
 
 def _attention_bullets(
     *,
     pipeline_day: dict | None,
-    escalated_targets: list,
     data_source_errors: list,
 ) -> list[str]:
     """Render the canonical "Needs your attention" bullets deterministically."""
@@ -698,11 +438,6 @@ def _attention_bullets(
                 "not yet processed."
             )
 
-    for target in escalated_targets:
-        bullets.append(
-            f"- tried twice, escalating: stale-pending segment reprocess on {target}"
-        )
-
     for err in data_source_errors:
         text = str(err).replace("\n", " ").strip()
         if ": " in text:
@@ -721,12 +456,13 @@ def _auto_repair_bullets(recipe_outcomes_7d: list) -> list[str]:
         recipe = str(row.get("recipe", ""))
         label = _RECIPE_LABELS.get(recipe, recipe.replace("_", " "))
         total = int(row.get("total", 0))
-        success = int(row.get("success", 0))
-        failure = int(row.get("failure", 0))
+        verified_healed = int(row.get("verified_healed", 0))
+        inflight = int(row.get("accepted", 0)) + int(row.get("running", 0))
+        failed = int(row.get("failed", 0)) + int(row.get("no_output", 0))
         last_iso = row.get("last_iso", "")
         bullets.append(
-            f"- {label} — {total}x in 7d ({success} succeeded, {failure} failed), "
-            f"last {last_iso}"
+            f"- {label} — {total}x in 7d ({verified_healed} verified-healed, "
+            f"{inflight} in-flight, {failed} failed), last {last_iso}"
         )
     return bullets
 
@@ -736,23 +472,20 @@ def render_health_body(
     generated_at: str,
     pipeline_day: dict | None,
     recipe_outcomes_7d: list,
-    escalated_targets: list,
     data_source_errors: list,
 ) -> str:
-    """Render the byte-exact 4-section health.md body from deterministic facts.
+    """Render the byte-exact 3-section health.md body from deterministic facts.
 
     Output is guaranteed to satisfy ``validate_steward_health``. No LLM is
     involved; the model only appends the human-friendly summaries to steward.jsonl.
     """
     status = _status_sentence(
         pipeline_day=pipeline_day,
-        escalated_targets=escalated_targets,
         data_source_errors=data_source_errors,
         recipe_outcomes_7d=recipe_outcomes_7d,
     )
     attention = _attention_bullets(
         pipeline_day=pipeline_day,
-        escalated_targets=escalated_targets,
         data_source_errors=data_source_errors,
     )
     repairs = _auto_repair_bullets(recipe_outcomes_7d)
@@ -768,8 +501,6 @@ def render_health_body(
     lines.append("")
     lines.append(STEWARD_SECTION_AUTO_REPAIRS)
     lines.extend(repairs)
-    lines.append("")
-    lines.append(STEWARD_SECTION_TRENDS)
     lines.append("")
     return "\n".join(lines)
 
@@ -805,24 +536,19 @@ def _coerce_summary(raw: str | dict) -> dict | None:
 
 def default_summary_from_body(body: str) -> dict:
     """Deterministic fallback summary derived from a rendered health.md body."""
-    _headings, sections = _parse_sections(body)
+    sections = _parse_sections(body)[1]
     status_lines = sections.get(STEWARD_SECTION_STATUS, [])
-    attention_lines = sections.get(STEWARD_SECTION_ATTENTION, [])
-    status = _first_status_body_line(status_lines) or "Sol is well."
-    if status.startswith("Sol is well."):
+    status = _first_status_body_line(status_lines) or "sol is well."
+    if status.startswith("sol is well."):
         return {
             "headline": "All clear",
             "summary_sentence": status,
             "suggested_action": "none",
         }
-    escalating = any("escalating" in line for line in attention_lines if line.strip())
-    # An escalated repair has already failed twice, so the deterministic fallback
-    # points at support rather than another retry. The LLM may still choose
-    # reprocess_stale when a retry looks worthwhile.
     return {
         "headline": "Needs attention",
         "summary_sentence": status,
-        "suggested_action": "open_support" if escalating else "open_health_detail",
+        "suggested_action": "open_health_detail",
     }
 
 

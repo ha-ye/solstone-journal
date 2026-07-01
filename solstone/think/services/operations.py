@@ -17,7 +17,13 @@ from solstone.think.services import outcomes
 logger = logging.getLogger(__name__)
 
 RETRYABLE_CODES = frozenset(
-    {outcomes.EXPIRED, outcomes.NETWORK_ERROR, outcomes.LOCAL_ERROR}
+    {
+        outcomes.EXPIRED,
+        outcomes.NETWORK_ERROR,
+        outcomes.LOCAL_ERROR,
+        outcomes.RELAY_UNAVAILABLE,
+        outcomes.RELAY_REJECTED,
+    }
 )
 OPERATION_GRACE_SECONDS = 30.0
 # Phases at which an operation is finished — no actionable consent CTA should

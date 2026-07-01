@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 from pathlib import Path
@@ -25,6 +26,7 @@ from solstone.convey.reasons import (
 )
 from solstone.convey.utils import error_response
 from solstone.observe.protocol import OBSERVER_HANDLE_HEADER
+from solstone.think.contract.journal import ContractIssue
 from solstone.think.journal_io import atomic_replace
 from solstone.think.utils import now_ms
 
@@ -56,6 +58,145 @@ def observer_filename_prefix(record: dict[str, Any]) -> str:
     if isinstance(key, str) and key:
         return key[:8]
     raise ValueError("observer record must include key")
+
+
+def sanitize_validation_summary(
+    issues: list[ContractIssue], *, max_issues: int = 3, max_chars: int = 240
+) -> str:
+    """Return a bounded, content-safe one-line contract validation summary."""
+    parts = []
+    for issue in issues[:max_issues]:
+        path = issue.path[:80]
+        desc = _safe_issue_descriptor(issue.message)[:100]
+        parts.append(f"{path}: {desc}")
+    if len(issues) > max_issues:
+        parts.append(f"(+{len(issues) - max_issues} more)")
+    return "; ".join(parts)[:max_chars]
+
+
+def _safe_issue_descriptor(message: str) -> str:
+    if message.endswith("is a required property"):
+        return message
+    if message.startswith("Additional properties are not allowed"):
+        return "Additional properties are not allowed"
+
+    markers = (
+        " is not of type ",
+        " is not one of ",
+        " does not match ",
+        " is too long",
+        " is too short",
+        " is less than ",
+        " is greater than ",
+        " is not a ",
+        " is not valid under ",
+    )
+    for marker in markers:
+        index = message.find(marker)
+        if index >= 0:
+            return "value" + message[index:]
+    return "invalid"
+
+
+def record_ingest_rejection(
+    observer: dict,
+    *,
+    reason_code: str,
+    segment: str,
+    stream: str,
+    version: str | None,
+    issues: list[ContractIssue],
+) -> None:
+    """Record an active ingest rejection on an observer record."""
+    health = observer.setdefault("health", {})
+    existing = health.get("ingest_rejection")
+    now = now_ms()
+    if isinstance(existing, dict):
+        first_ts = existing["first_ts"]
+        active_count = existing.get("active_count", 1) + 1
+    else:
+        first_ts = now
+        active_count = 1
+
+    health["ingest_rejection"] = {
+        "reason_code": reason_code,
+        "first_ts": first_ts,
+        "latest_ts": now,
+        "active_count": active_count,
+        "segment": segment,
+        "stream": stream,
+        "version": version,
+        "summary": sanitize_validation_summary(issues),
+    }
+
+
+def clear_ingest_rejection(observer: dict) -> bool:
+    """Clear an active ingest rejection from an observer record."""
+    health = observer.get("health")
+    if isinstance(health, dict) and "ingest_rejection" in health:
+        del health["ingest_rejection"]
+        return True
+    return False
+
+
+def record_status_beacon(observer: dict, data: dict) -> None:
+    """Record a sanitized observer status beacon on an observer record."""
+    observer["last_seen"] = now_ms()
+    beacon = {
+        "name": _coerce_beacon_str(data.get("name"), 120),
+        "stream_type": _coerce_beacon_str(data.get("stream_type"), 120),
+        "version": _coerce_beacon_str(data.get("version"), 120),
+        "uptime": _coerce_beacon_int(data.get("uptime")),
+        "last_successful_sync": _coerce_beacon_int(data.get("last_successful_sync")),
+        "pending_queue_depth": _coerce_beacon_int(data.get("pending_queue_depth")),
+        "recent_error_count": _coerce_beacon_int(data.get("recent_error_count")),
+        "last_error_reason": _coerce_beacon_str(data.get("last_error_reason"), 200),
+    }
+    if all(value is None for value in beacon.values()):
+        return
+
+    observer.setdefault("health", {})["beacon"] = {
+        "received_at": now_ms(),
+        **beacon,
+    }
+
+
+def _coerce_beacon_str(value: Any, max_len: int) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return None
+    return str(value).strip()[:max_len]
+
+
+def _coerce_beacon_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return max(0, value)
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+        return max(0, int(value))
+    if isinstance(value, str):
+        try:
+            parsed = float(value.strip())
+        except ValueError:
+            return None
+        if not math.isfinite(parsed):
+            return None
+        return max(0, int(parsed))
+    return None
+
+
+def get_active_ingest_rejection(record: dict) -> dict | None:
+    health = record.get("health")
+    rej = health.get("ingest_rejection") if isinstance(health, dict) else None
+    return rej if isinstance(rej, dict) else None
+
+
+def get_health_beacon(record: dict) -> dict | None:
+    health = record.get("health")
+    beacon = health.get("beacon") if isinstance(health, dict) else None
+    return beacon if isinstance(beacon, dict) else None
 
 
 def _observer_filename(record: dict[str, Any]) -> str:
@@ -293,6 +434,23 @@ def find_observer_by_name(name: str) -> dict | None:
     return ObserverRegistry.singleton().by_name(name)
 
 
+def find_oldest_unrevoked_by_name(name: str) -> dict | None:
+    """Return the oldest unrevoked observer record for a stream name.
+
+    The survivor rule shared by idempotent register and `observer reconcile`:
+    filter to unrevoked records whose name matches, then take the minimum
+    created_at. Returns None when no unrevoked record exists for the name.
+    """
+    candidates = [
+        record
+        for record in list_observers()
+        if record.get("name") == name and not record.get("revoked", False)
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda record: record.get("created_at", 0))
+
+
 def _get_auth_key() -> str | None:
     from flask import request
 
@@ -372,6 +530,25 @@ def load_history(key_prefix: str, day: str) -> list[dict]:
     except (json.JSONDecodeError, OSError) as e:
         logger.warning(f"Failed to load sync history {hist_path}: {e}")
     return records
+
+
+def has_history_for_stream(stream: str) -> bool:
+    """True if any observer sync-history row references this stream. Read-only."""
+    for observer in list_observers():
+        prefix = observer["filename_prefix"]
+        hist_dir = get_hist_dir(prefix, ensure_exists=False)
+        if not hist_dir.exists():
+            continue
+        for hist_path in hist_dir.glob("*.jsonl"):
+            try:
+                with open(hist_path, encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and json.loads(line).get("stream") == stream:
+                            return True
+            except (json.JSONDecodeError, OSError):
+                continue
+    return False
 
 
 def prune_history_by_stream(stream: str) -> int:

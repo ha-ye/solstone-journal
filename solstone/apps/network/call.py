@@ -289,8 +289,13 @@ def pair(
         "--timeout",
         help="How long to wait for the linked system before giving up",
     ),
+    no_wait: bool = typer.Option(
+        False,
+        "--no-wait",
+        help="Print the pair link and exit without waiting for the linked system.",
+    ),
 ) -> None:
-    """Start a pairing link, print join-ready credentials, wait for completion."""
+    """Start a pairing link, print join-ready credentials, optionally wait."""
     if as_role is not None and as_role not in VALID_ROLES:
         typer.echo("invalid role; expected one of: phone, observer, peer", err=True)
         raise typer.Exit(2)
@@ -319,6 +324,8 @@ def pair(
     typer.echo(f"{CLI_PAIR_CA_FINGERPRINT_LABEL}: sha256:{ca_fp}")
     if device_label:
         typer.echo(f"Device: {device_label}{' (peer)' if as_role == 'peer' else ''}")
+    if no_wait:
+        return
     typer.echo("")
     typer.echo("Waiting for linked system…")
 

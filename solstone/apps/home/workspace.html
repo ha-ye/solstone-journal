@@ -14,7 +14,7 @@
 .pulse-dashboard a:focus-visible,
 .pulse-dashboard button:focus-visible,
 .pulse-dashboard [role="button"]:focus-visible {
-  outline-color: #6366f1;
+  outline-color: var(--focus);
 }
 
 /* Vital Signs */
@@ -46,10 +46,9 @@
   top: 0px;
 }
 
-.pulse-vitals-dot.active { background: #4ade80; }
-.pulse-vitals-dot.stale { background: #fbbf24; }
-.pulse-vitals-dot.offline { background: #f87171; }
-.pulse-vitals-dot.unknown { background: #9ca3af; }
+.pulse-vitals-dot.green { background: #4ade80; }
+.pulse-vitals-dot.amber { background: #fbbf24; }
+.pulse-vitals-dot.red { background: #dc2626; }
 
 .pulse-vitals-sep {
   width: 1px;
@@ -59,53 +58,43 @@
 
 .pulse-vitals > a.pulse-vitals-health-link {
   margin-left: auto;
-  color: #6366f1;
+  color: var(--orange-ink);
   text-decoration: none;
   font-size: 0.85rem;
 }
 
 .pulse-vitals a:hover { text-decoration: underline; }
 .pulse-vitals a:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
   border-radius: 2px;
 }
 .pulse-vitals a:active {
-  color: #4f46e5;
+  color: var(--orange-ink);
 }
 
-.pulse-vitals-attention {
-  color: #dc2626;
-  font-weight: 500;
-}
-
-.pulse-vitals-headline {
+.pulse-vitals-verdict {
   font-weight: 600;
   font-size: 0.8rem;
-  color: #b45309;
 }
+.pulse-vitals-verdict.green { color: #166534; }
+.pulse-vitals-verdict.amber { color: #b45309; }
+.pulse-vitals-verdict.red { color: #b91c1c; }
 
-.pulse-vitals-action {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.2rem;
-  cursor: pointer;
-}
-
-.pulse-vitals-action .pulse-vitals-item::before {
-  content: "○";
-  color: #cbd5e1;
-  flex-shrink: 0;
-  width: 0.75rem;
-  text-align: center;
-}
-
-.pulse-vitals-action-link {
-  color: #6366f1;
-  font-size: 0.75rem;
+.pulse-vitals-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
   text-decoration: none;
 }
+.pulse-vitals-chip.red { color: #b91c1c; background: #fef2f2; border-color: #fecaca; }
+.pulse-vitals-chip.amber { color: #b45309; background: #fffbeb; border-color: #fde68a; }
+
+.pulse-vitals-cta { color: var(--orange-ink); text-decoration: none; }
 
 /* Section Headers */
 .pulse-section-header {
@@ -180,7 +169,7 @@
   border-radius: 6px;
 }
 .pulse-section-toggle:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
   border-radius: 6px;
 }
@@ -377,7 +366,7 @@
 
 .pulse-needs-more {
   font-size: 0.8rem;
-  color: #6366f1;
+  color: var(--orange-ink);
   margin-top: 0.5rem;
 }
 
@@ -415,15 +404,15 @@
   background: #e2e8f0;
 }
 [data-conversation]:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 .pulse-briefing-header:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 .pulse-yesterday-header:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 .pulse-briefing-header:hover {
@@ -444,7 +433,7 @@
   display: inline-block;
   margin-top: 0.5rem;
   font-size: 0.8rem;
-  color: #6366f1;
+  color: var(--orange-ink);
   text-decoration: none;
 }
 .pulse-tell-more:hover {
@@ -452,12 +441,12 @@
   background: transparent;
 }
 .pulse-tell-more:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
   border-radius: 2px;
 }
 .pulse-tell-more:active {
-  color: #4f46e5;
+  color: var(--orange-ink);
 }
 
 /* Briefing Card */
@@ -600,7 +589,7 @@
   color: #64748b;
 }
 .pulse-briefing-section-toggle:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
   border-radius: 4px;
 }
@@ -609,14 +598,14 @@
 }
 
 .pulse-reading-link {
-  color: #6366f1;
+  color: var(--orange-ink);
   text-decoration: none;
 }
 .pulse-reading-link:hover {
   text-decoration: underline;
 }
 .pulse-reading-link:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
   border-radius: 2px;
 }
@@ -666,6 +655,7 @@
 }
 
 .pulse-welcome h2 {
+  font-family: var(--font-display);
   font-size: 1.15rem;
   font-weight: 600;
   color: #1e293b;
@@ -684,7 +674,7 @@
 }
 
 .pulse-welcome a {
-  color: #6366f1;
+  color: var(--orange-ink);
   text-decoration: none;
   font-size: 0.85rem;
   font-weight: 500;
@@ -697,13 +687,13 @@
 }
 
 .pulse-welcome a:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
   border-radius: 2px;
 }
 
 .pulse-welcome a:active {
-  color: #4f46e5;
+  color: var(--orange-ink);
 }
 
 .pulse-empty-state {
@@ -732,7 +722,7 @@
 }
 
 .pulse-empty-state .pulse-empty-message a {
-  color: #6366f1;
+  color: var(--orange-ink);
   text-decoration: none;
 }
 
@@ -742,14 +732,14 @@
 
 .pulse-needs-more a:focus-visible,
 .pulse-empty-state .pulse-empty-message a:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
   border-radius: 2px;
 }
 
 .pulse-needs-more a:active,
 .pulse-empty-state .pulse-empty-message a:active {
-  color: #4f46e5;
+  color: var(--orange-ink);
 }
 
 /* Responsive breakpoints */
@@ -830,49 +820,28 @@
 <div class="pulse-dashboard">
 
   <!-- Vital Signs -->
+  {% set health_glance = health_glance|default({}) %}
   <div class="pulse-vitals" id="pulse-vitals" role="status" aria-live="polite">
-	    {% set dot_class = 'active' if capture_status == 'active' else ('stale' if capture_status == 'stale' else ('offline' if capture_status == 'offline' else 'unknown')) %}
-	    <div class="pulse-vitals-item">
-	      <span class="pulse-vitals-dot {{ dot_class }}" aria-hidden="true"></span>
-	      <span>{{ capture_display_text }}</span>
-	    </div>
-    {% if segment_count > 0 %}
-    <div class="pulse-vitals-sep"></div>
     <div class="pulse-vitals-item">
-      {{ segment_count }} segment{{ 's' if segment_count != 1 else '' }}{% if duration_minutes > 0 %} · {{ duration_minutes }}m{% endif %}
+      <span class="pulse-vitals-dot {{ health_glance.severity }}" aria-hidden="true"></span>
+      <span class="pulse-vitals-verdict {{ health_glance.severity }}">{{ health_glance.headline }}</span>
     </div>
+    {% if health_glance.verdict == 'attention' %}
+      {% for issue in health_glance.issues %}
+      <a class="pulse-vitals-chip {{ issue.severity }}" href="{{ issue.href }}">{{ issue.text }} →</a>
+      {% endfor %}
+    {% else %}
+      {% if health_glance.last_observation %}
+      <div class="pulse-vitals-sep"></div>
+      <div class="pulse-vitals-item">last observation {{ health_glance.last_observation }}</div>
+      {% endif %}
+      {% if health_glance.cta %}
+      <div class="pulse-vitals-sep"></div>
+      <a class="pulse-vitals-item pulse-vitals-cta" href="{{ health_glance.cta.href }}">{{ health_glance.cta.text }}</a>
+      {% endif %}
     {% endif %}
-    {% if last_observe_relative %}
-    <div class="pulse-vitals-sep"></div>
-    <div class="pulse-vitals-item">
-      Last observation {{ last_observe_relative }}
-    </div>
-	    {% endif %}
-	    {% if attention %}
-	    <div class="pulse-vitals-sep"></div>
-	    <div class="pulse-vitals-action" role="button" tabindex="0" data-conversation="explain the current attention items.">
-	      <div class="pulse-vitals-item pulse-vitals-attention">
-	        {{ attention.placeholder_text }}
-	      </div>
-	      <a class="pulse-vitals-action-link" href="/app/health#focus=recent-errors&day=today">view details →</a>
-	    </div>
-	    {% endif %}
-	    {% if pipeline_status %}
-	    <div class="pulse-vitals-sep"></div>
-	    <div class="pulse-vitals-action" role="button" tabindex="0" data-conversation="explain pipeline health for today.">
-	      {% if pipeline_status.headline %}<div class="pulse-vitals-headline">{{ pipeline_status.headline }}</div>{% endif %}
-	      <div class="pulse-vitals-item pulse-vitals-attention">{{ pipeline_status.summary_sentence or pipeline_status.message }}</div>
-	      {% if pipeline_status.suggested_action == 'reprocess_stale' %}
-	      <a class="pulse-vitals-action-link" href="/app/health#focus=recent-errors&day=today">review stale items →</a>
-	      {% elif pipeline_status.suggested_action == 'open_support' %}
-	      <a class="pulse-vitals-action-link" href="/app/support">open a support ticket →</a>
-	      {% elif pipeline_status.suggested_action == 'open_health_detail' or not pipeline_status.suggested_action %}
-	      <a class="pulse-vitals-action-link" href="/app/health#focus=recent-errors&day=today">view details →</a>
-	      {% endif %}
-	    </div>
-	    {% endif %}
-	    <a class="pulse-vitals-health-link" href="/app/health">health →</a>
-	  </div>
+    <a class="pulse-vitals-health-link" href="/app/health">health →</a>
+  </div>
 
   {% if yesterday_processing %}
   <section class="pulse-yesterday" id="pulse-yesterday" data-collapsed="{{ 'true' if yesterday_processing.default_collapsed else 'false' }}">
@@ -1378,39 +1347,25 @@
       .then(data => {
         const el = document.getElementById('pulse-vitals');
         if (!el) return;
-        if (typeof data.capture_status !== 'string') {
+        var g = data.health_glance;
+        if (!g || typeof g !== 'object') {
           throw malformedHomeResponse('/app/home/api/pulse', 'Malformed pulse response');
         }
         renderNeedsYouFromPulse(data);
         clearPulseRefreshError('pulse-vitals');
-        let dotClass = data.capture_status === 'active' ? 'active' : (data.capture_status === 'stale' ? 'stale' : (data.capture_status === 'offline' ? 'offline' : 'unknown'));
-        let displayStatus = data.capture_status === 'no_observers' ? 'no observers' : data.capture_status;
-        let captureText = data.capture_display_text || ('observer ' + displayStatus);
-        let html = '<div class="pulse-vitals-item"><span class="pulse-vitals-dot ' + dotClass + '" aria-hidden="true"></span><span>' + esc(captureText) + '</span></div>';
-        if (data.segment_count > 0) {
-          html += '<div class="pulse-vitals-sep"></div><div class="pulse-vitals-item">' + data.segment_count + ' segment' + (data.segment_count !== 1 ? 's' : '');
-          if (data.duration_minutes > 0) html += ' · ' + data.duration_minutes + 'm';
-          html += '</div>';
-        }
-        if (data.last_observe_relative) {
-          html += '<div class="pulse-vitals-sep"></div><div class="pulse-vitals-item">last observation ' + esc(data.last_observe_relative) + '</div>';
-        }
-        if (data.attention) {
-          html += '<div class="pulse-vitals-sep"></div><div class="pulse-vitals-action" role="button" tabindex="0" data-conversation="explain the current attention items."><div class="pulse-vitals-item pulse-vitals-attention">' + esc(data.attention.placeholder_text) + '</div><a class="pulse-vitals-action-link" href="/app/health#focus=recent-errors&day=today">view details →</a></div>';
-        }
-        if (data.pipeline_status) {
-          var ps = data.pipeline_status;
-          var headlineHtml = ps.headline ? '<div class="pulse-vitals-headline">' + esc(ps.headline) + '</div>' : '';
-          var sentence = ps.summary_sentence || ps.message || '';
-          var actionHtml = '';
-          if (ps.suggested_action === 'reprocess_stale') {
-            actionHtml = '<a class="pulse-vitals-action-link" href="/app/health#focus=recent-errors&day=today">review stale items →</a>';
-          } else if (ps.suggested_action === 'open_support') {
-            actionHtml = '<a class="pulse-vitals-action-link" href="/app/support">open a support ticket →</a>';
-          } else if (ps.suggested_action === 'open_health_detail' || !ps.suggested_action) {
-            actionHtml = '<a class="pulse-vitals-action-link" href="/app/health#focus=recent-errors&day=today">view details →</a>';
+        var sev = g.severity || 'amber';
+        var html = '<div class="pulse-vitals-item"><span class="pulse-vitals-dot ' + esc(sev) + '" aria-hidden="true"></span><span class="pulse-vitals-verdict ' + esc(sev) + '">' + esc(g.headline || '') + '</span></div>';
+        if (g.verdict === 'attention') {
+          (g.issues || []).forEach(function(issue) {
+            html += '<a class="pulse-vitals-chip ' + esc(issue.severity || 'amber') + '" href="' + esc(issue.href || '#') + '">' + esc(issue.text || '') + ' →</a>';
+          });
+        } else {
+          if (g.last_observation) {
+            html += '<div class="pulse-vitals-sep"></div><div class="pulse-vitals-item">last observation ' + esc(g.last_observation) + '</div>';
           }
-          html += '<div class="pulse-vitals-sep"></div><div class="pulse-vitals-action" role="button" tabindex="0" data-conversation="explain pipeline health for today.">' + headlineHtml + '<div class="pulse-vitals-item pulse-vitals-attention">' + esc(sentence) + '</div>' + actionHtml + '</div>';
+          if (g.cta) {
+            html += '<div class="pulse-vitals-sep"></div><a class="pulse-vitals-item pulse-vitals-cta" href="' + esc(g.cta.href || '#') + '">' + esc(g.cta.text || '') + '</a>';
+          }
         }
         html += '<a class="pulse-vitals-health-link" href="/app/health">health →</a>';
         el.innerHTML = html;

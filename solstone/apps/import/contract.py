@@ -21,6 +21,110 @@ def _json_error(
 
 
 _NULLABLE_STRING = {"type": ["string", "null"]}
+_NULLABLE_INTEGER = {"type": ["integer", "null"]}
+_FREE_OBJECT = {"type": "object", "additionalProperties": True}
+_STATUS_SCHEMA = {"type": "string", "enum": ["staged", "duplicate"]}
+_SOURCE_SCHEMA = {"type": "string", "enum": ["audio", "image", "document", "text"]}
+_ACTION_SCHEMA = {"type": "string", "enum": ["start", "do_not_start"]}
+_SOURCE_INFERENCE_SCHEMA = {
+    "type": "string",
+    "enum": ["extension", "content_type", "default"],
+}
+_METADATA_SCHEMA = {
+    "type": "object",
+    "additionalProperties": True,
+    "properties": {
+        "original_filename": _NULLABLE_STRING,
+        "mime_type": _NULLABLE_STRING,
+        "imported_via": _NULLABLE_STRING,
+        "observer_handle": _NULLABLE_STRING,
+        "source_hint": _NULLABLE_STRING,
+        "client": _FREE_OBJECT,
+    },
+    "required": [
+        "original_filename",
+        "mime_type",
+        "imported_via",
+        "observer_handle",
+        "source_hint",
+        "client",
+    ],
+}
+_DIAGNOSTICS_SCHEMA = {
+    "type": "object",
+    "additionalProperties": True,
+    "properties": {
+        "timestamp_detection_method": {"type": "string"},
+        "timestamp_detection_model_called": {"type": "boolean"},
+        "timestamp_detection_no_match_reason": _NULLABLE_STRING,
+        "source_inference": _SOURCE_INFERENCE_SCHEMA,
+    },
+    "required": [
+        "timestamp_detection_method",
+        "timestamp_detection_model_called",
+        "timestamp_detection_no_match_reason",
+        "source_inference",
+    ],
+}
+_DUPLICATE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": True,
+    "properties": {
+        "import_id": {"type": "string"},
+        "imported_at": _NULLABLE_STRING,
+        "entry_count": _NULLABLE_INTEGER,
+        "state": {"type": "string", "enum": ["imported", "staged"]},
+    },
+    "required": ["import_id", "imported_at", "entry_count", "state"],
+}
+
+_SAVE_RESPONSE_FIELDS = (
+    FieldSpec("schema_version", "integer", required=True),
+    FieldSpec("status", "string", required=True, raw_schema=_STATUS_SCHEMA),
+    FieldSpec("replay", "boolean", required=True),
+    FieldSpec("path", "string", required=True),
+    FieldSpec("timestamp", "string", required=True),
+    FieldSpec("client_item_id", "string", required=True),
+    FieldSpec("source", "string", required=True, raw_schema=_SOURCE_SCHEMA),
+    FieldSpec("facet", "string", required=True, raw_schema=_NULLABLE_STRING),
+    FieldSpec("setting", "string", required=True, raw_schema=_NULLABLE_STRING),
+    FieldSpec(
+        "recommended_action",
+        "string",
+        required=True,
+        raw_schema=_ACTION_SCHEMA,
+    ),
+    FieldSpec("metadata", "object", required=True, raw_schema=_METADATA_SCHEMA),
+    FieldSpec("diagnostics", "object", required=True, raw_schema=_DIAGNOSTICS_SCHEMA),
+    FieldSpec("duplicate", "object", raw_schema=_DUPLICATE_SCHEMA),
+)
+
+_SAVE_RESPONSE_EXAMPLE = {
+    "schema_version": 1,
+    "status": "staged",
+    "replay": False,
+    "path": "/journal/imports/20260618_143022/source.m4a",
+    "timestamp": "20260618_143022",
+    "client_item_id": "ios-item-4f8b",
+    "source": "audio",
+    "facet": None,
+    "setting": None,
+    "recommended_action": "start",
+    "metadata": {
+        "original_filename": "source.m4a",
+        "mime_type": "audio/mp4",
+        "imported_via": "ios",
+        "observer_handle": None,
+        "source_hint": None,
+        "client": {},
+    },
+    "diagnostics": {
+        "timestamp_detection_method": "upload_fallback",
+        "timestamp_detection_model_called": False,
+        "timestamp_detection_no_match_reason": None,
+        "source_inference": "extension",
+    },
+}
 
 
 OPERATIONS: list[OperationSpec] = [
@@ -31,11 +135,13 @@ OPERATIONS: list[OperationSpec] = [
         summary="Save import source",
         description=(
             "Save an uploaded import file or pasted text into imports staging. "
-            "Submit either file or text."
+            "Submit either file or text. client_item_id is required for "
+            "idempotent native-client staging."
         ),
         request=RequestSpec(
             content_type="multipart/form-data",
             fields=(
+                FieldSpec("client_item_id", "string", required=True),
                 FieldSpec(
                     "file",
                     "string",
@@ -44,42 +150,163 @@ OPERATIONS: list[OperationSpec] = [
                 FieldSpec("text", "string"),
                 FieldSpec("facet", "string"),
                 FieldSpec("setting", "string"),
+                FieldSpec("source_hint", "string"),
                 FieldSpec("imported_via", "string"),
                 FieldSpec("observer_handle", "string"),
+                FieldSpec("deterministic_only", "boolean"),
+                FieldSpec("client", "object"),
             ),
             description="Multipart body with either file or text.",
         ),
         responses=(
             ResponseSpec(
                 status=200,
-                description="Import source saved.",
-                named_fields=(
-                    FieldSpec("path", "string", required=True),
-                    FieldSpec("timestamp", "string", required=True),
-                    FieldSpec(
-                        "facet",
-                        "string",
-                        required=True,
-                        raw_schema=_NULLABLE_STRING,
-                    ),
-                    FieldSpec(
-                        "setting",
-                        "string",
-                        required=True,
-                        raw_schema=_NULLABLE_STRING,
-                    ),
+                description=(
+                    "Import source staged, replayed, or identified as a duplicate."
                 ),
+                named_fields=_SAVE_RESPONSE_FIELDS,
+                example=_SAVE_RESPONSE_EXAMPLE,
+            ),
+            _json_error(
+                400,
+                ("ingest_no_files", "missing_required_field"),
+                "Required fields were missing or neither file nor text was supplied.",
+            ),
+            _json_error(
+                409,
+                ("import_client_id_conflict",),
+                "client_item_id already names different staged content.",
+            ),
+            _json_error(
+                403,
+                ("pl_revoked",),
+                "Access gate rejected a revoked paired-link identity.",
+            ),
+        ),
+    ),
+    OperationSpec(
+        operation_id="import.savePath",
+        method="POST",
+        rule="/app/import/api/save-path",
+        summary="Save import source path",
+        description=(
+            "Register a local filesystem path for import staging using the same "
+            "idempotent summary response as import.save."
+        ),
+        request=RequestSpec(
+            fields=(
+                FieldSpec("client_item_id", "string", required=True),
+                FieldSpec("path", "string", required=True),
+                FieldSpec("facet", "string"),
+                FieldSpec("setting", "string"),
+                FieldSpec("source_hint", "string"),
+                FieldSpec("imported_via", "string"),
+                FieldSpec("observer_handle", "string"),
+                FieldSpec("client", "object"),
+            ),
+            example={
+                "client_item_id": "ios-path-1357",
+                "path": "/Users/sol/Documents/Notes",
+                "source_hint": "obsidian",
+                "client": {},
+            },
+        ),
+        responses=(
+            ResponseSpec(
+                status=200,
+                description=(
+                    "Import path staged, replayed, or identified as a duplicate."
+                ),
+                named_fields=_SAVE_RESPONSE_FIELDS,
                 example={
-                    "path": "/journal/imports/20260618_143022/source.txt",
-                    "timestamp": "20260618_143022",
-                    "facet": None,
-                    "setting": None,
+                    **_SAVE_RESPONSE_EXAMPLE,
+                    "path": "/Users/sol/Documents/Notes",
+                    "client_item_id": "ios-path-1357",
+                    "source": "text",
+                    "metadata": {
+                        **_SAVE_RESPONSE_EXAMPLE["metadata"],
+                        "original_filename": "Notes",
+                        "mime_type": None,
+                        "source_hint": "obsidian",
+                    },
                 },
             ),
             _json_error(
                 400,
-                ("ingest_no_files",),
-                "Neither file nor text was supplied.",
+                ("missing_required_field",),
+                "client_item_id or path was missing.",
+            ),
+            _json_error(
+                404,
+                ("file_not_found",),
+                "The local path did not exist.",
+            ),
+            _json_error(
+                409,
+                ("import_client_id_conflict",),
+                "client_item_id already names different staged content.",
+            ),
+            _json_error(
+                403,
+                ("pl_revoked",),
+                "Access gate rejected a revoked paired-link identity.",
+            ),
+        ),
+    ),
+    OperationSpec(
+        operation_id="import.meta",
+        method="POST",
+        rule="/app/import/api/meta",
+        summary="Update import metadata",
+        description="Update allowlisted metadata fields on a not-yet-started import.",
+        request=RequestSpec(
+            fields=(
+                FieldSpec("path", "string", required=True),
+                FieldSpec("facet", "string"),
+                FieldSpec("setting", "string"),
+                FieldSpec("original_filename", "string"),
+                FieldSpec("mime_type", "string"),
+                FieldSpec("source_hint", "string"),
+                FieldSpec("observer_handle", "string"),
+                FieldSpec("imported_via", "string"),
+                FieldSpec("client", "object"),
+            ),
+            example={
+                "path": "/journal/imports/20260618_143022/source.m4a",
+                "facet": "work",
+            },
+        ),
+        responses=(
+            ResponseSpec(
+                status=200,
+                description="Import metadata updated.",
+                named_fields=(
+                    FieldSpec("status", "string", required=True),
+                    FieldSpec("path", "string", required=True),
+                    FieldSpec("timestamp", "string", required=True),
+                    FieldSpec("updated", "object", required=True),
+                ),
+                example={
+                    "status": "ok",
+                    "path": "/journal/imports/20260618_143022/source.m4a",
+                    "timestamp": "20260618_143022",
+                    "updated": {"facet": "work"},
+                },
+            ),
+            _json_error(
+                400,
+                ("invalid_operation_for_state", "missing_required_field"),
+                "The import path was missing or the import state is terminal.",
+            ),
+            _json_error(
+                404,
+                ("import_not_found",),
+                "Import metadata was not found.",
+            ),
+            _json_error(
+                500,
+                ("import_metadata_failed",),
+                "Import metadata could not be read or updated.",
             ),
             _json_error(
                 403,
@@ -93,18 +320,19 @@ OPERATIONS: list[OperationSpec] = [
         method="POST",
         rule="/app/import/api/start",
         summary="Start import",
-        description="Start processing a previously saved import source.",
+        description=(
+            "Start processing a previously saved import source. Saved import "
+            "metadata is authoritative for facet, setting, and source routing."
+        ),
         request=RequestSpec(
             fields=(
                 FieldSpec("path", "string", required=True),
                 FieldSpec("timestamp", "string", required=True),
-                FieldSpec("source", "string"),
                 FieldSpec("force", "boolean"),
             ),
             example={
                 "path": "/journal/imports/20260618_143022/source.txt",
                 "timestamp": "20260618_143022",
-                "source": "manual",
                 "force": False,
             },
         ),
@@ -120,8 +348,8 @@ OPERATIONS: list[OperationSpec] = [
             ),
             _json_error(
                 400,
-                ("missing_required_field",),
-                "Path or timestamp was missing.",
+                ("invalid_operation_for_state", "missing_required_field"),
+                "Path or timestamp was missing, or the import is terminal.",
             ),
             _json_error(
                 404,

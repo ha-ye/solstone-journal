@@ -93,26 +93,57 @@
       "title": "Document Analysis",
       "type": "generate"
     },
-    "entities": {
-      "color": "#2e7d32",
-      "description": "Extracts people, companies, projects, and tools from segment content",
+    "entities:detection": {
+      "app": "entities",
+      "color": "#00695c",
+      "description": "Per-segment, per-entity facet-relevance judgment feeding the living detection substrate",
       "hook": {
-        "post": "entities"
+        "post": "entities:detection",
+        "pre": "entities:detection"
       },
       "load": {
-        "percepts": true,
+        "percepts": false,
         "talents": false,
-        "transcripts": true
+        "transcripts": false
       },
       "max_output_tokens": 1024,
       "mtime": 0,
-      "output": "md",
-      "path": "<PROJECT>/solstone/talent/entities.md",
-      "priority": 10,
+      "output": "json",
+      "path": "<PROJECT>/solstone/apps/entities/talent/detection.md",
+      "priority": 15,
+      "provider": "google",
       "schedule": "segment",
-      "source": "system",
-      "thinking_budget": 4096,
-      "title": "Entity Extraction",
+      "schema": "detection.schema.json",
+      "source": "app",
+      "thinking_budget": 2048,
+      "title": "Entity Detection",
+      "type": "generate"
+    },
+    "entities:entities_review": {
+      "app": "entities",
+      "color": "#00796b",
+      "description": "Reviews detected entities and promotes recurring ones to attached status",
+      "group": "Entities",
+      "hook": {
+        "post": "entities:entities_review",
+        "pre": "entities:entities_review"
+      },
+      "load": {
+        "percepts": false,
+        "talents": false,
+        "transcripts": false
+      },
+      "mtime": 0,
+      "multi_facet": true,
+      "output": "json",
+      "path": "<PROJECT>/solstone/apps/entities/talent/entities_review.md",
+      "priority": 56,
+      "schedule": "daily",
+      "schema": "entities_review.schema.json",
+      "source": "app",
+      "thinking_budget": 2048,
+      "tier": 2,
+      "title": "Entity Reviewer",
       "type": "generate"
     },
     "entities:entity_describe": {

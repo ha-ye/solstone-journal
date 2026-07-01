@@ -56,18 +56,24 @@ OPERATIONS: list[OperationSpec] = [
                 named_fields=(
                     FieldSpec("use_id", "string", required=True),
                     FieldSpec("queued", "boolean", required=True),
+                    FieldSpec("queue_depth", "integer", required=True),
                 ),
-                example={"use_id": "1781803200000", "queued": False},
+                example={
+                    "use_id": "1781803200000",
+                    "queued": False,
+                    "queue_depth": 0,
+                },
             ),
             _json_error(
                 400,
                 ("missing_required_field",),
                 "Message text was missing.",
             ),
-            _json_error(
-                429,
-                ("chat_queue_full",),
-                "Chat queue was full.",
+            ResponseSpec(
+                status=429,
+                description="Chat queue was full.",
+                reason_codes=("chat_queue_full",),
+                named_fields=(FieldSpec("queue_depth", "integer", required=True),),
             ),
             _json_error(
                 503,

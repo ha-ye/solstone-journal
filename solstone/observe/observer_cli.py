@@ -89,6 +89,20 @@ def _fmt_time(ms: int | None) -> str:
     return dt.strftime("%Y-%m-%d %H:%M")
 
 
+def _aggregate_stats(records: list[dict]) -> dict:
+    """Sum every numeric stat counter present across a group of records."""
+    totals: dict[str, int | float] = {}
+    for record in records:
+        stats = record.get("stats", {})
+        if not isinstance(stats, dict):
+            continue
+        for key, value in stats.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            totals[key] = totals.get(key, 0) + value
+    return totals
+
+
 def create_observer_record(
     name: str,
     *,
@@ -130,6 +144,46 @@ def create_observer_record(
         params={"name": name, "key_prefix": key[:8]},
     )
     return observer_data, key, False
+
+
+def reconcile_observers(*, dry_run: bool) -> list[dict]:
+    """Collapse duplicate unrevoked observer records, oldest survives.
+
+    Groups unrevoked records by stream name. For each stream with more than one
+    record the oldest (min created_at) survives and absorbs the group's summed
+    stat counters; the rest are revoked (soft-delete). Single-record streams are
+    left untouched. Returns one plan entry per collapsed stream; when dry_run is
+    True nothing is written.
+    """
+    groups: dict[str, list[dict]] = {}
+    for record in list_observers():
+        if record.get("revoked", False):
+            continue
+        groups.setdefault(record.get("name", ""), []).append(record)
+
+    plan: list[dict] = []
+    for name, records in groups.items():
+        if len(records) < 2:
+            continue
+        survivor = min(records, key=lambda r: r.get("created_at", 0))
+        losers = [r for r in records if r is not survivor]
+        totals = _aggregate_stats(records)
+        plan.append(
+            {
+                "name": name,
+                "survivor_prefix": observer_filename_prefix(survivor),
+                "revoked_prefixes": [observer_filename_prefix(r) for r in losers],
+                "stats": totals,
+            }
+        )
+        if dry_run:
+            continue
+        survivor["stats"] = totals
+        if not save_observer(survivor):
+            raise RuntimeError(f"failed to save reconcile survivor for stream {name}")
+        for loser in losers:
+            revoke_observer_record(observer_filename_prefix(loser))
+    return plan
 
 
 # === Subcommands ===
@@ -235,6 +289,25 @@ def cmd_revoke(args: argparse.Namespace) -> int:
         return 0
 
     print(f"Revoked observer '{name}' ({key_prefix})")
+    return 0
+
+
+def cmd_reconcile(args: argparse.Namespace) -> int:
+    """Collapse duplicate observer registrations per stream."""
+    plan = reconcile_observers(dry_run=args.dry_run)
+    if not plan:
+        print("No duplicate observer streams to reconcile.")
+        return 0
+    prefix = "[dry-run] would reconcile" if args.dry_run else "Reconciled"
+    for entry in plan:
+        stats = entry["stats"]
+        print(f"{prefix} stream '{entry['name']}':")
+        print(f"  survivor:  {entry['survivor_prefix']}")
+        print(f"  revoking:  {', '.join(entry['revoked_prefixes'])}")
+        print(f"  segments:  {stats.get('segments_received', 0)}")
+        print(f"  bytes:     {_fmt_bytes(stats.get('bytes_received', 0))}")
+        if stats.get("duplicates_rejected"):
+            print(f"  duplicates: {stats['duplicates_rejected']} rejected")
     return 0
 
 
@@ -470,6 +543,18 @@ def main() -> None:
         help="Observer name or key prefix (omit for overview)",
     )
 
+    # reconcile
+    p_reconcile = sub.add_parser(
+        "reconcile",
+        help="Collapse duplicate registrations per stream (oldest survives)",
+    )
+    p_reconcile.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Print the reconciliation plan without revoking anything.",
+    )
+
     args = setup_cli(parser)
 
     # Keep app helpers aligned with the active CLI journal.
@@ -485,6 +570,7 @@ def main() -> None:
         "create": cmd_create,
         "list": cmd_list,
         "rename": cmd_rename,
+        "reconcile": cmd_reconcile,
         "revoke": cmd_revoke,
         "status": cmd_status,
     }

@@ -123,6 +123,10 @@ def enable_spl_via_consent(
 
         try:
             spl.enable_spl()
+        except spl.RelayRejectedError as exc:
+            return outcomes.relay_rejection_outcome(
+                status=exc.status, reason=exc.reason
+            )
         except spl.RelayUnreachableError:
             return outcomes.outcome_for_code(outcomes.NETWORK_ERROR)
         except (

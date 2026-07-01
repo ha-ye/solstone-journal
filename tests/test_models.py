@@ -4,7 +4,9 @@
 """Tests for think.models module."""
 
 import asyncio
+import json
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -186,6 +188,15 @@ def test_calc_token_cost_with_reasoning_tokens():
 def use_fixtures_journal(monkeypatch):
     """Use the fixtures journal for provider config tests."""
     monkeypatch.setenv("SOLSTONE_JOURNAL", "tests/fixtures/journal")
+
+
+def _write_tmp_journal_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: dict
+) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "journal.json").write_text(json.dumps(config))
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
 
 def test_resolve_provider_default_generate(use_fixtures_journal):
@@ -460,8 +471,6 @@ def test_resolve_provider_tier_fallback_to_system_default(use_fixtures_journal):
 
 def test_resolve_provider_invalid_tier(use_fixtures_journal, monkeypatch, tmp_path):
     """Test that invalid tier values fall back to default tier."""
-    import json
-
     # Create a config with an invalid tier
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -486,6 +495,283 @@ def test_resolve_provider_invalid_tier(use_fixtures_journal, monkeypatch, tmp_pa
     provider, model = resolve_provider("test.string", "generate")
     assert provider == "google"
     assert model == GEMINI_FLASH
+
+
+def test_resolve_provider_local_type_default_overrides_cloud_context(
+    use_fixtures_journal, monkeypatch, tmp_path
+):
+    """Local type defaults override cloud context provider/model pins."""
+    _write_tmp_journal_config(
+        tmp_path,
+        monkeypatch,
+        {
+            "providers": {
+                "generate": {"provider": "local"},
+                "contexts": {
+                    "talent.timeline.segment_summary": {
+                        "provider": "google",
+                        "model": "gemini-flash-lite-latest",
+                    }
+                },
+            }
+        },
+    )
+
+    provider, model = resolve_provider("talent.timeline.segment_summary", "generate")
+
+    assert provider == "local"
+    assert model == LOCAL_MODEL
+    assert model != "gemini-flash-lite-latest"
+
+
+def test_resolve_provider_local_context_model_pin_is_honored(
+    use_fixtures_journal, monkeypatch, tmp_path
+):
+    """An explicit local context pin (provider: local + model) keeps its model."""
+    _write_tmp_journal_config(
+        tmp_path,
+        monkeypatch,
+        {
+            "providers": {
+                "generate": {"provider": "local"},
+                "contexts": {
+                    "talent.timeline.segment_summary": {
+                        "provider": "local",
+                        "model": "local/custom-7b",
+                    }
+                },
+            }
+        },
+    )
+
+    provider, model = resolve_provider("talent.timeline.segment_summary", "generate")
+
+    assert provider == "local"
+    assert model == "local/custom-7b"
+    assert model != LOCAL_MODEL
+
+
+def test_resolve_provider_local_context_blank_pin_uses_context_tier(
+    use_fixtures_journal, monkeypatch, tmp_path
+):
+    """Blank local context model pins fall through to tier-based local routing."""
+    _write_tmp_journal_config(
+        tmp_path,
+        monkeypatch,
+        {
+            "providers": {
+                "generate": {"provider": "local"},
+                "models": {"local": {"3": "local/lite-test"}},
+                "contexts": {
+                    "talent.blank": {
+                        "provider": "local",
+                        "model": "",
+                        "tier": 3,
+                    }
+                },
+            }
+        },
+    )
+
+    provider, model = resolve_provider("talent.blank", "generate")
+
+    assert provider == "local"
+    assert model == "local/lite-test"
+    assert model != ""
+
+
+def test_resolve_provider_local_context_malformed_pin_uses_type_default_tier(
+    use_fixtures_journal, monkeypatch, tmp_path
+):
+    """Malformed local model pins fall through without crashing."""
+    _write_tmp_journal_config(
+        tmp_path,
+        monkeypatch,
+        {
+            "providers": {
+                "generate": {"provider": "local", "tier": 2},
+                "models": {"local": {"2": "local/default-test"}},
+                "contexts": {
+                    "talent.blank.no_tier": {
+                        "provider": "local",
+                        "model": "",
+                    },
+                    "talent.numeric.invalid_tier": {
+                        "provider": "local",
+                        "model": 123,
+                        "tier": 99,
+                    },
+                },
+            }
+        },
+    )
+
+    assert resolve_provider("talent.blank.no_tier", "generate") == (
+        "local",
+        "local/default-test",
+    )
+    assert resolve_provider("talent.numeric.invalid_tier", "generate") == (
+        "local",
+        "local/default-test",
+    )
+
+
+def test_resolve_provider_local_honors_context_tier_and_models_override(
+    use_fixtures_journal, monkeypatch, tmp_path
+):
+    """Local type defaults use context tier without mutating stored context data."""
+    _write_tmp_journal_config(
+        tmp_path,
+        monkeypatch,
+        {
+            "providers": {
+                "generate": {"provider": "local"},
+                "models": {"local": {"3": "local/lite-test"}},
+                "contexts": {
+                    "talent.x": {
+                        "provider": "google",
+                        "tier": 3,
+                        "disabled": True,
+                        "extract": "foo",
+                    }
+                },
+            }
+        },
+    )
+
+    assert resolve_provider("talent.x", "generate") == ("local", "local/lite-test")
+
+    stored = json.loads((tmp_path / "config" / "journal.json").read_text())
+    context = stored["providers"]["contexts"]["talent.x"]
+    assert context["disabled"] is True
+    assert context["extract"] == "foo"
+    assert context["tier"] == 3
+
+
+def test_resolve_provider_cogitate_system_talents_stay_local(
+    use_fixtures_journal, monkeypatch, tmp_path
+):
+    """Cogitate system talents stay local when the cogitate lane is local."""
+    _write_tmp_journal_config(
+        tmp_path,
+        monkeypatch,
+        {"providers": {"cogitate": {"provider": "local"}}},
+    )
+
+    weekly_provider, _ = resolve_provider("talent.system.weekly_reflection", "cogitate")
+    partner_provider, _ = resolve_provider("talent.system.partner", "cogitate")
+
+    assert weekly_provider == "local"
+    assert partner_provider == "local"
+
+
+def test_resolve_provider_split_lane_other_type_stays_cloud(
+    use_fixtures_journal, monkeypatch, tmp_path
+):
+    """A local generate lane does not force the cogitate lane local."""
+    _write_tmp_journal_config(
+        tmp_path,
+        monkeypatch,
+        {
+            "providers": {
+                "generate": {"provider": "local"},
+                "cogitate": {"provider": "openai", "tier": 2},
+                "contexts": {
+                    "talent.timeline.segment_summary": {
+                        "provider": "google",
+                        "model": "gemini-flash-lite-latest",
+                    }
+                },
+            }
+        },
+    )
+
+    generate_provider, _ = resolve_provider(
+        "talent.timeline.segment_summary", "generate"
+    )
+    cogitate_provider, _ = resolve_provider("talent.system.partner", "cogitate")
+
+    assert generate_provider == "local"
+    assert cogitate_provider == "openai"
+
+
+def test_generate_rejects_cloud_model_override_for_local_provider():
+    with (
+        patch(
+            "solstone.think.models.resolve_provider",
+            return_value=("local", "local/qwen3.5-4b"),
+        ),
+        patch(
+            "solstone.think.providers.get_provider_module",
+            side_effect=AssertionError("provider module should not be invoked"),
+        ),
+    ):
+        with pytest.raises(ValueError, match="local provider cannot serve"):
+            generate("hello", "test.context", model="gpt-5.5")
+
+
+def test_generate_with_result_rejects_cloud_model_override_for_local_provider():
+    with (
+        patch(
+            "solstone.think.models.resolve_provider",
+            return_value=("local", "local/qwen3.5-4b"),
+        ),
+        patch(
+            "solstone.think.providers.get_provider_module",
+            side_effect=AssertionError("provider module should not be invoked"),
+        ),
+    ):
+        with pytest.raises(ValueError, match="local provider cannot serve"):
+            generate_with_result("hello", "test.context", model="gpt-5.5")
+
+
+def test_agenerate_rejects_cloud_model_override_for_local_provider():
+    with (
+        patch(
+            "solstone.think.models.resolve_provider",
+            return_value=("local", "local/qwen3.5-4b"),
+        ),
+        patch(
+            "solstone.think.providers.get_provider_module",
+            side_effect=AssertionError("provider module should not be invoked"),
+        ),
+    ):
+        with pytest.raises(ValueError, match="local provider cannot serve"):
+            asyncio.run(agenerate("hello", "test.context", model="gpt-5.5"))
+
+
+def test_unknown_model_override_for_local_provider_proceeds_to_provider():
+    provider_module = SimpleNamespace(
+        run_generate=MagicMock(
+            return_value={"text": "ok", "finish_reason": "stop"},
+        ),
+        run_agenerate=AsyncMock(
+            return_value={"text": "ok", "finish_reason": "stop"},
+        ),
+    )
+
+    with (
+        patch(
+            "solstone.think.models.resolve_provider",
+            return_value=("local", "local/qwen3.5-4b"),
+        ),
+        patch(
+            "solstone.think.providers.get_provider_module",
+            return_value=provider_module,
+        ),
+    ):
+        assert generate("hello", "test.context", model="served-model") == "ok"
+        assert generate_with_result("hello", "test.context", model="served-model") == {
+            "text": "ok",
+            "finish_reason": "stop",
+        }
+        assert (
+            asyncio.run(agenerate("hello", "test.context", model="served-model"))
+            == "ok"
+        )
+
+    assert provider_module.run_generate.call_count == 2
+    assert provider_module.run_agenerate.call_count == 1
 
 
 # ---------------------------------------------------------------------------

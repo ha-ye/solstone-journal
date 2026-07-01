@@ -8,6 +8,14 @@ import json
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
+
+from solstone.observe.processing_record import (
+    HANDLER_DESCRIBE,
+    REASON_NO_DECODABLE_FRAMES,
+    STATE_EMPTY,
+    build_processing_record,
+)
 
 
 @pytest.fixture
@@ -31,11 +39,6 @@ def _segment_configs(*names: str) -> dict[str, dict]:
             "output": "json",
             "schedule": "segment",
         },
-        "entities": {
-            "priority": 20,
-            "type": "cogitate",
-            "schedule": "segment",
-        },
         "documents": {
             "priority": 20,
             "type": "cogitate",
@@ -43,6 +46,12 @@ def _segment_configs(*names: str) -> dict[str, dict]:
         },
         "timeline:segment_summary": {
             "priority": 41,
+            "type": "generate",
+            "output": "json",
+            "schedule": "segment",
+        },
+        "entities:detection": {
+            "priority": 15,
             "type": "generate",
             "output": "json",
             "schedule": "segment",
@@ -67,10 +76,49 @@ def _segment_configs(*names: str) -> dict[str, dict]:
     return {name: dict(configs[name]) for name in names}
 
 
+def _sense_config_with_load(*names: str) -> dict[str, dict]:
+    cfgs = _segment_configs(*names)
+    cfgs["sense"]["load"] = {
+        "transcripts": True,
+        "percepts": True,
+        "talents": False,
+    }
+    return cfgs
+
+
+def _read_jsonl_events(path: Path) -> list[dict]:
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
 def _write_sense_output(segment_dir: Path, sense_json: dict) -> None:
     (segment_dir / "talents" / "sense.json").write_text(
         json.dumps(sense_json),
         encoding="utf-8",
+    )
+
+
+def _seed_empty_screen(segment_dir: Path, name: str = "screen") -> None:
+    raw_path = segment_dir / f"{name}.webm"
+    raw_path.write_bytes(b"raw-screen")
+    header = {
+        "raw": f"{name}.webm",
+        "first_hash": None,
+        "last_hash": None,
+        "qualified_count": 0,
+    }
+    header["_solstone_processing"] = build_processing_record(
+        state=STATE_EMPTY,
+        reason_code=REASON_NO_DECODABLE_FRAMES,
+        handler=HANDLER_DESCRIBE,
+        input_size=raw_path.stat().st_size,
+        source="backfill",
+    )
+    (segment_dir / f"{name}.jsonl").write_text(
+        json.dumps(header) + "\n", encoding="utf-8"
     )
 
 
@@ -161,7 +209,6 @@ def _patch_segment_cortex(monkeypatch, think, spawned: list[str]) -> None:
         "get_talent_configs",
         lambda schedule=None, **kwargs: _segment_configs(
             "sense",
-            "entities",
             "documents",
             "timeline:segment_summary",
             "screen",
@@ -240,6 +287,475 @@ class TestLoadSegmentFacets:
 
 
 class TestRunSegmentSense:
+    def test_recorded_empty_gates_via_data_state(self, segment_dir):
+        from solstone.think.talents import (
+            MIN_INPUT_CHARS,
+            _is_no_input,
+            _load_transcript,
+            check_segment_has_no_input,
+        )
+
+        _seed_empty_screen(segment_dir)
+        sources = {"transcripts": True, "percepts": True, "talents": False}
+
+        transcript, counts = _load_transcript(
+            "20240115", "120000_300", None, sources, stream="default"
+        )
+
+        assert _is_no_input(transcript, counts) is False
+        assert len(transcript.strip()) >= MIN_INPUT_CHARS
+        assert (
+            check_segment_has_no_input(
+                "20240115", "120000_300", sources, stream="default"
+            )
+            is True
+        )
+
+    def test_recorded_empty_segment_is_gated_to_idle(self, segment_dir, monkeypatch):
+        from solstone.think import thinking as think
+        from solstone.think.pipeline_health import (
+            classify_segment_completion,
+            read_segment_progress,
+            segment_fully_thought,
+        )
+        from solstone.think.thinking import ThinkingJSONLWriter
+
+        _seed_empty_screen(segment_dir)
+        spawned = []
+        jsonl_path = (
+            segment_dir.parent.parent / "health" / "test_recorded_empty_gate.jsonl"
+        )
+        writer = ThinkingJSONLWriter(str(jsonl_path))
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _sense_config_with_load(
+                "sense", "documents", "screen"
+            ),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "_callosum", None)
+        monkeypatch.setattr(think, "_jsonl", writer)
+
+        result = think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+        writer.close()
+
+        assert spawned == []
+        assert result == (0, 0, [])
+
+        progress = read_segment_progress("20240115")
+        prog = progress[("default", "120000_300")]
+        assert segment_fully_thought(prog) == (True, None)
+
+        segments = [
+            {
+                "key": "120000_300",
+                "stream": "default",
+                "data_state": {"screen": "empty"},
+            }
+        ]
+        completion = classify_segment_completion(segments, progress)
+        assert completion.not_thought == 0
+
+        events = _read_jsonl_events(jsonl_path)
+        sense_completes = [
+            event for event in events if event["event"] == "sense.complete"
+        ]
+        assert len(sense_completes) == 1
+        assert sense_completes[0]["density"] == "idle"
+        assert sense_completes[0]["gated"] == "no_input"
+        assert any(event["event"] == "sense.change_detect" for event in events)
+        assert not any(
+            event["event"] in {"talent.complete", "talent.fail"}
+            and event.get("name") == "sense"
+            for event in events
+        )
+
+    def test_no_input_segment_is_gated_to_idle(self, segment_dir, monkeypatch):
+        from solstone.think import thinking as think
+        from solstone.think.pipeline_health import (
+            classify_segment_completion,
+            read_segment_progress,
+            segment_fully_sensed,
+            segment_fully_thought,
+        )
+        from solstone.think.thinking import ThinkingJSONLWriter
+
+        spawned = []
+        jsonl_path = segment_dir.parent.parent / "health" / "test_gate.jsonl"
+        writer = ThinkingJSONLWriter(str(jsonl_path))
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _sense_config_with_load(
+                "sense", "documents", "screen"
+            ),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "_callosum", None)
+        monkeypatch.setattr(think, "_jsonl", writer)
+
+        result = think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+        writer.close()
+
+        assert spawned == []
+        assert result == (0, 0, [])
+
+        progress = read_segment_progress("20240115")
+        prog = progress[("default", "120000_300")]
+        assert segment_fully_thought(prog) == (True, None)
+
+        segments = [{"key": "120000_300", "stream": "default", "data_state": {}}]
+        assert segment_fully_sensed(segments[0]["data_state"]) is True
+        completion = classify_segment_completion(segments, progress)
+        assert completion.not_sensed == 0
+        assert completion.not_thought == 0
+
+        events = _read_jsonl_events(jsonl_path)
+        sense_completes = [
+            event for event in events if event["event"] == "sense.complete"
+        ]
+        assert len(sense_completes) == 1
+        assert sense_completes[0]["density"] == "idle"
+        assert sense_completes[0]["gated"] == "no_input"
+        assert any(event["event"] == "sense.change_detect" for event in events)
+        assert not any(
+            event["event"] in {"talent.complete", "talent.fail"}
+            and event.get("name") == "sense"
+            for event in events
+        )
+        assert not any(
+            "output_parse" in failed_name
+            for event in events
+            for failed_name in event.get("failed_names", [])
+        )
+
+        sense_json = json.loads(
+            (segment_dir / "talents" / "sense.json").read_text(encoding="utf-8")
+        )
+        schema_path = (
+            Path(__file__).resolve().parents[1]
+            / "solstone"
+            / "talent"
+            / "sense.schema.json"
+        )
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        errors = sorted(
+            Draft202012Validator(schema).iter_errors(sense_json),
+            key=lambda error: list(error.path),
+        )
+        assert not errors, [error.message for error in errors]
+        assert "gated" not in sense_json
+
+    def test_no_input_gate_fires_under_refresh(self, segment_dir, monkeypatch):
+        from solstone.think import thinking as think
+        from solstone.think.pipeline_health import (
+            read_segment_progress,
+            segment_fully_thought,
+        )
+        from solstone.think.thinking import ThinkingJSONLWriter
+
+        spawned = []
+        jsonl_path = segment_dir.parent.parent / "health" / "test_gate_refresh.jsonl"
+        writer = ThinkingJSONLWriter(str(jsonl_path))
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _sense_config_with_load("sense"),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "_callosum", None)
+        monkeypatch.setattr(think, "_jsonl", writer)
+
+        result = think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=True,
+            verbose=False,
+            stream="default",
+        )
+        writer.close()
+
+        assert spawned == []
+        assert result == (0, 0, [])
+        progress = read_segment_progress("20240115")
+        assert segment_fully_thought(progress[("default", "120000_300")]) == (
+            True,
+            None,
+        )
+
+    def test_no_input_gate_is_idempotent(self, segment_dir, monkeypatch):
+        from solstone.think import thinking as think
+        from solstone.think.pipeline_health import (
+            read_segment_progress,
+            segment_fully_thought,
+        )
+        from solstone.think.thinking import ThinkingJSONLWriter
+
+        spawned = []
+        jsonl_path = segment_dir.parent.parent / "health" / "test_gate_repeat.jsonl"
+        writer = ThinkingJSONLWriter(str(jsonl_path))
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _sense_config_with_load("sense"),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "_callosum", None)
+        monkeypatch.setattr(think, "_jsonl", writer)
+
+        first = think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+        second = think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+        writer.close()
+
+        assert spawned == []
+        assert first == (0, 0, [])
+        assert second == (0, 0, [])
+        density = json.loads(
+            (segment_dir / "talents" / "density.json").read_text(encoding="utf-8")
+        )
+        assert density["classification"] == "idle"
+        progress = read_segment_progress("20240115")
+        assert segment_fully_thought(progress[("default", "120000_300")]) == (
+            True,
+            None,
+        )
+
+    def test_recorded_empty_gate_is_idempotent(self, segment_dir, monkeypatch):
+        from solstone.think import thinking as think
+        from solstone.think.pipeline_health import (
+            read_segment_progress,
+            segment_fully_thought,
+        )
+        from solstone.think.thinking import ThinkingJSONLWriter
+
+        _seed_empty_screen(segment_dir)
+        spawned = []
+        jsonl_path = (
+            segment_dir.parent.parent / "health" / "test_recorded_empty_repeat.jsonl"
+        )
+        writer = ThinkingJSONLWriter(str(jsonl_path))
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _sense_config_with_load("sense"),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "_callosum", None)
+        monkeypatch.setattr(think, "_jsonl", writer)
+
+        first = think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+        second = think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+        writer.close()
+
+        assert spawned == []
+        assert first == (0, 0, [])
+        assert second == (0, 0, [])
+        density = json.loads(
+            (segment_dir / "talents" / "density.json").read_text(encoding="utf-8")
+        )
+        assert density["classification"] == "idle"
+        progress = read_segment_progress("20240115")
+        assert segment_fully_thought(progress[("default", "120000_300")]) == (
+            True,
+            None,
+        )
+
+    def test_mixed_empty_and_analyzed_dispatches_sense(self, segment_dir, monkeypatch):
+        from solstone.think import thinking as think
+
+        _seed_empty_screen(segment_dir)
+        (segment_dir / "audio.jsonl").write_text(
+            "{}\n"
+            '{"start":"00:00:01","text":"This transcript sentence is well over '
+            'fifty characters so the gate must not fire."}\n',
+            encoding="utf-8",
+        )
+        _write_sense_output(segment_dir, _active_sense_json())
+        spawned = []
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _sense_config_with_load("sense"),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "_callosum", None)
+
+        result = think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+
+        assert spawned == ["sense"]
+        assert result == (1, 0, [])
+
+    @pytest.mark.parametrize(
+        ("filename", "body"),
+        [
+            (
+                "audio.jsonl",
+                "{}\n"
+                '{"start":"00:00:01","text":"This transcript sentence is well '
+                "over fifty characters so the no-input gate must not fire."
+                '"}\n',
+            ),
+            (
+                "screen.jsonl",
+                '{"raw":"screen.webm"}\n'
+                '{"timestamp":1,"analysis":{"primary":"work","visual_description":'
+                '"This rendered screen description is well over fifty characters '
+                'so the no-input gate must not fire."}}\n',
+            ),
+        ],
+    )
+    def test_input_present_dispatches_sense(
+        self, segment_dir, monkeypatch, filename, body
+    ):
+        from solstone.think import thinking as think
+
+        spawned = []
+        (segment_dir / filename).write_text(body, encoding="utf-8")
+        _write_sense_output(segment_dir, _active_sense_json())
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _sense_config_with_load("sense"),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "_callosum", None)
+
+        result = think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+
+        assert spawned == ["sense"]
+        assert result == (1, 0, [])
+
+    def test_check_segment_has_no_input_noop_without_sources(self, segment_dir):
+        from solstone.think.talents import _is_no_input, check_segment_has_no_input
+
+        assert segment_dir.is_dir()
+        assert (
+            check_segment_has_no_input("20240115", "120000_300", {}, stream="default")
+            is False
+        )
+        assert _is_no_input("", {}) is True
+        assert _is_no_input("x" * 49, {"transcripts": 1}) is True
+        assert _is_no_input("x" * 60, {"transcripts": 1}) is False
+
     def test_sense_runs_first(self, segment_dir, monkeypatch):
         from solstone.think import thinking as think
 
@@ -252,7 +768,7 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "get_talent_configs",
-            lambda schedule=None, **kwargs: _segment_configs("sense", "entities"),
+            lambda schedule=None, **kwargs: _segment_configs("sense", "documents"),
         )
         monkeypatch.setattr(
             think,
@@ -274,7 +790,7 @@ class TestRunSegmentSense:
             stream="default",
         )
 
-        assert spawned == ["sense", "entities"]
+        assert spawned == ["sense", "documents"]
         assert success == 2
         assert failed == 0
         assert failed_names == []
@@ -310,7 +826,7 @@ class TestRunSegmentSense:
             think,
             "get_talent_configs",
             lambda schedule=None, **kwargs: _segment_configs(
-                "sense", "entities", "screen"
+                "sense", "documents", "screen"
             ),
         )
         monkeypatch.setattr(
@@ -359,6 +875,94 @@ class TestRunSegmentSense:
             "active": {},
         }
 
+    def test_idle_short_circuit_persists_same_id_facet_records(
+        self, segment_dir, monkeypatch
+    ):
+        from solstone.think import thinking as think
+        from solstone.think.activities import load_activity_records
+        from solstone.think.activity_state_machine import ActivityStateMachine
+
+        spawned = []
+        facets = [
+            {"facet": "work", "activity": "deep parser work", "level": "high"},
+            {"facet": "personal", "activity": "reading docs", "level": "medium"},
+        ]
+        entities = [
+            {"type": "Person", "name": "Alice", "context": "pairing"},
+            {"type": "Tool", "name": "VS Code", "context": "editor"},
+        ]
+
+        def sense(density="active", facet_payload=None):
+            return {
+                "density": density,
+                "content_type": "coding",
+                "activity_summary": "Working on parser state.",
+                "entities": entities,
+                "facets": facets if facet_payload is None else facet_payload,
+                "meeting_detected": False,
+                "speakers": [],
+                "recommend": {"screen_record": True},
+            }
+
+        sm = ActivityStateMachine(journal_root=segment_dir.parents[3])
+        sm.update(sense(), "115000_300", "20240115")
+        sm.update(sense(), "115500_300", "20240115")
+        _write_sense_output(segment_dir, sense(density="idle", facet_payload=[]))
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _segment_configs(
+                "sense", "documents", "screen"
+            ),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "_callosum", None)
+
+        success, failed, failed_names = think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+            state_machine=sm,
+            skip_activity_prompts=True,
+        )
+
+        assert spawned == ["sense"]
+        assert success == 1
+        assert failed == 0
+        assert failed_names == []
+
+        work_records = load_activity_records("work", "20240115")
+        personal_records = load_activity_records("personal", "20240115")
+        assert len(work_records) == 1
+        assert len(personal_records) == 1
+
+        work = work_records[0]
+        personal = personal_records[0]
+        expected_segments = ["115000_300", "115500_300"]
+        expected_entities = ["Alice", "VS Code"]
+        assert work["description"] == "deep parser work"
+        assert work["level_avg"] == 1.0
+        assert work["segments"] == expected_segments
+        assert work["active_entities"] == expected_entities
+        assert personal["description"] == "reading docs"
+        assert personal["level_avg"] == 0.5
+        assert personal["segments"] == expected_segments
+        assert personal["active_entities"] == expected_entities
+        assert work["description"] != personal["description"]
+        assert work["level_avg"] != personal["level_avg"]
+
     def test_conditional_screen_dispatch(self, segment_dir, monkeypatch):
         from solstone.think import thinking as think
 
@@ -372,7 +976,7 @@ class TestRunSegmentSense:
             think,
             "get_talent_configs",
             lambda schedule=None, **kwargs: _segment_configs(
-                "sense", "entities", "screen"
+                "sense", "documents", "screen"
             ),
         )
         monkeypatch.setattr(
@@ -395,13 +999,63 @@ class TestRunSegmentSense:
             stream="default",
         )
 
-        assert spawned == ["sense", "entities", "screen"]
+        assert spawned == ["sense", "documents", "screen"]
+
+    @pytest.mark.parametrize("live", [False, True])
+    def test_entities_detection_dispatches_in_stable_order(
+        self, segment_dir, monkeypatch, live
+    ):
+        from solstone.think import thinking as think
+
+        spawned = []
+        _write_sense_output(
+            segment_dir,
+            {"density": "active", "recommend": {}, "facets": []},
+        )
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _segment_configs(
+                "sense",
+                "documents",
+                "timeline:segment_summary",
+                "entities:detection",
+            ),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "_callosum", None)
+
+        think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+            live=live,
+        )
+
+        assert spawned == [
+            "sense",
+            "documents",
+            "timeline:segment_summary",
+            "entities:detection",
+        ]
 
     @pytest.mark.parametrize(
         ("has_embeddings", "expected"),
         [
-            (False, ["sense", "entities"]),
-            (True, ["sense", "entities", "speaker_attribution"]),
+            (False, ["sense", "documents"]),
+            (True, ["sense", "documents", "speaker_attribution"]),
         ],
     )
     def test_conditional_speaker_attribution(
@@ -431,7 +1085,7 @@ class TestRunSegmentSense:
             "get_talent_configs",
             lambda schedule=None, **kwargs: _segment_configs(
                 "sense",
-                "entities",
+                "documents",
                 "speaker_attribution",
             ),
         )
@@ -481,7 +1135,6 @@ class TestRunSegmentSense:
             "get_talent_configs",
             lambda schedule=None, **kwargs: _segment_configs(
                 "sense",
-                "entities",
                 "documents",
                 "timeline:segment_summary",
                 "screen",
@@ -510,7 +1163,6 @@ class TestRunSegmentSense:
 
         assert spawned == [
             "sense",
-            "entities",
             "documents",
             "timeline:segment_summary",
             "screen",
@@ -571,7 +1223,6 @@ class TestRunSegmentSense:
 
         assert spawned == [
             "sense",
-            "entities",
             "documents",
             "timeline:segment_summary",
             "screen",
@@ -623,7 +1274,6 @@ class TestRunSegmentSense:
 
         assert spawned == [
             "sense",
-            "entities",
             "documents",
             "timeline:segment_summary",
             "screen",
@@ -655,7 +1305,6 @@ class TestRunSegmentSense:
 
         assert spawned == [
             "sense",
-            "entities",
             "documents",
             "timeline:segment_summary",
             "screen",
@@ -777,7 +1426,7 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "get_talent_configs",
-            lambda schedule=None, **kwargs: _segment_configs("sense", "entities"),
+            lambda schedule=None, **kwargs: _segment_configs("sense", "documents"),
         )
         monkeypatch.setattr(
             think,
@@ -799,12 +1448,12 @@ class TestRunSegmentSense:
             stream="default",
         )
 
-        assert spawned == ["sense", "entities"]
+        assert spawned == ["sense", "documents"]
         assert success == 2
         assert failed == 0
         assert failed_names == []
 
-    def test_entities_always_runs(self, segment_dir, monkeypatch):
+    def test_documents_always_runs(self, segment_dir, monkeypatch):
         from solstone.think import thinking as think
 
         spawned = []
@@ -817,7 +1466,7 @@ class TestRunSegmentSense:
             think,
             "get_talent_configs",
             lambda schedule=None, **kwargs: _segment_configs(
-                "sense", "entities", "screen"
+                "sense", "documents", "screen"
             ),
         )
         monkeypatch.setattr(
@@ -840,8 +1489,141 @@ class TestRunSegmentSense:
             stream="default",
         )
 
-        assert "entities" in spawned
+        assert "documents" in spawned
         assert "screen" not in spawned
+
+    def test_capped_floor_talent_is_not_dispatched(self, segment_dir, monkeypatch):
+        from solstone.think import thinking as think
+        from solstone.think.thinking import ThinkingJSONLWriter
+
+        spawned = []
+        jsonl_path = segment_dir.parent.parent / "health" / "test_capped_floor.jsonl"
+        writer = ThinkingJSONLWriter(str(jsonl_path))
+        _write_sense_output(
+            segment_dir,
+            {"density": "active", "recommend": {"screen_record": False}, "facets": []},
+        )
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _segment_configs("sense", "documents"),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "is_floor_talent_capped", lambda *args: True)
+        monkeypatch.setattr(think, "_callosum", None)
+        monkeypatch.setattr(think, "_jsonl", writer)
+
+        think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+        writer.close()
+
+        events = _read_jsonl_events(jsonl_path)
+        skips = [event for event in events if event["event"] == "talent.skip"]
+
+        assert spawned == ["sense"]
+        assert any(
+            skip["name"] == "documents" and skip["reason"] == "capped" for skip in skips
+        )
+
+    def test_refresh_bypasses_capped_floor_talent_gate(self, segment_dir, monkeypatch):
+        from solstone.think import thinking as think
+
+        spawned = []
+        _write_sense_output(
+            segment_dir,
+            {"density": "active", "recommend": {"screen_record": False}, "facets": []},
+        )
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _segment_configs("sense", "documents"),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "is_floor_talent_capped", lambda *args: True)
+        monkeypatch.setattr(think, "_callosum", None)
+
+        think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=True,
+            verbose=False,
+            stream="default",
+        )
+
+        assert spawned == ["sense", "documents"]
+
+    def test_capped_floor_talent_gate_does_not_skip_non_floor_talents(
+        self, segment_dir, monkeypatch
+    ):
+        from solstone.think import thinking as think
+
+        spawned = []
+        _write_sense_output(
+            segment_dir,
+            {"density": "active", "recommend": {"screen_record": False}, "facets": []},
+        )
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: {
+                **_segment_configs("sense", "timeline:segment_summary"),
+                "flow": {
+                    "priority": 20,
+                    "type": "cogitate",
+                    "schedule": "segment",
+                },
+            },
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "SEGMENT_FLOOR_TALENTS", ("flow",))
+        monkeypatch.setattr(think, "is_floor_talent_capped", lambda *args: True)
+        monkeypatch.setattr(think, "_callosum", None)
+
+        think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+
+        assert "flow" not in spawned
+        assert "timeline:segment_summary" in spawned
 
     def test_segment_summary_dispatched_for_non_idle(self, segment_dir, monkeypatch):
         from solstone.think import thinking as think
@@ -856,7 +1638,7 @@ class TestRunSegmentSense:
             think,
             "get_talent_configs",
             lambda schedule=None, **kwargs: _segment_configs(
-                "sense", "entities", "timeline:segment_summary"
+                "sense", "documents", "timeline:segment_summary"
             ),
         )
         monkeypatch.setattr(
@@ -894,7 +1676,7 @@ class TestRunSegmentSense:
             think,
             "get_talent_configs",
             lambda schedule=None, **kwargs: _segment_configs(
-                "sense", "entities", "timeline:segment_summary"
+                "sense", "documents", "timeline:segment_summary"
             ),
         )
         monkeypatch.setattr(
@@ -931,7 +1713,7 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "get_talent_configs",
-            lambda schedule=None, **kwargs: _segment_configs("sense", "entities"),
+            lambda schedule=None, **kwargs: _segment_configs("sense"),
         )
         monkeypatch.setattr(
             think,
@@ -988,6 +1770,7 @@ class TestRunSegmentSense:
                 return [
                     {
                         "id": "coding_120000_300",
+                        "facet": "work",
                         "activity": "coding",
                         "segments": ["120000_300"],
                         "level_avg": 0.5,
@@ -1005,7 +1788,7 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "get_talent_configs",
-            lambda schedule=None, **kwargs: _segment_configs("sense", "entities"),
+            lambda schedule=None, **kwargs: _segment_configs("sense", "documents"),
         )
         monkeypatch.setattr(
             think,
@@ -1071,16 +1854,14 @@ class TestRunSegmentSense:
             segment_dir,
             {"density": "active", "recommend": {}, "facets": []},
         )
-        (segment_dir / "talents" / "entities.md").write_text(
-            "entities", encoding="utf-8"
-        )
+        (segment_dir / "talents" / "flow.md").write_text("flow", encoding="utf-8")
 
         monkeypatch.setattr(
             think,
             "get_talent_configs",
             lambda schedule=None, **kwargs: {
                 **_segment_configs("sense"),
-                "entities": {
+                "flow": {
                     "priority": 20,
                     "type": "generate",
                     "output": "md",
@@ -1103,6 +1884,7 @@ class TestRunSegmentSense:
             "run_queued_command",
             lambda cmd, day, timeout=60: indexer_calls.append(cmd) or True,
         )
+        monkeypatch.setattr(think, "SEGMENT_FLOOR_TALENTS", ("flow",))
         monkeypatch.setattr(think, "_callosum", None)
 
         think.run_segment_sense(
@@ -1135,7 +1917,7 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "get_talent_configs",
-            lambda schedule=None, **kwargs: _segment_configs("sense", "entities"),
+            lambda schedule=None, **kwargs: _segment_configs("sense", "documents"),
         )
         monkeypatch.setattr(think, "cortex_request", mock_cortex_request)
         monkeypatch.setattr(think, "_SEND_RETRY_DELAYS", (0.0, 0.0))
@@ -1155,10 +1937,10 @@ class TestRunSegmentSense:
         )
 
         assert calls[0] == "sense"
-        assert calls[1:] == ["entities", "entities", "entities"]
+        assert calls[1:] == ["documents", "documents", "documents"]
         assert success == 1
         assert failed == 1
-        assert failed_names == ["entities (send)"]
+        assert failed_names == ["documents (send)"]
 
 
 class TestCortexRequestRetry:
@@ -1485,7 +2267,7 @@ class TestThinkJSONLEvents:
         monkeypatch.setattr(
             think,
             "get_talent_configs",
-            lambda schedule=None, **kwargs: _segment_configs("sense", "entities"),
+            lambda schedule=None, **kwargs: _segment_configs("sense"),
         )
         monkeypatch.setattr(
             think,

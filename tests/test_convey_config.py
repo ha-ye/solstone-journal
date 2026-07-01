@@ -28,6 +28,13 @@ def _read_convey_config(journal: Path) -> dict:
     return json.loads((journal / "config" / "convey.json").read_text("utf-8"))
 
 
+def _commit_journal_identity() -> None:
+    from solstone.think.link.ca import load_or_generate_ca
+    from solstone.think.link.paths import ca_dir
+
+    load_or_generate_ca(ca_dir())
+
+
 def test_reporting_enabled_defaults_true_when_absent(monkeypatch, tmp_path):
     from solstone.convey.config import reporting_enabled
 
@@ -157,6 +164,7 @@ def test_init_finalize_seeds_default_app_navigation(journal_copy):
     (journal_copy / "config" / "convey.json").unlink()
     app = create_app(str(journal_copy))
     app.config["TESTING"] = True
+    _commit_journal_identity()
 
     resp = app.test_client().post(
         "/init/finalize",
@@ -189,6 +197,7 @@ def test_init_finalize_logs_convey_seed_persist_failure(
     caplog.set_level(logging.ERROR, logger="solstone.convey.root")
     app = create_app(str(journal_copy))
     app.config["TESTING"] = True
+    _commit_journal_identity()
 
     resp = app.test_client().post(
         "/init/finalize",

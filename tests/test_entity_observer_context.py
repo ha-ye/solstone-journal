@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 
+import solstone.apps.entities.talent.entity_observer as entity_observer_hook
+import solstone.think.entities.context as entity_context
 from solstone.apps.entities.talent.entity_observer import post_process, pre_process
-from solstone.think.entities.context import assemble_observer_context
 from solstone.think.entities.observations import load_observations
 from solstone.think.talent import get_talent
 
@@ -28,6 +28,16 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
         "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
         encoding="utf-8",
     )
+
+
+def _write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def _write_audio_jsonl(path: Path, records: list[dict]) -> None:
+    rows = [{"raw": "raw.flac", "model": "whisper-1", "duration": 120}, *records]
+    _write_jsonl(path, rows)
 
 
 def _attach_entity(
@@ -52,29 +62,163 @@ def _obs_path(facet: str, entity_id: str) -> Path:
     return Path("facets") / facet / "entities" / entity_id / "observations.jsonl"
 
 
+COUNT_KEYS = ("update", "add", "drop", "keep", "skipped")
+
+
+def _outcome_path(root: Path, facet: str, day: str) -> Path:
+    return root / "facets" / facet / "entities" / f"{day}_observer_outcome.json"
+
+
+def _load_outcome(root: Path, facet: str, day: str) -> dict:
+    return json.loads(_outcome_path(root, facet, day).read_text(encoding="utf-8"))
+
+
+def _count_sum(outcome: dict) -> int:
+    return sum(outcome[key] for key in COUNT_KEYS)
+
+
+def _assert_outcome_shape(outcome: dict) -> None:
+    assert set(outcome) == {*COUNT_KEYS, "error", "ts"}
+    assert isinstance(outcome["ts"], int)
+
+
+def _empty_search(*_args, **_kwargs) -> tuple[int, list[dict]]:
+    return 0, []
+
+
+def _section_for(result: str, entity_name: str) -> str:
+    start = result.index(f"#### {entity_name}")
+    end = result.find("\n---\n", start)
+    if end == -1:
+        return result[start:]
+    return result[start:end]
+
+
 # ============================================================================
 # Context assembly tests
 # ============================================================================
 
 
-def test_assemble_observer_context_with_fixture_data(monkeypatch):
-    _set_journal(monkeypatch, "tests/fixtures/journal")
-
-    result = assemble_observer_context("capulet", "20260304")
-
-    assert result
-    assert "Juliet Capulet" in result
-    assert "Knowledge Graph" in result
-    assert (
-        "Prepared revenue projections for Verona Platform board presentation" in result
+def test_assemble_observer_context_deep_segment_context(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, str(tmp_path))
+    monkeypatch.setattr(entity_context, "search_journal", _empty_search)
+    facet = "work"
+    day = "20260405"
+    segment = "090000_300"
+    composite = f"{day}/default/{segment}"
+    unrelated_segment = "100000_300"
+    unrelated_composite = f"{day}/default/{unrelated_segment}"
+    _attach_entity(
+        tmp_path,
+        facet,
+        "alice_johnson",
+        "Alice Johnson",
+        description="Strategic owner for partner integrations.",
+    )
+    _write_jsonl(
+        tmp_path / "facets" / facet / "entities" / f"{day}.jsonl",
+        [
+            {
+                "id": "alice_johnson",
+                "type": "Person",
+                "name": "Alice Johnson",
+                "description": "Detected from integration planning.",
+                "segments": [composite],
+            },
+            {
+                "id": "bob_lee",
+                "type": "Person",
+                "name": "Bob Lee",
+                "description": "Unattached unrelated detection.",
+                "segments": [unrelated_composite],
+            },
+        ],
+    )
+    _write_jsonl(
+        tmp_path / _obs_path(facet, "alice_johnson"),
+        [
+            {
+                "content": "Existing Alpha observation 1",
+                "observed_at": 1,
+                "source_day": "20260401",
+            },
+            {
+                "content": "Existing Alpha observation 2",
+                "observed_at": 2,
+                "source_day": "20260402",
+            },
+        ],
+    )
+    seg_dir = tmp_path / "chronicle" / day / "default" / segment
+    _write_json(
+        seg_dir / "talents" / "sense.json",
+        {
+            "activity_summary": "Prepared integration roadmap for Alpha Platform.",
+            "entities": [
+                {
+                    "type": "Person",
+                    "name": "Alice Johnson",
+                    "role": "participant",
+                    "source": "audio",
+                    "context": "Alice owns the durable partner integration strategy.",
+                    "level": 5,
+                },
+                {
+                    "type": "Person",
+                    "name": "Bob Lee",
+                    "role": "mentioned",
+                    "source": "audio",
+                    "context": "Bob unrelated sense context should not appear.",
+                    "level": 2,
+                },
+            ],
+        },
+    )
+    _write_audio_jsonl(
+        seg_dir / "audio.jsonl",
+        [
+            {
+                "start": f"00:00:{index:02d}",
+                "text": f"Alice Johnson transcript line {index}",
+            }
+            for index in range(1, 14)
+        ]
+        + [
+            {
+                "start": "00:01:00",
+                "text": "Bob unrelated transcript should not appear.",
+            }
+        ],
+    )
+    _write_text(
+        tmp_path / "chronicle" / day / "talents" / "knowledge_graph.md",
+        "UNIQUE_KG_SENTINEL_DAY_DUMP",
     )
 
+    result = entity_context.assemble_observer_context(facet, day)
 
-def test_assemble_observer_context_no_kg(tmp_path, monkeypatch):
+    assert "Alice Johnson" in result
+    assert "Strategic owner for partner integrations." in result
+    assert "0. Existing Alpha observation 1 (source: 20260401)" in result
+    assert "1. Existing Alpha observation 2 (source: 20260402)" in result
+    assert "Prepared integration roadmap for Alpha Platform." in result
+    assert "Alice owns the durable partner integration strategy." in result
+    assert "Alice Johnson transcript line 1" in result
+    assert "Alice Johnson transcript line 12" in result
+    assert "Alice Johnson transcript line 13" not in result
+    assert "UNIQUE_KG_SENTINEL_DAY_DUMP" not in result
+    assert "Bob unrelated sense context should not appear." not in result
+    assert "Bob unrelated transcript should not appear." not in result
+
+
+def test_assemble_observer_context_per_lever_resilience(tmp_path, monkeypatch):
     _set_journal(monkeypatch, str(tmp_path))
+    monkeypatch.setattr(entity_context, "search_journal", _empty_search)
     facet = "work"
-    day = "20260304"
+    day = "20260405"
     _attach_entity(tmp_path, facet, "alice_johnson", "Alice Johnson")
+    broken_composite = f"{day}/default/080000_300"
+    sense_only_composite = f"{day}/default/090000_300"
     _write_jsonl(
         tmp_path / "facets" / facet / "entities" / f"{day}.jsonl",
         [
@@ -83,22 +227,220 @@ def test_assemble_observer_context_no_kg(tmp_path, monkeypatch):
                 "type": "Person",
                 "name": "Alice Johnson",
                 "description": "Detected from activity",
+                "segments": [broken_composite, sense_only_composite],
+            }
+        ],
+    )
+    _write_text(
+        tmp_path
+        / "chronicle"
+        / day
+        / "default"
+        / "080000_300"
+        / "talents"
+        / "sense.json",
+        "{bad json",
+    )
+    _write_json(
+        tmp_path
+        / "chronicle"
+        / day
+        / "default"
+        / "090000_300"
+        / "talents"
+        / "sense.json",
+        {
+            "activity_summary": "Reviewed resilient source handling.",
+            "entities": [
+                {
+                    "type": "Person",
+                    "name": "Alice Johnson",
+                    "role": "participant",
+                    "source": "audio",
+                    "context": "Alice has valid sense even without audio.",
+                    "level": 4,
+                }
+            ],
+        },
+    )
+
+    result = entity_context.assemble_observer_context(facet, day)
+
+    assert "Alice Johnson" in result
+    assert "Alice has valid sense even without audio." in result
+    assert f"(segment {broken_composite}: source unavailable)" in result
+    assert f"(segment {sense_only_composite}: source unavailable)" not in result
+
+
+def test_assemble_observer_context_thin_source_marker(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, str(tmp_path))
+    monkeypatch.setattr(entity_context, "search_journal", _empty_search)
+    facet = "work"
+    day = "20260405"
+    _attach_entity(tmp_path, facet, "alpha_person", "Alpha Person")
+    _attach_entity(tmp_path, facet, "beta_person", "Beta Person")
+    alpha_composite = f"{day}/default/090000_300"
+    _write_jsonl(
+        tmp_path / "facets" / facet / "entities" / f"{day}.jsonl",
+        [
+            {
+                "id": "alpha_person",
+                "type": "Person",
+                "name": "Alpha Person",
+                "description": "Rich source entity",
+                "segments": [alpha_composite],
+            },
+            {
+                "id": "beta_person",
+                "type": "Person",
+                "name": "Beta Person",
+                "description": "Thin source entity",
+            },
+        ],
+    )
+    _write_json(
+        tmp_path
+        / "chronicle"
+        / day
+        / "default"
+        / "090000_300"
+        / "talents"
+        / "sense.json",
+        {
+            "activity_summary": "Alpha created a durable plan.",
+            "entities": [
+                {
+                    "type": "Person",
+                    "name": "Alpha Person",
+                    "role": "participant",
+                    "source": "audio",
+                    "context": "Alpha has fresh sense context.",
+                    "level": 4,
+                }
+            ],
+        },
+    )
+
+    result = entity_context.assemble_observer_context(facet, day)
+
+    alpha_section = _section_for(result, "Alpha Person")
+    beta_section = _section_for(result, "Beta Person")
+    assert entity_context.THIN_SOURCE_MARKER not in alpha_section
+    assert entity_context.THIN_SOURCE_MARKER in beta_section
+
+
+def test_assemble_observer_context_budget_ceiling(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, str(tmp_path))
+    monkeypatch.setattr(entity_context, "search_journal", _empty_search)
+    facet = "work"
+    day = "20260405"
+    entity_id = "alice_johnson"
+    _attach_entity(tmp_path, facet, entity_id, "Alice Johnson")
+    _write_jsonl(
+        tmp_path / "facets" / facet / "entities" / f"{day}.jsonl",
+        [
+            {
+                "id": entity_id,
+                "type": "Person",
+                "name": "Alice Johnson",
+                "description": "Budget pressure entity",
+            }
+        ],
+    )
+    _write_jsonl(
+        tmp_path / _obs_path(facet, entity_id),
+        [
+            {
+                "content": f"Observation {index} " + ("x" * 240),
+                "observed_at": index,
+                "source_day": day,
+            }
+            for index in range(140)
+        ],
+    )
+
+    result = entity_context.assemble_observer_context(facet, day)
+    source = Path(__file__).read_text(encoding="utf-8")
+
+    assert len(result) <= entity_context.TOTAL_CHAR_BUDGET
+    for forbidden in (
+        ("local", "_budget"),
+        ("count", "_tokens"),
+        ("fit", "_contents"),
+    ):
+        assert "".join(forbidden) not in source
+
+
+def test_assemble_observer_context_search_and_kg_levers(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, str(tmp_path))
+    facet = "work"
+    day = "20260405"
+    entity_id = "alice_johnson"
+    segment = "090000_300"
+    composite = f"{day}/default/{segment}"
+    _attach_entity(tmp_path, facet, entity_id, "Alice Johnson")
+    _write_jsonl(
+        tmp_path / "facets" / facet / "entities" / f"{day}.jsonl",
+        [
+            {
+                "id": entity_id,
+                "type": "Person",
+                "name": "Alice Johnson",
+                "description": "",
+                "segments": [composite],
             }
         ],
     )
 
-    result = assemble_observer_context(facet, day)
+    calls = []
 
-    assert result
-    assert "No knowledge graph available for this day." in result
-    assert "Alice Johnson" in result
+    def fake_search(query: str, **kwargs) -> tuple[int, list[dict]]:
+        calls.append((query, kwargs))
+        if kwargs.get("agent") == "knowledge_graph":
+            return 1, [
+                {
+                    "text": "KG chunk says Alice owns integration architecture.",
+                    "metadata": {
+                        "agent": "knowledge_graph",
+                        "path": f"{day}/talents/knowledge_graph.md",
+                    },
+                }
+            ]
+        return 3, [
+            {
+                "text": "Deduped segment evidence should not show.",
+                "metadata": {
+                    "agent": "audio",
+                    "path": f"{composite}/audio.jsonl",
+                },
+            },
+            {
+                "text": "Chat noise should not show.",
+                "metadata": {"agent": "chat", "path": f"{day}/chat/1"},
+            },
+            {
+                "text": "Related journal evidence says Alice owns partner APIs.",
+                "metadata": {"agent": "note_transcript", "path": f"{day}/notes.md"},
+            },
+        ]
+
+    monkeypatch.setattr(entity_context, "search_journal", fake_search)
+
+    result = entity_context.assemble_observer_context(facet, day)
+
+    assert "Related journal evidence says Alice owns partner APIs." in result
+    assert "KG chunk says Alice owns integration architecture." in result
+    assert "Deduped segment evidence should not show." not in result
+    assert "Chat noise should not show." not in result
+    assert entity_context.THIN_SOURCE_MARKER not in result
+    assert any(call[1].get("agent") == "knowledge_graph" for call in calls)
 
 
 def test_assemble_observer_context_no_active_entities(tmp_path, monkeypatch):
     _set_journal(monkeypatch, str(tmp_path))
     _attach_entity(tmp_path, "work", "alice_johnson", "Alice Johnson")
 
-    result = assemble_observer_context("work", "20260304")
+    result = entity_context.assemble_observer_context("work", "20260304")
 
     assert "No active entities" in result
 
@@ -107,13 +449,16 @@ def test_assemble_observer_context_empty_facet(tmp_path, monkeypatch):
     _set_journal(monkeypatch, str(tmp_path))
     (tmp_path / "facets" / "empty" / "entities").mkdir(parents=True)
 
-    result = assemble_observer_context("empty", "20260304")
+    result = entity_context.assemble_observer_context("empty", "20260304")
 
     assert "No active entities" in result
 
 
-def test_assemble_observer_context_observations_sliced(tmp_path, monkeypatch):
+def test_assemble_observer_context_observations_are_numbered_full_list(
+    tmp_path, monkeypatch
+):
     _set_journal(monkeypatch, str(tmp_path))
+    monkeypatch.setattr(entity_context, "search_journal", _empty_search)
     facet = "work"
     day = "20260304"
     entity_id = "alice_johnson"
@@ -132,19 +477,19 @@ def test_assemble_observer_context_observations_sliced(tmp_path, monkeypatch):
     _write_jsonl(
         tmp_path / _obs_path(facet, entity_id),
         [
-            {"content": "Observation 1", "observed_at": 1, "source_day": "20260301"},
-            {"content": "Observation 2", "observed_at": 2, "source_day": "20260302"},
-            {"content": "Observation 3", "observed_at": 3, "source_day": "20260303"},
-            {"content": "Observation 4", "observed_at": 4, "source_day": "20260304"},
-            {"content": "Observation 5", "observed_at": 5, "source_day": "20260305"},
+            {
+                "content": f"Observation {index}",
+                "observed_at": index,
+                "source_day": f"2026030{index}",
+            }
+            for index in range(1, 6)
         ],
     )
 
-    result = assemble_observer_context(facet, day)
+    result = entity_context.assemble_observer_context(facet, day)
 
-    assert "Observation 1" not in result
-    assert "Observation 2" not in result
-    assert result.count("(source: ") == 3
+    for index in range(5):
+        assert f"{index}. Observation {index + 1}" in result
 
 
 # ============================================================================
@@ -171,187 +516,384 @@ def test_pre_process_missing_day():
     assert pre_process({"facet": "work"}) is None
 
 
-def test_post_process_persists_observations(tmp_path, monkeypatch):
+def test_post_process_applies_operations_and_writes_outcome(tmp_path, monkeypatch):
     _set_journal(monkeypatch, str(tmp_path))
     facet = "work"
+    day = "20260304"
+    _attach_entity(tmp_path, facet, "alice_johnson", "Alice Johnson")
+    _write_jsonl(
+        tmp_path / _obs_path(facet, "alice_johnson"),
+        [
+            {"content": "Prefers morning meetings", "observed_at": 1},
+            {"content": "Uses legacy planning notes", "observed_at": 2},
+            {"content": "Works Pacific time hours", "observed_at": 3},
+        ],
+    )
+
+    result = post_process(
+        json.dumps(
+            {
+                "entities": [
+                    {
+                        "entity_id": "alice_johnson",
+                        "operations": [
+                            {
+                                "op": "update",
+                                "target_index": 0,
+                                "content": "Prefers concise morning planning meetings",
+                                "target_quote": "morning meetings",
+                                "reasoning": "Fresh source narrows the preference.",
+                            },
+                            {
+                                "op": "drop",
+                                "target_index": 1,
+                                "target_quote": "legacy planning",
+                                "reasoning": "Stale duplicate planning note.",
+                            },
+                            {
+                                "op": "keep",
+                                "target_index": 2,
+                                "reasoning": "Still durable.",
+                            },
+                            {
+                                "op": "add",
+                                "content": "Has deep knowledge of distributed systems",
+                                "reasoning": "Durable expertise.",
+                            },
+                        ],
+                    }
+                ],
+                "summary": "Applied four operations.",
+            }
+        ),
+        {"facet": facet, "day": day},
+    )
+
+    assert result is None
+    observations = load_observations(facet, "alice_johnson")
+    assert [obs["content"] for obs in observations] == [
+        "Prefers concise morning planning meetings",
+        "Works Pacific time hours",
+        "Has deep knowledge of distributed systems",
+    ]
+    outcome = _load_outcome(tmp_path, facet, day)
+    _assert_outcome_shape(outcome)
+    assert {key: outcome[key] for key in COUNT_KEYS} == {
+        "update": 1,
+        "add": 1,
+        "drop": 1,
+        "keep": 1,
+        "skipped": 0,
+    }
+    assert outcome["error"] is None
+    assert _count_sum(outcome) == 4
+
+
+def test_post_process_unknown_entity_counts_all_operation_rows_skipped(
+    tmp_path, monkeypatch
+):
+    _set_journal(monkeypatch, str(tmp_path))
+    facet = "work"
+    day = "20260304"
     _attach_entity(tmp_path, facet, "alice_johnson", "Alice Johnson")
 
     result = post_process(
         json.dumps(
             {
-                "observations": [
+                "entities": [
                     {
-                        "entity_id": "alice_johnson",
-                        "items": [
+                        "entity_id": "unknown_entity",
+                        "operations": [
                             {
-                                "content": "Prefers morning meetings",
-                                "reasoning": "Durable preference",
-                            }
+                                "op": "add",
+                                "content": "Should be ignored",
+                                "reasoning": "Unknown entity.",
+                            },
+                            {
+                                "op": "drop",
+                                "target_index": 0,
+                                "reasoning": "Unknown entity.",
+                            },
+                            "not an object",
                         ],
                     }
                 ],
-                "skipped": [],
-                "summary": "1 entity, 1 observation",
+                "summary": "unknown entity",
             }
         ),
-        {"facet": facet, "day": "20260304"},
+        {"facet": facet, "day": day},
     )
-
-    assert result is None
-    observations = load_observations(facet, "alice_johnson")
-    assert [obs["content"] for obs in observations] == ["Prefers morning meetings"]
-
-
-def test_post_process_filters_unrecognized_entity(tmp_path, caplog, monkeypatch):
-    _set_journal(monkeypatch, str(tmp_path))
-    facet = "work"
-    _attach_entity(tmp_path, facet, "alice_johnson", "Alice Johnson")
-
-    with caplog.at_level(logging.DEBUG):
-        result = post_process(
-            json.dumps(
-                {
-                    "observations": [
-                        {
-                            "entity_id": "unknown_entity",
-                            "items": [
-                                {
-                                    "content": "Should be ignored",
-                                    "reasoning": "Unknown entity",
-                                }
-                            ],
-                        }
-                    ],
-                    "skipped": ["alice_johnson"],
-                    "summary": "1 entity skipped",
-                }
-            ),
-            {"facet": facet, "day": "20260304"},
-        )
 
     assert result is None
     assert load_observations(facet, "alice_johnson") == []
     assert load_observations(facet, "unknown_entity") == []
-    assert "Skipping unrecognized entity_id: unknown_entity" in caplog.text
+    outcome = _load_outcome(tmp_path, facet, day)
+    assert {key: outcome[key] for key in COUNT_KEYS} == {
+        "update": 0,
+        "add": 0,
+        "drop": 0,
+        "keep": 0,
+        "skipped": 3,
+    }
+    assert outcome["error"] is None
+    assert _count_sum(outcome) == 3
 
 
-def test_post_process_skips_empty_content(tmp_path, monkeypatch):
+def test_post_process_handles_malformed_json_with_zero_outcome(tmp_path, monkeypatch):
     _set_journal(monkeypatch, str(tmp_path))
     facet = "work"
-    _attach_entity(tmp_path, facet, "alice_johnson", "Alice Johnson")
+    day = "20260304"
 
-    post_process(
-        json.dumps(
-            {
-                "observations": [
-                    {
-                        "entity_id": "alice_johnson",
-                        "items": [{"content": "", "reasoning": "empty"}],
-                    }
-                ],
-                "skipped": [],
-                "summary": "No valid observations",
-            }
-        ),
-        {"facet": facet, "day": "20260304"},
-    )
+    assert post_process("not valid json", {"facet": facet, "day": day}) is None
 
-    assert load_observations(facet, "alice_johnson") == []
+    outcome = _load_outcome(tmp_path, facet, day)
+    _assert_outcome_shape(outcome)
+    assert {key: outcome[key] for key in COUNT_KEYS} == {
+        "update": 0,
+        "add": 0,
+        "drop": 0,
+        "keep": 0,
+        "skipped": 0,
+    }
+    assert outcome["error"] is None
 
 
-def test_post_process_skips_non_list_group_items(tmp_path, caplog, monkeypatch):
+def test_post_process_rejects_malformed_ops_and_counts_skipped(tmp_path, monkeypatch):
     _set_journal(monkeypatch, str(tmp_path))
     facet = "work"
-    _attach_entity(tmp_path, facet, "alice_johnson", "Alice Johnson")
-
-    with caplog.at_level(logging.DEBUG):
-        post_process(
-            json.dumps(
-                {
-                    "observations": [
-                        {
-                            "entity_id": "alice_johnson",
-                            "items": "not a list",
-                        }
-                    ],
-                    "skipped": [],
-                    "summary": "Malformed items",
-                }
-            ),
-            {"facet": facet, "day": "20260304"},
-        )
-
-    assert load_observations(facet, "alice_johnson") == []
-    assert "Skipping malformed observation entry" in caplog.text
-
-
-def test_post_process_skips_group_missing_entity_id(tmp_path, caplog, monkeypatch):
-    _set_journal(monkeypatch, str(tmp_path))
-    facet = "work"
-    _attach_entity(tmp_path, facet, "alice_johnson", "Alice Johnson")
-
-    with caplog.at_level(logging.DEBUG):
-        post_process(
-            json.dumps(
-                {
-                    "observations": [
-                        {
-                            "items": [{"content": "x", "reasoning": "y"}],
-                        }
-                    ],
-                    "skipped": [],
-                    "summary": "Missing entity id",
-                }
-            ),
-            {"facet": facet, "day": "20260304"},
-        )
-
-    assert load_observations(facet, "alice_johnson") == []
-    assert "Skipping malformed observation entry" in caplog.text
-
-
-def test_post_process_deduplicates_existing(tmp_path, monkeypatch):
-    _set_journal(monkeypatch, str(tmp_path))
-    facet = "work"
+    day = "20260304"
     _attach_entity(tmp_path, facet, "alice_johnson", "Alice Johnson")
     _write_jsonl(
         tmp_path / _obs_path(facet, "alice_johnson"),
-        [{"content": "Prefers morning meetings", "observed_at": 1}],
+        [{"content": "Existing observation stays unchanged", "observed_at": 1}],
     )
 
     post_process(
         json.dumps(
             {
-                "observations": [
+                "entities": [
                     {
                         "entity_id": "alice_johnson",
-                        "items": [
+                        "operations": [
+                            "not an object",
+                            {"op": "add", "content": " ", "reasoning": "empty"},
                             {
-                                "content": "Prefers morning meetings",
-                                "reasoning": "dupe",
+                                "op": "update",
+                                "target_index": True,
+                                "content": "Invalid bool index.",
+                                "reasoning": "bad index",
                             },
                             {
-                                "content": "Expert in distributed systems",
-                                "reasoning": "new",
+                                "op": "update",
+                                "target_index": 0,
+                                "content": "",
+                                "reasoning": "empty update",
+                            },
+                            {
+                                "op": "drop",
+                                "target_index": "0",
+                                "reasoning": "string index",
+                            },
+                            {
+                                "op": "keep",
+                                "target_index": None,
+                                "reasoning": "missing index",
+                            },
+                            {"op": "replace", "target_index": 0, "reasoning": "bad"},
+                            {
+                                "op": "drop",
+                                "target_index": 0,
+                                "target_quote": 7,
+                                "reasoning": "bad quote",
+                            },
+                            {
+                                "op": "add",
+                                "content": "Durable valid observation",
+                                "reasoning": "valid add",
                             },
                         ],
                     }
                 ],
-                "skipped": [],
-                "summary": "One duplicate, one new observation",
+                "summary": "malformed rows",
             }
         ),
-        {"facet": facet, "day": "20260304"},
+        {"facet": facet, "day": day},
+    )
+
+    assert [obs["content"] for obs in load_observations(facet, "alice_johnson")] == [
+        "Existing observation stays unchanged",
+        "Durable valid observation",
+    ]
+    outcome = _load_outcome(tmp_path, facet, day)
+    assert {key: outcome[key] for key in COUNT_KEYS} == {
+        "update": 0,
+        "add": 1,
+        "drop": 0,
+        "keep": 0,
+        "skipped": 8,
+    }
+    assert outcome["error"] is None
+    assert _count_sum(outcome) == 9
+
+
+def test_post_process_duplicate_target_index_first_clean_op_wins(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, str(tmp_path))
+    facet = "work"
+    day = "20260304"
+    _attach_entity(tmp_path, facet, "alice_johnson", "Alice Johnson")
+    _write_jsonl(
+        tmp_path / _obs_path(facet, "alice_johnson"),
+        [
+            {"content": "Prefers morning meetings", "observed_at": 1},
+            {"content": "Works Pacific time hours", "observed_at": 2},
+        ],
+    )
+
+    post_process(
+        json.dumps(
+            {
+                "entities": [
+                    {
+                        "entity_id": "alice_johnson",
+                        "operations": [
+                            {
+                                "op": "update",
+                                "target_index": 0,
+                                "content": "Prefers concise morning planning meetings",
+                                "target_quote": "morning meetings",
+                                "reasoning": "first clean op wins",
+                            },
+                            {
+                                "op": "drop",
+                                "target_index": 0,
+                                "target_quote": "morning meetings",
+                                "reasoning": "second op skipped",
+                            },
+                            {
+                                "op": "keep",
+                                "target_index": 1,
+                                "reasoning": "unchanged",
+                            },
+                        ],
+                    }
+                ],
+                "summary": "duplicate target",
+            }
+        ),
+        {"facet": facet, "day": day},
     )
 
     observations = load_observations(facet, "alice_johnson")
-    contents = [obs["content"] for obs in observations]
-    assert contents.count("Prefers morning meetings") == 1
-    assert "Expert in distributed systems" in contents
+    assert [obs["content"] for obs in observations] == [
+        "Prefers concise morning planning meetings",
+        "Works Pacific time hours",
+    ]
+    outcome = _load_outcome(tmp_path, facet, day)
+    assert {key: outcome[key] for key in COUNT_KEYS} == {
+        "update": 1,
+        "add": 0,
+        "drop": 0,
+        "keep": 1,
+        "skipped": 1,
+    }
+    assert outcome["error"] is None
+    assert _count_sum(outcome) == 3
 
 
-def test_post_process_handles_malformed_json():
-    assert post_process("not valid json", {"facet": "work", "day": "20260304"}) is None
+def test_post_process_storage_failure_sets_error_and_writes_outcome(
+    tmp_path, monkeypatch
+):
+    _set_journal(monkeypatch, str(tmp_path))
+    facet = "work"
+    day = "20260304"
+    _attach_entity(tmp_path, facet, "alice_johnson", "Alice Johnson")
+
+    def fail_record_ops(*_args, **_kwargs):
+        raise OSError("disk busy")
+
+    monkeypatch.setattr(entity_observer_hook, "record_observation_ops", fail_record_ops)
+
+    post_process(
+        json.dumps(
+            {
+                "entities": [
+                    {
+                        "entity_id": "alice_johnson",
+                        "operations": [
+                            {
+                                "op": "add",
+                                "content": "Will be skipped by storage failure",
+                                "reasoning": "valid row",
+                            },
+                            {
+                                "op": "add",
+                                "content": "Also skipped by storage failure",
+                                "reasoning": "valid row",
+                            },
+                        ],
+                    }
+                ],
+                "summary": "storage failure",
+            }
+        ),
+        {"facet": facet, "day": day},
+    )
+
+    assert load_observations(facet, "alice_johnson") == []
+    outcome = _load_outcome(tmp_path, facet, day)
+    assert {key: outcome[key] for key in COUNT_KEYS} == {
+        "update": 0,
+        "add": 0,
+        "drop": 0,
+        "keep": 0,
+        "skipped": 2,
+    }
+    assert outcome["error"] == "OSError: disk busy"
+    assert _count_sum(outcome) == 2
+
+
+def test_post_process_invalid_entity_id_counts_operation_rows_skipped(
+    tmp_path, monkeypatch
+):
+    _set_journal(monkeypatch, str(tmp_path))
+    facet = "work"
+    day = "20260304"
+    _attach_entity(tmp_path, facet, "alice_johnson", "Alice Johnson")
+
+    post_process(
+        json.dumps(
+            {
+                "entities": [
+                    {
+                        "entity_id": 123,
+                        "operations": [
+                            {
+                                "op": "add",
+                                "content": "Skipped because entity id is invalid",
+                                "reasoning": "bad entity id",
+                            }
+                        ],
+                    },
+                    {
+                        "entity_id": "alice_johnson",
+                        "operations": "not a list",
+                    },
+                ],
+                "summary": "bad entity containers",
+            }
+        ),
+        {"facet": facet, "day": day},
+    )
+
+    outcome = _load_outcome(tmp_path, facet, day)
+    assert {key: outcome[key] for key in COUNT_KEYS} == {
+        "update": 0,
+        "add": 0,
+        "drop": 0,
+        "keep": 0,
+        "skipped": 1,
+    }
+    assert _count_sum(outcome) == 1
 
 
 # ============================================================================

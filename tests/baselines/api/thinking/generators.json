@@ -9,6 +9,14 @@
       "title": "Entity Observer"
     },
     {
+      "app": "entities",
+      "description": "Reviews detected entities and promotes recurring ones to attached status",
+      "disabled": false,
+      "key": "entities:entities_review",
+      "source": "app",
+      "title": "Entity Reviewer"
+    },
+    {
       "app": null,
       "description": "Analyzes activity patterns to identify optimal times for scheduled maintenance tasks.",
       "disabled": false,
@@ -43,6 +51,14 @@
   ],
   "segment": [
     {
+      "app": "entities",
+      "description": "Per-segment, per-entity facet-relevance judgment feeding the living detection substrate",
+      "disabled": false,
+      "key": "entities:detection",
+      "source": "app",
+      "title": "Entity Detection"
+    },
+    {
       "app": "timeline",
       "description": "",
       "disabled": false,
@@ -57,14 +73,6 @@
       "key": "screen",
       "source": "system",
       "title": "Screen Record"
-    },
-    {
-      "app": null,
-      "description": "Extracts people, companies, projects, and tools from segment content",
-      "disabled": false,
-      "key": "entities",
-      "source": "system",
-      "title": "Entity Extraction"
     },
     {
       "app": null,

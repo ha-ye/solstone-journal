@@ -11,6 +11,8 @@ import pytest
 
 from solstone.think import catchup_state, pipeline_health
 from solstone.think.pipeline_health import (
+    BACKLOG_STATE_COMPLETE,
+    BACKLOG_STATE_PENDING,
     BACKLOG_STATE_UNKNOWN,
     BacklogDay,
     BacklogError,
@@ -132,6 +134,99 @@ def test_journal_caught_up_pending_and_stuck_warn_with_distinct_counts(
     assert "1 day(s) stuck" in result.detail
     assert "oldest outstanding 20200229" in result.detail
     assert str(2 + 1) not in result.detail
+
+
+def test_journal_caught_up_warns_for_degraded_segment_repair_day(
+    doctor,
+    monkeypatch,
+):
+    day = BacklogDay(
+        day="20200229",
+        state=BACKLOG_STATE_PENDING,
+        segments=0,
+        units=0,
+        not_sensed=0,
+        why=(),
+        reason="segment_repair_degraded",
+        reason_code="segment_repair_degraded",
+        provider=None,
+        model=None,
+        error=None,
+        segment_repair_status="degraded",
+    )
+    view = BacklogView(
+        window=30,
+        days=(day,),
+        pending_days=1,
+        stuck_days=0,
+        oldest_pending_day="20200229",
+        errors=(),
+    )
+    monkeypatch.setattr(pipeline_health, "read_backlog_view", lambda: view)
+
+    result = doctor.journal_caught_up_check(args(doctor))
+
+    assert result.status == "warn"
+    assert result.status != "ok"
+    assert "1 day(s) pending" in result.detail
+
+
+def test_journal_caught_up_warns_for_unknown_segment_repair_day(
+    doctor,
+    monkeypatch,
+):
+    error = BacklogError(
+        day="20200229",
+        stage="segment_repair",
+        message="segment-repair state unreadable",
+    )
+    day = BacklogDay(
+        day="20200229",
+        state=BACKLOG_STATE_UNKNOWN,
+        segments=0,
+        units=0,
+        not_sensed=0,
+        why=(),
+        reason="segment_repair_unknown",
+        reason_code="segment_repair_unknown",
+        provider=None,
+        model=None,
+        error=error,
+        segment_repair_status="unknown",
+    )
+    view = BacklogView(
+        window=30,
+        days=(day,),
+        pending_days=0,
+        stuck_days=0,
+        oldest_pending_day=None,
+        errors=(),
+        degraded=True,
+    )
+    monkeypatch.setattr(pipeline_health, "read_backlog_view", lambda: view)
+
+    result = doctor.journal_caught_up_check(args(doctor))
+
+    assert result.status == "warn"
+    assert result.status != "ok"
+    assert "1 day(s) unknown" in result.detail
+
+
+def test_journal_caught_up_ok_for_all_complete_view(doctor, monkeypatch):
+    view = BacklogView(
+        window=30,
+        days=(backlog_day("20200229", BACKLOG_STATE_COMPLETE),),
+        pending_days=0,
+        stuck_days=0,
+        oldest_pending_day=None,
+        errors=(),
+    )
+    monkeypatch.setattr(pipeline_health, "read_backlog_view", lambda: view)
+
+    result = doctor.journal_caught_up_check(args(doctor))
+
+    assert result.status == "ok"
+    assert result.detail == "caught up"
 
 
 def test_journal_caught_up_reports_backoff_stuck_day(doctor, tmp_path, monkeypatch):

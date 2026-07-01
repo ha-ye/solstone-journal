@@ -66,10 +66,10 @@
 }
 
 .settings-nav-item.active {
-  background: var(--facet-color, #E8923A);
-  color: white;
+  background: color-mix(in srgb, var(--facet-color, var(--orange)) 14%, var(--paper));
+  color: var(--ink);
   font-weight: 600;
-  box-shadow: inset 3px 0 0 0 rgba(255,255,255,0.5);
+  box-shadow: inset 3px 0 0 0 var(--facet-color, var(--orange));
 }
 
 /* Reusable per-tab attention indicator. Any tab can opt in by setting
@@ -630,6 +630,138 @@ input:checked + .slider:before {
   text-align: center;
 }
 
+/* Lucide icon picker */
+.icon-picker-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75em;
+  cursor: pointer;
+  padding: 0.6em 0.75em;
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--facet-color, #E8923A);
+  transition: all 0.2s;
+}
+
+.icon-picker-trigger:hover {
+  background: #f5f5f5;
+  border-color: #999;
+}
+
+.icon-picker-trigger:focus-visible {
+  outline: 2px solid var(--facet-color, #E8923A);
+  outline-offset: 2px;
+}
+
+.icon-picker-preview,
+.icon-modal-preview-glyph {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--pill-color, var(--facet-color, #E8923A));
+}
+
+.icon-picker-preview svg,
+.icon-modal-preview-glyph svg,
+.icon-result-btn svg {
+  width: 24px;
+  height: 24px;
+  stroke-width: 1.5;
+  color: currentColor;
+}
+
+.icon-picker-name {
+  color: #333;
+  font-weight: 600;
+}
+
+.icon-search-input {
+  width: 100%;
+  padding: 0.65em 0.75em;
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  font: inherit;
+  margin-bottom: 1em;
+}
+
+.icon-results-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
+  gap: 0.6em;
+  max-height: 280px;
+  overflow: auto;
+  margin-bottom: 1em;
+}
+
+.icon-result-btn {
+  aspect-ratio: 1;
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--pill-color, var(--facet-color, #E8923A));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.icon-result-btn:hover {
+  background: #f5f5f5;
+  border-color: #999;
+}
+
+.icon-result-btn:active {
+  transform: scale(0.95);
+}
+
+.icon-result-btn.selected {
+  border-color: var(--facet-color, #E8923A);
+  box-shadow: 0 0 0 2px #fff, 0 0 0 5px var(--facet-color, #E8923A);
+}
+
+.icon-picker-message {
+  padding: 0.75em;
+  border-radius: 8px;
+  background: #f8f8f8;
+  color: #555;
+  margin-bottom: 1em;
+}
+
+.icon-picker-message.error {
+  background: #fff4f4;
+  color: #a33;
+}
+
+.icon-picker-actions {
+  display: flex;
+  gap: 0.75em;
+}
+
+.icon-picker-actions .save-color-btn {
+  flex: 1;
+}
+
+.icon-clear-btn {
+  flex: 1;
+  padding: 0.75em 1.5em;
+  background: #fff;
+  color: #333;
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  font-size: 1em;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.icon-clear-btn:hover {
+  background: #f5f5f5;
+  border-color: #999;
+}
+
 /* Color picker */
 .color-picker-trigger {
   display: flex;
@@ -811,22 +943,23 @@ input:checked + .slider:before {
 .save-color-btn {
   width: 100%;
   padding: 0.75em 1.5em;
-  background: var(--facet-color, #E8923A);
-  color: white;
+  background: color-mix(in srgb, var(--facet-color, var(--orange)) 14%, var(--paper));
+  color: var(--ink);
   border: none;
+  box-shadow: inset 0 0 0 2px var(--facet-color, var(--orange));
   border-radius: 8px;
   font-size: 1em;
   font-weight: 600;
   cursor: pointer;
-  transition: opacity 0.2s;
+  transition: background 0.2s;
 }
 
 .save-color-btn:hover {
-  opacity: 0.9;
+  background: color-mix(in srgb, var(--facet-color, var(--orange)) 22%, var(--paper));
 }
 
 .save-color-btn:active {
-  opacity: 0.75;
+  background: color-mix(in srgb, var(--facet-color, var(--orange)) 30%, var(--paper));
   transform: translateY(1px);
 }
 
@@ -1861,6 +1994,9 @@ input:checked + .slider:before {
 .log-more-btn:focus-visible,
 .color-close:focus-visible,
 .color-swatch:focus-visible,
+.icon-picker-trigger:focus-visible,
+.icon-result-btn:focus-visible,
+.icon-clear-btn:focus-visible,
 .field-display:focus-visible,
 button:focus-visible {
   outline: 2px solid var(--facet-color, #E8923A);
@@ -1886,6 +2022,7 @@ button:focus-visible {
 .save-color-btn:focus:not(:focus-visible),
 .field-display:focus:not(:focus-visible),
 .color-picker-trigger:focus:not(:focus-visible),
+.icon-picker-trigger:focus:not(:focus-visible),
 .emoji-display:focus:not(:focus-visible),
 button:focus:not(:focus-visible) {
   outline: none;
@@ -2672,7 +2809,7 @@ button:focus:not(:focus-visible) {
         </div>
 
         <p id="plaudSyncTokenNote" style="display: none; color: #888; font-size: 0.85em; margin-top: 1em; padding: 0.75em; background: #f8f9fa; border-radius: 4px;">
-          configure your Plaud token in <a href="#apikeys" id="plaudApiKeysLink" style="color: #667eea;">API keys</a> to enable sync.
+          configure your Plaud token in <a href="#apikeys" id="plaudApiKeysLink" style="color: var(--orange-ink);">API keys</a> to enable sync.
         </p>
       </div>
 
@@ -2766,6 +2903,30 @@ button:focus:not(:focus-visible) {
         <div class="context-overrides-body" id="streamOverridesBody">
           <p style="color: #666; font-size: 0.85em; margin: 0 0 1em 0;">override the global retention mode for individual streams.</p>
           <div id="streamOverridesList"></div>
+        </div>
+      </div>
+
+      <div class="settings-field" id="logRetentionField">
+        <label>operational logs</label>
+        <small>cleans up operational logs and execution traces sol keeps while working. this does not affect your observed media or durable journal content.</small>
+        <div class="toggle-container" style="justify-content: flex-start; gap: 1em; margin-top: 0.75em;">
+          <label class="toggle-switch toggle-positive">
+            <input type="checkbox" id="logRetentionEnabled">
+            <span class="slider"></span>
+          </label>
+          <label for="logRetentionEnabled" class="toggle-label" style="cursor: pointer;">log retention</label>
+        </div>
+        <div id="logRetentionDaysField" class="retention-days-row" style="margin-top: 0.75em;">
+          <button type="button" class="settings-preset-btn" data-days="7">7</button>
+          <button type="button" class="settings-preset-btn" data-days="30">30</button>
+          <button type="button" class="settings-preset-btn" data-days="90">90</button>
+          <input type="number" id="logRetentionDaysInput" min="1" max="365" style="width: 5em; padding: 0.4em 0.6em; border: 1px solid #ccc; border-radius: 4px;" placeholder="custom">
+          <span style="color: #666; font-size: 0.9em;">days</span>
+        </div>
+        <div id="logRetentionStatus" style="margin-top: 0.75em; color: #666; font-size: 0.9em;">currently: keep operational logs 30 days</div>
+        <div style="margin-top: 1em;">
+          <button type="button" id="cleanupLogsBtn" class="btn-secondary">clean up logs now</button>
+          <small style="display: block; margin-top: 0.5em; color: #666;">manually prune operational logs and execution traces older than a specified number of days.</small>
         </div>
       </div>
 
@@ -2923,6 +3084,15 @@ button:focus:not(:focus-visible) {
       </div>
 
       <div class="settings-field">
+        <label for="iconTrigger">lucide icon</label>
+        <button type="button" class="icon-picker-trigger" id="iconTrigger">
+          <span class="icon-picker-preview" id="iconPreview" aria-hidden="true">—</span>
+          <span class="icon-picker-name" id="iconNameDisplay">use emoji</span>
+        </button>
+        <small>choose a Lucide override, or keep using the emoji</small>
+      </div>
+
+      <div class="settings-field">
         <label>theme color</label>
         <div class="color-picker-trigger" id="colorTrigger" tabindex="0" role="button">
           <div class="color-preview" id="colorPreview"></div>
@@ -3008,6 +3178,29 @@ button:focus:not(:focus-visible) {
   </div>
 </div>
 
+<!-- Icon Picker Modal -->
+<div id="iconPickerModal" class="color-modal" role="dialog" aria-modal="true" aria-labelledby="iconPickerHeading">
+  <div class="color-modal-content">
+    <span class="color-close" id="iconPickerClose">&times;</span>
+    <h3 id="iconPickerHeading">choose lucide icon</h3>
+    <label for="iconSearchInput">search icons</label>
+    <input type="search" id="iconSearchInput" class="icon-search-input" placeholder="search by name or tag" autocomplete="off">
+    <div class="icon-picker-message" id="iconPickerMessage" role="status" aria-live="polite" style="display:none"></div>
+    <div class="icon-results-grid" id="iconResultsGrid"></div>
+    <div class="color-preview-section">
+      <h4>preview</h4>
+      <div class="modal-preview-pill" id="iconModalPreview">
+        <span class="icon-modal-preview-glyph" id="iconModalPreviewGlyph" aria-hidden="true">—</span>
+        <span class="modal-preview-title" id="iconModalPreviewTitle">facet</span>
+      </div>
+    </div>
+    <div class="icon-picker-actions">
+      <button class="save-color-btn" id="applyIconBtn">apply icon</button>
+      <button class="icon-clear-btn" id="clearIconBtn">use emoji instead</button>
+    </div>
+  </div>
+</div>
+
 <!-- Color Picker Modal -->
 <div id="colorPickerModal" class="color-modal" role="dialog" aria-modal="true" aria-labelledby="colorPickerHeading">
   <div class="color-modal-content">
@@ -3066,6 +3259,33 @@ button:focus:not(:focus-visible) {
   </div>
 </div>
 
+<!-- Operational Logs Cleanup Modal -->
+<div id="cleanupLogsModal" class="color-modal" role="dialog" aria-modal="true" aria-labelledby="cleanupLogsHeading">
+  <div class="color-modal-content" style="max-width: 560px;">
+    <span class="color-close" id="cleanupLogsModalClose">&times;</span>
+    <h3 id="cleanupLogsHeading">clean up operational logs</h3>
+    <p style="color: #666; font-size: 0.9em; margin-bottom: 1em;">prune operational logs and execution traces older than the specified number of days. this does not affect your observed media or durable journal content.</p>
+
+    <div class="settings-field" style="margin-bottom: 1em;">
+      <label for="cleanupLogsDaysInput">older than</label>
+      <div style="display: flex; gap: 0.5em; align-items: center;">
+        <input type="number" id="cleanupLogsDaysInput" min="1" value="30" style="width: 5em; padding: 0.4em 0.6em; border: 1px solid #ccc; border-radius: 4px;">
+        <span style="color: #666;">days</span>
+      </div>
+    </div>
+
+    <div id="cleanupLogsPreview" style="background: #f8f8f8; border-radius: 6px; padding: 1em; margin-bottom: 1em; display: none;">
+      <div style="font-weight: 600; margin-bottom: 0.5em;">preview</div>
+      <div id="cleanupLogsPreviewText" style="font-size: 0.9em; color: #666;"></div>
+    </div>
+
+    <div style="display: flex; gap: 0.75em; justify-content: flex-end;">
+      <button type="button" id="cleanupLogsPreviewBtn" class="cleanup-preview-btn">preview</button>
+      <button type="button" id="cleanupLogsConfirmBtn" class="cleanup-confirm-btn" disabled>delete logs</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const INSTALL_COPY = {{ install_copy | tojson }};
 const IN_FLIGHT_INSTALL_STATES = ['resolving', 'downloading', 'verifying', 'installing'];
@@ -3079,6 +3299,7 @@ let keyValidationData = {};
 let solVoiceData = null;
 let solVoiceThrottledTimer = null;
 let transcribeResource = null;
+const iconSvgCache = new Map();
 const escapeHtml = (value) => window.AppServices.escapeHtml(value);
 const solVoiceCopy = {
   autoMutedFormat: {{ sol_voice_copy.SOL_VOICE_SETTINGS_CATEGORY_CAP_AUTO_MUTED_FORMAT | tojson }},
@@ -3113,14 +3334,20 @@ function setTabAttention(section, on) {
 }
 
 // ========== MODAL ACCESSIBILITY ==========
+const MODAL_FOCUSABLE_SELECTOR = 'input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function refreshModalFocusables(modal) {
+  const focusable = modal.querySelectorAll(MODAL_FOCUSABLE_SELECTOR);
+  modal._focusableEls = Array.from(focusable);
+}
+
 function setupModalAccessibility(modalId) {
   const modal = document.getElementById(modalId);
   if (!modal) return;
 
   modal._openAccessible = function(triggerEl) {
     this._triggerEl = triggerEl || document.activeElement;
-    const focusable = this.querySelectorAll('input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])');
-    this._focusableEls = Array.from(focusable);
+    refreshModalFocusables(this);
     if (this._focusableEls.length) {
       requestAnimationFrame(() => this._focusableEls[0].focus());
     }
@@ -3159,6 +3386,7 @@ function setupModalAccessibility(modalId) {
 }
 
 setupModalAccessibility('colorPickerModal');
+setupModalAccessibility('iconPickerModal');
 setupModalAccessibility('customActivityModal');
 setupModalAccessibility('cleanupModal');
 
@@ -4202,6 +4430,10 @@ function populateFacetForm(facetName, config) {
   document.getElementById('facetDescInput').value = config.description || '';
 
   document.getElementById('emojiDisplay').textContent = config.emoji || '\uD83D\uDCE6';
+  updateIconDisplay(config.icon || '', null);
+  if (config.icon) {
+    loadIconDisplaySvg(config.icon);
+  }
 
   const color = config.color || '#667eea';
   document.getElementById('colorPreview').style.backgroundColor = color;
@@ -4216,6 +4448,7 @@ function setupFacetEditing() {
   setupDoubleTapEdit('facetTitleField', 'facetTitleDisplay', 'facetTitleInput', 'title');
   setupDoubleTapEdit('facetDescField', 'facetDescDisplay', 'facetDescInput', 'description');
   setupEmojiPicker();
+  setupIconPicker();
   setupColorPicker();
   setupMutedToggle();
 }
@@ -4294,6 +4527,227 @@ function setupEmojiPicker() {
 
   input.onkeydown = (e) => {
     if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+  };
+}
+
+function setIconSvg(element, svg) {
+  element.innerHTML = svg;
+  const svgEl = element.querySelector('svg');
+  if (svgEl) {
+    svgEl.setAttribute('stroke-width', '1.5');
+    svgEl.setAttribute('aria-hidden', 'true');
+    svgEl.style.color = 'currentColor';
+  }
+}
+
+function updateIconDisplay(iconName, svg) {
+  const preview = document.getElementById('iconPreview');
+  const nameDisplay = document.getElementById('iconNameDisplay');
+  if (!preview || !nameDisplay) return;
+
+  if (iconName && svg) {
+    setIconSvg(preview, svg);
+    nameDisplay.textContent = iconName;
+  } else if (iconName) {
+    preview.textContent = '?';
+    nameDisplay.textContent = iconName;
+  } else {
+    preview.textContent = '—';
+    nameDisplay.textContent = 'use emoji';
+  }
+}
+
+async function loadIconDisplaySvg(iconName) {
+  if (!iconName) return;
+  if (iconSvgCache.has(iconName)) {
+    updateIconDisplay(iconName, iconSvgCache.get(iconName));
+    return;
+  }
+
+  try {
+    const response = await fetch(`/app/settings/api/icons?q=${encodeURIComponent(iconName)}&limit=80`);
+    const data = await response.json();
+    if (!response.ok || data.error) throw new Error(data.error || 'icon lookup failed');
+    const match = (data.icons || []).find(icon => icon.name === iconName);
+    if (match) {
+      iconSvgCache.set(match.name, match.svg);
+      if (facetConfig?.icon === iconName) {
+        updateIconDisplay(iconName, match.svg);
+      }
+    }
+  } catch (err) {
+    console.error('Icon lookup error:', err);
+  }
+}
+
+function setupIconPicker() {
+  const modal = document.getElementById('iconPickerModal');
+  const trigger = document.getElementById('iconTrigger');
+  const closeBtn = document.getElementById('iconPickerClose');
+  const searchInput = document.getElementById('iconSearchInput');
+  const grid = document.getElementById('iconResultsGrid');
+  const message = document.getElementById('iconPickerMessage');
+  const applyBtn = document.getElementById('applyIconBtn');
+  const clearBtn = document.getElementById('clearIconBtn');
+  const previewGlyph = document.getElementById('iconModalPreviewGlyph');
+  const previewTitle = document.getElementById('iconModalPreviewTitle');
+  const previewPill = document.getElementById('iconModalPreview');
+  if (!modal || !trigger || !closeBtn || !searchInput || !grid || !message || !applyBtn || !clearBtn || !previewGlyph || !previewTitle || !previewPill) return;
+
+  let selectedIcon = '';
+  let selectedSvg = null;
+  let searchTimer = null;
+  let searchRequestId = 0;
+
+  function clearIconMessage() {
+    message.style.display = 'none';
+    message.classList.remove('error');
+    message.replaceChildren();
+  }
+
+  function showIconMessage(text, isError = false, retryQuery = null) {
+    message.replaceChildren();
+    const span = document.createElement('span');
+    span.textContent = text;
+    message.appendChild(span);
+    if (retryQuery !== null) {
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'icon-clear-btn';
+      retry.textContent = 'retry';
+      retry.style.marginTop = '0.75em';
+      retry.addEventListener('click', () => fetchIcons(retryQuery));
+      message.appendChild(retry);
+    }
+    message.style.display = 'block';
+    message.classList.toggle('error', isError);
+    refreshModalFocusables(modal);
+  }
+
+  function updateIconPreview() {
+    const color = facetConfig?.color || '#667eea';
+    previewPill.style.borderColor = color;
+    previewPill.style.backgroundColor = color + '1a';
+    previewGlyph.style.setProperty('--pill-color', color);
+    previewTitle.style.color = color;
+    previewTitle.textContent = document.getElementById('facetTitleDisplay').textContent;
+    if (selectedIcon && selectedSvg) {
+      setIconSvg(previewGlyph, selectedSvg);
+    } else {
+      previewGlyph.textContent = document.getElementById('emojiDisplay').textContent || '—';
+    }
+    applyBtn.disabled = !selectedIcon;
+    refreshModalFocusables(modal);
+  }
+
+  function setSelectedIcon(name, svg) {
+    selectedIcon = name;
+    selectedSvg = svg;
+    grid.querySelectorAll('.icon-result-btn').forEach(btn => {
+      btn.classList.toggle('selected', btn.dataset.iconName === name);
+    });
+    updateIconPreview();
+  }
+
+  function renderIconResults(icons, query) {
+    grid.replaceChildren();
+    if (!icons.length) {
+      showIconMessage(query ? 'no icons match' : 'no icons available');
+      return;
+    }
+
+    clearIconMessage();
+    icons.forEach(icon => {
+      iconSvgCache.set(icon.name, icon.svg);
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'icon-result-btn';
+      button.dataset.iconName = icon.name;
+      button.setAttribute('aria-label', icon.name);
+      button.title = icon.name;
+      setIconSvg(button, icon.svg);
+      if (icon.name === selectedIcon) {
+        button.classList.add('selected');
+      }
+      button.addEventListener('click', () => setSelectedIcon(icon.name, icon.svg));
+      grid.appendChild(button);
+    });
+    refreshModalFocusables(modal);
+  }
+
+  async function fetchIcons(query) {
+    const requestId = ++searchRequestId;
+    showIconMessage('loading icons...');
+    try {
+      const response = await fetch(`/app/settings/api/icons?q=${encodeURIComponent(query)}`);
+      const data = await response.json();
+      if (requestId !== searchRequestId) return;
+      if (!response.ok || data.error) throw new Error(data.error || 'icon search failed');
+      renderIconResults(data.icons || [], query);
+      if (selectedIcon && !selectedSvg && iconSvgCache.has(selectedIcon)) {
+        selectedSvg = iconSvgCache.get(selectedIcon);
+        updateIconPreview();
+      }
+    } catch (err) {
+      if (requestId !== searchRequestId) return;
+      console.error('Icon search error:', err);
+      showIconMessage('icon search failed', true, query);
+    }
+  }
+
+  function queueIconSearch() {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => fetchIcons(searchInput.value), 200);
+  }
+
+  grid.onkeydown = (e) => {
+    const target = e.target.closest('.icon-result-btn');
+    if (!target) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      target.click();
+    }
+    if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)) {
+      e.preventDefault();
+      const all = [...grid.querySelectorAll('.icon-result-btn')];
+      const idx = all.indexOf(target);
+      const cols = Math.floor(grid.clientWidth / all[0].offsetWidth) || 4;
+      let next = idx;
+      if (e.key === 'ArrowRight') next = Math.min(idx + 1, all.length - 1);
+      if (e.key === 'ArrowLeft') next = Math.max(idx - 1, 0);
+      if (e.key === 'ArrowDown') next = Math.min(idx + cols, all.length - 1);
+      if (e.key === 'ArrowUp') next = Math.max(idx - cols, 0);
+      all[next].focus();
+    }
+  };
+
+  trigger.onclick = () => {
+    selectedIcon = facetConfig?.icon || '';
+    selectedSvg = selectedIcon && iconSvgCache.has(selectedIcon) ? iconSvgCache.get(selectedIcon) : null;
+    searchInput.value = selectedIcon;
+    updateIconPreview();
+    modal.style.display = 'block';
+    modal._openAccessible(trigger);
+    fetchIcons(searchInput.value);
+  };
+
+  closeBtn.onclick = () => modal._closeAccessible();
+  modal.onclick = (e) => { if (e.target === modal) modal._closeAccessible(); };
+  searchInput.oninput = queueIconSearch;
+
+  applyBtn.onclick = () => {
+    if (!selectedIcon) return;
+    updateIconDisplay(selectedIcon, selectedSvg);
+    saveFacetField('icon', selectedIcon, null);
+    modal._closeAccessible();
+  };
+
+  clearBtn.onclick = () => {
+    selectedIcon = '';
+    selectedSvg = null;
+    updateIconDisplay('', null);
+    saveFacetField('icon', '', null);
+    modal._closeAccessible();
   };
 }
 
@@ -4424,7 +4878,7 @@ async function saveFacetField(field, value, triggerEl) {
         showFieldStatus(triggerEl, 'saved');
       }
       // Prompt reload for changes that affect the facet bar
-      if (field === 'title' || field === 'emoji' || field === 'color' || field === 'muted') {
+      if (field === 'title' || field === 'emoji' || field === 'icon' || field === 'color' || field === 'muted') {
         promptReload();
       }
     } else {
@@ -4631,6 +5085,9 @@ function setStorageControlsDisabled(disabled) {
   document.querySelectorAll('#retentionDaysField .settings-preset-btn').forEach((el) => {
     el.disabled = disabled;
   });
+  document.querySelectorAll('#logRetentionDaysField .settings-preset-btn').forEach((el) => {
+    el.disabled = disabled;
+  });
   const daysInput = document.getElementById('retentionDaysInput');
   if (daysInput) {
     daysInput.disabled = disabled;
@@ -4639,6 +5096,10 @@ function setStorageControlsDisabled(disabled) {
   if (dontRetain) {
     dontRetain.disabled = disabled;
   }
+  ['logRetentionEnabled', 'logRetentionDaysInput', 'cleanupLogsBtn'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = disabled;
+  });
 }
 
 function renderTranscribeResourceInfo(resource) {
@@ -5672,7 +6133,7 @@ function startEditField(el, field) {
   input.className = 'activity-desc-input';
   input.value = isPlaceholder ? '' : currentText;
   input.placeholder = field === 'instructions' ? 'Detection hints and level guidance' : '';
-  input.style.cssText = 'width:100%;padding:0.3em;font-size:0.85em;border:1px solid var(--facet-color,#667eea);border-radius:4px;';
+  input.style.cssText = 'width:100%;padding:0.3em;font-size:0.85em;border:1px solid var(--facet-color,var(--orange));border-radius:4px;';
 
   el.style.display = 'none';
   el.parentNode.insertBefore(input, el.nextSibling);
@@ -5946,6 +6407,7 @@ function populateStorage(data) {
     dontRetainCheckbox.checked = false;
   }
   updateRetentionUI();
+  populateLogRetention(data.retention.journal_logs || {});
 
   // Populate per-stream overrides
   populateStreamOverrides(data.streams, data.retention.per_stream || {});
@@ -6051,6 +6513,81 @@ function saveStreamOverrides() {
   saveRetentionConfig({ per_stream: perStream });
 }
 
+function populateLogRetention(config) {
+  const enabledInput = document.getElementById('logRetentionEnabled');
+  const daysInput = document.getElementById('logRetentionDaysInput');
+  if (!enabledInput || !daysInput) return;
+
+  enabledInput.checked = config.enabled !== false;
+  const days = Number.isFinite(config.days) && config.days >= 1 ? config.days : 30;
+  daysInput.value = days;
+  updateLogRetentionUI();
+}
+
+function updateLogRetentionUI() {
+  const enabledInput = document.getElementById('logRetentionEnabled');
+  const daysInput = document.getElementById('logRetentionDaysInput');
+  const daysField = document.getElementById('logRetentionDaysField');
+  const statusEl = document.getElementById('logRetentionStatus');
+  const presetButtons = document.querySelectorAll('#logRetentionDaysField .settings-preset-btn');
+  if (!enabledInput || !daysInput || !daysField || !statusEl) return;
+
+  const enabled = enabledInput.checked;
+  const days = parseInt(daysInput.value, 10);
+  const validDays = Number.isFinite(days) && days >= 1;
+  statusEl.textContent = enabled
+    ? `currently: keep operational logs ${validDays ? days : 30} days`
+    : 'currently: log retention is turned off';
+  daysField.classList.toggle('is-disabled', !enabled);
+  daysInput.disabled = !enabled;
+  daysInput.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+
+  presetButtons.forEach(btn => {
+    const isActive = enabled && validDays && parseInt(btn.dataset.days, 10) === days;
+    btn.classList.toggle('active', isActive);
+    btn.disabled = !enabled;
+    btn.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+  });
+}
+
+async function saveLogRetentionConfig() {
+  const el = document.getElementById('logRetentionField');
+  const errorHost = prepareFieldErrorHost(el);
+  const enabledInput = document.getElementById('logRetentionEnabled');
+  const daysInput = document.getElementById('logRetentionDaysInput');
+  const days = parseInt(daysInput.value, 10);
+  if (!Number.isFinite(days) || days < 1) {
+    showFieldStatus(el, 'error', 'Enter a positive number of days.');
+    return;
+  }
+
+  const journalLogs = {
+    enabled: enabledInput.checked,
+    days,
+  };
+  try {
+    await window.saveControl({
+      el,
+      errorHost,
+      readValue: () => null,
+      writeValue: () => {},
+      fetchArgs: ['api/storage', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ journal_logs: journalLogs }),
+      }],
+      onSuccess: () => {
+        if (storageData) {
+          storageData.retention = storageData.retention || {};
+          storageData.retention.journal_logs = journalLogs;
+        }
+        if (el) showFieldStatus(el, 'saved');
+      },
+    });
+  } catch (_) {
+  }
+}
+
 async function saveRetentionConfig(data) {
   const el = document.getElementById('retentionModeField');
   const errorHost = prepareFieldErrorHost(el);
@@ -6075,7 +6612,10 @@ async function saveRetentionConfig(data) {
       }],
       onSuccess: () => {
         if (storageData) {
-          storageData.retention = payload;
+          storageData.retention = {
+            ...(storageData.retention || {}),
+            ...payload,
+          };
         }
         if (el) showFieldStatus(el, 'saved');
       },
@@ -6101,6 +6641,21 @@ function setupStorageListeners() {
     updateRetentionUI();
     saveRetentionConfig({});
   });
+  document.querySelectorAll('#logRetentionDaysField .settings-preset-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.getElementById('logRetentionDaysInput').value = btn.dataset.days;
+      updateLogRetentionUI();
+      saveLogRetentionConfig();
+    });
+  });
+  document.getElementById('logRetentionDaysInput').addEventListener('input', () => {
+    updateLogRetentionUI();
+    saveLogRetentionConfig();
+  });
+  document.getElementById('logRetentionEnabled').addEventListener('change', () => {
+    updateLogRetentionUI();
+    saveLogRetentionConfig();
+  });
 
   // Stream overrides toggle
   document.getElementById('streamOverridesToggle').addEventListener('click', () => {
@@ -6109,6 +6664,7 @@ function setupStorageListeners() {
 
   // Cleanup button
   document.getElementById('cleanupNowBtn').addEventListener('click', openCleanupModal);
+  document.getElementById('cleanupLogsBtn').addEventListener('click', openLogCleanupModal);
 }
 
 function openCleanupModal() {
@@ -6218,6 +6774,167 @@ async function runCleanupExecute() {
   }
 }
 
+function openLogCleanupModal() {
+  const modal = document.getElementById('cleanupLogsModal');
+  const daysInput = document.getElementById('cleanupLogsDaysInput');
+  const configuredDays = storageData?.retention?.journal_logs?.days || 30;
+  daysInput.value = configuredDays;
+  modal.style.display = 'flex';
+  modal._openAccessible(document.getElementById('cleanupLogsBtn'));
+  resetLogCleanupPreview();
+}
+
+function closeLogCleanupModal() {
+  document.getElementById('cleanupLogsModal')._closeAccessible();
+}
+
+function resetLogCleanupPreview() {
+  document.getElementById('cleanupLogsPreview').style.display = 'none';
+  document.getElementById('cleanupLogsPreviewText').textContent = '';
+  document.getElementById('cleanupLogsConfirmBtn').disabled = true;
+}
+
+function readLogCleanupDays() {
+  const days = parseInt(document.getElementById('cleanupLogsDaysInput').value, 10);
+  if (!Number.isFinite(days) || days < 1) {
+    notifyError('Invalid Input', 'Enter a positive number of days.');
+    resetLogCleanupPreview();
+    return null;
+  }
+  return days;
+}
+
+function logCleanupHasWork(result) {
+  const rootRemoved = result.root_task_log?.lines_removed || 0;
+  return ((result.files_deleted || 0) + (result.dirs_deleted || 0) + rootRemoved) > 0;
+}
+
+function logCleanupClassLabel(name) {
+  return String(name || '').replaceAll('_', ' ');
+}
+
+function renderLogCleanupStats(stats, includeSkipped) {
+  const parts = [];
+  if (stats.files_deleted) parts.push(`${stats.files_deleted} file(s)`);
+  if (stats.dirs_deleted) parts.push(`${stats.dirs_deleted} cache dir(s)`);
+  if (stats.bytes_freed) parts.push(stats.bytes_freed + ' B');
+  if (includeSkipped && stats.skipped) parts.push(`${stats.skipped} skipped`);
+  return parts.length ? parts.join(', ') : 'no deletions';
+}
+
+function renderLogCleanupResult(result, phase) {
+  if (result.enabled === false) {
+    return '<p>log retention is turned off.</p>';
+  }
+
+  const totalWork = logCleanupHasWork(result);
+  const fileDirWork = ((result.files_deleted || 0) + (result.dirs_deleted || 0)) > 0;
+  const actionText = phase === 'preview' ? 'would be deleted' : 'deleted';
+  const heading = phase === 'preview' ? 'preview' : 'cleanup complete';
+  let html = `<div style="font-weight: 600; margin-bottom: 0.5em;">${heading}</div>`;
+
+  if (!totalWork) {
+    html += '<p>no operational logs or execution traces to clean up.</p>';
+  } else if (fileDirWork) {
+    const fileBytes = Object.values(result.by_class || {}).reduce((sum, stats) => sum + (stats.bytes_freed || 0), 0);
+    html += `<p>${result.files_deleted || 0} operational-log file(s) and ${result.dirs_deleted || 0} cache dir(s) (${fileBytes} B) ${actionText}.</p>`;
+  }
+
+  const rootStats = result.root_task_log || {};
+  if (rootStats.lines_removed) {
+    const rootBytes = rootStats.bytes_freed || 0;
+    html += `<p>${rootStats.lines_removed} root task-log line(s) ${phase === 'preview' ? 'would be compacted' : 'compacted'} (${rootBytes} B).</p>`;
+  }
+
+  const classRows = Object.entries(result.by_class || {})
+    .filter(([, stats]) => (stats.files_deleted || 0) || (stats.dirs_deleted || 0) || (stats.skipped || 0) || (stats.errors || []).length)
+    .map(([name, stats]) => `<li><strong>${escapeHtml(logCleanupClassLabel(name))}</strong>: ${escapeHtml(renderLogCleanupStats(stats, true))}</li>`);
+  if (classRows.length) {
+    html += `<div style="margin-top: 0.75em;"><strong>by class</strong><ul style="margin: 0.4em 0 0 1.25em; padding: 0;">${classRows.join('')}</ul></div>`;
+  }
+
+  const dayRows = Object.entries(result.by_day || {})
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([day, stats]) => `<li><strong>${escapeHtml(day)}</strong>: ${escapeHtml(renderLogCleanupStats(stats, false))}</li>`);
+  if (dayRows.length) {
+    html += `<div style="margin-top: 0.75em;"><strong>by day</strong><ul style="margin: 0.4em 0 0 1.25em; padding: 0;">${dayRows.join('')}</ul></div>`;
+  }
+
+  const errorRows = (result.errors || []).map(error => {
+    const hint = error.hint ? ` <span>${escapeHtml(error.hint)}</span>` : '';
+    const message = error.message || error.reason || 'unknown error';
+    return `<li><strong>${escapeHtml(error.reason || 'error')}</strong>: ${escapeHtml(message)}${hint}</li>`;
+  });
+  if (errorRows.length) {
+    html += `<div style="margin-top: 0.75em;"><strong>errors</strong><ul style="margin: 0.4em 0 0 1.25em; padding: 0;">${errorRows.join('')}</ul></div>`;
+  }
+
+  return html;
+}
+
+async function runLogCleanupPreview() {
+  const days = readLogCleanupDays();
+  if (days === null) return;
+
+  const previewDiv = document.getElementById('cleanupLogsPreview');
+  const previewText = document.getElementById('cleanupLogsPreviewText');
+  previewText.textContent = 'checking...';
+  previewDiv.style.display = '';
+
+  try {
+    const response = await fetch('api/storage/prune-logs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        dry_run: true,
+        days,
+      }),
+    });
+    const result = await response.json();
+    if (result.error) throw new Error(result.error);
+
+    previewText.innerHTML = renderLogCleanupResult(result, 'preview');
+    document.getElementById('cleanupLogsConfirmBtn').disabled = !result.enabled || !logCleanupHasWork(result);
+  } catch (err) {
+    previewText.textContent = 'error: ' + err.message;
+    document.getElementById('cleanupLogsConfirmBtn').disabled = true;
+  }
+}
+
+async function runLogCleanupExecute() {
+  const days = readLogCleanupDays();
+  if (days === null) return;
+
+  const btn = document.getElementById('cleanupLogsConfirmBtn');
+  const previewDiv = document.getElementById('cleanupLogsPreview');
+  const previewText = document.getElementById('cleanupLogsPreviewText');
+  btn.disabled = true;
+  btn.textContent = 'deleting...';
+  previewDiv.style.display = '';
+
+  try {
+    const response = await fetch('api/storage/prune-logs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        dry_run: false,
+        days,
+      }),
+    });
+    const result = await response.json();
+    if (result.error) throw new Error(result.error);
+
+    previewText.innerHTML = renderLogCleanupResult(result, 'execute');
+    closeLogCleanupModal();
+    loadStorage();
+  } catch (err) {
+    notifyError('Cleanup Failed', err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'delete logs';
+  }
+}
+
 // Cleanup modal event handlers
 document.getElementById('cleanupModalClose').addEventListener('click', closeCleanupModal);
 document.getElementById('cleanupModal').addEventListener('click', (e) => {
@@ -6227,6 +6944,13 @@ document.getElementById('cleanupDaysInput').addEventListener('input', resetClean
 document.getElementById('cleanupStreamFilter').addEventListener('change', resetCleanupPreview);
 document.getElementById('cleanupPreviewBtn').addEventListener('click', runCleanupPreview);
 document.getElementById('cleanupConfirmBtn').addEventListener('click', runCleanupExecute);
+document.getElementById('cleanupLogsModalClose').addEventListener('click', closeLogCleanupModal);
+document.getElementById('cleanupLogsModal').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('cleanupLogsModal')) closeLogCleanupModal();
+});
+document.getElementById('cleanupLogsDaysInput').addEventListener('input', resetLogCleanupPreview);
+document.getElementById('cleanupLogsPreviewBtn').addEventListener('click', runLogCleanupPreview);
+document.getElementById('cleanupLogsConfirmBtn').addEventListener('click', runLogCleanupExecute);
 
 // ========== INIT ==========
 function initSettings() {

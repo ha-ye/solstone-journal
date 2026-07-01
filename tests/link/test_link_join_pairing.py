@@ -14,6 +14,8 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 
 from solstone.apps.network.routes import _build_pair_link
+from solstone.convey.secure_listener.framing import RESET_INTERNAL_ERROR
+from solstone.convey.secure_listener.mux import RESET_CTX_HANDLER_EXCEPTION
 from solstone.convey.secure_listener.tls import issue_server_cert
 from solstone.think.link import client as link_client
 from solstone.think.link import join_cli
@@ -335,7 +337,7 @@ def test_framed_midstream_reset_is_single_line_error(
     async def handler(reader, writer) -> None:
         await reader.read()
         await writer.write(b"HTTP/1.1 200 OK\r\n")
-        await writer.reset()
+        await writer.reset(RESET_INTERNAL_ERROR, RESET_CTX_HANDLER_EXCEPTION)
 
     with pairing_harness(tmp_path, monkeypatch, handle_stream=handler) as harness:
         result = join_cli.main(

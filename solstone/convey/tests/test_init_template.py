@@ -35,6 +35,13 @@ def _write_config(journal: Path, config: dict[str, Any]) -> None:
     (journal / "config" / "journal.json").write_text(json.dumps(config, indent=2))
 
 
+def _commit_journal_identity() -> None:
+    from solstone.think.link.ca import load_or_generate_ca
+    from solstone.think.link.paths import ca_dir
+
+    load_or_generate_ca(ca_dir())
+
+
 def _finalize_body(gemini_key: str) -> dict[str, Any]:
     return {
         "name": "Setup Test",
@@ -96,6 +103,7 @@ def test_finalize_empty_gemini_key_preserves_existing_scout_config(
     config.setdefault("env", {})["GOOGLE_API_KEY"] = "SCOUT_FIXTURE"
     config.setdefault("services", {})["scout"] = scout_block.copy()
     _write_config(env.journal, config)
+    _commit_journal_identity()
 
     response = env.client.post(
         "/init/finalize",
@@ -112,6 +120,7 @@ def test_finalize_empty_gemini_key_preserves_existing_scout_config(
 
 def test_finalize_manual_paste_writes_gemini_key(convey_env_setup_pending) -> None:
     env = convey_env_setup_pending()
+    _commit_journal_identity()
 
     response = env.client.post(
         "/init/finalize",

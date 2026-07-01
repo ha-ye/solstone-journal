@@ -822,13 +822,18 @@ def get_config() -> dict[str, Any]:
         raise CorruptConfigError(config_path, error=exc) from exc
 
 
-def _append_task_log(dir_path: str | Path, message: str) -> None:
+def _write_task_log(dir_path: str | Path, message: str) -> None:
     """Append ``message`` to ``task_log.txt`` inside ``dir_path``."""
     path = Path(dir_path) / "task_log.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(f"{int(time.time())}\t{message}\n")
+
+
+def _append_task_log(dir_path: str | Path, message: str) -> None:
+    """Best-effort append of ``message`` to ``task_log.txt`` inside ``dir_path``."""
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(f"{int(time.time())}\t{message}\n")
+        _write_task_log(dir_path, message)
     except Exception:
         pass
 
@@ -836,6 +841,11 @@ def _append_task_log(dir_path: str | Path, message: str) -> None:
 def day_log(day: str, message: str) -> None:
     """Convenience wrapper to log message for ``day``."""
     _append_task_log(str(day_path(day)), message)
+
+
+def day_log_checked(day: str, message: str) -> None:
+    """Append a day log entry, raising if the write fails."""
+    _write_task_log(str(day_path(day, create=True)), message)
 
 
 def journal_log(message: str) -> None:

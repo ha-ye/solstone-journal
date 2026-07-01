@@ -223,7 +223,7 @@ def format_audio(
             pass
 
     # Add metadata fields (excluding special fields)
-    skip_fields = {"error", "raw", "imported"}
+    skip_fields = {"error", "raw", "imported", "_solstone_processing"}
 
     for key, value in metadata.items():
         if key in skip_fields:

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from solstone.think.callosum import CallosumConnection
-from solstone.think.detect_created import detect_created
+from solstone.think.detect_created import detect_created, resolve_created_deterministic
 from solstone.think.importers.audio import _get_audio_duration, prepare_audio_segments
 from solstone.think.importers.shared import (
     _get_relative_path,
@@ -375,6 +375,7 @@ def import_one(
     json_output: bool = False,
     verbose: bool = False,
     wait_for_processing: bool = True,
+    deterministic_only: bool = False,
 ) -> dict[str, Any] | None:
     """When False, returns after segment creation without awaiting transcription completion;
     failed_segments is omitted from the result and created_segments is the durable
@@ -392,6 +393,7 @@ def import_one(
         json=json_output,
         verbose=verbose,
         wait_for_processing=wait_for_processing,
+        deterministic_only=deterministic_only,
     )
     return _import_one_from_args(args)
 
@@ -401,8 +403,6 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
     global _stage_start_time, _stages_run, _status_thread, _status_running
 
     args.media = os.path.expanduser(args.media)
-    if args.source == "quick":
-        args.source = None
 
     _file_importer = None
     import_source = None
@@ -432,8 +432,10 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
             _file_importer = detected
             import_source = detected.name
 
-    # Try file importer detection for unknown file extensions
-    if _file_importer is None and not args.source:
+    # Try file importer detection for unknown file extensions. Non-file-importer
+    # --source values are intentionally ignored, so they should not suppress
+    # detection for image/structured imports.
+    if _file_importer is None:
         _ext = os.path.splitext(args.media)[1].lower()
         if _ext not in {".m4a", ".txt", ".md", ".pdf"}:
             from solstone.think.importers.file_importer import detect_file_importer
@@ -474,13 +476,32 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
         # File importers don't need an external timestamp — auto-generate for metadata
         args.timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     elif not args.timestamp:
-        # If no timestamp provided, detect it
-        # Pass the original filename for better detection
-        detection_result = detect_created(
+        detection_result = resolve_created_deterministic(
             args.media,
             original_filename=os.path.basename(args.media),
-            guidance=args.auto if isinstance(args.auto, str) else None,
         )
+        if (
+            not detection_result
+            or not detection_result.get("day")
+            or not detection_result.get("time")
+        ):
+            if args.deterministic_only:
+                print(
+                    "No deterministic timestamp found. Provide --timestamp "
+                    "YYYYMMDD_HHMMSS, or omit --deterministic-only to use model "
+                    "detection."
+                )
+                return {
+                    "skipped": True,
+                    "reason": "no_deterministic_match",
+                }
+            # If no deterministic timestamp exists, fall back to model detection.
+            # Pass the original filename for better detection.
+            detection_result = detect_created(
+                args.media,
+                original_filename=os.path.basename(args.media),
+                guidance=args.auto if isinstance(args.auto, str) else None,
+            )
         if (
             detection_result
             and detection_result.get("day")
@@ -516,17 +537,13 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
     day = base_dt.strftime("%Y%m%d")
 
     # --- Derive import_source for non-file-importer paths ---
+    # Generic (non-file-importer) items stream as audio or text by extension.
+    # A non-importer --source value (e.g. legacy "recording"/"quick") never
+    # becomes a stream name; it is ignored here so leaked vocabulary cannot
+    # reach the stream/manifest. File-importer sources are handled earlier.
     if import_source is None:
-        if args.source:
-            import_source = args.source
-        else:
-            _ext = os.path.splitext(args.media)[1].lower()
-            if _ext == ".m4a":
-                import_source = "apple"
-            elif _ext in {".txt", ".md", ".pdf"}:
-                import_source = "text"
-            else:
-                import_source = "audio"
+        _ext = os.path.splitext(args.media)[1].lower()
+        import_source = "text" if _ext in {".txt", ".md", ".pdf"} else "audio"
 
     stream = stream_name(import_source=import_source)
     needs_setup = _file_importer is None and not _is_in_imports(args.media)
@@ -1326,7 +1343,11 @@ def main() -> None:
         "--source",
         type=str,
         default=None,
-        help="Import source type (apple, plaud, audio, text, or a file importer name). Auto-detected if omitted.",
+        help=(
+            "Import source hint: a file importer name (e.g. obsidian, plaud, ics) "
+            "or a canonical category (audio, image, document, text). "
+            "Auto-detected if omitted."
+        ),
     )
     parser.add_argument(
         "--force",
@@ -1344,6 +1365,11 @@ def main() -> None:
         "--dry-run",
         action="store_true",
         help="Show what would be imported without writing to the journal",
+    )
+    parser.add_argument(
+        "--deterministic-only",
+        action="store_true",
+        help="Use only deterministic timestamp detection; skip model detection",
     )
     parser.add_argument(
         "--backends",
@@ -1470,6 +1496,7 @@ def main() -> None:
             dry_run=args.dry_run,
             json_output=args.json,
             verbose=args.verbose,
+            deterministic_only=args.deterministic_only,
         )
     except Exception as exc:
         raise SystemExit(str(exc)) from exc

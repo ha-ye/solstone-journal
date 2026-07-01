@@ -12,6 +12,7 @@ from collections.abc import Callable, Iterator
 import pytest
 
 import solstone.convey.bridge as convey_bridge
+from solstone.think.spl.health import LINK_HEALTH_EVENT
 
 
 @pytest.fixture(autouse=True)
@@ -19,12 +20,12 @@ def clear_sse_subscribers() -> Iterator[None]:
     with convey_bridge._SSE_LOCK:
         convey_bridge._SSE_SUBSCRIBERS_BY_KEY.clear()
         convey_bridge._SSE_LAST_CHAT_REQUEST_AT_BY_KEY.clear()
-    convey_bridge._STATE_CACHE["link_connection"] = None
+    convey_bridge._STATE_CACHE["link_health"] = None
     yield
     with convey_bridge._SSE_LOCK:
         convey_bridge._SSE_SUBSCRIBERS_BY_KEY.clear()
         convey_bridge._SSE_LAST_CHAT_REQUEST_AT_BY_KEY.clear()
-    convey_bridge._STATE_CACHE["link_connection"] = None
+    convey_bridge._STATE_CACHE["link_health"] = None
 
 
 def _next_chunk(response) -> str:
@@ -102,19 +103,79 @@ def test_callosum_sse_round_trip_payload(convey_env):
         resp.close()
 
 
-def test_bridge_caches_link_connection_events_only() -> None:
-    for event in ("connecting", "connected", "disconnect"):
+def _link_health_message(
+    *,
+    generation: int,
+    state: str = "connected",
+    ts: int = 1_700_000_000_000,
+) -> dict:
+    return {
+        "tract": "link",
+        "event": LINK_HEALTH_EVENT,
+        "state": state,
+        "listen_generation": generation,
+        "last_successful_relay_tunnel_at": 1_700_000_000_100,
+        "last_relay_tunnel_error": None,
+        "last_relay_tunnel_error_at": None,
+        "relay_tunnel_error_status": None,
+        "ts": ts,
+    }
+
+
+def test_bridge_caches_structured_link_health() -> None:
+    convey_bridge._broadcast_callosum_event(_link_health_message(generation=7))
+
+    assert convey_bridge.get_cached_state()["link_health"] == {
+        "state": "connected",
+        "listen_generation": 7,
+        "last_successful_relay_tunnel_at": 1_700_000_000_100,
+        "last_relay_tunnel_error": None,
+        "last_relay_tunnel_error_at": None,
+        "relay_tunnel_error_status": None,
+        "ts": 1_700_000_000_000,
+    }
+
+
+def test_bridge_ignores_coarse_link_events_for_health_cache() -> None:
+    for event in (
+        "connecting",
+        "connected",
+        "disconnect",
+        "tunnel_pair",
+        "tunnel_close",
+    ):
         convey_bridge._broadcast_callosum_event({"tract": "link", "event": event})
-        assert convey_bridge.get_cached_state()["link_connection"] == event
+        assert convey_bridge.get_cached_state()["link_health"] is None
 
-    convey_bridge._broadcast_callosum_event({"tract": "link", "event": "enrolled"})
-    assert convey_bridge.get_cached_state()["link_connection"] == "disconnect"
 
-    convey_bridge._broadcast_callosum_event({"tract": "link", "event": "tunnel_pair"})
-    assert convey_bridge.get_cached_state()["link_connection"] == "disconnect"
+def test_bridge_drops_older_link_health_generation() -> None:
+    convey_bridge._broadcast_callosum_event(
+        _link_health_message(generation=3, state="connected")
+    )
+    convey_bridge._broadcast_callosum_event(
+        _link_health_message(generation=2, state="reconnecting")
+    )
 
-    convey_bridge._broadcast_callosum_event({"tract": "link", "event": "tunnel_close"})
-    assert convey_bridge.get_cached_state()["link_connection"] == "disconnect"
+    health = convey_bridge.get_cached_state()["link_health"]
+    assert health["listen_generation"] == 3
+    assert health["state"] == "connected"
+
+
+def test_bridge_overwrites_equal_or_newer_link_health_generation() -> None:
+    convey_bridge._broadcast_callosum_event(
+        _link_health_message(generation=3, state="connected")
+    )
+    convey_bridge._broadcast_callosum_event(
+        _link_health_message(generation=3, state="connecting")
+    )
+    assert convey_bridge.get_cached_state()["link_health"]["state"] == "connecting"
+
+    convey_bridge._broadcast_callosum_event(
+        _link_health_message(generation=4, state="reconnecting")
+    )
+    health = convey_bridge.get_cached_state()["link_health"]
+    assert health["listen_generation"] == 4
+    assert health["state"] == "reconnecting"
 
 
 def test_callosum_sse_multi_client_fanout(convey_env):

@@ -5,6 +5,7 @@ import builtins
 import io
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -18,6 +19,7 @@ import pytest
 
 from solstone.apps.transcripts.routes import (
     _attach_streams_to_ranges,
+    _segment_modality_signals,
     _watch_reprocess_completion,
 )
 from solstone.apps.transcripts.tests._media_helpers import (
@@ -26,6 +28,8 @@ from solstone.apps.transcripts.tests._media_helpers import (
     read_true_duration_seconds,
     top_level_atom_order,
 )
+from solstone.observe.processing_record import STATE_EMPTY
+from solstone.think.data_state import ANALYZING_STALE_SECONDS
 
 # 20260304 is the canonical fully-analyzed reference day; see
 # tests/fixtures/journal/chronicle/20260304/README.md and
@@ -80,6 +84,10 @@ def _write_jsonl(path, entries: list[dict]) -> None:
         "\n".join(json.dumps(entry) for entry in entries) + "\n",
         encoding="utf-8",
     )
+
+
+def _empty_screen_header(raw: str = "screen.webm") -> dict:
+    return {"raw": raw, "_solstone_processing": {"state": STATE_EMPTY}}
 
 
 def _segment_event(
@@ -148,6 +156,27 @@ def _write_raw_pending_segment(
         (segment_dir / "screen.webm").write_bytes(b"screen")
         _write_jsonl(segment_dir / "screen.jsonl", [{"raw": "screen.webm"}])
     return segment_dir
+
+
+def _write_analyzing_marker(
+    segment_dir: Path,
+    *,
+    modality: str = "screen",
+    request_id: str = "req-1",
+) -> Path:
+    marker = segment_dir / f".analyzing_{modality}"
+    marker.write_text(
+        json.dumps(
+            {
+                "started_at": "2026-05-20T09:00:00Z",
+                "modality": modality,
+                "request_id": request_id,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return marker
 
 
 class _ProcStub:
@@ -543,6 +572,61 @@ def test_segment_content_marks_headerless_screen_frame_analyzed(client, journal_
     assert any(chunk["type"] == "screen" for chunk in data["chunks"])
 
 
+def test_segment_content_renders_sense_json_over_stale_markdown(client, journal_copy):
+    day = "20990116"
+    stream = "default"
+    segment = "090000_300"
+    _write_segment(journal_copy, day, stream, segment, audio=False, screen=False)
+    talents_dir = journal_copy / "chronicle" / day / stream / segment / "talents"
+    talents_dir.mkdir(parents=True, exist_ok=True)
+    (talents_dir / "sense.json").write_text(
+        json.dumps(
+            {
+                "density": "active",
+                "content_type": "meeting",
+                "activity_summary": "Discussed the timeline for the launch.",
+                "entities": [
+                    {
+                        "type": "Person",
+                        "name": "Alice Smith",
+                        "role": "attendee",
+                        "source": "voice",
+                        "context": "Owned timeline follow-up.",
+                    },
+                    {
+                        "type": "Tool",
+                        "name": "Grafana",
+                        "role": "mentioned",
+                        "source": "screen",
+                        "context": "Used for dashboards.",
+                    },
+                ],
+                "facets": [
+                    {"facet": "work", "activity": "launch planning", "level": "high"}
+                ],
+                "speculative_facet": None,
+                "meeting_detected": True,
+                "speakers": ["Alice Smith", "Bob Chen"],
+                "recommend": {"screen_record": True, "speaker_attribution": True},
+                "emotional_register": "collaborative",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (talents_dir / "sense.md").write_text("STALE MD", encoding="utf-8")
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    md_files = response.get_json()["md_files"]
+    assert "entities" not in md_files
+    assert list(md_files).count("sense") == 1
+    assert "Alice Smith" in md_files["sense"]
+    assert "Owned timeline follow-up." in md_files["sense"]
+    assert "Discussed the timeline for the launch." in md_files["sense"]
+    assert "STALE MD" not in md_files["sense"]
+
+
 def test_segment_content_maps_still_images_to_screen_frames(client, journal_copy):
     day = "20990117"
     stream = "mentra-live"
@@ -808,6 +892,45 @@ def test_segment_content_header_only_missing_raw_is_purged(client, journal_copy)
     assert data["chunks"] == []
     assert data["data_state"] == {"audio": "purged", "screen": "purged"}
     assert data["media_purged"] == {"audio": True, "screen": True}
+
+
+def test_segment_content_empty_record_screen_is_empty(client, journal_copy):
+    day = "20990121"
+    stream = "default"
+    segment = "090000_300"
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    segment_dir.mkdir(parents=True)
+    (segment_dir / "screen.webm").write_bytes(b"screen")
+    _write_jsonl(segment_dir / "screen.jsonl", [_empty_screen_header()])
+
+    signals = _segment_modality_signals(segment_dir, "screen")
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert signals["state"] == "empty"
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["chunks"] == []
+    assert data["data_state"] == {"screen": "empty"}
+    assert data["media_purged"] == {"audio": False, "screen": False}
+
+
+def test_segment_content_purged_beats_empty_record(client, journal_copy):
+    day = "20990122"
+    stream = "default"
+    segment = "090000_300"
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    segment_dir.mkdir(parents=True)
+    _write_jsonl(segment_dir / "screen.jsonl", [_empty_screen_header()])
+
+    signals = _segment_modality_signals(segment_dir, "screen")
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert signals["state"] == "purged"
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["chunks"] == []
+    assert data["data_state"] == {"screen": "purged"}
+    assert data["media_purged"] == {"audio": False, "screen": True}
 
 
 def test_segment_content_analyzed_missing_raw_keeps_purged_flag(client, journal_copy):
@@ -1183,10 +1306,12 @@ def test_reprocess_segment_starts_sense_process(client, journal_copy, monkeypatc
     data = response.get_json()
     assert data["data_state"]["screen"] == "analyzing"
     assert data["marker"]["started_at"]
+    assert data["repair_status"] == "accepted"
     marker = segment_dir / ".analyzing_screen"
     assert marker.exists()
     marker_payload = json.loads(marker.read_text())
     assert marker_payload["modality"] == "screen"
+    assert marker_payload["request_id"]
     assert len(popen_calls) == 1
     argv, kwargs = popen_calls[0]
     assert argv == [
@@ -1209,16 +1334,18 @@ def test_reprocess_segment_starts_sense_process(client, journal_copy, monkeypatc
     assert len(threads) == 1
     assert threads[0].daemon is True
     assert threads[0].started is True
+    assert threads[0].args[1] == marker
+    assert threads[0].args[2] == segment_dir / ".analyze_failed_screen"
+    assert threads[0].args[3] == segment_dir
+    assert threads[0].args[4] == "screen"
+    assert threads[0].args[5] == marker_payload["request_id"]
 
 
 def test_reprocess_segment_analyzing_is_idempotent(client, journal_copy, monkeypatch):
     day = "20990125"
     segment = "090000_300"
     segment_dir = _write_raw_pending_segment(journal_copy, day, "alpha", segment)
-    (segment_dir / ".analyzing_screen").write_text(
-        '{"started_at": "2026-05-20T09:00:00Z", "modality": "screen"}\n',
-        encoding="utf-8",
-    )
+    _write_analyzing_marker(segment_dir)
 
     def fail_popen(*args, **kwargs):
         raise AssertionError("idempotent analyzing request must not spawn")
@@ -1234,6 +1361,97 @@ def test_reprocess_segment_analyzing_is_idempotent(client, journal_copy, monkeyp
     data = response.get_json()
     assert data["data_state"]["screen"] == "analyzing"
     assert data["marker"] == {"started_at": "2026-05-20T09:00:00Z"}
+    assert data["repair_status"] == "running"
+
+
+@pytest.mark.parametrize(
+    "marker_age_seconds",
+    [ANALYZING_STALE_SECONDS + 60, 3600, 6 * 3600],
+)
+def test_reprocess_segment_stale_analyzing_marker_respawns(
+    client, journal_copy, monkeypatch, marker_age_seconds
+):
+    day = "20990125"
+    segment = "090500_300"
+    segment_dir = _write_raw_pending_segment(journal_copy, day, "alpha", segment)
+    marker = _write_analyzing_marker(segment_dir, request_id="aged-req")
+    marker_time = time.time() - marker_age_seconds
+    os.utime(marker, (marker_time, marker_time))
+    popen_calls, _threads = _stub_reprocess_spawn(monkeypatch)
+
+    response = client.post(
+        f"/app/transcripts/api/segment/{day}/alpha/{segment}/reprocess",
+        json={"modality": "screen"},
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["repair_status"] == "accepted"
+    assert len(popen_calls) == 1
+    fresh_marker = segment_dir / ".analyzing_screen"
+    assert fresh_marker.exists()
+    marker_payload = json.loads(fresh_marker.read_text(encoding="utf-8"))
+    assert marker_payload["modality"] == "screen"
+    assert marker_payload["request_id"] != "aged-req"
+
+
+def test_reprocess_segment_fresh_analyzing_marker_does_not_respawn(
+    client, journal_copy, monkeypatch
+):
+    day = "20990125"
+    segment = "090700_300"
+    segment_dir = _write_raw_pending_segment(journal_copy, day, "alpha", segment)
+    marker = _write_analyzing_marker(segment_dir, request_id="fresh-req")
+    now = time.time()
+    os.utime(marker, (now, now))
+
+    def fail_popen(*args, **kwargs):
+        raise AssertionError("fresh analyzing request must not spawn")
+
+    monkeypatch.setattr("solstone.apps.transcripts.routes.subprocess.Popen", fail_popen)
+
+    response = client.post(
+        f"/app/transcripts/api/segment/{day}/alpha/{segment}/reprocess",
+        json={"modality": "screen"},
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["repair_status"] == "running"
+    marker_payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert marker_payload["request_id"] == "fresh-req"
+
+
+def test_reprocess_segment_file_exists_race_returns_running(
+    client, journal_copy, monkeypatch
+):
+    day = "20990125"
+    segment = "091000_300"
+    _write_raw_pending_segment(journal_copy, day, "alpha", segment)
+
+    def race_create(seg_path: Path, modality: str) -> Path:
+        _write_analyzing_marker(seg_path, modality=modality, request_id="race-req")
+        raise FileExistsError
+
+    def fail_popen(*args, **kwargs):
+        raise AssertionError("race request must not spawn")
+
+    monkeypatch.setattr(
+        "solstone.apps.transcripts.routes.create_analyzing_marker",
+        race_create,
+    )
+    monkeypatch.setattr("solstone.apps.transcripts.routes.subprocess.Popen", fail_popen)
+
+    response = client.post(
+        f"/app/transcripts/api/segment/{day}/alpha/{segment}/reprocess",
+        json={"modality": "screen"},
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["data_state"]["screen"] == "analyzing"
+    assert data["marker"] == {"started_at": "2026-05-20T09:00:00Z"}
+    assert data["repair_status"] == "running"
 
 
 def test_reprocess_segment_failed_unlinks_failed_marker(
@@ -1256,6 +1474,7 @@ def test_reprocess_segment_failed_unlinks_failed_marker(
     )
 
     assert response.status_code == 200
+    assert response.get_json()["repair_status"] == "accepted"
     assert not failed.exists()
     assert (segment_dir / ".analyzing_screen").exists()
 
@@ -1288,29 +1507,73 @@ def test_reprocess_segment_rolls_back_marker_when_spawn_fails(
 
 
 def test_reprocess_watcher_success_removes_marker(tmp_path):
-    marker = tmp_path / ".analyzing_screen"
-    failed = tmp_path / ".analyze_failed_screen"
-    marker.write_text(
-        '{"started_at": "2026-05-20T09:00:00Z", "modality": "screen"}\n',
-        encoding="utf-8",
+    (tmp_path / "screen.webm").write_bytes(b"screen")
+    _write_jsonl(
+        tmp_path / "screen.jsonl",
+        [{"raw": "screen.webm"}, {"frame_id": 1, "timestamp": 1, "analysis": {}}],
     )
+    marker = _write_analyzing_marker(tmp_path)
+    failed = tmp_path / ".analyze_failed_screen"
 
-    _watch_reprocess_completion(_ProcStub(rc=0), marker, failed)
+    _watch_reprocess_completion(
+        _ProcStub(rc=0), marker, failed, tmp_path, "screen", "req-1"
+    )
 
     assert not marker.exists()
     assert not failed.exists()
 
 
-def test_reprocess_watcher_failure_writes_failed_marker(tmp_path):
-    marker = tmp_path / ".analyzing_screen"
+def test_reprocess_watcher_success_empty_removes_marker_without_failed(tmp_path):
+    (tmp_path / "screen.webm").write_bytes(b"screen")
+    _write_jsonl(tmp_path / "screen.jsonl", [_empty_screen_header()])
+    marker = _write_analyzing_marker(tmp_path)
     failed = tmp_path / ".analyze_failed_screen"
-    marker.write_text(
-        '{"started_at": "2026-05-20T09:00:00Z", "modality": "screen"}\n',
-        encoding="utf-8",
+
+    _watch_reprocess_completion(
+        _ProcStub(rc=0), marker, failed, tmp_path, "screen", "req-1"
     )
+
+    assert not marker.exists()
+    assert not failed.exists()
+
+
+def test_reprocess_watcher_success_without_chunks_writes_no_output(tmp_path):
+    (tmp_path / "screen.webm").write_bytes(b"screen")
+    _write_jsonl(tmp_path / "screen.jsonl", [{"raw": "screen.webm"}])
+    marker = _write_analyzing_marker(tmp_path)
+    failed = tmp_path / ".analyze_failed_screen"
+
+    _watch_reprocess_completion(
+        _ProcStub(rc=0), marker, failed, tmp_path, "screen", "req-1"
+    )
+
+    assert not marker.exists()
+    payload = json.loads(failed.read_text())
+    assert payload["reason"] == "no_output"
+    assert payload["reason_code"] == "no_output"
+    assert payload["detail"] == "worker exited 0 without analyzed chunks"
+
+
+def test_reprocess_watcher_request_id_mismatch_noops(tmp_path):
+    marker = _write_analyzing_marker(tmp_path, request_id="new-req")
+    failed = tmp_path / ".analyze_failed_screen"
+
+    _watch_reprocess_completion(
+        _ProcStub(rc=7, stderr=b"boom"), marker, failed, tmp_path, "screen", "old-req"
+    )
+
+    assert marker.exists()
+    assert not failed.exists()
+
+
+def test_reprocess_watcher_failure_writes_failed_marker(tmp_path):
+    marker = _write_analyzing_marker(tmp_path)
+    failed = tmp_path / ".analyze_failed_screen"
     stderr = b"x" * 600
 
-    _watch_reprocess_completion(_ProcStub(rc=7, stderr=stderr), marker, failed)
+    _watch_reprocess_completion(
+        _ProcStub(rc=7, stderr=stderr), marker, failed, tmp_path, "screen", "req-1"
+    )
 
     assert not marker.exists()
     payload = json.loads(failed.read_text())
@@ -1319,6 +1582,7 @@ def test_reprocess_watcher_failure_writes_failed_marker(tmp_path):
     assert payload["reason"] == "exit_7"
     assert payload["detail"] == "x" * 512
     assert payload["failed_at"]
+    assert "reason_code" not in payload
 
 
 def test_reprocess_segment_isolates_streams(client, journal_copy, monkeypatch):

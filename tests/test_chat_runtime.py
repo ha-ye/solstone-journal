@@ -26,6 +26,7 @@ def _reset_chat_state(chat_module) -> None:
         chat_module._queued_triggers.clear()
         chat_module._active_talents.clear()
         chat_module._reserved_use_ids.clear()
+        chat_module._abandoned_raw_use_ids.clear()
         for timer in chat_module._watchdog_timers.values():
             timer.cancel()
         chat_module._watchdog_timers.clear()
@@ -1758,6 +1759,84 @@ def test_chat_watchdog_times_out_current_chat_generate(tmp_path, monkeypatch):
         assert chat._current_chat_use_id is None
         assert chat._current_chat_state is None
         assert raw_use_id not in chat._watchdog_timers
+
+
+def test_late_chat_finish_after_watchdog_timeout_is_abandoned_raw(
+    tmp_path, monkeypatch, caplog
+):
+    import solstone.convey.chat as chat
+
+    _setup_journal(tmp_path, monkeypatch)
+    _reset_chat_state(chat)
+    timers = _install_fake_timers(monkeypatch)
+
+    emitted_errors: list[tuple[str, str, dict]] = []
+    emitted_finishes: list[tuple[str, str]] = []
+    run_actions: list[dict | None] = []
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_error",
+        lambda use_id, reason, **kwargs: emitted_errors.append(
+            (use_id, reason, kwargs)
+        ),
+    )
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_finish",
+        lambda use_id, message: emitted_finishes.append((use_id, message)),
+    )
+    monkeypatch.setattr(
+        "solstone.convey.chat._run_next_action",
+        lambda action: run_actions.append(action),
+    )
+
+    logical_use_id = "1713628050000"
+    with chat._state_lock:
+        start_info = chat._activate_current_locked(
+            logical_use_id,
+            {"type": "owner_message", "message": "first"},
+            {"app": "sol", "path": "/app/sol", "facet": "work"},
+        )
+        queued_use_id, queued, start_action = chat._activate_or_enqueue_trigger_locked(
+            {"type": "owner_message", "message": "second"},
+            {"app": "sol", "path": "/app/sol", "facet": "work"},
+        )
+
+    assert queued is True
+    assert start_action is None
+    raw_use_id = start_info["raw_use_id"]
+
+    timers[-1].fire()
+
+    assert emitted_errors == [(logical_use_id, "chat_timeout", {})]
+    assert run_actions and run_actions[-1]["logical_use_id"] == queued_use_id
+    with chat._state_lock:
+        assert chat._current_chat_use_id == queued_use_id
+        assert chat._current_chat_state is not None
+        assert chat._current_chat_state["raw_use_id"] != raw_use_id
+
+    events_before_late = read_chat_events(chat._today_day())
+    caplog.clear()
+    caplog.set_level(logging.DEBUG, logger="solstone.convey.chat")
+    chat._on_cortex_finish(
+        {
+            "use_id": raw_use_id,
+            "result": json.dumps(
+                {"message": "late answer", "notes": "ok", "talent_request": None}
+            ),
+        }
+    )
+
+    assert read_chat_events(chat._today_day()) == events_before_late
+    assert emitted_finishes == []
+    assert (
+        f"superseded raw cortex event use_id={raw_use_id} "
+        "event=finish reason=raw rotated"
+    ) in caplog.text
+    warning_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "solstone.convey.chat" and record.levelno >= logging.WARNING
+    ]
+    assert all("unrouteable cortex event" not in msg for msg in warning_messages)
 
 
 def test_chat_watchdog_times_out_active_talent_and_queues_fold_when_chat_busy(

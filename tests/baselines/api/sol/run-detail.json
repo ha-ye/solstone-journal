@@ -2,6 +2,7 @@
   "cost": 0.001175,
   "day": "20231114",
   "error_message": null,
+  "reason_code": null,
   "events": [
     {
       "args": null,

@@ -109,6 +109,11 @@ REFUSAL_BUDGET_EXHAUSTED = (
     "budget_exhausted: read-call budget is exhausted; stop raw reads and use "
     "the evidence already gathered or a domain command."
 )
+REFUSAL_BROAD_ROOT = (
+    "broad_root: refused a recursive scan of the whole journal, chronicle, "
+    "or facets before any narrowing; scope to a day 'chronicle/YYYYMMDD', a "
+    "facet tree 'facets/<facet>', the 'entities' tree, or an exact file path."
+)
 
 NOTICE_READ_FILE_TRUNCATED = (
     "read_file_truncated: hit max_lines or max_bytes; use start_line to "
@@ -230,7 +235,8 @@ def _resolve_target(
     tool: str,
 ) -> tuple[Path | None, ReadResult | None]:
     rel_text = str(rel)
-    if rel_text in {"", "."}:
+    # Empty parts mean the journal root, covering "", ".", and "./".
+    if not Path(rel_text).parts:
         return _journal_root_real(journal), None
     try:
         return contained_path(journal, rel_text), None
@@ -259,6 +265,16 @@ def _explicit_denial(tool: str, classification: Classification) -> ReadResult | 
         return _refused(tool, REFUSAL_DENIED_COMPONENT)
     if classification == CLASS_DENIED_CREDENTIAL:
         return _refused(tool, REFUSAL_CREDENTIAL_FILE)
+    return None
+
+
+_BROAD_RECURSIVE_PARTS = frozenset({(), ("chronicle",), ("facets",)})
+
+
+def _broad_recursive_refusal(resolved: Path, journal_root_real: Path) -> str | None:
+    """Refuse a recursive scan rooted at the journal root, chronicle, or facets."""
+    if resolved.relative_to(journal_root_real).parts in _BROAD_RECURSIVE_PARTS:
+        return REFUSAL_BROAD_ROOT
     return None
 
 
@@ -518,6 +534,11 @@ def list_directory(
     if denial:
         return denial
 
+    if recursive:
+        broad_refusal = _broad_recursive_refusal(resolved, journal_root_real)
+        if broad_refusal:
+            return _refused(_TOOL_LIST_DIRECTORY, broad_refusal)
+
     stat_result, stat_refusal = _stat_path(_TOOL_LIST_DIRECTORY, resolved)
     if stat_refusal:
         return stat_refusal
@@ -589,6 +610,10 @@ def glob(
     denial = _explicit_denial(_TOOL_GLOB, _classify(resolved, journal_root_real))
     if denial:
         return denial
+
+    broad_refusal = _broad_recursive_refusal(resolved, journal_root_real)
+    if broad_refusal:
+        return _refused(_TOOL_GLOB, broad_refusal)
 
     stat_result, stat_refusal = _stat_path(_TOOL_GLOB, resolved)
     if stat_refusal:
@@ -747,6 +772,10 @@ def grep_search(
 
     if not stat.S_ISDIR(stat_result.st_mode):
         return _ok(_TOOL_GREP_SEARCH, [])
+
+    broad_refusal = _broad_recursive_refusal(resolved, journal_root_real)
+    if broad_refusal:
+        return _refused(_TOOL_GREP_SEARCH, broad_refusal)
 
     for entry_resolved, is_dir in _walk_allowed(
         journal,

@@ -198,26 +198,28 @@
 }
 .add-observer-form button {
   padding: 8px 16px;
-  background: var(--facet-color, #b06a1a);
-  color: white;
+  background: color-mix(in srgb, var(--facet-color, var(--orange)) 14%, var(--paper));
+  color: var(--ink);
   border: none;
+  box-shadow: inset 0 0 0 2px var(--facet-color, var(--orange));
   border-radius: 4px;
   cursor: pointer;
-  font-weight: bold;
+  font-weight: 600;
   min-height: 44px;
 }
 .add-observer-form button:hover {
-  background: color-mix(in srgb, var(--facet-color, #b06a1a) 85%, black);
+  background: color-mix(in srgb, var(--facet-color, var(--orange)) 22%, var(--paper));
 }
 .add-observer-form button:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--facet-color, #b06a1a) 85%, black);
+  outline: 2px solid var(--facet-color, var(--focus));
   outline-offset: 2px;
 }
 .add-observer-form button:active {
-  background: color-mix(in srgb, var(--facet-color, #b06a1a) 70%, black);
+  background: color-mix(in srgb, var(--facet-color, var(--orange)) 30%, var(--paper));
 }
 .add-observer-form button:disabled {
   background: #ccc;
+  box-shadow: none;
   cursor: not-allowed;
 }
 
@@ -324,20 +326,21 @@
   min-height: 44px;
 }
 .modal-primary-btn {
-  background: var(--facet-color, #b06a1a);
-  color: white;
+  background: color-mix(in srgb, var(--facet-color, var(--orange)) 14%, var(--paper));
+  color: var(--ink);
   border: none;
-  font-weight: bold;
+  box-shadow: inset 0 0 0 2px var(--facet-color, var(--orange));
+  font-weight: 600;
 }
 .modal-primary-btn:hover {
-  background: color-mix(in srgb, var(--facet-color, #b06a1a) 85%, black);
+  background: color-mix(in srgb, var(--facet-color, var(--orange)) 22%, var(--paper));
 }
 .modal-primary-btn:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--facet-color, #b06a1a) 85%, black);
+  outline: 2px solid var(--facet-color, var(--focus));
   outline-offset: 2px;
 }
 .modal-primary-btn:active {
-  background: color-mix(in srgb, var(--facet-color, #b06a1a) 70%, black);
+  background: color-mix(in srgb, var(--facet-color, var(--orange)) 30%, var(--paper));
 }
 .modal-warning {
   font-size: 0.85em;

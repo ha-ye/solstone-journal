@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from solstone.think.journal_io.locking import hold_lock
 from solstone.think.utils import (
     day_dirs,
     day_is_complete,
@@ -29,7 +30,12 @@ STATE_VERSION = 1
 KIND_DAILY_CATCHUP = "daily-catchup"
 KIND_DAILY_FROM_SCRATCH = "daily-from-scratch"
 KIND_SEGMENT = "segment"
+KIND_SEGMENT_REPAIR = "segment-repair"
 RECORDED_KINDS = frozenset({KIND_DAILY_CATCHUP, KIND_DAILY_FROM_SCRATCH, KIND_SEGMENT})
+RECONCILABLE_KINDS = RECORDED_KINDS | frozenset({KIND_SEGMENT_REPAIR})
+
+SEGMENT_REPAIR_TIMEOUT_REASON = "wall_clock_exceeded"
+SEGMENT_REPAIR_FAILED_REASON = "repair_failed"
 
 BACKOFF_BASE_SECONDS = 600
 BACKOFF_MAX_SECONDS = 86400
@@ -178,6 +184,9 @@ def _new_record(day: str, command_kind: str) -> dict:
         "notified_at": None,
         "fingerprint": None,
         "active": None,
+        "reason_code": None,
+        "timeout_seconds": None,
+        "bounded": None,
     }
 
 
@@ -311,6 +320,43 @@ def read_backoff_summary(day: str) -> dict | None:
     }
 
 
+def read_segment_repair_summary(day: str) -> dict | None:
+    path = Path(get_journal()) / "health" / "catchup-state.json"
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            raw = json.load(file)
+    except FileNotFoundError:
+        return None
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning(
+            "Failed to read segment-repair catchup state for %s: %s", day, exc
+        )
+        return {"status": "unknown"}
+
+    state = _normalize_state(raw)
+    record = state["entries"].get(_key(day, KIND_SEGMENT_REPAIR))
+    if not isinstance(record, dict):
+        return None
+
+    consecutive = int(record.get("consecutive_non_completion") or 0)
+    if consecutive == 0:
+        return None
+    if read_raw_input_fingerprint(day) != record.get("fingerprint"):
+        return None
+
+    status = "stuck" if record.get("entered_backoff_at") is not None else "degraded"
+    return {
+        "status": status,
+        "attempts": int(record.get("attempts") or 0),
+        "consecutive_non_completion": consecutive,
+        "last_outcome": record.get("last_outcome") or "",
+        "next_retry_at": float(record.get("next_retry_at") or 0),
+        "repair_reason_code": record.get("reason_code"),
+        "timeout_seconds": record.get("timeout_seconds"),
+        "bounded": record.get("bounded"),
+    }
+
+
 def _prune(state: dict) -> None:
     days = day_dirs()
     if not days:
@@ -360,7 +406,8 @@ def record_attempt(
             read_raw_input_fingerprint(cmd_day) if kind == KIND_DAILY_CATCHUP else None
         )
 
-        with _CATCHUP_STATE_LOCK:
+        state_path = _state_path()
+        with hold_lock(state_path), _CATCHUP_STATE_LOCK:
             state = _read_state_from_disk()
             entries = state["entries"]
             key = _key(cmd_day, kind)
@@ -412,7 +459,8 @@ def record_outcome(
                 cmd_day,
             )
 
-        with _CATCHUP_STATE_LOCK:
+        state_path = _state_path()
+        with hold_lock(state_path), _CATCHUP_STATE_LOCK:
             state = _read_state_from_disk()
             entries = state["entries"]
             key = _key(cmd_day, kind)
@@ -503,7 +551,8 @@ def record_outcome(
 
 def clear_day_backoff(day: str) -> None:
     try:
-        with _CATCHUP_STATE_LOCK:
+        state_path = _state_path()
+        with hold_lock(state_path), _CATCHUP_STATE_LOCK:
             state = _read_state_from_disk()
             entries = state["entries"]
             entries.pop(_key(day, KIND_DAILY_CATCHUP), None)
@@ -514,9 +563,91 @@ def clear_day_backoff(day: str) -> None:
         logger.warning("Failed to clear catchup backoff for %s", day, exc_info=True)
 
 
+def record_segment_repair_attempt(day: str, *, started_at: float) -> None:
+    try:
+        fingerprint = read_raw_input_fingerprint(day)
+        state_path = _state_path()
+        with hold_lock(state_path), _CATCHUP_STATE_LOCK:
+            state = _read_state_from_disk()
+            entries = state["entries"]
+            key = _key(day, KIND_SEGMENT_REPAIR)
+            record = _record_from_entry(entries.get(key), day, KIND_SEGMENT_REPAIR)
+            if record.get("fingerprint") != fingerprint:
+                record["consecutive_non_completion"] = 0
+                record["entered_backoff_at"] = None
+                record["notified_at"] = None
+                record["next_retry_at"] = 0
+                record["reason_code"] = None
+                record["timeout_seconds"] = None
+                record["bounded"] = None
+            record["fingerprint"] = fingerprint
+            record["attempts"] = int(record.get("attempts") or 0) + 1
+            record["last_attempt_at"] = started_at
+            record["active"] = {
+                "ref": "segment-repair",
+                "started_at": started_at,
+            }
+            entries[key] = record
+            _prune(state)
+            _write_state(state)
+    except Exception:
+        logger.warning(
+            "Failed to record segment-repair attempt for %s", day, exc_info=True
+        )
+
+
+def record_segment_repair_outcome(
+    day: str,
+    *,
+    success: bool,
+    timed_out: bool,
+    timeout_seconds: float | None,
+    ended_at: float,
+) -> None:
+    try:
+        state_path = _state_path()
+        with hold_lock(state_path), _CATCHUP_STATE_LOCK:
+            state = _read_state_from_disk()
+            entries = state["entries"]
+            key = _key(day, KIND_SEGMENT_REPAIR)
+            if success:
+                entries.pop(key, None)
+                _prune(state)
+                _write_state(state)
+                return
+
+            record = _record_from_entry(entries.get(key), day, KIND_SEGMENT_REPAIR)
+            record["active"] = None
+            record["last_outcome"] = "timeout" if timed_out else "error"
+            record["reason_code"] = (
+                SEGMENT_REPAIR_TIMEOUT_REASON
+                if timed_out
+                else SEGMENT_REPAIR_FAILED_REASON
+            )
+            record["timeout_seconds"] = timeout_seconds if timed_out else None
+            record["bounded"] = bool(timed_out)
+            consecutive = int(record.get("consecutive_non_completion") or 0) + 1
+            record["consecutive_non_completion"] = consecutive
+            record["next_retry_at"] = ended_at + _backoff_delay(consecutive)
+            if (
+                consecutive >= STUCK_THRESHOLD
+                and record.get("entered_backoff_at") is None
+            ):
+                record["entered_backoff_at"] = ended_at
+                record["notified_at"] = ended_at
+            entries[key] = record
+            _prune(state)
+            _write_state(state)
+    except Exception:
+        logger.warning(
+            "Failed to record segment-repair outcome for %s", day, exc_info=True
+        )
+
+
 def reconcile_interrupted_attempts() -> list[BackoffTransition]:
     try:
-        with _CATCHUP_STATE_LOCK:
+        state_path = _state_path()
+        with hold_lock(state_path), _CATCHUP_STATE_LOCK:
             state = _read_state_from_disk()
             entries = state["entries"]
             transitions: list[BackoffTransition] = []
@@ -529,7 +660,7 @@ def reconcile_interrupted_attempts() -> list[BackoffTransition]:
                     continue
                 kind = record.get("command_kind")
                 day = record.get("day")
-                if not isinstance(day, str) or kind not in RECORDED_KINDS:
+                if not isinstance(day, str) or kind not in RECONCILABLE_KINDS:
                     record["active"] = None
                     changed = True
                     continue
@@ -546,7 +677,7 @@ def reconcile_interrupted_attempts() -> list[BackoffTransition]:
                 record["active"] = None
                 record["last_outcome"] = "interrupted"
                 changed = True
-                if kind == KIND_DAILY_CATCHUP:
+                if kind in (KIND_DAILY_CATCHUP, KIND_SEGMENT_REPAIR):
                     consecutive = int(record.get("consecutive_non_completion") or 0) + 1
                     next_retry_at = now + _backoff_delay(consecutive)
                     record["consecutive_non_completion"] = consecutive
@@ -557,17 +688,18 @@ def reconcile_interrupted_attempts() -> list[BackoffTransition]:
                     ):
                         record["entered_backoff_at"] = now
                         record["notified_at"] = now
-                        transitions.append(
-                            BackoffTransition(
-                                day=day,
-                                command_kind=kind,
-                                attempts=int(record.get("attempts") or 0),
-                                consecutive_non_completion=consecutive,
-                                last_outcome="interrupted",
-                                next_retry_at=next_retry_at,
-                                entered_backoff_at=now,
+                        if kind == KIND_DAILY_CATCHUP:
+                            transitions.append(
+                                BackoffTransition(
+                                    day=day,
+                                    command_kind=kind,
+                                    attempts=int(record.get("attempts") or 0),
+                                    consecutive_non_completion=consecutive,
+                                    last_outcome="interrupted",
+                                    next_retry_at=next_retry_at,
+                                    entered_backoff_at=now,
+                                )
                             )
-                        )
                 entries[key] = record
 
             if changed:

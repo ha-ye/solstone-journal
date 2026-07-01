@@ -30,7 +30,7 @@
 
 .import-source-card:hover {
   transform: translateY(-2px);
-  border-color: var(--facet-color, #b06a1a);
+  border-color: var(--facet-color, var(--orange));
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
 }
 
@@ -185,7 +185,7 @@
 }
 
 .import-upload-area:focus-visible {
-  outline: 2px solid var(--facet-color, #b06a1a);
+  outline: 2px solid var(--facet-color, var(--focus));
   outline-offset: 2px;
 }
 
@@ -528,7 +528,7 @@
 }
 
 .import-table tbody tr:focus-visible {
-  outline: 2px solid var(--facet-color, #b06a1a);
+  outline: 2px solid var(--facet-color, var(--focus));
   outline-offset: -2px;
   background: #f0f4ff;
 }
@@ -669,6 +669,7 @@
       </div>
     </div>
     <input type="hidden" id="savedPath" />
+    <div id="detectDuplicateNotice"></div>
     <div class="modal-actions">
       <button id="startBtn" class="import-primary-btn">start import</button>
     </div>
@@ -708,6 +709,9 @@ let currentFile = null;
 let currentGuideSource = null;
 let currentGuidedFile = null;
 let currentGuidedSaved = null;
+window._quickClientItemId = null;
+window._quickSaved = null;
+window._guidedClientItemId = null;
 let importEvents = {};
 let importsCache = [];
 let currentSourceFilter = '';
@@ -787,7 +791,7 @@ function showGrid() {
   currentGuideSource = null;
   currentGuidedFile = null;
   currentGuidedSaved = null;
-  window._guidedForceImport = false;
+  window._guidedClientItemId = null;
   navigateTo('grid');
 }
 
@@ -838,9 +842,42 @@ function showQuickImport() {
 let previousDetectFocus = null;
 let detectFocusTrapHandler = null;
 
+function isTerminalDuplicate(data) {
+  return data?.status === 'duplicate' || data?.recommended_action === 'do_not_start';
+}
+
+function duplicateNoticeText(duplicate = {}) {
+  const state = duplicate.state || 'imported';
+  const importId = duplicate.import_id || '';
+  if (state === 'staged') {
+    return `this file was already staged${importId ? ` as ${importId}` : ''}.`;
+  }
+  const importedAt = duplicate.imported_at || 'an earlier import';
+  const entries = duplicate.entry_count ? ` (${duplicate.entry_count} entries)` : '';
+  return `this file was already imported on ${importedAt}${entries}.`;
+}
+
 function showDetect(res) {
+  window._quickSaved = res;
   document.getElementById('timestampInput').value = res.timestamp || '';
   document.getElementById('savedPath').value = res.path;
+  const duplicateNotice = document.getElementById('detectDuplicateNotice');
+  if (duplicateNotice) {
+    duplicateNotice.innerHTML = '';
+  }
+  startBtn.style.display = '';
+  startBtn.disabled = false;
+  if (isTerminalDuplicate(res)) {
+    if (duplicateNotice) {
+      duplicateNotice.innerHTML = `
+        <div class="import-dedup-notice">
+          <span class="dedup-text">${escapeHtml(duplicateNoticeText(res.duplicate))}</span>
+        </div>
+      `;
+    }
+    startBtn.disabled = true;
+    startBtn.style.display = 'none';
+  }
   const defaultFacet = res.facet || window.selectedFacet || '';
   loadFacets(defaultFacet);
   settingInput.value = res.setting || '';
@@ -1406,6 +1443,7 @@ async function loadGuidedFlow(sourceName) {
   currentGuideSource = sourceName;
   currentGuidedFile = null;
   currentGuidedSaved = null;
+  window._guidedClientItemId = null;
   if (!guideSteps) {
     return;
   }
@@ -1480,6 +1518,13 @@ async function loadGuidedFlow(sourceName) {
   } else {
     // Auto-detect default path for path_input sources
     checkDefaultPath(sourceName);
+    const guidedPathInput = document.getElementById('guidedPathInput');
+    if (guidedPathInput) {
+      guidedPathInput.addEventListener('input', () => {
+        currentGuidedSaved = null;
+        window._guidedClientItemId = crypto.randomUUID();
+      });
+    }
   }
   document.getElementById('guidedStartBtn').addEventListener('click', () => startGuidedImport(source));
   const guidedForm = document.getElementById('guidedImportForm');
@@ -1573,6 +1618,7 @@ function setupGuidedUploadArea() {
     currentGuidedFile = file || null;
     fileLabel.textContent = file ? file.name : '';
     currentGuidedSaved = null;
+    window._guidedClientItemId = file ? crypto.randomUUID() : null;
   };
 
   dropArea.onclick = () => fileInput.click();
@@ -1619,6 +1665,8 @@ function setupQuickImportForm() {
   }
 
   currentFile = null;
+  window._quickClientItemId = null;
+  window._quickSaved = null;
   dropArea.onclick = () => fileInput.click();
   dropArea.addEventListener('keydown', e => {
     if (e.key === 'Enter' || e.key === ' ') {
@@ -1639,14 +1687,24 @@ function setupQuickImportForm() {
     if (file) {
       currentFile = file;
       fileLabel.textContent = file.name;
+      window._quickClientItemId = crypto.randomUUID();
+      window._quickSaved = null;
     }
   });
   fileInput.onchange = e => {
     currentFile = e.target.files[0];
     if (currentFile) {
       fileLabel.textContent = currentFile.name;
+      window._quickClientItemId = crypto.randomUUID();
+      window._quickSaved = null;
     }
   };
+  ['input', 'paste'].forEach(eventName => {
+    pasteText.addEventListener(eventName, () => {
+      window._quickClientItemId = crypto.randomUUID();
+      window._quickSaved = null;
+    });
+  });
 
   importForm.onsubmit = async e => {
     e.preventDefault();
@@ -1671,6 +1729,10 @@ function setupQuickImportForm() {
       } else {
         fd.append('text', pasteText.value);
       }
+      fd.append(
+        'client_item_id',
+        window._quickClientItemId || (window._quickClientItemId = crypto.randomUUID())
+      );
 
       const facet = quickFacetSelect ? quickFacetSelect.value : '';
       if (facet) {
@@ -1703,7 +1765,7 @@ function setupQuickImportForm() {
   };
 }
 
-async function uploadGuidedSourceFile() {
+async function uploadGuidedSourceFile(source) {
   if (!currentGuidedFile) {
     throw new Error('Please select a file to import.');
   }
@@ -1712,6 +1774,13 @@ async function uploadGuidedSourceFile() {
   const guidedSettingInput = document.getElementById('guidedSettingInput');
   const fd = new FormData();
   fd.append('file', currentGuidedFile);
+  fd.append(
+    'client_item_id',
+    window._guidedClientItemId || (window._guidedClientItemId = crypto.randomUUID())
+  );
+  if (source && source.name !== 'recording') {
+    fd.append('source_hint', source.name);
+  }
   if (guidedFacetSelect && guidedFacetSelect.value) {
     fd.append('facet', guidedFacetSelect.value);
   }
@@ -1730,27 +1799,21 @@ async function uploadGuidedSourceFile() {
 
   currentGuidedSaved = data;
 
-  // Show dedup notice if the file was previously imported
-  if (data.dedup) {
-    showDedupNotice(data.dedup);
+  if (isTerminalDuplicate(data)) {
+    showDedupNotice(data.duplicate);
   }
 
   return data;
 }
 
-function showDedupNotice(dedup) {
+function showDedupNotice(duplicate) {
   const container = document.getElementById('guidedDedupNotice');
   if (!container) return;
   container.innerHTML = `
     <div class="import-dedup-notice">
-      <span class="dedup-text">this file was already imported on ${escapeHtml(dedup.imported_at)}${dedup.entry_count ? ` (${dedup.entry_count} entries)` : ''}.</span>
-      <button type="button" id="dedupForceBtn">re-import anyway</button>
+      <span class="dedup-text">${escapeHtml(duplicateNoticeText(duplicate))}</span>
     </div>
   `;
-  document.getElementById('dedupForceBtn').addEventListener('click', () => {
-    window._guidedForceImport = true;
-    container.innerHTML = '<div class="import-dedup-notice"><span class="dedup-text">will re-import. click start import to proceed.</span></div>';
-  });
 }
 
 async function saveGuidedPath(source) {
@@ -1763,11 +1826,21 @@ async function saveGuidedPath(source) {
   const guidedSettingInput = document.getElementById('guidedSettingInput');
   const facet = guidedFacetSelect ? guidedFacetSelect.value : '';
   const setting = guidedSettingInput ? guidedSettingInput.value.trim() : '';
+  const payload = {
+    path: pathInput.value.trim(),
+    facet,
+    setting,
+    client_item_id: window._guidedClientItemId
+      || (window._guidedClientItemId = crypto.randomUUID()),
+  };
+  if (source && source.name !== 'recording') {
+    payload.source_hint = source.name;
+  }
 
   const response = await fetch('/app/import/api/save-path', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: pathInput.value.trim(), facet, setting }),
+    body: JSON.stringify(payload),
   });
   const data = await response.json();
   if (!response.ok) {
@@ -1775,6 +1848,9 @@ async function saveGuidedPath(source) {
   }
 
   currentGuidedSaved = data;
+  if (isTerminalDuplicate(data)) {
+    showDedupNotice(data.duplicate);
+  }
   return data;
 }
 
@@ -1792,15 +1868,18 @@ async function startGuidedImport(source) {
     if (source.input_type === 'path_input') {
       saved = currentGuidedSaved || await saveGuidedPath(source);
     } else {
-      saved = currentGuidedSaved || await uploadGuidedSourceFile();
+      saved = currentGuidedSaved || await uploadGuidedSourceFile(source);
+    }
+    if (isTerminalDuplicate(saved)) {
+      showDedupNotice(saved.duplicate);
+      return;
     }
     const path = saved.path;
     const ts = saved.timestamp;
     const facet = guidedFacetSelect ? guidedFacetSelect.value : '';
     const setting = guidedSettingInput ? guidedSettingInput.value.trim() : '';
-    const force = !!(window._guidedForceImport);
 
-    const metaResponse = await fetch('/app/import/api/facet', {
+    const metaResponse = await fetch('/app/import/api/meta', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path, facet, setting }),
@@ -1814,7 +1893,7 @@ async function startGuidedImport(source) {
     const startResponse = await fetch('/app/import/api/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path, timestamp: ts, source: source.name, force }),
+      body: JSON.stringify({ path, timestamp: ts }),
     });
 
     if (!startResponse.ok) {
@@ -1830,7 +1909,6 @@ async function startGuidedImport(source) {
       source_display: source.display_name,
     };
     trackPendingImport(ts);
-    window._guidedForceImport = false;
     loadImports();
     navigateTo(`progress/${ts}`);
   } catch (err) {
@@ -1925,13 +2003,17 @@ startBtn.addEventListener('click', async () => {
     if (window.showError) showError('Timestamp is required before starting the import.');
     return;
   }
+  if (isTerminalDuplicate(window._quickSaved)) {
+    showDetect(window._quickSaved);
+    return;
+  }
 
   const originalText = startBtn.textContent;
   startBtn.disabled = true;
   startBtn.innerHTML = 'starting<span class="spinner"></span>';
 
   try {
-    const response = await fetch('/app/import/api/facet', {
+    const response = await fetch('/app/import/api/meta', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path, facet, setting }),
@@ -1945,7 +2027,7 @@ startBtn.addEventListener('click', async () => {
     const startResponse = await fetch('/app/import/api/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path, timestamp: ts, source: 'quick', force: false }),
+      body: JSON.stringify({ path, timestamp: ts }),
     });
 
     if (!startResponse.ok) {

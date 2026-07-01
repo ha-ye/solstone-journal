@@ -9,6 +9,7 @@ from pathlib import Path
 
 from solstone.apps.settings import copy as settings_copy
 from solstone.convey import create_app
+from solstone.convey.icons import lucide_svg
 
 
 def _write_facet(
@@ -17,6 +18,7 @@ def _write_facet(
     *,
     title: str,
     emoji: str = "TF",
+    icon: str = "",
     color: str = "#123456",
     muted: bool = False,
 ) -> None:
@@ -28,6 +30,8 @@ def _write_facet(
         "emoji": emoji,
         "color": color,
     }
+    if icon:
+        payload["icon"] = icon
     if muted:
         payload["muted"] = True
     (facet_dir / "facet.json").write_text(
@@ -103,6 +107,20 @@ def test_settings_facets_api_returns_all_facets(settings_env):
         "title": "Active Facet",
         "color": "#123456",
         "emoji": "TF",
+        "icon": "",
+        "icon_svg": None,
         "muted": False,
     }
     assert by_name["muted-facet"]["muted"] is True
+
+
+def test_settings_facets_api_returns_icon_override_svg(settings_env):
+    journal, client = _settings_client(settings_env)
+    _write_facet(journal, "icon-facet", title="Icon Facet", emoji="📚", icon="brain")
+
+    response = client.get("/app/settings/api/facets")
+
+    assert response.status_code == 200
+    facet = response.get_json()["facets"][0]
+    assert facet["icon"] == "brain"
+    assert facet["icon_svg"] == lucide_svg("brain")

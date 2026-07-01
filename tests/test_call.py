@@ -483,6 +483,17 @@ class TestFacetCRUD:
         assert payload["color"] == "#ff0000"
         assert payload["description"] == "A cool project"
 
+    def test_facet_create_with_icon(self, facet_journal):
+        """Create persists a Lucide icon override."""
+        result = runner.invoke(
+            call_app,
+            ["journal", "facet", "create", "Icon Project", "--icon", "coins"],
+        )
+        assert result.exit_code == 0
+        facet_file = facet_journal / "facets" / "icon-project" / "facet.json"
+        payload = json.loads(facet_file.read_text(encoding="utf-8"))
+        assert payload["icon"] == "coins"
+
     def test_facet_create_duplicate(self, facet_journal):
         """Create rejects duplicate slugs."""
         result = runner.invoke(call_app, ["journal", "facet", "create", "Test Facet"])
@@ -510,6 +521,55 @@ class TestFacetCRUD:
         payload = json.loads(facet_file.read_text(encoding="utf-8"))
         assert payload["description"] == "New desc"
         assert payload["emoji"] == "🎯"
+
+    def test_facet_update_with_icon_and_emoji(self, facet_journal):
+        """Update persists an icon override without mutating emoji behavior."""
+        result = runner.invoke(
+            call_app,
+            [
+                "journal",
+                "facet",
+                "update",
+                "test-facet",
+                "--emoji",
+                "🎯",
+                "--icon",
+                "brain",
+            ],
+        )
+        assert result.exit_code == 0
+        facet_file = facet_journal / "facets" / "test-facet" / "facet.json"
+        payload = json.loads(facet_file.read_text(encoding="utf-8"))
+        assert payload["emoji"] == "🎯"
+        assert payload["icon"] == "brain"
+
+    def test_facet_update_icon_clear(self, facet_journal):
+        """Update --icon '' clears the icon override."""
+        facet_file = facet_journal / "facets" / "test-facet" / "facet.json"
+        payload = json.loads(facet_file.read_text(encoding="utf-8"))
+        payload["icon"] = "brain"
+        facet_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+        result = runner.invoke(
+            call_app,
+            ["journal", "facet", "update", "test-facet", "--icon", ""],
+        )
+        assert result.exit_code == 0
+        payload = json.loads(facet_file.read_text(encoding="utf-8"))
+        assert "icon" not in payload
+
+    def test_facet_update_invalid_icon(self, facet_journal):
+        """Invalid icon names fail with the guiding validation message."""
+        facet_file = facet_journal / "facets" / "test-facet" / "facet.json"
+        before = facet_file.read_text(encoding="utf-8")
+
+        result = runner.invoke(
+            call_app,
+            ["journal", "facet", "update", "test-facet", "--icon", "bogus"],
+        )
+        assert result.exit_code == 1
+        assert "open the picker or see lucide.dev/icons" in result.output
+        assert facet_file.read_text(encoding="utf-8") == before
 
     def test_facet_update_not_found(self, facet_journal):
         """Update fails when facet does not exist."""

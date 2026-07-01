@@ -57,7 +57,8 @@
           "name",
           "role",
           "source",
-          "context"
+          "context",
+          "level"
         ],
         "properties": {
           "type": {
@@ -91,6 +92,14 @@
           },
           "context": {
             "type": "string"
+          },
+          "level": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
           }
         }
       }

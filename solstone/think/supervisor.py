@@ -33,6 +33,7 @@ from solstone.think.backup.engine import BACKUP_MAX_RUNTIME, BACKUP_RUN_CMD
 from solstone.think.callosum import CallosumConnection, CallosumServer
 from solstone.think.catchup_state import (
     KIND_DAILY_CATCHUP,
+    KIND_SEGMENT_REPAIR,
     STUCK_THRESHOLD,
     day_eligible_to_drain,
     reconcile_interrupted_attempts,
@@ -52,8 +53,8 @@ from solstone.think.processing import (
 )
 from solstone.think.providers.mlx_server import MLX_SERVER_PROCESS_NAME
 from solstone.think.readiness import START_TIME_TOLERANCE_S, clear_ready, signal_ready
+from solstone.think.runner import DEFAULT_TASK_MAX_RUNTIME, _command_partition
 from solstone.think.runner import ManagedProcess as RunnerManagedProcess
-from solstone.think.runner import _command_partition
 from solstone.think.sync_check import (
     DEFAULT_INTERVAL_SECONDS,
     SyncCheckSnapshot,
@@ -80,9 +81,6 @@ from solstone.think.utils import (
     write_service_port,
 )
 
-DEFAULT_TASK_MAX_RUNTIME = (
-    1800  # 30m wall-clock default for any uncapped TaskQueue partition
-)
 REACTIVE_TASK_CAPS = {
     "daily": 21600,  # 6h daily/from-scratch reprocess
     "segment": 4500,  # 75m per-segment think
@@ -2225,7 +2223,9 @@ def run_catchup_drain(
 
     def _eligible(day: str) -> bool:
         try:
-            return day_eligible_to_drain(day, KIND_DAILY_CATCHUP)
+            return day_eligible_to_drain(
+                day, KIND_DAILY_CATCHUP
+            ) and day_eligible_to_drain(day, KIND_SEGMENT_REPAIR)
         except Exception:
             logging.warning(
                 "Catchup eligibility check failed for %s; treating as eligible",

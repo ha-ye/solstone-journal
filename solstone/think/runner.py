@@ -24,16 +24,255 @@ import signal
 import subprocess
 import threading
 import time
+from collections import namedtuple
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+import psutil
+
 from solstone.think.callosum import CallosumConnection
 from solstone.think.utils import CHRONICLE_DIR, get_journal, now_ms
 
 logger = logging.getLogger(__name__)
+# Default wall-clock budget (30m) for a task run with no explicit cap.
+DEFAULT_TASK_MAX_RUNTIME = 1800
 KILL_REAP_GRACE_S = 0.5
+DESCENDANT_POLL_INTERVAL_S = 0.05
+DescendantRef = namedtuple("DescendantRef", ["pid", "pgid"])
+
+_SIGNAL_RACE_EXCEPTIONS = (
+    ProcessLookupError,
+    OSError,
+    psutil.NoSuchProcess,
+    psutil.AccessDenied,
+)
+
+
+class ProcessTreeNotReaped(subprocess.TimeoutExpired):
+    """Raised when a bounded process-tree termination cannot prove cleanup."""
+
+    reason: str
+    survivors: list[DescendantRef]
+
+    def __init__(
+        self,
+        cmd: list[str],
+        timeout: float,
+        *,
+        reason: str,
+        survivors: list[DescendantRef] | None = None,
+    ):
+        super().__init__(cmd, timeout)
+        self.reason = reason
+        self.survivors = list(survivors or [])
+
+    def __str__(self) -> str:
+        base = super().__str__()
+        if not self.survivors:
+            return f"{base}; process tree not reaped: reason={self.reason}"
+        survivor_text = ", ".join(_format_descendant(ref) for ref in self.survivors)
+        return (
+            f"{base}; process tree not reaped: reason={self.reason}; "
+            f"survivors=[{survivor_text}]"
+        )
+
+
+def _format_descendant(ref: DescendantRef) -> str:
+    if ref.pgid is None:
+        return f"pid={ref.pid}"
+    return f"pid={ref.pid} pgid={ref.pgid}"
+
+
+def snapshot_descendants(pid: int) -> list[DescendantRef]:
+    """Return recursive descendant pid/pgid refs for a process."""
+    try:
+        children = psutil.Process(pid).children(recursive=True)
+    except psutil.NoSuchProcess:
+        return []
+    except (psutil.AccessDenied, psutil.Error, OSError):
+        raise
+
+    descendants = []
+    for child in children:
+        try:
+            pgid = os.getpgid(child.pid)
+        except (ProcessLookupError, OSError):
+            pgid = None
+        descendants.append(DescendantRef(child.pid, pgid))
+    return descendants
+
+
+def _safe_signal_id(
+    value: int | None,
+    *,
+    own_pid: int,
+    own_pgid: int,
+    kind: str,
+    process_name: str,
+    sig: signal.Signals,
+) -> bool:
+    if value is None:
+        return False
+    if value <= 1 or value == own_pid or value == own_pgid:
+        logger.warning(
+            "%s terminate: refusing unsafe %s signal target id=%s sig=%s "
+            "own_pid=%s own_pgid=%s",
+            process_name,
+            kind,
+            value,
+            sig.name,
+            own_pid,
+            own_pgid,
+        )
+        return False
+    return True
+
+
+def _signal_pid(
+    pid: int | None,
+    sig: signal.Signals,
+    *,
+    own_pid: int,
+    own_pgid: int,
+    process_name: str,
+) -> None:
+    if not _safe_signal_id(
+        pid,
+        own_pid=own_pid,
+        own_pgid=own_pgid,
+        kind="pid",
+        process_name=process_name,
+        sig=sig,
+    ):
+        return
+    try:
+        os.kill(pid, sig)
+    except _SIGNAL_RACE_EXCEPTIONS:
+        pass
+
+
+def _signal_pgid(
+    pgid: int | None,
+    sig: signal.Signals,
+    *,
+    own_pid: int,
+    own_pgid: int,
+    process_name: str,
+) -> None:
+    if not _safe_signal_id(
+        pgid,
+        own_pid=own_pid,
+        own_pgid=own_pgid,
+        kind="pgid",
+        process_name=process_name,
+        sig=sig,
+    ):
+        return
+    try:
+        os.killpg(pgid, sig)
+    except _SIGNAL_RACE_EXCEPTIONS:
+        pass
+
+
+def _signal_parent_process(
+    process: subprocess.Popen,
+    sig: signal.Signals,
+    *,
+    own_pid: int,
+    own_pgid: int,
+    process_name: str,
+) -> None:
+    if not _safe_signal_id(
+        process.pid,
+        own_pid=own_pid,
+        own_pgid=own_pgid,
+        kind="pid",
+        process_name=process_name,
+        sig=sig,
+    ):
+        return
+    try:
+        if sig == signal.SIGTERM:
+            process.terminate()
+        else:
+            process.kill()
+    except _SIGNAL_RACE_EXCEPTIONS:
+        pass
+
+
+def _signal_descendants(
+    descendants: list[DescendantRef],
+    sig: signal.Signals,
+    *,
+    own_pid: int,
+    own_pgid: int,
+    process_name: str,
+) -> None:
+    for descendant in descendants:
+        _signal_pid(
+            descendant.pid,
+            sig,
+            own_pid=own_pid,
+            own_pgid=own_pgid,
+            process_name=process_name,
+        )
+
+    signaled_pgids = set()
+    for descendant in descendants:
+        if descendant.pgid in signaled_pgids:
+            continue
+        signaled_pgids.add(descendant.pgid)
+        _signal_pgid(
+            descendant.pgid,
+            sig,
+            own_pid=own_pid,
+            own_pgid=own_pgid,
+            process_name=process_name,
+        )
+
+
+def _descendant_alive(descendant: DescendantRef) -> bool:
+    try:
+        return psutil.Process(descendant.pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+    except (psutil.AccessDenied, OSError):
+        return True
+
+
+def _alive_descendants(descendants: list[DescendantRef]) -> list[DescendantRef]:
+    return [descendant for descendant in descendants if _descendant_alive(descendant)]
+
+
+def _poll_descendants_until_gone(
+    descendants: list[DescendantRef], deadline: float
+) -> list[DescendantRef]:
+    if not descendants:
+        return []
+
+    survivors = _alive_descendants(descendants)
+    while survivors:
+        now = time.monotonic()
+        if now >= deadline:
+            return survivors
+        time.sleep(min(DESCENDANT_POLL_INTERVAL_S, deadline - now))
+        survivors = _alive_descendants(descendants)
+    return []
+
+
+def _log_descendant_survivors(
+    process_name: str, reason: str, survivors: list[DescendantRef]
+) -> None:
+    for survivor in survivors:
+        logger.warning(
+            "%s terminate: descendant alive after signaling reason=%s pid=%s pgid=%s",
+            process_name,
+            reason,
+            survivor.pid,
+            survivor.pgid,
+        )
 
 
 def _get_journal_path() -> Path:
@@ -405,69 +644,182 @@ class ManagedProcess:
         return self.process.poll() is None
 
     def terminate(self, timeout: float = 15) -> int:
-        """Terminate the managed process and its session group.
+        """Terminate the managed process and its snapshotted process tree.
 
-        Sends SIGTERM to the immediate child and the process group. Waits up to
-        `timeout` seconds for graceful exit. If the process is still alive after
-        `timeout`, escalates to SIGKILL on the group and child, waits up to
-        `KILL_REAP_GRACE_S` for the kill to reap, then abandons the wait and
-        re-raises `subprocess.TimeoutExpired`.
+        Descendants are snapshotted before signaling so children that outlive
+        and are reparented away from the managed process can still be targeted.
+        SIGTERM is sent to the managed parent, parent process group, descendant
+        pids, and descendant process groups. If any live process remains after
+        the bounded graceful wait, SIGKILL is sent to the remaining tree targets
+        and reaping is bounded by `KILL_REAP_GRACE_S`.
 
         Args:
             timeout: Seconds to wait after SIGTERM before SIGKILL (default: 15).
 
         Returns:
-            Exit code on graceful termination (may be negative for signals,
-            e.g., -15 for SIGTERM).
+            Parent exit code when the parent and all snapshotted descendants
+            are reaped or gone.
 
         Raises:
-            subprocess.TimeoutExpired: Re-raised after SIGKILL when graceful
-                shutdown did not complete within `timeout`.
+            subprocess.TimeoutExpired: The original parent wait timeout is
+                re-raised after bounded SIGKILL escalation if the parent did not
+                reap after SIGTERM.
+            ProcessTreeNotReaped: Raised when the parent reaped but descendant
+                cleanup could not be proven or descendants survived SIGKILL.
         """
         logger.debug(f"Terminating {self.name} (PID {self.pid})...")
+        own_pid = os.getpid()
+        own_pgid = os.getpgrp()
         try:
-            pgid = os.getpgid(self.process.pid)
+            parent_pgid = os.getpgid(self.process.pid)
         except (ProcessLookupError, OSError):
-            pgid = None
+            parent_pgid = None
 
         try:
-            try:
-                self.process.terminate()
-            except (ProcessLookupError, OSError):
-                pass
-            if pgid is not None:
-                try:
-                    os.killpg(pgid, signal.SIGTERM)
-                except (ProcessLookupError, OSError):
-                    pass
+            descendants = snapshot_descendants(self.process.pid)
+            snapshot_error = None
+        except (psutil.AccessDenied, psutil.Error, OSError) as exc:
+            descendants = []
+            snapshot_error = exc
+            logger.warning(
+                "%s terminate: descendant snapshot uncertain pid=%s pgid=%s error=%s",
+                self.name,
+                self.process.pid,
+                parent_pgid,
+                exc.__class__.__name__,
+            )
+
+        deadline = time.monotonic() + timeout
+        parent_timeout = None
+        parent_alive = False
+        exit_code = None
+
+        _signal_parent_process(
+            self.process,
+            signal.SIGTERM,
+            own_pid=own_pid,
+            own_pgid=own_pgid,
+            process_name=self.name,
+        )
+        _signal_pgid(
+            parent_pgid,
+            signal.SIGTERM,
+            own_pid=own_pid,
+            own_pgid=own_pgid,
+            process_name=self.name,
+        )
+        _signal_descendants(
+            descendants,
+            signal.SIGTERM,
+            own_pid=own_pid,
+            own_pgid=own_pgid,
+            process_name=self.name,
+        )
+
+        try:
             exit_code = self.process.wait(timeout=timeout)
             logger.debug(f"{self.name} terminated gracefully with code {exit_code}")
-            return exit_code
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
+            parent_timeout = exc
+            parent_alive = True
             logger.warning(
-                f"{self.name} did not terminate after {timeout}s, force killing..."
+                "%s terminate: parent did not reap after %ss; "
+                "force killing pid=%s pgid=%s",
+                self.name,
+                timeout,
+                self.process.pid,
+                parent_pgid,
             )
-            if pgid is not None:
-                try:
-                    os.killpg(pgid, signal.SIGKILL)
-                except (ProcessLookupError, OSError):
-                    pass
-            try:
-                self.process.kill()
-            except (ProcessLookupError, OSError):
-                pass
-            try:
-                self.process.wait(timeout=KILL_REAP_GRACE_S)
-                logger.debug(f"{self.name} killed with code {self.process.returncode}")
-            except subprocess.TimeoutExpired:
-                logger.warning(
-                    "%s remained unreaped %.1fs after SIGKILL "
-                    "(likely D-state; supervisor exiting; SIGKILL guarantees "
-                    "eventual death)",
-                    self.name,
-                    KILL_REAP_GRACE_S,
+
+        graceful_survivors = []
+        if not parent_alive and snapshot_error is None and descendants:
+            graceful_survivors = _poll_descendants_until_gone(descendants, deadline)
+
+        if parent_alive or graceful_survivors:
+            if parent_alive:
+                _signal_parent_process(
+                    self.process,
+                    signal.SIGKILL,
+                    own_pid=own_pid,
+                    own_pgid=own_pgid,
+                    process_name=self.name,
                 )
-            raise
+                _signal_pgid(
+                    parent_pgid,
+                    signal.SIGKILL,
+                    own_pid=own_pid,
+                    own_pgid=own_pgid,
+                    process_name=self.name,
+                )
+
+            _signal_descendants(
+                descendants,
+                signal.SIGKILL,
+                own_pid=own_pid,
+                own_pgid=own_pgid,
+                process_name=self.name,
+            )
+
+            if parent_alive:
+                try:
+                    self.process.wait(timeout=KILL_REAP_GRACE_S)
+                    logger.debug(
+                        f"{self.name} killed with code {self.process.returncode}"
+                    )
+                except subprocess.TimeoutExpired:
+                    logger.warning(
+                        "%s remained unreaped %.1fs after SIGKILL "
+                        "pid=%s pgid=%s "
+                        "(likely D-state; supervisor exiting; SIGKILL guarantees "
+                        "eventual death)",
+                        self.name,
+                        KILL_REAP_GRACE_S,
+                        self.process.pid,
+                        parent_pgid,
+                    )
+
+            kill_survivors = []
+            if descendants:
+                kill_survivors = _poll_descendants_until_gone(
+                    descendants,
+                    time.monotonic() + KILL_REAP_GRACE_S,
+                )
+
+            if kill_survivors:
+                _log_descendant_survivors(
+                    self.name,
+                    "parent_timeout" if parent_alive else "survived_sigkill",
+                    kill_survivors,
+                )
+
+            if parent_alive:
+                raise parent_timeout
+
+            if kill_survivors:
+                raise ProcessTreeNotReaped(
+                    self.cmd,
+                    timeout,
+                    reason="survived_sigkill",
+                    survivors=kill_survivors,
+                )
+
+        if snapshot_error is not None:
+            logger.warning(
+                "%s terminate: cleanup not proven pid=%s pgid=%s "
+                "reason=cleanup_unproven",
+                self.name,
+                self.process.pid,
+                parent_pgid,
+            )
+            raise ProcessTreeNotReaped(
+                self.cmd,
+                timeout,
+                reason="cleanup_unproven",
+            )
+
+        if exit_code is None:
+            exit_code = self.process.returncode
+        return exit_code
 
     def cleanup(self) -> None:
         """Wait for output threads to finish and close log file.
@@ -529,7 +881,7 @@ def run_task(
     ref: str | None = None,
     callosum: CallosumConnection | None = None,
     day: str | None = None,
-) -> tuple[bool, int, Path]:
+) -> tuple[bool, int, Path, bool]:
     """Run a task to completion with automatic logging (blocking).
 
     Spawns process, waits for completion, cleans up resources.
@@ -546,18 +898,22 @@ def run_task(
             in that day's health directory instead of today's.
 
     Returns:
-        (success, exit_code, log_path) tuple where success = (exit_code == 0)
-        and log_path points to the process output log file.
+        (success, exit_code, log_path, timed_out) tuple. success is True
+        only when the process exited 0 AND did not exceed the wall-clock
+        ``timeout``; a timeout is always a failure regardless of the
+        post-termination exit code. log_path points to the process output
+        log file, and timed_out is True only when the wall-clock ``timeout``
+        was exceeded.
 
     Example:
-        success, code, log = run_task(
+        success, code, log, timed_out = run_task(
             ["sol", "generate", "20241101", "-f", "flow"],
             timeout=300,
         )
         # Logs to: {JOURNAL}/{YYYYMMDD}/health/{ref}_generate.log
 
         # With explicit correlation ID:
-        success, code, log = run_task(
+        success, code, log, timed_out = run_task(
             ["journal", "indexer", "--rescan"],
             ref="1730476800000",
         )
@@ -565,10 +921,12 @@ def run_task(
     """
     managed = ManagedProcess.spawn(cmd, env=env, ref=ref, callosum=callosum, day=day)
     log_path = managed.log_writer.path
+    timed_out = False
     try:
         exit_code = managed.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         logger.error(f"{managed.name} timed out after {timeout}s, terminating...")
+        timed_out = True
         exit_code = managed.terminate()
     finally:
         managed.cleanup()
@@ -576,4 +934,4 @@ def run_task(
     if exit_code != 0:
         logger.warning(f"{managed.name} exited with code {exit_code}")
 
-    return (exit_code == 0, exit_code, log_path)
+    return ((exit_code == 0) and not timed_out, exit_code, log_path, timed_out)

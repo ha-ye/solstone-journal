@@ -28,10 +28,10 @@ def _minimal_valid_stats(schema_mod):
     }
 
 
-def test_schema_version_is_6():
+def test_schema_version_is_7():
     schema_mod = importlib.import_module("solstone.think.stats_schema")
 
-    assert schema_mod.SCHEMA_VERSION == 6
+    assert schema_mod.SCHEMA_VERSION == 7
 
 
 def test_validate_passes_on_valid_output(tmp_path, monkeypatch):

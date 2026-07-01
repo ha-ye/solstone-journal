@@ -30,12 +30,16 @@ from solstone.think.journal_io import (
     read_json,
     write_json,
 )
-from solstone.think.utils import get_journal
+from solstone.think.utils import DATE_RE, get_journal
 
 LOG = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 _PROVENANCE_DIR = "talent-provenance"
+
+
+class UnsupportedProvenancePath(ValueError):
+    """Raised when a talent output path has no day-rooted provenance home."""
 
 
 def _canonical_json(value: Any) -> str:
@@ -58,6 +62,15 @@ def _journal_relative(path: Path) -> Path:
     return path.resolve().relative_to(journal)
 
 
+def _stem_day(output_path: Path, parts: tuple[str, ...]) -> str:
+    stem = Path(parts[-1]).stem
+    if not DATE_RE.fullmatch(stem):
+        raise UnsupportedProvenancePath(
+            f"unsupported talent output path for provenance: {output_path}"
+        )
+    return stem
+
+
 def _day_and_logical_output(output_path: Path) -> tuple[str, Path]:
     rel = _journal_relative(output_path)
     parts = rel.parts
@@ -67,7 +80,14 @@ def _day_and_logical_output(output_path: Path) -> tuple[str, Path]:
         facet = parts[1]
         day = parts[3]
         return day, Path("facets", facet, "activities", *parts[4:])
-    raise ValueError(f"unsupported talent output path for provenance: {output_path}")
+    # Day-rooted outputs whose day is the filename stem (it STAYS in logical).
+    if len(parts) == 3 and parts[0] == "reflections" and parts[1] == "weekly":
+        return _stem_day(output_path, parts), rel
+    if len(parts) == 4 and parts[0] == "facets" and parts[2] == "news":
+        return _stem_day(output_path, parts), rel
+    raise UnsupportedProvenancePath(
+        f"unsupported talent output path for provenance: {output_path}"
+    )
 
 
 def _base_dir(day: str) -> Path:
