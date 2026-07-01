@@ -7,7 +7,6 @@ import html
 import re
 
 from solstone.apps.network import copy
-from solstone.think.link import establish
 
 
 def _workspace_body(env) -> str:
@@ -53,9 +52,8 @@ def test_workspace_identity_scaffold_is_empty_and_guarded(link_env) -> None:
         "icons.every(icon => icon && icon.svg && icon.color && icon.color.hex)" in body
     )
     assert '<svg viewBox="0 0 24 24" fill="none" stroke="${icon.color.hex}"' in body
-    mark = establish.committed_mark().to_render_spec()
-    assert mark["icon1"]["svg"] not in body
-    assert mark["icon2"]["svg"] not in body
+    assert "link-mark-chip" not in match.group(1)
+    assert "<svg" not in match.group(1)
 
 
 def test_workspace_identity_copy_and_visible_terms(link_env) -> None:
