@@ -4,7 +4,7 @@
 """Frame extraction selection for vision analysis pipeline.
 
 Determines which categorized frames should receive detailed content extraction.
-Provides AI-based selection with random fallback.
+Provides AI-based selection with a deterministic max-temporal-spread fallback.
 
 The first qualified frame is always included regardless of selection results.
 """
@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import logging
-import random
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -40,8 +39,10 @@ def select_frames_for_extraction(
     The first qualified frame is always included, even if it exceeds max_extractions
     by one. This ensures we always have context from the start of the recording.
 
-    Category importance settings from config (high/normal/low/ignore) are passed
-    as advisory hints to the AI selection process but are not enforced programmatically.
+    Category importance settings from config are a hard filter: ``ignore`` drops
+    the category entirely; ``low`` keeps at most 2 frames per category;
+    ``normal``/``high`` are uncapped. The first frame is always re-added even
+    if its category is capped.
 
     Parameters
     ----------
@@ -65,7 +66,7 @@ def select_frames_for_extraction(
     if not categorized_frames:
         return []
 
-    # Load config overrides for AI hints (importance is advisory, not a filter)
+    # Load config overrides; importance is a hard per-category filter (see _apply_category_caps).
     config_overrides = _get_category_config()
 
     # Try AI selection if categories provided
@@ -79,6 +80,10 @@ def select_frames_for_extraction(
             selected = _fallback_select_frames(categorized_frames, max_extractions)
     else:
         selected = _fallback_select_frames(categorized_frames, max_extractions)
+
+    # Enforce hard per-category caps before guaranteeing the first frame,
+    # so the first frame is re-added even if its category is capped.
+    selected = _apply_category_caps(selected, categorized_frames, config_overrides)
 
     # Ensure first frame is always included
     first_frame_id = categorized_frames[0]["frame_id"]
@@ -101,6 +106,37 @@ def _get_category_config() -> dict[str, dict]:
 
     config = get_config()
     return config.get("describe", {}).get("categories", {})
+
+
+def _apply_category_caps(
+    selected_ids: list[int],
+    categorized_frames: list[dict[str, Any]],
+    config_overrides: dict[str, dict],
+) -> list[int]:
+    """Enforce hard per-category caps on a selection.
+
+    importance -> cap: ``ignore`` = 0 (dropped), ``low`` = 2 per category,
+    ``normal``/``high`` = uncapped. Frames are considered lowest-frame_id first,
+    so the surviving low-importance frames are deterministic.
+    """
+    id_to_category = {
+        f["frame_id"]: f.get("analysis", {}).get("primary") for f in categorized_frames
+    }
+    caps = {"ignore": 0, "low": 2}
+    counts: dict[str, int] = {}
+    kept: list[int] = []
+    for frame_id in sorted(selected_ids):
+        category = id_to_category.get(frame_id)
+        importance = config_overrides.get(category, {}).get("importance", "normal")
+        cap = caps.get(importance)
+        if cap == 0:
+            continue
+        if cap is not None:
+            if counts.get(category, 0) >= cap:
+                continue
+            counts[category] = counts.get(category, 0) + 1
+        kept.append(frame_id)
+    return kept
 
 
 def _build_extraction_guidance(
@@ -286,30 +322,39 @@ def _fallback_select_frames(
 ) -> list[int]:
     """Fallback frame selection when AI selection is unavailable.
 
-    If total frames <= max_extractions: returns all frames.
-    Otherwise: returns random sample of max_extractions frames.
-
-    Parameters
-    ----------
-    categorized_frames : list[dict]
-        List of categorized frame data.
-    max_extractions : int
-        Maximum number of frames to select.
-
-    Returns
-    -------
-    list[int]
-        Selected frame IDs.
+    If total frames <= max_extractions: returns all frame IDs (input order).
+    Otherwise: deterministically selects max_extractions frames spread across the
+    segment's timeline via greedy farthest-point sampling on the timestamp axis,
+    seeded with the lowest-frame_id frame; ties are broken by lowest frame_id.
     """
     if not categorized_frames:
         return []
 
     all_ids = [f["frame_id"] for f in categorized_frames]
-
     if len(all_ids) <= max_extractions:
         return all_ids
 
-    return random.sample(all_ids, max_extractions)
+    frames = [(f["frame_id"], float(f["timestamp"])) for f in categorized_frames]
+    seed = min(frames, key=lambda p: p[0])
+    selected = [seed]
+    selected_ts = [seed[1]]
+    remaining = [p for p in frames if p != seed]
+
+    while len(selected) < max_extractions and remaining:
+        best = None
+        best_key: tuple[float, int] | None = None
+        for frame_id, timestamp in remaining:
+            min_dist = min(abs(timestamp - ts) for ts in selected_ts)
+            # Maximize distance to the nearest selected frame; tie -> lowest frame_id.
+            key = (min_dist, -frame_id)
+            if best_key is None or key > best_key:
+                best_key = key
+                best = (frame_id, timestamp)
+        selected.append(best)
+        selected_ts.append(best[1])
+        remaining.remove(best)
+
+    return [frame_id for frame_id, _ in selected]
 
 
 __all__ = [
