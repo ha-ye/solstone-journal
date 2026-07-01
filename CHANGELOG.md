@@ -4,6 +4,13 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.19] - 2026-07-01
+
+### Fixed
+- a stretch of your day with nothing for sol to think about, like a quiet passage with no speech or one where your phone only had your location, used to keep the day from finishing. sol would keep re-trying that stretch and never mark the day done. now sol recognizes there's nothing there to read, marks that stretch done, and moves on, so the day completes.
+- if one step sol runs on a stretch of your day kept failing, it could hold the whole day open, re-attempted each time solstone caught up and never finishing. now sol sets a step aside after it fails enough times in a row, so the day completes, and leaves it there to try again later. your transcript and media stay in your journal the whole time.
+- asking sol to re-process part of a day is steadier now. it used to be able to get wedged partway and not restart, and now it recovers. and if an earlier version already left days stuck this way, running `journal backfill-processing-records` clears them so they can finish, previewing the change before you apply it.
+
 ## [0.6.18] - 2026-06-30
 
 ### Added

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "solstone"
-version = "0.6.18"
+version = "0.6.19"
 description = "Navigate Life Intelligently"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -174,7 +174,7 @@ journal-host = [
 
 # Run a journal here — the full host stack with CPU transcription (default).
 journal = [
-    "solstone-journal-host==0.6.18",
+    "solstone-journal-host==0.6.19",
     # CPU ONNX runtime: covers VAD + the WeSpeaker embedder everywhere, and the
     # parakeet STT on Linux/x86_64. Floor raised on x86_64 for the parakeet
     # backend; !=1.24.1 across the board (known-bad wheel).
@@ -187,7 +187,7 @@ journal = [
 # GPU wheel supplies the `onnxruntime` namespace (incl. CPU providers) for
 # VAD/embedder. Install this instead of [journal], not alongside it.
 journal-cuda = [
-    "solstone-journal-host==0.6.18",
+    "solstone-journal-host==0.6.19",
     "onnxruntime-gpu>=1.25.0",
     "nvidia-cuda-runtime-cu12",
     "nvidia-cudnn-cu12",
