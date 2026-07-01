@@ -119,7 +119,7 @@ journal-host = [
     "mistune",
     "python-frontmatter",
     "packaging",
-    "Pillow",
+    "Pillow>=11.0.0",
     "numpy",
     "av",
     "openai>=1.2.0",

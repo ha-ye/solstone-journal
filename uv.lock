@@ -4435,7 +4435,7 @@ requires-dist = [
     { name = "opentelemetry-semantic-conventions", marker = "extra == 'journal-host'", specifier = "==0.60b1" },
     { name = "packaging", marker = "extra == 'journal-host'" },
     { name = "pdf2image", marker = "extra == 'pdf'", specifier = ">=1.16.0" },
-    { name = "pillow", marker = "extra == 'journal-host'" },
+    { name = "pillow", marker = "extra == 'journal-host'", specifier = ">=11.0.0" },
     { name = "psutil" },
     { name = "pyopenssl", specifier = ">=24.0" },
     { name = "pypdf", marker = "extra == 'pdf'", specifier = ">=4.0.0" },

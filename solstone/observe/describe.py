@@ -106,6 +106,13 @@ def _winnow_decision(
     return (True, False, "kept")
 
 
+def _flattened_image_data(img: Image.Image):
+    get_flattened_data = getattr(img, "get_flattened_data", None)
+    if get_flattened_data is not None:
+        return get_flattened_data()
+    return img.getdata()
+
+
 class RequestType(Enum):
     """Type of vision analysis request."""
 
@@ -614,7 +621,7 @@ class VideoProcessor:
     def _dhash(self, img: Image.Image) -> int:
         """Compute 64-bit dHash (difference hash) for perceptual comparison."""
         small = img.resize(self.DHASH_SIZE, Image.BILINEAR).convert("L")
-        pixels = list(small.getdata())
+        pixels = list(_flattened_image_data(small))
         hash_val = 0
         for row in range(8):
             for col in range(8):
