@@ -10,11 +10,11 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import av
 import numpy as np
 import pytest
 import soundfile as sf
 
+from solstone.observe import utils as observe_utils
 from solstone.observe.transcribe import (
     DEFAULT_COMPUTE,
     DEFAULT_DEVICE,
@@ -26,7 +26,7 @@ from solstone.observe.transcribe import (
     build_statements_from_acoustic,
 )
 from solstone.observe.transcribe.main import EMBEDDER_NAME, _statements_to_jsonl
-from solstone.observe.utils import SAMPLE_RATE, load_audio
+from solstone.observe.utils import SAMPLE_RATE, AudioDecodeError, load_audio
 from solstone.observe.vad import VadResult
 from solstone.think.journal_io.errors import MalformedDataError
 from solstone.think.journal_io.npz import load_npz
@@ -417,8 +417,35 @@ class TestLoadAudio:
         message = str(excinfo.value)
         assert str(path) in message
         assert "(.wav)" in message
-        assert excinfo.value.__cause__ is not None
-        assert isinstance(excinfo.value.__cause__, av.error.FFmpegError)
+        assert isinstance(excinfo.value, AudioDecodeError)
+
+    def test_load_audio_reports_worker_signal_exit(self, tmp_path, monkeypatch):
+        path = tmp_path / "crash.m4a"
+        path.write_bytes(b"truncated")
+
+        def fake_decode(*args, **kwargs):
+            raise AudioDecodeError("worker exited from signal 11")
+
+        monkeypatch.setattr(observe_utils, "_decode_audio_in_worker", fake_decode)
+
+        with pytest.raises(AudioDecodeError) as excinfo:
+            load_audio(path)
+
+        assert "worker exited from signal 11" in str(excinfo.value)
+
+    def test_load_audio_reports_malformed_worker_payload(self, tmp_path, monkeypatch):
+        path = tmp_path / "bad-payload.m4a"
+        path.write_bytes(b"payload")
+
+        def fake_decode(*args, **kwargs):
+            return {"ok": True}
+
+        monkeypatch.setattr(observe_utils, "_decode_audio_in_worker", fake_decode)
+
+        with pytest.raises(AudioDecodeError) as excinfo:
+            load_audio(path)
+
+        assert "invalid worker sample rate" in str(excinfo.value)
 
     def test_load_audio_rejects_empty_decode(self, tmp_path):
         path = tmp_path / "not-audio.flac"

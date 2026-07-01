@@ -36,7 +36,7 @@ from solstone.observe.processing_record import (
     STATE_EMPTY,
     STATE_FAILED,
 )
-from solstone.observe.utils import SAMPLE_RATE
+from solstone.observe.utils import SAMPLE_RATE, AudioDecodeError
 from solstone.think.cluster import (
     cluster_segments,
     read_segment_data_state,
@@ -503,6 +503,56 @@ def test_ac3_silent_audio_records_empty_no_stt(segment_journal, monkeypatch):
     assert filtered_stt.call_count == 0
     assert not filter_audio.exists()
     assert not filtered_jsonl.exists()
+
+
+def test_corrupt_audio_decode_records_failed_without_vad_or_stt(
+    segment_journal,
+    monkeypatch,
+):
+    from solstone.observe import processing_record
+
+    transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
+    vad_module = importlib.import_module("solstone.observe.vad")
+    segment = _segment_dir(segment_journal)
+    audio_path = segment / "audio.m4a"
+    audio_path.write_bytes(b"truncated")
+
+    stt_spy = Mock(return_value=[])
+    vad_spy = Mock()
+    monkeypatch.setattr(processing_record, "now_iso_utc", lambda: FIXED_NOW)
+    monkeypatch.setattr(
+        transcribe_main,
+        "callosum_send",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        transcribe_main,
+        "load_audio",
+        Mock(side_effect=AudioDecodeError("worker exited from signal 11")),
+    )
+    monkeypatch.setattr(transcribe_main, "stt_transcribe", stt_spy)
+    monkeypatch.setattr(vad_module, "run_vad", vad_spy)
+
+    transcribe_main._process_one(
+        audio_path,
+        argparse.Namespace(backend=None, cpu=False, model=None, redo=False),
+        {"preserve_all": True},
+        "whisper",
+        [],
+    )
+
+    jsonl_path = audio_path.with_suffix(".jsonl")
+    record = _read_processing_record(jsonl_path)
+    _assert_processing_record(
+        record,
+        state=STATE_FAILED,
+        reason_code=REASON_CORRUPT_INPUT,
+        handler=HANDLER_TRANSCRIBE,
+    )
+    assert len(jsonl_path.read_text(encoding="utf-8").splitlines()) == 1
+    assert stt_spy.call_count == 0
+    assert vad_spy.call_count == 0
+    assert read_segment_data_state(DAY, SEGMENT) == {"audio": DataState.FAILED.value}
 
 
 def test_ac4_corrupt_screen_is_failed_distinct_from_empty(segment_journal, monkeypatch):

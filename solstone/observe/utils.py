@@ -9,9 +9,11 @@ import datetime
 import hashlib
 import json
 import logging
+import multiprocessing
 import os
 import random
 import re
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -39,6 +41,10 @@ PDF_EXTENSIONS = tuple(_PDF_EXTENSIONS)
 # Pre-resize images to this max longest-side before VLM analysis. Images already
 # at or below this dimension pass through unchanged.
 _MAX_VLM_DIM = 1920
+
+
+class AudioDecodeError(RuntimeError):
+    """Audio decode failed in the isolated PyAV worker."""
 
 
 def resize_for_vlm(img: "Image.Image") -> "Image.Image":
@@ -72,7 +78,7 @@ def audio_to_flac_bytes(audio: np.ndarray, sample_rate: int) -> bytes:
     return buf.getvalue()
 
 
-def load_audio(raw_path: Path, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
+def _load_audio_direct(raw_path: Path, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
     """Load audio file into a numpy buffer using PyAV.
 
     All supported formats are decoded through PyAV. For M4A files from sck-cli
@@ -193,6 +199,112 @@ def load_audio(raw_path: Path, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
         logger.info(f"  Mixed {len(stream_data)} streams -> {len(mixed)} samples")
 
     return mixed.astype(np.float32)
+
+
+def _audio_decode_child(raw_path: str, sample_rate: int, connection) -> None:
+    try:
+        audio = _load_audio_direct(Path(raw_path), sample_rate)
+        connection.send(
+            {
+                "ok": True,
+                "sample_rate": sample_rate,
+                "dtype": str(audio.dtype),
+                "shape": list(audio.shape),
+                "audio": audio,
+            }
+        )
+    except BaseException as e:
+        connection.send({"ok": False, "error": f"{type(e).__name__}: {e}"})
+    finally:
+        connection.close()
+
+
+def _worker_context() -> multiprocessing.context.BaseContext:
+    start_methods = multiprocessing.get_all_start_methods()
+    if threading.active_count() == 1 and "fork" in start_methods:
+        return multiprocessing.get_context("fork")
+    if "forkserver" in start_methods:
+        return multiprocessing.get_context("forkserver")
+    return multiprocessing.get_context()
+
+
+def _decode_audio_in_worker(raw_path: Path, sample_rate: int) -> dict:
+    ctx = _worker_context()
+    parent_conn, child_conn = ctx.Pipe(duplex=False)
+    process = ctx.Process(
+        target=_audio_decode_child,
+        args=(str(raw_path), sample_rate, child_conn),
+    )
+    process.start()
+    child_conn.close()
+
+    payload = None
+    try:
+        while process.is_alive():
+            if parent_conn.poll(0.05):
+                payload = parent_conn.recv()
+                break
+        process.join()
+        if payload is None and parent_conn.poll():
+            payload = parent_conn.recv()
+    finally:
+        parent_conn.close()
+        if process.is_alive():
+            process.terminate()
+            process.join()
+
+    exitcode = process.exitcode
+    if exitcode:
+        if exitcode < 0:
+            raise AudioDecodeError(f"worker exited from signal {-exitcode}")
+        raise AudioDecodeError(f"worker exited with code {exitcode}")
+    if payload is None:
+        raise AudioDecodeError("worker produced no decode payload")
+    return payload
+
+
+def load_audio(raw_path: Path, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
+    """Load audio file through an isolated PyAV decode worker."""
+    import numpy as np
+
+    raw_path = Path(raw_path)
+    suffix = raw_path.suffix.lower()
+    try:
+        payload = _decode_audio_in_worker(raw_path, sample_rate)
+    except AudioDecodeError as e:
+        raise AudioDecodeError(f"failed to decode {raw_path} ({suffix}): {e}") from e
+
+    if not isinstance(payload, dict):
+        raise AudioDecodeError(
+            f"failed to decode {raw_path} ({suffix}): malformed worker payload"
+        )
+    if not payload.get("ok"):
+        error = payload.get("error") or "unknown worker decode error"
+        raise AudioDecodeError(f"failed to decode {raw_path} ({suffix}): {error}")
+    if payload.get("sample_rate") != sample_rate:
+        raise AudioDecodeError(
+            f"failed to decode {raw_path} ({suffix}): invalid worker sample rate"
+        )
+    if payload.get("dtype") != "float32":
+        raise AudioDecodeError(
+            f"failed to decode {raw_path} ({suffix}): invalid worker dtype"
+        )
+    shape = payload.get("shape")
+    audio = payload.get("audio")
+    if not isinstance(shape, list) or len(shape) != 1 or not isinstance(shape[0], int):
+        raise AudioDecodeError(
+            f"failed to decode {raw_path} ({suffix}): invalid worker shape"
+        )
+    if (
+        not isinstance(audio, np.ndarray)
+        or audio.dtype != np.float32
+        or audio.ndim != 1
+        or list(audio.shape) != shape
+    ):
+        raise AudioDecodeError(
+            f"failed to decode {raw_path} ({suffix}): invalid decoded audio"
+        )
+    return audio
 
 
 def get_segment_key(media_path: Path) -> str | None:

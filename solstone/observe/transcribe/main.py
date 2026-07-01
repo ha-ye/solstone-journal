@@ -75,10 +75,12 @@ from solstone.apps.speakers.encoder_config import (
 )
 from solstone.observe.processing_record import (
     HANDLER_TRANSCRIBE,
+    REASON_CORRUPT_INPUT,
     REASON_NO_DECODABLE_AUDIO,
     REASON_OK,
     STATE_ANALYZED,
     STATE_EMPTY,
+    STATE_FAILED,
     build_processing_record,
 )
 from solstone.observe.transcribe import (
@@ -97,7 +99,12 @@ from solstone.observe.transcribe.whisper import (
     DEFAULT_DEVICE,
     DEFAULT_MODEL,
 )
-from solstone.observe.utils import SAMPLE_RATE, get_segment_key, load_audio
+from solstone.observe.utils import (
+    SAMPLE_RATE,
+    AudioDecodeError,
+    get_segment_key,
+    load_audio,
+)
 from solstone.think.callosum import callosum_send
 from solstone.think.journal_io import write_text
 from solstone.think.journal_io.npz import write_npz
@@ -613,6 +620,28 @@ def _write_empty_processing_jsonl(
     write_text(jsonl_path, "\n".join(lines) + "\n")
 
 
+def _write_failed_processing_jsonl(
+    raw_path: Path,
+    jsonl_path: Path,
+    *,
+    reason_code: str,
+) -> None:
+    record = build_processing_record(
+        state=STATE_FAILED,
+        reason_code=reason_code,
+        handler=HANDLER_TRANSCRIBE,
+        input_size=raw_path.stat().st_size,
+    )
+    lines = _statements_to_jsonl(
+        [],
+        f"{raw_path.stem}{raw_path.suffix}",
+        datetime.datetime.min,
+        {},
+        processing_record=record,
+    )
+    write_text(jsonl_path, "\n".join(lines) + "\n")
+
+
 def process_audio(
     raw_path: Path,
     audio_buffer: np.ndarray,
@@ -933,7 +962,40 @@ def _process_one(
     from solstone.observe.vad import reduce_audio, run_vad
 
     # Load audio once - handles M4A multi-stream mixing
-    audio_buffer = load_audio(audio_path)
+    try:
+        audio_buffer = load_audio(audio_path)
+    except AudioDecodeError as e:
+        logging.error("Failed to decode %s: %s", audio_path, e)
+        jsonl_path = _get_jsonl_path(audio_path)
+        _write_failed_processing_jsonl(
+            audio_path,
+            jsonl_path,
+            reason_code=REASON_CORRUPT_INPUT,
+        )
+        try:
+            journal_path = Path(get_journal())
+            try:
+                rel_input = journal_relative_path(journal_path, audio_path)
+            except ValueError:
+                rel_input = audio_path
+            event = {
+                "input": str(rel_input),
+                "outcome": "failed",
+                "error": f"{type(e).__name__}: {e}",
+            }
+            segment = get_segment_key(audio_path)
+            day = day_from_path(audio_path)
+            observer = os.getenv("OBSERVER_NAME")
+            if day:
+                event["day"] = day
+            if segment:
+                event["segment"] = segment
+            if observer:
+                event["observer"] = observer
+            callosum_send("observe", "transcribed", **event)
+        except Exception:
+            logging.exception("Failed to emit decode failure event")
+        return
 
     # Stage 1: Run VAD to detect speech (lightweight, before loading STT model)
     vad_result = run_vad(audio_buffer, min_speech_seconds=min_speech_seconds)
