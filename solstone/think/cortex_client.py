@@ -30,6 +30,7 @@ class CortexSpawnUnavailable(Exception):
 
 # Module-level state for monotonic timestamp generation
 _last_ts = 0
+_last_ts_lock = threading.Lock()
 
 
 def _find_use_file(talents_dir: Path, use_id: str) -> tuple[Path | None, str]:
@@ -74,20 +75,21 @@ def cortex_request(
 
     # Generate monotonic timestamp in milliseconds, ensuring uniqueness
     global _last_ts
-    if use_id is None:
-        ts = now_ms()
+    with _last_ts_lock:
+        if use_id is None:
+            ts = now_ms()
 
-        if ts <= _last_ts:
-            ts = _last_ts + 1
+            if ts <= _last_ts:
+                ts = _last_ts + 1
 
-        _last_ts = ts
-        use_id = str(ts)
-    else:
-        if not use_id.isdigit():
-            raise ValueError("use_id must be a millisecond timestamp string")
-        ts = int(use_id)
-        if ts > _last_ts:
             _last_ts = ts
+            use_id = str(ts)
+        else:
+            if not use_id.isdigit():
+                raise ValueError("use_id must be a millisecond timestamp string")
+            ts = int(use_id)
+            if ts > _last_ts:
+                _last_ts = ts
 
     # Build request object
     request = {

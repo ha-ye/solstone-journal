@@ -14,10 +14,12 @@ import argparse
 import fnmatch
 import json
 import logging
+import os
 import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -54,10 +56,13 @@ from solstone.think.pipeline_health import (
     DeterministicFailure,
     classify_segment_completion,
     is_floor_talent_capped,
+    lookup_segment_progress,
     read_completed_since,
     read_completed_units,
     read_daily_deterministic_failures,
     read_segment_progress,
+    segment_fully_sensed,
+    segment_fully_thought,
 )
 from solstone.think.runner import DEFAULT_TASK_MAX_RUNTIME, run_task
 from solstone.think.sense_splitter import (
@@ -104,6 +109,7 @@ class ThinkingJSONLWriter:
     def __init__(self, path: str | None = None) -> None:
         self.file = None
         self.skip_count = 0
+        self.lock = threading.Lock()
         if path:
             try:
                 Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -115,27 +121,32 @@ class ThinkingJSONLWriter:
         if not self.file:
             return
         data = {"event": event, "ts": now_ms(), **fields}
-        if event == "talent.skip":
-            self.skip_count += 1
-        try:
-            self.file.write(json.dumps(data, ensure_ascii=False) + "\n")
-            self.file.flush()
-        except OSError as exc:
-            logging.warning(
-                "Failed to write think JSONL sidecar %s: %s", self.file.name, exc
-            )
+        with self.lock:
+            if event == "talent.skip":
+                self.skip_count += 1
+            try:
+                self.file.write(json.dumps(data, ensure_ascii=False) + "\n")
+                self.file.flush()
+            except OSError as exc:
+                logging.warning(
+                    "Failed to write think JSONL sidecar %s: %s", self.file.name, exc
+                )
 
     def close(self) -> None:
         if self.file:
-            try:
-                self.file.close()
-            except OSError as exc:
-                logging.warning(
-                    "Failed to close think JSONL sidecar %s: %s", self.file.name, exc
-                )
+            with self.lock:
+                try:
+                    self.file.close()
+                except OSError as exc:
+                    logging.warning(
+                        "Failed to close think JSONL sidecar %s: %s",
+                        self.file.name,
+                        exc,
+                    )
 
 
 _jsonl: ThinkingJSONLWriter | None = None
+SEGMENT_WORKERS_MAX = 32
 
 
 def _jsonl_log(event: str, **fields) -> None:
@@ -432,6 +443,193 @@ def _flush_batch_state_machines(
             max_concurrency=max_concurrency,
             skip_activity_prompts=skip_activity_prompts,
         )
+
+
+def _default_segment_workers() -> int:
+    """Return the default segment-level worker count for repair mode."""
+    cpu_count = os.cpu_count() or 2
+    return max(1, min(8, cpu_count // 2))
+
+
+def _select_segment_repair_targets(
+    day: str,
+    segments: list[dict],
+    *,
+    force_all: bool,
+) -> tuple[list[dict], dict[str, int]]:
+    """Select runnable segment-thinking repair targets.
+
+    Normal repair mode targets only fully-sensed segments whose thinking is not
+    complete. ``force_all`` preserves refresh/from-scratch semantics.
+    """
+    counts = {
+        "total": len(segments),
+        "selected": 0,
+        "complete": 0,
+        "raw_blocked": 0,
+    }
+    if force_all:
+        selected = list(segments)
+        counts["selected"] = len(selected)
+        return selected, counts
+
+    progress = read_segment_progress(day)
+    selected: list[dict] = []
+    for seg in segments:
+        if not segment_fully_sensed(seg.get("data_state", {})):
+            counts["raw_blocked"] += 1
+            continue
+
+        key = seg["key"]
+        stream = seg.get("stream")
+        segment_progress = lookup_segment_progress(progress, stream, key)
+        complete, _reason = segment_fully_thought(segment_progress)
+        if complete:
+            counts["complete"] += 1
+            continue
+
+        selected.append(seg)
+
+    counts["selected"] = len(selected)
+    return selected, counts
+
+
+def _read_segment_sense_json(day: str, stream: str | None, segment: str) -> dict | None:
+    path = get_output_path(
+        day_path(day),
+        "sense",
+        segment=segment,
+        output_format="json",
+        stream=stream,
+    )
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        logging.debug(
+            "No sense output for %s/%s/%s during activity replay", day, stream, segment
+        )
+        return None
+    except (json.JSONDecodeError, OSError):
+        logging.warning(
+            "Failed to load sense output for %s/%s/%s during activity replay",
+            day,
+            stream,
+            segment,
+            exc_info=True,
+        )
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _replay_activity_state_for_segments(
+    *,
+    day: str,
+    segments: list[dict],
+    refresh: bool,
+    verbose: bool,
+    max_concurrency: int,
+    skip_activity_prompts: bool,
+) -> None:
+    """Replay activity state chronologically from persisted Sense outputs."""
+    batch_state_machines: dict[str | None, ActivityStateMachine] = {}
+    for seg in segments:
+        stream = seg.get("stream")
+        segment = seg["key"]
+        sense_json = _read_segment_sense_json(day, stream, segment)
+        if sense_json is None:
+            continue
+        sm = batch_state_machines.get(stream)
+        if sm is None:
+            sm = ActivityStateMachine()
+            batch_state_machines[stream] = sm
+        _run_activity_state_tail(
+            sm,
+            sense_json,
+            segment,
+            day,
+            "segment",
+            refresh=refresh,
+            verbose=verbose,
+            max_concurrency=max_concurrency,
+            skip_activity_prompts=skip_activity_prompts,
+        )
+
+    _flush_batch_state_machines(
+        batch_state_machines,
+        day,
+        refresh=refresh,
+        verbose=verbose,
+        max_concurrency=max_concurrency,
+        skip_activity_prompts=skip_activity_prompts,
+    )
+
+
+def _run_segment_repair_batch(
+    *,
+    day: str,
+    segments: list[dict],
+    refresh: bool,
+    verbose: bool,
+    max_concurrency: int,
+    segment_workers: int,
+    timeout: int | None,
+    skip_activity_prompts: bool,
+    skip_talents: frozenset[str],
+) -> tuple[int, int]:
+    """Run selected segment repairs with bounded segment-level parallelism."""
+    if not segments:
+        return (0, 0)
+
+    workers = max(1, min(segment_workers, len(segments)))
+    batch_success = 0
+    batch_failed = 0
+    completed = 0
+    total = len(segments)
+    status_lock = threading.Lock()
+
+    def _run_one(seg: dict) -> tuple[int, int]:
+        seg_key = seg["key"]
+        seg_stream = seg.get("stream")
+        logging.info(
+            "Processing repair segment: %s (%s-%s)",
+            seg_key,
+            seg.get("start", "?"),
+            seg.get("end", "?"),
+        )
+        success, failed, _fn = run_segment_sense(
+            day=day,
+            segment=seg_key,
+            refresh=refresh,
+            verbose=verbose,
+            max_concurrency=max_concurrency,
+            stream=seg_stream,
+            timeout=timeout,
+            state_machine=None,
+            # Activity state is replayed once across the full chronological day
+            # after parallel repairs; worker threads must not mutate rolling state.
+            skip_activity_prompts=True,
+            skip_talents=skip_talents,
+            live=False,
+            predecessor=resolve_predecessor(day, seg_stream, seg_key),
+        )
+        return success, failed
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_segment = {executor.submit(_run_one, seg): seg for seg in segments}
+        for future in as_completed(future_to_segment):
+            seg = future_to_segment[future]
+            try:
+                success, failed = future.result()
+            except Exception:
+                logging.exception("Segment %s failed with exception", seg["key"])
+                success, failed = 0, 1
+            with status_lock:
+                completed += 1
+                batch_success += success
+                batch_failed += failed
+                _update_status(segments_completed=completed, segments_total=total)
+
+    return batch_success, batch_failed
 
 
 def _log_skip(name: str, reason: str, detail: str, **extra) -> None:
@@ -3477,6 +3675,16 @@ def parse_args() -> argparse.ArgumentParser:
         help="Disable per-batch agent wait timeout in --segments mode",
     )
     parser.add_argument(
+        "--segment-workers",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Max concurrent segment repair workers in --segments mode "
+            "(default: half CPU capped at 8; valid 1-32)"
+        ),
+    )
+    parser.add_argument(
         "--no-activity-prompts",
         action="store_true",
         help=(
@@ -3592,6 +3800,11 @@ def main() -> None:
     if args.no_activity_prompts and args.activity:
         parser.error("--no-activity-prompts cannot be combined with --activity")
 
+    if args.segment_workers is not None and not (
+        1 <= args.segment_workers <= SEGMENT_WORKERS_MAX
+    ):
+        parser.error(f"--segment-workers must be between 1 and {SEGMENT_WORKERS_MAX}")
+
     skip_talents: frozenset[str] = frozenset(
         name.strip() for name in (args.skip_talents or "").split(",") if name.strip()
     )
@@ -3621,6 +3834,14 @@ def main() -> None:
         parser.error(
             "--cadence is incompatible with --segment, --segments, --activity, --flush, and --weekly"
         )
+
+    if args.segments:
+        segment_workers = args.segment_workers or _default_segment_workers()
+        if args.jobs == 0 and segment_workers > 1:
+            parser.error(
+                "--jobs 0 is incompatible with multi-worker --segments; "
+                "set --jobs to a positive bound or --segment-workers 1"
+            )
 
     if args.dry_run:
         dry_run(
@@ -3710,51 +3931,92 @@ def main() -> None:
                 sys.exit(0)
 
             total = len(segments)
-            logging.info(f"Processing {total} segments for {day}")
-            emit("segments_started", day=day, count=total)
-            _update_status(segments_total=total, segments_completed=0)
-
             batch_start = time.time()
-            batch_success = 0
-            batch_failed = 0
-            batch_state_machines: dict = {}
-
-            for i, seg in enumerate(segments, 1):
-                seg_key = seg["key"]
-                seg_stream = seg.get("stream")
-                sm = batch_state_machines.get(seg_stream)
-                if sm is None:
-                    sm = ActivityStateMachine()
-                    batch_state_machines[seg_stream] = sm
-                logging.info(
-                    f"Processing segment {i}/{total}: {seg_key} ({seg['start']}-{seg['end']})"
+            force_all_segments = args.refresh or args.from_scratch
+            try:
+                selected_segments, repair_counts = _select_segment_repair_targets(
+                    day,
+                    segments,
+                    force_all=force_all_segments,
                 )
-                try:
-                    success, failed, _fn = run_segment_sense(
-                        day=day,
-                        segment=seg_key,
-                        refresh=args.refresh,
-                        verbose=args.verbose,
-                        max_concurrency=args.jobs,
-                        stream=seg_stream,
-                        timeout=None if args.no_timeout else 610,
-                        state_machine=sm,
-                        skip_activity_prompts=args.no_activity_prompts,
-                        skip_talents=skip_talents,
-                        live=False,
-                        predecessor=resolve_predecessor(day, seg_stream, seg_key),
-                    )
-                    batch_success += success
-                    batch_failed += failed
-                    _update_status(segments_completed=i, segments_total=total)
-                except Exception:
-                    logging.exception(f"Segment {seg_key} failed with exception")
-                    batch_failed += 1
-                    _update_status(segments_completed=i, segments_total=total)
+            except Exception:
+                logging.exception("Failed to select segment repair targets for %s", day)
+                _run_result["failed"] = 1
+                sys.exit(1)
 
-            _flush_batch_state_machines(
-                batch_state_machines,
+            selected = len(selected_segments)
+            segment_workers = args.segment_workers or _default_segment_workers()
+            logging.info(
+                "Segment repair targets for %s: selected=%d complete=%d "
+                "raw_blocked=%d total=%d workers=%d jobs=%s",
                 day,
+                selected,
+                repair_counts["complete"],
+                repair_counts["raw_blocked"],
+                total,
+                min(segment_workers, max(selected, 1)),
+                args.jobs,
+            )
+            emit(
+                "segments_started",
+                day=day,
+                count=selected,
+                total=total,
+                complete=repair_counts["complete"],
+                raw_blocked=repair_counts["raw_blocked"],
+                workers=min(segment_workers, max(selected, 1)),
+            )
+            _update_status(segments_total=selected, segments_completed=0)
+
+            if selected == 0:
+                duration_ms = int((time.time() - batch_start) * 1000)
+                if repair_counts["raw_blocked"]:
+                    logging.info(
+                        "No runnable segment repair targets for %s: "
+                        "%d complete, %d raw-media-blocked, %d total",
+                        day,
+                        repair_counts["complete"],
+                        repair_counts["raw_blocked"],
+                        total,
+                    )
+                else:
+                    logging.info(
+                        "All %d segment(s) already fully thought for %s", total, day
+                    )
+                emit(
+                    "segments_completed",
+                    day=day,
+                    count=0,
+                    total=total,
+                    success=0,
+                    failed=0,
+                    duration_ms=duration_ms,
+                )
+                day_log(
+                    day,
+                    "think --segments selected=0 "
+                    f"complete={repair_counts['complete']} "
+                    f"raw_blocked={repair_counts['raw_blocked']} failed=0",
+                )
+                _run_result["success"] = 0
+                _run_result["failed"] = 0
+                sys.exit(0)
+
+            batch_success, batch_failed = _run_segment_repair_batch(
+                day=day,
+                segments=selected_segments,
+                refresh=args.refresh,
+                verbose=args.verbose,
+                max_concurrency=args.jobs,
+                segment_workers=segment_workers,
+                timeout=None if args.no_timeout else 610,
+                skip_activity_prompts=args.no_activity_prompts,
+                skip_talents=skip_talents,
+            )
+
+            _replay_activity_state_for_segments(
+                day=day,
+                segments=segments,
                 refresh=args.refresh,
                 verbose=args.verbose,
                 max_concurrency=args.jobs,
@@ -3764,21 +4026,39 @@ def main() -> None:
             duration_ms = int((time.time() - batch_start) * 1000)
             logging.info(
                 f"All segments completed in {duration_ms}ms: "
-                f"{batch_success} succeeded, {batch_failed} failed across {total} segments"
+                f"{batch_success} succeeded, {batch_failed} failed across "
+                f"{selected}/{total} selected segments"
             )
             emit(
                 "segments_completed",
                 day=day,
-                count=total,
+                count=selected,
+                total=total,
                 success=batch_success,
                 failed=batch_failed,
+                complete=repair_counts["complete"],
+                raw_blocked=repair_counts["raw_blocked"],
                 duration_ms=duration_ms,
             )
 
             if args.refresh:
-                day_log(day, f"think --segments --refresh failed={batch_failed}")
+                day_log(
+                    day,
+                    f"think --segments --refresh selected={selected} failed={batch_failed}",
+                )
+            elif args.from_scratch:
+                day_log(
+                    day,
+                    "think --segments --from-scratch "
+                    f"selected={selected} failed={batch_failed}",
+                )
             else:
-                day_log(day, f"think --segments failed={batch_failed}")
+                day_log(
+                    day,
+                    f"think --segments selected={selected} "
+                    f"complete={repair_counts['complete']} "
+                    f"raw_blocked={repair_counts['raw_blocked']} failed={batch_failed}",
+                )
 
             _run_result["success"] = batch_success
             _run_result["failed"] = batch_failed
