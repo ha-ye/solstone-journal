@@ -19,6 +19,8 @@ from solstone.observe.processing_record import (
 )
 from solstone.think.cluster import cluster_segments
 from solstone.think.pipeline_health import (
+    CAP,
+    MIN_SPAN_MS,
     SEGMENT_FLOOR_TALENTS,
     SEGMENT_NONGATING_TALENTS,
     SegmentProgress,
@@ -528,6 +530,7 @@ def test_segment_fully_thought_idle_short_circuits():
         dispatched=frozenset({"sense"}),
         completed=frozenset({"sense"}),
         unconfigured=frozenset(),
+        capped=frozenset(),
     )
 
     assert segment_fully_thought(progress) == (True, None)
@@ -541,6 +544,7 @@ def test_segment_fully_thought_redundant_short_circuits():
         dispatched=frozenset({"sense"}),
         completed=frozenset({"sense"}),
         unconfigured=frozenset(),
+        capped=frozenset(),
     )
 
     assert segment_fully_thought(progress) == (True, None)
@@ -554,6 +558,7 @@ def test_segment_fully_thought_requires_floor_after_sense():
         dispatched=frozenset({"sense"}),
         completed=frozenset({"sense"}),
         unconfigured=frozenset(),
+        capped=frozenset(),
     )
 
     assert segment_fully_thought(progress) == (False, "floor:documents")
@@ -588,6 +593,7 @@ def test_segment_fully_thought_does_not_require_detection_before_activation():
         dispatched=frozenset({"sense", "documents"}),
         completed=frozenset({"sense", "documents"}),
         unconfigured=frozenset(),
+        capped=frozenset(),
     )
 
     assert segment_fully_thought(progress) == (True, None)
@@ -601,6 +607,7 @@ def test_segment_fully_thought_does_not_require_rolling_talents():
         dispatched=frozenset({"sense", "documents"}),
         completed=frozenset({"sense", "documents"}),
         unconfigured=frozenset(),
+        capped=frozenset(),
     )
 
     assert segment_fully_thought(progress) == (True, None)
@@ -614,6 +621,7 @@ def test_segment_fully_thought_allows_unconfigured_floor_talent():
         dispatched=frozenset({"sense"}),
         completed=frozenset({"sense"}),
         unconfigured=frozenset({"documents"}),
+        capped=frozenset(),
     )
 
     assert segment_fully_thought(progress) == (True, None)
@@ -627,6 +635,7 @@ def test_segment_fully_thought_requires_dispatched_completion():
         dispatched=frozenset({"sense", "documents", "screen"}),
         completed=frozenset({"sense", "documents"}),
         unconfigured=frozenset(),
+        capped=frozenset(),
     )
 
     assert segment_fully_thought(progress) == (False, "dispatched:screen")
@@ -640,6 +649,7 @@ def test_segment_fully_thought_allows_nongating_detection_without_completion():
         dispatched=frozenset({"sense", "documents", "entities:detection"}),
         completed=frozenset({"sense", "documents"}),
         unconfigured=frozenset(),
+        capped=frozenset(),
     )
 
     assert segment_fully_thought(progress) == (True, None)
@@ -734,6 +744,88 @@ def test_classify_segment_completion_latest_terminal_wins(segment_journal):
             "detail": "floor:documents",
         }
     ]
+
+
+def test_capped_floor_talent_unblocks_segment_completion(segment_journal):
+    day = "20990420"
+    _seed_segment(segment_journal, day, SEGMENT)
+    first_ts = 1_000
+    fail_events = [
+        _fail(
+            SEGMENT,
+            "documents",
+            first_ts + idx * (MIN_SPAN_MS // (CAP - 1)),
+            stream=STREAM,
+        )
+        for idx in range(CAP)
+    ]
+    _write_health(
+        segment_journal,
+        day,
+        "001_segment.jsonl",
+        [
+            _sense_complete(SEGMENT, "active", 10, stream=STREAM),
+            _dispatch(SEGMENT, "documents", 20, stream=STREAM),
+            *fail_events,
+            _skip(
+                SEGMENT,
+                "documents",
+                "capped",
+                first_ts + MIN_SPAN_MS + 1,
+                stream=STREAM,
+            ),
+        ],
+    )
+
+    progress = read_segment_progress(day)
+    segment_progress = progress[(STREAM, SEGMENT)]
+    completion = classify_segment_completion(cluster_segments(day), progress)
+
+    assert segment_progress.capped == frozenset({"documents"})
+    assert segment_fully_thought(segment_progress) == (True, None)
+    assert completion.blockers == []
+    assert completion.capped == 1
+
+
+def test_capped_fold_resets_with_later_terminal_events(segment_journal):
+    day = "20990421"
+    _seed_segment(segment_journal, day, SEGMENT)
+    _write_health(
+        segment_journal,
+        day,
+        "001_segment.jsonl",
+        [
+            _sense_complete(SEGMENT, "active", 10, stream=STREAM),
+            _dispatch(SEGMENT, "documents", 20, stream=STREAM),
+            _skip(SEGMENT, "documents", "capped", 30, stream=STREAM),
+        ],
+    )
+
+    capped_progress = read_segment_progress(day)[(STREAM, SEGMENT)]
+    assert capped_progress.capped == frozenset({"documents"})
+    assert segment_fully_thought(capped_progress) == (True, None)
+
+    _write_health(
+        segment_journal,
+        day,
+        "002_segment.jsonl",
+        [_complete(SEGMENT, "documents", 40, stream=STREAM)],
+    )
+    complete_progress = read_segment_progress(day)[(STREAM, SEGMENT)]
+    assert complete_progress.capped == frozenset()
+    assert "documents" in complete_progress.completed
+    assert segment_fully_thought(complete_progress) == (True, None)
+
+    _write_health(
+        segment_journal,
+        day,
+        "003_segment.jsonl",
+        [_fail(SEGMENT, "documents", 50, stream=STREAM)],
+    )
+    failed_progress = read_segment_progress(day)[(STREAM, SEGMENT)]
+    assert failed_progress.capped == frozenset()
+    assert "documents" not in failed_progress.completed
+    assert segment_fully_thought(failed_progress) == (False, "floor:documents")
 
 
 def test_dropped_empty_modality_segment_is_not_counted(segment_journal):
@@ -842,6 +934,25 @@ def test_daily_marker_written_when_daily_and_segments_complete(
     _write_health(segment_journal, DAY, "001_daily.jsonl", [_daily_complete()])
     _write_health(
         segment_journal, DAY, "002_segment.jsonl", _complete_segment_events(SEGMENT)
+    )
+
+    health = _run_daily_gate(segment_journal, DAY, monkeypatch)
+
+    assert (health / "daily.updated").exists()
+
+
+def test_daily_marker_written_when_floor_talent_capped(segment_journal, monkeypatch):
+    _seed_segment(segment_journal, DAY, SEGMENT)
+    _write_health(segment_journal, DAY, "001_daily.jsonl", [_daily_complete()])
+    _write_health(
+        segment_journal,
+        DAY,
+        "002_segment.jsonl",
+        [
+            _sense_complete(SEGMENT, "active", 10, stream=STREAM),
+            _dispatch(SEGMENT, "documents", 20, stream=STREAM),
+            _skip(SEGMENT, "documents", "capped", 30, stream=STREAM),
+        ],
     )
 
     health = _run_daily_gate(segment_journal, DAY, monkeypatch)

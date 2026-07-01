@@ -38,6 +38,9 @@ _MODES = ("segment", "daily", "activity", "weekly", "flush", "cadence")
 _FAILED_LIST_CAP = 20
 SEGMENT_FLOOR_TALENTS: tuple[str, ...] = ("documents",)
 SEGMENT_NONGATING_TALENTS: tuple[str, ...] = ("entities:detection",)
+# Floor talents are capped after repeated failures spanning at least two hours.
+CAP = 5
+MIN_SPAN_MS = 7_200_000
 SENSED_TERMINAL_STATES = frozenset(
     {
         DataState.ANALYZED.value,
@@ -79,6 +82,7 @@ class SegmentProgress:
     dispatched: frozenset[str]
     completed: frozenset[str]
     unconfigured: frozenset[str]
+    capped: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -89,6 +93,7 @@ class SegmentCompletion:
     not_sensed: int
     not_thought: int
     total: int
+    capped: int
 
 
 @dataclass(frozen=True)
@@ -128,6 +133,7 @@ class TerminalState:
     reason_code: str | None
     provider: str | None
     model: str | None
+    oldest_trailing_fail_ts: int | None
 
 
 @dataclass(frozen=True)
@@ -236,6 +242,7 @@ def summarize_pipeline_day(day: str) -> dict:
             "completed": 0,
             "failed": 0,
             "skipped": 0,
+            "capped": 0,
             "failed_list": [],
             "failed_list_truncated": False,
         },
@@ -299,7 +306,10 @@ def summarize_pipeline_day(day: str) -> dict:
                         else:
                             summary["talents"]["failed_list_truncated"] = True
                     elif event == "talent.skip":
-                        summary["talents"]["skipped"] += 1
+                        if rec.get("reason") == "capped":
+                            summary["talents"]["capped"] += 1
+                        else:
+                            summary["talents"]["skipped"] += 1
                     elif event == "activity.detected":
                         summary["activities"]["detected"] += 1
                     elif event == "activity.persisted":
@@ -487,8 +497,9 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
         ]
         last_real_complete_ts = max(real_complete_ts) if real_complete_ts else None
         trailing_fail_count = 0
+        oldest_trailing_fail_ts = None
         for (
-            _ts,
+            ts,
             _seq,
             event,
             _reason_code,
@@ -499,6 +510,7 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
             if event != TERMINAL_FAIL:
                 break
             trailing_fail_count += 1
+            oldest_trailing_fail_ts = ts
         deterministic_fail_count = 0
         for (
             _ts,
@@ -530,8 +542,32 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
             reason_code=last_fail[3] if last_fail else None,
             provider=last_fail[4] if last_fail else None,
             model=last_fail[5] if last_fail else None,
+            oldest_trailing_fail_ts=oldest_trailing_fail_ts,
         )
     return states
+
+
+def is_floor_talent_capped(
+    day: str, stream: str | None, segment: str, name: str
+) -> bool:
+    """Return True when a segment floor talent has hit the failure cap."""
+    state = read_terminal_states(day).get(
+        TerminalUnit(
+            mode="segment",
+            name=name,
+            facet=None,
+            stream=stream,
+            segment=segment,
+            activity=None,
+        )
+    )
+    if state is None:
+        return False
+    if state.trailing_fail_count < CAP:
+        return False
+    if state.oldest_trailing_fail_ts is None or state.last_fail_ts is None:
+        return False
+    return state.last_fail_ts - state.oldest_trailing_fail_ts >= MIN_SPAN_MS
 
 
 def read_completed_units(day: str) -> set[tuple[str, str, str | None]]:
@@ -650,17 +686,18 @@ def read_segment_progress(day: str) -> dict[tuple[str | None, str], SegmentProgr
     Folds the day's health JSONL files read-only. Progress is keyed by
     ``(stream, segment)``. Untagged historical records use a legacy ``None``
     stream bucket. Segment-scoped records are records with ``mode == "segment"``
-    and a truthy string ``segment`` field. Terminal events are only
-    ``talent.complete`` and ``talent.fail``; the latest terminal per
-    ``((stream, segment), name)`` wins by ``ts``. ``talent.skip`` is
-    non-terminal, except ``reason="no_config"`` is tracked for floor verdicts.
+    and a truthy string ``segment`` field. Terminal fold states are
+    ``talent.complete``, ``talent.fail``, and ``talent.skip`` with
+    ``reason="capped"``; the latest terminal per ``((stream, segment), name)``
+    wins by ``ts``. Other ``talent.skip`` records are non-terminal, except
+    ``reason="no_config"`` is tracked for floor verdicts.
 
     This function does not create, modify, or delete journal state.
     """
     latest_sense: dict[tuple[str | None, str], tuple[int, str | None]] = {}
     latest_change: dict[tuple[str | None, str], tuple[int, str | None]] = {}
     dispatched: dict[tuple[str | None, str], set[str]] = {}
-    terminals: dict[tuple[str | None, str], dict[str, tuple[int, bool]]] = {}
+    terminals: dict[tuple[str | None, str], dict[str, tuple[int, str]]] = {}
     unconfigured: dict[tuple[str | None, str], set[str]] = {}
 
     try:
@@ -754,8 +791,32 @@ def read_segment_progress(day: str) -> dict[tuple[str | None, str], SegmentProgr
                         ):
                             segment_terminals[name] = (
                                 ts,
-                                event == "talent.complete",
+                                "complete" if event == "talent.complete" else "fail",
                             )
+                    elif event == "talent.skip" and rec.get("reason") == "capped":
+                        name = rec.get("name")
+                        if not isinstance(name, str):
+                            logger.debug(
+                                "pipeline_health: skipping capped segment terminal "
+                                "missing name in %s",
+                                path,
+                            )
+                            continue
+                        try:
+                            ts = int(rec["ts"])
+                        except (KeyError, TypeError, ValueError):
+                            logger.debug(
+                                "pipeline_health: skipping capped segment terminal "
+                                "with invalid ts in %s",
+                                path,
+                            )
+                            continue
+                        segment_terminals = terminals.setdefault(key, {})
+                        if (
+                            name not in segment_terminals
+                            or ts >= segment_terminals[name][0]
+                        ):
+                            segment_terminals[name] = (ts, "capped")
                     elif event == "talent.skip" and rec.get("reason") == "no_config":
                         name = rec.get("name")
                         if isinstance(name, str):
@@ -785,10 +846,15 @@ def read_segment_progress(day: str) -> dict[tuple[str | None, str], SegmentProgr
             dispatched=frozenset(dispatched.get(key, set())),
             completed=frozenset(
                 name
-                for name, (_ts, is_complete) in segment_terminals.items()
-                if is_complete
+                for name, (_ts, state) in segment_terminals.items()
+                if state == "complete"
             ),
             unconfigured=frozenset(unconfigured.get(key, set())),
+            capped=frozenset(
+                name
+                for name, (_ts, state) in segment_terminals.items()
+                if state == "capped"
+            ),
         )
     return progress
 
@@ -812,12 +878,16 @@ def segment_fully_thought(progress: SegmentProgress | None) -> tuple[bool, str |
     if progress.change_class == "redundant":
         return True, None
     for name in SEGMENT_FLOOR_TALENTS:
-        if name not in progress.completed and name not in progress.unconfigured:
+        if (
+            name not in progress.completed
+            and name not in progress.unconfigured
+            and name not in progress.capped
+        ):
             return False, f"floor:{name}"
     for name in sorted(progress.dispatched):
         if name in SEGMENT_NONGATING_TALENTS:
             continue
-        if name not in progress.completed:
+        if name not in progress.completed and name not in progress.capped:
             return False, f"dispatched:{name}"
     return True, None
 
@@ -847,9 +917,13 @@ def classify_segment_completion(
     blockers: list[dict[str, str]] = []
     not_sensed = 0
     not_thought = 0
+    capped = 0
 
     for seg in segments:
         key = seg["key"]
+        segment_progress = lookup_segment_progress(progress, seg["stream"], key)
+        if segment_progress is not None and segment_progress.capped:
+            capped += 1
         if not segment_fully_sensed(seg["data_state"]):
             detail = ",".join(
                 f"{modality}={state}"
@@ -866,9 +940,7 @@ def classify_segment_completion(
             not_sensed += 1
             continue
 
-        ok, reason = segment_fully_thought(
-            lookup_segment_progress(progress, seg["stream"], key)
-        )
+        ok, reason = segment_fully_thought(segment_progress)
         if not ok:
             blockers.append(
                 {
@@ -884,6 +956,7 @@ def classify_segment_completion(
         not_sensed=not_sensed,
         not_thought=not_thought,
         total=len(segments),
+        capped=capped,
     )
 
 

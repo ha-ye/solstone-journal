@@ -216,6 +216,7 @@ def _segment_backlog(
             not_sensed=0,
             not_thought=not_thought,
             total=max(not_thought, 1),
+            capped=0,
         )
         for day, not_thought in per_day_counts.items()
     }

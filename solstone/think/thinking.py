@@ -53,6 +53,7 @@ from solstone.think.pipeline_health import (
     SEGMENT_FLOOR_TALENTS,
     DeterministicFailure,
     classify_segment_completion,
+    is_floor_talent_capped,
     read_completed_since,
     read_completed_units,
     read_daily_deterministic_failures,
@@ -1290,9 +1291,7 @@ def run_segment_sense(
 
     for floor_name in SEGMENT_FLOOR_TALENTS:
         floor_config = _cfg(floor_name)
-        if floor_config:
-            agents_to_run.append((floor_name, floor_config))
-        else:
+        if not floor_config:
             _log_skip(
                 floor_name,
                 "no_config",
@@ -1302,6 +1301,19 @@ def run_segment_sense(
                 segment=segment,
                 **({"stream": stream} if stream else {}),
             )
+            continue
+        if not refresh and is_floor_talent_capped(day, stream, segment, floor_name):
+            _log_skip(
+                floor_name,
+                "capped",
+                f"{floor_name} skipped after repeated failures; reprocess to retry",
+                mode=target_schedule,
+                day=day,
+                segment=segment,
+                **({"stream": stream} if stream else {}),
+            )
+            continue
+        agents_to_run.append((floor_name, floor_config))
 
     summary_name = "timeline:segment_summary"
     summary_config = _cfg(summary_name)

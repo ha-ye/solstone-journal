@@ -1492,6 +1492,139 @@ class TestRunSegmentSense:
         assert "documents" in spawned
         assert "screen" not in spawned
 
+    def test_capped_floor_talent_is_not_dispatched(self, segment_dir, monkeypatch):
+        from solstone.think import thinking as think
+        from solstone.think.thinking import ThinkingJSONLWriter
+
+        spawned = []
+        jsonl_path = segment_dir.parent.parent / "health" / "test_capped_floor.jsonl"
+        writer = ThinkingJSONLWriter(str(jsonl_path))
+        _write_sense_output(
+            segment_dir,
+            {"density": "active", "recommend": {"screen_record": False}, "facets": []},
+        )
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _segment_configs("sense", "documents"),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "is_floor_talent_capped", lambda *args: True)
+        monkeypatch.setattr(think, "_callosum", None)
+        monkeypatch.setattr(think, "_jsonl", writer)
+
+        think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+        writer.close()
+
+        events = _read_jsonl_events(jsonl_path)
+        skips = [event for event in events if event["event"] == "talent.skip"]
+
+        assert spawned == ["sense"]
+        assert any(
+            skip["name"] == "documents" and skip["reason"] == "capped" for skip in skips
+        )
+
+    def test_refresh_bypasses_capped_floor_talent_gate(self, segment_dir, monkeypatch):
+        from solstone.think import thinking as think
+
+        spawned = []
+        _write_sense_output(
+            segment_dir,
+            {"density": "active", "recommend": {"screen_record": False}, "facets": []},
+        )
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _segment_configs("sense", "documents"),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "is_floor_talent_capped", lambda *args: True)
+        monkeypatch.setattr(think, "_callosum", None)
+
+        think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=True,
+            verbose=False,
+            stream="default",
+        )
+
+        assert spawned == ["sense", "documents"]
+
+    def test_capped_floor_talent_gate_does_not_skip_non_floor_talents(
+        self, segment_dir, monkeypatch
+    ):
+        from solstone.think import thinking as think
+
+        spawned = []
+        _write_sense_output(
+            segment_dir,
+            {"density": "active", "recommend": {"screen_record": False}, "facets": []},
+        )
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: {
+                **_segment_configs("sense", "timeline:segment_summary"),
+                "flow": {
+                    "priority": 20,
+                    "type": "cogitate",
+                    "schedule": "segment",
+                },
+            },
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "SEGMENT_FLOOR_TALENTS", ("flow",))
+        monkeypatch.setattr(think, "is_floor_talent_capped", lambda *args: True)
+        monkeypatch.setattr(think, "_callosum", None)
+
+        think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+
+        assert "flow" not in spawned
+        assert "timeline:segment_summary" in spawned
+
     def test_segment_summary_dispatched_for_non_idle(self, segment_dir, monkeypatch):
         from solstone.think import thinking as think
 

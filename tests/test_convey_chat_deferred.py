@@ -83,6 +83,7 @@ def _backlog(
         not_sensed=not_sensed,
         not_thought=not_thought,
         total=total,
+        capped=0,
     )
     return SegmentBacklog(
         days=(day,),

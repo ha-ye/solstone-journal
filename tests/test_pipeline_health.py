@@ -20,6 +20,8 @@ from solstone.think.pipeline_health import (
     BACKLOG_STATE_PENDING,
     BACKLOG_STATE_STUCK,
     BACKLOG_STATE_UNKNOWN,
+    CAP,
+    MIN_SPAN_MS,
     REASON_CATCHUP_BACKOFF,
     REASON_SEGMENT_REPAIR_DEGRADED,
     REASON_SEGMENT_REPAIR_STUCK,
@@ -27,6 +29,7 @@ from solstone.think.pipeline_health import (
     TERMINAL_FAIL,
     CompletionsSince,
     TerminalUnit,
+    is_floor_talent_capped,
     lookup_segment_progress,
     pipeline_status_message,
     read_backlog_view,
@@ -684,11 +687,13 @@ def test_read_terminal_states_latest_wins_and_preserves_expanded_keys(
     assert alpha.latest_ts == 4
     assert alpha.trailing_fail_count == 2
     assert alpha.last_fail_ts == 4
+    assert alpha.oldest_trailing_fail_ts == 3
     assert alpha.reason_code == "provider_quota_exceeded"
     assert alpha.provider == "anthropic"
     assert alpha.model == "claude-opus-4-1"
     assert beta.latest_event == "complete"
     assert beta.trailing_fail_count == 0
+    assert beta.oldest_trailing_fail_ts is None
     assert read_completed_units(day) == {("daily", "beta", None)}
     assert (
         states[
@@ -702,6 +707,98 @@ def test_read_terminal_states_latest_wins_and_preserves_expanded_keys(
         ].latest_event
         == "complete"
     )
+
+
+def test_floor_talent_cap_trips_after_spanning_failures(pipeline_journal):
+    day = "20990215"
+    segment = "090000_300"
+    stream = "default"
+    first_ts = 1_000
+    events = [
+        _fail(
+            segment,
+            "documents",
+            first_ts + idx * (MIN_SPAN_MS // (CAP - 1)),
+            stream=stream,
+        )
+        for idx in range(CAP)
+    ]
+    _write_jsonl(
+        pipeline_journal / "chronicle" / day / "health" / "001_segment.jsonl",
+        events,
+    )
+
+    unit = TerminalUnit("segment", "documents", None, stream, segment, None)
+    state = read_terminal_states(day)[unit]
+
+    assert state.trailing_fail_count == CAP
+    assert state.oldest_trailing_fail_ts == first_ts
+    assert is_floor_talent_capped(day, stream, segment, "documents") is True
+
+
+def test_floor_talent_cap_requires_minimum_span(pipeline_journal):
+    day = "20990216"
+    segment = "090000_300"
+    stream = "default"
+    _write_jsonl(
+        pipeline_journal / "chronicle" / day / "health" / "001_segment.jsonl",
+        [_fail(segment, "documents", 1_000 + idx, stream=stream) for idx in range(CAP)],
+    )
+
+    assert is_floor_talent_capped(day, stream, segment, "documents") is False
+
+
+def test_floor_talent_cap_resets_after_completion(pipeline_journal):
+    day = "20990217"
+    segment = "090000_300"
+    stream = "default"
+    _write_jsonl(
+        pipeline_journal / "chronicle" / day / "health" / "001_segment.jsonl",
+        [
+            *[
+                _fail(segment, "documents", 1_000 + idx, stream=stream)
+                for idx in range(CAP - 1)
+            ],
+            _complete(segment, "documents", 2_000, stream=stream),
+            _fail(segment, "documents", 2_001, stream=stream),
+        ],
+    )
+
+    unit = TerminalUnit("segment", "documents", None, stream, segment, None)
+    state = read_terminal_states(day)[unit]
+
+    assert state.trailing_fail_count == 1
+    assert is_floor_talent_capped(day, stream, segment, "documents") is False
+
+
+def test_floor_talent_cap_uses_global_terminal_timestamp_order(pipeline_journal):
+    day = "20990218"
+    segment = "090000_300"
+    stream = "default"
+    first_ts = 1_000
+    _write_jsonl(
+        pipeline_journal / "chronicle" / day / "health" / "001_segment.jsonl",
+        [
+            _fail(
+                segment,
+                "documents",
+                first_ts + idx * (MIN_SPAN_MS // (CAP - 1)),
+                stream=stream,
+            )
+            for idx in range(CAP)
+        ],
+    )
+    _write_jsonl(
+        pipeline_journal / "chronicle" / day / "health" / "999_segment.jsonl",
+        [_complete(segment, "documents", first_ts - 1, stream=stream)],
+    )
+
+    unit = TerminalUnit("segment", "documents", None, stream, segment, None)
+    state = read_terminal_states(day)[unit]
+
+    assert state.latest_event == TERMINAL_FAIL
+    assert state.trailing_fail_count == CAP
+    assert is_floor_talent_capped(day, stream, segment, "documents") is True
 
 
 def test_read_completed_units_returns_old_daily_tuple_shape_and_filters_scoped_units(
@@ -947,6 +1044,7 @@ def test_empty_day_is_healthy(pipeline_journal):
         "completed": 0,
         "failed": 0,
         "skipped": 0,
+        "capped": 0,
         "failed_list": [],
         "failed_list_truncated": False,
     }
@@ -1010,6 +1108,32 @@ def test_healthy_day_with_all_modes(pipeline_journal):
     assert summary["runs"]["daily"] == {"count": 1, "duration_ms_total": 20}
     assert summary["runs"]["activity"] == {"count": 1, "duration_ms_total": 30}
     assert summary["activities"]["talents_fired"] is True
+
+
+def test_capped_skip_summarizes_separately_from_generic_skips(pipeline_journal):
+    day = "20990108"
+    _write_jsonl(
+        pipeline_journal / "chronicle" / day / "health" / "1_segment.jsonl",
+        [
+            {
+                "event": "talent.skip",
+                "mode": "segment",
+                "name": "documents",
+                "reason": "capped",
+            },
+            {
+                "event": "talent.skip",
+                "mode": "segment",
+                "name": "screen",
+                "reason": "no_config",
+            },
+        ],
+    )
+
+    summary = summarize_pipeline_day(day)
+
+    assert summary["talents"]["capped"] == 1
+    assert summary["talents"]["skipped"] == 1
 
 
 def test_agent_failure_promotes_warning(pipeline_journal):
@@ -1251,6 +1375,7 @@ def test_invalid_day_returns_healthy_empty(pipeline_journal):
         "completed": 0,
         "failed": 0,
         "skipped": 0,
+        "capped": 0,
         "failed_list": [],
         "failed_list_truncated": False,
     }
