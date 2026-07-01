@@ -959,6 +959,11 @@ def _process_one(
 
     logging.info(f"Processing audio: {audio_path}")
 
+    jsonl_path = _get_jsonl_path(audio_path)
+    if not getattr(args, "redo", False) and jsonl_path.exists():
+        logging.info(f"Already processed: {audio_path}")
+        return
+
     from solstone.observe.vad import reduce_audio, run_vad
 
     # Load audio once - handles M4A multi-stream mixing
@@ -966,7 +971,6 @@ def _process_one(
         audio_buffer = load_audio(audio_path)
     except AudioDecodeError as e:
         logging.error("Failed to decode %s: %s", audio_path, e)
-        jsonl_path = _get_jsonl_path(audio_path)
         _write_failed_processing_jsonl(
             audio_path,
             jsonl_path,

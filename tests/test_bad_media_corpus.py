@@ -525,11 +525,8 @@ def test_corrupt_audio_decode_records_failed_without_vad_or_stt(
         "callosum_send",
         lambda *args, **kwargs: None,
     )
-    monkeypatch.setattr(
-        transcribe_main,
-        "load_audio",
-        Mock(side_effect=AudioDecodeError("worker exited from signal 11")),
-    )
+    load_audio_spy = Mock(side_effect=AudioDecodeError("worker exited from signal 11"))
+    monkeypatch.setattr(transcribe_main, "load_audio", load_audio_spy)
     monkeypatch.setattr(transcribe_main, "stt_transcribe", stt_spy)
     monkeypatch.setattr(vad_module, "run_vad", vad_spy)
 
@@ -552,7 +549,24 @@ def test_corrupt_audio_decode_records_failed_without_vad_or_stt(
     assert len(jsonl_path.read_text(encoding="utf-8").splitlines()) == 1
     assert stt_spy.call_count == 0
     assert vad_spy.call_count == 0
+    assert load_audio_spy.call_count == 1
     assert read_segment_data_state(DAY, SEGMENT) == {"audio": DataState.FAILED.value}
+
+    load_audio_spy.reset_mock()
+    stt_spy.reset_mock()
+    vad_spy.reset_mock()
+
+    transcribe_main._process_one(
+        audio_path,
+        argparse.Namespace(backend=None, cpu=False, model=None, redo=False),
+        {"preserve_all": True},
+        "whisper",
+        [],
+    )
+
+    assert load_audio_spy.call_count == 0
+    assert stt_spy.call_count == 0
+    assert vad_spy.call_count == 0
 
 
 def test_ac4_corrupt_screen_is_failed_distinct_from_empty(segment_journal, monkeypatch):
