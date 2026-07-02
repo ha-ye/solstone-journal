@@ -320,6 +320,104 @@ def test_process_log_writer_pins_journal_root_at_init(tmp_path, monkeypatch):
     assert list(journal_a.rglob("*.log")) or list(journal_a.rglob("*echo*"))
 
 
+def test_process_log_writer_rollover_open_fails_once(tmp_path, monkeypatch):
+    from solstone.think import runner
+
+    monkeypatch.setattr(runner, "_get_journal_path", lambda: tmp_path)
+    monkeypatch.setattr(runner, "_current_day", lambda: "20241101")
+
+    ref = "1730476800000"
+    writer = ProcessLogWriter(ref, "test")
+    writer.write("baseline\n")
+
+    real_open = writer._open_log
+    calls = {"n": 0}
+
+    def flaky_open(day=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("disk full")
+        return real_open(day)
+
+    writer._open_log = flaky_open
+    monkeypatch.setattr(runner, "_current_day", lambda: "20241102")
+
+    writer.write("during-failure\n")
+    writer.write("after-recovery\n")
+    writer.close()
+
+    previous_log = tmp_path / "chronicle" / "20241101" / "health" / f"{ref}_test.log"
+    current_log = tmp_path / "chronicle" / "20241102" / "health" / f"{ref}_test.log"
+    previous_content = previous_log.read_text()
+    current_content = current_log.read_text()
+
+    assert "during-failure\n" in previous_content
+    assert "after-recovery\n" not in previous_content
+    assert "after-recovery\n" in current_content
+
+
+def test_process_log_writer_rollover_preserves_handle_and_day(tmp_path, monkeypatch):
+    from solstone.think import runner
+
+    monkeypatch.setattr(runner, "_get_journal_path", lambda: tmp_path)
+    monkeypatch.setattr(runner, "_current_day", lambda: "20241101")
+
+    ref = "1730476800000"
+    writer = ProcessLogWriter(ref, "test")
+
+    def flaky_open(day=None):
+        raise OSError("disk full")
+
+    writer._open_log = flaky_open
+    monkeypatch.setattr(runner, "_current_day", lambda: "20241102")
+
+    writer.write("x\n")
+
+    assert writer._fh.closed is False
+    assert writer._current_day == "20241101"
+
+    writer.write("still-writable\n")
+    writer.close()
+
+    previous_log = tmp_path / "chronicle" / "20241101" / "health" / f"{ref}_test.log"
+    assert "still-writable\n" in previous_log.read_text()
+
+
+def test_process_log_writer_post_swap_best_effort(tmp_path, monkeypatch):
+    from solstone.think import runner
+
+    monkeypatch.setattr(runner, "_get_journal_path", lambda: tmp_path)
+    monkeypatch.setattr(runner, "_current_day", lambda: "20241101")
+
+    ref = "1730476800000"
+    writer = ProcessLogWriter(ref, "test")
+    writer._fh.close()
+    failing_fh = MagicMock()
+    failing_fh.write.side_effect = OSError("disk full")
+    failing_fh.closed = False
+    writer._fh = failing_fh
+
+    writer.write("x\n")
+
+    failing_fh.write.assert_called_once_with("x\n")
+    writer.close()
+
+    writer = ProcessLogWriter(ref, "test")
+
+    def fail_symlinks():
+        raise OSError("symlink failed")
+
+    writer._update_symlinks = fail_symlinks
+    monkeypatch.setattr(runner, "_current_day", lambda: "20241102")
+
+    writer.write("rolled\n")
+    writer.close()
+
+    current_log = tmp_path / "chronicle" / "20241102" / "health" / f"{ref}_test.log"
+    assert writer._current_day == "20241102"
+    assert "rolled\n" in current_log.read_text()
+
+
 def test_handler_process_cleanup():
     """Test HandlerProcess cleanup joins threads and closes logger."""
     mock_managed = MagicMock()
