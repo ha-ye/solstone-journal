@@ -13,7 +13,7 @@ Terminology:
 - "segment" = journal directory (HHMMSS_LEN/ time window) - NOT used here
 
 Available backends:
-- parakeet: Default local backend via Apple Silicon helper or Linux ONNX
+- parakeet: Default local backend via Apple Silicon helper or Linux parakeet.cpp
 - whisper: Local faster-whisper (rollback/local alternative, GPU/CPU)
 - revai: Rev.ai cloud API (speaker diarization)
 - gemini: Google Gemini API (speaker diarization)
@@ -95,14 +95,14 @@ BACKEND_METADATA: dict[str, dict] = {
         "settings": [],
     },
     "parakeet": {
-        "label": "Parakeet - Local processing (Apple Silicon CoreML or Linux ONNX)",
-        "description": "On-device speech recognition via Parakeet TDT; macOS uses a FluidAudio/CoreML helper, Linux uses onnx-asr + onnxruntime. Requires `make install`.",
+        "label": "Parakeet - Local processing (Apple Silicon CoreML or Linux parakeet.cpp)",
+        "description": "On-device speech recognition via Parakeet TDT; macOS uses a FluidAudio/CoreML helper, Linux uses the supervised parakeet.cpp server. Requires `make install`.",
         "env_key": None,
         "settings": ["model_version", "device", "timeout_sec"],
     },
     "parakeet-cpp": {
-        "label": "Parakeet.cpp - Local processing (Linux, selectable)",
-        "description": "On-device speech recognition via a supervised parakeet.cpp server (mudler/parakeet.cpp). Linux only; opt-in alongside the default Parakeet backend. Install with `journal install-provider parakeet`.",
+        "label": "Parakeet.cpp - Local processing (Linux)",
+        "description": "On-device speech recognition via a supervised parakeet.cpp server (mudler/parakeet.cpp). Linux only; install with `journal install-provider parakeet`.",
         "env_key": None,
         "settings": ["device"],
     },

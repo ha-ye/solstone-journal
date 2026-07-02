@@ -51,14 +51,45 @@ def test_workspace_contains_parakeet_cpp_device_fieldset() -> None:
 def test_workspace_wires_parakeet_cpp_population_switch_and_save() -> None:
     text = _workspace_text()
 
+    assert "let parakeetUsesCpp = false;" in text
+    assert "parakeetUsesCpp = Boolean(data.parakeet_uses_cpp)" in text
     assert "const parakeetCpp = transcribe['parakeet-cpp'] || {};" in text
     assert "setValue('field-parakeet-cpp-device', parakeetCpp.device || 'auto')" in text
     assert "document.getElementById('parakeet-cpp-settings').style.display" in text
-    assert "backend === 'parakeet-cpp' ? 'block' : 'none'" in text
+    assert (
+        "backend === 'parakeet-cpp' || (backend === 'parakeet' && parakeetUsesCpp)"
+        in text
+    )
+    assert "backend === 'parakeet' && !parakeetUsesCpp" in text
     assert "data: { 'parakeet-cpp': { device: value } }" in text
 
 
+def test_transcribe_payload_marks_linux_parakeet_cpp_runtime(
+    settings_env, monkeypatch
+) -> None:
+    from solstone.apps.settings import routes
+
+    journal_path, config = settings_env()
+    config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
+    (journal_path / "config" / "journal.json").write_text(
+        json.dumps(config, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(routes.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(routes.platform, "machine", lambda: "x86_64")
+    client = _client(journal_path)
+
+    response = client.get("/app/settings/api/transcribe")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["runtime_label"] == "Linux parakeet.cpp"
+    assert payload["parakeet_uses_cpp"] is True
+
+
 def test_parakeet_cpp_device_round_trips_through_settings_config(settings_env) -> None:
+    from solstone.think import supervisor
+
     journal_path, config = settings_env()
     config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
     (journal_path / "config" / "journal.json").write_text(
@@ -75,6 +106,10 @@ def test_parakeet_cpp_device_round_trips_through_settings_config(settings_env) -
     assert response.status_code == 200
     payload = client.get("/app/settings/api/config").get_json()
     assert payload["transcribe"]["parakeet-cpp"]["device"] == "cpu"
+    assert supervisor._configured_parakeet_device() == "cpu"
+    plan = supervisor.resolve_parakeet_server_launch_plan("cpu", None)
+    assert plan.binary_backend == "cpu"
+    assert plan.env_updates == {}
 
     unknown = client.put(
         "/app/settings/api/config",

@@ -57,6 +57,7 @@ import json
 import logging
 import os
 import platform
+import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -1126,19 +1127,25 @@ def _process_one(
         if entity_names:
             backend_config["entities"] = entity_names
     elif backend == "parakeet":
-        parakeet_config = transcribe_config.get("parakeet", {})
-        backend_config = {
-            k: v
-            for k, v in parakeet_config.items()
-            if k
-            in (
-                "model_version",
-                "cache_dir",
-                "timeout_sec",
-                "device",
-                "quantization",
-            )
-        }
+        if sys.platform.startswith("linux"):
+            parakeet_cpp_config = transcribe_config.get("parakeet-cpp", {})
+            backend_config = {
+                k: v for k, v in parakeet_cpp_config.items() if k == "device"
+            }
+        else:
+            parakeet_config = transcribe_config.get("parakeet", {})
+            backend_config = {
+                k: v
+                for k, v in parakeet_config.items()
+                if k
+                in (
+                    "model_version",
+                    "cache_dir",
+                    "timeout_sec",
+                    "device",
+                    "quantization",
+                )
+            }
     elif backend == "parakeet-cpp":
         parakeet_cpp_config = transcribe_config.get("parakeet-cpp", {})
         backend_config = {k: v for k, v in parakeet_cpp_config.items() if k == "device"}

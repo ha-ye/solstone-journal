@@ -146,16 +146,7 @@ def _compute_runtime_label() -> str:
         return "macOS CoreML helper"
     if os_name != "linux" or arch != "x86_64":
         return "unsupported"
-    try:
-        import onnxruntime
-
-        return (
-            "Linux ONNX (CUDA fp32)"
-            if "CUDAExecutionProvider" in onnxruntime.get_available_providers()
-            else "Linux ONNX (CPU fp32)"
-        )
-    except Exception:
-        return "unsupported"
+    return "Linux parakeet.cpp"
 
 
 def _service_key_validation(config: dict[str, Any]) -> dict[str, Any]:
@@ -561,6 +552,10 @@ def get_transcribe() -> Any:
                 "api_keys": api_keys,
                 "config": transcribe_config,
                 "runtime_label": runtime_label,
+                "parakeet_uses_cpp": (
+                    platform.system().lower() == "linux"
+                    and platform.machine().lower() == "x86_64"
+                ),
                 "resource": resource,
             }
         )

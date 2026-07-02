@@ -24,6 +24,7 @@ from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Any, Callable, Literal
 
+from solstone.think import parakeet_readiness
 from solstone.think.setup_events import EVENT_TYPES, JsonlEmitter, utc_now_iso
 from solstone.think.user_config import (
     config_path,
@@ -338,8 +339,8 @@ def resolve_context(
             "value": bool(args.accept_existing_journal),
             "source": "cli" if args.accept_existing_journal else "default",
         },
-        "parakeet_onnx_variant_env": {
-            "value": os.environ.get("PARAKEET_ONNX_VARIANT"),
+        "journal_variant_env": {
+            "value": os.environ.get("JOURNAL_VARIANT"),
             "source": "env",
         },
         "is_source_checkout": {
@@ -1116,8 +1117,17 @@ def prompt_accept_existing_journal(path: Path) -> bool:
     return answer in {"y", "yes"}
 
 
-def linux_model_sentinel() -> Path:
-    return Path.home() / ".cache" / "huggingface" / "hub" / ".solstone-install-complete"
+def linux_model_paths(journal_path: Path) -> list[Path]:
+    try:
+        artifact_key = parakeet_readiness.parakeet_cpp_artifact_key()
+    except RuntimeError:
+        return []
+    cache_root = parakeet_readiness.parakeet_cpp_cache_root(journal_path)
+    return [
+        parakeet_readiness.parakeet_cpp_binary_path(cache_root, artifact_key, "cpu"),
+        parakeet_readiness.parakeet_cpp_binary_path(cache_root, artifact_key, "vulkan"),
+        parakeet_readiness.parakeet_cpp_model_path(cache_root),
+    ]
 
 
 def mac_model_sentinel() -> Path:
@@ -1132,9 +1142,9 @@ def mac_model_sentinel() -> Path:
     )
 
 
-def model_paths() -> list[Path]:
+def model_paths(journal_path: Path | None = None) -> list[Path]:
     if sys.platform.startswith("linux"):
-        return [linux_model_sentinel()]
+        return linux_model_paths(journal_path or default_journal())
     if sys.platform == "darwin":
         return [mac_model_sentinel()]
     return []
@@ -1154,7 +1164,7 @@ def step_install_models(ctx: SetupContext, step_index: int) -> StepResult:
         return step_result(
             "install_models",
             "failed",
-            model_paths(),
+            model_paths(ctx.journal_path),
             started_at,
             subprocess_error(
                 "install_models", result, timeout=ctx.step_timeout_seconds
@@ -1164,11 +1174,13 @@ def step_install_models(ctx: SetupContext, step_index: int) -> StepResult:
         return step_result(
             "install_models",
             "failed",
-            model_paths(),
+            model_paths(ctx.journal_path),
             started_at,
             subprocess_error("install_models", result),
         )
-    return step_result("install_models", "ok", model_paths(), started_at)
+    return step_result(
+        "install_models", "ok", model_paths(ctx.journal_path), started_at
+    )
 
 
 def skills_user_paths() -> list[Path]:

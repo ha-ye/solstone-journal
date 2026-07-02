@@ -24,16 +24,6 @@ MAC_CACHE_DIR = Path.home() / "Library/Application Support/solstone/parakeet/mod
 # FluidAudio's downloadAndLoad(to:) treats the passed dir as the parent and writes into <parent>/<repo-folder>; verified empirically against FluidAudio v0.14.0 v3 on Apple Silicon (helper invocation against a fresh cache dir wrote to <parent>/parakeet-tdt-0.6b-v3/).
 MAC_FLUIDAUDIO_REPO_NAME = "parakeet-tdt-0.6b-v3"
 MAC_SENTINEL = MAC_CACHE_DIR / ".install-complete"
-LINUX_HUB_DIR = Path.home() / ".cache/huggingface/hub"
-LINUX_MODEL_DIR = LINUX_HUB_DIR / "models--istupakov--parakeet-tdt-0.6b-v3-onnx"
-LINUX_SENTINEL = LINUX_HUB_DIR / ".solstone-install-complete"
-LINUX_MODEL_FILES = (
-    "encoder-model.onnx",
-    "decoder_joint-model.onnx",
-    "config.json",
-    "vocab.txt",
-)
-LINUX_MIN_CACHE_BYTES = 2_400_000_000
 MAC_MODEL_FILES = (
     "Encoder.mlmodelc/weights/weight.bin",
     "Decoder.mlmodelc/weights/weight.bin",
@@ -123,11 +113,15 @@ def check_parakeet_cpp_files(cache_root: Path, artifact_key: str) -> dict[str, P
 
 
 def _sentinel_path(variant: str) -> Path:
-    return MAC_SENTINEL if variant == "coreml" else LINUX_SENTINEL
+    if variant != "coreml":
+        raise RuntimeError(f"parakeet sentinel is unsupported for variant {variant!r}")
+    return MAC_SENTINEL
 
 
 def _cache_dir(variant: str) -> Path:
-    return MAC_CACHE_DIR if variant == "coreml" else LINUX_MODEL_DIR
+    if variant != "coreml":
+        raise RuntimeError(f"parakeet cache is unsupported for variant {variant!r}")
+    return MAC_CACHE_DIR
 
 
 def _load_sentinel(path: Path) -> dict[str, Any] | None:
@@ -170,25 +164,6 @@ def _sentinel_ready(
     return resolved if resolved.exists() else None
 
 
-def _verify_linux_cache(cache_dir: Path) -> bool:
-    snapshots_dir = cache_dir / "snapshots"
-    if not snapshots_dir.is_dir():
-        return False
-    for child in snapshots_dir.iterdir():
-        if not child.is_dir():
-            continue
-        if not all(
-            (child / relative_path).is_file() for relative_path in LINUX_MODEL_FILES
-        ):
-            continue
-        total_bytes = sum(
-            path.stat().st_size for path in child.rglob("*") if path.is_file()
-        )
-        if total_bytes >= LINUX_MIN_CACHE_BYTES:
-            return True
-    return False
-
-
 def _verify_mac_cache(cache_dir: Path) -> bool:
     return all(
         (cache_dir.parent / MAC_FLUIDAUDIO_REPO_NAME / relative_path).is_file()
@@ -197,8 +172,10 @@ def _verify_mac_cache(cache_dir: Path) -> bool:
 
 
 def _verify_variant_cache(variant: str, cache_dir: Path) -> bool:
-    if variant in {"cpu", "cuda"}:
-        return _verify_linux_cache(cache_dir)
+    if variant != "coreml":
+        raise RuntimeError(
+            f"parakeet cache verification is unsupported for variant {variant!r}"
+        )
     return _verify_mac_cache(cache_dir)
 
 
@@ -208,6 +185,8 @@ def _check_parakeet_ready(
     variant: str,
     sentinel_path: Path,
 ) -> Path:
+    if variant != "coreml":
+        raise RuntimeError(f"parakeet readiness is unsupported for variant {variant!r}")
     ready_cache = _sentinel_ready(
         _load_sentinel(sentinel_path),
         os_name,

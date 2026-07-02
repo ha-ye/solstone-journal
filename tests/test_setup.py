@@ -367,7 +367,7 @@ def prior_artifact_paths(journal: Path) -> dict[str, list[Path]]:
     return {
         "doctor": [],
         "journal": [setup.config_path(), journal],
-        "install_models": setup.model_paths(),
+        "install_models": setup.model_paths(journal),
         "skills_user": [
             Path.home() / ".claude" / "skills" / "sol" / "SKILL.md",
             Path.home() / ".codex" / "skills" / "sol" / "SKILL.md",

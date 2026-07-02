@@ -114,7 +114,7 @@ def test_start_parakeet_server_vulkan_crash_falls_back_to_cpu(
 ) -> None:
     monkeypatch.delenv("GGML_VK_VISIBLE_DEVICES", raising=False)
     monkeypatch.setattr(supervisor.sys, "platform", "linux")
-    monkeypatch.setattr(supervisor, "configured_stt_backend", lambda: "parakeet-cpp")
+    monkeypatch.setattr(supervisor, "linux_stt_uses_parakeet_cpp", lambda: True)
     monkeypatch.setattr(supervisor, "_configured_parakeet_device", lambda: "auto")
     gpu = local_vulkan.VulkanDevice(
         2,
@@ -185,31 +185,51 @@ def test_start_parakeet_server_vulkan_crash_falls_back_to_cpu(
 
 
 @pytest.mark.parametrize(
-    ("platform", "backend", "expected"),
+    ("sys_platform", "machine", "backend", "available_bytes", "google_key", "expected"),
     [
-        ("linux", "parakeet-cpp", True),
-        ("linux", "parakeet", False),
-        ("darwin", "parakeet-cpp", False),
+        ("linux", "x86_64", None, 5 * 1024**3, False, True),
+        ("linux", "x86_64", None, 3 * 1024**3, False, False),
+        ("linux", "x86_64", None, 3 * 1024**3, True, False),
+        ("linux", "x86_64", "parakeet", 3 * 1024**3, False, True),
+        ("linux", "x86_64", "parakeet-cpp", 3 * 1024**3, False, True),
+        ("linux", "x86_64", "whisper", 5 * 1024**3, False, False),
+        ("linux", "x86_64", "revai", 5 * 1024**3, False, False),
+        ("linux", "x86_64", "gemini", 5 * 1024**3, False, False),
+        ("linux", "aarch64", None, 5 * 1024**3, False, False),
+        ("darwin", "arm64", None, 5 * 1024**3, False, False),
     ],
 )
-def test_boot_gate_predicate(monkeypatch, platform: str, backend: str, expected: bool):
-    monkeypatch.setattr(supervisor.sys, "platform", platform)
-    monkeypatch.setattr(supervisor, "configured_stt_backend", lambda: backend)
+def test_linux_stt_uses_parakeet_cpp_truth_table(
+    monkeypatch,
+    sys_platform: str,
+    machine: str,
+    backend: str | None,
+    available_bytes: int,
+    google_key: bool,
+    expected: bool,
+):
+    monkeypatch.setattr(supervisor.sys, "platform", sys_platform)
+    monkeypatch.setattr(supervisor.platform, "machine", lambda: machine)
+    config = {"transcribe": {"backend": backend}} if backend is not None else {}
+    monkeypatch.setattr(supervisor, "read_journal_config", lambda: config)
+    monkeypatch.setattr(supervisor, "read_available_bytes", lambda: available_bytes)
+    monkeypatch.setattr(supervisor, "stt_local_floor_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(supervisor, "local_stt_backend", lambda: "parakeet")
+    if google_key:
+        monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    else:
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
-    should_start = (
-        supervisor.sys.platform.startswith("linux")
-        and supervisor.configured_stt_backend() == "parakeet-cpp"
-    )
-
-    assert should_start is expected
+    assert supervisor.linux_stt_uses_parakeet_cpp() is expected
 
 
 def test_start_parakeet_server_early_returns_for_non_linux(monkeypatch) -> None:
     monkeypatch.setattr(supervisor.sys, "platform", "darwin")
+    monkeypatch.setattr(supervisor.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(
         supervisor,
-        "configured_stt_backend",
-        lambda: pytest.fail("backend should not be read off-linux"),
+        "read_journal_config",
+        lambda: pytest.fail("config should not be read off-linux"),
     )
 
     assert supervisor.start_parakeet_server() is None
@@ -217,6 +237,11 @@ def test_start_parakeet_server_early_returns_for_non_linux(monkeypatch) -> None:
 
 def test_start_parakeet_server_early_returns_for_other_backend(monkeypatch) -> None:
     monkeypatch.setattr(supervisor.sys, "platform", "linux")
-    monkeypatch.setattr(supervisor, "configured_stt_backend", lambda: "parakeet")
+    monkeypatch.setattr(supervisor.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(
+        supervisor,
+        "read_journal_config",
+        lambda: {"transcribe": {"backend": "gemini"}},
+    )
 
     assert supervisor.start_parakeet_server() is None

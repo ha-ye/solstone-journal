@@ -480,10 +480,7 @@ class TestCommandRegistry:
         )
 
     def test_pyproject_declares_journal_parakeet_dependencies(self):
-        """The default Parakeet/STT runtime ships in the journal-host extras,
-        not the thin base. After the package split, base carries no transcription
-        stack: [journal-host] pulls onnx-asr (Linux/x86_64) and [journal] pulls
-        the CPU onnxruntime, while [journal-cuda] swaps in the GPU runtime."""
+        """The journal host keeps ONNX runtime deps out of the thin base."""
         pyproject = tomllib.loads(
             (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
         )
@@ -500,11 +497,6 @@ class TestCommandRegistry:
         assert (
             "onnxruntime>=1.25.0,!=1.24.1; sys_platform == 'linux' and platform_machine == 'x86_64'"
             in extras["journal"]
-        )
-        # [journal-host] (shared core) pulls the parakeet STT lib on Linux/x86_64.
-        assert (
-            "onnx-asr>=0.11.0; sys_platform == 'linux' and platform_machine == 'x86_64'"
-            in extras["journal-host"]
         )
         # [journal-cuda] swaps in the GPU runtime and never the CPU onnxruntime.
         assert "onnxruntime-gpu>=1.25.0" in extras["journal-cuda"]

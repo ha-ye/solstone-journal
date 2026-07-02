@@ -5074,6 +5074,7 @@ function promptReload() {
 let transcribeBackends = [];
 let transcribeApiKeys = {};
 let transcribeRuntimeLabel = 'unsupported';
+let parakeetUsesCpp = false;
 let storageLoadedOnce = false;
 
 function setLoadState(slotId, html = '') {
@@ -5154,6 +5155,7 @@ async function loadTranscribeBackends() {
     transcribeBackends = data.backends || [];
     transcribeApiKeys = data.api_keys || {};
     transcribeRuntimeLabel = data.runtime_label || 'unsupported';
+    parakeetUsesCpp = Boolean(data.parakeet_uses_cpp);
     transcribeResource = data.resource || null;
     setLoadState('transcriptionLoadState');
     const select = document.getElementById('field-transcribe-backend');
@@ -5197,8 +5199,9 @@ async function loadTranscribeBackends() {
 
 function switchTranscribeBackend(backend, config) {
   // Show/hide backend-specific fieldsets
-  document.getElementById('parakeet-settings').style.display = backend === 'parakeet' ? 'block' : 'none';
-  document.getElementById('parakeet-cpp-settings').style.display = backend === 'parakeet-cpp' ? 'block' : 'none';
+  const showParakeetCppSettings = backend === 'parakeet-cpp' || (backend === 'parakeet' && parakeetUsesCpp);
+  document.getElementById('parakeet-settings').style.display = (backend === 'parakeet' && !parakeetUsesCpp) ? 'block' : 'none';
+  document.getElementById('parakeet-cpp-settings').style.display = showParakeetCppSettings ? 'block' : 'none';
   document.getElementById('whisper-settings').style.display = backend === 'whisper' ? 'block' : 'none';
   document.getElementById('revai-settings').style.display = backend === 'revai' ? 'block' : 'none';
   document.getElementById('gemini-settings').style.display = backend === 'gemini' ? 'block' : 'none';

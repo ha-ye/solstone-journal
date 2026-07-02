@@ -9,10 +9,6 @@ import pytest
 import solstone.observe.transcribe.parakeet as parakeet
 
 
-def test_onnx_module_imports_without_onnx_installed():
-    import solstone.observe.transcribe._parakeet_onnx  # noqa: F401
-
-
 def test_dispatch_transcribe_routes_darwin_arm64(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(platform, "machine", lambda: "arm64")
@@ -22,7 +18,7 @@ def test_dispatch_transcribe_routes_darwin_arm64(monkeypatch: pytest.MonkeyPatch
         lambda *args, **kwargs: [{"arm": "coreml"}],
     )
     monkeypatch.setattr(
-        parakeet._parakeet_onnx, "transcribe", lambda *args, **kwargs: [{"arm": "onnx"}]
+        parakeet._parakeet_cpp, "transcribe", lambda *args, **kwargs: [{"arm": "cpp"}]
     )
 
     assert parakeet.transcribe([], 16000, {}) == [{"arm": "coreml"}]
@@ -37,10 +33,10 @@ def test_dispatch_transcribe_routes_linux_x86_64(monkeypatch: pytest.MonkeyPatch
         lambda *args, **kwargs: [{"arm": "coreml"}],
     )
     monkeypatch.setattr(
-        parakeet._parakeet_onnx, "transcribe", lambda *args, **kwargs: [{"arm": "onnx"}]
+        parakeet._parakeet_cpp, "transcribe", lambda *args, **kwargs: [{"arm": "cpp"}]
     )
 
-    assert parakeet.transcribe([], 16000, {}) == [{"arm": "onnx"}]
+    assert parakeet.transcribe([], 16000, {}) == [{"arm": "cpp"}]
 
 
 @pytest.mark.parametrize(
@@ -78,7 +74,7 @@ def test_dispatch_get_model_info_routes_linux_x86_64(
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(
-        parakeet._parakeet_onnx, "get_model_info", lambda config: {"arm": "onnx"}
+        parakeet._parakeet_cpp, "get_model_info", lambda config: {"arm": "cpp"}
     )
 
-    assert parakeet.get_model_info({}) == {"arm": "onnx"}
+    assert parakeet.get_model_info({}) == {"arm": "cpp"}

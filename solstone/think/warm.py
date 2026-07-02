@@ -25,7 +25,6 @@ _WARM_ALL = [
     "sklearn",
     "faster_whisper",
 ]
-_WARM_LINUX_X86_64 = ["onnx_asr"]
 _WARM_DARWIN_ARM64 = ["mlx", "mlx_vlm"]
 
 
@@ -33,8 +32,6 @@ def warm_module_names() -> list[str]:
     """Return platform-filtered import names for bundled native warmup."""
     names = list(_WARM_ALL)
     machine = platform.machine()
-    if sys.platform == "linux" and machine == "x86_64":
-        names.extend(_WARM_LINUX_X86_64)
     if sys.platform == "darwin" and machine == "arm64":
         names.extend(_WARM_DARWIN_ARM64)
     return names

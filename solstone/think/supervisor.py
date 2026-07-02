@@ -11,6 +11,7 @@ import getpass
 import json
 import logging
 import os
+import platform
 import signal
 import socket
 import stat
@@ -28,6 +29,11 @@ from typing import Any, Callable, Iterable, NoReturn
 
 import psutil
 
+from solstone.observe.transcribe.resource import (
+    local_stt_backend,
+    select_stt_backend,
+    stt_local_floor_bytes,
+)
 from solstone.think import maintenance, scheduler
 from solstone.think.app_supervised import FLAG, is_app_supervised, resolve_parent_fd
 from solstone.think.backup.engine import BACKUP_MAX_RUNTIME, BACKUP_RUN_CMD
@@ -53,6 +59,7 @@ from solstone.think.processing import (
     evaluate_drain_gate,
     load_processing_settings,
 )
+from solstone.think.providers.memory import read_available_bytes
 from solstone.think.providers.mlx_server import MLX_SERVER_PROCESS_NAME
 from solstone.think.readiness import START_TIME_TOLERANCE_S, clear_ready, signal_ready
 from solstone.think.runner import DEFAULT_TASK_MAX_RUNTIME, _command_partition
@@ -121,11 +128,26 @@ SUPERVISOR_LOG_BACKUP_COUNT = 5
 logger = logging.getLogger(__name__)
 
 
-def configured_stt_backend() -> str | None:
+def linux_stt_uses_parakeet_cpp() -> bool:
+    """Return whether this host's effective STT path needs parakeet-server."""
+    if not sys.platform.startswith("linux"):
+        return False
+    if platform.machine().lower() != "x86_64":
+        return False
+
     config = read_journal_config()
     transcribe = config.get("transcribe", {})
     backend = transcribe.get("backend") if isinstance(transcribe, dict) else None
-    return backend if isinstance(backend, str) else None
+    if isinstance(backend, str):
+        return backend in {"parakeet", "parakeet-cpp"}
+
+    selected = select_stt_backend(
+        read_available_bytes(),
+        google_key_present=bool(os.getenv("GOOGLE_API_KEY")),
+        floor_bytes=stt_local_floor_bytes(),
+        local_backend=local_stt_backend(),
+    )
+    return selected in {"parakeet", "parakeet-cpp"}
 
 
 def _configured_parakeet_device() -> str:
@@ -2215,9 +2237,7 @@ def start_local_server() -> RunnerManagedProcess | None:
 
 def start_parakeet_server() -> RunnerManagedProcess | None:
     """Launch the supervisor-owned parakeet-server when STT opts into it."""
-    if not sys.platform.startswith("linux"):
-        return None
-    if configured_stt_backend() != "parakeet-cpp":
+    if not linux_stt_uses_parakeet_cpp():
         return None
 
     from solstone.think.providers import local_vulkan, parakeet_install
@@ -3350,10 +3370,7 @@ def main() -> None:
             proc = start_local_server()
             if proc is not None:
                 procs.append(proc)
-        if (
-            sys.platform.startswith("linux")
-            and configured_stt_backend() == "parakeet-cpp"
-        ):
+        if linux_stt_uses_parakeet_cpp():
             parakeet_proc = start_parakeet_server()
             if parakeet_proc is not None:
                 procs.append(parakeet_proc)

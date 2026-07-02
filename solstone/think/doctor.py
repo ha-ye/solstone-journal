@@ -118,19 +118,15 @@ DEFAULT_STT_READY_CHECK = Check("default_stt_ready", "advisory", ("linux", "darw
 PARAKEET_CPP_STT_READY_CHECK = Check(
     "parakeet_cpp_stt_ready", "advisory", ("linux", "darwin")
 )
-_DEFAULT_STT_RUNTIME_FIX = (
-    "parakeet runtime (onnx-asr) is not installed — reinstall to add it: "
-    "uv tool install --reinstall solstone"
-)
-_DEFAULT_STT_MODEL_FIX = (
-    "parakeet model is not downloaded — fetch it with: journal install-models"
-)
 _PARAKEET_CPP_INSTALL_FIX = (
     "parakeet-cpp artifacts are not installed — fetch them with: "
     "journal install-provider parakeet"
 )
 _PARAKEET_CPP_START_FIX = (
     "parakeet-server is not reachable — start the journal service: journal start"
+)
+_COREML_MODEL_FIX = (
+    "CoreML parakeet model is not downloaded — fetch it with: journal install-models"
 )
 JOURNAL_CAUGHT_UP_CHECK = Check("journal_caught_up", "advisory", ("linux", "darwin"))
 TASK_PACE_CHECK = Check("task_pace", "advisory", ("linux", "darwin"))
@@ -753,51 +749,7 @@ def _resolve_configured_backend() -> str | None:
     return backend if isinstance(backend, str) else None
 
 
-def default_stt_ready_check(args: Args) -> CheckResult:
-    del args
-    check = DEFAULT_STT_READY_CHECK
-    backend = _resolve_configured_backend()
-    if backend and backend != "parakeet":
-        return make_result(
-            check,
-            "skip",
-            f"configured backend is {backend}; parakeet readiness not applicable",
-        )
-
-    os_name, arch = parakeet_readiness._platform_info()
-    if (os_name, arch) not in {("linux", "x86_64"), ("darwin", "arm64")}:
-        return make_result(check, "skip", "parakeet not supported on this platform")
-
-    variant = "cpu" if os_name == "linux" else "coreml"
-    if os_name == "linux" and importlib.util.find_spec("onnx_asr") is None:
-        return make_result(
-            check,
-            "warn",
-            "onnx-asr runtime not installed",
-            _DEFAULT_STT_RUNTIME_FIX,
-        )
-
-    try:
-        ready_cache = parakeet_readiness._check_parakeet_ready(
-            os_name,
-            arch,
-            variant,
-            parakeet_readiness._sentinel_path(variant),
-        )
-    except RuntimeError as exc:
-        return make_result(check, "warn", str(exc), _DEFAULT_STT_MODEL_FIX)
-    return make_result(check, "ok", f"parakeet model ready at {ready_cache}")
-
-
-def parakeet_cpp_stt_ready_check(args: Args) -> CheckResult:
-    del args
-    check = PARAKEET_CPP_STT_READY_CHECK
-    if _resolve_configured_backend() != "parakeet-cpp":
-        return make_result(
-            check,
-            "skip",
-            "configured backend is not parakeet-cpp; check not applicable",
-        )
+def _parakeet_cpp_ready_result(check: Check) -> CheckResult:
     os_name, arch = parakeet_readiness._platform_info()
     if os_name != "linux":
         return make_result(check, "skip", "parakeet-cpp is only supported on Linux")
@@ -824,6 +776,46 @@ def parakeet_cpp_stt_ready_check(args: Args) -> CheckResult:
     return make_result(
         check, "ok", "parakeet-cpp ready (binaries + model installed, server reachable)"
     )
+
+
+def default_stt_ready_check(args: Args) -> CheckResult:
+    del args
+    check = DEFAULT_STT_READY_CHECK
+    backend = _resolve_configured_backend()
+    if backend and backend != "parakeet":
+        return make_result(
+            check,
+            "skip",
+            f"configured backend is {backend}; parakeet readiness not applicable",
+        )
+
+    os_name, arch = parakeet_readiness._platform_info()
+    if os_name == "linux" and arch == "x86_64":
+        return _parakeet_cpp_ready_result(check)
+    if os_name == "darwin" and arch == "arm64":
+        try:
+            ready_cache = parakeet_readiness._check_parakeet_ready(
+                os_name,
+                arch,
+                "coreml",
+                parakeet_readiness._sentinel_path("coreml"),
+            )
+        except RuntimeError as exc:
+            return make_result(check, "warn", str(exc), _COREML_MODEL_FIX)
+        return make_result(check, "ok", f"parakeet model ready at {ready_cache}")
+    return make_result(check, "skip", "parakeet not supported on this platform")
+
+
+def parakeet_cpp_stt_ready_check(args: Args) -> CheckResult:
+    del args
+    check = PARAKEET_CPP_STT_READY_CHECK
+    if _resolve_configured_backend() != "parakeet-cpp":
+        return make_result(
+            check,
+            "skip",
+            "configured backend is not parakeet-cpp; check not applicable",
+        )
+    return _parakeet_cpp_ready_result(check)
 
 
 def _make_feature_check(

@@ -2604,18 +2604,6 @@ wheels = [
 ]
 
 [[package]]
-name = "onnx-asr"
-version = "0.11.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/78/f6/b154881761a593312f509522f99542acffa2516f7a1df6ddf5660ad4a162/onnx_asr-0.11.0.tar.gz", hash = "sha256:57ad8d9571dc17db95f0daf9ba432b9472383de320c610735850e56b5375a37d", size = 43665, upload-time = "2026-03-23T02:30:57.349Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/82/04/bdffd682cc38b43144b6528186c80451f219a05e3fd0eb331a548f455b9a/onnx_asr-0.11.0-py3-none-any.whl", hash = "sha256:142d8b3ce7716684992826a269304f5ce9cf1c0fe704b751358e223f45d2a5cf", size = 138349, upload-time = "2026-03-23T02:30:58.566Z" },
-]
-
-[[package]]
 name = "onnxruntime"
 version = "1.25.0"
 source = { registry = "https://pypi.org/simple" }
@@ -4315,7 +4303,6 @@ journal-host = [
     { name = "mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
     { name = "mlx-vlm", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
     { name = "numpy" },
-    { name = "onnx-asr", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "openai" },
     { name = "opencv-python-headless" },
     { name = "openhands-sdk" },
@@ -4338,23 +4325,6 @@ journal-host = [
     { name = "soundfile" },
     { name = "tzlocal" },
     { name = "weasyprint" },
-]
-parakeet-onnx-cpu = [
-    { name = "huggingface-hub" },
-    { name = "onnx-asr" },
-    { name = "onnxruntime" },
-]
-parakeet-onnx-cuda = [
-    { name = "huggingface-hub" },
-    { name = "nvidia-cublas-cu12" },
-    { name = "nvidia-cuda-nvrtc-cu12" },
-    { name = "nvidia-cuda-runtime-cu12" },
-    { name = "nvidia-cudnn-cu12" },
-    { name = "nvidia-cufft-cu12" },
-    { name = "nvidia-curand-cu12" },
-    { name = "nvidia-nvjitlink-cu12" },
-    { name = "onnx-asr" },
-    { name = "onnxruntime-gpu" },
 ]
 pdf = [
     { name = "pdf2image" },
@@ -4391,8 +4361,6 @@ requires-dist = [
     { name = "h2", marker = "extra == 'journal-host'" },
     { name = "httpx", marker = "extra == 'journal-host'" },
     { name = "huggingface-hub", marker = "extra == 'journal-host'", specifier = ">=0.24" },
-    { name = "huggingface-hub", marker = "extra == 'parakeet-onnx-cpu'", specifier = ">=0.24" },
-    { name = "huggingface-hub", marker = "extra == 'parakeet-onnx-cuda'", specifier = ">=0.24" },
     { name = "icalendar", marker = "extra == 'journal-host'" },
     { name = "jsonschema", marker = "extra == 'journal-host'", specifier = ">=4.26,<5" },
     { name = "kaldi-native-fbank", marker = "extra == 'journal-host'", specifier = ">=1.22" },
@@ -4402,27 +4370,15 @@ requires-dist = [
     { name = "mlx-vlm", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'journal-host'", specifier = ">=0.6.2,<0.7" },
     { name = "numpy", marker = "extra == 'journal-host'" },
     { name = "nvidia-cublas-cu12", marker = "extra == 'journal-cuda'" },
-    { name = "nvidia-cublas-cu12", marker = "extra == 'parakeet-onnx-cuda'" },
     { name = "nvidia-cuda-nvrtc-cu12", marker = "extra == 'journal-cuda'" },
-    { name = "nvidia-cuda-nvrtc-cu12", marker = "extra == 'parakeet-onnx-cuda'" },
     { name = "nvidia-cuda-runtime-cu12", marker = "extra == 'journal-cuda'" },
-    { name = "nvidia-cuda-runtime-cu12", marker = "extra == 'parakeet-onnx-cuda'" },
     { name = "nvidia-cudnn-cu12", marker = "extra == 'journal-cuda'" },
-    { name = "nvidia-cudnn-cu12", marker = "extra == 'parakeet-onnx-cuda'" },
     { name = "nvidia-cufft-cu12", marker = "extra == 'journal-cuda'" },
-    { name = "nvidia-cufft-cu12", marker = "extra == 'parakeet-onnx-cuda'" },
     { name = "nvidia-curand-cu12", marker = "extra == 'journal-cuda'" },
-    { name = "nvidia-curand-cu12", marker = "extra == 'parakeet-onnx-cuda'" },
     { name = "nvidia-nvjitlink-cu12", marker = "extra == 'journal-cuda'" },
-    { name = "nvidia-nvjitlink-cu12", marker = "extra == 'parakeet-onnx-cuda'" },
-    { name = "onnx-asr", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'journal-host'", specifier = ">=0.11.0" },
-    { name = "onnx-asr", marker = "extra == 'parakeet-onnx-cpu'", specifier = ">=0.11.0" },
-    { name = "onnx-asr", marker = "extra == 'parakeet-onnx-cuda'", specifier = ">=0.11.0" },
     { name = "onnxruntime", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'journal'", specifier = "!=1.24.1,>=1.25.0" },
     { name = "onnxruntime", marker = "extra == 'journal'", specifier = ">=1.20.0,!=1.24.1" },
-    { name = "onnxruntime", marker = "extra == 'parakeet-onnx-cpu'", specifier = ">=1.25.0" },
     { name = "onnxruntime-gpu", marker = "extra == 'journal-cuda'", specifier = ">=1.25.0" },
-    { name = "onnxruntime-gpu", marker = "extra == 'parakeet-onnx-cuda'", specifier = ">=1.25.0" },
     { name = "openai", marker = "extra == 'journal-host'", specifier = ">=1.2.0" },
     { name = "opencv-python-headless", marker = "extra == 'journal-host'" },
     { name = "openhands-sdk", marker = "extra == 'journal-host'", specifier = "==1.27.*" },
@@ -4458,7 +4414,7 @@ requires-dist = [
     { name = "weasyprint", marker = "extra == 'pdf'", specifier = ">=60.0" },
     { name = "websockets", specifier = ">=13.0" },
 ]
-provides-extras = ["pdf", "whisper", "parakeet-onnx-cpu", "parakeet-onnx-cuda", "journal-host", "journal", "journal-cuda"]
+provides-extras = ["pdf", "whisper", "journal-host", "journal", "journal-cuda"]
 
 [package.metadata.requires-dev]
 dev = [

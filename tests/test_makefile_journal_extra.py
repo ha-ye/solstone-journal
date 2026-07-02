@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
-"""Guard: `make install` selects the CUDA transcription bundle only on x86_64.
+"""Guard: `make install` selects the CUDA journal bundle only on x86_64.
 
-The Makefile derives JOURNAL_EXTRA from PARAKEET_ONNX_VARIANT, auto-detected
+The Makefile derives JOURNAL_EXTRA from JOURNAL_VARIANT, auto-detected
 from the host (`uname -m` + `nvidia-smi`). The CUDA variant resolves
 onnxruntime-gpu, which ships NO aarch64 wheel on PyPI — so an aarch64 NVIDIA
 host (DGX Spark / GB10) that picked `cuda` would die in the `.installed`
@@ -105,7 +105,7 @@ def _resolve_journal_extra(arch: str, *, nvidia: bool) -> str:
         # prevents — `nvidia-smi` succeeding must NOT force `cuda` here.
         ("aarch64", True, "journal"),
         ("aarch64", False, "journal"),
-        # macOS arm64 stays on the CPU bundle (GPU STT rides parakeet-helper);
+        # macOS arm64 stays on the CPU bundle (parakeet uses the CoreML helper);
         # nvidia-smi is absent there, but the gate holds even if it weren't.
         ("arm64", True, "journal"),
         ("arm64", False, "journal"),
