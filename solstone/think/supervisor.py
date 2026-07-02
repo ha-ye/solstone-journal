@@ -96,8 +96,6 @@ REACTIVE_TASK_CAPS = {
     "indexer": 7200,  # 2h indexer, above the code's own 1h rescan allotment
     "importer": 3600,  # 1h importer
 }
-DEFAULT_THRESHOLD = 60
-CHECK_INTERVAL = 30
 GATE_TICK_INTERVAL_S = 60
 MAX_UPDATED_CATCHUP = 4
 TEMPFAIL_DELAY = 15  # seconds to wait before retrying a tempfail exit
@@ -763,60 +761,97 @@ class TaskQueue:
         return None
 
     def enforce_deadlines(self, now: float) -> None:
-        """Enforce configured task runtime caps without blocking the supervisor tick."""
+        """Enforce configured task runtime caps without blocking the supervisor tick.
+
+        Phase A snapshots active tasks under the lock. Phase B does all psutil
+        probing and outcome decisions with NO lock held. Phase C applies the state
+        mutations under the lock. Phase D starts termination threads with NO lock
+        held. Threads start only after Phase C so a cap/stopped-terminated ref is
+        recorded in _cap_terminated before its process can exit (preserving the
+        "timeout" exit-status labeling in _run_task's completion handler).
+        """
+        # Phase A: snapshot under lock.
         with self._lock:
-            for ref, managed in list(self._active.items()):
-                cmd_name = self.get_command_name(managed.cmd)
-                cap = self._effective_cap(cmd_name)
+            snapshot = [
+                (ref, managed, self._effective_cap(self.get_command_name(managed.cmd)))
+                for ref, managed in self._active.items()
+            ]
+            already_cap_terminated = set(self._cap_terminated)
+            stopped_ticks = dict(self._stopped_ticks)
 
-                elapsed = now - managed.start_time
-                if elapsed <= cap:
-                    continue
+        # Phase B: probe + decide, no lock, no mutation, no thread starts.
+        newly_cap_terminated: set[str] = set()
+        to_terminate: list[tuple[str, RunnerManagedProcess, str]] = []
+        stopped_updates: dict[str, int | None] = {}  # ref -> new count, or None to pop
 
-                elapsed_seconds = int(elapsed)
-                logging.warning(
-                    "Task %s (cmd=%s, ref=%s) exceeded max_runtime of %ds "
-                    "(elapsed=%ds); terminating",
-                    cmd_name,
-                    " ".join(managed.cmd),
-                    ref,
-                    cap,
-                    elapsed_seconds,
-                )
-                self._cap_terminated.add(ref)
-                _start_termination_thread(ref, managed, timeout=2.0, reason="cap")
+        # Cap loop first (populates newly_cap_terminated for the stopped skip set).
+        for ref, managed, cap in snapshot:
+            elapsed = now - managed.start_time
+            if elapsed <= cap:
+                continue
 
-            for ref, managed in list(self._active.items()):
-                if ref in self._cap_terminated:
-                    continue
+            cmd_name = self.get_command_name(managed.cmd)
+            logging.warning(
+                "Task %s (cmd=%s, ref=%s) exceeded max_runtime of %ds "
+                "(elapsed=%ds); terminating",
+                cmd_name,
+                " ".join(managed.cmd),
+                ref,
+                cap,
+                int(elapsed),
+            )
+            newly_cap_terminated.add(ref)
+            to_terminate.append((ref, managed, "cap"))
 
-                try:
-                    state = psutil.Process(managed.process.pid).status()
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    self._stopped_ticks.pop(ref, None)
-                    continue
+        # Stopped loop, skipping anything cap-terminated (prior ticks or this tick).
+        skip = already_cap_terminated | newly_cap_terminated
+        for ref, managed, _cap in snapshot:
+            if ref in skip:
+                continue
+            try:
+                state = psutil.Process(managed.process.pid).status()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                stopped_updates[ref] = None
+                continue
 
-                if state in (psutil.STATUS_STOPPED, psutil.STATUS_TRACING_STOP):
-                    ticks = self._stopped_ticks.get(ref, 0) + 1
-                    self._stopped_ticks[ref] = ticks
-                    if ticks >= STOPPED_TICKS_THRESHOLD:
-                        cmd_name = self.get_command_name(managed.cmd)
-                        logging.warning(
-                            "Task %s (cmd=%s, ref=%s) was stopped (state=%s) "
-                            "for %d consecutive ticks; terminating",
-                            cmd_name,
-                            " ".join(managed.cmd),
-                            ref,
-                            state,
-                            ticks,
-                        )
-                        self._cap_terminated.add(ref)
-                        _start_termination_thread(
-                            ref, managed, timeout=2.0, reason="stopped"
-                        )
-                        self._stopped_ticks.pop(ref, None)
+            if state in (psutil.STATUS_STOPPED, psutil.STATUS_TRACING_STOP):
+                ticks = stopped_ticks.get(ref, 0) + 1
+                if ticks >= STOPPED_TICKS_THRESHOLD:
+                    cmd_name = self.get_command_name(managed.cmd)
+                    logging.warning(
+                        "Task %s (cmd=%s, ref=%s) was stopped (state=%s) "
+                        "for %d consecutive ticks; terminating",
+                        cmd_name,
+                        " ".join(managed.cmd),
+                        ref,
+                        state,
+                        ticks,
+                    )
+                    newly_cap_terminated.add(ref)
+                    to_terminate.append((ref, managed, "stopped"))
+                    stopped_updates[ref] = None
                 else:
+                    stopped_updates[ref] = ticks
+            else:
+                stopped_updates[ref] = None
+
+        # Phase C: apply state mutations under lock. Guard additions/sets with
+        # `ref in self._active` so a task that completed during the unlocked probe
+        # window (already popped its own _cap_terminated/_stopped_ticks entries in
+        # _run_task) is not resurrected. Pops are unconditional.
+        with self._lock:
+            for ref in newly_cap_terminated:
+                if ref in self._active:
+                    self._cap_terminated.add(ref)
+            for ref, val in stopped_updates.items():
+                if val is None:
                     self._stopped_ticks.pop(ref, None)
+                elif ref in self._active:
+                    self._stopped_ticks[ref] = val
+
+        # Phase D: start termination threads, no lock held.
+        for ref, managed, reason in to_terminate:
+            _start_termination_thread(ref, managed, timeout=2.0, reason=reason)
 
     def set_ready(self) -> None:
         """Allow buffered tasks to start dispatching through the normal queue path."""
@@ -1019,25 +1054,6 @@ class TaskQueue:
                 daemon=True,
             ).start()
 
-    def cancel(self, ref: str) -> bool:
-        """Cancel a running task.
-
-        Returns:
-            True if task was found and terminated, False otherwise
-        """
-        if ref not in self._active:
-            logging.warning(f"Cannot cancel task {ref}: not found")
-            return False
-
-        managed = self._active[ref]
-        if not managed.is_running():
-            logging.debug(f"Task {ref} already finished")
-            return False
-
-        logging.info(f"Cancelling task {ref}...")
-        managed.terminate()
-        return True
-
     def shutdown(self, timeout: float = 10.0) -> int:
         with self._lock:
             active = list(self._active.items())
@@ -1059,25 +1075,13 @@ class TaskQueue:
             list(executor.map(_terminate, active))
         return len(active)
 
-    def get_status(self, ref: str) -> dict:
-        """Get status of a task."""
-        if ref not in self._active:
-            return {"status": "not_found"}
-
-        managed = self._active[ref]
-        return {
-            "status": "running" if managed.is_running() else "finished",
-            "pid": managed.pid,
-            "returncode": managed.returncode,
-            "log_path": str(managed.log_writer.path),
-            "cmd": managed.cmd,
-        }
-
     def collect_task_status(self) -> list[dict]:
         """Collect status of all running tasks for supervisor status."""
         now = time.time()
+        with self._lock:
+            snapshot = list(self._active.items())
         tasks = []
-        for ref, managed in self._active.items():
+        for ref, managed in snapshot:
             if managed.is_running():
                 duration = int(now - managed.start_time)
                 cmd_name = TaskQueue.get_command_name(managed.cmd)
@@ -1678,20 +1682,6 @@ def _handle_cortex_outcome(message: dict) -> None:
     else:
         logging.warning("local server wedge: recycle deferred; service not running")
         failures.clear()
-
-
-def get_task_status(ref: str) -> dict:
-    """Get status of a task.
-
-    Args:
-        ref: Task correlation ID
-
-    Returns:
-        Dict with status info, or {"status": "not_found"} if task doesn't exist
-    """
-    if _task_queue:
-        return _task_queue.get_status(ref)
-    return {"status": "not_found"}
 
 
 def collect_status(procs: list[RunnerManagedProcess]) -> dict:
@@ -3156,6 +3146,48 @@ def _run_gate_tick(now: float) -> None:
     run_catchup_drain()
 
 
+_FATAL_TICK_EXCEPTIONS = (KeyboardInterrupt, asyncio.CancelledError, SystemExit)
+
+# Consecutive-duplicate suppression for tick-step failure logging.
+_last_tick_step_failure: tuple[str, str] | None = None
+
+
+def _log_tick_step_failure(step: str, exc: Exception) -> None:
+    """Log a guarded tick-step failure, debouncing identical consecutive repeats.
+
+    The first occurrence of any distinct (step, message) always logs at ERROR
+    with a full traceback; an immediately-repeated identical failure downgrades
+    to DEBUG so a persistently-failing step cannot flood the log.
+    """
+    global _last_tick_step_failure
+    signature = (step, f"{type(exc).__name__}: {exc}")
+    if signature == _last_tick_step_failure:
+        logging.debug("Supervision step %r still failing: %s", step, exc)
+        return
+    _last_tick_step_failure = signature
+    logging.error("Supervision step %r failed; continuing", step, exc_info=True)
+
+
+def _guarded_tick_step(step: str, fn: Callable[[], None]) -> None:
+    """Run a synchronous tick step, swallowing non-fatal exceptions."""
+    try:
+        fn()
+    except _FATAL_TICK_EXCEPTIONS:
+        raise
+    except Exception as exc:
+        _log_tick_step_failure(step, exc)
+
+
+async def _guarded_tick_step_async(step: str, coro_factory) -> None:
+    """Run an awaited tick step, swallowing non-fatal exceptions."""
+    try:
+        await coro_factory()
+    except _FATAL_TICK_EXCEPTIONS:
+        raise
+    except Exception as exc:
+        _log_tick_step_failure(step, exc)
+
+
 async def supervise(
     *,
     daily: bool = True,
@@ -3182,12 +3214,19 @@ async def supervise(
             not shutdown_requested
         ):  # pragma: no cover - loop checked via unit tests by patching
             if _task_queue:
-                _task_queue.enforce_deadlines(time.time())
+                _guarded_tick_step(
+                    "enforce_deadlines",
+                    lambda: _task_queue.enforce_deadlines(time.time()),
+                )
 
             # Check for runner exits first (immediate alert)
             if procs:
-                await handle_runner_exits(procs)
-                await _check_local_server_recovery()
+                await _guarded_tick_step_async(
+                    "handle_runner_exits", lambda: handle_runner_exits(procs)
+                )
+                await _guarded_tick_step_async(
+                    "check_local_server_recovery", _check_local_server_recovery
+                )
 
             # Emit status every 5 seconds
             now = time.time()
@@ -3201,7 +3240,7 @@ async def supervise(
                 last_status_emit = now
 
             # Check for segment flush (non-blocking, submits via task queue)
-            _check_segment_flush()
+            _guarded_tick_step("check_segment_flush", _check_segment_flush)
 
             # Check for journal sync conflicts (usually just heartbeat IO)
             if not _run_sync_tick(now):
@@ -3209,12 +3248,12 @@ async def supervise(
 
             # Check for daily processing (non-blocking, submits via task queue)
             if daily:
-                handle_daily_tasks()
-                _run_gate_tick(now)
+                _guarded_tick_step("handle_daily_tasks", handle_daily_tasks)
+                _guarded_tick_step("run_gate_tick", lambda: _run_gate_tick(now))
 
             # Check periodic task schedules (non-blocking, submits via callosum)
             if schedule:
-                scheduler.check()
+                _guarded_tick_step("scheduler_check", scheduler.check)
 
             # Sleep 1 second before next iteration (responsive to shutdown)
             await asyncio.sleep(1)
@@ -3230,15 +3269,6 @@ def parse_args() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Convey port (0 = auto-select available port)",
-    )
-    parser.add_argument(
-        "--threshold",
-        type=int,
-        default=DEFAULT_THRESHOLD,
-        help="Seconds before heartbeat considered stale",
-    )
-    parser.add_argument(
-        "--interval", type=int, default=CHECK_INTERVAL, help="Polling interval seconds"
     )
     parser.add_argument(
         "--no-daily",
@@ -3354,6 +3384,23 @@ def register_baseline_caps(queue: TaskQueue) -> None:
         TaskQueue.get_command_name(BACKUP_RUN_CMD),
         parse_duration_seconds(BACKUP_MAX_RUNTIME),
     )
+
+
+def _register_scheduler_defaults() -> None:
+    """Register built-in scheduler defaults, tolerating a malformed config file.
+
+    scheduler.register_defaults() reads config/schedules.json with
+    RAISE-on-malformed semantics; a hand-corrupted or truncated file must
+    degrade to "no built-in defaults" rather than abort supervisor boot.
+    """
+    try:
+        scheduler.register_defaults()
+    except Exception:
+        logging.error(
+            "Failed to register scheduler defaults (malformed schedules.json?); "
+            "continuing without built-in defaults",
+            exc_info=True,
+        )
 
 
 def main() -> None:
@@ -3572,7 +3619,7 @@ def main() -> None:
         except Exception:
             logging.error("Failed to register maintenance schedules", exc_info=True)
         scheduler.init(_supervisor_callosum)
-        scheduler.register_defaults()
+        _register_scheduler_defaults()
         if _task_queue:
             for cmd, seconds in scheduler.collect_runtime_caps():
                 cmd_name = TaskQueue.get_command_name(cmd)

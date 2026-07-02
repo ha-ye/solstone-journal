@@ -2108,6 +2108,68 @@ def test_supervise_resets_display_powersave_monitor_on_entry(monkeypatch):
     reset.assert_called_once_with()
 
 
+def test_supervise_logs_tick_step_failure_and_continues(caplog, monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    monkeypatch.setattr(mod, "shutdown_requested", False)
+    monkeypatch.setattr(mod, "_task_queue", None)
+    monkeypatch.setattr(mod, "_supervisor_callosum", None)
+    monkeypatch.setattr(mod, "_last_tick_step_failure", None)
+    monkeypatch.setattr(mod, "reset_display_powersave_monitor", lambda: None)
+    monkeypatch.setattr(mod, "_run_sync_tick", lambda _now: True)
+
+    flush_calls = []
+    monkeypatch.setattr(
+        mod, "_check_segment_flush", lambda: flush_calls.append("flush")
+    )
+
+    scheduler_calls = 0
+
+    def check_schedule():
+        nonlocal scheduler_calls
+        scheduler_calls += 1
+        if scheduler_calls == 1:
+            raise Exception("schedule boom")
+
+    monkeypatch.setattr(mod.scheduler, "check", check_schedule)
+
+    async def stop_after_two_ticks(_seconds):
+        if scheduler_calls >= 2:
+            mod.shutdown_requested = True
+
+    monkeypatch.setattr(mod.asyncio, "sleep", stop_after_two_ticks)
+
+    with caplog.at_level(logging.DEBUG):
+        asyncio.run(mod.supervise(daily=False, schedule=True, procs=[]))
+
+    errors = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.ERROR and "scheduler_check" in record.message
+    ]
+    assert len(errors) == 1
+    assert errors[0].exc_info is not None
+    assert scheduler_calls == 2
+    assert len(flush_calls) == 2
+
+
+def test_supervise_propagates_cancelled_error_from_guarded_step(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    monkeypatch.setattr(mod, "shutdown_requested", False)
+    monkeypatch.setattr(mod, "_task_queue", None)
+    monkeypatch.setattr(mod, "_supervisor_callosum", None)
+    monkeypatch.setattr(mod, "reset_display_powersave_monitor", lambda: None)
+    monkeypatch.setattr(mod, "_check_segment_flush", lambda: None)
+    monkeypatch.setattr(mod, "_run_sync_tick", lambda _now: True)
+    monkeypatch.setattr(
+        mod.scheduler,
+        "check",
+        lambda: (_ for _ in ()).throw(asyncio.CancelledError()),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(mod.supervise(daily=False, schedule=True, procs=[]))
+
+
 def test_record_scheduler_completion_serializes_concurrent_writes(
     tmp_path, monkeypatch
 ):
@@ -2386,6 +2448,46 @@ def test_collect_task_status_default_cap_stuck(monkeypatch):
     assert status[0]["stuck"] is True
 
 
+def test_collect_task_status_snapshots_active_under_lock():
+    mod = importlib.import_module("solstone.think.supervisor")
+    queue = mod.TaskQueue(on_queue_change=None)
+
+    for index in range(25):
+        managed = _TaskManagedStub(cmd=["journal", "providers"], start_time=100.0)
+        managed.is_running = MagicMock(side_effect=lambda: time.sleep(0.0001) or True)
+        queue._active[f"ref-{index}"] = managed
+
+    stop = threading.Event()
+    thread_errors = []
+
+    def mutate_active():
+        index = 0
+        try:
+            while not stop.is_set():
+                ref = f"bg-{index}"
+                managed = _TaskManagedStub(cmd=["journal", "providers"])
+                with queue._lock:
+                    queue._active[ref] = managed
+                time.sleep(0)
+                with queue._lock:
+                    queue._active.pop(ref, None)
+                index += 1
+        except BaseException as exc:
+            thread_errors.append(exc)
+
+    thread = threading.Thread(target=mutate_active)
+    thread.start()
+    try:
+        for _ in range(100):
+            queue.collect_task_status()
+    finally:
+        stop.set()
+        thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert thread_errors == []
+
+
 def test_enforce_deadlines_terminates_stopped_task(caplog, monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     proc = subprocess.Popen(["sh", "-c", "kill -STOP $$; sleep 60"])
@@ -2427,6 +2529,47 @@ def test_enforce_deadlines_terminates_stopped_task(caplog, monkeypatch):
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout=5)
+
+
+def test_enforce_deadlines_does_not_probe_status_under_lock(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    queue = mod.TaskQueue(on_queue_change=None)
+    managed = _TaskManagedStub(cmd=["sol", "import"], start_time=100.0)
+    managed.process.pid = 123
+    queue._active["ref-1"] = managed
+    queue.set_cap("import", 300)
+
+    class ProbeProcess:
+        def __init__(self, pid):
+            assert pid == 123
+
+        def status(self):
+            acquired = queue._lock.acquire(blocking=False)
+            assert acquired
+            queue._lock.release()
+            return mod.psutil.STATUS_RUNNING
+
+    monkeypatch.setattr(mod.psutil, "Process", ProbeProcess)
+    monkeypatch.setattr(mod, "_start_termination_thread", MagicMock())
+
+    queue.enforce_deadlines(110.0)
+
+
+def test_enforce_deadlines_skips_stopped_probe_for_new_cap_kill(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    queue = mod.TaskQueue(on_queue_change=None)
+    managed = _TaskManagedStub(cmd=["sol", "import"], start_time=100.0)
+    queue._active["ref-1"] = managed
+    queue.set_cap("import", 50)
+    probe = MagicMock()
+    terminate = MagicMock()
+    monkeypatch.setattr(mod.psutil, "Process", probe)
+    monkeypatch.setattr(mod, "_start_termination_thread", terminate)
+
+    queue.enforce_deadlines(200.0)
+
+    probe.assert_not_called()
+    terminate.assert_called_once_with("ref-1", managed, timeout=2.0, reason="cap")
 
 
 def test_terminate_managed_logs_timeout(caplog):
