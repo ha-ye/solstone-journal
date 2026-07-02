@@ -16,7 +16,7 @@ Decision log:
   be diagnosed.
 - disk threshold: 10 GiB — measured `.venv`=7.88 GiB +
   uv-cache first-install growth ~1 GiB + buffer.
-- Feature-extras checks (pdf, whisper) are dynamically registered from
+- Feature-extras checks are dynamically registered from
   `solstone.think.features.FEATURES`, severity advisory, never affect
   exit code. Filter via `--feature <name>`.
 """

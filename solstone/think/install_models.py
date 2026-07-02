@@ -80,7 +80,11 @@ def _resolve_variant(
     if flag_value in {"cpu", "cuda"}:
         if os_name != "linux":
             raise SystemExit(f"variant {flag_value!r} not supported on {os_name}")
-        if arch != "x86_64":
+        if flag_value == "cpu" and arch not in {"x86_64", "aarch64", "arm64"}:
+            raise SystemExit(
+                f"variant {flag_value!r} not supported on {os_name}/{arch}"
+            )
+        if flag_value == "cuda" and arch != "x86_64":
             raise SystemExit(
                 f"variant {flag_value!r} not supported on {os_name}/{arch}"
             )
@@ -95,13 +99,20 @@ def _resolve_variant(
 
     if os_name == "darwin" and arch == "arm64":
         return "coreml"
-    if os_name == "linux" and arch == "x86_64":
+    if os_name == "linux" and arch in {"x86_64", "aarch64", "arm64"}:
         if env_value:
             if env_value not in {"cpu", "cuda"}:
                 raise SystemExit(
                     f"invalid {JOURNAL_VARIANT_ENV}={env_value!r}; use 'cpu' or 'cuda'"
                 )
+            if env_value == "cuda" and arch != "x86_64":
+                raise SystemExit(
+                    f"invalid {JOURNAL_VARIANT_ENV}={env_value!r}; "
+                    f"use 'cpu' on {os_name}/{arch}"
+                )
             return env_value
+        if arch != "x86_64":
+            return "cpu"
         return _detect_linux_variant()
     return None
 
@@ -297,11 +308,14 @@ def _check_linux_cpp_ready() -> dict[str, Path]:
     )
 
 
-def _install_linux_cpp() -> int:
+def _install_linux_cpp(*, force: bool = False) -> int:
     from solstone.think.providers import parakeet_install
 
     try:
-        parakeet_install.install_parakeet()
+        if force:
+            parakeet_install.install_parakeet(force=True)
+        else:
+            parakeet_install.install_parakeet()
         paths = _check_linux_cpp_ready()
     except Exception as exc:
         return _fail(f"parakeet install failed: {exc}")
@@ -309,9 +323,15 @@ def _install_linux_cpp() -> int:
     return 0
 
 
-def _install_models(os_name: str, arch: str, variant: str) -> int:
+def _install_models(
+    os_name: str,
+    arch: str,
+    variant: str,
+    *,
+    force: bool = False,
+) -> int:
     if variant in {"cpu", "cuda"}:
-        return _install_linux_cpp()
+        return _install_linux_cpp(force=force)
 
     sentinel_path = _sentinel_path(variant)
     cache_dir = _cache_dir(variant)
@@ -407,22 +427,6 @@ def main() -> int:
         )
         return 0
 
-    if os_name == "linux" and arch == "x86_64" and variant == "cuda":
-        try:
-            import onnxruntime
-
-            providers = onnxruntime.get_available_providers()
-        except Exception:
-            sys.exit(
-                "device=cuda requires CUDAExecutionProvider; rerun: "
-                "JOURNAL_VARIANT=cuda make install"
-            )
-        if "CUDAExecutionProvider" not in providers:
-            sys.exit(
-                "device=cuda requires CUDAExecutionProvider; rerun: "
-                "JOURNAL_VARIANT=cuda make install"
-            )
-
     if variant in {"cpu", "cuda"}:
         if args.check:
             try:
@@ -439,7 +443,7 @@ def main() -> int:
             else:
                 print(f"model ready: {paths['model']}")
                 return 0
-        return _install_models(os_name, arch, variant)
+        return _install_models(os_name, arch, variant, force=args.force)
 
     sentinel_path = _sentinel_path(variant)
     if args.check:
@@ -466,7 +470,7 @@ def main() -> int:
             print(f"model ready: {ready_cache}")
             return 0
 
-    return _install_models(os_name, arch, variant)
+    return _install_models(os_name, arch, variant, force=args.force)
 
 
 if __name__ == "__main__":

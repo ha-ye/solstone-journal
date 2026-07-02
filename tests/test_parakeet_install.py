@@ -7,6 +7,7 @@ import io
 import os
 import shutil
 import tarfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -216,6 +217,36 @@ def test_install_parakeet_writes_distinct_binary_and_model_metadata(
     assert slot["model_revision"] == parakeet_readiness.PARAKEET_CPP_MODEL_REVISION
     assert slot["model_path"] == str(parakeet_install.model_path())
     assert Path(slot["model_path"]).is_file()
+
+
+def test_install_parakeet_rechecks_readiness_under_provider_lock(
+    tmp_path, monkeypatch
+) -> None:
+    _init_journal(tmp_path, monkeypatch)
+    _stage_ready_files()
+    lock_calls = []
+
+    @contextmanager
+    def fake_hold_install_lock(journal_path=None):
+        lock_calls.append(parakeet_install._install_lock_path(journal_path))
+        yield
+
+    monkeypatch.setattr(parakeet_install, "_hold_install_lock", fake_hold_install_lock)
+    monkeypatch.setattr(
+        parakeet_install,
+        "_install_parakeet_server_unlocked",
+        lambda *_args: pytest.fail("ready artifacts should not reinstall"),
+    )
+    monkeypatch.setattr(
+        parakeet_install,
+        "_install_model_unlocked",
+        lambda: pytest.fail("ready model should not reinstall"),
+    )
+
+    result = parakeet_install.install_parakeet()
+
+    assert result["install_state"] == "installed"
+    assert lock_calls == [parakeet_install.cache_root() / "install"]
 
 
 def test_ensure_artifacts_installed_resolves_requested_backend(

@@ -2471,43 +2471,6 @@ button:focus:not(:focus-visible) {
         <span id="transcribeResourceNoticeText"></span>
       </div>
 
-      <!-- Whisper-specific settings -->
-      <fieldset id="whisper-settings" class="backend-settings">
-        <div class="settings-field">
-          <label for="field-whisper-device">device</label>
-          <select id="field-whisper-device">
-            <option value="auto" selected>Auto - Detect GPU if available</option>
-            <option value="cpu">CPU - Use processor only</option>
-            <option value="cuda">CUDA - Force NVIDIA GPU</option>
-          </select>
-          <small>Hardware to use for local transcription</small>
-        </div>
-
-        <div class="settings-field">
-          <label for="field-whisper-model">model</label>
-          <select id="field-whisper-model">
-            <option value="tiny.en">Tiny - Fastest</option>
-            <option value="base.en">Base</option>
-            <option value="small.en">Small</option>
-            <option value="medium.en" selected>Medium (default)</option>
-            <option value="large-v3-turbo">Large v3 Turbo</option>
-            <option value="distil-large-v3">Distil Large v3</option>
-          </select>
-          <small>Model size - larger is more accurate but slower</small>
-        </div>
-
-        <div class="settings-field">
-          <label for="field-whisper-compute">compute type</label>
-          <select id="field-whisper-compute">
-            <option value="default" selected>Default - Auto-select</option>
-            <option value="float32">Float32 - Highest precision</option>
-            <option value="float16">Float16 - Balanced</option>
-            <option value="int8">Int8 - Fastest</option>
-          </select>
-          <small>Numeric precision for inference</small>
-        </div>
-      </fieldset>
-
       <!-- Rev.ai-specific settings -->
       <fieldset id="revai-settings" class="backend-settings" style="display:none">
         <div class="settings-field">
@@ -3783,12 +3746,6 @@ function populateFields(config) {
   // Parakeet.cpp settings (nested)
   const parakeetCpp = transcribe['parakeet-cpp'] || {};
   setValue('field-parakeet-cpp-device', parakeetCpp.device || 'auto');
-
-  // Whisper settings (nested)
-  const whisper = transcribe.whisper || {};
-  setValue('field-whisper-device', whisper.device || 'auto');
-  setValue('field-whisper-model', whisper.model || 'medium.en');
-  setValue('field-whisper-compute', whisper.compute_type || 'default');
 
   // Rev.ai settings (nested)
   const revai = transcribe.revai || {};
@@ -5202,7 +5159,6 @@ function switchTranscribeBackend(backend, config) {
   const showParakeetCppSettings = backend === 'parakeet-cpp' || (backend === 'parakeet' && parakeetUsesCpp);
   document.getElementById('parakeet-settings').style.display = (backend === 'parakeet' && !parakeetUsesCpp) ? 'block' : 'none';
   document.getElementById('parakeet-cpp-settings').style.display = showParakeetCppSettings ? 'block' : 'none';
-  document.getElementById('whisper-settings').style.display = backend === 'whisper' ? 'block' : 'none';
   document.getElementById('revai-settings').style.display = backend === 'revai' ? 'block' : 'none';
   document.getElementById('gemini-settings').style.display = backend === 'gemini' ? 'block' : 'none';
 
@@ -5280,33 +5236,6 @@ document.getElementById('backendKeyLink')?.addEventListener('click', (e) => {
 document.getElementById('plaudApiKeysLink')?.addEventListener('click', (e) => {
   e.preventDefault();
   switchSection('apikeys');
-});
-
-// Whisper settings change handlers
-['field-whisper-device', 'field-whisper-model', 'field-whisper-compute'].forEach(id => {
-  document.getElementById(id)?.addEventListener('change', async (e) => {
-    const key = id === 'field-whisper-device' ? 'device' :
-                id === 'field-whisper-model' ? 'model' : 'compute_type';
-    const value = e.target.value;
-
-    try {
-      const response = await fetch('api/config', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ section: 'transcribe', data: { whisper: { [key]: value } } })
-      });
-      const result = await response.json();
-      if (result.success) {
-        configData = result.config;
-        showFieldStatus(e.target, 'saved');
-      } else {
-        throw new Error(result.error);
-      }
-    } catch (err) {
-      console.error('Error saving whisper setting:', err);
-      showFieldStatus(e.target, 'error', err.message);
-    }
-  });
 });
 
 // Rev.ai settings change handlers

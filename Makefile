@@ -29,8 +29,8 @@ PYTHON := $(VENV_PY)
 # an aarch64 NVIDIA host (e.g. DGX Spark / GB10) that auto-selected `cuda` would
 # die in the `.installed` `uv sync` below — before the per-arch `install` guard
 # (which correctly skips non-x86_64 Linux) ever runs. Gating on x86_64 also
-# keeps this coherent with the STT arch decision (aarch64-linux transcribes on
-# whisper/CPU). Everything non-x86_64 falls to the CPU `journal` bundle, whose
+# keeps this coherent with the STT arch decision (aarch64-linux uses the
+# parakeet.cpp CPU/Vulkan bundle). Everything non-x86_64 falls to the CPU `journal` bundle, whose
 # onnxruntime has aarch64 wheels. Guarded by tests/test_makefile_journal_extra.py.
 JOURNAL_VARIANT ?= $(shell if [ "$$(uname -m)" = "x86_64" ] && nvidia-smi -L >/dev/null 2>&1; then echo cuda; else echo cpu; fi)
 

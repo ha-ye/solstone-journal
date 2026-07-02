@@ -10,7 +10,7 @@ import sys
 # Single source of truth: pyproject.toml [journal-host], plus the [journal] and
 # [journal-cuda] onnxruntime entries. Package-to-import mapping:
 # Pillow -> PIL; opencv-python-headless -> cv2; scikit-learn -> sklearn;
-# faster-whisper -> faster_whisper; kaldi-native-fbank -> kaldi_native_fbank.
+# kaldi-native-fbank -> kaldi_native_fbank.
 #
 # Excluded intentionally: pyarrow (not a dependency), scipy (transitive through
 # sklearn), and pure-Python dependencies (no native code-signing surface).
@@ -23,7 +23,6 @@ _WARM_ALL = [
     "onnxruntime",
     "kaldi_native_fbank",
     "sklearn",
-    "faster_whisper",
 ]
 _WARM_DARWIN_ARM64 = ["mlx", "mlx_vlm"]
 

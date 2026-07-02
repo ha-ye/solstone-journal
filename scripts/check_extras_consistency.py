@@ -16,8 +16,8 @@ The invariants are:
   2. There is no `[all]` extra.
   3. `[journal]` and `[journal-cuda]` each contain exactly one
      `solstone-journal-host==<root version>` pin.
-  4. `[journal-host]` stays in root and folds in the `[pdf]` and `[whisper]`
-     building blocks ("choose journal, get it all").
+  4. `[journal-host]` stays in root and folds in the `[pdf]` building block
+     ("choose journal, get it all").
   5. The CPU/CUDA ONNX runtime split holds: `[journal]` pulls the CPU
      `onnxruntime` and NOT `onnxruntime-gpu`; `[journal-cuda]` pulls
      `onnxruntime-gpu` and NOT the CPU `onnxruntime`. They must never both
@@ -105,7 +105,7 @@ def main() -> int:
         errors.append("[all] extra must be removed")
 
     # 3. Required extras exist.
-    for name in ("pdf", "whisper", "journal", "journal-cuda", "journal-host"):
+    for name in ("pdf", "journal", "journal-cuda", "journal-host"):
         if name not in extras:
             errors.append(f"missing required extra: [{name}]")
 
@@ -125,9 +125,9 @@ def main() -> int:
                 )
 
     if "journal-host" in extras:
-        # 4. journal-host folds pdf + whisper.
+        # 4. journal-host folds pdf.
         host = extras["journal-host"]
-        for block in ("solstone[pdf]", "solstone[whisper]"):
+        for block in ("solstone[pdf]",):
             if block not in host:
                 errors.append(f"[journal-host] must fold in {block}")
 

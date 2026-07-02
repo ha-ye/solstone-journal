@@ -109,10 +109,41 @@ def test_build_parakeet_cmd_load_bearing_invariants() -> None:
     assert cmd[cmd.index("--threads") + 1] == "6"
 
 
+def test_parakeet_runtime_library_dirs_aliases_bundled_libgomp(
+    tmp_path, monkeypatch
+) -> None:
+    site_dir = tmp_path / "site-packages"
+    libs_dir = site_dir / "scikit_learn.libs"
+    libs_dir.mkdir(parents=True)
+    bundled = libs_dir / "libgomp-e985bcbb.so.1.0.0"
+    bundled.write_text("runtime")
+    journal = tmp_path / "journal"
+
+    monkeypatch.setattr(supervisor, "_site_package_search_dirs", lambda: [site_dir])
+    monkeypatch.setattr(supervisor, "get_journal", lambda: str(journal))
+
+    result = supervisor._parakeet_runtime_library_dirs()
+
+    assert result == [journal / "cache" / "providers" / "parakeet" / "lib"]
+    alias = result[0] / "libgomp.so.1"
+    assert alias.is_symlink()
+    assert alias.resolve() == bundled.resolve()
+
+
+def test_with_library_path_prepends_dirs() -> None:
+    env = {"LD_LIBRARY_PATH": "/existing"}
+
+    result = supervisor._with_library_path(env, [Path("/parakeet/lib")])
+
+    assert result["LD_LIBRARY_PATH"] == "/parakeet/lib:/existing"
+    assert env["LD_LIBRARY_PATH"] == "/existing"
+
+
 def test_start_parakeet_server_vulkan_crash_falls_back_to_cpu(
     monkeypatch,
 ) -> None:
     monkeypatch.delenv("GGML_VK_VISIBLE_DEVICES", raising=False)
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
     monkeypatch.setattr(supervisor.sys, "platform", "linux")
     monkeypatch.setattr(supervisor, "linux_stt_uses_parakeet_cpp", lambda: True)
     monkeypatch.setattr(supervisor, "_configured_parakeet_device", lambda: "auto")
@@ -138,6 +169,9 @@ def test_start_parakeet_server_vulkan_crash_falls_back_to_cpu(
         lambda service, port: ports.append((service, port)),
     )
     monkeypatch.setattr(supervisor, "parakeet_physical_thread_count", lambda: 6)
+    monkeypatch.setattr(
+        supervisor, "_parakeet_runtime_library_dirs", lambda: [Path("/parakeet/lib")]
+    )
     monkeypatch.setattr(
         parakeet_server, "probe_state", lambda: (parakeet_server.STATE_READY, None)
     )
@@ -177,8 +211,10 @@ def test_start_parakeet_server_vulkan_crash_falls_back_to_cpu(
     assert launches[0]["restart"] is True
     assert launches[0]["cmd"][0] == "/tmp/vulkan/parakeet-server"
     assert launches[0]["env"]["GGML_VK_VISIBLE_DEVICES"] == "2"
+    assert launches[0]["env"]["LD_LIBRARY_PATH"] == "/parakeet/lib"
     assert launches[1]["cmd"][0] == "/tmp/cpu/parakeet-server"
     assert "GGML_VK_VISIBLE_DEVICES" not in launches[1]["env"]
+    assert launches[1]["env"]["LD_LIBRARY_PATH"] == "/parakeet/lib"
     assert launches[0]["managed"].cleanup_called is True
     assert terminated[0][0] is launches[0]["managed"]
     assert ports == [("parakeet-cpp", 45123)]
@@ -192,10 +228,10 @@ def test_start_parakeet_server_vulkan_crash_falls_back_to_cpu(
         ("linux", "x86_64", None, 3 * 1024**3, True, False),
         ("linux", "x86_64", "parakeet", 3 * 1024**3, False, True),
         ("linux", "x86_64", "parakeet-cpp", 3 * 1024**3, False, True),
-        ("linux", "x86_64", "whisper", 5 * 1024**3, False, False),
         ("linux", "x86_64", "revai", 5 * 1024**3, False, False),
         ("linux", "x86_64", "gemini", 5 * 1024**3, False, False),
-        ("linux", "aarch64", None, 5 * 1024**3, False, False),
+        ("linux", "aarch64", None, 5 * 1024**3, False, True),
+        ("linux", "aarch64", "parakeet", 3 * 1024**3, False, True),
         ("darwin", "arm64", None, 5 * 1024**3, False, False),
     ],
 )
@@ -245,3 +281,96 @@ def test_start_parakeet_server_early_returns_for_other_backend(monkeypatch) -> N
     )
 
     assert supervisor.start_parakeet_server() is None
+
+
+def test_start_parakeet_server_starts_background_install_when_missing(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(supervisor, "linux_stt_uses_parakeet_cpp", lambda: True)
+    monkeypatch.setattr(supervisor, "_configured_parakeet_device", lambda: "cpu")
+    started: list[str] = []
+
+    class _Thread:
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+
+        def is_alive(self):
+            return False
+
+        def start(self):
+            started.append(self.name)
+
+    monkeypatch.setattr(supervisor.threading, "Thread", _Thread)
+    monkeypatch.setattr(
+        parakeet_install,
+        "ensure_artifacts_installed",
+        lambda _backend: (_ for _ in ()).throw(
+            parakeet_install.ParakeetProviderError(
+                "model_missing", "Parakeet model is not installed."
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        parakeet_install,
+        "inspect_readiness",
+        lambda: {
+            "install_state": "idle",
+            "binary_installed": False,
+            "model_installed": False,
+        },
+    )
+    monkeypatch.setattr(supervisor, "_parakeet_bootstrap_thread", None)
+
+    assert supervisor.start_parakeet_server() is None
+    assert started == ["parakeet-cpp-provider-bootstrap"]
+
+
+def test_parakeet_bootstrap_worker_requests_start_after_install(monkeypatch) -> None:
+    calls: list[str] = []
+    requests: list[str] = []
+
+    monkeypatch.setattr(
+        parakeet_install, "install_parakeet", lambda: calls.append("install")
+    )
+    monkeypatch.setattr(
+        supervisor, "_request_parakeet_server_start", lambda: requests.append("start")
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_parakeet_bootstrap_thread",
+        supervisor.threading.current_thread(),
+    )
+
+    supervisor._run_parakeet_bootstrap_worker()
+
+    assert calls == ["install"]
+    assert requests == ["start"]
+    assert supervisor._parakeet_bootstrap_thread is None
+
+
+def test_parakeet_bootstrap_worker_uses_captured_journal_path(
+    monkeypatch, tmp_path
+) -> None:
+    calls: list[Path] = []
+    requests: list[str] = []
+    journal_path = tmp_path / "original"
+
+    def fake_install_parakeet(*, journal_path=None):
+        calls.append(journal_path)
+
+    monkeypatch.setattr(parakeet_install, "install_parakeet", fake_install_parakeet)
+    monkeypatch.setattr(
+        supervisor, "_request_parakeet_server_start", lambda: requests.append("start")
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_parakeet_bootstrap_thread",
+        supervisor.threading.current_thread(),
+    )
+
+    supervisor._run_parakeet_bootstrap_worker(journal_path)
+
+    assert calls == [journal_path]
+    assert requests == ["start"]

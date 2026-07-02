@@ -37,7 +37,7 @@ from solstone.observe.transcribe.resource import (
 from solstone.think import maintenance, scheduler
 from solstone.think.app_supervised import FLAG, is_app_supervised, resolve_parent_fd
 from solstone.think.backup.engine import BACKUP_MAX_RUNTIME, BACKUP_RUN_CMD
-from solstone.think.callosum import CallosumConnection, CallosumServer
+from solstone.think.callosum import CallosumConnection, CallosumServer, callosum_send
 from solstone.think.catchup_state import (
     KIND_DAILY_CATCHUP,
     KIND_SEGMENT_REPAIR,
@@ -132,14 +132,20 @@ def linux_stt_uses_parakeet_cpp() -> bool:
     """Return whether this host's effective STT path needs parakeet-server."""
     if not sys.platform.startswith("linux"):
         return False
-    if platform.machine().lower() != "x86_64":
+    try:
+        from solstone.think import parakeet_readiness
+
+        parakeet_readiness.parakeet_cpp_artifact_key(
+            "linux", platform.machine().lower()
+        )
+    except RuntimeError:
         return False
 
     config = read_journal_config()
     transcribe = config.get("transcribe", {})
     backend = transcribe.get("backend") if isinstance(transcribe, dict) else None
     if isinstance(backend, str):
-        return backend in {"parakeet", "parakeet-cpp"}
+        return backend not in {"revai", "gemini"}
 
     selected = select_stt_backend(
         read_available_bytes(),
@@ -233,6 +239,8 @@ _sync_conflict_shutdown: bool = False
 _supervisor_ref: str | None = None
 _supervisor_start: float | None = None
 _parent_death_sigterm_sent = threading.Event()
+_parakeet_bootstrap_lock = threading.Lock()
+_parakeet_bootstrap_thread: threading.Thread | None = None
 
 
 def app_supervised_graceful_budget_s() -> float:
@@ -1567,6 +1575,24 @@ def _handle_supervisor_start_local(message: dict) -> None:
         logging.info("started local server from start_local request")
 
 
+def _handle_supervisor_start_parakeet(message: dict) -> None:
+    """Handle incoming parakeet-server start requests after provider install."""
+    if message.get("tract") != "supervisor" or message.get("event") != "start_parakeet":
+        return
+    if _is_remote_mode:
+        return
+
+    for proc in _managed_procs:
+        if proc.name == PARAKEET_SERVER_PROCESS_NAME and proc.is_running():
+            logging.info("parakeet-server already running; ignoring start_parakeet")
+            return
+
+    proc = start_parakeet_server()
+    if proc is not None:
+        _managed_procs.append(proc)
+        logging.info("started parakeet-server from start_parakeet request")
+
+
 def _handle_cortex_outcome(message: dict) -> None:
     """Recycle a wedged local model server after sustained generation failures."""
     if message.get("tract") != "cortex":
@@ -1889,6 +1915,90 @@ def resolve_parakeet_server_launch_plan(
     return ParakeetServerLaunchPlan("cpu", {}, None)
 
 
+def _request_parakeet_server_start() -> None:
+    """Best-effort: ask this supervisor to retry parakeet-server startup."""
+    try:
+        if not callosum_send("supervisor", "start_parakeet"):
+            logging.warning(
+                "could not request parakeet-server start: callosum send failed"
+            )
+    except Exception:
+        logging.exception("could not request parakeet-server start")
+
+
+def _run_parakeet_bootstrap_worker(journal_path: Path | None = None) -> None:
+    """Install parakeet.cpp artifacts in the background, then retry startup."""
+    current_thread = threading.current_thread()
+    try:
+        from solstone.think.providers import parakeet_install
+
+        if journal_path is None:
+            parakeet_install.install_parakeet()
+        else:
+            parakeet_install.install_parakeet(journal_path=journal_path)
+    except Exception:
+        logging.exception("parakeet.cpp provider bootstrap failed")
+    else:
+        logging.info("parakeet.cpp provider bootstrap complete; requesting startup")
+        _request_parakeet_server_start()
+    finally:
+        global _parakeet_bootstrap_thread
+        with _parakeet_bootstrap_lock:
+            if _parakeet_bootstrap_thread is current_thread:
+                _parakeet_bootstrap_thread = None
+
+
+def _start_parakeet_bootstrap_if_needed(reason: str) -> None:
+    """Start one non-blocking parakeet.cpp install worker when artifacts are absent."""
+    global _parakeet_bootstrap_thread
+    from solstone.think.providers import parakeet_install
+    from solstone.think.providers.install_state import IN_FLIGHT_STATES
+
+    try:
+        readiness = parakeet_install.inspect_readiness()
+    except Exception as exc:
+        logging.info(
+            "could not inspect parakeet.cpp readiness before bootstrap: %s", exc
+        )
+        readiness = {}
+
+    if readiness.get("binary_installed") and readiness.get("model_installed"):
+        return
+    if readiness.get("install_state") in IN_FLIGHT_STATES:
+        logging.info(
+            "parakeet.cpp provider install already %s; not starting another worker",
+            readiness.get("install_state"),
+        )
+        return
+
+    with _parakeet_bootstrap_lock:
+        if (
+            _parakeet_bootstrap_thread is not None
+            and _parakeet_bootstrap_thread.is_alive()
+        ):
+            logging.info("parakeet.cpp provider bootstrap already running")
+            return
+        journal_path = Path(get_journal())
+        thread = threading.Thread(
+            target=lambda: _run_parakeet_bootstrap_worker(journal_path),
+            name="parakeet-cpp-provider-bootstrap",
+            daemon=True,
+        )
+        _parakeet_bootstrap_thread = thread
+
+    logging.info(
+        "Parakeet artifacts not ready; starting background provider install: %s",
+        reason,
+    )
+    try:
+        thread.start()
+    except Exception:
+        with _parakeet_bootstrap_lock:
+            if _parakeet_bootstrap_thread is thread:
+                _parakeet_bootstrap_thread = None
+        logging.exception("could not start parakeet.cpp provider bootstrap worker")
+
+
 def _build_parakeet_cmd(
     binary_path: Path, gguf_path: Path, port: int, threads: int
 ) -> list[str]:
@@ -1907,6 +2017,62 @@ def _build_parakeet_cmd(
     if "0.0.0.0" in cmd:
         raise RuntimeError("parakeet server may not bind 0.0.0.0.")
     return cmd
+
+
+def _site_package_search_dirs() -> list[Path]:
+    dirs: list[Path] = []
+    for raw in sys.path:
+        if not raw:
+            continue
+        path = Path(raw)
+        if path.is_dir() and path not in dirs:
+            dirs.append(path)
+    return dirs
+
+
+def _find_bundled_libgomp() -> Path | None:
+    for site_dir in _site_package_search_dirs():
+        for libs_dir in (site_dir / "scikit_learn.libs", site_dir / "scipy.libs"):
+            if not libs_dir.is_dir():
+                continue
+            candidates = sorted(libs_dir.glob("libgomp*.so*"))
+            if candidates:
+                return candidates[0]
+    return None
+
+
+def _parakeet_runtime_library_dirs() -> list[Path]:
+    """Return library dirs needed by downloaded parakeet.cpp binaries."""
+    from solstone.think import parakeet_readiness
+
+    libgomp = _find_bundled_libgomp()
+    if libgomp is None:
+        return []
+
+    try:
+        lib_dir = (
+            parakeet_readiness.parakeet_cpp_cache_root(Path(get_journal())) / "lib"
+        )
+        lib_dir.mkdir(parents=True, exist_ok=True)
+        alias = lib_dir / "libgomp.so.1"
+        if alias.is_symlink() or alias.exists():
+            if alias.resolve() != libgomp.resolve():
+                alias.unlink()
+        if not alias.exists():
+            alias.symlink_to(libgomp)
+        return [lib_dir]
+    except Exception:
+        logging.exception("could not prepare parakeet-server OpenMP runtime alias")
+        return []
+
+
+def _with_library_path(env: dict[str, str], dirs: Iterable[Path]) -> dict[str, str]:
+    additions = [str(path) for path in dirs]
+    if not additions:
+        return env
+    existing = env.get("LD_LIBRARY_PATH") or ""
+    paths = additions + ([existing] if existing else [])
+    return env | {"LD_LIBRARY_PATH": ":".join(paths)}
 
 
 def _launch_and_warm_parakeet(
@@ -2264,16 +2430,15 @@ def start_parakeet_server() -> RunnerManagedProcess | None:
             plan.binary_backend
         )
     except Exception as exc:
-        logging.info(
-            "Parakeet artifacts not ready; skipping parakeet-server startup: %s", exc
-        )
+        _start_parakeet_bootstrap_if_needed(str(exc))
         return None
 
     port = find_available_port()
     write_service_port("parakeet-cpp", port)
     threads = parakeet_physical_thread_count()
     logging.info("parakeet-server threads=%d", threads)
-    env = os.environ | plan.env_updates
+    library_dirs = _parakeet_runtime_library_dirs()
+    env = _with_library_path(os.environ | plan.env_updates, library_dirs)
     status, managed = _launch_and_warm_parakeet(
         plan.binary_backend,
         binary_path,
@@ -2303,7 +2468,7 @@ def start_parakeet_server() -> RunnerManagedProcess | None:
             gguf_path,
             port,
             threads,
-            os.environ | {},
+            _with_library_path(os.environ | {}, library_dirs),
         )
         if cpu_status == "crashed":
             logging.warning("parakeet-server cpu exited during warmup")
@@ -2902,6 +3067,7 @@ def _handle_callosum_message(message: dict) -> None:
     _handle_supervisor_request(message)
     _handle_supervisor_drain(message)
     _handle_supervisor_start_local(message)
+    _handle_supervisor_start_parakeet(message)
     _handle_segment_observed(message)
     _handle_activity_recorded(message)
     _handle_think_daily_complete(message)

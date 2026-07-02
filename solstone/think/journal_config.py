@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -13,25 +14,43 @@ from typing import Any
 
 from solstone.think.journal_io.atomic import atomic_replace
 from solstone.think.journal_io.locking import hold_lock
-from solstone.think.utils import get_config, get_journal
+from solstone.think.utils import (
+    CorruptConfigError,
+    _load_default_config,
+    get_config,
+    get_journal,
+)
 
 
-def get_journal_config_path() -> Path:
+def get_journal_config_path(journal_path: str | Path | None = None) -> Path:
     """Return the canonical journal config path."""
 
-    return Path(get_journal()) / "config" / "journal.json"
+    return Path(journal_path or get_journal()) / "config" / "journal.json"
 
 
-def read_journal_config() -> dict[str, Any]:
+def read_journal_config(journal_path: str | Path | None = None) -> dict[str, Any]:
     """Read journal config through the canonical config resolver."""
 
-    return get_config()
+    if journal_path is None:
+        return get_config()
+
+    config_path = get_journal_config_path(journal_path)
+    if not config_path.exists():
+        return copy.deepcopy(_load_default_config())
+
+    try:
+        with config_path.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (json.JSONDecodeError, OSError) as exc:
+        raise CorruptConfigError(config_path, error=exc) from exc
 
 
-def write_journal_config(config: dict[str, Any]) -> None:
+def write_journal_config(
+    config: dict[str, Any], journal_path: str | Path | None = None
+) -> None:
     """Write journal config atomically with stable formatting and private permissions."""
 
-    config_path = get_journal_config_path()
+    config_path = get_journal_config_path(journal_path)
     config_path.parent.mkdir(parents=True, exist_ok=True)
     atomic_replace(
         config_path,
@@ -41,10 +60,10 @@ def write_journal_config(config: dict[str, Any]) -> None:
 
 
 @contextmanager
-def hold_config_lock() -> Iterator[None]:
+def hold_config_lock(journal_path: str | Path | None = None) -> Iterator[None]:
     """Hold the journal config read-modify-write lock."""
 
-    with hold_lock(get_journal_config_path()):
+    with hold_lock(get_journal_config_path(journal_path)):
         yield
 
 

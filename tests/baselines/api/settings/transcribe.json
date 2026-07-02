@@ -3,8 +3,7 @@
     "gemini": false,
     "parakeet": false,
     "parakeet-cpp": false,
-    "revai": false,
-    "whisper": false
+    "revai": false
   },
   "backends": [
     {
@@ -21,17 +20,6 @@
       "name": "revai",
       "settings": [
         "model"
-      ]
-    },
-    {
-      "description": "Local speech recognition using faster-whisper",
-      "env_key": null,
-      "label": "Whisper - Local processing",
-      "name": "whisper",
-      "settings": [
-        "device",
-        "model",
-        "compute_type"
       ]
     },
     {
@@ -66,11 +54,6 @@
     },
     "revai": {
       "model": "fusion"
-    },
-    "whisper": {
-      "compute_type": "default",
-      "device": "auto",
-      "model": "medium.en"
     }
   },
   "resource": {

@@ -19,6 +19,7 @@ def test_stt_floor_constants_are_exact_gibibytes() -> None:
         ("Darwin", "arm64", resource.STT_LOCAL_FLOOR_DARWIN_BYTES),
         ("Linux", "x86_64", resource.STT_LOCAL_FLOOR_LINUX_BYTES),
         ("Linux", "aarch64", resource.STT_LOCAL_FLOOR_LINUX_BYTES),
+        ("Linux", "arm64", resource.STT_LOCAL_FLOOR_LINUX_BYTES),
         ("Windows", "AMD64", None),
     ],
 )
@@ -39,7 +40,8 @@ def test_stt_local_floor_bytes_platform_mapping(
     [
         ("Darwin", "arm64", "parakeet"),
         ("Linux", "x86_64", "parakeet"),
-        ("Linux", "aarch64", "whisper"),
+        ("Linux", "aarch64", "parakeet"),
+        ("Linux", "arm64", "parakeet"),
         ("Windows", "AMD64", None),
     ],
 )
@@ -72,8 +74,8 @@ def test_local_stt_backend_platform_mapping(
         (3 * 1024**3, False, 4 * 1024**3, "parakeet", resource.STT_SURFACE),
         (None, False, 4 * 1024**3, "parakeet", resource.STT_SURFACE),
         (3 * 1024**3, False, None, None, resource.STT_SURFACE),
-        (4 * 1024**3, False, 4 * 1024**3, "whisper", "whisper"),
-        (3 * 1024**3, True, 4 * 1024**3, "whisper", "gemini"),
+        (4 * 1024**3, False, 4 * 1024**3, "parakeet", "parakeet"),
+        (3 * 1024**3, True, 4 * 1024**3, "parakeet", "gemini"),
     ],
 )
 def test_select_stt_backend_matrix(

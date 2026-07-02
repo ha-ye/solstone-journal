@@ -30,14 +30,6 @@ FEATURES: dict[str, Feature] = {
         brew_packages=("pango", "poppler"),
         usage="Render reflections to PDF and ingest PDF documents into the journal",
     ),
-    "whisper": Feature(
-        name="whisper",
-        summary="Whisper transcription backend (optional)",
-        pip_modules=("faster_whisper",),
-        apt_packages=(),
-        brew_packages=(),
-        usage="Transcribe audio with the Whisper backend",
-    ),
 }
 
 

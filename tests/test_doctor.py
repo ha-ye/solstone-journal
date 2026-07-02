@@ -517,7 +517,6 @@ class TestHostDependencies:
             "host_dependencies",
             "default_stt_ready",
             "feature:pdf",
-            "feature:whisper",
         ]:
             assert name not in readiness_names
 
@@ -543,7 +542,6 @@ class TestHostDependencies:
         assert selected[0][0].name == "host_dependencies"
         assert "default_stt_ready" in {check.name for check, _runner in selected}
         assert "feature:pdf" in {check.name for check, _runner in selected}
-        assert "feature:whisper" in {check.name for check, _runner in selected}
 
     def test_host_dependencies_registered_in_journal_and_check_map(self, doctor):
         assert "host_dependencies" in {

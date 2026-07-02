@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Literal, TypedDict, cast, get_args
 
 from solstone.think.journal_config import read_journal_config, write_journal_config
@@ -110,8 +111,13 @@ def is_stalled(status: InstallStatus, *, now: datetime | None = None) -> bool:
     return (now - parsed).total_seconds() > INSTALL_STATE_NO_PROGRESS_SECONDS
 
 
-def read_install_status(*, scope: _InstallScope, name: str) -> InstallStatus:
-    config = read_journal_config()
+def read_install_status(
+    *,
+    scope: _InstallScope,
+    name: str,
+    journal_path: str | Path | None = None,
+) -> InstallStatus:
+    config = read_journal_config(journal_path)
     try:
         record = config["providers"][scope][name]
         install_state = record["install_state"]
@@ -132,8 +138,13 @@ def read_install_status(*, scope: _InstallScope, name: str) -> InstallStatus:
     }
 
 
-def write_install_status(status: InstallStatus, *, scope: _InstallScope) -> None:
-    config = read_journal_config()
+def write_install_status(
+    status: InstallStatus,
+    *,
+    scope: _InstallScope,
+    journal_path: str | Path | None = None,
+) -> None:
+    config = read_journal_config(journal_path)
     slot = (
         config.setdefault("providers", {})
         .setdefault(scope, {})
@@ -145,7 +156,7 @@ def write_install_status(status: InstallStatus, *, scope: _InstallScope) -> None
     slot["install_error"] = status["install_error"]
     slot["progress_bytes_received"] = status["progress_bytes_received"]
     slot["progress_bytes_total"] = status["progress_bytes_total"]
-    write_journal_config(config)
+    write_journal_config(config, journal_path)
 
 
 __all__ = [

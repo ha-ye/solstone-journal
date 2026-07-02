@@ -258,7 +258,7 @@ def test_transcribe_setters(journal_copy: Path) -> None:
     )
     assert transcribe_bad.exit_code == 1
     assert transcribe_bad.stderr == (
-        "Invalid backend: invalid. Must be one of: gemini, parakeet, parakeet-cpp, revai, whisper\n"
+        "Invalid backend: invalid. Must be one of: gemini, parakeet, parakeet-cpp, revai\n"
     )
 
     transcribe_set = runner.invoke(

@@ -117,7 +117,7 @@ def submit_job(
 
     # Build options from config
     # Note: Settings UI only exposes 'model', but CLI supports all options
-    # Validate model - use default if not a valid Rev.ai model (e.g., whisper model passed)
+    # Validate model - use default if the configured value is not a Rev.ai model.
     model = config.get("model", DEFAULT_MODEL)
     if model not in VALID_MODELS:
         model = DEFAULT_MODEL

@@ -30,6 +30,8 @@ def _write_model_files(base_dir: Path, relative_paths: tuple[str, ...]) -> None:
         ("cpu", "cuda", "linux", "x86_64", "cpu"),
         ("auto", "cpu", "linux", "x86_64", "cpu"),
         ("auto", "cuda", "linux", "x86_64", "cuda"),
+        ("auto", None, "linux", "aarch64", "cpu"),
+        ("cpu", None, "linux", "aarch64", "cpu"),
         ("auto", None, "darwin", "arm64", "coreml"),
         ("auto", None, "windows", "amd64", None),
     ],
@@ -66,6 +68,8 @@ def test_resolve_variant_rejects_incompatible_explicit_variant():
         install_models._resolve_variant("coreml", None, "linux", "x86_64")
     with pytest.raises(SystemExit, match="variant 'cpu' not supported on darwin"):
         install_models._resolve_variant("cpu", None, "darwin", "arm64")
+    with pytest.raises(SystemExit, match="variant 'cuda' not supported"):
+        install_models._resolve_variant("cuda", None, "linux", "aarch64")
 
 
 def test_verify_bundled_assets_returns_when_hashes_match(
@@ -289,11 +293,13 @@ def test_main_force_reinstalls_linux_cpp(
     monkeypatch.setattr(
         install_models,
         "_install_models",
-        lambda os_name, arch, variant: calls.append((os_name, arch, variant)) or 0,
+        lambda os_name, arch, variant, **kwargs: (
+            calls.append((os_name, arch, variant, kwargs)) or 0
+        ),
     )
 
     assert install_models.main() == 0
-    assert calls == [("linux", "x86_64", "cpu")]
+    assert calls == [("linux", "x86_64", "cpu", {"force": True})]
 
 
 def test_main_skips_install_when_linux_cpp_ready(

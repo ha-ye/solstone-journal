@@ -2,7 +2,6 @@
   "cost": 0.001175,
   "day": "20231114",
   "error_message": null,
-  "reason_code": null,
   "events": [
     {
       "args": null,
@@ -64,6 +63,7 @@
   "output_file": null,
   "prompt": "Search for meetings about project updates",
   "provider": "openai",
+  "reason_code": null,
   "runtime_seconds": 0.599,
   "start": 1700000000001,
   "status": "completed",

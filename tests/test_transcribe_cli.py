@@ -313,15 +313,21 @@ def test_resolve_default_backend_uses_parakeet_when_memory_fits(monkeypatch):
     assert transcribe_main.resolve_default_backend(_args(), {}) == "parakeet"
 
 
-def test_resolve_default_backend_uses_whisper_when_memory_fits(monkeypatch):
+def test_resolve_default_backend_falls_back_when_configured_backend_is_removed(
+    monkeypatch, caplog
+):
     transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
 
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-    monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 5 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 3 * 1024**3)
     monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
-    monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "whisper")
+    monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
 
-    assert transcribe_main.resolve_default_backend(_args(), {}) == "whisper"
+    assert (
+        transcribe_main.resolve_default_backend(_args(), {"backend": "removed-local"})
+        == "parakeet"
+    )
+    assert "unavailable" in caplog.text
 
 
 def test_all_batch_reads_memory_once_and_reuses_default_backend(tmp_path, monkeypatch):

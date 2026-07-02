@@ -34,7 +34,6 @@ def test_feature_checks_registered(doctor):
 
 def test_feature_checks_in_check_map(doctor):
     assert "feature:pdf" in doctor.CHECK_MAP
-    assert "feature:whisper" in doctor.CHECK_MAP
 
 
 def test_pdf_feature_check_ok_when_available(doctor):
@@ -66,18 +65,17 @@ def test_parse_args_rejects_unknown_feature(doctor, capsys):
     stderr = capsys.readouterr().err
     assert "known features" in stderr
     assert "pdf" in stderr
-    assert "whisper" in stderr
 
 
 def test_run_checks_filters_to_feature(doctor):
-    results = doctor.run_checks(args(doctor, feature="whisper"))
+    results = doctor.run_checks(args(doctor, feature="pdf"))
 
     assert len(results) == 1
-    assert results[0].name.startswith("feature:whisper")
+    assert results[0].name.startswith("feature:pdf")
 
 
 def test_emit_json_filtered_summary(doctor, capsys):
-    results = doctor.run_checks(args(doctor, feature="whisper"))
+    results = doctor.run_checks(args(doctor, feature="pdf"))
 
     doctor.emit_json(results)
     payload = json.loads(capsys.readouterr().out)

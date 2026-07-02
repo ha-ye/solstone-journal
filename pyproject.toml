@@ -74,19 +74,15 @@ dependencies = [
 # packages/solstone-journal-host/. That shim owns the host-only `journal` and
 # `mlx-vlm-server` console scripts; base solstone keeps only `sol`/`solstone`.
 #
-# [pdf] and [whisper] remain as internal building blocks: they back the
-# per-feature install hints (think/features.py) and lazy-import boundaries, and
-# [journal-host]/[journal] compose them. They are NOT part of the advertised
-# menu — INSTALL.md documents only `solstone` and `solstone[journal]`.
+# [pdf] remains an internal building block: it backs the per-feature install
+# hints (think/features.py), and [journal-host]/[journal] compose it. It is NOT
+# part of the advertised menu — INSTALL.md documents only `solstone` and
+# `solstone[journal]`.
 # ---------------------------------------------------------------------------
 pdf = [
     "weasyprint>=60.0",
     "pypdf>=4.0.0",
     "pdf2image>=1.16.0",
-]
-
-whisper = [
-    "faster-whisper>=1.0.0",
 ]
 
 # The full journal-host stack EXCEPT the ONNX runtime package (which is the
@@ -143,11 +139,9 @@ journal-host = [
     "scikit-learn>=1.3",
     # Media processing
     "opencv-python-headless",
-    # PDF + faster-whisper fold into the journal host ("choose journal, get it
-    # all"). Referenced via the building-block extras so the per-feature hints
-    # stay in sync.
+    # PDF folds into the journal host ("choose journal, get it all"). Referenced
+    # via the building-block extra so the per-feature hints stay in sync.
     "solstone[pdf]",
-    "solstone[whisper]",
 ]
 
 # Run a journal here — the full host stack with CPU ONNX runtime.

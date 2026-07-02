@@ -24,9 +24,10 @@ def test_dispatch_transcribe_routes_darwin_arm64(monkeypatch: pytest.MonkeyPatch
     assert parakeet.transcribe([], 16000, {}) == [{"arm": "coreml"}]
 
 
-def test_dispatch_transcribe_routes_linux_x86_64(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize("arch", ["x86_64", "aarch64"])
+def test_dispatch_transcribe_routes_linux(monkeypatch: pytest.MonkeyPatch, arch: str):
     monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(platform, "machine", lambda: arch)
     monkeypatch.setattr(
         parakeet._parakeet_coreml,
         "transcribe",
@@ -43,7 +44,7 @@ def test_dispatch_transcribe_routes_linux_x86_64(monkeypatch: pytest.MonkeyPatch
     ("os_name", "arch", "expected"),
     [
         ("darwin", "x86_64", "darwin/x86_64"),
-        ("linux", "aarch64", "linux/aarch64"),
+        ("linux", "riscv64", "linux/riscv64"),
         ("win32", "AMD64", "win32/amd64"),
     ],
 )
@@ -66,6 +67,7 @@ def test_dispatch_transcribe_unsupported_platforms_raise(
     assert expected in message
     assert "darwin/arm64" in message
     assert "linux/x86_64" in message
+    assert "linux/aarch64" in message
 
 
 def test_dispatch_get_model_info_routes_linux_x86_64(

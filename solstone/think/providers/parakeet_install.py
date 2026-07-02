@@ -9,10 +9,16 @@ It performs no network access at import time.
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import hashlib
 import os
+import random
 import shutil
 import stat
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -31,6 +37,8 @@ from solstone.think.utils import get_journal
 
 PARAKEET_PROVIDER_NAME = "parakeet"
 _PROBE_TIMEOUT_SECONDS = 10
+_INSTALL_LOCK_TIMEOUT_SECONDS = 60.0 * 60.0
+_INSTALL_LOCK_POLL_INTERVAL_SECONDS = 1.0
 _PARAKEET_METADATA_KEYS = frozenset(
     {
         "binary_artifact_cpu",
@@ -120,49 +128,64 @@ def parakeet_server_artifact_key() -> str:
         raise ParakeetProviderError("unsupported_platform", str(exc)) from exc
 
 
-def cache_root() -> Path:
-    return parakeet_readiness.parakeet_cpp_cache_root(Path(get_journal()))
+def cache_root(journal_path: str | Path | None = None) -> Path:
+    root = Path(journal_path) if journal_path is not None else Path(get_journal())
+    return parakeet_readiness.parakeet_cpp_cache_root(root)
 
 
-def binary_install_dir(backend: str) -> Path:
+def binary_install_dir(backend: str, journal_path: str | Path | None = None) -> Path:
     return parakeet_readiness.parakeet_cpp_binary_install_dir(
-        cache_root(), parakeet_server_artifact_key(), _validate_backend(backend)
+        cache_root(journal_path),
+        parakeet_server_artifact_key(),
+        _validate_backend(backend),
     )
 
 
-def binary_path(backend: str) -> Path:
+def binary_path(backend: str, journal_path: str | Path | None = None) -> Path:
     return parakeet_readiness.parakeet_cpp_binary_path(
-        cache_root(), parakeet_server_artifact_key(), _validate_backend(backend)
+        cache_root(journal_path),
+        parakeet_server_artifact_key(),
+        _validate_backend(backend),
     )
 
 
-def model_dir() -> Path:
-    return parakeet_readiness.parakeet_cpp_model_dir(cache_root())
+def model_dir(journal_path: str | Path | None = None) -> Path:
+    return parakeet_readiness.parakeet_cpp_model_dir(cache_root(journal_path))
 
 
-def model_path() -> Path:
-    return parakeet_readiness.parakeet_cpp_model_path(cache_root())
+def model_path(journal_path: str | Path | None = None) -> Path:
+    return parakeet_readiness.parakeet_cpp_model_path(cache_root(journal_path))
 
 
 def install_hint() -> str:
     return "journal install-provider parakeet"
 
 
-def _read_parakeet_status() -> InstallStatus:
-    return read_install_status(scope="bundled", name=PARAKEET_PROVIDER_NAME)
+def _read_parakeet_status(
+    journal_path: str | Path | None = None,
+) -> InstallStatus:
+    return read_install_status(
+        scope="bundled", name=PARAKEET_PROVIDER_NAME, journal_path=journal_path
+    )
 
 
-def _write_parakeet_status(status: InstallStatus) -> InstallStatus:
-    write_install_status(status, scope="bundled")
+def _write_parakeet_status(
+    status: InstallStatus,
+    journal_path: str | Path | None = None,
+) -> InstallStatus:
+    write_install_status(status, scope="bundled", journal_path=journal_path)
     return status
 
 
-def _write_parakeet_metadata(updates: dict[str, str]) -> None:
+def _write_parakeet_metadata(
+    updates: dict[str, str],
+    journal_path: str | Path | None = None,
+) -> None:
     unknown_keys = sorted(set(updates) - _PARAKEET_METADATA_KEYS)
     if unknown_keys:
         raise ValueError(f"unknown parakeet install metadata key: {unknown_keys[0]}")
 
-    config = read_journal_config()
+    config = read_journal_config(journal_path)
     slot = (
         config.setdefault("providers", {})
         .setdefault("bundled", {})
@@ -170,14 +193,70 @@ def _write_parakeet_metadata(updates: dict[str, str]) -> None:
     )
     for key, value in updates.items():
         slot[key] = value
-    write_journal_config(config)
+    write_journal_config(config, journal_path)
 
 
-def _record_parakeet_progress(received: int, total: int | None) -> None:
-    status = _read_parakeet_status()
+def _record_parakeet_progress(
+    received: int,
+    total: int | None,
+    *,
+    journal_path: str | Path | None = None,
+) -> None:
+    status = _read_parakeet_status(journal_path)
     if status["install_state"] not in IN_FLIGHT_STATES:
         return
-    _write_parakeet_status(bump_progress(status, received=received, total=total))
+    _write_parakeet_status(
+        bump_progress(status, received=received, total=total),
+        journal_path,
+    )
+
+
+def _install_lock_path(journal_path: str | Path | None = None) -> Path:
+    return cache_root(journal_path) / "install"
+
+
+@contextmanager
+def _hold_install_lock(journal_path: str | Path | None = None) -> Iterator[None]:
+    path = _install_lock_path(journal_path)
+    lock_path = path.parent / f"{path.name}.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + _INSTALL_LOCK_TIMEOUT_SECONDS
+    lock_file = open(lock_path, "w", encoding="utf-8")
+    try:
+        while True:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise ParakeetProviderError(
+                        "install_lock_timeout",
+                        f"Timed out waiting for parakeet install lock at {lock_path}",
+                    ) from exc
+                time.sleep(random.uniform(0.1, _INSTALL_LOCK_POLL_INTERVAL_SECONDS))
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+    finally:
+        lock_file.close()
+
+
+def _ready_status_if_installed(
+    journal_path: str | Path | None = None,
+) -> InstallStatus | None:
+    try:
+        parakeet_readiness.check_parakeet_cpp_files(
+            cache_root(journal_path), parakeet_server_artifact_key()
+        )
+    except (ParakeetProviderError, RuntimeError):
+        return None
+    return _write_parakeet_status(
+        transition_state(_read_parakeet_status(journal_path), new_state="installed"),
+        journal_path,
+    )
 
 
 def _sha256_file(path: Path) -> str:
@@ -286,7 +365,10 @@ def probe_binary_runnable(binary_path: str | Path) -> tuple[bool, str | None]:
     return False, detail
 
 
-def install_parakeet_server(backend: str) -> dict[str, Any]:
+def _install_parakeet_server_unlocked(
+    backend: str,
+    journal_path: str | Path | None = None,
+) -> dict[str, Any]:
     backend = _validate_backend(backend)
     artifact_key = parakeet_server_artifact_key()
     pin = _pin_for_backend(artifact_key, backend)
@@ -294,17 +376,32 @@ def install_parakeet_server(backend: str) -> dict[str, Any]:
         "https://github.com/mudler/parakeet.cpp/releases/download/"
         f"{parakeet_readiness.PARAKEET_CPP_RELEASE_TAG}/{pin['filename']}"
     )
-    install_dir = binary_install_dir(backend)
+    install_dir = binary_install_dir(backend, journal_path)
     tarball = install_dir / pin["filename"]
 
     try:
         _write_parakeet_status(
-            transition_state(_read_parakeet_status(), new_state="downloading")
+            transition_state(
+                _read_parakeet_status(journal_path), new_state="downloading"
+            ),
+            journal_path,
         )
-        _write_parakeet_metadata({f"binary_artifact_{backend}": pin["filename"]})
-        _download_file(url, tarball, on_progress=_record_parakeet_progress)
+        _write_parakeet_metadata(
+            {f"binary_artifact_{backend}": pin["filename"]},
+            journal_path,
+        )
+        _download_file(
+            url,
+            tarball,
+            on_progress=lambda received, total: _record_parakeet_progress(
+                received, total, journal_path=journal_path
+            ),
+        )
         _write_parakeet_status(
-            transition_state(_read_parakeet_status(), new_state="verifying")
+            transition_state(
+                _read_parakeet_status(journal_path), new_state="verifying"
+            ),
+            journal_path,
         )
         _verify_sha256(tarball, pin["sha256"])
         if install_dir.exists():
@@ -318,7 +415,7 @@ def install_parakeet_server(backend: str) -> dict[str, Any]:
         extracted = _find_extracted_binary(
             install_dir, parakeet_readiness.PARAKEET_CPP_BINARY_NAME
         )
-        final_path = binary_path(backend)
+        final_path = binary_path(backend, journal_path)
         inner_dir = extracted.parent
         if inner_dir != install_dir:
             for item in inner_dir.iterdir():
@@ -330,39 +427,70 @@ def install_parakeet_server(backend: str) -> dict[str, Any]:
                 f"binary_artifact_{backend}": pin["filename"],
                 f"binary_sha256_{backend}": pin["sha256"],
                 f"binary_path_{backend}": str(final_path),
-            }
+            },
+            journal_path,
         )
         return _write_parakeet_status(
-            transition_state(_read_parakeet_status(), new_state="installed")
+            transition_state(
+                _read_parakeet_status(journal_path), new_state="installed"
+            ),
+            journal_path,
         )
     except Exception as exc:
         _write_parakeet_status(
             transition_state(
-                _read_parakeet_status(), new_state="failed", error=str(exc)
-            )
+                _read_parakeet_status(journal_path),
+                new_state="failed",
+                error=str(exc),
+            ),
+            journal_path,
         )
         raise
 
 
-def install_model() -> dict[str, Any]:
+def install_parakeet_server(
+    backend: str,
+    *,
+    journal_path: str | Path | None = None,
+) -> dict[str, Any]:
+    with _hold_install_lock(journal_path):
+        return _install_parakeet_server_unlocked(backend, journal_path)
+
+
+def _install_model_unlocked(
+    journal_path: str | Path | None = None,
+) -> dict[str, Any]:
     spec = PARAKEET_MODEL_SPEC
     url = f"https://huggingface.co/{spec.repo}/resolve/{spec.revision}/{spec.filename}"
-    dest = model_path()
+    dest = model_path(journal_path)
 
     try:
         _write_parakeet_status(
-            transition_state(_read_parakeet_status(), new_state="downloading")
+            transition_state(
+                _read_parakeet_status(journal_path), new_state="downloading"
+            ),
+            journal_path,
         )
         _write_parakeet_metadata(
             {
                 "model_repo": spec.repo,
                 "model_filename": spec.filename,
                 "model_revision": spec.revision,
-            }
+            },
+            journal_path,
         )
-        _download_file(url, dest, on_progress=_record_parakeet_progress)
+        _download_file(
+            url,
+            dest,
+            on_progress=lambda received, total: _record_parakeet_progress(
+                received, total, journal_path=journal_path
+            ),
+        )
         _write_parakeet_status(
-            transition_state(_read_parakeet_status(), new_state="verifying")
+            transition_state(
+                _read_parakeet_status(journal_path), new_state="verifying"
+            ),
+            journal_path,
         )
         _verify_sha256(dest, spec.sha256)
         _write_parakeet_metadata(
@@ -372,31 +500,55 @@ def install_model() -> dict[str, Any]:
                 "model_revision": spec.revision,
                 "model_path": str(dest),
                 "model_sha256": spec.sha256,
-            }
+            },
+            journal_path,
         )
         return _write_parakeet_status(
-            transition_state(_read_parakeet_status(), new_state="installed")
+            transition_state(
+                _read_parakeet_status(journal_path), new_state="installed"
+            ),
+            journal_path,
         )
     except Exception as exc:
         _write_parakeet_status(
             transition_state(
-                _read_parakeet_status(), new_state="failed", error=str(exc)
-            )
+                _read_parakeet_status(journal_path),
+                new_state="failed",
+                error=str(exc),
+            ),
+            journal_path,
         )
         raise
 
 
-def install_parakeet() -> dict[str, Any]:
-    for backend in parakeet_readiness.PARAKEET_CPP_BINARY_BACKENDS:
-        install_parakeet_server(backend)
-    return install_model()
+def install_model(
+    *,
+    journal_path: str | Path | None = None,
+) -> dict[str, Any]:
+    with _hold_install_lock(journal_path):
+        return _install_model_unlocked(journal_path)
 
 
-def inspect_readiness() -> dict[str, Any]:
-    status = _read_parakeet_status()
-    cpu_path = binary_path("cpu")
-    vulkan_path = binary_path("vulkan")
-    gguf_path = model_path()
+def install_parakeet(
+    *,
+    force: bool = False,
+    journal_path: str | Path | None = None,
+) -> dict[str, Any]:
+    with _hold_install_lock(journal_path):
+        if not force:
+            ready_status = _ready_status_if_installed(journal_path)
+            if ready_status is not None:
+                return ready_status
+        for backend in parakeet_readiness.PARAKEET_CPP_BINARY_BACKENDS:
+            _install_parakeet_server_unlocked(backend, journal_path)
+        return _install_model_unlocked(journal_path)
+
+
+def inspect_readiness(journal_path: str | Path | None = None) -> dict[str, Any]:
+    status = _read_parakeet_status(journal_path)
+    cpu_path = binary_path("cpu", journal_path)
+    vulkan_path = binary_path("vulkan", journal_path)
+    gguf_path = model_path(journal_path)
     cpu_installed = cpu_path.exists() and os.access(cpu_path, os.X_OK)
     vulkan_installed = vulkan_path.exists() and os.access(vulkan_path, os.X_OK)
     model_installed = gguf_path.exists()
@@ -413,9 +565,13 @@ def inspect_readiness() -> dict[str, Any]:
     }
 
 
-def ensure_artifacts_installed(backend: str) -> tuple[Path, Path]:
+def ensure_artifacts_installed(
+    backend: str,
+    *,
+    journal_path: str | Path | None = None,
+) -> tuple[Path, Path]:
     backend = _validate_backend(backend)
-    readiness = inspect_readiness()
+    readiness = inspect_readiness(journal_path)
     if not readiness["binary_installed"]:
         raise ParakeetProviderError(
             "binary_missing", "Parakeet server binaries are not installed."

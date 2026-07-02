@@ -5,7 +5,7 @@
 
 Routes to platform-specific implementations:
 - Apple Silicon (darwin/arm64) -> _parakeet_coreml (FluidAudio helper)
-- Linux x86_64 -> _parakeet_cpp (supervised parakeet.cpp server)
+- Linux x86_64/aarch64 -> _parakeet_cpp (supervised parakeet.cpp server)
 
 Unsupported platforms raise RuntimeError with the detected platform
 and the supported-platforms list.
@@ -33,8 +33,12 @@ def _unsupported_platform_message(os_name: str, arch: str) -> str:
     """Build the unsupported-platform error message."""
     return (
         f"Unsupported Parakeet platform: {os_name}/{arch}. "
-        "Supported platforms: darwin/arm64, linux/x86_64"
+        "Supported platforms: darwin/arm64, linux/x86_64, linux/aarch64"
     )
+
+
+def _linux_cpp_supported(arch: str) -> bool:
+    return arch in {"x86_64", "amd64", "x64", "aarch64", "arm64"}
 
 
 def transcribe(audio: np.ndarray, sample_rate: int, config: dict) -> list[dict]:
@@ -42,7 +46,7 @@ def transcribe(audio: np.ndarray, sample_rate: int, config: dict) -> list[dict]:
     os_name, arch = _current_platform()
     if os_name == "darwin" and arch == "arm64":
         return _parakeet_coreml.transcribe(audio, sample_rate, config)
-    if os_name == "linux" and arch == "x86_64":
+    if os_name == "linux" and _linux_cpp_supported(arch):
         return _parakeet_cpp.transcribe(audio, sample_rate, config)
     raise RuntimeError(_unsupported_platform_message(os_name, arch))
 
@@ -52,6 +56,6 @@ def get_model_info(config: dict) -> dict:
     os_name, arch = _current_platform()
     if os_name == "darwin" and arch == "arm64":
         return _parakeet_coreml.get_model_info(config)
-    if os_name == "linux" and arch == "x86_64":
+    if os_name == "linux" and _linux_cpp_supported(arch):
         return _parakeet_cpp.get_model_info(config)
     raise RuntimeError(_unsupported_platform_message(os_name, arch))

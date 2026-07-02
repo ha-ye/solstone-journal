@@ -112,7 +112,6 @@ EXCLUDED_FILES: frozenset[str] = frozenset(
         # App-storage and temporary upload/transcription files.
         "solstone/apps/import/routes.py",
         "solstone/apps/support/routes.py",
-        "solstone/observe/transcribe/whisper.py",
         "solstone/observe/transcribe/_parakeet_coreml.py",
         "solstone/observe/transcribe/revai.py",
         "solstone/think/journal_export.py",
