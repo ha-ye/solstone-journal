@@ -218,6 +218,21 @@ def get_output_path(
     return day / "talents" / filename
 
 
+def morning_briefing_path(day: str) -> Path:
+    """Canonical filesystem path to a day's morning-briefing artifact.
+
+    Delegates to the shared path authority so the
+    ``chronicle/<day>/talents/morning_briefing.md`` layout is derived in
+    exactly one place. Callers pass a ``YYYYMMDD`` day string; no directory
+    is created (read-verb safe).
+    """
+    from solstone.think.utils import day_path
+
+    return get_output_path(
+        day_path(day, create=False), "morning_briefing", output_format="md"
+    )
+
+
 def get_talent_configs(
     *,
     type: str | None = None,

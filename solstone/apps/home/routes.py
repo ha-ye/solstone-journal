@@ -29,6 +29,7 @@ from solstone.think.day_accumulator import read_latest
 from solstone.think.facets import get_enabled_facets, get_facets
 from solstone.think.pipeline_health import summarize_pipeline_day
 from solstone.think.steward import read_steward_health, read_steward_summary
+from solstone.think.talent import morning_briefing_path
 from solstone.think.utils import day_path, get_journal
 
 # Briefing phase thresholds
@@ -151,8 +152,7 @@ def _load_briefing_md(
     """Load today's briefing.md sections and needs_attention bullets."""
     try:
         today = today or _today()
-        journal = Path(get_journal())
-        briefing_path = journal / "identity" / "briefing.md"
+        briefing_path = morning_briefing_path(today)
         if not briefing_path.exists():
             return {}, None, []
 
@@ -430,64 +430,36 @@ def _top_heatmap_hours(stats_data: dict[str, Any]) -> list[int]:
     return [hour for hour, _minutes in ranked[:3]]
 
 
-def _knowledge_graph_freshness(yesterday: str) -> dict[str, Any]:
-    path = (
-        Path(get_journal()) / "chronicle" / yesterday / "talents" / "knowledge_graph.md"
-    )
-    if not path.exists():
-        return {"exists": False, "fresh": False, "updated_label": None}
-
-    try:
-        start_of_yesterday_local = datetime.strptime(yesterday, "%Y%m%d").astimezone()
-        updated_at = datetime.fromtimestamp(path.stat().st_mtime).astimezone()
-    except Exception:
-        logger.warning(
-            "home: failed to inspect knowledge graph freshness", exc_info=True
-        )
-        return {"exists": True, "fresh": False, "updated_label": None}
-
-    return {
-        "exists": True,
-        "fresh": updated_at >= start_of_yesterday_local,
-        "updated_label": updated_at.strftime("%-I:%M%p").lower(),
-    }
-
-
 def _briefing_freshness(today: str) -> dict[str, Any]:
-    briefing_path = Path(get_journal()) / "identity" / "briefing.md"
+    briefing_path = morning_briefing_path(today)
     if not briefing_path.exists():
         return {"exists": False, "valid": False, "generated_label": None}
 
     try:
-        post = frontmatter.load(str(briefing_path))
+        metadata = frontmatter.load(str(briefing_path)).metadata
     except Exception:
         logger.warning("home: failed to load briefing freshness", exc_info=True)
         return {"exists": True, "valid": False, "generated_label": None}
 
-    if post.metadata.get("type") != "morning_briefing":
-        return {"exists": True, "valid": False, "generated_label": None}
+    valid = (
+        metadata.get("type") == "morning_briefing"
+        and str(metadata.get("date")) == today
+    )
 
-    generated = post.metadata.get("generated")
-    if generated is None:
-        return {"exists": True, "valid": False, "generated_label": None}
+    generated_label = None
+    generated = metadata.get("generated")
+    if generated is not None:
+        try:
+            generated_dt = (
+                datetime.fromisoformat(generated)
+                if isinstance(generated, str)
+                else generated
+            )
+            generated_label = generated_dt.astimezone().strftime("%-I:%M%p").lower()
+        except Exception:
+            generated_label = None
 
-    try:
-        if isinstance(generated, str):
-            generated_dt = datetime.fromisoformat(generated)
-        else:
-            generated_dt = generated
-        if generated_dt.tzinfo is None:
-            generated_dt = generated_dt.astimezone()
-        else:
-            generated_dt = generated_dt.astimezone()
-    except Exception:
-        return {"exists": True, "valid": False, "generated_label": None}
-
-    return {
-        "exists": True,
-        "valid": generated_dt.strftime("%Y%m%d") == today,
-        "generated_label": generated_dt.strftime("%-I:%M%p").lower(),
-    }
+    return {"exists": True, "valid": valid, "generated_label": generated_label}
 
 
 def _newsletter_attempts_from_think_logs(yesterday: str) -> tuple[int, int]:
@@ -600,7 +572,6 @@ def _format_processing_summary(
     mode: str,
     successful_newsletters: int,
     attempted_newsletters: int,
-    knowledge_graph: dict[str, Any],
     briefing: dict[str, Any],
 ) -> str:
     if mode == "degraded":
@@ -626,8 +597,6 @@ def _format_processing_summary(
             f"wrote {successful_newsletters} newsletter"
             f"{'s' if successful_newsletters != 1 else ''}"
         )
-    if knowledge_graph.get("fresh"):
-        actions.append("refreshed your knowledge graph")
     if briefing.get("valid"):
         actions.append("prepared your morning briefing")
     if not actions:
@@ -656,7 +625,6 @@ def _format_heatmap_summary(stats_data: dict[str, Any]) -> str | None:
 
 def _format_gap_links(
     pipeline_summary: dict[str, Any],
-    knowledge_graph: dict[str, Any],
     briefing: dict[str, Any],
     yesterday_day: str,
     today: str,
@@ -713,13 +681,6 @@ def _format_gap_links(
             }
         )
 
-    if not knowledge_graph.get("fresh"):
-        links.append(
-            {
-                "text": "I didn't refresh your knowledge graph overnight.",
-                "href": f"/app/sol/{yesterday_day}#knowledge_graph",
-            }
-        )
     if not briefing.get("valid"):
         links.append(
             {
@@ -756,7 +717,6 @@ def _summarize_yesterday_processing(
         return None
 
     pipeline_summary = _load_yesterday_pipeline_summary(yesterday)
-    knowledge_graph = _knowledge_graph_freshness(yesterday)
     today = _today()
     briefing = _briefing_freshness(today)
     successful_newsletters, attempted_newsletters = (
@@ -774,8 +734,6 @@ def _summarize_yesterday_processing(
         status_reasons.append("newsletter_partial")
     if pipeline_summary.get("status") != "healthy":
         status_reasons.append("pipeline_warning")
-    if not knowledge_graph.get("fresh"):
-        status_reasons.append("knowledge_graph_stale")
     if not briefing.get("valid"):
         status_reasons.append("briefing_missing")
 
@@ -812,22 +770,11 @@ def _summarize_yesterday_processing(
     details = []
     gap_links: list[dict[str, str]] = []
     if mode == "degraded":
-        gap_links = _format_gap_links(
-            pipeline_summary, knowledge_graph, briefing, yesterday, today
-        )
+        gap_links = _format_gap_links(pipeline_summary, briefing, yesterday, today)
 
     details.append(
         _format_newsletter_summary(successful_newsletters, attempted_newsletters)
     )
-    if knowledge_graph.get("fresh"):
-        details.append(
-            "I refreshed your knowledge graph"
-            + (
-                f" at {knowledge_graph['updated_label']}."
-                if knowledge_graph.get("updated_label")
-                else "."
-            )
-        )
     if briefing.get("valid"):
         details.append(
             "I prepared your morning briefing"
@@ -860,7 +807,6 @@ def _summarize_yesterday_processing(
             mode,
             successful_newsletters,
             attempted_newsletters,
-            knowledge_graph,
             briefing,
         ),
         "details": details,

@@ -30,11 +30,8 @@ Internal helpers called only by `_summarize_yesterday_processing`:
 - `_top_heatmap_hours(stats_data: dict) -> list[int]`
   Reads `stats_data["heatmap_data"]["hours"]`, keeps the top 3 non-zero hours, sorts by minutes desc then hour asc.
 
-- `_knowledge_graph_freshness(yesterday: str) -> dict`
-  Reads `chronicle/{yesterday}/talents/knowledge_graph.md`, checks existence and `st_mtime` freshness using the relaxed rule in section 4.
-
 - `_briefing_freshness(today: str) -> dict`
-  Reads `journal/identity/briefing.md` with local `frontmatter.load`. Valid only when frontmatter has `type: morning_briefing` and a parseable `generated` timestamp whose local date is `today`.
+  Reads `chronicle/<day>/talents/morning_briefing.md` with local `frontmatter.load`. Valid only when frontmatter has `type: morning_briefing` and `date` (which may be a YAML int) equal to `today`. `generated` is used only for the display label.
 
 - `_newsletter_attempts_from_think_logs(yesterday: str) -> tuple[int, int]`
   Option A helper from section 3. Counts successful facet newsletters from files plus failed facet newsletter attempts from think logs.
@@ -56,7 +53,7 @@ Mode resolution:
 
 - `degraded`
   Any overnight processing gap is present:
-  newsletter partial count, pipeline summary not healthy, missing/invalid briefing, or stale/missing knowledge graph.
+  newsletter partial count, pipeline summary not healthy, or missing/invalid briefing.
 
 - `healthy`
   Non-sparse day with no degradation signals.
@@ -95,7 +92,7 @@ Fields:
   Exactly two preformatted strings when `mode == "sparse"`, else `None`.
 
 - `status_reasons`
-  Internal-only list of machine-readable reason tags such as `newsletter_partial`, `pipeline_warning`, `knowledge_graph_stale`, `briefing_missing`. Useful for tests and future copy changes; template does not inspect it.
+  Internal-only list of machine-readable reason tags such as `newsletter_partial`, `pipeline_warning`, `briefing_missing`. Useful for tests and future copy changes; template does not inspect it.
 
 Why this shape:
 
@@ -110,9 +107,9 @@ Recommended rendered content by mode:
   Body: two lines only, no bullet list, no first-week framing.
 
 - `healthy`
-  Summary line: “I wrote N newsletters, refreshed your knowledge graph, and prepared your morning briefing.”
+  Summary line: “I wrote N newsletters and prepared your morning briefing.”
   Details:
-  newsletter result, knowledge graph refresh, briefing generation time, top heatmap hours, top activities, top entities.
+  newsletter result, briefing generation time, top heatmap hours, top activities, top entities.
 
 - `degraded`
   Summary line: “I wrote N of M newsletters, but some overnight processing didn’t finish.” if Option A is selected.
@@ -214,6 +211,8 @@ Fallback behavior inside Option A:
 - Generic non-newsletter pipeline failures still flip the card to `degraded`, but they appear as separate warning bullets rather than inflating `M`.
 
 ## 4. Q3 — `knowledge_graph.md` mtime false-negative edge case
+
+> **Retired 2026-07-02 (H1 lode):** the knowledge-graph freshness signal was removed from the Home card; its producer talent was deleted 2026-04-18. The text below is kept for historical context only.
 
 Use the relaxed rule:
 
@@ -318,7 +317,6 @@ Unit tests:
 - `test_entity_grouping_people_first_zero_dropped_plurals`
 - `test_heatmap_peaks_top_3`
 - `test_activity_bullet_title_duration_facet`
-- `test_knowledge_graph_refresh_detection_yesterday_and_overnight`
 - `test_briefing_frontmatter_missing_counts_as_gap`
 - `test_newsletter_attempts_option_a_matches_facet_newsletter_failures_only`
 
@@ -328,8 +326,7 @@ Fixture plan:
   Dense day fixture with:
   `stats.json`,
   one or two `health/*_daily.jsonl` files,
-  one activity file under `facets/*/activities/20260415.jsonl`,
-  `agents/knowledge_graph.md`.
+  one activity file under `facets/*/activities/20260415.jsonl`.
 
 - `tests/fixtures/journal/chronicle/20260414/`
   Sparse day fixture with:
@@ -342,7 +339,7 @@ Fixture plan:
 
 Supporting non-chronicle fixture:
 
-- `tests/fixtures/journal/identity/briefing.md`
+- `tests/fixtures/journal/chronicle/20260327/talents/morning_briefing.md`
   Valid morning-briefing frontmatter fixture for healthy cases.
   Tests that need missing/invalid frontmatter can overwrite or delete it in `tmp_path`.
 

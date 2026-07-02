@@ -34,10 +34,11 @@ from solstone.think.steward import (
     latest_daily_run_complete_ts,
     release_steward_lock,
 )
-from solstone.think.utils import day_dirs, day_path, get_journal, require_solstone
+from solstone.think.talent import morning_briefing_path
+from solstone.think.utils import day_dirs, get_journal, require_solstone
 
 app = typer.Typer(
-    help="Journal identity directory — partner.md, health.md, and morning briefing.",
+    help="Journal identity directory — partner.md and health.md.",
     invoke_without_command=True,
     no_args_is_help=False,
 )
@@ -271,7 +272,7 @@ def briefing_cmd(
 ) -> None:
     """Read the morning briefing from YYYYMMDD/talents/morning_briefing.md."""
     if day:
-        path = day_path(day, create=False) / "talents" / "morning_briefing.md"
+        path = morning_briefing_path(day)
         if not path.exists():
             typer.echo("No briefing found.", err=True)
             raise typer.Exit(1)
@@ -280,8 +281,7 @@ def briefing_cmd(
 
     # No day specified — find most recent
     for day in sorted(day_dirs().keys(), reverse=True):
-        agents_dir = day_path(day, create=False) / "talents"
-        briefing = agents_dir / "morning_briefing.md"
+        briefing = morning_briefing_path(day)
         if briefing.exists() and briefing.stat().st_size > 0:
             typer.echo(briefing.read_text(encoding="utf-8"))
             return
