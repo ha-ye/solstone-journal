@@ -9,6 +9,7 @@ import logging
 import re
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -19,6 +20,9 @@ LOG = logging.getLogger(__name__)
 _PROBE_TIMEOUT_S = 10
 _ARCH_RE = re.compile(r"\bsm_\d+a?\b")
 _CUDA_VERSION_RE = re.compile(r"CUDA Version\s*:?\s*(\d+)(?:\.\d+)?")
+MEMORY_SOURCE_UNAVAILABLE = "unavailable"
+MEMORY_SOURCE_NVIDIA_VRAM = "nvidia memory.total"
+MEMORY_SOURCE_SYSTEM_AVAILABLE = "system MemAvailable (unified memory)"
 
 
 class LocalCudaError(RuntimeError):
@@ -35,6 +39,8 @@ class NvidiaProbe:
     compute_cap: str | None
     driver_cuda_version: int | None
     vram_mib: int | None
+    tiering_memory_mib: int | None
+    memory_source: str
     detected: bool
 
 
@@ -61,25 +67,62 @@ def _undetected() -> NvidiaProbe:
         compute_cap=None,
         driver_cuda_version=None,
         vram_mib=None,
+        tiering_memory_mib=None,
+        memory_source=MEMORY_SOURCE_UNAVAILABLE,
         detected=False,
     )
 
 
-def _parse_nvidia_smi_row(line: str) -> tuple[int, str | None, int | None] | None:
+def _parse_nvidia_smi_row(
+    line: str,
+) -> tuple[int, str, str | None, int | None] | None:
     fields = [field.strip() for field in line.split(",")]
-    if len(fields) != 4:
+    if len(fields) != 5:
         return None
     try:
         index = int(fields[0])
     except ValueError:
         return None
 
-    compute_cap = _compute_cap_to_arch(fields[1])
+    gpu_name = fields[1]
+    compute_cap = _compute_cap_to_arch(fields[2])
     try:
-        vram_mib = int(fields[3])
+        vram_mib = int(fields[4])
     except ValueError:
         vram_mib = None
-    return index, compute_cap, vram_mib
+    return index, gpu_name, compute_cap, vram_mib
+
+
+def _has_unified_memory_name(gpu_name: str) -> bool:
+    return "GB10" in gpu_name.upper()
+
+
+def _parse_memavailable_mib(meminfo_text: str) -> int | None:
+    for line in meminfo_text.splitlines():
+        key, sep, value = line.partition(":")
+        if sep != ":" or key != "MemAvailable":
+            continue
+        parts = value.strip().split()
+        if not parts:
+            return None
+        try:
+            value_kib = int(parts[0])
+        except ValueError:
+            return None
+        if len(parts) > 1 and parts[1] != "kB":
+            return None
+        return value_kib // 1024
+    return None
+
+
+def _read_linux_memavailable_mib(
+    meminfo_path: Path = Path("/proc/meminfo"),
+) -> int | None:
+    try:
+        return _parse_memavailable_mib(meminfo_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        LOG.warning("Linux MemAvailable probe could not read %s: %s", meminfo_path, exc)
+        return None
 
 
 def _probe_driver_cuda_version() -> int | None:
@@ -121,7 +164,7 @@ def probe_nvidia_gpu() -> NvidiaProbe:
         completed = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=index,compute_cap,driver_version,memory.total",
+                "--query-gpu=index,name,compute_cap,driver_version,memory.total",
                 "--format=csv,noheader,nounits",
             ],
             capture_output=True,
@@ -153,12 +196,25 @@ def probe_nvidia_gpu() -> NvidiaProbe:
         LOG.warning("NVIDIA GPU probe returned invalid CSV")
         return _undetected()
 
-    index, compute_cap, vram_mib = parsed
+    index, gpu_name, compute_cap, vram_mib = parsed
+    tiering_memory_mib = vram_mib
+    memory_source = MEMORY_SOURCE_NVIDIA_VRAM
+    if vram_mib is None and _has_unified_memory_name(gpu_name):
+        tiering_memory_mib = _read_linux_memavailable_mib()
+        memory_source = (
+            MEMORY_SOURCE_SYSTEM_AVAILABLE
+            if tiering_memory_mib is not None
+            else MEMORY_SOURCE_UNAVAILABLE
+        )
+    elif vram_mib is None:
+        memory_source = MEMORY_SOURCE_UNAVAILABLE
     return NvidiaProbe(
         index=index,
         compute_cap=compute_cap,
         driver_cuda_version=_probe_driver_cuda_version(),
         vram_mib=vram_mib,
+        tiering_memory_mib=tiering_memory_mib,
+        memory_source=memory_source,
         detected=True,
     )
 
@@ -223,6 +279,9 @@ def verify_cuda_pin_arch_set(text: str, declared: frozenset[str]) -> None:
 __all__ = [
     "BackendChoice",
     "LocalCudaError",
+    "MEMORY_SOURCE_NVIDIA_VRAM",
+    "MEMORY_SOURCE_SYSTEM_AVAILABLE",
+    "MEMORY_SOURCE_UNAVAILABLE",
     "NvidiaProbe",
     "parse_embedded_arch_set",
     "probe_nvidia_gpu",

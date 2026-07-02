@@ -1973,23 +1973,29 @@ def _start_cuda_local_server(
     gpu_index = probe.index if probe.index is not None else 0
     port = find_available_port()
     write_service_port("local", port)
-    if probe.vram_mib is None:
-        # TODO(AC10): source unified memory for a real GB10 tier — floor is the safe default (AC10 item 5).
+    if probe.tiering_memory_mib is None:
         tier = local_server.select_server_tier(0)
         logging.info(
-            "local server VRAM read unavailable (unified memory / probe gap); "
-            "using floor tier"
+            "local server CUDA tiering memory unavailable (source=%s); "
+            "using floor tier",
+            probe.memory_source,
         )
     else:
-        tier = local_server.select_server_tier(probe.vram_mib)
+        tier = local_server.select_server_tier(probe.tiering_memory_mib)
     local_server.write_local_context_window(tier.context_tokens)
     logging.info(
         "local server backend=cuda tier=%s context=%d parallel=%d cache=%d MiB "
-        "(vram=%s)",
+        "(tiering_memory=%s MiB source=%s discrete_vram=%s)",
         tier.name,
         tier.context_tokens,
         tier.parallel_slots,
         tier.prompt_cache_mib,
+        (
+            str(probe.tiering_memory_mib)
+            if probe.tiering_memory_mib is not None
+            else "unavailable"
+        ),
+        probe.memory_source,
         probe.vram_mib if probe.vram_mib is not None else "unavailable",
     )
     cmd = [
