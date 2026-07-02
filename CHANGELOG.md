@@ -4,6 +4,12 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.21] - 2026-07-02
+
+### Changed
+- on linux, sol now uses a single local engine to turn your speech into text. it runs entirely on your own machine, and your audio never leaves it.
+- the first time that engine runs, it downloads the model files it needs to work, the same as the previous engine did. that download only brings files in; nothing from your journal goes out.
+
 ## [0.6.20] - 2026-07-01
 
 ### Added
