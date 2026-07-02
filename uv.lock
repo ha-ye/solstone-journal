@@ -4265,7 +4265,7 @@ wheels = [
 
 [[package]]
 name = "solstone"
-version = "0.6.19"
+version = "0.6.20"
 source = { editable = "." }
 dependencies = [
     { name = "argon2-cffi" },
@@ -4474,7 +4474,7 @@ dev = [
 
 [[package]]
 name = "solstone-journal-host"
-version = "0.6.19"
+version = "0.6.20"
 source = { editable = "packages/solstone-journal-host" }
 dependencies = [
     { name = "solstone", extra = ["journal-host"] },

@@ -4,6 +4,18 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.20] - 2026-07-01
+
+### Added
+- on linux, you can now opt into an alternative local transcription engine. the default engine is unchanged.
+
+### Changed
+- sol now does less repeated work on the video and on-screen activity it takes in. it skips near-identical moments while keeping the ones where something on screen changed, so nothing that changed gets missed.
+
+### Fixed
+- catching up on past days is steadier. sol re-does only the parts of a day that didn't finish rather than walking the whole day from the start, and it skips audio it has already turned into text.
+- if one audio file in your day couldn't be read, it used to be able to stop the rest of the day from being transcribed. now sol sets that one file aside and keeps going, so the rest of your day still becomes text in your journal.
+
 ## [0.6.19] - 2026-07-01
 
 ### Fixed
