@@ -44,6 +44,7 @@ def _readiness(
     gpu: bool = True,
     gpu_probe_ok: bool | None = None,
     install_state: str = "installed",
+    backend: str = "vulkan",
 ) -> dict:
     payload = {
         "install_state": install_state,
@@ -55,6 +56,8 @@ def _readiness(
         "model_path": "/tmp/model.gguf",
         "model_id": LOCAL_MODEL,
         "install_error": None,
+        "backend": backend,
+        "backend_reason": f"test {backend}",
     }
     if gpu_probe_ok is not None:
         payload["gpu_probe_ok"] = gpu_probe_ok
@@ -590,6 +593,56 @@ def test_local_readiness_ready(monkeypatch):
     assert provider_state.status == "ready"
     assert provider_state.reason_code is None
     assert provider_state.source == "local_server"
+
+
+@pytest.mark.parametrize("backend", ["vulkan", "cuda"])
+def test_local_readiness_backend_fields_are_additive(monkeypatch, backend):
+    monkeypatch.setattr(
+        local_endpoint,
+        "resolve_local_endpoint",
+        lambda: local_endpoint.LocalEndpoint("", "", None, is_bundled=True),
+    )
+    monkeypatch.setattr(
+        local_install,
+        "inspect_readiness",
+        lambda _model=None: _readiness(backend=backend),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "probe_state",
+        lambda: (local_server.STATE_READY, None),
+    )
+
+    provider_state = state.readiness_for_provider("local", "generate")
+
+    assert provider_state.status == "ready"
+    assert provider_state.reason_code is None
+    assert provider_state.source == "local_server"
+
+
+@pytest.mark.parametrize("backend", ["vulkan", "cuda"])
+def test_local_status_dict_backend_fields_are_additive(monkeypatch, backend):
+    monkeypatch.setattr(
+        "solstone.think.models.is_local_provider_needed",
+        lambda *a, **k: True,
+    )
+    monkeypatch.setattr(
+        local_endpoint,
+        "resolve_local_endpoint",
+        lambda: local_endpoint.LocalEndpoint("", "", None, is_bundled=True),
+    )
+    monkeypatch.setattr(
+        local_install,
+        "inspect_readiness",
+        lambda _model=None: _readiness(backend=backend),
+    )
+    monkeypatch.setattr(local_server, "is_healthy", lambda: True)
+
+    status = state.local_status_dict()
+
+    assert status["generate_ready"] is True
+    assert status["cogitate_ready"] is True
+    assert status["issues"] == []
 
 
 def test_local_readiness_darwin_ready(monkeypatch):

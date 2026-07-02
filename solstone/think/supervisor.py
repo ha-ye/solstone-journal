@@ -1937,6 +1937,119 @@ def _cleanup_parakeet_launch(managed: RunnerManagedProcess, reason: str) -> None
     managed.cleanup()
 
 
+def _start_cuda_local_server(
+    artifacts: Any,
+    binary_path: Path,
+    gguf_path: Path,
+    mmproj_path: Path | None,
+) -> RunnerManagedProcess | None:
+    """Launch the CUDA llama-server path after backend selection chose CUDA."""
+    from solstone.think.providers import local_cuda, local_install, local_server
+
+    pin = local_install.CUDA_SERVER_PIN
+    probe = local_cuda.probe_nvidia_gpu()
+    gpu_index = probe.index if probe.index is not None else 0
+    port = find_available_port()
+    write_service_port("local", port)
+    if probe.vram_mib is None:
+        # TODO(AC10): source unified memory for a real GB10 tier — floor is the safe default (AC10 item 5).
+        tier = local_server.select_server_tier(0)
+        logging.info(
+            "local server VRAM read unavailable (unified memory / probe gap); "
+            "using floor tier"
+        )
+    else:
+        tier = local_server.select_server_tier(probe.vram_mib)
+    local_server.write_local_context_window(tier.context_tokens)
+    logging.info(
+        "local server backend=cuda tier=%s context=%d parallel=%d cache=%d MiB "
+        "(vram=%s)",
+        tier.name,
+        tier.context_tokens,
+        tier.parallel_slots,
+        tier.prompt_cache_mib,
+        probe.vram_mib if probe.vram_mib is not None else "unavailable",
+    )
+    cmd = [
+        str(binary_path),
+        "-m",
+        str(gguf_path),
+        "--alias",
+        LOCAL_MODEL,
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--jinja",
+        "--n-gpu-layers",
+        "999",
+        "-c",
+        str(tier.context_tokens),
+        "--parallel",
+        str(tier.parallel_slots),
+        "--kv-unified",
+        "--cache-ram",
+        str(tier.prompt_cache_mib),
+        "--no-context-shift",
+        "--device",
+        # TODO(AC10): confirm --device CUDA0 spelling on the CUDA build.
+        pin.device_flag_value,
+    ]
+    if mmproj_path is not None:
+        cmd.extend(["--mmproj", str(mmproj_path)])
+    if "0.0.0.0" in cmd:
+        raise RuntimeError("Local server may not bind 0.0.0.0.")
+
+    lib_dir = str(artifacts.lib_dir)
+    existing_ld = os.environ.get("LD_LIBRARY_PATH", "")
+    ld_library_path = f"{lib_dir}:{existing_ld}" if existing_ld else lib_dir
+    env = os.environ | {
+        # TODO(AC10): confirm CUDA_VISIBLE_DEVICES env name on the CUDA build.
+        pin.visible_devices_env: str(gpu_index),
+        "LD_LIBRARY_PATH": ld_library_path,
+    }
+    managed = _launch_process(LOCAL_SERVER_PROCESS_NAME, cmd, restart=True, env=env)
+    print(f"  {LOCAL_MODEL_WARMING_UP_COPY}", flush=True)
+
+    def fail_cuda_server_launch(reason: str) -> None:
+        logging.error("CUDA local server launch failed: %s", reason)
+        timeout = _SERVICE_STATE.get(managed.name, {}).get("shutdown_timeout", 15)
+        _SERVICE_STATE.pop(managed.name, None)
+        _terminate_managed(
+            managed,
+            timeout,
+            reason="CUDA local server launch failed",
+        )
+        managed.cleanup()
+
+    deadline = time.monotonic() + LOCAL_SERVER_READY_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if managed.process.poll() is not None:
+            fail_cuda_server_launch(
+                f"llama-server exited during warmup with code "
+                f"{managed.process.returncode}"
+            )
+            return None
+        state, error = local_server._probe_health(port)
+        if state == local_server.STATE_READY:
+            props = local_server.fetch_props(port)
+            n_ctx = local_server._extract_n_ctx(props) if props is not None else None
+            total_slots = props.get("total_slots") if isinstance(props, dict) else None
+            _log_context_assertion(tier, n_ctx, total_slots)
+            logging.info("llama-server ready on port %s", port)
+            return managed
+        if state == local_server.STATE_FAILED and error:
+            logging.debug("llama-server health probe failed during warmup: %s", error)
+        time.sleep(LOCAL_SERVER_HEALTH_POLL_INTERVAL_S)
+
+    fail_cuda_server_launch(
+        "CUDA llama-server did not become ready within "
+        f"{LOCAL_SERVER_READY_TIMEOUT_S:.0f}s; the covered-arch CUDA build may be "
+        "crashing on this GPU"
+    )
+    return None
+
+
 def start_local_server() -> RunnerManagedProcess | None:
     """Launch the supervisor-owned local llama-server when artifacts are present."""
     from solstone.think.providers.local_endpoint import resolve_local_endpoint
@@ -1947,12 +2060,17 @@ def start_local_server() -> RunnerManagedProcess | None:
     if sys.platform == "darwin":
         return _start_mlx_local_server()
 
-    from solstone.think.providers import local_install, local_server, local_vulkan
+    from solstone.think.providers import (
+        local_install,
+        local_server,
+        local_vulkan,
+    )
 
     try:
-        binary_path, gguf_path, mmproj_path = local_install.ensure_artifacts_installed(
-            LOCAL_MODEL
-        )
+        artifacts = local_install.ensure_artifacts_installed(LOCAL_MODEL)
+        binary_path = artifacts.binary_path
+        gguf_path = artifacts.gguf_path
+        mmproj_path = artifacts.mmproj_path
         # Defense in depth: refuse to launch a gguf/mmproj pair that does not
         # belong to the selected model, even if readiness ever regresses. A
         # mixed pair (e.g. a stale gguf from a prior model + the current mmproj)
@@ -1969,6 +2087,14 @@ def start_local_server() -> RunnerManagedProcess | None:
     except Exception as exc:
         logging.info("Local model not ready; skipping llama-server startup: %s", exc)
         return None
+
+    logging.info(
+        "local backend selected: backend=%s reason=%s",
+        artifacts.backend,
+        artifacts.backend_reason,
+    )
+    if artifacts.backend == "cuda":
+        return _start_cuda_local_server(artifacts, binary_path, gguf_path, mmproj_path)
 
     devices = local_vulkan.detect_gpus()
     override = local_install.gpu_device_override()

@@ -208,6 +208,22 @@ def _offline_result(
     wanted: Sequence[str],
     target_dir: Path,
 ) -> OciInstallResult | None:
+    record = _verify_sidecar(image_ref, arch, wanted, target_dir)
+    if record is None:
+        return None
+    return OciInstallResult(
+        target_dir=target_dir,
+        files=dict(record.files),
+        already_present=True,
+    )
+
+
+def _verify_sidecar(
+    image_ref: str,
+    arch: str,
+    wanted: Sequence[str],
+    target_dir: Path,
+) -> OciInstallRecord | None:
     sidecar = target_dir / SIDECAR_NAME
     try:
         record = OciInstallRecord.from_json(sidecar.read_text(encoding="utf-8"))
@@ -226,11 +242,17 @@ def _offline_result(
             _verify_sha256(path, expected)
         except OciImageError:
             return None
-    return OciInstallResult(
-        target_dir=target_dir,
-        files=dict(record.files),
-        already_present=True,
-    )
+    return record
+
+
+def verify_sidecar_install(
+    image_ref: str,
+    arch: str,
+    wanted_files: Sequence[str],
+    target_dir: Path,
+) -> bool:
+    wanted = _validate_wanted_files(wanted_files)
+    return _verify_sidecar(image_ref, arch, wanted, Path(target_dir)) is not None
 
 
 def _fetch_token(client: httpx.Client, repo: str) -> str:
@@ -540,4 +562,5 @@ __all__ = [
     "OciInstallResult",
     "SIDECAR_NAME",
     "pull_and_install",
+    "verify_sidecar_install",
 ]

@@ -15,7 +15,7 @@ import pytest
 
 from solstone.think.journal_config import read_journal_config
 from solstone.think.models import LOCAL_MODEL
-from solstone.think.providers import local_install, local_vulkan, memory
+from solstone.think.providers import local_cuda, local_install, local_vulkan, memory
 from solstone.think.providers.install_state import read_install_status
 from solstone.think.providers.local import LOCAL_MODEL_SPECS
 
@@ -38,6 +38,15 @@ def _local_slot() -> dict:
     return read_journal_config()["providers"]["bundled"]["local"]
 
 
+@pytest.fixture(autouse=True)
+def _default_vulkan_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        local_cuda,
+        "resolve_local_backend",
+        lambda _pin: local_cuda.BackendChoice("vulkan", "test vulkan"),
+    )
+
+
 def _write_probe_script(tmp_path: Path, body: str) -> Path:
     script = tmp_path / "probe.sh"
     script.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
@@ -47,6 +56,49 @@ def _write_probe_script(tmp_path: Path, body: str) -> Path:
 
 def test_install_hint_literal() -> None:
     assert local_install.install_hint() == "journal install-provider local"
+
+
+@pytest.mark.parametrize(
+    ("machine", "arch"),
+    [
+        ("x86_64", "amd64"),
+        ("amd64", "amd64"),
+        ("x64", "amd64"),
+        ("aarch64", "arm64"),
+        ("arm64", "arm64"),
+    ],
+)
+def test_oci_arch_mapping(machine: str, arch: str, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(local_install.platform, "machine", lambda: machine)
+
+    assert local_install._oci_arch() == arch
+
+
+def test_oci_arch_unsupported_raises(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(local_install.platform, "machine", lambda: "riscv64")
+
+    with pytest.raises(local_install.LocalProviderError) as exc_info:
+        local_install._oci_arch()
+
+    assert exc_info.value.reason_code == "unsupported_platform"
+
+
+def test_cuda_binary_paths_include_index_digest(tmp_path, monkeypatch):
+    _init_journal(tmp_path, monkeypatch)
+    digest = local_install.CUDA_SERVER_PIN.image_ref.split("@sha256:", 1)[1]
+
+    assert local_install.cuda_binary_dir() == (
+        tmp_path
+        / "cache"
+        / "providers"
+        / "local"
+        / "cuda"
+        / local_install.llama_server_artifact_key()
+        / digest
+    )
+    assert local_install.cuda_binary_path() == (
+        local_install.cuda_binary_dir() / local_install.CUDA_SERVER_PIN.binary_name
+    )
 
 
 def test_llama_server_pins_cover_expected_platforms() -> None:
@@ -183,6 +235,98 @@ def test_install_llama_server_writes_canonical_sequence(tmp_path, monkeypatch):
     assert slot["binary_sha256"] == "abc123"
     assert slot["binary_path"] == str(final_path)
     assert "state" not in slot
+
+
+def test_install_llama_server_cuda_uses_oci_without_metadata(tmp_path, monkeypatch):
+    from solstone.think.providers import oci_image
+
+    _init_journal(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        local_cuda,
+        "resolve_local_backend",
+        lambda _pin: local_cuda.BackendChoice("cuda", "test cuda"),
+    )
+    metadata_calls: list[dict[str, str]] = []
+    pull_calls: list[tuple[str, str, tuple[str, ...], Path]] = []
+
+    def fake_pull_and_install(
+        image_ref: str,
+        arch: str,
+        wanted_files: tuple[str, ...],
+        target_dir: Path,
+    ) -> oci_image.OciInstallResult:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        binary = target_dir / local_install.CUDA_SERVER_PIN.binary_name
+        binary.write_text("binary", encoding="utf-8")
+        pull_calls.append((image_ref, arch, wanted_files, target_dir))
+        return oci_image.OciInstallResult(
+            target_dir=target_dir,
+            files={},
+            already_present=False,
+        )
+
+    monkeypatch.setattr(oci_image, "pull_and_install", fake_pull_and_install)
+    monkeypatch.setattr(
+        local_install,
+        "_write_local_metadata",
+        lambda updates: metadata_calls.append(updates),
+    )
+
+    result = local_install.install_llama_server()
+
+    assert result["install_state"] == "installed"
+    assert pull_calls == [
+        (
+            local_install.CUDA_SERVER_PIN.image_ref,
+            local_install._oci_arch(),
+            local_install.CUDA_SERVER_PIN.wanted_files,
+            local_install.cuda_binary_dir(),
+        )
+    ]
+    assert metadata_calls == []
+    assert local_install.cuda_binary_path().stat().st_mode & 0o111
+
+
+def test_install_llama_server_vulkan_choice_does_not_pull_oci(tmp_path, monkeypatch):
+    from solstone.think.providers import oci_image
+
+    _init_journal(tmp_path, monkeypatch)
+    pin = {
+        "release_tag": "v1",
+        "filename": "llama.tar.gz",
+        "sha256": "abc123",
+        "binary_name": "llama-server",
+    }
+    final_path = local_install.binary_path_for_pin("test-platform", pin)
+    final_path.parent.mkdir(parents=True)
+    final_path.write_text("binary", encoding="utf-8")
+
+    monkeypatch.setattr(
+        local_install, "llama_server_artifact_key", lambda: "test-platform"
+    )
+    monkeypatch.setattr(local_install, "pin_for_current_platform", lambda: pin)
+    monkeypatch.setattr(local_install, "_download_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(local_install, "_verify_sha256", lambda _path, _expected: None)
+    monkeypatch.setattr(
+        local_install, "_safe_extract_tarball", lambda _tarball, _dest: None
+    )
+    monkeypatch.setattr(
+        local_install, "_find_extracted_binary", lambda _dest, _name: final_path
+    )
+    monkeypatch.setattr(local_install, "_chmod_executable", lambda _path: None)
+    monkeypatch.setattr(local_install, "_clear_macos_quarantine", lambda _path: None)
+    monkeypatch.setattr(
+        oci_image,
+        "pull_and_install",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("OCI pull not expected")
+        ),
+    )
+
+    result = local_install.install_llama_server()
+
+    assert result["install_state"] == "installed"
+    assert _local_slot()["binary_path"] == str(final_path)
 
 
 def test_probe_binary_runnable_returns_true_for_zero_exit(tmp_path):
@@ -332,13 +476,20 @@ def test_ensure_artifacts_installed_returns_binary_gguf_and_optional_mmproj(
             "binary_path": str(binary),
             "model_path": str(gguf),
             "mmproj_path": str(mmproj),
+            "backend": "vulkan",
+            "backend_reason": "test vulkan",
         },
     )
 
-    assert local_install.ensure_artifacts_installed(LOCAL_MODEL) == (
-        binary,
-        gguf,
-        mmproj,
+    assert local_install.ensure_artifacts_installed(
+        LOCAL_MODEL
+    ) == local_install.LocalArtifacts(
+        backend="vulkan",
+        backend_reason="test vulkan",
+        binary_path=binary,
+        lib_dir=None,
+        gguf_path=gguf,
+        mmproj_path=mmproj,
     )
 
 
@@ -357,14 +508,86 @@ def test_ensure_artifacts_installed_ignores_low_memory_when_artifacts_exist(
             "binary_path": str(binary),
             "model_path": str(gguf),
             "mmproj_path": None,
+            "backend": "vulkan",
+            "backend_reason": "test vulkan",
         },
     )
 
-    assert local_install.ensure_artifacts_installed(LOCAL_MODEL) == (
-        binary,
-        gguf,
-        None,
+    assert local_install.ensure_artifacts_installed(
+        LOCAL_MODEL
+    ) == local_install.LocalArtifacts(
+        backend="vulkan",
+        backend_reason="test vulkan",
+        binary_path=binary,
+        lib_dir=None,
+        gguf_path=gguf,
+        mmproj_path=None,
     )
+
+
+def test_ensure_artifacts_installed_returns_cuda_lib_dir(tmp_path, monkeypatch):
+    _init_journal(tmp_path, monkeypatch)
+    binary = tmp_path / "llama-server"
+    gguf = tmp_path / "model.gguf"
+    monkeypatch.setattr(
+        local_install,
+        "inspect_readiness",
+        lambda model_id: {
+            "binary_installed": True,
+            "model_installed": True,
+            "ram_sufficient": True,
+            "binary_path": str(binary),
+            "model_path": str(gguf),
+            "mmproj_path": None,
+            "backend": "cuda",
+            "backend_reason": "test cuda",
+        },
+    )
+
+    assert local_install.ensure_artifacts_installed(
+        LOCAL_MODEL
+    ) == local_install.LocalArtifacts(
+        backend="cuda",
+        backend_reason="test cuda",
+        binary_path=binary,
+        lib_dir=local_install.cuda_binary_dir(),
+        gguf_path=gguf,
+        mmproj_path=None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("binary_installed", "model_installed", "reason_code"),
+    [(False, True, "binary_missing"), (True, False, "model_missing")],
+)
+def test_ensure_artifacts_installed_raises_for_missing_artifacts(
+    tmp_path,
+    monkeypatch,
+    binary_installed,
+    model_installed,
+    reason_code,
+):
+    binary = tmp_path / "llama-server"
+    gguf = tmp_path / "model.gguf"
+    monkeypatch.setattr(
+        local_install,
+        "inspect_readiness",
+        lambda model_id: {
+            "binary_installed": binary_installed,
+            "model_installed": model_installed,
+            "ram_sufficient": True,
+            "binary_path": str(binary),
+            "model_path": str(gguf),
+            "mmproj_path": None,
+            "backend": "vulkan",
+            "backend_reason": "test vulkan",
+        },
+    )
+
+    with pytest.raises(local_install.LocalProviderError) as exc_info:
+        local_install.ensure_artifacts_installed(LOCAL_MODEL)
+
+    assert exc_info.value.reason_code == reason_code
 
 
 def test_inspect_readiness_reports_ram_sufficient_for_low_or_unknown_memory(
@@ -380,6 +603,62 @@ def test_inspect_readiness_reports_ram_sufficient_for_low_or_unknown_memory(
     readiness = local_install.inspect_readiness(LOCAL_MODEL)
 
     assert readiness["ram_sufficient"] is True
+
+
+@pytest.mark.parametrize("sidecar_ok", [True, False])
+def test_inspect_readiness_cuda_uses_sidecar_full_set(
+    tmp_path,
+    monkeypatch,
+    sidecar_ok,
+):
+    from solstone.think.providers import oci_image
+
+    _init_journal(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        local_cuda,
+        "resolve_local_backend",
+        lambda _pin: local_cuda.BackendChoice("cuda", "test cuda"),
+    )
+    binary = local_install.cuda_binary_path()
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_text("binary", encoding="utf-8")
+    binary.chmod(0o755)
+    verify_calls: list[tuple[str, str, tuple[str, ...], Path]] = []
+
+    def fake_verify(
+        image_ref: str,
+        arch: str,
+        wanted_files: tuple[str, ...],
+        target_dir: Path,
+    ) -> bool:
+        verify_calls.append((image_ref, arch, wanted_files, target_dir))
+        return sidecar_ok
+
+    monkeypatch.setattr(oci_image, "verify_sidecar_install", fake_verify)
+    monkeypatch.setattr(
+        local_vulkan,
+        "detect_gpus",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("Vulkan probe not expected for CUDA readiness")
+        ),
+    )
+
+    readiness = local_install.inspect_readiness(LOCAL_MODEL)
+
+    assert readiness["backend"] == "cuda"
+    assert readiness["backend_reason"] == "test cuda"
+    assert readiness["binary_path"] == str(binary)
+    assert readiness["binary_installed"] is sidecar_ok
+    assert readiness["gpu_available"] is True
+    assert readiness["gpu_probe_ok"] is True
+    assert verify_calls == [
+        (
+            local_install.CUDA_SERVER_PIN.image_ref,
+            local_install._oci_arch(),
+            local_install.CUDA_SERVER_PIN.wanted_files,
+            local_install.cuda_binary_dir(),
+        )
+    ]
 
 
 def test_inspect_readiness_reports_gpu_available_with_hardware(tmp_path, monkeypatch):
@@ -400,6 +679,8 @@ def test_inspect_readiness_reports_gpu_available_with_hardware(tmp_path, monkeyp
     readiness = local_install.inspect_readiness(LOCAL_MODEL)
 
     assert readiness["gpu_available"] is True
+    assert readiness["backend"] == "vulkan"
+    assert readiness["backend_reason"] == "test vulkan"
 
 
 def test_inspect_readiness_reports_gpu_unavailable_without_hardware(

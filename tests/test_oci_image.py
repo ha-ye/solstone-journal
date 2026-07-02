@@ -534,3 +534,76 @@ def test_ac7_offline_short_circuit_uses_zero_requests(tmp_path: Path) -> None:
 
     assert exc_info.value.reason_code == "token_fetch_failed"
     assert request_count == 1
+
+
+def test_verify_sidecar_install_reports_cached_integrity(tmp_path: Path) -> None:
+    layer = _layer_bytes(
+        {
+            "bin/tool": b"tool",
+            "usr/lib/libfoo.so": b"library",
+        }
+    )
+    target = tmp_path / "target"
+    _pull_with_registry(
+        _registry_for_layers([layer]),
+        target,
+        ["tool", "libfoo.so"],
+    )
+
+    assert oci_image.verify_sidecar_install(
+        IMAGE_REF,
+        "amd64",
+        ["tool", "libfoo.so"],
+        target,
+    )
+    assert not oci_image.verify_sidecar_install(
+        ALT_IMAGE_REF,
+        "amd64",
+        ["tool", "libfoo.so"],
+        target,
+    )
+    assert not oci_image.verify_sidecar_install(
+        IMAGE_REF,
+        "arm64",
+        ["tool", "libfoo.so"],
+        target,
+    )
+
+    (target / "libfoo.so").unlink()
+    assert not oci_image.verify_sidecar_install(
+        IMAGE_REF,
+        "amd64",
+        ["tool", "libfoo.so"],
+        target,
+    )
+
+    (target / "libfoo.so").write_bytes(b"wrong")
+    assert not oci_image.verify_sidecar_install(
+        IMAGE_REF,
+        "amd64",
+        ["tool", "libfoo.so"],
+        target,
+    )
+
+
+def test_ac8_offline_short_circuit_uses_request_raising_transport(
+    tmp_path: Path,
+) -> None:
+    layer = _layer_bytes({"bin/tool": b"tool"})
+    target = tmp_path / "target"
+    _pull_with_registry(_registry_for_layers([layer]), target, ["tool"])
+
+    def raising_handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"unexpected HTTP request: {request.url}")
+
+    with httpx.Client(transport=httpx.MockTransport(raising_handler)) as client:
+        result = oci_image.pull_and_install(
+            IMAGE_REF,
+            "amd64",
+            ["tool"],
+            target,
+            client=client,
+        )
+
+    assert result.already_present is True
+    assert result.files["tool"] == _sha256_file(target / "tool")

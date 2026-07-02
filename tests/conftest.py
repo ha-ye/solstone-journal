@@ -139,6 +139,17 @@ def set_test_journal_path(monkeypatch, _isolate_os_environ):
 
 
 @pytest.fixture(autouse=True)
+def _default_local_backend_vulkan(monkeypatch):
+    from solstone.think.providers import local_cuda
+
+    monkeypatch.setattr(
+        local_cuda,
+        "resolve_local_backend",
+        lambda pin: local_cuda.BackendChoice("vulkan", "test default: no CUDA host"),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _cleanup_voice_runtime():
     yield
     stop_all_voice_runtime()
