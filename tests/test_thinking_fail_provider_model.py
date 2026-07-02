@@ -15,14 +15,27 @@ def _capture_jsonl(monkeypatch, mod):
     def log(event: str, **fields) -> None:
         records.append({"event": event, **fields})
 
+    def capture_emit(event_name: str, **kwargs) -> None:
+        records.append({"event": f"emit:{event_name}", **kwargs})
+
     monkeypatch.setattr(mod, "_jsonl_log", log)
-    monkeypatch.setattr(mod, "emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mod, "emit", capture_emit)
     monkeypatch.setattr(mod, "_update_status", lambda **kwargs: None)
     monkeypatch.setattr(mod, "day_log", lambda *args, **kwargs: None)
     return records
 
 
+def _use_log_status(use_id: str) -> str:
+    if use_id.endswith("lost"):
+        return "not_found"
+    if use_id.endswith("running"):
+        return "running"
+    return "completed"
+
+
 def _provider_model_reason(use_id: str) -> tuple[str | None, str | None, str | None]:
+    if use_id.endswith("lost"):
+        return (None, None, None)
     if use_id.endswith("timeout"):
         return ("google", "gemini-2.5-pro", None)
     if use_id.endswith("error"):
@@ -57,6 +70,7 @@ def test_priority_fail_records_provider_model_and_null_when_missing(monkeypatch)
     from solstone.think import thinking
 
     records = _capture_jsonl(monkeypatch, thinking)
+    monkeypatch.setattr(thinking, "get_use_log_status", _use_log_status)
     monkeypatch.setattr(
         thinking,
         "read_use_provider_model_reason",
@@ -65,16 +79,23 @@ def test_priority_fail_records_provider_model_and_null_when_missing(monkeypatch)
     monkeypatch.setattr(
         thinking,
         "wait_for_uses",
-        lambda ids, timeout: ({}, ["use-timeout"]),
+        lambda ids, timeout: ({}, ["use-lost", "use-running", "use-completed"]),
     )
 
-    thinking._drain_priority_batch(
-        [("use-timeout", "entities", {"type": "cogitate"}, None)],
+    _, _, failed_names = thinking._drain_priority_batch(
+        [
+            ("use-lost", "lost", {"type": "cogitate"}, None),
+            ("use-running", "running", {"type": "cogitate"}, None),
+            ("use-completed", "completed", {"type": "cogitate"}, None),
+        ],
         "segment",
         "20240101",
         "100000_300",
         stream="default",
     )
+
+    assert "lost (request_lost)" in failed_names
+    assert "running (timeout)" in failed_names
 
     monkeypatch.setattr(
         thinking,
@@ -82,20 +103,32 @@ def test_priority_fail_records_provider_model_and_null_when_missing(monkeypatch)
         lambda ids, timeout: ({"use-error": "error"}, []),
     )
     thinking._drain_priority_batch(
-        [("use-error", "documents", {"type": "cogitate"}, None)],
+        [("use-error", "error", {"type": "cogitate"}, None)],
         "segment",
         "20240101",
         "100000_300",
         stream="default",
     )
 
-    failures = [record for record in records if record["event"] == "talent.fail"]
-    assert failures[0]["provider"] == "google"
-    assert failures[0]["model"] == "gemini-2.5-pro"
-    assert "reason_code" not in failures[0]
-    assert failures[1]["provider"] is None
-    assert failures[1]["model"] is None
-    assert failures[1]["reason_code"] == "provider_key_missing"
+    failures = {
+        record["name"]: record for record in records if record["event"] == "talent.fail"
+    }
+    assert failures["lost"]["state"] == "request_lost"
+    assert failures["lost"]["provider"] is None
+    assert failures["lost"]["model"] is None
+    assert failures["running"]["state"] == "timeout"
+    assert failures["completed"]["state"] == "timeout"
+    assert failures["error"]["state"] == "error"
+    assert failures["error"]["provider"] is None
+    assert failures["error"]["model"] is None
+    assert failures["error"]["reason_code"] == "provider_key_missing"
+
+    emits = {
+        record["name"]: record
+        for record in records
+        if record["event"] == "emit:talent_completed"
+    }
+    assert emits["lost"]["state"] == "request_lost"
 
 
 def test_activity_fail_records_provider_model_on_timeout_and_terminal(
@@ -108,6 +141,7 @@ def test_activity_fail_records_provider_model_on_timeout_and_terminal(
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
     _write_activity_record(journal, "20240101", "work", "coding_100000_300")
     records = _capture_jsonl(monkeypatch, thinking)
+    monkeypatch.setattr(thinking, "get_use_log_status", _use_log_status)
     monkeypatch.setattr(
         thinking,
         "read_use_provider_model_reason",
@@ -117,7 +151,17 @@ def test_activity_fail_records_provider_model_on_timeout_and_terminal(
         thinking,
         "get_talent_configs",
         lambda schedule: {
-            "timeout": {
+            "lost": {
+                "type": "cogitate",
+                "priority": 10,
+                "activities": ["coding"],
+            },
+            "running": {
+                "type": "cogitate",
+                "priority": 10,
+                "activities": ["coding"],
+            },
+            "completed": {
                 "type": "cogitate",
                 "priority": 10,
                 "activities": ["coding"],
@@ -137,7 +181,10 @@ def test_activity_fail_records_provider_model_on_timeout_and_terminal(
     monkeypatch.setattr(
         thinking,
         "wait_for_uses",
-        lambda ids, timeout: ({"use-error": "error"}, ["use-timeout"]),
+        lambda ids, timeout: (
+            {"use-error": "error"},
+            ["use-lost", "use-running", "use-completed"],
+        ),
     )
 
     assert (
@@ -150,25 +197,30 @@ def test_activity_fail_records_provider_model_on_timeout_and_terminal(
         is False
     )
 
-    failures = [record for record in records if record["event"] == "talent.fail"]
-    assert {
-        (
-            record["name"],
-            record["provider"],
-            record["model"],
-            record.get("reason_code"),
-        )
-        for record in failures
-    } == {
-        ("timeout", "google", "gemini-2.5-pro", None),
-        ("error", None, None, "provider_key_missing"),
+    failures = {
+        record["name"]: record for record in records if record["event"] == "talent.fail"
     }
+    assert failures["lost"]["state"] == "request_lost"
+    assert failures["lost"]["provider"] is None
+    assert failures["lost"]["model"] is None
+    assert failures["running"]["state"] == "timeout"
+    assert failures["completed"]["state"] == "timeout"
+    assert failures["error"]["state"] == "error"
+    assert failures["error"]["reason_code"] == "provider_key_missing"
+
+    emits = {
+        record["name"]: record
+        for record in records
+        if record["event"] == "emit:talent_completed"
+    }
+    assert emits["lost"]["state"] == "request_lost"
 
 
 def test_flush_fail_records_provider_model_on_timeout_and_terminal(monkeypatch):
     from solstone.think import thinking
 
     records = _capture_jsonl(monkeypatch, thinking)
+    monkeypatch.setattr(thinking, "get_use_log_status", _use_log_status)
     monkeypatch.setattr(
         thinking,
         "read_use_provider_model_reason",
@@ -178,7 +230,17 @@ def test_flush_fail_records_provider_model_on_timeout_and_terminal(monkeypatch):
         thinking,
         "get_talent_configs",
         lambda schedule: {
-            "timeout": {
+            "lost": {
+                "type": "cogitate",
+                "priority": 10,
+                "hook": {"flush": True},
+            },
+            "running": {
+                "type": "cogitate",
+                "priority": 10,
+                "hook": {"flush": True},
+            },
+            "completed": {
                 "type": "cogitate",
                 "priority": 10,
                 "hook": {"flush": True},
@@ -198,21 +260,21 @@ def test_flush_fail_records_provider_model_on_timeout_and_terminal(monkeypatch):
     monkeypatch.setattr(
         thinking,
         "wait_for_uses",
-        lambda ids, timeout: ({"use-error": "error"}, ["use-timeout"]),
+        lambda ids, timeout: (
+            {"use-error": "error"},
+            ["use-lost", "use-running", "use-completed"],
+        ),
     )
 
     assert thinking.run_flush_prompts("20240101", "100000_300", False) is False
 
-    failures = [record for record in records if record["event"] == "talent.fail"]
-    assert {
-        (
-            record["name"],
-            record["provider"],
-            record["model"],
-            record.get("reason_code"),
-        )
-        for record in failures
-    } == {
-        ("timeout", "google", "gemini-2.5-pro", None),
-        ("error", None, None, "provider_key_missing"),
+    failures = {
+        record["name"]: record for record in records if record["event"] == "talent.fail"
     }
+    assert failures["lost"]["state"] == "request_lost"
+    assert failures["lost"]["provider"] is None
+    assert failures["lost"]["model"] is None
+    assert failures["running"]["state"] == "timeout"
+    assert failures["completed"]["state"] == "timeout"
+    assert failures["error"]["state"] == "error"
+    assert failures["error"]["reason_code"] == "provider_key_missing"

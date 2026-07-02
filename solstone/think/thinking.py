@@ -41,6 +41,7 @@ from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_THRESHOLD
 from solstone.think.cortex_client import (
     CortexSpawnUnavailable,
     cortex_request,
+    get_use_log_status,
     read_use_finish_fields,
     read_use_provider_model_reason,
     wait_for_uses,
@@ -183,6 +184,28 @@ def _provider_model_fields(use_id: str) -> dict[str, str | None]:
     if reason_code:
         fields["reason_code"] = reason_code
     return fields
+
+
+def _classify_timeout_state(use_id: str) -> str:
+    """Classify a timed-out use as ``request_lost`` or ``timeout``.
+
+    On a ``wait_for_uses`` timeout, a use has no durable terminal event —
+    ``_recover_completed_from_disk`` folds any use with a durable finish/error
+    event into ``completed`` before the timeout is reported. So a still-timed-out
+    use's durable log is either absent (the Callosum request was never claimed by
+    cortex — the request was lost) or present-but-non-terminal (the talent genuinely
+    ran past the deadline).
+
+    Returns ``"request_lost"`` when no durable use file exists
+    (``get_use_log_status`` is ``"not_found"``), otherwise ``"timeout"``.
+
+    ``request_lost`` strictly means "no durable claim existed at classification
+    time." A request can rarely be claimed *after* the wait deadline (late bus
+    delivery), producing a ``request_lost`` record followed by a later completion;
+    the terminal-state fold on the summary side reconciles that. The state name is
+    about attributability, not a guarantee the work never ran.
+    """
+    return "request_lost" if get_use_log_status(use_id) == "not_found" else "timeout"
 
 
 def _cache_fields(use_id: str) -> dict[str, bool | int | None]:
@@ -856,7 +879,8 @@ def _drain_priority_batch(
             )
             timed_facet = next((f for aid, _, _, f in spawned if aid == use_id), None)
             label = f"{timed_name}/{timed_facet}" if timed_facet else timed_name
-            failed_names.append(f"{label} (timeout)")
+            state = _classify_timeout_state(use_id)
+            failed_names.append(f"{label} ({state})")
             emit(
                 "talent_completed",
                 mode=target_schedule,
@@ -864,7 +888,7 @@ def _drain_priority_batch(
                 segment=segment,
                 name=timed_name,
                 use_id=use_id,
-                state="timeout",
+                state=state,
                 **({"facet": timed_facet} if timed_facet else {}),
             )
             _jsonl_log(
@@ -874,7 +898,7 @@ def _drain_priority_batch(
                 segment=segment,
                 name=timed_name,
                 use_id=use_id,
-                state="timeout",
+                state=state,
                 **_provider_model_fields(use_id),
                 **({"stream": stream} if stream else {}),
                 **({"facet": timed_facet} if timed_facet else {}),
@@ -2843,6 +2867,7 @@ def run_activity_prompts(
                     timed_name = next(
                         (n for aid, n, _ in spawned if aid == use_id), "unknown"
                     )
+                    state = _classify_timeout_state(use_id)
                     emit(
                         "talent_completed",
                         mode="activity",
@@ -2851,7 +2876,7 @@ def run_activity_prompts(
                         facet=facet,
                         name=timed_name,
                         use_id=use_id,
-                        state="timeout",
+                        state=state,
                     )
                     _jsonl_log(
                         "talent.fail",
@@ -2861,7 +2886,7 @@ def run_activity_prompts(
                         facet=facet,
                         name=timed_name,
                         use_id=use_id,
-                        state="timeout",
+                        state=state,
                         **_provider_model_fields(use_id),
                     )
 
@@ -3215,6 +3240,7 @@ def run_flush_prompts(
                 timed_name = next(
                     (n for aid, n, _ in spawned if aid == use_id), "unknown"
                 )
+                state = _classify_timeout_state(use_id)
                 _jsonl_log(
                     "talent.fail",
                     mode="flush",
@@ -3222,7 +3248,7 @@ def run_flush_prompts(
                     segment=segment,
                     name=timed_name,
                     use_id=use_id,
-                    state="timeout",
+                    state=state,
                     **_provider_model_fields(use_id),
                 )
 
