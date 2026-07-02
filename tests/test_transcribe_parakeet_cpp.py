@@ -108,10 +108,10 @@ def test_request_shape_and_wav_encoding(monkeypatch: pytest.MonkeyPatch) -> None
     assert statements[0]["text"] == "hello."
     assert observed["url"] == "http://127.0.0.1:4567/v1/audio/transcriptions"
     assert observed["timeout"] == parakeet_cpp._DEFAULT_TIMEOUT_SEC
-    assert observed["data"] == [
-        ("response_format", "verbose_json"),
-        ("timestamp_granularities[]", "word"),
-    ]
+    assert observed["data"] == {
+        "response_format": "verbose_json",
+        "timestamp_granularities[]": "word",
+    }
     filename, wav_bytes, content_type = observed["files"]["file"]
     assert filename == "audio.wav"
     assert content_type == "audio/wav"
@@ -120,6 +120,43 @@ def test_request_shape_and_wav_encoding(monkeypatch: pytest.MonkeyPatch) -> None
         assert wav_file.samplerate == 16000
         assert wav_file.channels == 1
         assert wav_file.subtype == "PCM_16"
+
+
+def test_real_multipart_encoder_encodes_form_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Mocking httpx.post never runs the real multipart encoder, which is
+    # where this bug lived (data passed as a list of tuples raised
+    # TypeError). This test drives the genuine encoder via MockTransport so
+    # a regression re-raises at encode time instead of shipping silently.
+    captured = {}
+
+    def real_encoder_post(url, **kwargs):
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["content"] = request.read()
+            captured["content_type"] = request.headers["content-type"]
+            return httpx.Response(200, json=_payload(text="hello."))
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            return client.post(url, **kwargs)
+
+    monkeypatch.setattr(parakeet_cpp.parakeet_server, "connect", lambda: _server())
+    monkeypatch.setattr(httpx, "post", real_encoder_post)
+
+    statements = parakeet_cpp.transcribe(
+        np.linspace(-0.5, 0.5, 3200, dtype=np.float32),
+        16000,
+        {"device": "cpu"},
+    )
+
+    # Encoder ran and parse path still works end-to-end.
+    assert statements[0]["text"] == "hello."
+    assert captured["content_type"].startswith("multipart/form-data")
+    body = captured["content"]
+    assert b"response_format" in body
+    assert b"verbose_json" in body
+    assert b"timestamp_granularities[]" in body
+    assert b"word" in body
 
 
 def test_connect_not_ready_propagates(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -110,10 +110,10 @@ def transcribe(audio: np.ndarray, sample_rate: int, config: dict) -> list[dict]:
 
     started = time.perf_counter()
     files = {"file": ("audio.wav", wav_bytes, "audio/wav")}
-    data = [
-        ("response_format", "verbose_json"),
-        ("timestamp_granularities[]", "word"),
-    ]
+    data = {
+        "response_format": "verbose_json",
+        "timestamp_granularities[]": "word",
+    }
     try:
         response = httpx.post(
             f"{server.base_url}/v1/audio/transcriptions",
