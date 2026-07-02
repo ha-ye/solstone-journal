@@ -1428,7 +1428,6 @@ def _emit_catchup_backoff(
             "show",
             title="Catchup stuck",
             message=message,
-            icon="⚠️",
             action="/app/health",
         )
     except Exception:

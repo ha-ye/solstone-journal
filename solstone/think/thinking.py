@@ -4319,7 +4319,6 @@ def main() -> None:
                         "show",
                         title="Storage Warning",
                         message=storage_warnings[0]["message"],
-                        icon="💾",
                         action="/app/settings#storage",
                     )
             except Exception:

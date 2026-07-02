@@ -140,6 +140,13 @@ class CallosumServer:
                                 pass  # Silent failure - avoid feedback loops
                 except socket.timeout:
                     continue
+                except UnicodeDecodeError as e:
+                    logger.warning(
+                        f"utf-8 split decode drop [server] fd={conn.fileno()}: "
+                        f"dropping {len(data)}-byte chunk, disconnecting peer "
+                        f"(pos {e.start}-{e.end}, {e.reason})"
+                    )
+                    break
         except Exception as e:
             logger.debug(f"Client error: {e}")
         finally:
@@ -372,6 +379,18 @@ class CallosumConnection:
                                 logger.error(f"Callback error: {e}")
                 except socket.timeout:
                     continue  # Normal, just loop back to drain queue
+                except UnicodeDecodeError as e:
+                    logger.warning(
+                        f"utf-8 split decode drop [client] fd={sock.fileno()}: "
+                        f"dropping {len(data)}-byte chunk, resetting connection "
+                        f"(pos {e.start}-{e.end}, {e.reason})"
+                    )
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+                    sock = None
+                    buffer = ""
                 except Exception as e:
                     logger.info(f"Receive error: {e}")
                     try:
