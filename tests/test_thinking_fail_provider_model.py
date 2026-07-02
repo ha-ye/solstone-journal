@@ -175,7 +175,7 @@ def test_activity_fail_records_provider_model_on_timeout_and_terminal(
     )
     monkeypatch.setattr(
         thinking,
-        "_cortex_request_with_retry",
+        "_dispatch_cortex_request",
         lambda **kwargs: f"use-{kwargs['name']}",
     )
     monkeypatch.setattr(
@@ -254,7 +254,7 @@ def test_flush_fail_records_provider_model_on_timeout_and_terminal(monkeypatch):
     )
     monkeypatch.setattr(
         thinking,
-        "_cortex_request_with_retry",
+        "_dispatch_cortex_request",
         lambda **kwargs: f"use-{kwargs['name']}",
     )
     monkeypatch.setattr(

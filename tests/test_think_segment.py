@@ -1912,7 +1912,7 @@ class TestRunSegmentSense:
             calls.append(name)
             if name == "sense":
                 return "agent-sense"
-            return None
+            raise think.CortexSpawnUnavailable()
 
         monkeypatch.setattr(
             think,
@@ -1920,7 +1920,6 @@ class TestRunSegmentSense:
             lambda schedule=None, **kwargs: _segment_configs("sense", "documents"),
         )
         monkeypatch.setattr(think, "cortex_request", mock_cortex_request)
-        monkeypatch.setattr(think, "_SEND_RETRY_DELAYS", (0.0, 0.0))
         monkeypatch.setattr(
             think,
             "wait_for_uses",
@@ -1937,16 +1936,93 @@ class TestRunSegmentSense:
         )
 
         assert calls[0] == "sense"
-        assert calls[1:] == ["documents", "documents", "documents"]
+        assert calls[1:] == ["documents"]
         assert success == 1
         assert failed == 1
         assert failed_names == ["documents (send)"]
 
+    def test_not_claimed_recorded_without_wait(self, segment_dir, monkeypatch):
+        from solstone.think import thinking as think
 
-class TestCortexRequestRetry:
-    """Tests for _cortex_request_with_retry."""
+        _write_sense_output(
+            segment_dir,
+            {"density": "active", "recommend": {}, "facets": []},
+        )
+        wait_calls = []
+        jsonl_events = []
+        emitted_events = []
 
-    def test_succeeds_on_first_try(self, monkeypatch):
+        def mock_cortex_request(prompt, name, config=None):
+            if name == "sense":
+                return "agent-sense"
+            raise think.CortexNotClaimed(use_id="lost-1")
+
+        def fake_wait_for_uses(agent_ids, timeout=600):
+            wait_calls.append(list(agent_ids))
+            return {aid: "finish" for aid in agent_ids}, []
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _segment_configs("sense", "documents"),
+        )
+        monkeypatch.setattr(think, "cortex_request", mock_cortex_request)
+        monkeypatch.setattr(think, "wait_for_uses", fake_wait_for_uses)
+        monkeypatch.setattr(
+            think,
+            "_jsonl_log",
+            lambda event, **fields: jsonl_events.append((event, fields)),
+        )
+        monkeypatch.setattr(
+            think,
+            "emit",
+            lambda event, **fields: emitted_events.append((event, fields)),
+        )
+        monkeypatch.setattr(think, "_callosum", None)
+
+        success, failed, failed_names = think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+
+        assert success == 1
+        assert failed == 1
+        assert failed_names == ["documents (request_lost)"]
+        assert all("lost-1" not in call for call in wait_calls)
+        assert (
+            "talent.fail",
+            {
+                "mode": "segment",
+                "day": "20240115",
+                "segment": "120000_300",
+                "name": "documents",
+                "use_id": "lost-1",
+                "state": "request_lost",
+                "provider": None,
+                "model": None,
+                "stream": "default",
+            },
+        ) in jsonl_events
+        assert (
+            "talent_completed",
+            {
+                "mode": "segment",
+                "day": "20240115",
+                "segment": "120000_300",
+                "name": "documents",
+                "use_id": "lost-1",
+                "state": "request_lost",
+            },
+        ) in emitted_events
+
+
+class TestDispatchCortexRequest:
+    """Tests for _dispatch_cortex_request."""
+
+    def test_returns_use_id_on_success(self, monkeypatch):
         from solstone.think import thinking as think
 
         calls = []
@@ -1957,44 +2033,35 @@ class TestCortexRequestRetry:
 
         monkeypatch.setattr(think, "cortex_request", mock_cortex_request)
 
-        result = think._cortex_request_with_retry(prompt="hi", name="test")
+        result = think._dispatch_cortex_request(prompt="hi", name="test")
 
         assert result == "agent-1"
         assert len(calls) == 1
 
-    def test_succeeds_on_retry(self, monkeypatch):
+    def test_returns_none_when_spawn_unavailable(self, monkeypatch):
         from solstone.think import thinking as think
 
-        calls = []
-
         def mock_cortex_request(**kwargs):
-            calls.append(kwargs)
-            return None if len(calls) <= 1 else "agent-2"
+            raise think.CortexSpawnUnavailable(detail="FileNotFoundError")
 
         monkeypatch.setattr(think, "cortex_request", mock_cortex_request)
-        monkeypatch.setattr(think, "_SEND_RETRY_DELAYS", (0.0, 0.0))
 
-        result = think._cortex_request_with_retry(prompt="hi", name="test")
-
-        assert result == "agent-2"
-        assert len(calls) == 2
-
-    def test_returns_none_after_all_retries(self, monkeypatch):
-        from solstone.think import thinking as think
-
-        calls = []
-
-        def mock_cortex_request(**kwargs):
-            calls.append(kwargs)
-            return None
-
-        monkeypatch.setattr(think, "cortex_request", mock_cortex_request)
-        monkeypatch.setattr(think, "_SEND_RETRY_DELAYS", (0.0, 0.0))
-
-        result = think._cortex_request_with_retry(prompt="hi", name="test")
+        result = think._dispatch_cortex_request(prompt="hi", name="test")
 
         assert result is None
-        assert len(calls) == 3
+
+    def test_returns_not_claimed_sentinel(self, monkeypatch):
+        from solstone.think import thinking as think
+
+        def mock_cortex_request(**kwargs):
+            raise think.CortexNotClaimed(use_id="lost-1", detail="not claimed")
+
+        monkeypatch.setattr(think, "cortex_request", mock_cortex_request)
+
+        result = think._dispatch_cortex_request(prompt="hi", name="test")
+
+        assert isinstance(result, think._NotClaimed)
+        assert result.use_id == "lost-1"
 
 
 class TestStreamAutoResolution:

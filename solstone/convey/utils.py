@@ -130,7 +130,7 @@ def spawn_agent(
     provider: Optional[str] = None,
     config: Optional[dict[str, Any]] = None,
     use_id: Optional[str] = None,
-) -> str | None:
+) -> str:
     """Spawn a Cortex agent and return the use_id.
 
     Thin wrapper around cortex_request that ensures imports are handled
@@ -144,10 +144,12 @@ def spawn_agent(
         use_id: Optional pre-reserved Cortex use_id to reuse for the request
 
     Returns:
-        use_id string (timestamp-based), or None if the request could not be sent.
+        use_id string (timestamp-based).
 
     Raises:
         ValueError: If config is invalid
+        CortexSpawnUnavailable: If the request cannot reach Callosum
+        CortexNotClaimed: If Cortex does not durably claim the request
     """
     from solstone.think.cortex_client import cortex_request
 

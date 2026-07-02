@@ -1077,11 +1077,6 @@ def generate_description(facet_name: str) -> Any:
             prompt=prompt,
             name="entities:entity_describe",
         )
-        if use_id is None:
-            return error_response(
-                AGENT_UNAVAILABLE,
-                detail="Failed to connect to agent service",
-            )
 
         return jsonify({"success": True, "use_id": use_id})
 
@@ -1132,11 +1127,6 @@ def assist_add(facet_name: str) -> Any:
             prompt=prompt,
             name="entities:entity_assist",
         )
-        if use_id is None:
-            return error_response(
-                AGENT_UNAVAILABLE,
-                detail="Failed to connect to agent service",
-            )
 
         return jsonify({"success": True, "use_id": use_id})
 

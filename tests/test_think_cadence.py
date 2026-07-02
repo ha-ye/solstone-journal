@@ -62,7 +62,7 @@ def test_run_cadence_prompts_zero_talents_exits_without_state_write(
     monkeypatch.setattr(mod, "get_talent_configs", lambda schedule: {})
     monkeypatch.setattr(
         mod,
-        "_cortex_request_with_retry",
+        "_dispatch_cortex_request",
         lambda **kwargs: pytest.fail("cadence should not dispatch"),
     )
 
@@ -94,7 +94,7 @@ def test_run_cadence_prompts_fires_when_window_has_new_work(
         return "use-1"
 
     monkeypatch.setattr(mod, "read_completed_since", fake_completed_since)
-    monkeypatch.setattr(mod, "_cortex_request_with_retry", fake_request)
+    monkeypatch.setattr(mod, "_dispatch_cortex_request", fake_request)
     monkeypatch.setattr(
         mod,
         "_drain_priority_batch",
@@ -129,7 +129,7 @@ def test_run_cadence_prompts_noops_without_new_work(cadence_runtime, monkeypatch
     )
     monkeypatch.setattr(
         mod,
-        "_cortex_request_with_retry",
+        "_dispatch_cortex_request",
         lambda **kwargs: pytest.fail("cadence should not dispatch"),
     )
     monkeypatch.setattr(
@@ -159,7 +159,7 @@ def test_run_cadence_prompts_respects_per_talent_interval(cadence_runtime, monke
     )
     monkeypatch.setattr(
         mod,
-        "_cortex_request_with_retry",
+        "_dispatch_cortex_request",
         lambda **kwargs: pytest.fail("cadence should not dispatch"),
     )
 
@@ -178,7 +178,7 @@ def test_run_cadence_prompts_writes_back_only_on_success(cadence_runtime, monkey
     )
     monkeypatch.setattr(mod, "now_ms", lambda: NOW)
     monkeypatch.setattr(mod, "read_completed_since", lambda day, since_ms: _window())
-    monkeypatch.setattr(mod, "_cortex_request_with_retry", lambda **kwargs: "use-fail")
+    monkeypatch.setattr(mod, "_dispatch_cortex_request", lambda **kwargs: "use-fail")
     monkeypatch.setattr(
         mod,
         "_drain_priority_batch",
@@ -213,7 +213,7 @@ def test_run_cadence_prompts_missing_state_treats_talent_as_never_run(
     monkeypatch.setattr(mod, "read_completed_since", lambda day, since_ms: _window())
     monkeypatch.setattr(
         mod,
-        "_cortex_request_with_retry",
+        "_dispatch_cortex_request",
         lambda **kwargs: requests.append(kwargs) or "use-1",
     )
     monkeypatch.setattr(
@@ -251,7 +251,7 @@ def test_run_cadence_prompts_writeback_uses_window_read_time(
 
     monkeypatch.setattr(mod, "now_ms", fake_now_ms)
     monkeypatch.setattr(mod, "read_completed_since", lambda day, since_ms: _window())
-    monkeypatch.setattr(mod, "_cortex_request_with_retry", lambda **kwargs: "use-1")
+    monkeypatch.setattr(mod, "_dispatch_cortex_request", lambda **kwargs: "use-1")
     monkeypatch.setattr(mod, "_drain_priority_batch", fake_drain)
 
     assert mod.run_cadence_prompts(DAY, refresh=False, verbose=False) == (1, 0, [])

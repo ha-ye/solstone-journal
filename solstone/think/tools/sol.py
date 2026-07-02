@@ -18,6 +18,7 @@ from pathlib import Path
 import typer
 
 from solstone.think.cortex_client import (
+    CortexNotClaimed,
     CortexSpawnUnavailable,
     cortex_request,
     wait_for_uses,
@@ -227,7 +228,7 @@ def health_cmd(
                 name="steward",
                 config={"day": today, "output": "md", "refresh": True},
             )
-        except CortexSpawnUnavailable:
+        except (CortexSpawnUnavailable, CortexNotClaimed):
             use_id = None
         if use_id is None:
             typer.echo("Error: failed to send steward request to cortex.", err=True)

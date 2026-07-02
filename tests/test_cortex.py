@@ -126,6 +126,49 @@ def test_cortex_service_initialization(cortex_service, mock_journal):
     assert cortex_service.talents_dir.exists()
 
 
+def test_handle_request_dedups_existing_active_file(
+    cortex_service, mock_journal, monkeypatch
+):
+    """A re-broadcast with the same use_id must not spawn twice."""
+    spawn_calls = []
+
+    def fake_spawn_subprocess(use_id, file_path, request, cmd, process_type):
+        spawn_calls.append((use_id, file_path, request, cmd, process_type))
+
+    monkeypatch.setattr(cortex_service, "_spawn_subprocess", fake_spawn_subprocess)
+    request = {
+        "tract": "cortex",
+        "event": "request",
+        "use_id": "1713629000005",
+        "prompt": "Test prompt",
+        "provider": "openai",
+        "name": "chat",
+    }
+
+    cortex_service._handle_request(request)
+    cortex_service._handle_request(dict(request))
+
+    active_path = mock_journal / "talents" / "chat" / "1713629000005_active.jsonl"
+    assert active_path.exists()
+
+    cortex_service._spawn_worker = threading.Thread(
+        target=cortex_service._run_spawn_worker,
+        daemon=True,
+    )
+    cortex_service._spawn_worker.start()
+    assert _wait_until(
+        lambda: (
+            cortex_service.spawn_queue.qsize() == 0
+            and cortex_service._pending_spawns == 0
+        )
+    )
+    cortex_service.stop_event.set()
+    cortex_service._spawn_worker.join(timeout=1)
+
+    assert len(spawn_calls) == 1
+    assert spawn_calls[0][0] == "1713629000005"
+
+
 def test_cortex_installs_sigterm_handler():
     from solstone.think import cortex
 

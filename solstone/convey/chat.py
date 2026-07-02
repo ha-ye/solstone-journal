@@ -64,7 +64,7 @@ from solstone.convey.sol_initiated.copy import KIND_SOL_CHAT_REQUEST, SURFACE_CO
 from solstone.convey.utils import error_response
 from solstone.think.callosum import CallosumConnection, callosum_send
 from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_REASON_CODES
-from solstone.think.cortex_client import CortexSpawnUnavailable
+from solstone.think.cortex_client import CortexNotClaimed, CortexSpawnUnavailable
 from solstone.think.pipeline_health import SegmentBacklog, read_segment_backlog
 from solstone.think.processing import (
     ProcessingSettings,
@@ -979,7 +979,7 @@ def _spawn_chat_generate(action: dict[str, Any]) -> ChatSpawnResult:
         "chat_request_use_id": action["logical_use_id"],
     }
     try:
-        use_id = spawn_agent(
+        spawn_agent(
             prompt="",
             name="chat",
             provider=None,
@@ -992,8 +992,12 @@ def _spawn_chat_generate(action: dict[str, Any]) -> ChatSpawnResult:
             reason="chat_pipeline_unavailable",
             detail=exc.detail or "",
         )
-    if use_id is None:
-        return ChatSpawnResult(ok=False, reason="unknown")
+    except CortexNotClaimed as exc:
+        return ChatSpawnResult(
+            ok=False,
+            reason="chat_pipeline_unavailable",
+            detail=exc.detail or "",
+        )
     _emit_cortex_event("thinking", use_id=action["logical_use_id"], chat_proxy=True)
     return ChatSpawnResult(ok=True)
 
@@ -1029,7 +1033,7 @@ def _spawn_talent(action: dict[str, Any]) -> bool:
     }
     spawn_name = DISPATCH_SPAWN_NAMES.get(action["target"], action["target"])
     try:
-        use_id = spawn_agent(
+        spawn_agent(
             prompt=prompt,
             name=spawn_name,
             provider=None,
@@ -1038,7 +1042,7 @@ def _spawn_talent(action: dict[str, Any]) -> bool:
         )
     except CortexSpawnUnavailable:
         return False
-    if use_id is None:
+    except CortexNotClaimed:
         return False
     _emit_cortex_event("thinking", use_id=action["logical_use_id"], chat_proxy=True)
     return True

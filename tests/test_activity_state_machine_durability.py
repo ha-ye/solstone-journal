@@ -221,7 +221,7 @@ def test_run_segment_sense_emits_activity_events(tmp_path: Path, monkeypatch):
             "sense": {"priority": 10, "type": "generate", "output": "json"}
         },
     )
-    monkeypatch.setattr(think, "_cortex_request_with_retry", lambda **kwargs: "sense-1")
+    monkeypatch.setattr(think, "_dispatch_cortex_request", lambda **kwargs: "sense-1")
     monkeypatch.setattr(
         think, "_drain_priority_batch", lambda *args, **kwargs: (1, 0, [])
     )
