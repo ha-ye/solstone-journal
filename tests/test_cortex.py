@@ -6,7 +6,9 @@
 import json
 import os
 import signal
+import subprocess
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -36,6 +38,14 @@ class MockPipe:
         if self._iter is None:
             self._iter = iter(self._lines)
         return next(self._iter)
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 @pytest.fixture
@@ -449,6 +459,7 @@ def test_monitor_stdout_json_events(cortex_service, mock_journal):
 
     use_id = "123456789"
     log_path = mock_journal / "talents" / f"{use_id}_active.jsonl"
+    log_path.touch()
 
     mock_process = MagicMock()
     mock_process.poll.return_value = 0  # Process exits
@@ -495,6 +506,7 @@ def test_monitor_stdout_non_json_output(cortex_service, mock_journal):
 
     use_id = "123456789"
     log_path = mock_journal / "talents" / f"{use_id}_active.jsonl"
+    log_path.touch()
 
     mock_process = MagicMock()
     mock_process.poll.return_value = 0
@@ -526,6 +538,7 @@ def test_monitor_stdout_no_finish_event(cortex_service, mock_journal):
 
     use_id = "123456789"
     log_path = mock_journal / "talents" / f"{use_id}_active.jsonl"
+    log_path.touch()
 
     mock_process = MagicMock()
     mock_process.wait.return_value = 1  # Non-zero exit
@@ -548,7 +561,7 @@ def test_monitor_stdout_no_finish_event(cortex_service, mock_journal):
 
 
 def test_monitor_stderr(cortex_service, mock_journal):
-    """Test monitoring stderr for errors."""
+    """Test monitoring stderr collects trace without writing an event."""
     from io import StringIO
 
     from solstone.think.cortex import TalentProcess
@@ -566,16 +579,12 @@ def test_monitor_stderr(cortex_service, mock_journal):
 
     cortex_service._monitor_stderr(agent)
 
-    # Check error event was written
-    assert log_path.exists()
-    lines = log_path.read_text().strip().split("\n")
-    assert len(lines) == 1
-
-    error_event = json.loads(lines[0])
-    assert error_event["event"] == "error"
-    assert "trace" in error_event
-    assert "Error: Something went wrong" in error_event["trace"]
-    assert error_event["exit_code"] == 1
+    assert agent.stderr_lines == [
+        "Error: Something went wrong",
+        "Stack trace line 1",
+        "Stack trace line 2",
+    ]
+    assert not log_path.exists()
 
 
 def test_has_finish_event(cortex_service, mock_journal):
@@ -782,6 +791,306 @@ def test_write_error_and_complete(cortex_service, mock_journal):
     assert "ts" in error_event
 
 
+def test_watchdog_finalizes_hung_stdout_pipe(cortex_service, mock_journal):
+    """A grandchild-held stdout pipe is finalized by the watchdog."""
+    from solstone.think.cortex import TalentProcess
+    from solstone.think.cortex_client import get_use_end_state
+
+    use_id = "1234567891000"
+    day = "20260410"
+    talent_dir = mock_journal / "talents" / "chat"
+    talent_dir.mkdir()
+    active_path = talent_dir / f"{use_id}_active.jsonl"
+    request = {
+        "event": "request",
+        "use_id": use_id,
+        "ts": 1000,
+        "name": "chat",
+        "day": day,
+    }
+    active_path.write_text(json.dumps(request) + "\n", encoding="utf-8")
+
+    child_code = (
+        "import os, time\n"
+        'print(\'{"event":"start","ts":1001}\', flush=True)\n'
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    time.sleep(30)\n"
+        "    os._exit(0)\n"
+        "os._exit(0)\n"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", child_code],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        process_group=0,
+    )
+    agent = TalentProcess(use_id, process, active_path)
+    cortex_service.running_uses[use_id] = agent
+    cortex_service.use_requests[use_id] = request
+
+    monitor_done = threading.Event()
+    timeout_done = threading.Event()
+
+    def monitor_stdout():
+        try:
+            cortex_service._monitor_stdout(agent)
+        finally:
+            monitor_done.set()
+
+    def timeout_talent():
+        try:
+            cortex_service._timeout_talent(use_id, agent, 0.1)
+        finally:
+            timeout_done.set()
+
+    monitor = threading.Thread(target=monitor_stdout)
+    monitor.start()
+    agent.timeout_timer = threading.Timer(0.1, timeout_talent)
+    agent.timeout_timer.start()
+
+    completed = monitor_done.wait(5)
+    timeout_completed = timeout_done.wait(5)
+    if not completed:
+        agent.stop()
+    monitor.join(timeout=5)
+
+    assert completed
+    assert timeout_completed
+    assert not monitor.is_alive()
+    completed_path = talent_dir / f"{use_id}.jsonl"
+    assert completed_path.exists()
+    assert not active_path.exists()
+    assert use_id not in cortex_service.running_uses
+    assert get_use_end_state(use_id) == "error"
+    assert any(event.get("event") == "error" for event in _read_jsonl(completed_path))
+
+
+def test_timeout_finalize_claim_beats_late_stdout_cleanup(cortex_service, mock_journal):
+    """Timeout finalization wins once; later stdout cleanup is a no-op loser."""
+    from solstone.think.cortex import TalentProcess
+
+    use_id = "1234567891001"
+    day = "20260410"
+    talent_dir = mock_journal / "talents" / "chat"
+    talent_dir.mkdir()
+    active_path = talent_dir / f"{use_id}_active.jsonl"
+    request = {
+        "event": "request",
+        "use_id": use_id,
+        "ts": 1000,
+        "name": "chat",
+        "day": day,
+    }
+    active_path.write_text(json.dumps(request) + "\n", encoding="utf-8")
+
+    mock_process = MagicMock()
+    mock_process.pid = 24680
+    mock_process.wait.return_value = 0
+    mock_process.stdout = MockPipe([])
+    agent = TalentProcess(use_id, mock_process, active_path)
+    cortex_service.running_uses[use_id] = agent
+    cortex_service.use_requests[use_id] = request
+
+    with patch.object(agent, "_signal_process_group"):
+        cortex_service._timeout_talent(use_id, agent, 1)
+
+    completed_path = talent_dir / f"{use_id}.jsonl"
+    after_timeout = completed_path.read_bytes()
+    day_index = mock_journal / "talents" / f"{day}.jsonl"
+    assert len(day_index.read_text(encoding="utf-8").splitlines()) == 1
+
+    cortex_service._monitor_stdout(agent)
+
+    assert not active_path.exists()
+    assert completed_path.read_bytes() == after_timeout
+    summaries = [
+        json.loads(line)
+        for line in day_index.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert [summary["use_id"] for summary in summaries].count(use_id) == 1
+
+
+def test_monitor_stderr_after_completion_does_not_resurrect_active_log(
+    cortex_service, mock_journal
+):
+    """Late stderr collection after completion does not recreate active logs."""
+    from io import StringIO
+
+    from solstone.think.cortex import TalentProcess
+
+    use_id = "1234567891002"
+    talent_dir = mock_journal / "talents" / "chat"
+    talent_dir.mkdir()
+    active_path = talent_dir / f"{use_id}_active.jsonl"
+    active_path.write_text('{"event":"request","name":"chat"}\n', encoding="utf-8")
+    cortex_service.use_requests[use_id] = {"name": "chat"}
+    cortex_service._complete_use_file(use_id, active_path)
+
+    mock_process = MagicMock()
+    mock_process.stderr = StringIO("late stderr\n")
+    mock_process.poll.return_value = 1
+    agent = TalentProcess(use_id, mock_process, active_path)
+
+    cortex_service._monitor_stderr(agent)
+
+    assert not active_path.exists()
+    assert (talent_dir / f"{use_id}.jsonl").exists()
+    assert agent.stderr_lines == ["late stderr"]
+
+
+def test_nonzero_exit_with_stderr_writes_single_terminal_error(
+    cortex_service, mock_journal
+):
+    """Stdout finalizer writes the only terminal error and includes stderr trace."""
+    from io import StringIO
+
+    from solstone.think.cortex import TalentProcess
+
+    use_id = "1234567891003"
+    day = "20260410"
+    talent_dir = mock_journal / "talents" / "chat"
+    talent_dir.mkdir()
+    active_path = talent_dir / f"{use_id}_active.jsonl"
+    request = {
+        "event": "request",
+        "use_id": use_id,
+        "ts": 1000,
+        "name": "chat",
+        "day": day,
+    }
+    active_path.write_text(json.dumps(request) + "\n", encoding="utf-8")
+
+    mock_process = MagicMock()
+    mock_process.poll.return_value = 1
+    mock_process.wait.return_value = 1
+    mock_process.stderr = StringIO("stderr line 1\nstderr line 2\n")
+    mock_process.stdout = StringIO('{"event": "start", "ts": 1001}\n')
+    agent = TalentProcess(use_id, mock_process, active_path)
+    cortex_service.running_uses[use_id] = agent
+    cortex_service.use_requests[use_id] = request
+
+    cortex_service._monitor_stderr(agent)
+    cortex_service._monitor_stdout(agent)
+
+    completed_path = talent_dir / f"{use_id}.jsonl"
+    events = _read_jsonl(completed_path)
+    terminal_errors = [
+        event
+        for event in events
+        if event.get("event") == "error" and event.get("terminal", True)
+    ]
+    assert len(terminal_errors) == 1
+    assert terminal_errors[0]["trace"] == "stderr line 1\nstderr line 2"
+    assert terminal_errors[0]["exit_code"] == 1
+
+
+def test_spawn_failure_completes_and_clears_state(cortex_service, mock_journal):
+    """Spawn failures complete as errors and clear request/running state."""
+    use_id = "1234567891004"
+    active_path = mock_journal / "talents" / f"{use_id}_active.jsonl"
+    request = {"event": "request", "use_id": use_id, "name": "chat", "day": "20260410"}
+    active_path.write_text(json.dumps(request) + "\n", encoding="utf-8")
+
+    mock_process = MagicMock()
+    mock_process.stdin.write.side_effect = BrokenPipeError()
+    mock_process.pid = 12345
+
+    with patch("solstone.think.cortex.subprocess.Popen", return_value=mock_process):
+        cortex_service._spawn_subprocess(
+            use_id,
+            active_path,
+            request,
+            [sys.executable, "-m", "solstone.think.talents"],
+            "generate",
+        )
+
+    completed_path = mock_journal / "talents" / f"{use_id}.jsonl"
+    assert completed_path.exists()
+    assert use_id not in cortex_service.running_uses
+    assert use_id not in cortex_service.use_requests
+    mock_process.kill.assert_called_once()
+    mock_process.wait.assert_called_once_with(timeout=5)
+    assert any(event.get("event") == "error" for event in _read_jsonl(completed_path))
+
+    popen_use_id = "1234567891005"
+    popen_active_path = mock_journal / "talents" / f"{popen_use_id}_active.jsonl"
+    popen_request = {
+        "event": "request",
+        "use_id": popen_use_id,
+        "name": "chat",
+        "day": "20260410",
+    }
+    popen_active_path.write_text(json.dumps(popen_request) + "\n", encoding="utf-8")
+
+    with patch(
+        "solstone.think.cortex.subprocess.Popen", side_effect=OSError("spawn boom")
+    ):
+        cortex_service._spawn_subprocess(
+            popen_use_id,
+            popen_active_path,
+            popen_request,
+            [sys.executable, "-m", "solstone.think.talents"],
+            "generate",
+        )
+
+    popen_completed_path = mock_journal / "talents" / f"{popen_use_id}.jsonl"
+    assert popen_completed_path.exists()
+    assert popen_use_id not in cortex_service.running_uses
+    assert popen_use_id not in cortex_service.use_requests
+    assert any(
+        event.get("event") == "error" for event in _read_jsonl(popen_completed_path)
+    )
+
+
+def test_normal_completion_cancels_timeout_timer(
+    cortex_service, mock_journal, monkeypatch
+):
+    """A normally completed use cancels its timer before the watchdog fires."""
+    from io import StringIO
+
+    from solstone.think.cortex import TalentProcess
+
+    use_id = "1234567891006"
+    day = "20260410"
+    talent_dir = mock_journal / "talents" / "chat"
+    talent_dir.mkdir()
+    active_path = talent_dir / f"{use_id}_active.jsonl"
+    request = {
+        "event": "request",
+        "use_id": use_id,
+        "ts": 1000,
+        "name": "chat",
+        "day": day,
+    }
+    active_path.write_text(json.dumps(request) + "\n", encoding="utf-8")
+
+    fired = threading.Event()
+
+    def fake_timeout(*_args):
+        fired.set()
+
+    monkeypatch.setattr(cortex_service, "_timeout_talent", fake_timeout)
+
+    mock_process = MagicMock()
+    mock_process.stdout = StringIO('{"event": "finish", "ts": 1001}\n')
+    mock_process.wait.return_value = 0
+    agent = TalentProcess(use_id, mock_process, active_path)
+    cortex_service.running_uses[use_id] = agent
+    cortex_service.use_requests[use_id] = request
+    agent.timeout_timer = threading.Timer(
+        0.05, lambda: cortex_service._timeout_talent(use_id, agent, 0.05)
+    )
+    agent.timeout_timer.start()
+
+    cortex_service._monitor_stdout(agent)
+
+    assert not fired.wait(0.2)
+
+
 def test_get_status(cortex_service):
     """Test getting service status."""
     from solstone.think.cortex import TalentProcess
@@ -810,6 +1119,7 @@ def test_monitor_stdout_finish_prefers_model_version(cortex_service, mock_journa
 
     use_id = "model_version_test"
     active_path = mock_journal / "talents" / f"{use_id}_active.jsonl"
+    active_path.touch()
     cortex_service.use_requests = {
         use_id: {
             "event": "request",
@@ -860,6 +1170,7 @@ def test_monitor_stdout_finish_falls_back_to_request_model(
 
     use_id = "request_model_test"
     active_path = mock_journal / "talents" / f"{use_id}_active.jsonl"
+    active_path.touch()
     cortex_service.use_requests = {
         use_id: {
             "event": "request",
@@ -907,6 +1218,7 @@ def test_monitor_stdout_finish_generate_skips_token_logging(
 
     use_id = "generate_usage_test"
     active_path = mock_journal / "talents" / f"{use_id}_active.jsonl"
+    active_path.touch()
     cortex_service.use_requests = {
         use_id: {
             "event": "request",
@@ -963,6 +1275,7 @@ def test_monitor_stdout_terminal_error_logs_cogitate_usage_only(
 
     def run_terminal_event(use_id: str, request_type: str, event: dict):
         active_path = mock_journal / "talents" / f"{use_id}_active.jsonl"
+        active_path.touch()
         cortex_service.use_requests = {
             use_id: {
                 "event": "request",
@@ -1034,6 +1347,7 @@ def test_monitor_stdout_nonterminal_error_logs_terminal_stuck_usage(
 
     use_id = "nonterminal_error_then_stuck"
     active_path = mock_journal / "talents" / f"{use_id}_active.jsonl"
+    active_path.touch()
     usage = {
         "input_tokens": 10,
         "output_tokens": 5,
@@ -1095,6 +1409,7 @@ def test_monitor_stdout_nonterminal_error_logs_finish_usage_once(
 
     use_id = "nonterminal_error_then_finish"
     active_path = mock_journal / "talents" / f"{use_id}_active.jsonl"
+    active_path.touch()
     usage = {
         "input_tokens": 20,
         "output_tokens": 7,

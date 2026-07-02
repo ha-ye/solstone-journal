@@ -46,6 +46,11 @@ class TalentProcess:
         self.stop_event = threading.Event()
         self.timeout_timer = None  # For timeout support
         self.start_time = time.time()  # Track when agent started
+        self.stderr_lines: list[str] = []
+        try:
+            self.process_group_id: int | None = os.getpgid(process.pid)
+        except ProcessLookupError:
+            self.process_group_id = None
 
     def is_running(self) -> bool:
         """Check if the agent process is still running."""
@@ -59,31 +64,33 @@ class TalentProcess:
         if self.timeout_timer:
             self.timeout_timer.cancel()
 
-        if self.process.poll() is None:
-            # First try SIGTERM for graceful shutdown
+        # First try SIGTERM for graceful shutdown. Signal the process group even
+        # when the direct child has exited so live descendants release pipes.
+        try:
+            self.process.terminate()
+        except ProcessLookupError:
+            pass
+        self._signal_process_group(signal.SIGTERM)
+        try:
+            self.process.wait(timeout=10)  # Give more time for graceful shutdown
+        except subprocess.TimeoutExpired:
+            logging.getLogger(__name__).warning(
+                f"Talent {self.use_id} didn't stop gracefully, killing"
+            )
+            self._signal_process_group(signal.SIGKILL)
             try:
-                self.process.terminate()
+                self.process.kill()
             except ProcessLookupError:
                 pass
-            self._signal_process_group(signal.SIGTERM)
-            try:
-                self.process.wait(timeout=10)  # Give more time for graceful shutdown
-            except subprocess.TimeoutExpired:
-                logging.getLogger(__name__).warning(
-                    f"Talent {self.use_id} didn't stop gracefully, killing"
-                )
-                self._signal_process_group(signal.SIGKILL)
-                try:
-                    self.process.kill()
-                except ProcessLookupError:
-                    pass
-                self.process.wait()  # Ensure zombie is reaped
+            self.process.wait()  # Ensure zombie is reaped
 
     def _signal_process_group(self, sig: int) -> None:
-        try:
-            pgid = os.getpgid(self.process.pid)
-        except ProcessLookupError:
-            return
+        pgid = self.process_group_id
+        if pgid is None:
+            try:
+                pgid = os.getpgid(self.process.pid)
+            except ProcessLookupError:
+                return
         try:
             os.killpg(pgid, sig)
         except ProcessLookupError:
@@ -127,6 +134,74 @@ class CortexService:
         if exit_code is not None:
             event["exit_code"] = exit_code
         return event
+
+    def _claim_finalize(self, use_id: str) -> bool:
+        """Atomically claim finalization rights for a tracked talent use."""
+        with self.lock:
+            if use_id not in self.running_uses:
+                return False
+            del self.running_uses[use_id]
+            return True
+
+    def _clear_request(self, use_id: str) -> None:
+        """Clear stored request metadata after completion."""
+        with self.lock:
+            self.use_requests.pop(use_id, None)
+
+    def _append_use_event(
+        self, use_id: str, active_path: Path, event: Dict[str, Any]
+    ) -> bool:
+        """Append a use event without recreating a completed active log."""
+        line = json.dumps(event) + "\n"
+        try:
+            fd = os.open(active_path, os.O_WRONLY | os.O_APPEND)
+        except FileNotFoundError:
+            completed_path = active_path.parent / f"{use_id}.jsonl"
+            if completed_path.exists():
+                self.logger.info(
+                    "Dropping late %s event for completed use %s",
+                    event.get("event", "?"),
+                    use_id,
+                )
+            else:
+                self.logger.warning(
+                    "Use log missing for %s; dropping %s event",
+                    use_id,
+                    event.get("event", "?"),
+                )
+            return False
+        try:
+            os.write(fd, line.encode("utf-8"))
+        finally:
+            os.close(fd)
+        return True
+
+    def _abort_spawn(
+        self,
+        use_id: str,
+        file_path: Path,
+        process: subprocess.Popen | None,
+        error_message: str,
+    ) -> None:
+        """Abort a spawn failure and complete the use as an error."""
+        if process is not None:
+            # Spawn aborts only reap the direct child; group cleanup belongs to stop().
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+
+        with self.lock:
+            self.running_uses.pop(use_id, None)
+
+        self._write_error_and_complete(file_path, error_message)
+
+        with self.lock:
+            self.use_requests.pop(use_id, None)
 
     def _recover_orphaned_uses(self, active_files: list) -> None:
         """Recover orphaned active talent files from a previous crash.
@@ -254,17 +329,13 @@ class CortexService:
             self.use_requests[use_id] = request
 
         # Spawn talent process - it handles all validation/hydration
-        try:
-            self._spawn_subprocess(
-                use_id,
-                file_path,
-                request,
-                [sys.executable, "-m", TALENT_EXECUTION_MODULE],
-                "talent",
-            )
-        except Exception as e:
-            self.logger.exception(f"Failed to spawn talent {use_id}: {e}")
-            self._write_error_and_complete(file_path, f"Failed to spawn talent: {e}")
+        self._spawn_subprocess(
+            use_id,
+            file_path,
+            request,
+            [sys.executable, "-m", TALENT_EXECUTION_MODULE],
+            "talent",
+        )
 
     def _spawn_subprocess(
         self,
@@ -284,6 +355,8 @@ class CortexService:
             process_type: Label for logging ("talent")
         """
         try:
+            process: subprocess.Popen | None = None
+
             # Store the config for later use - thread safe
             with self.lock:
                 self.use_requests[use_id] = config
@@ -380,36 +453,39 @@ class CortexService:
 
         except Exception as e:
             self.logger.exception(f"Failed to spawn {process_type} {use_id}: {e}")
-            self._write_error_and_complete(
-                file_path, f"Failed to spawn {process_type}: {e}"
+            self._abort_spawn(
+                use_id,
+                file_path,
+                process,
+                f"Failed to spawn {process_type}: {e}",
             )
 
     def _timeout_talent(
         self, use_id: str, agent: TalentProcess, timeout_seconds: int
     ) -> None:
         """Handle talent timeout."""
-        if agent.is_running():
-            self.logger.warning(
-                f"Talent {use_id} timed out after {timeout_seconds} seconds"
-            )
-            error_event = self._create_error_event(
-                use_id, f"Talent timed out after {timeout_seconds} seconds"
-            )
-            try:
-                with open(agent.log_path, "a") as f:
-                    f.write(json.dumps(error_event) + "\n")
-            except Exception as e:
-                self.logger.error(f"Failed to write timeout event: {e}")
+        if not self._claim_finalize(use_id):
+            return
 
-            # Broadcast to callosum so wait_for_uses detects immediately
-            try:
-                event_copy = error_event.copy()
-                event_type = event_copy.pop("event", "error")
-                self.callosum.emit("cortex", event_type, **event_copy)
-            except Exception:
-                pass
+        self.logger.warning(
+            f"Talent {use_id} timed out after {timeout_seconds} seconds"
+        )
+        error_event = self._create_error_event(
+            use_id, f"Talent timed out after {timeout_seconds} seconds"
+        )
+        self._append_use_event(use_id, agent.log_path, error_event)
 
-            agent.stop()
+        # Broadcast to callosum so wait_for_uses detects immediately
+        try:
+            event_copy = error_event.copy()
+            event_type = event_copy.pop("event", "error")
+            self.callosum.emit("cortex", event_type, **event_copy)
+        except Exception:
+            pass
+
+        agent.stop()
+        self._complete_use_file(use_id, agent.log_path)
+        self._clear_request(use_id)
 
     def _monitor_stdout(self, agent: TalentProcess) -> None:
         """Monitor talent stdout and append events to the JSONL file."""
@@ -445,8 +521,7 @@ class CortexService:
                             event["day"] = _req.get("day", "")
 
                         # Append to JSONL file
-                        with open(agent.log_path, "a") as f:
-                            f.write(json.dumps(event) + "\n")
+                        self._append_use_event(agent.use_id, agent.log_path, event)
 
                         # Broadcast event to Callosum
                         try:
@@ -529,8 +604,7 @@ class CortexService:
                             "message": line,
                             "use_id": agent.use_id,
                         }
-                        with open(agent.log_path, "a") as f:
-                            f.write(json.dumps(info_event) + "\n")
+                        self._append_use_event(agent.use_id, agent.log_path, info_event)
 
         except Exception as e:
             self.logger.error(f"Error monitoring stdout for agent {agent.use_id}: {e}")
@@ -538,6 +612,12 @@ class CortexService:
             # Wait for process to fully exit (reaps zombie)
             exit_code = agent.process.wait()
             self.logger.info(f"Talent {agent.use_id} exited with code {exit_code}")
+
+            if agent.timeout_timer:
+                agent.timeout_timer.cancel()
+
+            if not self._claim_finalize(agent.use_id):
+                return
 
             # Check if finish event was emitted
             has_finish = self._has_finish_event(agent.log_path)
@@ -547,28 +627,20 @@ class CortexService:
                 error_event = self._create_error_event(
                     agent.use_id,
                     f"Talent exited with code {exit_code} without finish event",
+                    trace="\n".join(agent.stderr_lines) or None,
                     exit_code=exit_code,
                 )
-                with open(agent.log_path, "a") as f:
-                    f.write(json.dumps(error_event) + "\n")
+                self._append_use_event(agent.use_id, agent.log_path, error_event)
 
             # Complete the file (rename from _active.jsonl to .jsonl)
             self._complete_use_file(agent.use_id, agent.log_path)
-
-            # Remove from running agents and clean up stored request (thread-safe)
-            with self.lock:
-                if agent.use_id in self.running_uses:
-                    del self.running_uses[agent.use_id]
-                # Clean up stored request
-                if agent.use_id in self.use_requests:
-                    del self.use_requests[agent.use_id]
+            self._clear_request(agent.use_id)
 
     def _monitor_stderr(self, agent: TalentProcess) -> None:
         """Monitor talent stderr for errors."""
         if not agent.process.stderr:
             return
 
-        stderr_lines = []
         try:
             with agent.process.stderr:
                 for line in agent.process.stderr:
@@ -576,7 +648,7 @@ class CortexService:
                         continue
                     stripped = line.strip()
                     if stripped:
-                        stderr_lines.append(stripped)
+                        agent.stderr_lines.append(stripped)
                         # Pass through to cortex stderr with talent prefix for traceability
                         print(
                             f"[talent:{agent.use_id}:stderr] {stripped}",
@@ -586,22 +658,6 @@ class CortexService:
 
         except Exception as e:
             self.logger.error(f"Error monitoring stderr for agent {agent.use_id}: {e}")
-        finally:
-            # If process failed with stderr output, write error event
-            if stderr_lines:
-                exit_code = agent.process.poll()
-                if exit_code is not None and exit_code != 0:
-                    error_event = self._create_error_event(
-                        agent.use_id,
-                        "Process failed with stderr output",
-                        trace="\n".join(stderr_lines),
-                        exit_code=exit_code,
-                    )
-                    try:
-                        with open(agent.log_path, "a") as f:
-                            f.write(json.dumps(error_event) + "\n")
-                    except Exception as e:
-                        self.logger.warning(f"Failed to write stderr event: {e}")
 
     def _has_finish_event(self, file_path: Path) -> bool:
         """Check if the JSONL file contains a finish or terminal error event."""
@@ -787,8 +843,7 @@ class CortexService:
         try:
             use_id = file_path.stem.replace("_active", "")
             error_event = self._create_error_event(use_id, error_message)
-            with open(file_path, "a") as f:
-                f.write(json.dumps(error_event) + "\n")
+            self._append_use_event(use_id, file_path, error_event)
 
             # Complete the file
             self._complete_use_file(use_id, file_path)
