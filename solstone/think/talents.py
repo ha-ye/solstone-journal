@@ -19,6 +19,7 @@ import errno
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import traceback
@@ -868,6 +869,38 @@ def _write_output(output_path: Path, result: str) -> bool:
     return True
 
 
+_MD_FENCE_LINE = re.compile(r"^```[A-Za-z0-9_-]*$")
+
+
+def _strip_outer_markdown_fence(text: str) -> tuple[str, bool]:
+    """Strip a single whole-output code fence wrapping markdown text.
+
+    Returns (text, stripped). Only strips when the output is wrapped as a
+    whole in exactly one outer fence: the opener is the first non-whitespace
+    line (```  or ```lang) and the closer is the last non-whitespace line and
+    is a bare ```. Requires the opener and closer to be the ONLY fence-delimiter
+    lines in the output, so an interior code block never triggers a strip.
+    On any non-match returns the original text unchanged with stripped=False.
+    """
+    lines = text.split("\n")
+    fence_indices = [
+        index for index, line in enumerate(lines) if _MD_FENCE_LINE.match(line.strip())
+    ]
+    if len(fence_indices) != 2:
+        return text, False
+
+    opener_idx, closer_idx = fence_indices
+    if any(line.strip() for line in lines[:opener_idx]):
+        return text, False
+    if any(line.strip() for line in lines[closer_idx + 1 :]):
+        return text, False
+    if lines[closer_idx].strip() != "```":
+        return text, False
+
+    interior = "\n".join(lines[opener_idx + 1 : closer_idx])
+    return interior, True
+
+
 def _build_generation_contents(config: dict) -> list[Any]:
     messages = config.get("messages")
     if messages and isinstance(messages, list):
@@ -1503,6 +1536,16 @@ async def _execute_generate(
             config["health_stale"] = False
 
     raw_result = gen_result["text"]
+    if output_format == "md":
+        stripped_text, fence_stripped = _strip_outer_markdown_fence(raw_result)
+        if fence_stripped:
+            LOG.info(
+                "Stripped whole-output markdown fence from talent %s (day=%s, schedule=%s)",
+                name,
+                config.get("day"),
+                config.get("schedule"),
+            )
+            raw_result = stripped_text
     usage_data = gen_result.get("usage")
 
     # Run post-hooks
