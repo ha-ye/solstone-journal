@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -46,6 +47,33 @@ def _read_jsonl(path: Path) -> list[dict]:
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+
+
+def _cortex_request(use_id: str, name: str = "chat") -> dict:
+    return {
+        "tract": "cortex",
+        "event": "request",
+        "use_id": use_id,
+        "name": name,
+        "day": "20260410",
+    }
+
+
+def _active_path(journal_path: Path, use_id: str, name: str = "chat") -> Path:
+    return journal_path / "talents" / name.replace(":", "--") / f"{use_id}_active.jsonl"
+
+
+def _completed_path(journal_path: Path, use_id: str, name: str = "chat") -> Path:
+    return journal_path / "talents" / name.replace(":", "--") / f"{use_id}.jsonl"
+
+
+def _wait_until(predicate, timeout: float = 2.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
 
 
 @pytest.fixture
@@ -449,6 +477,216 @@ def test_spawn_subprocess_skips_talent_meta_for_generate(
 
     mock_get_agent.assert_not_called()
     assert mock_timer.call_args.args[0] == 600
+
+
+def test_slow_spawn_does_not_block_request_callback(cortex_service, mock_journal):
+    """AC1: a blocked spawn worker does not block later request claims."""
+    block = threading.Event()
+    started = threading.Event()
+    spawned: list[str] = []
+
+    def slow_spawn(use_id, *_args):
+        spawned.append(use_id)
+        started.set()
+        block.wait(timeout=5)
+
+    with patch.object(cortex_service, "_spawn_subprocess", side_effect=slow_spawn):
+        cortex_service._spawn_worker = threading.Thread(
+            target=cortex_service._run_spawn_worker,
+            daemon=True,
+        )
+        cortex_service._spawn_worker.start()
+
+        cortex_service._handle_callosum_message(_cortex_request("slow_1"))
+        assert started.wait(1)
+
+        before = time.monotonic()
+        cortex_service._handle_callosum_message(_cortex_request("slow_2"))
+        elapsed = time.monotonic() - before
+
+        assert elapsed < 0.5
+        assert _active_path(mock_journal, "slow_2").exists()
+        assert cortex_service.spawn_queue.qsize() >= 1
+        assert spawned == ["slow_1"]
+
+        cortex_service.stop_event.set()
+        block.set()
+        cortex_service._spawn_worker.join(timeout=1)
+
+
+def test_claim_latency_independent_of_queue_depth(cortex_service, mock_journal):
+    """AC2: request handling claims and queues without spawning inline."""
+    with patch.object(cortex_service, "_spawn_subprocess") as mock_spawn:
+        cortex_service._handle_callosum_message(_cortex_request("claim_only"))
+
+    assert _active_path(mock_journal, "claim_only").exists()
+    assert cortex_service.spawn_queue.qsize() == 1
+    mock_spawn.assert_not_called()
+
+
+def test_spawn_worker_processes_fifo(cortex_service):
+    """AC3: the dedicated worker drains queued spawns in arrival order."""
+    use_ids = ["fifo_1", "fifo_2", "fifo_3"]
+    spawned: list[str] = []
+
+    with patch.object(
+        cortex_service,
+        "_spawn_subprocess",
+        side_effect=lambda use_id, *_args: spawned.append(use_id),
+    ):
+        for use_id in use_ids:
+            cortex_service._handle_callosum_message(_cortex_request(use_id))
+
+        cortex_service._spawn_worker = threading.Thread(
+            target=cortex_service._run_spawn_worker,
+            daemon=True,
+        )
+        cortex_service._spawn_worker.start()
+
+        assert _wait_until(
+            lambda: (
+                cortex_service.spawn_queue.qsize() == 0
+                and cortex_service._pending_spawns == 0
+            )
+        )
+        cortex_service.stop_event.set()
+        cortex_service._spawn_worker.join(timeout=1)
+
+    assert spawned == use_ids
+
+
+def test_duplicate_claim_is_not_enqueued_twice(cortex_service, mock_journal):
+    """AC4: duplicate use_ids preserve the single active-file claim semantics."""
+    use_id = "dedup_1"
+    cortex_service._handle_callosum_message(_cortex_request(use_id))
+    cortex_service._handle_callosum_message(_cortex_request(use_id))
+
+    assert _active_path(mock_journal, use_id).exists()
+    assert len(list((mock_journal / "talents" / "chat").glob("*_active.jsonl"))) == 1
+    assert cortex_service.spawn_queue.qsize() == 1
+    assert cortex_service._pending_spawns == 1
+
+    with patch.object(cortex_service, "_spawn_subprocess") as mock_spawn:
+        cortex_service._spawn_worker = threading.Thread(
+            target=cortex_service._run_spawn_worker,
+            daemon=True,
+        )
+        cortex_service._spawn_worker.start()
+
+        assert _wait_until(
+            lambda: (
+                cortex_service.spawn_queue.qsize() == 0
+                and cortex_service._pending_spawns == 0
+            )
+        )
+        cortex_service.stop_event.set()
+        cortex_service._spawn_worker.join(timeout=1)
+
+    mock_spawn.assert_called_once()
+
+
+def test_spawn_worker_isolates_per_item_failures(cortex_service, mock_journal):
+    """AC5: one unexpected spawn failure terminalizes that use and keeps draining."""
+    spawned: list[str] = []
+
+    def spawn_or_raise(use_id, *_args):
+        if use_id == "bad":
+            raise RuntimeError("boom")
+        spawned.append(use_id)
+
+    with patch.object(cortex_service, "_spawn_subprocess", side_effect=spawn_or_raise):
+        cortex_service._spawn_worker = threading.Thread(
+            target=cortex_service._run_spawn_worker,
+            daemon=True,
+        )
+        cortex_service._spawn_worker.start()
+
+        cortex_service._handle_callosum_message(_cortex_request("bad"))
+        cortex_service._handle_callosum_message(_cortex_request("good"))
+
+        assert _wait_until(
+            lambda: (
+                cortex_service.spawn_queue.qsize() == 0
+                and cortex_service._pending_spawns == 0
+            )
+        )
+
+        completed = _completed_path(mock_journal, "bad")
+        assert completed.exists()
+        assert not _active_path(mock_journal, "bad").exists()
+        assert any(event.get("event") == "error" for event in _read_jsonl(completed))
+        assert spawned == ["good"]
+        assert cortex_service._spawn_worker.is_alive()
+
+        cortex_service.stop_event.set()
+        cortex_service._spawn_worker.join(timeout=1)
+
+
+def test_idle_predicate_includes_pending_spawns(cortex_service):
+    """AC6: idle is false while a claimed request is queued for spawn."""
+    cortex_service._handle_callosum_message(_cortex_request("idle_1"))
+
+    assert not cortex_service._is_idle()
+    assert not cortex_service._is_idle()
+    assert cortex_service.spawn_queue.qsize() == 1
+    assert cortex_service._pending_spawns == 1
+
+    cortex_service.spawn_queue.get_nowait()
+    with cortex_service.lock:
+        cortex_service._pending_spawns -= 1
+
+    assert cortex_service._is_idle()
+    assert cortex_service._is_idle()
+    assert cortex_service.spawn_queue.qsize() == 0
+    assert cortex_service._pending_spawns == 0
+
+
+def test_stop_terminalizes_queued_claims(cortex_service, mock_journal):
+    """AC7: stopping drains queued claims after the worker exits."""
+    use_ids = ["stop_1", "stop_2", "stop_3"]
+    for use_id in use_ids:
+        cortex_service._handle_callosum_message(_cortex_request(use_id))
+
+    assert cortex_service.spawn_queue.qsize() == 3
+
+    before = time.monotonic()
+    cortex_service.stop()
+    elapsed = time.monotonic() - before
+
+    assert elapsed < 1
+    assert cortex_service.spawn_queue.qsize() == 0
+    assert cortex_service._pending_spawns == 0
+    for use_id in use_ids:
+        active = _active_path(mock_journal, use_id)
+        completed = _completed_path(mock_journal, use_id)
+        assert not active.exists()
+        assert completed.exists()
+        assert any(event.get("event") == "error" for event in _read_jsonl(completed))
+
+
+def test_emit_status_once_includes_queue_depth(cortex_service):
+    """AC8: status emits queue_depth for queued work and stays quiet when idle."""
+    cortex_service._handle_callosum_message(_cortex_request("status_1"))
+    cortex_service._handle_callosum_message(_cortex_request("status_2"))
+    cortex_service.callosum = MagicMock()
+
+    cortex_service._emit_status_once()
+
+    cortex_service.callosum.emit.assert_called_once()
+    assert cortex_service.callosum.emit.call_args.args[:2] == ("cortex", "status")
+    assert cortex_service.callosum.emit.call_args.kwargs["running_uses"] == 0
+    assert cortex_service.callosum.emit.call_args.kwargs["uses"] == []
+    assert cortex_service.callosum.emit.call_args.kwargs["queue_depth"] == 2
+
+    while cortex_service.spawn_queue.qsize():
+        cortex_service.spawn_queue.get_nowait()
+        with cortex_service.lock:
+            cortex_service._pending_spawns -= 1
+    cortex_service.callosum.emit.reset_mock()
+
+    cortex_service._emit_status_once()
+
+    cortex_service.callosum.emit.assert_not_called()
 
 
 def test_monitor_stdout_json_events(cortex_service, mock_journal):

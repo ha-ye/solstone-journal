@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
 import signal
 import subprocess
 import sys
@@ -111,6 +112,9 @@ class CortexService:
         self.lock = threading.RLock()
         self.stop_event = threading.Event()
         self.shutdown_requested = threading.Event()
+        self.spawn_queue: queue.Queue = queue.Queue()
+        self._pending_spawns: int = 0
+        self._spawn_worker: threading.Thread | None = None
 
         # Callosum connection for receiving requests and broadcasting events
         self.callosum = CallosumConnection(defaults={"rev": get_rev()})
@@ -251,6 +255,12 @@ class CortexService:
             name="cortex-status",
             daemon=True,
         ).start()
+        self._spawn_worker = threading.Thread(
+            target=self._run_spawn_worker,
+            name="cortex-spawn-worker",
+            daemon=True,
+        )
+        self._spawn_worker.start()
 
         self.logger.info("Cortex service started, listening for talent requests")
 
@@ -260,12 +270,11 @@ class CortexService:
                     time.sleep(1)
                     # Exit when idle during shutdown
                     if self.shutdown_requested.is_set():
-                        with self.lock:
-                            if len(self.running_uses) == 0:
-                                self.logger.info(
-                                    "No talent uses running, exiting gracefully"
-                                )
-                                return
+                        if self._is_idle():
+                            self.logger.info(
+                                "No talent uses running, exiting gracefully"
+                            )
+                            return
                 break
             except KeyboardInterrupt:
                 self.logger.info("Shutdown requested, will exit when idle")
@@ -324,18 +333,46 @@ class CortexService:
 
         self.logger.info(f"Processing talent request: {use_id}")
 
-        # Store request for later use (output writing)
         with self.lock:
             self.use_requests[use_id] = request
-
-        # Spawn talent process - it handles all validation/hydration
-        self._spawn_subprocess(
-            use_id,
-            file_path,
-            request,
-            [sys.executable, "-m", TALENT_EXECUTION_MODULE],
-            "talent",
+            self._pending_spawns += 1
+        self.spawn_queue.put(
+            {"use_id": use_id, "file_path": file_path, "request": request}
         )
+
+    def _run_spawn_worker(self) -> None:
+        """Drain the spawn queue on a single dedicated thread (FIFO)."""
+        while not self.stop_event.is_set():
+            try:
+                item = self.spawn_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            use_id = item["use_id"]
+            file_path = item["file_path"]
+            request = item["request"]
+            try:
+                self._spawn_subprocess(
+                    use_id,
+                    file_path,
+                    request,
+                    [sys.executable, "-m", TALENT_EXECUTION_MODULE],
+                    "talent",
+                )
+            except Exception as e:
+                # `_spawn_subprocess` handles its own failures via `_abort_spawn`;
+                # this backstop only fires on a truly unexpected escape. Terminalize
+                # THIS use and keep the loop alive.
+                self.logger.exception(f"Spawn worker error for {use_id}: {e}")
+                self._abort_spawn(use_id, file_path, None, f"Spawn worker error: {e}")
+            finally:
+                with self.lock:
+                    self._pending_spawns -= 1
+                self.spawn_queue.task_done()
+
+    def _is_idle(self) -> bool:
+        """True when nothing is running, queued, or mid-spawn on the worker."""
+        with self.lock:
+            return not self.running_uses and self._pending_spawns == 0
 
     def _spawn_subprocess(
         self,
@@ -854,9 +891,26 @@ class CortexService:
         """Stop the Cortex service."""
         self.stop_event.set()
 
-        # Close Callosum connection
         if self.callosum:
             self.callosum.stop()
+
+        # Let the spawn worker finish its current item and exit (~2s bound; the
+        # worker's 0.5s get-timeout guarantees it observes stop_event promptly).
+        if self._spawn_worker is not None:
+            self._spawn_worker.join(timeout=2.0)
+
+        # Terminalize any claims still queued. The worker has exited, so no other
+        # thread pulls these concurrently.
+        while True:
+            try:
+                item = self.spawn_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._abort_spawn(
+                item["use_id"], item["file_path"], None, "Cortex stopped before spawn"
+            )
+            with self.lock:
+                self._pending_spawns -= 1
 
         # Stop all running talent uses
         with self.lock:
@@ -867,33 +921,36 @@ class CortexService:
         """Emit status events every 5 seconds (runs in background thread)."""
         while not self.stop_event.is_set():
             try:
-                with self.lock:
-                    uses = []
-                    for use_id, agent_proc in self.running_uses.items():
-                        config = self.use_requests.get(use_id, {})
-                        uses.append(
-                            {
-                                "use_id": use_id,
-                                "name": config.get("name", "unknown"),
-                                "provider": config.get("provider", "unknown"),
-                                "elapsed_seconds": int(
-                                    time.time() - agent_proc.start_time
-                                ),
-                            }
-                        )
-
-                # Only emit status when there are active talent uses
-                if uses:
-                    self.callosum.emit(
-                        "cortex",
-                        "status",
-                        running_uses=len(uses),
-                        uses=uses,
-                    )
+                self._emit_status_once()
             except Exception as e:
                 self.logger.debug(f"Status emission failed: {e}")
 
             time.sleep(5)
+
+    def _emit_status_once(self) -> None:
+        with self.lock:
+            uses = [
+                {
+                    "use_id": use_id,
+                    "name": self.use_requests.get(use_id, {}).get("name", "unknown"),
+                    "provider": self.use_requests.get(use_id, {}).get(
+                        "provider", "unknown"
+                    ),
+                    "elapsed_seconds": int(time.time() - agent_proc.start_time),
+                }
+                for use_id, agent_proc in self.running_uses.items()
+            ]
+        queue_depth = self.spawn_queue.qsize()
+        # Emit when work is running OR queued, so a backlog with nothing yet
+        # spawned is still observable (the point of surfacing depth).
+        if uses or queue_depth > 0:
+            self.callosum.emit(
+                "cortex",
+                "status",
+                running_uses=len(uses),
+                uses=uses,
+                queue_depth=queue_depth,
+            )
 
     def get_status(self) -> Dict[str, Any]:
         """Get service status information."""
