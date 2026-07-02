@@ -101,6 +101,37 @@ def test_cuda_binary_paths_include_index_digest(tmp_path, monkeypatch):
     )
 
 
+@pytest.mark.parametrize(
+    ("arch", "expected_cpu", "unexpected_cpu", "cpu_count"),
+    [
+        ("amd64", "libggml-cpu-haswell.so", "libggml-cpu-armv8.0_1.so", 14),
+        ("arm64", "libggml-cpu-armv8.0_1.so", "libggml-cpu-haswell.so", 8),
+    ],
+)
+def test_cuda_server_pin_wanted_files_are_arch_specific(
+    arch: str,
+    expected_cpu: str,
+    unexpected_cpu: str,
+    cpu_count: int,
+) -> None:
+    wanted_files = local_install.CUDA_SERVER_PIN.wanted_files_for_arch(arch)
+    cpu_files = [name for name in wanted_files if name.startswith("libggml-cpu-")]
+
+    assert "llama-server" in wanted_files
+    assert "libcudart.so.13" in wanted_files
+    assert "libcublas.so.13" in wanted_files
+    assert expected_cpu in wanted_files
+    assert unexpected_cpu not in wanted_files
+    assert len(cpu_files) == cpu_count
+
+
+def test_cuda_server_pin_wanted_files_reject_unknown_arch() -> None:
+    with pytest.raises(local_install.LocalProviderError) as exc_info:
+        local_install.CUDA_SERVER_PIN.wanted_files_for_arch("ppc64le")
+
+    assert exc_info.value.reason_code == "unsupported_platform"
+
+
 def test_llama_server_pins_cover_expected_platforms() -> None:
     pins = local_install.LLAMA_SERVER_PINS
     # macOS arm64 (Metal) + both Linux arches on the cross-vendor Vulkan build.
@@ -237,10 +268,25 @@ def test_install_llama_server_writes_canonical_sequence(tmp_path, monkeypatch):
     assert "state" not in slot
 
 
-def test_install_llama_server_cuda_uses_oci_without_metadata(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("machine", "arch", "expected_cpu", "unexpected_cpu"),
+    [
+        ("x86_64", "amd64", "libggml-cpu-haswell.so", "libggml-cpu-armv8.0_1.so"),
+        ("arm64", "arm64", "libggml-cpu-armv8.0_1.so", "libggml-cpu-haswell.so"),
+    ],
+)
+def test_install_llama_server_cuda_uses_arch_specific_oci_wanted_files(
+    tmp_path,
+    monkeypatch,
+    machine: str,
+    arch: str,
+    expected_cpu: str,
+    unexpected_cpu: str,
+):
     from solstone.think.providers import oci_image
 
     _init_journal(tmp_path, monkeypatch)
+    monkeypatch.setattr(local_install.platform, "machine", lambda: machine)
     monkeypatch.setattr(
         local_cuda,
         "resolve_local_backend",
@@ -274,15 +320,18 @@ def test_install_llama_server_cuda_uses_oci_without_metadata(tmp_path, monkeypat
 
     result = local_install.install_llama_server()
 
+    wanted_files = local_install.CUDA_SERVER_PIN.wanted_files_for_arch(arch)
     assert result["install_state"] == "installed"
     assert pull_calls == [
         (
             local_install.CUDA_SERVER_PIN.image_ref,
-            local_install._oci_arch(),
-            local_install.CUDA_SERVER_PIN.wanted_files,
+            arch,
+            wanted_files,
             local_install.cuda_binary_dir(),
         )
     ]
+    assert expected_cpu in pull_calls[0][2]
+    assert unexpected_cpu not in pull_calls[0][2]
     assert metadata_calls == []
     assert local_install.cuda_binary_path().stat().st_mode & 0o111
 
@@ -645,6 +694,9 @@ def test_inspect_readiness_cuda_uses_sidecar_full_set(
 
     readiness = local_install.inspect_readiness(LOCAL_MODEL)
 
+    wanted_files = local_install.CUDA_SERVER_PIN.wanted_files_for_arch(
+        local_install._oci_arch()
+    )
     assert readiness["backend"] == "cuda"
     assert readiness["backend_reason"] == "test cuda"
     assert readiness["binary_path"] == str(binary)
@@ -655,7 +707,7 @@ def test_inspect_readiness_cuda_uses_sidecar_full_set(
         (
             local_install.CUDA_SERVER_PIN.image_ref,
             local_install._oci_arch(),
-            local_install.CUDA_SERVER_PIN.wanted_files,
+            wanted_files,
             local_install.cuda_binary_dir(),
         )
     ]

@@ -62,7 +62,17 @@ class CudaServerPin:
     binary_name: str
     device_flag_value: str
     visible_devices_env: str
-    wanted_files: tuple[str, ...]
+    shared_wanted_files: tuple[str, ...]
+    cpu_wanted_files_by_arch: dict[str, tuple[str, ...]]
+
+    def wanted_files_for_arch(self, arch: str) -> tuple[str, ...]:
+        cpu_wanted_files = self.cpu_wanted_files_by_arch.get(arch)
+        if cpu_wanted_files is None:
+            raise LocalProviderError(
+                "unsupported_platform",
+                f"No CUDA wanted-files set for OCI architecture {arch}",
+            )
+        return self.shared_wanted_files + cpu_wanted_files
 
 
 @dataclass(frozen=True)
@@ -110,9 +120,7 @@ CUDA_SERVER_PIN = CudaServerPin(
     # TODO(AC10): confirm CUDA device flag + visible-devices env on the CUDA build.
     device_flag_value="CUDA0",
     visible_devices_env="CUDA_VISIBLE_DEVICES",
-    # TODO(AC10): confirm full lib closure (esp. runtime-dlopen'd
-    # libggml-cpu-*.so + host libs) via ldd/startup on hardware.
-    wanted_files=(
+    shared_wanted_files=(
         "llama-server",
         "libllama-server-impl.so",
         "libllama-common.so.0",
@@ -124,21 +132,37 @@ CUDA_SERVER_PIN = CudaServerPin(
         "libcudart.so.13",
         "libcublas.so.13",
         "libcublasLt.so.13",
-        "libggml-cpu-x64.so",
-        "libggml-cpu-sse42.so",
-        "libggml-cpu-sandybridge.so",
-        "libggml-cpu-ivybridge.so",
-        "libggml-cpu-piledriver.so",
-        "libggml-cpu-haswell.so",
-        "libggml-cpu-skylakex.so",
-        "libggml-cpu-cannonlake.so",
-        "libggml-cpu-cascadelake.so",
-        "libggml-cpu-icelake.so",
-        "libggml-cpu-cooperlake.so",
-        "libggml-cpu-zen4.so",
-        "libggml-cpu-alderlake.so",
-        "libggml-cpu-sapphirerapids.so",
     ),
+    # Keep the CPU dispatcher libs explicit per upstream image arch. The CUDA
+    # runtime libs share basenames; only the libggml-cpu-* variants differ.
+    cpu_wanted_files_by_arch={
+        "amd64": (
+            "libggml-cpu-x64.so",
+            "libggml-cpu-sse42.so",
+            "libggml-cpu-sandybridge.so",
+            "libggml-cpu-ivybridge.so",
+            "libggml-cpu-piledriver.so",
+            "libggml-cpu-haswell.so",
+            "libggml-cpu-skylakex.so",
+            "libggml-cpu-cannonlake.so",
+            "libggml-cpu-cascadelake.so",
+            "libggml-cpu-icelake.so",
+            "libggml-cpu-cooperlake.so",
+            "libggml-cpu-zen4.so",
+            "libggml-cpu-alderlake.so",
+            "libggml-cpu-sapphirerapids.so",
+        ),
+        "arm64": (
+            "libggml-cpu-armv8.0_1.so",
+            "libggml-cpu-armv8.2_1.so",
+            "libggml-cpu-armv8.2_2.so",
+            "libggml-cpu-armv8.2_3.so",
+            "libggml-cpu-armv8.6_1.so",
+            "libggml-cpu-armv8.6_2.so",
+            "libggml-cpu-armv9.2_1.so",
+            "libggml-cpu-armv9.2_2.so",
+        ),
+    },
 )
 
 
@@ -466,13 +490,15 @@ def _install_cuda_llama_server() -> dict[str, Any]:
     from solstone.think.providers import oci_image
 
     try:
+        arch = _oci_arch()
+        wanted_files = CUDA_SERVER_PIN.wanted_files_for_arch(arch)
         _write_local_status(
             transition_state(_read_local_status(), new_state="downloading")
         )
         oci_image.pull_and_install(
             CUDA_SERVER_PIN.image_ref,
-            _oci_arch(),
-            CUDA_SERVER_PIN.wanted_files,
+            arch,
+            wanted_files,
             cuda_binary_dir(),
         )
         _write_local_status(
@@ -575,12 +601,14 @@ def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
     memory_verdict = assess_memory(spec.min_ram_bytes, block_below_floor=False)
 
     if choice.backend == "cuda":
+        arch = _oci_arch()
+        wanted_files = CUDA_SERVER_PIN.wanted_files_for_arch(arch)
         binary_path = cuda_binary_path()
         binary_installed = (
             oci_image.verify_sidecar_install(
                 CUDA_SERVER_PIN.image_ref,
-                _oci_arch(),
-                CUDA_SERVER_PIN.wanted_files,
+                arch,
+                wanted_files,
                 cuda_binary_dir(),
             )
             and binary_path.exists()
