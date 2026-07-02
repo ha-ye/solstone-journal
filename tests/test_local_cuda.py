@@ -19,7 +19,7 @@ def _completed(stdout: str, returncode: int = 0) -> SimpleNamespace:
 def _patch_nvidia_smi(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    gpu_stdout: str = "0, 8.9, 580.95.05, 24564\n",
+    gpu_stdout: str = "0, NVIDIA GeForce RTX 4090, 8.9, 580.95.05, 24564\n",
     version_stdout: str = "CUDA Version        : 13.0\n",
     gpu_returncode: int = 0,
     version_returncode: int = 0,
@@ -30,7 +30,7 @@ def _patch_nvidia_smi(
 
     def fake_run(cmd: list[str], **_kwargs) -> SimpleNamespace:
         calls.append(cmd)
-        if "--query-gpu=index,compute_cap,driver_version,memory.total" in cmd:
+        if "--query-gpu=index,name,compute_cap,driver_version,memory.total" in cmd:
             if gpu_exc is not None:
                 raise gpu_exc
             return _completed(gpu_stdout, gpu_returncode)
@@ -42,6 +42,14 @@ def _patch_nvidia_smi(
 
     monkeypatch.setattr(local_cuda.subprocess, "run", fake_run)
     return calls
+
+
+def _patch_memavailable(monkeypatch: pytest.MonkeyPatch, value_mib: int | None) -> None:
+    monkeypatch.setattr(
+        local_cuda,
+        "_read_linux_memavailable_mib",
+        lambda: value_mib,
+    )
 
 
 def test_arch_helpers() -> None:
@@ -63,6 +71,8 @@ def test_probe_nvidia_gpu_parses_normal_output(monkeypatch: pytest.MonkeyPatch) 
         compute_cap="sm_89",
         driver_cuda_version=13,
         vram_mib=24564,
+        tiering_memory_mib=24564,
+        memory_source=local_cuda.MEMORY_SOURCE_NVIDIA_VRAM,
         detected=True,
     )
 
@@ -72,7 +82,7 @@ def test_probe_nvidia_gpu_parses_this_box_fixture(
 ) -> None:
     _patch_nvidia_smi(
         monkeypatch,
-        gpu_stdout="0, 7.5, 580.142, 6144\n",
+        gpu_stdout="0, NVIDIA GeForce RTX 2060, 7.5, 580.142, 6144\n",
         version_stdout="CUDA Version        : 13.0\n",
     )
 
@@ -83,6 +93,8 @@ def test_probe_nvidia_gpu_parses_this_box_fixture(
         compute_cap="sm_75",
         driver_cuda_version=13,
         vram_mib=6144,
+        tiering_memory_mib=6144,
+        memory_source=local_cuda.MEMORY_SOURCE_NVIDIA_VRAM,
         detected=True,
     )
 
@@ -92,9 +104,10 @@ def test_probe_nvidia_gpu_parses_gb10_unified_memory(
 ) -> None:
     _patch_nvidia_smi(
         monkeypatch,
-        gpu_stdout="0, 12.1, 580.95.05, [N/A]\n",
+        gpu_stdout="0, NVIDIA GB10, 12.1, 580.142, [N/A]\n",
         version_stdout="CUDA Version        : 13.0\n",
     )
+    _patch_memavailable(monkeypatch, 26724)
 
     probe = local_cuda.probe_nvidia_gpu()
 
@@ -103,6 +116,66 @@ def test_probe_nvidia_gpu_parses_gb10_unified_memory(
     assert probe.compute_cap == "sm_121"
     assert probe.driver_cuda_version == 13
     assert probe.vram_mib is None
+    assert probe.tiering_memory_mib == 26724
+    assert probe.memory_source == local_cuda.MEMORY_SOURCE_SYSTEM_AVAILABLE
+
+
+def test_probe_nvidia_gpu_gb10_unified_memory_unavailable_stays_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_nvidia_smi(
+        monkeypatch,
+        gpu_stdout="0, NVIDIA GB10, 12.1, 580.142, [N/A]\n",
+        version_stdout="CUDA Version        : 13.0\n",
+    )
+    _patch_memavailable(monkeypatch, None)
+
+    probe = local_cuda.probe_nvidia_gpu()
+
+    assert probe.detected is True
+    assert probe.index == 0
+    assert probe.compute_cap == "sm_121"
+    assert probe.driver_cuda_version == 13
+    assert probe.vram_mib is None
+    assert probe.tiering_memory_mib is None
+    assert probe.memory_source == local_cuda.MEMORY_SOURCE_UNAVAILABLE
+
+
+def test_probe_nvidia_gpu_unknown_missing_vram_stays_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_nvidia_smi(
+        monkeypatch,
+        gpu_stdout="0, NVIDIA Mystery, 12.1, 580.142, [N/A]\n",
+        version_stdout="CUDA Version        : 13.0\n",
+    )
+
+    def fail_memavailable() -> int | None:
+        raise AssertionError("non-GB10 missing VRAM must not use system memory")
+
+    monkeypatch.setattr(local_cuda, "_read_linux_memavailable_mib", fail_memavailable)
+
+    probe = local_cuda.probe_nvidia_gpu()
+
+    assert probe.detected is True
+    assert probe.index == 0
+    assert probe.compute_cap == "sm_121"
+    assert probe.driver_cuda_version == 13
+    assert probe.vram_mib is None
+    assert probe.tiering_memory_mib is None
+    assert probe.memory_source == local_cuda.MEMORY_SOURCE_UNAVAILABLE
+
+
+def test_parse_memavailable_mib() -> None:
+    assert (
+        local_cuda._parse_memavailable_mib(
+            "MemTotal:       127601388 kB\nMemAvailable:   27365908 kB\n"
+        )
+        == 26724
+    )
+    assert local_cuda._parse_memavailable_mib("MemAvailable: nope kB\n") is None
+    assert local_cuda._parse_memavailable_mib("MemAvailable: 1234 MB\n") is None
+    assert local_cuda._parse_memavailable_mib("MemTotal: 1234 kB\n") is None
 
 
 def test_probe_nvidia_gpu_missing_binary_fails_closed(
@@ -117,6 +190,8 @@ def test_probe_nvidia_gpu_missing_binary_fails_closed(
         compute_cap=None,
         driver_cuda_version=None,
         vram_mib=None,
+        tiering_memory_mib=None,
+        memory_source=local_cuda.MEMORY_SOURCE_UNAVAILABLE,
         detected=False,
     )
     assert len(calls) == 1
@@ -134,6 +209,8 @@ def test_probe_nvidia_gpu_garbled_output_fails_closed(
         compute_cap=None,
         driver_cuda_version=None,
         vram_mib=None,
+        tiering_memory_mib=None,
+        memory_source=local_cuda.MEMORY_SOURCE_UNAVAILABLE,
         detected=False,
     )
 
@@ -156,6 +233,8 @@ def test_select_local_backend_matrix() -> None:
             compute_cap=compute_cap,
             driver_cuda_version=driver_cuda,
             vram_mib=24564,
+            tiering_memory_mib=24564,
+            memory_source=local_cuda.MEMORY_SOURCE_NVIDIA_VRAM,
             detected=True,
         )
 
@@ -171,6 +250,8 @@ def test_select_local_backend_no_gpu_detected() -> None:
             compute_cap=None,
             driver_cuda_version=None,
             vram_mib=None,
+            tiering_memory_mib=None,
+            memory_source=local_cuda.MEMORY_SOURCE_UNAVAILABLE,
             detected=False,
         ),
         ARCH_SET,
@@ -187,6 +268,8 @@ def test_select_local_backend_driver_cuda_unreadable() -> None:
             compute_cap="sm_86",
             driver_cuda_version=None,
             vram_mib=24564,
+            tiering_memory_mib=24564,
+            memory_source=local_cuda.MEMORY_SOURCE_NVIDIA_VRAM,
             detected=True,
         ),
         ARCH_SET,

@@ -2990,6 +2990,8 @@ def test_start_local_server_cuda_launches_llama_server_cmd_and_env(
         compute_cap="sm_121",
         driver_cuda_version=13,
         vram_mib=20000,
+        tiering_memory_mib=20000,
+        memory_source=local_cuda.MEMORY_SOURCE_NVIDIA_VRAM,
         detected=True,
     )
     managed, spawned, spawned_envs, written_ports, written_context_windows, lib_dir = (
@@ -3024,6 +3026,8 @@ def test_start_local_server_cuda_missing_vram_uses_floor_tier(
         compute_cap="sm_121",
         driver_cuda_version=13,
         vram_mib=None,
+        tiering_memory_mib=None,
+        memory_source=local_cuda.MEMORY_SOURCE_UNAVAILABLE,
         detected=True,
     )
     managed, spawned, _spawned_envs, _ports, written_context_windows, _lib_dir = (
@@ -3039,9 +3043,68 @@ def test_start_local_server_cuda_missing_vram_uses_floor_tier(
         local_server.LOCAL_MIN_CONTEXT_TOKENS
     )
     assert any(
-        "VRAM read unavailable" in record.message
+        "CUDA tiering memory unavailable" in record.message
         and "using floor tier" in record.message
         for record in caplog.records
+    )
+
+
+def test_start_local_server_cuda_unified_memory_uses_capable_tier(
+    tmp_path, monkeypatch, caplog
+):
+    mod = importlib.import_module("solstone.think.supervisor")
+    from solstone.think.providers import local_cuda
+
+    probe = local_cuda.NvidiaProbe(
+        index=0,
+        compute_cap="sm_121",
+        driver_cuda_version=13,
+        vram_mib=None,
+        tiering_memory_mib=26724,
+        memory_source=local_cuda.MEMORY_SOURCE_SYSTEM_AVAILABLE,
+        detected=True,
+    )
+    managed, spawned, _spawned_envs, _ports, written_context_windows, _lib_dir = (
+        _configure_cuda_llama_start(mod, tmp_path, monkeypatch, probe=probe)
+    )
+
+    with caplog.at_level(logging.INFO):
+        result = mod.start_local_server()
+
+    assert result is managed
+    assert written_context_windows == [32768]
+    assert spawned[0][spawned[0].index("-c") + 1] == "32768"
+    assert any(
+        "source=system MemAvailable (unified memory)" in record.message
+        and "discrete_vram=unavailable" in record.message
+        for record in caplog.records
+    )
+
+
+def test_start_local_server_cuda_low_unified_memory_uses_floor_tier(
+    tmp_path, monkeypatch
+):
+    mod = importlib.import_module("solstone.think.supervisor")
+    from solstone.think.providers import local_cuda, local_server
+
+    probe = local_cuda.NvidiaProbe(
+        index=0,
+        compute_cap="sm_121",
+        driver_cuda_version=13,
+        vram_mib=None,
+        tiering_memory_mib=8000,
+        memory_source=local_cuda.MEMORY_SOURCE_SYSTEM_AVAILABLE,
+        detected=True,
+    )
+    _managed, spawned, _spawned_envs, _ports, written_context_windows, _lib_dir = (
+        _configure_cuda_llama_start(mod, tmp_path, monkeypatch, probe=probe)
+    )
+
+    mod.start_local_server()
+
+    assert written_context_windows == [local_server.LOCAL_MIN_CONTEXT_TOKENS]
+    assert spawned[0][spawned[0].index("-c") + 1] == str(
+        local_server.LOCAL_MIN_CONTEXT_TOKENS
     )
 
 
@@ -3055,6 +3118,8 @@ def test_start_local_server_cuda_warmup_timeout_fails_closed(tmp_path, monkeypat
         compute_cap="sm_121",
         driver_cuda_version=13,
         vram_mib=20000,
+        tiering_memory_mib=20000,
+        memory_source=local_cuda.MEMORY_SOURCE_NVIDIA_VRAM,
         detected=True,
     )
     managed, _spawned, _spawned_envs, _ports, _contexts, _lib_dir = (
