@@ -4,8 +4,9 @@
 """Clock-aligned task scheduler for the supervisor.
 
 Reads schedule definitions from config/schedules.json and submits tasks
-via Callosum at minute, hour, and day boundaries. State (last-run times) persists
-to health/scheduler.json across restarts.
+via Callosum at minute, hour, and day boundaries. Last-run state is read from
+health/scheduler.json, written by supervisor completion writeback, to avoid
+re-firing across restarts.
 
 Runtime functions (init, check) are used by the supervisor.
 The main() function provides the ``journal schedule`` CLI.
@@ -17,7 +18,6 @@ import argparse
 import json
 import logging
 import re
-import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -53,6 +53,8 @@ _last_daily_mark: datetime | None = None
 _weekly_day: str | None = None
 _weekly_time: str | None = None
 _last_weekly_mark: datetime | None = None
+# Coarse entries whose boundary emit failed; retried on later minute ticks.
+_pending_retry: set[str] = set()
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +145,7 @@ def load_config() -> dict[str, dict[str, Any]]:
                 "Schedule '%s': unknown interval '%s' (expected %s), skipping",
                 name,
                 every,
-                "/".join(sorted(INTERVALS)),
+                "/".join(sorted(INTERVALS)) + " or Nm",
             )
             continue
 
@@ -181,23 +183,6 @@ def load_state() -> dict[str, dict[str, Any]]:
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning("Failed to load scheduler state: %s", exc)
         return {}
-
-
-def save_state() -> None:
-    """Persist _state to health/scheduler.json atomically."""
-    health_dir = Path(get_journal()) / "health"
-    health_dir.mkdir(parents=True, exist_ok=True)
-    state_path = health_dir / "scheduler.json"
-
-    fd, tmp_path = tempfile.mkstemp(dir=health_dir, suffix=".tmp", prefix=".scheduler_")
-    tmp_file = Path(tmp_path)
-    try:
-        with open(fd, "w", encoding="utf-8") as f:
-            json.dump(_state, f, indent=2)
-        tmp_file.replace(state_path)
-    except BaseException:
-        tmp_file.unlink(missing_ok=True)
-        raise
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +287,17 @@ def _parse_minute_interval(every: Any) -> int | None:
     return max(int(match.group(1)), 5)
 
 
+def _effective_interval(every: Any) -> Any:
+    """Return the interval as it will actually run, for honest display.
+
+    Sub-5m minute intervals run at the 5m floor (see _parse_minute_interval);
+    this surfaces that. Non-minute or >=5m values pass through unchanged.
+    """
+    if _is_minute_interval(every):
+        return f"{_parse_minute_interval(every)}m"
+    return every
+
+
 def _is_due(entry: dict, state_entry: dict | None, now: datetime) -> bool:
     """Check if an entry is due based on its interval and last_run."""
     last_run = (state_entry or {}).get("last_run")
@@ -339,11 +335,12 @@ def _is_due(entry: dict, state_entry: dict | None, now: datetime) -> bool:
 def init(callosum: Any) -> None:
     """Initialize scheduler with a Callosum connection. Load config and state."""
     global _entries, _state, _callosum, _last_minute, _last_hour
-    global _last_daily_mark, _last_weekly_mark
+    global _last_daily_mark, _last_weekly_mark, _pending_retry
 
     _callosum = callosum
     _entries = load_config()
     _state = load_state()
+    _pending_retry = set()
 
     now = datetime.now()
     _last_minute = now.replace(second=0, microsecond=0)
@@ -491,7 +488,7 @@ def check() -> None:
     boundary has been crossed since the last check.
     """
     global _entries, _state, _last_minute, _last_hour, _last_daily_mark
-    global _last_weekly_mark
+    global _last_weekly_mark, _pending_retry
 
     if _last_hour is None:
         return
@@ -537,11 +534,30 @@ def check() -> None:
         weekly_mark_changed = True
     _last_weekly_mark = new_weekly_mark
 
+    # Retry pass: re-attempt coarse entries whose boundary emit previously
+    # failed. Bypasses the boundary gating below so a lost coarse cycle
+    # recovers within minutes instead of at the next boundary. The set is
+    # seeded ONLY by emit failure (boundary pass, below) — never by is-due —
+    # so a successful emit is never repeated. Drop names dropped from _entries
+    # (reconciled at the next coarse config reload), no longer due (supervisor
+    # writeback landed), or that now succeed.
+    attempted: set[str] = set()
+    for name in list(_pending_retry):
+        entry = _entries.get(name)
+        if entry is None or not _is_due(entry, _state.get(name), now):
+            _pending_retry.discard(name)
+            continue
+        attempted.add(name)
+        if _submit_entry(name, entry):
+            _pending_retry.discard(name)
+
     if not _entries:
         return
 
     submitted = False
     for name, entry in _entries.items():
+        if name in attempted:
+            continue
         every = entry["every"]
 
         # Only check entries matching the boundary that changed
@@ -559,6 +575,11 @@ def check() -> None:
 
         if _submit_entry(name, entry):
             submitted = True
+        elif not _is_minute_interval(every):
+            # Coarse emit failed at its boundary — retry on later minute
+            # ticks. Minute intervals self-heal via the next minute tick +
+            # _is_due's sliding window, so they do NOT join the retry set.
+            _pending_retry.add(name)
 
     if submitted:
         logger.debug("Submitted scheduled task batch")
@@ -604,7 +625,7 @@ def collect_status() -> list[dict[str, Any]]:
         last_run = (state_entry or {}).get("last_run")
         entry_status = {
             "name": name,
-            "every": entry["every"],
+            "every": _effective_interval(entry["every"]),
             "last_run": last_run,
             "due": _is_due(entry, state_entry, now),
         }
@@ -758,7 +779,7 @@ def main() -> None:
         if not isinstance(raw_entry, dict):
             continue
 
-        every = raw_entry.get("every", "?")
+        every = _effective_interval(raw_entry.get("every", "?"))
         cmd = raw_entry.get("cmd", [])
         enabled = raw_entry.get("enabled", True)
         state_entry = state.get(name)
