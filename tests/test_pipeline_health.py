@@ -645,6 +645,8 @@ def test_read_terminal_states_latest_wins_and_preserves_expanded_keys(
                 "ts": 4,
                 "mode": "daily",
                 "name": "alpha",
+                "use_id": "alpha-1",
+                "state": "timeout",
                 "reason_code": "provider_quota_exceeded",
                 "provider": "anthropic",
                 "model": "claude-opus-4-1",
@@ -688,6 +690,8 @@ def test_read_terminal_states_latest_wins_and_preserves_expanded_keys(
     assert alpha.trailing_fail_count == 2
     assert alpha.last_fail_ts == 4
     assert alpha.oldest_trailing_fail_ts == 3
+    assert alpha.use_id == "alpha-1"
+    assert alpha.state == "timeout"
     assert alpha.reason_code == "provider_quota_exceeded"
     assert alpha.provider == "anthropic"
     assert alpha.model == "claude-opus-4-1"
@@ -707,6 +711,48 @@ def test_read_terminal_states_latest_wins_and_preserves_expanded_keys(
         ].latest_event
         == "complete"
     )
+
+
+def test_read_terminal_states_scope_to_day_keeps_unscoped_records(pipeline_journal):
+    day = "20990210"
+    base = pipeline_journal / "chronicle" / day / "health"
+    _write_jsonl(
+        base / "001_daily.jsonl",
+        [
+            {
+                "event": "talent.fail",
+                "ts": 1,
+                "mode": "daily",
+                "name": "foreign",
+                "day": "20990209",
+            },
+            {"event": "talent.fail", "ts": 1, "mode": "daily", "name": "omitted"},
+            {
+                "event": "talent.fail",
+                "ts": 1,
+                "mode": "daily",
+                "name": "non_str",
+                "day": 20990210,
+            },
+            {
+                "event": "talent.complete",
+                "ts": 1,
+                "mode": "daily",
+                "name": "same",
+                "day": day,
+            },
+        ],
+    )
+
+    foreign = TerminalUnit("daily", "foreign", None, None, None, None)
+    omitted = TerminalUnit("daily", "omitted", None, None, None, None)
+    non_str = TerminalUnit("daily", "non_str", None, None, None, None)
+    same = TerminalUnit("daily", "same", None, None, None, None)
+
+    assert foreign in read_terminal_states(day)
+    scoped = read_terminal_states(day, scope_to_day=True)
+    assert foreign not in scoped
+    assert {omitted, non_str, same}.issubset(scoped)
 
 
 def test_floor_talent_cap_trips_after_spanning_failures(pipeline_journal):
@@ -1043,6 +1089,7 @@ def test_empty_day_is_healthy(pipeline_journal):
         "dispatched": 0,
         "completed": 0,
         "failed": 0,
+        "outstanding_failed": 0,
         "skipped": 0,
         "capped": 0,
         "failed_list": [],
@@ -1147,6 +1194,7 @@ def test_agent_failure_promotes_warning(pipeline_journal):
                 "name": "screen",
                 "use_id": "a-1",
                 "state": "timeout",
+                "ts": 1,
             }
         ],
     )
@@ -1155,6 +1203,7 @@ def test_agent_failure_promotes_warning(pipeline_journal):
 
     assert summary["status"] == "warning"
     assert summary["talents"]["failed"] == 1
+    assert summary["talents"]["outstanding_failed"] == 1
     assert summary["talents"]["failed_list"] == [
         {"mode": "segment", "name": "screen", "use_id": "a-1", "state": "timeout"}
     ]
@@ -1200,6 +1249,7 @@ def test_no_output_failure_is_incomplete_and_summarized(pipeline_journal):
     assert summary["status"] == "warning"
     assert summary["talents"]["completed"] == 1
     assert summary["talents"]["failed"] == 1
+    assert summary["talents"]["outstanding_failed"] == 1
     assert summary["talents"]["failed_list"] == [
         {"mode": "daily", "name": "alpha", "use_id": "a-1", "state": "error"}
     ]
@@ -1223,6 +1273,7 @@ def test_failed_list_truncates_at_20(pipeline_journal):
             "name": f"agent-{idx}",
             "use_id": f"id-{idx}",
             "state": "error",
+            "ts": idx + 1,
         }
         for idx in range(25)
     ]
@@ -1233,9 +1284,74 @@ def test_failed_list_truncates_at_20(pipeline_journal):
     summary = summarize_pipeline_day(day)
 
     assert summary["talents"]["failed"] == 25
+    assert summary["talents"]["outstanding_failed"] == 25
     assert len(summary["talents"]["failed_list"]) == 20
     assert summary["talents"]["failed_list_truncated"] is True
     assert sum(1 for a in summary["anomalies"] if a["kind"] == "talent_failure") == 20
+
+
+def test_fail_then_complete_same_unit_is_not_outstanding(pipeline_journal):
+    day = "20990109"
+    _write_jsonl(
+        pipeline_journal / "chronicle" / day / "health" / "1_daily.jsonl",
+        [
+            {
+                "event": "talent.fail",
+                "mode": "daily",
+                "name": "alpha",
+                "use_id": "a-1",
+                "state": "timeout",
+                "ts": 1,
+            },
+            {
+                "event": "talent.complete",
+                "mode": "daily",
+                "name": "alpha",
+                "use_id": "a-2",
+                "state": "finish",
+                "ts": 2,
+            },
+        ],
+    )
+
+    summary = summarize_pipeline_day(day)
+
+    assert summary["status"] != "warning"
+    assert summary["talents"]["failed"] == 1
+    assert summary["talents"]["completed"] == 1
+    assert summary["talents"]["outstanding_failed"] == 0
+    assert summary["talents"]["failed_list"] == []
+    assert not any(a["kind"] == "talent_failure" for a in summary["anomalies"])
+
+
+def test_foreign_day_failure_excluded_from_summary_and_terminal_fold(
+    pipeline_journal,
+):
+    day = "20990110"
+    _write_jsonl(
+        pipeline_journal / "chronicle" / day / "health" / "1_daily.jsonl",
+        [
+            {
+                "event": "talent.fail",
+                "mode": "daily",
+                "name": "foreign",
+                "use_id": "f-1",
+                "state": "error",
+                "ts": 1,
+                "day": "20990109",
+            }
+        ],
+    )
+
+    summary = summarize_pipeline_day(day)
+
+    assert summary["talents"]["failed"] == 0
+    assert summary["talents"]["outstanding_failed"] == 0
+    assert summary["talents"]["failed_list"] == []
+    assert not any(a["kind"] == "talent_failure" for a in summary["anomalies"])
+    assert TerminalUnit(
+        "daily", "foreign", None, None, None, None
+    ) not in read_terminal_states(day, scope_to_day=True)
 
 
 def test_activity_detected_without_run_is_stale(pipeline_journal):
@@ -1249,6 +1365,29 @@ def test_activity_detected_without_run_is_stale(pipeline_journal):
 
     assert summary["status"] == "stale"
     assert {"kind": "activity_agents_missing"} in summary["anomalies"]
+
+
+def test_activity_mode_record_in_segment_file_satisfies_activity_gap(
+    pipeline_journal,
+):
+    day = "20990111"
+    _write_jsonl(
+        pipeline_journal / "chronicle" / day / "health" / "1_segment.jsonl",
+        [
+            {"event": "activity.detected", "mode": "segment"},
+            {
+                "event": "talent.dispatch",
+                "mode": "activity",
+                "name": "activity_notes",
+                "activity": "meeting-1",
+            },
+        ],
+    )
+
+    summary = summarize_pipeline_day(day)
+
+    assert summary["activities"]["talents_fired"] is True
+    assert {"kind": "activity_agents_missing"} not in summary["anomalies"]
 
 
 def test_past_day_without_daily_run_is_stale(pipeline_journal, monkeypatch):
@@ -1293,7 +1432,7 @@ def test_today_after_23h_no_daily_run_is_stale(pipeline_journal, monkeypatch):
     assert {"kind": "daily_agents_missing"} in summary["anomalies"]
 
 
-def test_segment_runs_missing_elevates(pipeline_journal):
+def test_segments_not_thought_elevates(pipeline_journal):
     day = "20990105"
     segment = "120000_300"
     _seed_screen_segment(pipeline_journal, day, segment)
@@ -1306,7 +1445,7 @@ def test_segment_runs_missing_elevates(pipeline_journal):
 
     assert summary["status"] == "stale"
     assert {
-        "kind": "segment_runs_missing",
+        "kind": "segments_not_thought",
         "not_thought": 1,
         "not_sensed": 0,
         "total": 1,
@@ -1317,7 +1456,7 @@ def test_segment_runs_missing_elevates(pipeline_journal):
     }
 
 
-def test_segment_runs_missing_ignores_idle_and_fully_thought_segments(
+def test_segments_not_thought_ignores_idle_and_fully_thought_segments(
     pipeline_journal,
 ):
     day = "20990106"
@@ -1335,7 +1474,7 @@ def test_segment_runs_missing_ignores_idle_and_fully_thought_segments(
 
     assert summary["status"] == "healthy"
     assert not any(
-        anomaly["kind"] == "segment_runs_missing" for anomaly in summary["anomalies"]
+        anomaly["kind"] == "segments_not_thought" for anomaly in summary["anomalies"]
     )
 
 
@@ -1356,7 +1495,7 @@ def test_segment_completion_fold_failure_elevates_status(
     summary = summarize_pipeline_day(day)
 
     assert summary["status"] == "stale"
-    assert {"kind": "segment_runs_missing", "error": "fold_failed"} in summary[
+    assert {"kind": "segments_not_thought", "error": "fold_failed"} in summary[
         "anomalies"
     ]
     assert pipeline_status_message(summary) == {
@@ -1374,6 +1513,7 @@ def test_invalid_day_returns_healthy_empty(pipeline_journal):
         "dispatched": 0,
         "completed": 0,
         "failed": 0,
+        "outstanding_failed": 0,
         "skipped": 0,
         "capped": 0,
         "failed_list": [],
@@ -2020,7 +2160,7 @@ def test_historical_failures_with_latest_complete_are_not_pending(pipeline_journ
                     {"kind": "daily_agents_missing"},
                     {"kind": "talent_failure"},
                 ],
-                "talents": {"failed": 3},
+                "talents": {"failed": 3, "outstanding_failed": 3},
                 "day": "20260101",
             },
             {
@@ -2035,7 +2175,7 @@ def test_historical_failures_with_latest_complete_are_not_pending(pipeline_journ
                     {"kind": "daily_agents_missing"},
                     {"kind": "talent_failure"},
                 ],
-                "talents": {"failed": 2},
+                "talents": {"failed": 2, "outstanding_failed": 2},
                 "day": "20260102",
             },
             {
@@ -2047,7 +2187,7 @@ def test_historical_failures_with_latest_complete_are_not_pending(pipeline_journ
             {
                 "status": "warning",
                 "anomalies": [{"kind": "talent_failure"}],
-                "talents": {"failed": 1},
+                "talents": {"failed": 9, "outstanding_failed": 1},
                 "day": "20260101",
             },
             {"status": "warning", "message": "1 talent error today"},
@@ -2056,7 +2196,7 @@ def test_historical_failures_with_latest_complete_are_not_pending(pipeline_journ
             {
                 "status": "warning",
                 "anomalies": [{"kind": "talent_failure"}] * 3,
-                "talents": {"failed": 3},
+                "talents": {"failed": 9, "outstanding_failed": 3},
                 "day": "20260101",
             },
             {"status": "warning", "message": "3 talent errors today"},
@@ -2066,7 +2206,7 @@ def test_historical_failures_with_latest_complete_are_not_pending(pipeline_journ
                 "status": "stale",
                 "anomalies": [
                     {
-                        "kind": "segment_runs_missing",
+                        "kind": "segments_not_thought",
                         "not_thought": 2,
                         "not_sensed": 0,
                         "total": 5,
@@ -2080,7 +2220,7 @@ def test_historical_failures_with_latest_complete_are_not_pending(pipeline_journ
         (
             {
                 "status": "stale",
-                "anomalies": [{"kind": "segment_runs_missing", "error": "fold_failed"}],
+                "anomalies": [{"kind": "segments_not_thought", "error": "fold_failed"}],
                 "talents": {"failed": 0},
                 "day": "20260101",
             },

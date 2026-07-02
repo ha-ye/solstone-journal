@@ -569,7 +569,7 @@ def test_render_health_body_talent_failure_timed_out():
             {"kind": "talent_failure", "name": "entities", "state": "timeout"},
             {"kind": "talent_failure", "name": "documents", "state": "timeout"},
         ],
-        "talents": {"failed": 2},
+        "talents": {"failed": 9, "outstanding_failed": 2},
     }
     body = render_health_body(
         generated_at=_GEN_AT,
@@ -581,6 +581,27 @@ def test_render_health_body_talent_failure_timed_out():
     assert (
         "2 agents timed out during yesterday's processing (entities, documents)."
         in (body)
+    )
+
+
+def test_render_health_body_talent_failure_request_lost():
+    pipeline_day = {
+        "anomalies": [
+            {"kind": "talent_failure", "name": "entities", "state": "request_lost"},
+            {"kind": "talent_failure", "name": "documents", "state": "request_lost"},
+        ],
+        "talents": {"outstanding_failed": 2},
+    }
+    body = render_health_body(
+        generated_at=_GEN_AT,
+        pipeline_day=pipeline_day,
+        recipe_outcomes_7d=[],
+        data_source_errors=[],
+    )
+
+    assert (
+        "2 agents couldn't start during yesterday's processing "
+        "(entities, documents)." in body
     )
 
 

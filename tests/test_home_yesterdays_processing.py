@@ -155,6 +155,7 @@ def _append_think_log(
             "mode": "daily",
             "name": name,
             "state": "error",
+            "ts": 1,
         }
         if facet is not None:
             record["facet"] = facet
@@ -601,6 +602,21 @@ def test_gap_links_show_specific_daily_and_activity_without_generic():
             },
         ),
         (
+            [
+                {
+                    "kind": "talent_failure",
+                    "name": "flow",
+                    "use_id": "run-1",
+                    "state": "request_lost",
+                }
+            ],
+            {"valid": True},
+            {
+                "text": "The flow run couldn't start.",
+                "href": "/app/sol/20260415#flow/run-1",
+            },
+        ),
+        (
             [{"kind": "talent_failure", "name": "facet_newsletter"}],
             {"valid": True},
             {
@@ -633,6 +649,93 @@ def test_gap_links_href_for_each_anomaly_kind(anomalies, briefing, expected):
         "20260415",
         "20260416",
     )
+
+
+def test_gap_links_group_failures_by_name():
+    links = _format_gap_links(
+        {
+            "anomalies": [
+                {
+                    "kind": "talent_failure",
+                    "name": "facet_newsletter",
+                    "use_id": "run-1",
+                    "state": "timeout",
+                },
+                {
+                    "kind": "talent_failure",
+                    "name": "facet_newsletter",
+                    "use_id": "run-2",
+                    "state": "error",
+                },
+            ]
+        },
+        {"valid": True},
+        "20260415",
+        "20260416",
+    )
+
+    assert links == [
+        {
+            "text": "2 facet newsletter runs didn't finish.",
+            "href": "/app/sol/20260415#facet_newsletter",
+        }
+    ]
+
+
+def test_gap_links_group_request_lost_failures_by_name():
+    links = _format_gap_links(
+        {
+            "anomalies": [
+                {
+                    "kind": "talent_failure",
+                    "name": "flow",
+                    "use_id": "run-1",
+                    "state": "request_lost",
+                },
+                {
+                    "kind": "talent_failure",
+                    "name": "flow",
+                    "use_id": "run-2",
+                    "state": "request_lost",
+                },
+            ]
+        },
+        {"valid": True},
+        "20260415",
+        "20260416",
+    )
+
+    assert links == [
+        {
+            "text": "2 flow runs couldn't start.",
+            "href": "/app/sol/20260415#flow",
+        }
+    ]
+
+
+def test_gap_links_show_truncated_failures_count():
+    anomalies = [
+        {"kind": "talent_failure", "name": f"agent_{idx}", "state": "error"}
+        for idx in range(20)
+    ]
+
+    links = _format_gap_links(
+        {
+            "anomalies": anomalies,
+            "talents": {
+                "outstanding_failed": 25,
+                "failed_list_truncated": True,
+            },
+        },
+        {"valid": True},
+        "20260415",
+        "20260416",
+    )
+
+    assert links[-1] == {
+        "text": "…and 5 more didn't finish.",
+        "href": "/app/sol/20260415",
+    }
 
 
 def test_briefing_lateness_threshold():

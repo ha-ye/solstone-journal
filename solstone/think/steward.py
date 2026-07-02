@@ -476,10 +476,12 @@ def _attention_bullets(
 
     failures = [a for a in anomalies if a.get("kind") == "talent_failure"]
     if failures:
-        n = int((pd.get("talents") or {}).get("failed", len(failures)))
+        n = int((pd.get("talents") or {}).get("outstanding_failed", len(failures)))
         names = [str(a.get("name")) for a in failures if a.get("name")]
         verb = (
-            "timed out"
+            "couldn't start"
+            if all(a.get("state") == "request_lost" for a in failures)
+            else "timed out"
             if all(a.get("state") == "timeout" for a in failures)
             else "failed"
         )
@@ -495,7 +497,7 @@ def _attention_bullets(
             "journal data. Facet newsletters may be missing."
         )
 
-    seg = next((a for a in anomalies if a.get("kind") == "segment_runs_missing"), None)
+    seg = next((a for a in anomalies if a.get("kind") == "segments_not_thought"), None)
     if seg is not None:
         if seg.get("error"):
             bullets.append(

@@ -656,23 +656,53 @@ def _format_gap_links(
             }
         )
 
-    named_failures = []
+    grouped_failures: dict[str, list[dict[str, Any]]] = {}
     for anomaly in failure_anomalies:
         name = str(anomaly.get("name") or "").strip()
         if not name:
             continue
-        use_id = str(anomaly.get("use_id") or "").strip()
+        grouped_failures.setdefault(name, []).append(anomaly)
+
+    named_failures = []
+    for name, failures in grouped_failures.items():
+        count = len(failures)
+        label = name.replace("_", " ")
+        request_lost = all(
+            failure.get("state") == "request_lost" for failure in failures
+        )
+        if count == 1:
+            if request_lost:
+                text = f"The {label} run couldn't start."
+            else:
+                text = f"The {label} run didn't finish."
+        elif request_lost:
+            text = f"{count} {label} runs couldn't start."
+        else:
+            text = f"{count} {label} runs didn't finish."
+
+        use_id = str(failures[0].get("use_id") or "").strip()
         anchor = quote(name, safe="")
-        if use_id:
+        if count == 1 and use_id:
             anchor += f"/{quote(use_id, safe='')}"
         named_failures.append(
             {
-                "text": f"The {name.replace('_', ' ')} run didn't finish.",
+                "text": text,
                 "href": f"/app/sol/{yesterday_day}#{anchor}",
             }
         )
 
     links.extend(named_failures)
+    talents = pipeline_summary.get("talents") or {}
+    if talents.get("failed_list_truncated"):
+        n_more = int(talents.get("outstanding_failed", 0) or 0) - len(failure_anomalies)
+        if n_more > 0:
+            links.append(
+                {
+                    "text": f"…and {n_more} more didn't finish.",
+                    "href": f"/app/sol/{yesterday_day}",
+                }
+            )
+
     if failure_anomalies and not has_daily and not has_activity and not named_failures:
         links.append(
             {
