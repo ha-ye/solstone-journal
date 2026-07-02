@@ -225,15 +225,108 @@ def test_daily_segment_prephase_timeout_is_nonfatal(journal_copy, monkeypatch):
     assert daily_called
     assert bounded_calls == [
         (
+            ["journal", "sense", "--day", "20240101"],
+            "20240101",
+            mod.DEFAULT_TASK_MAX_RUNTIME,
+        ),
+        (
             ["journal", "think", "--segments", "--day", "20240101"],
             "20240101",
             mod.DEFAULT_TASK_MAX_RUNTIME,
-        )
+        ),
+        (
+            ["journal", "journal-stats"],
+            "20240101",
+            mod.JOURNAL_STATS_MAX_RUNTIME,
+        ),
     ]
     assert mod.DEFAULT_TASK_MAX_RUNTIME == 1800
-    assert ["journal", "sense", "--day", "20240101"] in command_calls
-    assert ["journal", "journal-stats"] in command_calls
-    assert ["journal", "think", "--segments", "--day", "20240101"] not in command_calls
+    assert mod.JOURNAL_STATS_MAX_RUNTIME == 600
+    assert command_calls == []
+
+
+def test_daily_sense_prephase_timeout_records_disposition(journal_copy, monkeypatch):
+    mod = importlib.import_module("solstone.think.thinking")
+    daily_called = []
+
+    def fake_bounded(cmd, day, timeout=None):
+        if cmd[:2] == ["journal", "sense"]:
+            return (False, True)
+        return (True, False)
+
+    def fake_daily(day, verbose, **kwargs):
+        daily_called.append(day)
+        return (5, 0, [], set())
+
+    _patch_main_runtime(monkeypatch)
+    monkeypatch.setattr(mod, "run_bounded_phase", fake_bounded)
+    monkeypatch.setattr(mod, "run_command", lambda cmd, day: True)
+    monkeypatch.setattr(mod, "run_queued_command", lambda cmd, day, timeout=600: True)
+    monkeypatch.setattr(mod, "run_daily_prompts", fake_daily)
+    monkeypatch.setattr("sys.argv", ["sol think", "--day", "20240101"])
+
+    mod.main()
+
+    health_dir = journal_copy / "chronicle" / "20240101" / "health"
+    daily_files = sorted(health_dir.glob("*_daily.jsonl"))
+    assert len(daily_files) == 1
+    events = _read_jsonl(daily_files[0])
+    completes = [
+        e
+        for e in events
+        if _event_name(e) == "phase.complete" and e.get("phase") == "sense_repair"
+    ]
+    assert len(completes) == 1
+    complete = completes[0]
+    assert complete["success"] is False
+    assert complete["reason_code"] == "wall_clock_exceeded"
+    assert complete["timeout_seconds"] == mod.DEFAULT_TASK_MAX_RUNTIME
+    assert complete["bounded"] is True
+    # Pipeline continued past the sense pre-phase into the daily prompts.
+    assert daily_called
+
+
+def test_daily_journal_stats_postphase_timeout_records_disposition(
+    journal_copy, monkeypatch
+):
+    mod = importlib.import_module("solstone.think.thinking")
+    daily_called = []
+
+    def fake_bounded(cmd, day, timeout=None):
+        if cmd[:2] == ["journal", "journal-stats"]:
+            return (False, True)
+        return (True, False)
+
+    def fake_daily(day, verbose, **kwargs):
+        daily_called.append(day)
+        return (5, 0, [], set())
+
+    _patch_main_runtime(monkeypatch)
+    monkeypatch.setattr(mod, "run_bounded_phase", fake_bounded)
+    monkeypatch.setattr(mod, "run_command", lambda cmd, day: True)
+    monkeypatch.setattr(mod, "run_queued_command", lambda cmd, day, timeout=600: True)
+    monkeypatch.setattr(mod, "run_daily_prompts", fake_daily)
+    monkeypatch.setattr("sys.argv", ["sol think", "--day", "20240101"])
+
+    # main() returning normally proves the post-phase did not wedge the pipeline.
+    mod.main()
+
+    health_dir = journal_copy / "chronicle" / "20240101" / "health"
+    daily_files = sorted(health_dir.glob("*_daily.jsonl"))
+    assert len(daily_files) == 1
+    events = _read_jsonl(daily_files[0])
+    completes = [
+        e
+        for e in events
+        if _event_name(e) == "phase.complete" and e.get("phase") == "journal_stats"
+    ]
+    assert len(completes) == 1
+    complete = completes[0]
+    assert complete["success"] is False
+    assert complete["reason_code"] == "wall_clock_exceeded"
+    assert complete["timeout_seconds"] == mod.JOURNAL_STATS_MAX_RUNTIME
+    assert complete["bounded"] is True
+    assert daily_called
 
 
 def test_daily_segment_prephase_failure_has_no_timeout_reason(

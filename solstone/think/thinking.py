@@ -147,6 +147,8 @@ class ThinkingJSONLWriter:
 
 _jsonl: ThinkingJSONLWriter | None = None
 SEGMENT_WORKERS_MAX = 32
+# ~10 min wall-clock budget for the journal-stats post-phase
+JOURNAL_STATS_MAX_RUNTIME = 600
 
 
 def _jsonl_log(event: str, **fields) -> None:
@@ -4131,17 +4133,31 @@ def main() -> None:
             day_log(day, f"starting: {' '.join(cmd)}")
             _jsonl_log("phase.start", mode=_run_mode, day=day, phase="sense_repair")
             _phase_start = time.time()
-            phase_ok = run_command(cmd, day)
-            _jsonl_log(
-                "phase.complete",
-                mode=_run_mode,
-                day=day,
-                phase="sense_repair",
-                success=phase_ok,
-                duration_ms=int((time.time() - _phase_start) * 1000),
+            phase_ok, phase_timed_out = run_bounded_phase(
+                cmd, day, DEFAULT_TASK_MAX_RUNTIME
             )
+            phase_complete = {
+                "mode": _run_mode,
+                "day": day,
+                "phase": "sense_repair",
+                "success": phase_ok,
+                "duration_ms": int((time.time() - _phase_start) * 1000),
+            }
+            if phase_timed_out:
+                phase_complete.update(
+                    reason_code="wall_clock_exceeded",
+                    timeout_seconds=DEFAULT_TASK_MAX_RUNTIME,
+                    bounded=True,
+                )
+            _jsonl_log("phase.complete", **phase_complete)
             if not phase_ok:
-                logging.warning("Sense repair failed, continuing anyway")
+                if phase_timed_out:
+                    logging.warning(
+                        "Sense repair exceeded its %ss budget, continuing anyway",
+                        DEFAULT_TASK_MAX_RUNTIME,
+                    )
+                else:
+                    logging.warning("Sense repair failed, continuing anyway")
 
         # PRE-PHASE: Run segment-think batch repair (daily only)
         if not args.segment:
@@ -4250,15 +4266,31 @@ def main() -> None:
                 stats_cmd.append("--verbose")
             _jsonl_log("phase.start", mode=_run_mode, day=day, phase="journal_stats")
             _phase_start = time.time()
-            stats_ok = run_command(stats_cmd, day)
-            _jsonl_log(
-                "phase.complete",
-                mode=_run_mode,
-                day=day,
-                phase="journal_stats",
-                success=stats_ok,
-                duration_ms=int((time.time() - _phase_start) * 1000),
+            stats_ok, stats_timed_out = run_bounded_phase(
+                stats_cmd, day, JOURNAL_STATS_MAX_RUNTIME
             )
+            phase_complete = {
+                "mode": _run_mode,
+                "day": day,
+                "phase": "journal_stats",
+                "success": stats_ok,
+                "duration_ms": int((time.time() - _phase_start) * 1000),
+            }
+            if stats_timed_out:
+                phase_complete.update(
+                    reason_code="wall_clock_exceeded",
+                    timeout_seconds=JOURNAL_STATS_MAX_RUNTIME,
+                    bounded=True,
+                )
+            _jsonl_log("phase.complete", **phase_complete)
+            if not stats_ok:
+                if stats_timed_out:
+                    logging.warning(
+                        "Journal stats exceeded its %ss budget, continuing anyway",
+                        JOURNAL_STATS_MAX_RUNTIME,
+                    )
+                else:
+                    logging.warning("Journal stats failed, continuing anyway")
 
             # Check storage health and emit warnings
             try:
