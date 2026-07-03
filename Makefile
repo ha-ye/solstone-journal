@@ -299,9 +299,12 @@ PYTEST := $(VENV_BIN)/pytest
 RUFF := $(VENV_BIN)/ruff
 MYPY := $(VENV_BIN)/mypy
 
-# Keep the default full-suite fan-out below host saturation; override with
-# `make PYTEST_MAX_WORKERS=16 test` on a dedicated box.
-PYTEST_MAX_WORKERS ?= 8
+# Keep the default full-suite fan-out LOW: this box runs many concurrent
+# sessions/lodes each invoking `make test`, and their worker pools multiply —
+# concurrent 8-worker suites OOM'd the box on 2026-07-03 (systemd-oomd killed
+# the hub daemon, hopper, and several agent sessions). Override with
+# `make PYTEST_MAX_WORKERS=16 test` on a dedicated/idle box.
+PYTEST_MAX_WORKERS ?= 2
 PYTEST_XDIST_ARGS := -n auto --maxprocesses $(PYTEST_MAX_WORKERS) --dist loadgroup
 
 # Check formatting without modifying files — gates `make test`
