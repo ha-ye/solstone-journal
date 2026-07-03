@@ -42,6 +42,7 @@ from solstone.convey.secure_listener.mux import (
     RESET_CTX_MALFORMED_FRAME,
     RESET_CTX_NO_IDENTITY,
     RESET_CTX_OVER_CREDIT_DATA,
+    RESET_CTX_OVER_CREDIT_OPEN,
     RESET_CTX_PARITY_VIOLATION,
     RESET_CTX_STREAM_CAP_OVERFLOW,
     RESET_CTX_UNKNOWN_STREAM,
@@ -138,6 +139,59 @@ async def test_open_with_initial_payload_hits_handler() -> None:
         == b"ack\n"
     )
     await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_open_payload_over_window_is_rejected_without_opening() -> None:
+    """An OPEN whose payload exceeds the receive window is reset before the
+    stream is opened — no reader/task spawned, no data buffered, no credit
+    granted (mirrors the DATA-path flow-control guard)."""
+    sent: list[bytes] = []
+    handler_invoked = False
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    async def handler(*_: object) -> None:  # pragma: no cover - must not run
+        nonlocal handler_invoked
+        handler_invoked = True
+        await asyncio.Event().wait()
+
+    mux = Multiplexer(send, handler, is_listener=True)
+    try:
+        await mux.feed(build_open(1, b"x" * (INITIAL_WINDOW + 1)).encode())
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert 1 not in mux._streams  # stream never opened
+        assert handler_invoked is False
+        frames = _decode_frames(sent)
+        _assert_single_reset(frames, 1, RESET_FLOW_CONTROL_ERROR)
+        assert not any(frame.flags & FLAG_WINDOW for frame in frames)
+    finally:
+        await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_open_payload_at_window_boundary_opens() -> None:
+    """An OPEN payload of exactly INITIAL_WINDOW is within the window (the
+    guard is strictly greater-than) and opens the stream normally."""
+
+    async def send(_: bytes) -> None:
+        return
+
+    async def handler(*_: object) -> None:
+        await asyncio.Event().wait()
+
+    mux = Multiplexer(send, handler, is_listener=True)
+    try:
+        await mux.feed(build_open(1, b"x" * INITIAL_WINDOW).encode())
+        for _ in range(10):
+            await asyncio.sleep(0)
+            if 1 in mux._streams:
+                break
+        assert 1 in mux._streams  # boundary payload opened the stream
+    finally:
+        await mux.close()
 
 
 @pytest.mark.asyncio
@@ -613,6 +667,9 @@ async def test_true_mux_violations_keep_reason_codes() -> None:
         await asyncio.sleep(0)
         await mux.feed(build_data(1, b"x" * (INITIAL_WINDOW + 1)).encode())
 
+    async def over_credit_open(mux: Multiplexer) -> None:
+        await mux.feed(build_open(1, b"x" * (INITIAL_WINDOW + 1)).encode())
+
     async def stream_cap(mux: Multiplexer) -> None:
         for offset in range(MAX_CONCURRENT_STREAMS):
             await mux.feed(build_open(1 + offset * 2).encode())
@@ -646,6 +703,12 @@ async def test_true_mux_violations_keep_reason_codes() -> None:
         stream_id=1,
         reason=RESET_FLOW_CONTROL_ERROR,
         context=RESET_CTX_OVER_CREDIT_DATA,
+    )
+    await run_single(
+        over_credit_open,
+        stream_id=1,
+        reason=RESET_FLOW_CONTROL_ERROR,
+        context=RESET_CTX_OVER_CREDIT_OPEN,
     )
     await run_single(
         stream_cap,

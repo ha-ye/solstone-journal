@@ -65,6 +65,7 @@ RESET_CTX_DUPLICATE_OPEN: Final[str] = "duplicate_open"
 RESET_CTX_STREAM_CAP_OVERFLOW: Final[str] = "stream_cap_overflow"
 RESET_CTX_UNKNOWN_STREAM: Final[str] = "unknown_stream"
 RESET_CTX_OVER_CREDIT_DATA: Final[str] = "over_credit_data"
+RESET_CTX_OVER_CREDIT_OPEN: Final[str] = "over_credit_open"
 RESET_CTX_BAD_WINDOW_FRAME: Final[str] = "bad_window_frame"
 RESET_CTX_HANDLER_EXCEPTION: Final[str] = "handler_exception"
 RESET_CTX_NO_IDENTITY: Final[str] = "no_identity"
@@ -229,6 +230,19 @@ class Multiplexer:
                     frame.stream_id,
                     RESET_STREAM_LIMIT_EXCEEDED,
                     RESET_CTX_STREAM_CAP_OVERFLOW,
+                )
+                return
+            # Flow control on the OPEN payload: a fresh stream's window is
+            # INITIAL_WINDOW, but a single frame may carry up to MAX_PAYLOAD
+            # (16x the window). Mirror the DATA-path guard here — reject before
+            # opening the stream so no reader/task is spawned and the oversized
+            # payload is never buffered. Return before the FLAG_CLOSE handling
+            # so an OPEN|DATA|CLOSE with an oversized payload resets cleanly.
+            if len(frame.payload) > INITIAL_WINDOW:
+                await self._emit_reset(
+                    frame.stream_id,
+                    RESET_FLOW_CONTROL_ERROR,
+                    RESET_CTX_OVER_CREDIT_OPEN,
                 )
                 return
             state = self._open_stream(frame.stream_id)
