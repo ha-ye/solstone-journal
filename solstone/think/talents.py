@@ -588,8 +588,7 @@ def prepare_config(request: dict) -> dict:
 
     request_access_tier = request.get("access_tier")
     if request_access_tier is not None and (
-        not definition_has_access_tier
-        or request_access_tier != definition_access_tier
+        not definition_has_access_tier or request_access_tier != definition_access_tier
     ):
         raise ValueError(
             f"Request overrides 'access_tier' for talent '{name}' are not allowed "

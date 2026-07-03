@@ -59,9 +59,7 @@ def test_dl_nonloopback_host_rejected_on_get(app):
 
 
 def test_dl_nonloopback_host_rejected_on_post(app):
-    assert _rejected(
-        _guard(app, headers={"Host": "attacker.example"}, method="POST")
-    )
+    assert _rejected(_guard(app, headers={"Host": "attacker.example"}, method="POST"))
 
 
 def test_dl_ipv6_loopback_host_passes(app):
