@@ -254,7 +254,7 @@ def _components() -> dict[str, Any]:
             "name": {"type": "string"},
             "size": {"type": "integer"},
             "sha256": {"type": "string"},
-            "status": {"type": "string"},
+            "status": {"type": "string", "enum": ["present", "relocated", "missing"]},
             "submitted_name": {"type": "string"},
             "current_path": {"type": "string"},
         },

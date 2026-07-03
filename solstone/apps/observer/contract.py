@@ -12,6 +12,7 @@ from solstone.convey.contract import (
     RequestSpec,
     ResponseSpec,
 )
+from solstone.think.media import FORMATS
 
 _OBSERVER_AUTH_PARAMS = (
     ParamSpec(
@@ -53,6 +54,15 @@ def _observer_auth_errors() -> tuple[ResponseSpec, ResponseSpec]:
             ("feature_unavailable", "pl_revoked"),
             "Observer is disabled or revoked.",
         ),
+    )
+
+
+def _media_format_description() -> str:
+    by_kind: dict[str, list[str]] = {}
+    for ext, mime, kind in FORMATS:
+        by_kind.setdefault(kind, []).append(f"{ext.lstrip('.')} ({mime})")
+    return "; ".join(
+        f"{kind}: {', '.join(entries)}" for kind, entries in by_kind.items()
     )
 
 
@@ -181,7 +191,12 @@ OPERATIONS: list[OperationSpec] = [
         summary="Upload observer segment files",
         description=(
             "Upload one capture segment as multipart form data and trigger local "
-            "observe processing."
+            "observe processing. Media parts must use a registry container format "
+            f"— {_media_format_description()}. Headerless raw streams are not "
+            "accepted as media containers; raw PCM must be WAV-wrapped before "
+            "upload. Video segment timestamps are boundary-relative real capture "
+            "offsets (seconds from the segment start), never synthetic frame "
+            "indices."
         ),
         parameters=_OBSERVER_AUTH_PARAMS,
         request=RequestSpec(
@@ -214,7 +229,13 @@ OPERATIONS: list[OperationSpec] = [
         responses=(
             ResponseSpec(
                 status=200,
-                description="Upload accepted, collision-adjusted, or duplicate.",
+                description=(
+                    "Upload accepted, collision-adjusted, or duplicate. On "
+                    "`duplicate`, `existing_segment` is the authoritative stored "
+                    "segment key the client must adopt (do not re-upload). On "
+                    "`collision`, the returned `segment` is the authoritative "
+                    "remapped key the client must adopt for subsequent references."
+                ),
                 named_fields=(
                     FieldSpec("status", "string", required=True),
                     FieldSpec("segment", "string"),
@@ -430,7 +451,23 @@ OPERATIONS: list[OperationSpec] = [
         description=(
             "Return segment upload history for one day. Protocol version 2 and "
             "newer receive a collection envelope; older or absent protocol "
-            "headers receive a legacy bare array."
+            "headers receive a legacy bare array. Per-file `status` is `present` "
+            "(file at its recorded path), `relocated` (located by inode elsewhere; "
+            "`current_path` gives the new journal-relative location), or `missing` "
+            "(not found). A local file is proven held by the journal only when its "
+            "listing entry is `present` or `relocated` AND the entry `sha256` "
+            "matches the local file; a `missing` status — or any local file the "
+            "listing does not positively account for — is needs-upload, and the "
+            "client must never delete a local copy on that basis. `relocated` is a "
+            "held state, not needs-upload: the journal provably holds the bytes "
+            "(inode-verified, `current_path`), and re-uploading only returns "
+            "`duplicate`. Confirm-before-delete matches every upload-eligible "
+            "local file to a listing entry per (filename, sha256) — the listing "
+            "filename is `submitted_name` when present, else `name` — and deletes "
+            "only on a proven-held match. `submitted_name` appears only when the "
+            "stored filename differs from the submitted one; segment-level "
+            "`original_key` carries the client's originally requested segment key "
+            "when a collision remapped it."
         ),
         parameters=(
             *_OBSERVER_AUTH_PARAMS,

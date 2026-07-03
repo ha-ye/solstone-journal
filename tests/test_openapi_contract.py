@@ -270,6 +270,39 @@ def test_segments_protocol_version_shape(contract_app):
     assert {"items", "total", "protocol_version"}.issubset(body)
 
 
+def test_segment_file_status_enum_matches_live_day_listing(contract_app):
+    _app, client, _journal = contract_app
+    document = build_document()
+    status_enum = document["components"]["schemas"]["SegmentFile"]["properties"][
+        "status"
+    ]["enum"]
+    assert status_enum == ["present", "relocated", "missing"]
+    key = _register_observer(client)
+
+    upload = client.post(
+        "/app/observer/ingest",
+        headers={"X-Solstone-Observer": key},
+        data={
+            "day": "20250103",
+            "segment": "120000_300",
+            "files": (io.BytesIO(b"contract upload"), "audio.flac"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert upload.status_code == 200
+
+    listing = client.get(
+        "/app/observer/ingest/segments/20250103",
+        headers={
+            "Authorization": f"Bearer {key}",
+            "X-Solstone-Protocol-Version": "2",
+        },
+    )
+    items = listing.get_json()["items"]
+    statuses = [file_info["status"] for item in items for file_info in item["files"]]
+    assert statuses and all(status in status_enum for status in statuses)
+
+
 def test_multipart_and_json_parsing(contract_app):
     _app, client, _journal = contract_app
     document = build_document()
