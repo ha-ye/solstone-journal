@@ -105,6 +105,7 @@ from solstone.think.entities.journal import (
 from solstone.think.journal_io.errors import LockTimeout
 from solstone.think.journal_io.npz import load_npz, update_npz
 from solstone.think.utils import (
+    STREAM_RE,
     day_dirs,
     day_path,
     get_journal,
@@ -119,6 +120,7 @@ if TYPE_CHECKING:
     import numpy as np
 
 logger = logging.getLogger(__name__)
+SEGMENT_KEY_RE = re.compile(r"\d{6}_\d+")
 VOICEPRINT_KEYS = ("embeddings", "metadata")
 
 speakers_bp = Blueprint(
@@ -1014,11 +1016,13 @@ def api_confirm_attribution() -> Any:
         )
     if not DATE_RE.fullmatch(day):
         return error_response(INVALID_DAY, detail="Invalid day format")
-    if not validate_segment_key(segment_key):
+    if not SEGMENT_KEY_RE.fullmatch(segment_key):
         return error_response(
             INVALID_SEGMENT_OR_STREAM,
             detail="Invalid segment key",
         )
+    if not STREAM_RE.fullmatch(stream):
+        return error_response(INVALID_SEGMENT_OR_STREAM, detail="Invalid stream")
 
     segment_dir = get_segment_path(day, segment_key, stream)
     labels_data = _load_speaker_labels(segment_dir)
@@ -1142,11 +1146,13 @@ def api_correct_attribution() -> Any:
         )
     if not DATE_RE.fullmatch(day):
         return error_response(INVALID_DAY, detail="Invalid day format")
-    if not validate_segment_key(segment_key):
+    if not SEGMENT_KEY_RE.fullmatch(segment_key):
         return error_response(
             INVALID_SEGMENT_OR_STREAM,
             detail="Invalid segment key",
         )
+    if not STREAM_RE.fullmatch(stream):
+        return error_response(INVALID_SEGMENT_OR_STREAM, detail="Invalid stream")
 
     target_entity = load_journal_entity(new_speaker)
     if not target_entity:
@@ -1302,11 +1308,13 @@ def api_assign_attribution() -> Any:
         )
     if not DATE_RE.fullmatch(day):
         return error_response(INVALID_DAY, detail="Invalid day format")
-    if not validate_segment_key(segment_key):
+    if not SEGMENT_KEY_RE.fullmatch(segment_key):
         return error_response(
             INVALID_SEGMENT_OR_STREAM,
             detail="Invalid segment key",
         )
+    if not STREAM_RE.fullmatch(stream):
+        return error_response(INVALID_SEGMENT_OR_STREAM, detail="Invalid stream")
 
     target_entity = load_journal_entity(speaker)
     if not target_entity:
@@ -1746,6 +1754,15 @@ def api_cli_attribute_segment() -> Any:
 
     if not all([day, stream, segment]):
         return error_response(MISSING_REQUIRED_FIELD, detail="Missing required fields")
+    if not DATE_RE.fullmatch(day):
+        return error_response(INVALID_DAY, detail="Invalid day format")
+    if not SEGMENT_KEY_RE.fullmatch(segment):
+        return error_response(
+            INVALID_SEGMENT_OR_STREAM,
+            detail="Invalid segment key",
+        )
+    if not STREAM_RE.fullmatch(stream):
+        return error_response(INVALID_SEGMENT_OR_STREAM, detail="Invalid stream")
 
     result = attribute_segment(day, stream, segment)
     if result.get("error"):
@@ -1910,16 +1927,13 @@ def serve_audio(day: str, rel_path: str) -> Any:
     if not DATE_RE.fullmatch(day):
         return error_response(INVALID_DAY, detail="Day not found", status=404)
 
+    full_path = os.path.join(state.journal_root, day, rel_path)
     try:
-        full_path = os.path.join(state.journal_root, day, rel_path)
-        day_dir = str(day_path(day))
-        if not os.path.commonpath([full_path, day_dir]) == day_dir:
-            return error_response(INVALID_PATH, detail="Invalid file path", status=403)
-        if not os.path.isfile(full_path):
-            return error_response(FILE_NOT_FOUND, detail="File not found")
+        base = Path(state.journal_root, day).resolve()
+        candidate = Path(full_path).resolve()
     except (OSError, ValueError):
         logger.warning(
-            "serve_audio path validation failed for %s/%s",
+            "serve_audio path resolution failed for %s/%s",
             day,
             rel_path,
             exc_info=True,
@@ -1927,5 +1941,13 @@ def serve_audio(day: str, rel_path: str) -> Any:
         return error_response(
             FILE_READ_FAILED, detail="Failed to serve file", status=404
         )
+
+    try:
+        candidate.relative_to(base)
+    except ValueError:
+        return error_response(INVALID_PATH, detail="Invalid file path", status=403)
+
+    if not os.path.isfile(full_path):
+        return error_response(FILE_NOT_FOUND, detail="File not found")
 
     return send_file(full_path, mimetype="audio/flac")
