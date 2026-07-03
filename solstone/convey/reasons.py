@@ -14,6 +14,10 @@ class Reason:
 # auth
 AUTH_REQUIRED = Reason("auth_required", "I couldn't verify this request.", 401)
 AUTH_KEY_INVALID = Reason("auth_key_invalid", "I couldn't verify that key.", 401)
+HOST_NOT_ALLOWED = Reason("host_not_allowed", "I couldn't verify this request.", 403)
+CROSS_ORIGIN_BLOCKED = Reason(
+    "cross_origin_blocked", "I couldn't verify this request.", 403
+)
 PL_REVOKED = Reason(
     "pl_revoked",
     "I couldn't use that paired device because it was revoked.",

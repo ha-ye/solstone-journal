@@ -14,6 +14,7 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from flask import (
     Blueprint,
@@ -44,6 +45,8 @@ from .config import (
     seed_default_app_navigation,
 )
 from .reasons import (
+    CROSS_ORIGIN_BLOCKED,
+    HOST_NOT_ALLOWED,
     IDENTITY_NOT_LOCKED,
     INVALID_CONFIG_VALUE,
     INVALID_OPERATION_FOR_STATE,
@@ -130,6 +133,60 @@ def require_access() -> Any:
     # Check setup state
     if not _is_setup_complete():
         return redirect(url_for("root.init"))
+
+    return None
+
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+_SAME_SITE_FETCH = frozenset({"same-origin", "same-site", "none"})
+_STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _hostname(value: str, *, has_scheme: bool) -> str | None:
+    """Return the lowercased, port- and bracket-stripped hostname.
+
+    ``has_scheme=False`` handles a ``Host`` header (``127.0.0.1:5015``,
+    ``[::1]:5015``, ``localhost``); ``True`` handles an ``Origin`` URL.
+    """
+    reference = value if has_scheme else f"//{value}"
+    try:
+        return urlparse(reference).hostname
+    except ValueError:
+        return None
+
+
+@bp.before_app_request
+def guard_loopback_origin() -> Any:
+    """Reject cross-origin / rebound requests to the local (``dl``) surface.
+
+    The loopback bind is the only control on the ``dl`` surface, and it stops
+    neither a same-host browser page (CSRF) nor a DNS-rebound hostname (read
+    exfil). Paired (PL) devices authenticate by certificate fingerprint and are
+    untouched. Gated on identity mode — every legitimate ``dl`` request is
+    loopback-Host with no foreign Origin, so key-authed local ingest and the
+    setup wizard pass unchanged.
+    """
+    identity = getattr(g, "identity", None)
+    if identity is None or getattr(identity, "mode", None) != "dl":
+        return None
+
+    # Host allowlist (all methods) — a non-loopback Host means DNS rebinding.
+    host = _hostname(request.headers.get("Host", ""), has_scheme=False)
+    if host not in _LOOPBACK_HOSTS:
+        return error_response(HOST_NOT_ALLOWED, detail="host not allowed", status=403)
+
+    # Cross-site guard (state-changing methods) — closes same-host CSRF.
+    if request.method in _STATE_CHANGING_METHODS:
+        sec_fetch = request.headers.get("Sec-Fetch-Site")
+        if sec_fetch is not None and sec_fetch not in _SAME_SITE_FETCH:
+            return error_response(
+                CROSS_ORIGIN_BLOCKED, detail="cross-site request", status=403
+            )
+        origin = request.headers.get("Origin")
+        if origin and _hostname(origin, has_scheme=True) not in _LOOPBACK_HOSTS:
+            return error_response(
+                CROSS_ORIGIN_BLOCKED, detail="cross-origin request", status=403
+            )
 
     return None
 
