@@ -4,6 +4,15 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.22] - 2026-07-03
+
+### Added
+- you can now pair a device to your journal over a Tailscale network, not only a shared wi-fi. if your phone and your journal are on the same Tailscale network but different wi-fi, that direct connection now works for pairing.
+
+### Fixed
+- sol's summary of a day's processing now reflects what actually happened. the 'yesterday's processing' view used to flag problems on nearly every normal day, counting work that had already retried and finished, or that belonged to a different day, and cutting long lists short. it now shows only what genuinely didn't finish for that day, grouped by name with an honest count.
+- sol gets through a full day's processing more reliably. scheduled work that didn't run at its set time is now retried instead of waiting out a full cycle, the switch to a new day at midnight no longer gets stuck, and if one step runs into trouble sol keeps going with the rest instead of stalling. work that sol used to occasionally lose track of now either finishes or is recorded as a clear failure.
+
 ## [0.6.21] - 2026-07-02
 
 ### Changed
