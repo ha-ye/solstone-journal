@@ -100,6 +100,7 @@
               "reprocess_already_complete",
               "reprocess_past_only",
               "reprocess_unreachable",
+              "search_failed",
               "service_busy",
               "service_operation_failed",
               "settings_operation_failed",

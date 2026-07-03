@@ -233,6 +233,10 @@ ACTIVITY_PROTECTED = Reason(
     "I can't remove that always-on activity.",
     400,
 )
+
+# search
+SEARCH_FAILED = Reason("search_failed", "I couldn't search for that.", 400)
+
 # agent/talent
 AGENT_UNAVAILABLE = Reason(
     "agent_unavailable",

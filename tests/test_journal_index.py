@@ -6,7 +6,7 @@
 import hashlib
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -14,6 +14,7 @@ import pytest
 from solstone.convey.chat_stream import append_chat_event
 from solstone.think.indexer import sanitize_fts_query
 from solstone.think.indexer.journal import (
+    _build_where_clause,
     extract_temporal_references,
     get_journal_index,
     search_journal,
@@ -87,7 +88,7 @@ class TestSanitizeFtsQuery:
     def test_preserves_apostrophe(self):
         """Apostrophes in contractions are preserved."""
         assert sanitize_fts_query("what's up") == (
-            "NEAR(what's up, 10) OR (what's AND up)",
+            'NEAR("what\'s" up, 10) OR ("what\'s" AND up)',
             None,
             None,
         )
@@ -147,6 +148,14 @@ class TestSanitizeFtsQuery:
             None,
             None,
         )
+
+
+def test_build_where_clause_binds_match_param():
+    """FTS MATCH query text is bound as the first positional parameter."""
+    where_clause, params = _build_where_clause("it's")
+
+    assert where_clause == "chunks MATCH ?"
+    assert params[0] == '"it\'s"'
 
 
 class TestTemporalExtraction:
@@ -398,6 +407,44 @@ def test_search_journal_outputs(journal_fixture):
     # Should find the flow output mentioning "project alpha"
     found = any("alpha" in r["text"].lower() for r in results)
     assert found
+
+
+def test_search_journal_apostrophe_terms(journal_fixture):
+    """Apostrophe-bearing search terms are valid against a real scanned index."""
+    from solstone.think.indexer.journal import scan_journal
+
+    talents_dir = journal_fixture / "chronicle" / "20240101" / "talents"
+    (talents_dir / "apostrophes.md").write_text(
+        "# Apostrophe Search\n\n"
+        "it's indexed exactly here. "
+        "Bob O'Brien said don't panic. "
+        "O'Brien brought dogs to the review.\n"
+    )
+
+    scan_journal(str(journal_fixture), full=True)
+
+    for query in ("it's", "O'Brien", "don't panic", "O'Brien AND dogs"):
+        total, results = search_journal(query)
+        assert total >= 1
+        assert results
+
+
+def test_search_journal_yesterdays_meeting_apostrophe(journal_fixture):
+    """Wall-clock temporal extraction still matches apostrophe residue."""
+    from solstone.think.indexer.journal import scan_journal
+
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+    talents_dir = journal_fixture / "chronicle" / yesterday / "talents"
+    talents_dir.mkdir(parents=True, exist_ok=True)
+    (talents_dir / "flow.md").write_text(
+        "# Yesterday\n\nReviewed yesterday's meeting notes.\n"
+    )
+
+    scan_journal(str(journal_fixture), full=True)
+
+    total, results = search_journal("yesterday's meeting")
+    assert total >= 1
+    assert any("yesterday's meeting" in result["text"].lower() for result in results)
 
 
 def test_segment_sense_json_searchable_and_exact(journal_copy):

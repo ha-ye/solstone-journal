@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import html
 import re
+import sqlite3
 from typing import Any
 
 from flask import Blueprint, jsonify, request
 
-from solstone.convey.utils import format_date, parse_pagination_params
+from solstone.convey.reasons import SEARCH_FAILED
+from solstone.convey.utils import error_response, format_date, parse_pagination_params
 from solstone.think.facets import get_facets
 from solstone.think.indexer.journal import search_counts, search_journal
 
@@ -153,50 +155,55 @@ def search_journal_api() -> Any:
     # Load facet metadata for enriching results
     facets_map = get_facets()
 
-    # Get aggregation counts efficiently (lightweight query, no content)
-    # First get unfiltered counts for sidebar display
-    base_counts = search_counts(query, stream=stream_filter)
-    facet_counts = dict(base_counts["facets"])
-    agent_counts = dict(base_counts["agents"])
+    try:
+        # Get aggregation counts efficiently (lightweight query, no content)
+        # First get unfiltered counts for sidebar display
+        base_counts = search_counts(query, stream=stream_filter)
+        facet_counts = dict(base_counts["facets"])
+        agent_counts = dict(base_counts["agents"])
 
-    # Get filtered counts for results
-    filtered_counts = search_counts(
-        query, facet=facet_filter, agent=agent_filter, stream=stream_filter
-    )
-    day_counts = dict(filtered_counts["days"])
-
-    # Determine which days to show (sorted descending)
-    sorted_days = sorted(day_counts.keys(), reverse=True)
-
-    # Apply day pagination
-    paginated_days = sorted_days[day_offset : day_offset + 20]
-
-    # Fetch results for each paginated day
-    days_response = []
-    for day in paginated_days:
-        _, day_results = search_journal(
-            query,
-            limit=results_per_day,
-            offset=0,
-            day=day,
-            facet=facet_filter,
-            agent=agent_filter,
-            stream=stream_filter,
+        # Get filtered counts for results
+        filtered_counts = search_counts(
+            query, facet=facet_filter, agent=agent_filter, stream=stream_filter
         )
-        total_in_day = day_counts.get(day, 0)
+        day_counts = dict(filtered_counts["days"])
 
-        formatted_results = [_format_result(r, query, facets_map) for r in day_results]
+        # Determine which days to show (sorted descending)
+        sorted_days = sorted(day_counts.keys(), reverse=True)
 
-        days_response.append(
-            {
-                "day": day,
-                "date": format_date(day),
-                "total": total_in_day,
-                "showing": len(formatted_results),
-                "has_more": total_in_day > results_per_day,
-                "results": formatted_results,
-            }
-        )
+        # Apply day pagination
+        paginated_days = sorted_days[day_offset : day_offset + 20]
+
+        # Fetch results for each paginated day
+        days_response = []
+        for day in paginated_days:
+            _, day_results = search_journal(
+                query,
+                limit=results_per_day,
+                offset=0,
+                day=day,
+                facet=facet_filter,
+                agent=agent_filter,
+                stream=stream_filter,
+            )
+            total_in_day = day_counts.get(day, 0)
+
+            formatted_results = [
+                _format_result(r, query, facets_map) for r in day_results
+            ]
+
+            days_response.append(
+                {
+                    "day": day,
+                    "date": format_date(day),
+                    "total": total_in_day,
+                    "showing": len(formatted_results),
+                    "has_more": total_in_day > results_per_day,
+                    "results": formatted_results,
+                }
+            )
+    except sqlite3.OperationalError as exc:
+        return error_response(SEARCH_FAILED, detail=str(exc))
 
     # Build facet list for sidebar with counts (unfiltered counts for discovery)
     facets_list = []
@@ -265,24 +272,31 @@ def day_results_api() -> Any:
 
     facets_map = get_facets()
 
-    # Get total count for this day with filters
-    counts = search_counts(
-        query, day=day, facet=facet_filter, agent=agent_filter, stream=stream_filter
-    )
-    total_in_day = counts["total"]
+    try:
+        # Get total count for this day with filters
+        counts = search_counts(
+            query,
+            day=day,
+            facet=facet_filter,
+            agent=agent_filter,
+            stream=stream_filter,
+        )
+        total_in_day = counts["total"]
 
-    # Fetch paginated results
-    _, rows = search_journal(
-        query,
-        limit=limit,
-        offset=offset,
-        day=day,
-        facet=facet_filter,
-        agent=agent_filter,
-        stream=stream_filter,
-    )
+        # Fetch paginated results
+        _, rows = search_journal(
+            query,
+            limit=limit,
+            offset=offset,
+            day=day,
+            facet=facet_filter,
+            agent=agent_filter,
+            stream=stream_filter,
+        )
 
-    formatted = [_format_result(r, query, facets_map) for r in rows]
+        formatted = [_format_result(r, query, facets_map) for r in rows]
+    except sqlite3.OperationalError as exc:
+        return error_response(SEARCH_FAILED, detail=str(exc))
 
     return jsonify(
         {
