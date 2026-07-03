@@ -165,7 +165,7 @@ def test_schema_for_filename_selects_screen_and_audio_sidecars() -> None:
 
 def test_journal_contract_docs_cover_floor_and_maintenance_playbook() -> None:
     playbook = (
-        journal.ROOT / "vpe" / "playbooks" / "journal-format-contract-maintenance.md"
+        journal.ROOT / "docs" / "journal-format-contract-maintenance.md"
     ).read_text(encoding="utf-8")
 
     assert "## Adding an observer with a new format" in playbook

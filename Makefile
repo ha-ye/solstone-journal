@@ -550,13 +550,14 @@ check-contract: .installed
 	$(VENV_BIN)/python -m solstone.think.contract_cli check
 	$(VENV_BIN)/python -m solstone.think.contract_cli build --check
 
-# Re-run the live four-backend integrated-façade cogitate smoke. Spawns the
-# archived runner (extro `vpe/workspace/archived/`) against this venv so the
-# real openhands-sdk Agent path is exercised end-to-end. Requires real API
-# keys in env (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`) and
-# `llama-server` on PATH for the `local` backend. Catches v1.23-style Agent
-# schema regressions that the openhands-fake unit tests cannot.
-COGITATE_SMOKE_RUNNER ?= /home/jer/projects/extro/vpe/workspace/archived/cogitate-integrated-facade-smoke-260523.py
+# Re-run the live four-backend integrated-façade cogitate smoke. Spawns an
+# external runner script against this venv so the real openhands-sdk Agent path
+# is exercised end-to-end. Requires real API keys in env (`ANTHROPIC_API_KEY`,
+# `OPENAI_API_KEY`, `GOOGLE_API_KEY`) and `llama-server` on PATH for the `local`
+# backend. Catches v1.23-style Agent schema regressions that the openhands-fake
+# unit tests cannot. Set COGITATE_SMOKE_RUNNER=/path/to/script to point at the
+# runner; there is no default.
+COGITATE_SMOKE_RUNNER ?=
 
 smoke-cogitate: .installed
 	@test -f "$(COGITATE_SMOKE_RUNNER)" || { echo "cogitate smoke runner not found: $(COGITATE_SMOKE_RUNNER)" >&2; echo "set COGITATE_SMOKE_RUNNER=/path/to/script to override" >&2; exit 1; }
