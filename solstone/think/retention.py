@@ -5,14 +5,14 @@
 
 Manages the lifecycle of raw media files (layer 1 captures) in journal segments.
 Three retention modes:
-- keep: retain raw media indefinitely
-- days: delete raw media after N days, once processing is complete (default: 7)
+- keep: retain raw media indefinitely and purge nothing (default)
+- days: delete raw media after explicit N days, once processing is complete
 - processed: delete raw media as soon as processing completes
 
 Scope: raw media ONLY. Chronicle JSONL, derived outputs, talents/ directories,
 and all other journal content persist indefinitely and are never touched by
-retention. Do not extrapolate the "7 days" default to any other data — it is
-specific to raw media purging.
+retention. Days mode requires an explicit days value from config or CLI override;
+without one, it purges nothing.
 
 Safety invariant: never delete raw media from segments that haven't finished
 processing. All completion checks must pass before any deletion.
@@ -29,10 +29,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from solstone.think.data_state import DataState, derive_modality_state
 from solstone.think.media import AUDIO_EXTENSIONS as RAW_AUDIO_EXTENSIONS
 from solstone.think.media import MEDIA_EXTENSIONS as RAW_MEDIA_EXTENSIONS
 from solstone.think.media import VIDEO_EXTENSIONS as RAW_VIDEO_EXTENSIONS
-from solstone.think.pruning_audit import write_prune_audit
+from solstone.think.pruning_audit import AuditOutcome, write_prune_audit
 from solstone.think.utils import day_dirs, get_journal, iter_segments
 
 logger = logging.getLogger(__name__)
@@ -71,72 +72,185 @@ def get_raw_media_files(segment_path: Path) -> list[Path]:
 # ---------------------------------------------------------------------------
 
 
-def is_segment_complete(segment_path: Path) -> bool:
-    """Check if a segment has finished all processing.
+@dataclass
+class SegmentGate:
+    """Deletion gate verdict for one segment."""
 
-    Completion checks (ALL must pass):
-    1. No _active.jsonl files in talents/
-    2. audio.jsonl exists if any audio raw media was captured
-    3. screen.jsonl exists if any video raw media was captured
-    4. talents/speaker_labels.json exists if embeddings (.npz) are present
-    """
+    verdict: str
+    failed_files: dict[str, str] = field(default_factory=dict)
+    completion_files: list[Path] = field(default_factory=list)
+
+
+def _matching_extraction_files(
+    segment_path: Path, patterns: tuple[str, ...]
+) -> list[Path]:
+    return sorted(
+        {
+            path
+            for pattern in patterns
+            for path in segment_path.glob(pattern)
+            if path.is_file()
+        }
+    )
+
+
+def _derive_extraction_file_state(
+    seg_path: Path,
+    jsonl_path: Path,
+    *,
+    modality: str,
+    marker_key: str,
+    has_raw: bool,
+) -> str:
+    """Read one extraction file strictly enough for irreversible deletion."""
+    try:
+        lines: list[str] = []
+        with jsonl_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                lines.append(line)
+                if len(lines) == 2:
+                    break
+    except OSError:
+        return "malformed"
+
+    if not lines:
+        return "malformed"
+
+    try:
+        header = json.loads(lines[0])
+    except (json.JSONDecodeError, ValueError):
+        return "malformed"
+    if not isinstance(header, dict):
+        return "malformed"
+
+    record = header.get("_solstone_processing")
+    if not isinstance(record, dict):
+        record = None
+
+    # Row 1 is always the metadata header. A stray marker key merged through
+    # SEGMENT_META must never make a header-only file look chunk-bearing when
+    # retention is deciding whether raw media can be irreversibly deleted.
+    has_chunks = False
+    if len(lines) == 2:
+        try:
+            first_chunk = json.loads(lines[1])
+        except (json.JSONDecodeError, ValueError):
+            first_chunk = None
+        has_chunks = isinstance(first_chunk, dict) and marker_key in first_chunk
+
+    return derive_modality_state(
+        seg_path,
+        modality,
+        has_chunks=has_chunks,
+        has_jsonl=True,
+        has_raw=has_raw,
+        record=record,
+    )
+
+
+def _collect_extraction_states(
+    segment_path: Path,
+    paths: list[Path],
+    *,
+    modality: str,
+    marker_key: str,
+    has_raw: bool,
+    failed_files: dict[str, str],
+    completion_files: list[Path],
+) -> bool:
+    incomplete = False
+    for path in paths:
+        state = _derive_extraction_file_state(
+            segment_path,
+            path,
+            modality=modality,
+            marker_key=marker_key,
+            has_raw=has_raw,
+        )
+        if state == "malformed":
+            failed_files[path.name] = "malformed"
+        elif state == DataState.FAILED.value:
+            failed_files[path.name] = DataState.FAILED.value
+        elif state in {DataState.PENDING.value, DataState.ANALYZING.value}:
+            incomplete = True
+        elif state in {DataState.ANALYZED.value, DataState.EMPTY.value}:
+            completion_files.append(path)
+        else:  # pragma: no cover - derive_modality_state owns this closed vocabulary.
+            raise RuntimeError(f"unexpected {modality} data state for {path}: {state}")
+    return incomplete
+
+
+def resolve_segment_gate(segment_path: Path) -> SegmentGate:
+    """Resolve whether a segment's raw media is safe to purge."""
     agents_dir = segment_path / "talents"
+    incomplete = False
+    failed_files: dict[str, str] = {}
+    completion_files: list[Path] = []
 
-    # Check 1: no active agent files
     if agents_dir.is_dir():
         for f in agents_dir.iterdir():
             if f.is_file() and f.name.endswith("_active.jsonl"):
-                return False
+                incomplete = True
+                break
 
     files = [f for f in segment_path.iterdir() if f.is_file()]
-    file_names = {f.name for f in files}
     file_suffixes = {f.suffix.lower() for f in files}
-
-    # Check 2: audio transcript exists if audio was captured
-    if file_suffixes & RAW_AUDIO_EXTENSIONS:
-        has_audio_extract = "audio.jsonl" in file_names or any(
-            n.endswith("_audio.jsonl") for n in file_names
-        )
-        if not has_audio_extract:
-            return False
-
-    # Check 3: screen extract exists if video was captured
-    if file_suffixes & RAW_VIDEO_EXTENSIONS:
-        has_screen_extract = "screen.jsonl" in file_names or any(
-            n.endswith("_screen.jsonl") for n in file_names
-        )
-        if not has_screen_extract:
-            return False
-
-    # Check 4: speaker labels exist if embeddings are present
-    if ".npz" in file_suffixes:
-        if not agents_dir.is_dir() or not (agents_dir / "speaker_labels.json").exists():
-            return False
-
-    return True
-
-
-def _get_completion_files(segment_path: Path) -> list[Path]:
-    """Return existing completion-indicating files for a segment."""
-    completion_files: list[Path] = []
-
-    for name in ("audio.jsonl", "screen.jsonl"):
-        path = segment_path / name
-        if path.exists():
-            completion_files.append(path)
-
-    completion_files.extend(
-        path
-        for pattern in ("*_audio.jsonl", "*_screen.jsonl")
-        for path in segment_path.glob(pattern)
-        if path.is_file()
+    has_audio_raw = bool(file_suffixes & RAW_AUDIO_EXTENSIONS)
+    has_video_raw = bool(file_suffixes & RAW_VIDEO_EXTENSIONS)
+    audio_extracts = _matching_extraction_files(
+        segment_path, ("audio.jsonl", "*_audio.jsonl")
+    )
+    screen_extracts = _matching_extraction_files(
+        segment_path, ("screen.jsonl", "*_screen.jsonl")
     )
 
-    speaker_labels = segment_path / "talents" / "speaker_labels.json"
+    if has_audio_raw and not audio_extracts:
+        incomplete = True
+
+    # monitor_*_diff.png files are raw media but have no extraction record. They
+    # ride the whole-segment gate and are only deleted when audio/video checks pass.
+    if has_video_raw and not screen_extracts:
+        incomplete = True
+
+    speaker_labels = agents_dir / "speaker_labels.json"
+    if ".npz" in file_suffixes:
+        if not agents_dir.is_dir() or not speaker_labels.exists():
+            incomplete = True
+
+    incomplete = (
+        _collect_extraction_states(
+            segment_path,
+            audio_extracts,
+            modality="audio",
+            marker_key="start",
+            has_raw=has_audio_raw,
+            failed_files=failed_files,
+            completion_files=completion_files,
+        )
+        or incomplete
+    )
+    incomplete = (
+        _collect_extraction_states(
+            segment_path,
+            screen_extracts,
+            modality="screen",
+            marker_key="timestamp",
+            has_raw=has_video_raw,
+            failed_files=failed_files,
+            completion_files=completion_files,
+        )
+        or incomplete
+    )
+
+    if failed_files:
+        return SegmentGate("failed", failed_files=failed_files)
     if speaker_labels.exists():
         completion_files.append(speaker_labels)
-
-    return completion_files
+    if incomplete:
+        return SegmentGate("incomplete", completion_files=completion_files)
+    return SegmentGate("eligible", completion_files=completion_files)
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +469,9 @@ class PurgeResult:
     segments_processed: int = 0
     segments_skipped_incomplete: int = 0
     segments_skipped_policy: int = 0
+    segments_blocked_failed: int = 0
+    blocked_failed_details: list[dict[str, Any]] = field(default_factory=list)
+    partial_error: bool = False
     details: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -403,13 +520,34 @@ def purge(
 
             result.segments_processed += 1
 
+            gate = resolve_segment_gate(seg_path)
+            if gate.verdict == "failed":
+                result.segments_blocked_failed += 1
+                blocked_detail = {
+                    "day": day_name,
+                    "stream": stream_name,
+                    "segment": seg_key,
+                    "files": gate.failed_files,
+                }
+                result.blocked_failed_details.append(blocked_detail)
+                logger.warning(
+                    "retention: blocked purge - extraction failed: %s/%s/%s files=%s",
+                    day_name,
+                    stream_name,
+                    seg_key,
+                    gate.failed_files,
+                )
+                continue
+
             # Safety invariant: never delete from incomplete segments
-            if not is_segment_complete(seg_path):
+            if gate.verdict == "incomplete":
                 result.segments_skipped_incomplete += 1
                 logger.debug(
                     "Skipping incomplete: %s/%s/%s", day_name, stream_name, seg_key
                 )
                 continue
+            if gate.verdict != "eligible":
+                raise RuntimeError(f"unexpected retention gate verdict: {gate.verdict}")
 
             # Check eligibility
             if older_than_days is not None:
@@ -440,10 +578,9 @@ def purge(
                     f.unlink()
                     logger.info("Deleted: %s (%s)", f, _human_bytes(size))
 
-            completion_files = _get_completion_files(seg_path)
             processed_at = None
-            if completion_files:
-                latest_mtime = max(f.stat().st_mtime for f in completion_files)
+            if gate.completion_files:
+                latest_mtime = max(f.stat().st_mtime for f in gate.completion_files)
                 processed_at = datetime.fromtimestamp(latest_mtime).isoformat()
 
             result.files_deleted += len(raw_files)
@@ -459,67 +596,68 @@ def purge(
                 }
             )
 
-    if not dry_run and result.files_deleted > 0:
+            if not dry_run and segment_files:
+                outcome = _write_segment_prune_audit(
+                    journal_path,
+                    day_name,
+                    stream_name,
+                    seg_key,
+                    segment_files,
+                    segment_bytes,
+                    processed_at,
+                    older_than_days,
+                )
+                for audit_day, error in outcome.per_day_failures.items():
+                    result.partial_error = True
+                    logger.warning(
+                        "retention: failed to append pruning task log for %s: %s",
+                        audit_day,
+                        error,
+                    )
+                if outcome.global_record_error is not None:
+                    result.partial_error = True
+                    logger.warning(
+                        "retention: failed to append pruning run record: %s",
+                        outcome.global_record_error,
+                    )
+
+    if not dry_run and (result.files_deleted > 0 or result.segments_blocked_failed > 0):
         _write_retention_log(journal_path, result)
-        _write_retention_prune_audit(journal_path, result, older_than_days)
 
     return result
 
 
-def _raw_media_audit_by_day(result: PurgeResult) -> dict[str, dict[str, int]]:
-    by_day: dict[str, dict[str, int]] = {}
-    for detail in result.details:
-        day = str(detail["day"])
-        entry = by_day.setdefault(
-            day,
-            {"files_deleted": 0, "bytes_freed": 0, "segments": 0},
-        )
-        entry["files_deleted"] += len(detail.get("files", []))
-        entry["bytes_freed"] += int(detail.get("bytes_freed", 0))
-        entry["segments"] += 1
-    return by_day
-
-
-def _raw_media_audit_day_messages(
-    by_day: dict[str, dict[str, int]],
-) -> dict[str, str]:
-    return {
-        day: (
-            "raw-media retention: pruned "
-            f"{stats['files_deleted']} raw media file(s) "
-            f"({_human_bytes(stats['bytes_freed'])}) from "
-            f"{stats['segments']} segment(s) for this day"
-        )
-        for day, stats in sorted(by_day.items())
-    }
-
-
-def _write_retention_prune_audit(
+def _write_segment_prune_audit(
     journal_path: Path,
-    result: PurgeResult,
+    day: str,
+    stream: str,
+    segment: str,
+    files: list[dict[str, Any]],
+    bytes_freed: int,
+    processed_at: str | None,
     older_than_days: int | None,
-) -> None:
-    by_day = _raw_media_audit_by_day(result)
+) -> AuditOutcome:
     run_record = {
         "timestamp": datetime.now().isoformat(),
         "kind": "raw_media",
         "dry_run": False,
         "days": older_than_days,
-        "by_day": by_day,
-        "totals": {
-            "files_deleted": result.files_deleted,
-            "bytes_freed": result.bytes_freed,
-            "segments_processed": result.segments_processed,
-            "segments_skipped_incomplete": result.segments_skipped_incomplete,
-        },
-        "details": result.details,
-        "errors": [],
+        "day": day,
+        "stream": stream,
+        "segment": segment,
+        "files": files,
+        "bytes_freed": bytes_freed,
+        "processed_at": processed_at,
     }
-    write_prune_audit(
+    message = (
+        f"raw-media retention: pruned {len(files)} raw media file(s) "
+        f"({_human_bytes(bytes_freed)}) from segment {stream}/{segment}"
+    )
+    return write_prune_audit(
         journal_path,
         kind="raw_media",
         run_record=run_record,
-        per_day_messages=_raw_media_audit_day_messages(by_day),
+        per_day_messages={day: message},
     )
 
 
@@ -535,6 +673,9 @@ def _write_retention_log(journal_path: Path, result: PurgeResult) -> None:
         "bytes_freed": result.bytes_freed,
         "segments_processed": result.segments_processed,
         "segments_skipped_incomplete": result.segments_skipped_incomplete,
+        "segments_blocked_failed": result.segments_blocked_failed,
+        "blocked_failed_details": result.blocked_failed_details,
+        "partial_error": result.partial_error,
         "details": result.details,
     }
 

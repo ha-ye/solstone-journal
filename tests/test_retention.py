@@ -8,7 +8,12 @@ import json
 import os
 import shutil
 from datetime import datetime
+from pathlib import Path
 
+import pytest
+from typer.testing import CliRunner
+
+from solstone.observe.processing_record import STATE_EMPTY, STATE_FAILED
 from solstone.think.retention import (
     RetentionConfig,
     RetentionPolicy,
@@ -17,10 +22,63 @@ from solstone.think.retention import (
     check_storage_health,
     get_raw_media_files,
     is_raw_media,
-    is_segment_complete,
     load_retention_config,
     purge,
+    resolve_segment_gate,
 )
+from solstone.think.tools.call import retention_app
+
+
+def _write_jsonl(path: Path, *records: dict) -> None:
+    path.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+
+
+def _processing_record(state: str) -> dict:
+    return {
+        "schema": "solstone.processing.v1",
+        "state": state,
+        "reason_code": "test",
+        "handler": "test",
+        "attempted_at": "2026-01-01T00:00:00Z",
+        "input_size": 1,
+    }
+
+
+def _write_audio_success(path: Path, raw: str = "audio.flac") -> None:
+    _write_jsonl(path, {"raw": raw}, {"start": "00:00:00", "text": "ok"})
+
+
+def _write_screen_success(path: Path, raw: str = "screen.webm") -> None:
+    _write_jsonl(path, {"raw": raw}, {"timestamp": 0.0, "content": {}})
+
+
+def _write_processing_header(path: Path, raw: str, state: str) -> None:
+    _write_jsonl(path, {"raw": raw, "_solstone_processing": _processing_record(state)})
+
+
+def _install_test_journal(
+    journal: Path, monkeypatch, fixed_now: datetime | None = None
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    fixed_now = fixed_now or datetime(2026, 4, 15)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is not None:
+                return fixed_now.replace(tzinfo=tz)
+            return fixed_now
+
+    monkeypatch.setattr("solstone.think.retention.datetime", FixedDateTime)
+    monkeypatch.setattr("solstone.think.pruning_audit.datetime", FixedDateTime)
+
+    import solstone.think.utils as think_utils
+
+    think_utils._journal_path_cache = None
+
 
 # ---------------------------------------------------------------------------
 # is_raw_media
@@ -88,7 +146,7 @@ class TestGetRawMediaFiles:
 
 
 # ---------------------------------------------------------------------------
-# is_segment_complete
+# resolve_segment_gate
 # ---------------------------------------------------------------------------
 
 
@@ -106,7 +164,7 @@ def _make_segment(
 ):
     """Create a segment directory with specified contents."""
     seg = tmp_path / "segment"
-    seg.mkdir(exist_ok=True)
+    seg.mkdir(parents=True, exist_ok=True)
     agents_dir = seg / "talents"
     agents_dir.mkdir(exist_ok=True)
 
@@ -117,9 +175,9 @@ def _make_segment(
     if embeddings:
         (seg / "audio.npz").write_bytes(b"npz")
     if audio and audio_extract:
-        (seg / "audio.jsonl").write_text('{"raw":"audio.flac"}\n')
+        _write_audio_success(seg / "audio.jsonl")
     if video and screen_extract:
-        (seg / "screen.jsonl").write_text('{"raw":"screen.webm"}\n')
+        _write_screen_success(seg / "screen.jsonl", video_name)
     if embeddings and speaker_labels:
         (agents_dir / "speaker_labels.json").write_text("{}")
     if active_agents:
@@ -129,40 +187,40 @@ def _make_segment(
     return seg
 
 
-class TestIsSegmentComplete:
-    def test_complete_audio_video(self, tmp_path):
+class TestResolveSegmentGate:
+    def test_complete_audio_video_is_eligible(self, tmp_path):
         seg = _make_segment(tmp_path, audio=True, video=True, embeddings=True)
-        assert is_segment_complete(seg)
+        assert resolve_segment_gate(seg).verdict == "eligible"
 
-    def test_complete_audio_only(self, tmp_path):
+    def test_complete_audio_only_is_eligible(self, tmp_path):
         seg = _make_segment(tmp_path, audio=True)
-        assert is_segment_complete(seg)
+        assert resolve_segment_gate(seg).verdict == "eligible"
 
-    def test_complete_video_only(self, tmp_path):
+    def test_complete_video_only_is_eligible(self, tmp_path):
         seg = _make_segment(tmp_path, video=True)
-        assert is_segment_complete(seg)
+        assert resolve_segment_gate(seg).verdict == "eligible"
 
     def test_incomplete_missing_audio_extract(self, tmp_path):
         seg = _make_segment(tmp_path, audio=True, audio_extract=False)
-        assert not is_segment_complete(seg)
+        assert resolve_segment_gate(seg).verdict == "incomplete"
 
     def test_incomplete_missing_screen_extract(self, tmp_path):
         seg = _make_segment(tmp_path, video=True, screen_extract=False)
-        assert not is_segment_complete(seg)
+        assert resolve_segment_gate(seg).verdict == "incomplete"
 
     def test_incomplete_missing_screen_extract_for_mp4(self, tmp_path):
         seg = _make_segment(
             tmp_path, video=True, video_name="screen.mp4", screen_extract=False
         )
-        assert not is_segment_complete(seg)
+        assert resolve_segment_gate(seg).verdict == "incomplete"
 
     def test_complete_mp4_with_screen_extract(self, tmp_path):
         seg = _make_segment(tmp_path, video=True, video_name="screen.mp4")
-        assert is_segment_complete(seg)
+        assert resolve_segment_gate(seg).verdict == "eligible"
 
     def test_incomplete_missing_speaker_labels(self, tmp_path):
         seg = _make_segment(tmp_path, audio=True, embeddings=True, speaker_labels=False)
-        assert not is_segment_complete(seg)
+        assert resolve_segment_gate(seg).verdict == "incomplete"
 
     def test_complete_with_stub_speaker_labels(self, tmp_path):
         """Stub speaker_labels.json (skipped=True, labels=[]) unblocks retention."""
@@ -171,26 +229,206 @@ class TestIsSegmentComplete:
         stub.write_text(
             json.dumps({"labels": [], "skipped": True, "reason": "no_owner_centroid"})
         )
-        assert is_segment_complete(seg)
+        assert resolve_segment_gate(seg).verdict == "eligible"
 
     def test_incomplete_active_agents(self, tmp_path):
         seg = _make_segment(tmp_path, audio=True, active_agents=True)
-        assert not is_segment_complete(seg)
+        assert resolve_segment_gate(seg).verdict == "incomplete"
 
-    def test_no_raw_media_is_complete(self, tmp_path):
-        """Segment with only derived content is considered complete."""
+    def test_no_raw_media_is_eligible_with_terminal_extract(self, tmp_path):
+        """Segment with only terminal derived content is considered eligible."""
         seg = tmp_path / "segment"
         seg.mkdir()
-        (seg / "audio.jsonl").write_text("transcript")
+        _write_audio_success(seg / "audio.jsonl")
         (seg / "stream.json").write_text("{}")
-        assert is_segment_complete(seg)
+        assert resolve_segment_gate(seg).verdict == "eligible"
 
     def test_no_agents_dir_is_ok(self, tmp_path):
         """No agents/ directory = no active agents = passes check 1."""
         seg = tmp_path / "segment"
         seg.mkdir()
         (seg / "stream.json").write_text("{}")
-        assert is_segment_complete(seg)
+        assert resolve_segment_gate(seg).verdict == "eligible"
+
+    def test_failed_audio_record_blocks(self, tmp_path):
+        seg = _make_segment(tmp_path, audio=True, audio_extract=False)
+        _write_processing_header(seg / "audio.jsonl", "audio.flac", STATE_FAILED)
+
+        gate = resolve_segment_gate(seg)
+
+        assert gate.verdict == "failed"
+        assert gate.failed_files == {"audio.jsonl": "failed"}
+
+    def test_corrupt_analyzing_marker_blocks(self, tmp_path):
+        seg = _make_segment(tmp_path, audio=True, audio_extract=False)
+        _write_jsonl(seg / "audio.jsonl", {"raw": "audio.flac"})
+        (seg / ".analyzing_audio").write_text("not json", encoding="utf-8")
+
+        gate = resolve_segment_gate(seg)
+
+        assert gate.verdict == "failed"
+        assert gate.failed_files == {"audio.jsonl": "failed"}
+
+    def test_stale_analyzing_marker_blocks(self, tmp_path):
+        seg = _make_segment(tmp_path, audio=True, audio_extract=False)
+        _write_jsonl(seg / "audio.jsonl", {"raw": "audio.flac"})
+        marker = seg / ".analyzing_audio"
+        marker.write_text(
+            '{"started_at": "2026-04-15T10:00:00Z", "modality": "audio"}\n',
+            encoding="utf-8",
+        )
+        os.utime(marker, (0, 0))
+
+        gate = resolve_segment_gate(seg)
+
+        assert gate.verdict == "failed"
+        assert gate.failed_files == {"audio.jsonl": "failed"}
+
+    def test_failed_marker_blocks(self, tmp_path):
+        seg = _make_segment(tmp_path, audio=True, audio_extract=False)
+        _write_jsonl(seg / "audio.jsonl", {"raw": "audio.flac"})
+        (seg / ".analyze_failed_audio").write_text(
+            '{"reason": "test"}\n', encoding="utf-8"
+        )
+
+        gate = resolve_segment_gate(seg)
+
+        assert gate.verdict == "failed"
+        assert gate.failed_files == {"audio.jsonl": "failed"}
+
+    def test_empty_audio_record_is_eligible(self, tmp_path):
+        seg = _make_segment(tmp_path, audio=True, audio_extract=False)
+        _write_processing_header(seg / "audio.jsonl", "audio.flac", STATE_EMPTY)
+
+        gate = resolve_segment_gate(seg)
+
+        assert gate.verdict == "eligible"
+        assert seg / "audio.jsonl" in gate.completion_files
+
+    def test_legacy_chunk_bearing_no_record_is_eligible(self, tmp_path):
+        seg = _make_segment(tmp_path, audio=True)
+
+        assert resolve_segment_gate(seg).verdict == "eligible"
+
+    def test_audio_header_start_poisoning_does_not_mask_failure(self, tmp_path):
+        seg = _make_segment(tmp_path, audio=True, audio_extract=False)
+        header = {
+            "raw": "audio.flac",
+            "start": "not-a-chunk",
+            "_solstone_processing": _processing_record(STATE_FAILED),
+        }
+        _write_jsonl(seg / "audio.jsonl", header)
+
+        gate = resolve_segment_gate(seg)
+
+        assert gate.verdict == "failed"
+        assert gate.failed_files == {"audio.jsonl": "failed"}
+
+    def test_screen_header_timestamp_poisoning_does_not_mask_failure(self, tmp_path):
+        seg = _make_segment(tmp_path, video=True, screen_extract=False)
+        header = {
+            "raw": "screen.webm",
+            "timestamp": "not-a-chunk",
+            "_solstone_processing": _processing_record(STATE_FAILED),
+        }
+        _write_jsonl(seg / "screen.jsonl", header)
+
+        gate = resolve_segment_gate(seg)
+
+        assert gate.verdict == "failed"
+        assert gate.failed_files == {"screen.jsonl": "failed"}
+
+    def test_audio_analyzed_sibling_does_not_mask_failed_sibling(self, tmp_path):
+        seg = _make_segment(tmp_path, audio=True)
+        (seg / "meeting_audio.flac").write_bytes(b"audio")
+        _write_processing_header(
+            seg / "meeting_audio.jsonl", "meeting_audio.flac", STATE_FAILED
+        )
+
+        gate = resolve_segment_gate(seg)
+
+        assert gate.verdict == "failed"
+        assert gate.failed_files == {"meeting_audio.jsonl": "failed"}
+
+    def test_screen_analyzed_sibling_does_not_mask_failed_sibling(self, tmp_path):
+        seg = _make_segment(tmp_path, video=True, screen_extract=False)
+        (seg / "left_screen.webm").write_bytes(b"video")
+        (seg / "right_screen.webm").write_bytes(b"video")
+        _write_screen_success(seg / "left_screen.jsonl", "left_screen.webm")
+        _write_processing_header(
+            seg / "right_screen.jsonl", "right_screen.webm", STATE_FAILED
+        )
+
+        gate = resolve_segment_gate(seg)
+
+        assert gate.verdict == "failed"
+        assert gate.failed_files == {"right_screen.jsonl": "failed"}
+
+    def test_pending_and_analyzing_are_incomplete_not_blocked(self, tmp_path):
+        pending = _make_segment(tmp_path / "pending", audio=True, audio_extract=False)
+        _write_jsonl(pending / "audio.jsonl", {"raw": "audio.flac"})
+        analyzing = _make_segment(
+            tmp_path / "analyzing", audio=True, audio_extract=False
+        )
+        _write_jsonl(analyzing / "audio.jsonl", {"raw": "audio.flac"})
+        (analyzing / ".analyzing_audio").write_text(
+            '{"started_at": "2026-04-15T10:00:00Z", "modality": "audio"}\n',
+            encoding="utf-8",
+        )
+
+        assert resolve_segment_gate(pending).verdict == "incomplete"
+        assert resolve_segment_gate(analyzing).verdict == "incomplete"
+
+    def test_zero_nonblank_extraction_blocks_as_malformed(self, tmp_path):
+        seg = _make_segment(tmp_path, audio=True, audio_extract=False)
+        (seg / "audio.jsonl").write_text("\n\n", encoding="utf-8")
+
+        gate = resolve_segment_gate(seg)
+
+        assert gate.verdict == "failed"
+        assert gate.failed_files == {"audio.jsonl": "malformed"}
+
+    def test_invalid_json_header_blocks_as_malformed(self, tmp_path):
+        seg = _make_segment(tmp_path, audio=True, audio_extract=False)
+        (seg / "audio.jsonl").write_text("not json\n", encoding="utf-8")
+
+        gate = resolve_segment_gate(seg)
+
+        assert gate.verdict == "failed"
+        assert gate.failed_files == {"audio.jsonl": "malformed"}
+
+    def test_non_object_header_blocks_as_malformed(self, tmp_path):
+        seg = _make_segment(tmp_path, audio=True, audio_extract=False)
+        (seg / "audio.jsonl").write_text('"header"\n', encoding="utf-8")
+
+        gate = resolve_segment_gate(seg)
+
+        assert gate.verdict == "failed"
+        assert gate.failed_files == {"audio.jsonl": "malformed"}
+
+    def test_unreadable_extraction_blocks_as_malformed(self, tmp_path, monkeypatch):
+        seg = _make_segment(tmp_path, audio=True, audio_extract=False)
+        target = seg / "audio.jsonl"
+        _write_audio_success(target)
+        original_open = Path.open
+
+        def blocked_open(path, *args, **kwargs):
+            if path == target:
+                raise OSError("blocked")
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", blocked_open)
+
+        gate = resolve_segment_gate(seg)
+
+        assert gate.verdict == "failed"
+        assert gate.failed_files == {"audio.jsonl": "malformed"}
+
+    def test_monitor_diff_rides_segment_gate(self, tmp_path):
+        seg = _make_segment(tmp_path, audio=True)
+        (seg / "monitor_1_diff.png").write_bytes(b"diff")
+
+        assert resolve_segment_gate(seg).verdict == "eligible"
 
 
 # ---------------------------------------------------------------------------
@@ -298,14 +536,14 @@ class TestPurge:
         day1 = journal / "chronicle" / "20260115" / "default" / "100000_300"
         day1.mkdir(parents=True)
         (day1 / "audio.flac").write_bytes(b"x" * 1000)
-        (day1 / "audio.jsonl").write_text('{"raw":"audio.flac"}\n')
+        _write_audio_success(day1 / "audio.jsonl")
         (day1 / "stream.json").write_text('{"stream":"default"}')
         (day1 / "talents").mkdir()
 
         day1b = journal / "chronicle" / "20260115" / "plaud" / "103000_300"
         day1b.mkdir(parents=True)
         (day1b / "audio.m4a").write_bytes(b"x" * 500)
-        (day1b / "audio.jsonl").write_text('{"raw":"audio.m4a"}\n')
+        _write_audio_success(day1b / "audio.jsonl", "audio.m4a")
         (day1b / "stream.json").write_text('{"stream":"plaud"}')
         (day1b / "talents").mkdir()
 
@@ -313,7 +551,7 @@ class TestPurge:
         day2 = journal / "chronicle" / "20260401" / "default" / "120000_300"
         day2.mkdir(parents=True)
         (day2 / "audio.flac").write_bytes(b"x" * 800)
-        (day2 / "audio.jsonl").write_text('{"raw":"audio.flac"}\n')
+        _write_audio_success(day2 / "audio.jsonl")
         (day2 / "stream.json").write_text('{"stream":"default"}')
         (day2 / "talents").mkdir()
 
@@ -323,23 +561,7 @@ class TestPurge:
         (day3 / "audio.flac").write_bytes(b"x" * 600)
         (day3 / "stream.json").write_text('{"stream":"default"}')
 
-        monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-        fixed_now = datetime(2026, 4, 15)
-
-        class FixedDateTime(datetime):
-            @classmethod
-            def now(cls, tz=None):
-                if tz is not None:
-                    return fixed_now.replace(tzinfo=tz)
-                return fixed_now
-
-        monkeypatch.setattr("solstone.think.retention.datetime", FixedDateTime)
-        monkeypatch.setattr("solstone.think.pruning_audit.datetime", FixedDateTime)
-        # Clear cached journal path
-        import solstone.think.utils as think_utils
-
-        think_utils._journal_path_cache = None
-
+        _install_test_journal(journal, monkeypatch)
         return journal
 
     def test_dry_run(self, tmp_path, monkeypatch):
@@ -356,7 +578,6 @@ class TestPurge:
         assert (
             journal / "chronicle" / "20260115" / "plaud" / "103000_300" / "audio.m4a"
         ).exists()
-        # No retention log for dry run
         assert not (journal / "health" / "retention.log").exists()
         assert not (journal / "health" / "pruning-runs").exists()
 
@@ -387,28 +608,75 @@ class TestPurge:
         assert (journal / "health" / "retention.log").exists()
         run_log = journal / "health" / "pruning-runs" / "20260415.jsonl"
         assert run_log.exists()
-        run_record = json.loads(run_log.read_text(encoding="utf-8").strip())
-        assert run_record["kind"] == "raw_media"
-        assert run_record["dry_run"] is False
-        assert run_record["days"] == 30
-        assert run_record["by_day"] == {
-            "20260115": {
-                "files_deleted": 2,
-                "bytes_freed": 1500,
-                "segments": 2,
-            }
-        }
-        assert run_record["totals"]["files_deleted"] == 2
-        assert run_record["totals"]["bytes_freed"] == 1500
-        assert run_record["totals"]["segments_skipped_incomplete"] == 1
-        assert run_record["details"] == result.details
-        assert run_record["errors"] == []
+        records = [
+            json.loads(line)
+            for line in run_log.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(records) == 2
+        by_segment = {record["segment"]: record for record in records}
+        default_record = by_segment["100000_300"]
+        plaud_record = by_segment["103000_300"]
+        assert default_record["kind"] == "raw_media"
+        assert default_record["dry_run"] is False
+        assert default_record["days"] == 30
+        assert default_record["day"] == "20260115"
+        assert default_record["stream"] == "default"
+        assert default_record["files"][0]["name"] == "audio.flac"
+        assert default_record["files"][0]["bytes"] == 1000
+        assert default_record["bytes_freed"] == 1000
+        assert isinstance(default_record["processed_at"], str)
+        assert plaud_record["stream"] == "plaud"
+        assert plaud_record["files"][0]["name"] == "audio.m4a"
+        assert plaud_record["files"][0]["bytes"] == 500
+        assert plaud_record["bytes_freed"] == 500
         task_log = journal / "chronicle" / "20260115" / "task_log.txt"
         task_line = task_log.read_text(encoding="utf-8")
         assert (
-            "raw-media retention: pruned 2 raw media file(s) (1.5 KB) "
-            "from 2 segment(s) for this day"
+            "raw-media retention: pruned 1 raw media file(s) (1000 B) "
+            "from segment default/100000_300"
         ) in task_line
+        assert (
+            "raw-media retention: pruned 1 raw media file(s) (500 B) "
+            "from segment plaud/103000_300"
+        ) in task_line
+
+    def test_mid_purge_interruption_preserves_prior_segment_audit(
+        self, tmp_path, monkeypatch
+    ):
+        journal = self._setup_journal(tmp_path, monkeypatch)
+        first_raw = (
+            journal / "chronicle" / "20260115" / "default" / "100000_300" / "audio.flac"
+        )
+        second_raw = (
+            journal / "chronicle" / "20260115" / "plaud" / "103000_300" / "audio.m4a"
+        )
+        original_unlink = Path.unlink
+
+        def fail_second_unlink(path, *args, **kwargs):
+            if path == second_raw:
+                raise OSError("interrupted")
+            return original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", fail_second_unlink)
+
+        with pytest.raises(OSError, match="interrupted"):
+            purge(older_than_days=30, dry_run=False)
+
+        assert not first_raw.exists()
+        assert second_raw.exists()
+
+        run_log = journal / "health" / "pruning-runs" / "20260415.jsonl"
+        assert run_log.exists()
+        records = [
+            json.loads(line)
+            for line in run_log.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(records) == 1
+        assert records[0]["stream"] == "default"
+        assert records[0]["segment"] == "100000_300"
+        assert records[0]["files"][0]["name"] == "audio.flac"
 
     def test_skips_incomplete(self, tmp_path, monkeypatch):
         self._setup_journal(tmp_path, monkeypatch)
@@ -441,6 +709,82 @@ class TestPurge:
         # Only plaud segment (60 days old) should be eligible
         assert result.files_deleted == 1
         assert result.details[0]["stream"] == "plaud"
+
+    def test_failed_extraction_blocks_purge_and_preserves_raw(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        journal = tmp_path / "journal"
+        segment = journal / "chronicle" / "20260115" / "default" / "100000_300"
+        segment.mkdir(parents=True)
+        (segment / "audio.flac").write_bytes(b"x" * 1000)
+        _write_processing_header(segment / "audio.jsonl", "audio.flac", STATE_FAILED)
+        (segment / "stream.json").write_text('{"stream":"default"}')
+        (segment / "talents").mkdir()
+        _install_test_journal(journal, monkeypatch)
+
+        with caplog.at_level("WARNING", logger="solstone.think.retention"):
+            result = purge(older_than_days=30, dry_run=False)
+
+        assert result.files_deleted == 0
+        assert result.segments_skipped_incomplete == 0
+        assert result.segments_blocked_failed == 1
+        assert result.blocked_failed_details == [
+            {
+                "day": "20260115",
+                "stream": "default",
+                "segment": "100000_300",
+                "files": {"audio.jsonl": "failed"},
+            }
+        ]
+        assert (segment / "audio.flac").exists()
+        assert "blocked purge" in caplog.text
+
+        log_entry = json.loads(
+            (journal / "health" / "retention.log").read_text(encoding="utf-8")
+        )
+        assert log_entry["segments_blocked_failed"] == 1
+        assert log_entry["blocked_failed_details"] == result.blocked_failed_details
+        assert log_entry["partial_error"] is False
+        assert not (journal / "health" / "pruning-runs").exists()
+
+    def test_audit_partial_error_is_surfaced(self, tmp_path, monkeypatch):
+        journal = self._setup_journal(tmp_path, monkeypatch)
+
+        def fail_day_log(day, message):
+            raise OSError(f"blocked {day}")
+
+        monkeypatch.setattr(
+            "solstone.think.pruning_audit.day_log_checked", fail_day_log
+        )
+
+        result = purge(older_than_days=30, dry_run=False)
+
+        assert result.files_deleted == 2
+        assert result.partial_error is True
+        log_entry = json.loads(
+            (journal / "health" / "retention.log").read_text(encoding="utf-8")
+        )
+        assert log_entry["partial_error"] is True
+
+    def test_cli_dry_run_surfaces_blocked_failed(self, tmp_path, monkeypatch):
+        journal = tmp_path / "journal"
+        segment = journal / "chronicle" / "20260115" / "default" / "100000_300"
+        segment.mkdir(parents=True)
+        (segment / "audio.flac").write_bytes(b"x" * 1000)
+        _write_processing_header(segment / "audio.jsonl", "audio.flac", STATE_FAILED)
+        (segment / "stream.json").write_text('{"stream":"default"}')
+        (segment / "talents").mkdir()
+        _install_test_journal(journal, monkeypatch)
+
+        result = CliRunner().invoke(
+            retention_app, ["purge", "--older-than", "30d", "--dry-run"]
+        )
+
+        assert result.exit_code == 0
+        assert "Blocked 1 segments" in result.output
+        assert "20260115/default/100000_300: audio.jsonl" in result.output
+        assert not (journal / "health" / "retention.log").exists()
+        assert not (journal / "health" / "pruning-runs").exists()
 
 
 class TestPurgeProvenance:
@@ -502,7 +846,7 @@ class TestPurgeProvenance:
         alternate_audio_jsonl = segment / "meeting_audio.jsonl"
         speaker_labels = segment / "talents" / "speaker_labels.json"
 
-        alternate_audio_jsonl.write_text('{"raw":"audio.flac"}\n')
+        _write_audio_success(alternate_audio_jsonl, "meeting_audio.flac")
         speaker_labels.write_text("{}")
 
         older_ts = datetime(2026, 1, 15, 10, 0, 0).timestamp()

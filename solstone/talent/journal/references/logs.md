@@ -141,6 +141,7 @@ The `health/` directory contains log files for long-running services.
 
 **Files:**
 - `health/<service>.log` – log output for each service (e.g., `observe.log`, `cortex.log`, `convey.log`)
-- `health/retention.log` – JSONL log of retention purge operations with timestamps, files deleted, bytes freed, and per-segment details
+- `health/retention.log` – JSONL run summaries for real retention purge operations, including files deleted, bytes freed, per-segment deletion details, `segments_blocked_failed`, `blocked_failed_details`, and `partial_error`
+- `health/pruning-runs/YYYYMMDD.jsonl` – per-deleted-segment raw-media prune audit records, one JSONL line per segment with day, stream, segment, per-file name/bytes/SHA-256 hash, bytes freed, and `processed_at`; dry-runs and zero-deletion blocked-only runs do not write pruning-run records
 
 These logs are useful for debugging service issues. See [DOCTOR.md](../../../docs/DOCTOR.md) for diagnostics and troubleshooting guidance.

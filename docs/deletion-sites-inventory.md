@@ -16,11 +16,11 @@ Inventory of every non-test, non-scratch, non-atomic-tmp destructive removal (`s
 
 - Reference model: `solstone/think/retention.py`
   - scope-narrow docstring at `:4-19`
-  - completion check at `:73-115`
-  - per-file stream-hashed SHA-256 at `:416-422`
-  - dry-run support at `:349-369`, `:427-429`, `:450-451`
-  - narrow exception handling at `:378-381`, `:416-429`
-  - retention log at `:456-472`
+  - deletion gate at `:75-253`
+  - per-file stream-hashed SHA-256 at `:563-576`
+  - dry-run support at `:478-498`, `:577-579`, `:599`
+  - failed-extraction block at `:523-540`
+  - retention log at `:624-625`, `:664-683`
 - Write-owner table pointer: `CLAUDE.md` / `AGENTS.md` §7 L2
 - Importer convention: importers audit destructive operations via `log_app_action(app='import', ...)` per repo convention (`solstone/think/importers/journal_source_cli.py:40, 75, 230, 250`).
 - Raw grep noise removed manually: nested app test hit at `solstone/apps/observer/tests/test_routes.py:1008` and regex literals in `scripts/check_layer_hygiene.py:54-55`.
@@ -35,7 +35,13 @@ Inventory of every non-test, non-scratch, non-atomic-tmp destructive removal (`s
 
 | file:line | target | trigger | path validation | audit log | dry-run | class | why |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `solstone/think/retention.py:428` | raw media files in completed segments | retention purge on eligible segments | `is_segment_complete()` plus retention-policy eligibility | `_write_retention_log()` to `health/retention.log` | yes | `✅` | reference template for this sweep |
+| `solstone/think/retention.py:578` | raw media files in gate-eligible segments | retention purge on eligible segments | `resolve_segment_gate()` plus retention-policy eligibility | per-segment `write_prune_audit()` record plus `_write_retention_log()` summary | yes | `✅` | reference template for this sweep |
+
+## think/log_retention
+
+| file:line | target | trigger | path validation | audit log | dry-run | class | why |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `solstone/think/log_retention.py:682,684,686` | dated operational log/cache files and dirs from the retention allowlist | operational log/cache pruning | class-specific scanners feed `_delete_target()` only with dated allowlist paths under the journal | `write_prune_audit()` plus structured result errors | yes | `✅` | declared operational-log/cache pruning owner with dry-run and audit outcome surfacing |
 
 ## think/entities
 

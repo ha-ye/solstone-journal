@@ -2077,6 +2077,8 @@ def run_purge() -> Any:
             "segments_processed": result.segments_processed,
             "segments_skipped_incomplete": result.segments_skipped_incomplete,
             "segments_skipped_policy": result.segments_skipped_policy,
+            "segments_blocked_failed": result.segments_blocked_failed,
+            "partial_error": result.partial_error,
             "dry_run": dry_run,
         }
 

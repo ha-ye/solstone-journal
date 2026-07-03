@@ -925,6 +925,18 @@ def purge(
             "(not yet eligible under retention policy)."
         )
 
+    if result.segments_blocked_failed:
+        typer.echo(
+            f"Blocked {result.segments_blocked_failed} segments "
+            "(extraction failed - raw media preserved)."
+        )
+        for detail in result.blocked_failed_details:
+            failed_names = ", ".join(sorted(detail["files"]))
+            typer.echo(
+                f"  {detail['day']}/{detail['stream']}/{detail['segment']}: "
+                f"{failed_names}"
+            )
+
 
 @retention_app.command()
 def config(
