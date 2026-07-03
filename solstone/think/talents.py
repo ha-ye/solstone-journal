@@ -566,6 +566,16 @@ def prepare_config(request: dict) -> dict:
     talent_path = Path(config["path"]) if config.get("path") else None
     sources = config.get("sources", {})
     talent_cwd = config.get("cwd")
+    # Capture the security-relevant fields from the talent definition BEFORE the
+    # request merge. access_tier selects tool capability; type steers provider/
+    # model resolution and the local-lane runtime promise. A request may not
+    # override either (same as cwd). Pin on PRESENCE, not just value:
+    # access_tier is populated only for cogitate talents (absent otherwise), so
+    # a request that introduces access_tier on a talent that declares none is
+    # itself the conflict to reject.
+    definition_has_access_tier = "access_tier" in config
+    definition_access_tier = config.get("access_tier")
+    definition_type = config.get("type")
 
     # Merge request values (request overrides talent defaults)
     config.update({k: v for k, v in request.items() if v is not None})
@@ -574,6 +584,23 @@ def prepare_config(request: dict) -> dict:
         raise ValueError(
             f"Request overrides 'cwd' for talent '{name}' are not allowed "
             f"({talent_cwd!r} != {request_cwd!r})"
+        )
+
+    request_access_tier = request.get("access_tier")
+    if request_access_tier is not None and (
+        not definition_has_access_tier
+        or request_access_tier != definition_access_tier
+    ):
+        raise ValueError(
+            f"Request overrides 'access_tier' for talent '{name}' are not allowed "
+            f"({definition_access_tier!r} != {request_access_tier!r})"
+        )
+
+    request_type = request.get("type")
+    if request_type is not None and request_type != definition_type:
+        raise ValueError(
+            f"Request overrides 'type' for talent '{name}' are not allowed "
+            f"({definition_type!r} != {request_type!r})"
         )
 
     cwd_value = config.get("cwd")
