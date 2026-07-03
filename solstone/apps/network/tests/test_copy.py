@@ -30,11 +30,11 @@ def test_copy_constants_are_locked() -> None:
     assert copy.DEVICE_LABEL_DEFAULT_FORMAT == "device — added {month} {day}"
     assert copy.EXPIRED_BUTTON == "this code expired — show a new one"
     assert copy.WINDOW_CLOSED_BUTTON == "pairing window closed — open a new one"
-    assert copy.SUCCESS_HEADING == '"{label}" is now paired with your solstone'
+    assert copy.SUCCESS_HEADING == '"{label}" is now paired with your journal'
     assert copy.SUCCESS_SUBHEAD == "{short_fp} · paired just now"
     assert copy.SUCCESS_DONE == "done"
     assert copy.PAIR_ERROR_BODY == (
-        "can't start pairing — your solstone isn't reachable on a network address yet."
+        "can't start pairing — your journal isn't reachable on a network address yet."
     )
     assert copy.SUCCESS_VERIFY_NOTE == (
         "check the device you just paired — this fingerprint should match what it "

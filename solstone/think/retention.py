@@ -398,7 +398,7 @@ def check_storage_health(
 
     retention = config.get("retention", {})
     keep_mode_nudge = (
-        " you're currently set to always retain observed media — consider "
+        " you're currently set to always retain original media — consider "
         "choosing a retention value in settings to free up disk space."
     )
     always_retain_enabled = retention.get("raw_media", "keep") == "keep"

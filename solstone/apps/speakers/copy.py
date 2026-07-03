@@ -8,9 +8,9 @@ from __future__ import annotations
 from typing import Any
 
 SPK_OVERVIEW_YOUR_VOICE_HEADER = "your voice"
-SPK_OVERVIEW_YOUR_VOICE_LEARNING = "solstone is still learning"
+SPK_OVERVIEW_YOUR_VOICE_LEARNING = "sol is still learning"
 SPK_OVERVIEW_OWNER_PROGRESS_SUFFIX = "longer statements"
-SPK_OVERVIEW_OWNER_HELP_LABEL = "help solstone learn faster"
+SPK_OVERVIEW_OWNER_HELP_LABEL = "help sol learn faster"
 SPK_OVERVIEW_OWNER_BUILD_FROM_TAGS_LABEL = "Build from manual tags"
 SPK_OVERVIEW_YOUR_VOICE_CONFIRMED = "confirmed"
 SPK_OVERVIEW_OWNER_SAMPLES_LABEL = "voice samples"
@@ -31,7 +31,7 @@ SPK_OVERVIEW_COHESION_LABELS = [
     "strong",
     "settled",
 ]
-SPK_OVERVIEW_KNOWN_VOICES_EMPTY = "no one else's voice has been learned yet. once solstone hears a recurring voice across a few segments, that person will appear here. you can also tag voices manually in any segment."
+SPK_OVERVIEW_KNOWN_VOICES_EMPTY = "no one else's voice has been learned yet. once the same voice shows up across a few segments, that person will appear here. you can also tag voices manually in any segment."
 SPK_OVERVIEW_NEW_VOICES_HEADER = "new voices"
 SPK_OVERVIEW_TODAY_LINK_LABEL = "today's review →"
 SPK_FILTER_BY_PREFIX = "filtering by:"

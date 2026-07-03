@@ -8,7 +8,7 @@ from __future__ import annotations
 BACKLOG_ACTION_PROCESS_NOW = "process now"
 BACKLOG_ACTION_REDO_SCRATCH = "redo from scratch"
 BACKLOG_CONFIRM_REDO_SCRATCH = (
-    "redo this whole day from scratch? this re-does the parts solstone already "
+    "redo this whole day from scratch? this re-does the parts sol already "
     "finished, so it'll take longer. the day you see now won't change until it's done."
 )
 BACKLOG_QUEUED_FEEDBACK = "queued — processing now"
@@ -32,16 +32,14 @@ BACKLOG_BUCKET_DESCRIPTION = (
 BACKLOG_DAY_BADGE = "stuck"
 BACKLOG_REASON_CORRUPT_RAW = "original raw media is missing or damaged — re-import it"
 BACKLOG_REASON_FAILING_STEP = "a processing step keeps failing — try again"
-BACKLOG_REASON_MISSING_CONFIG = "a setting's missing — check solstone's setup"
+BACKLOG_REASON_MISSING_CONFIG = "a setting's missing — check your journal's setup"
 BACKLOG_REASON_PROVIDER_DOWN = "the AI service was unreachable — try again"
 BACKLOG_WHY_NEVER_ATTEMPTED = "not looked at yet"
 BACKLOG_WHY_FAILED = "couldn't finish — will retry"
 BACKLOG_WHY_SENSED_NOT_THOUGHT = "observed, not yet thought through"
 BACKLOG_CATCHING_UP_DAY = "catching up"
 BACKLOG_CATCHING_UP_AGGREGATE = "{pending_n} day(s) catching up"
-BACKLOG_CATCHING_UP_TAIL = (
-    "solstone's working through these on its own, freshest day first."
-)
+BACKLOG_CATCHING_UP_TAIL = "sol's working through these on its own, freshest day first."
 
 
 __all__ = [

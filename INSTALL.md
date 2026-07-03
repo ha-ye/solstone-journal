@@ -1,6 +1,6 @@
 # installing solstone
 
-these instructions are for a coding agent and human working together. solstone is your co-brain — your observers experience your day along with you, sol curates your memories, and your journal holds everything. open source, made by sol pbc.
+these instructions are for a coding agent and human working together. solstone is the platform: sol is the app, and the journal is the memory it keeps. sol lives on your devices, experiences your day with you, and keeps it all in your journal — always private, only yours. open source, made by sol pbc.
 
 **supported platforms:** linux (primary), macOS. windows is not yet supported.
 
@@ -15,7 +15,7 @@ sol --version 2>&1 && journal service status 2>&1
 ```
 
 if `sol` isn't on PATH, the install hasn't been done yet — proceed.
-if solstone is running and healthy, skip to [install an observer](#install-an-observer).
+if solstone is running and healthy, skip to [install sol on your devices](#install-sol-on-your-devices).
 
 ### prerequisites
 
@@ -25,8 +25,8 @@ macOS: install xcode command line tools (`xcode-select --install`) and homebrew 
 
 ## install
 
-most people install solstone to **run a journal here** — the full host that
-observes alongside you, transcribes, and makes sense of your day:
+most people install solstone to **run the journal here** — the full host that
+transcribes, makes sense of your day, and holds everything:
 
 ```bash
 pip install 'solstone[journal]'
@@ -64,6 +64,9 @@ uvx solstone --help             # or ephemerally — no install, one-shot
 A thin/no-extras install carries only `sol` and `solstone`; `journal setup`,
 `journal start`, and `mlx-vlm-server` require a `solstone[journal]` host install.
 
+(packaging note: the journal is becoming its own installable package, so this
+install story will simplify — the commands above stay accurate today.)
+
 ## set up
 
 ```bash
@@ -84,19 +87,19 @@ if the service fails to start, check `journal service logs`.
 
 ## choosing how to power sol
 
-the sol agent is powered by an AI model, and you choose which. the choice has real privacy and hardware trade-offs worth understanding before you invest time in a path.
+sol is powered by an AI model, and you choose which. the choice has real privacy and hardware trade-offs worth understanding before you invest time in a path.
 
-- **a hosted provider key is the recommended way to start.** point solstone at Google (Gemini), OpenAI, or Anthropic with **your own developer API key**, created in that provider's developer console — *not* the consumer chat product (gemini.google.com / chatgpt.com / claude.ai). this is the fastest path to a working co-brain and what the first-run wizard sets up. cogitate (sol's tool-calling agent loop, used by chat/digest/morning_briefing/etc.) works out of the box as soon as you set a provider key — no extra install step.
-- **a local model via the local provider is a real, supported goal, but not the default daily experience yet.** running the sol agent fully locally means nothing leaves your machine. it's the maximum-privacy path, but it needs capable hardware and a local model with strong "thinking" support; smaller models on constrained machines (for example a base Mac mini) struggle on the reasoning-heavy work. treat local as a goal to grow into, not the recommended starting point.
+- **a hosted provider key is the recommended way to start.** point solstone at Google (Gemini), OpenAI, or Anthropic with **your own developer API key**, created in that provider's developer console — *not* the consumer chat product (gemini.google.com / chatgpt.com / claude.ai). this is the fastest path to a working sol and what the first-run wizard sets up. cogitate (sol's tool-calling agent loop, used by chat/digest/morning_briefing/etc.) works out of the box as soon as you set a provider key — no extra install step.
+- **a local model via the local provider is a real, supported goal, but not the default daily experience yet.** running sol fully locally means nothing leaves your machine. it's the maximum-privacy path, but it needs capable hardware and a local model with strong "thinking" support; smaller models on constrained machines (for example a base Mac mini) struggle on the reasoning-heavy work. treat local as a goal to grow into, not the recommended starting point.
 - **on Apple Silicon, you can run sol's screen analysis on-device today.** macs with Apple Silicon and at least 16 GB of memory can turn on the local provider in settings → providers; journal downloads a local model once, then does the work of making sense of your screen entirely on your machine, with nothing sent to a cloud provider. it's opt-in and covers screen analysis for now; the rest of sol stays on whichever provider you chose above.
 
 a hardware heads-up: local transcription alone installs a ~2.5 GB model, and a capable local *thinking* model needs meaningfully more memory and compute on top of that. if your machine is constrained, start with a hosted key and revisit local later; you can switch any time in settings → providers.
 
 what actually leaves your machine differs sharply between these paths: with a local model, nothing leaves; with a hosted provider, only that task's prompt plus the relevant journal context goes, directly to that provider under your own key. solstone is never a proxy, and sol pbc is never in that path and never sees it. for the full picture of what's sent, to whom, and under whose terms, see [what solstone sends](DATA-FLOW.md).
 
-## install an observer
+## install sol on your devices
 
-solstone needs a platform observer alongside your journal. observers are independent packages — install one for each machine you want to observe along with you.
+your journal needs sol alongside it — sol takes in your day on each device and keeps it in your journal. each platform ships its own package (the engineering docs call these observers); install one for each machine you want sol on.
 
 **macOS:** download the signed app bundle from https://solstone.app/observers and drag it to Applications. it pairs itself with the running journal on first launch.
 
@@ -155,7 +158,7 @@ reconciles the service unit if anything has changed.
 
 ## done
 
-once the observer is running, your observers experience your day along with you, transcribe conversations, surface people and projects, build a knowledge graph, and make everything searchable at http://localhost:5015. everything stays in your journal — one folder per day.
+once it's running, sol experiences your day along with you and keeps it all in your journal — conversations transcribed, people and projects surfaced, a knowledge graph built, everything searchable at http://localhost:5015. your journal is one folder per day, always private, only yours.
 
 source code: https://github.com/solpbc/solstone-journal
 company: https://solpbc.org

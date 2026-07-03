@@ -13,7 +13,7 @@
 {% endif %}
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>{{ app_registry.apps[app].label }} - solstone</title>
+  <title>{{ app_registry.apps[app].label }} - journal</title>
   <link rel="stylesheet" href="{{ url_for('root.static', filename='tokens.css') }}">
   <link rel="stylesheet" href="{{ url_for('root.static', filename='app.css') }}">
 
@@ -409,7 +409,7 @@
   };
 
   const DIAG_KEY_LABELS = {
-    version: "solstone version",
+    version: "journal version",
     revision: "build",
     platform: "system",
     services: "services",

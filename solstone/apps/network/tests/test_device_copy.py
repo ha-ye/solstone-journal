@@ -16,7 +16,7 @@ def test_device_section_copy_is_locked() -> None:
     assert copy.REFRESH_FAIL_NOTICE == "showing the last state we saw"
     assert copy.UNPAIR_TITLE_FORMAT == "unpair '{label}'?"
     assert copy.UNPAIR_BODY == (
-        "this device loses access to your solstone immediately and can't reconnect until "
+        "this device loses access to your journal immediately and can't reconnect until "
         "you pair it again. anything stored on the device stays on the device."
     )
     assert copy.DEVICE_STATUS_LABELS == {

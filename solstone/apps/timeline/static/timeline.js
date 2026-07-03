@@ -686,7 +686,7 @@ function renderYear() {
   if (months.every((m) => !m.yearEvent && !(m.day_count > 0))) {
     timeline.innerHTML = renderEmptyState(
       "no timeline data yet",
-      "once observers experience a day alongside you and sol rolls it up, that day will show up here",
+      "once sol experiences a day alongside you and keeps it in your journal, that day will show up here",
       { href: "/app/health", linkText: "system health →" },
     );
     return;

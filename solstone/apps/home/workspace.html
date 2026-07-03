@@ -874,8 +874,8 @@
   <!-- Welcome -->
   {% if show_welcome %}
   <div class="pulse-welcome">
-    <h2>welcome to your home page</h2>
-    <p>this is where your day comes together — narrative summaries, calendar events, and tasks. as observers experience your day along with you and sol curates, sections will appear here automatically.</p>
+    <h2>welcome to your journal</h2>
+    <p>this is where your day comes together — narrative summaries, calendar events, and tasks. as sol experiences your day with you and keeps it here in your journal, sections will appear automatically.</p>
     <a href="/app/health">check system health →</a>
   </div>
   {% endif %}
@@ -962,7 +962,7 @@
   {% if narrative_content is none and segment_count == 0 and not show_welcome %}
   <div class="pulse-empty-state">
     <h2 class="pulse-section-header">today's flow</h2>
-    <div class="pulse-empty-message">no narrative yet — one will appear after solstone processes some audio. <a href="/app/health">check observer status →</a></div>
+    <div class="pulse-empty-message">no narrative yet — one will appear after sol takes in some audio. <a href="/app/health">check system health →</a></div>
   </div>
   {% endif %}
 

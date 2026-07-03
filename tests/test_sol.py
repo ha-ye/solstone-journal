@@ -270,7 +270,7 @@ class TestMain:
         sol.main()
 
         captured = capsys.readouterr()
-        assert "sol - solstone unified CLI" in captured.out
+        assert "sol - journal access CLI (solstone)" in captured.out
         assert "Usage: sol <command>" in captured.out
 
     def test_journal_bare_verbose_shows_help_and_configures_debug(
@@ -289,7 +289,7 @@ class TestMain:
         sol.journal_main()
 
         captured = capsys.readouterr()
-        assert "journal - solstone journal service CLI" in captured.out
+        assert "journal - the journal host CLI (solstone)" in captured.out
         assert "Usage: journal <command>" in captured.out
         assert calls == [{"level": logging.DEBUG}]
 
@@ -338,7 +338,7 @@ class TestMain:
         sol.main()
 
         captured = capsys.readouterr()
-        assert "sol - solstone unified CLI" in captured.out
+        assert "sol - journal access CLI (solstone)" in captured.out
 
     def test_main_help_command_without_question(self, monkeypatch, capsys):
         """Test bare 'help' command shows static help."""
@@ -348,7 +348,7 @@ class TestMain:
         sol.main()
 
         captured = capsys.readouterr()
-        assert "sol - solstone unified CLI" in captured.out
+        assert "sol - journal access CLI (solstone)" in captured.out
 
     def test_main_version_flag(self, monkeypatch, capsys):
         """Test --version flag shows version."""

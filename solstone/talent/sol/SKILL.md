@@ -2,16 +2,16 @@
 name: sol
 version: 1.0.0
 description: >
-  Read-only query of the solstone journal from any project, plus routing
+  Read-only query of your journal (solstone) from any project, plus routing
   guidance for app-specific `sol call <app>` commands. Look up people and
-  relationships, today's events; read transcripts. TRIGGER: solstone, my
-  journal, search my memory, what happened, who is, meeting with, co-brain,
+  relationships, today's events; read transcripts. TRIGGER: solstone, sol, my
+  journal, search my memory, what happened, who is, meeting with,
   recall, sol call routing, sol call journal/entities/transcripts.
 ---
 
 # sol — journal query router
 
-Read-only query interface to your solstone journal. Invoke via Bash:
+Read-only query interface to your journal. Invoke via Bash:
 `sol call <app> <verb> [flags]`.
 
 Use this skill to search memories, look up people, check today's events, read

@@ -47,7 +47,7 @@ BACKLOG_COPY_LITERALS = {
     "BACKLOG_ACTION_PROCESS_NOW": "process now",
     "BACKLOG_ACTION_REDO_SCRATCH": "redo from scratch",
     "BACKLOG_CONFIRM_REDO_SCRATCH": (
-        "redo this whole day from scratch? this re-does the parts solstone already "
+        "redo this whole day from scratch? this re-does the parts sol already "
         "finished, so it'll take longer. the day you see now won't change until it's done."
     ),
     "BACKLOG_VERDICT_CAUGHT_UP": "your journal's all caught up.",
@@ -78,7 +78,7 @@ BACKLOG_COPY_LITERALS = {
         "original raw media is missing or damaged — re-import it"
     ),
     "BACKLOG_REASON_FAILING_STEP": "a processing step keeps failing — try again",
-    "BACKLOG_REASON_MISSING_CONFIG": "a setting's missing — check solstone's setup",
+    "BACKLOG_REASON_MISSING_CONFIG": "a setting's missing — check your journal's setup",
     "BACKLOG_REASON_PROVIDER_DOWN": "the AI service was unreachable — try again",
     "BACKLOG_QUEUED_FEEDBACK": "queued — processing now",
     "BACKLOG_WHY_NEVER_ATTEMPTED": "not looked at yet",
@@ -87,7 +87,7 @@ BACKLOG_COPY_LITERALS = {
     "BACKLOG_CATCHING_UP_DAY": "catching up",
     "BACKLOG_CATCHING_UP_AGGREGATE": "{pending_n} day(s) catching up",
     "BACKLOG_CATCHING_UP_TAIL": (
-        "solstone's working through these on its own, freshest day first."
+        "sol's working through these on its own, freshest day first."
     ),
 }
 

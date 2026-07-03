@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Unified CLI for solstone - AI-driven desktop journaling toolkit.
+"""Unified CLI for solstone — `sol` (journal access) and `journal` (the journal host).
 
 Usage:
     sol                     Show status and available commands
@@ -224,7 +224,7 @@ def _alias_target_label(alias: Alias) -> str:
 
 def print_help() -> None:
     """Print help with status and available commands."""
-    print("sol - solstone unified CLI\n")
+    print("sol - journal access CLI (solstone)\n")
     print_status()
 
     print("Usage: sol <command> [args...]\n")
@@ -250,7 +250,7 @@ def print_help() -> None:
 
 def print_journal_help() -> None:
     """Print help for the journal service command surface."""
-    print("journal - solstone journal service CLI\n")
+    print("journal - the journal host CLI (solstone)\n")
     print_status()
 
     print("Usage: journal <command> [options]\n")

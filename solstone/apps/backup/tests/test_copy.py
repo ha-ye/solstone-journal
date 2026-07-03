@@ -66,7 +66,7 @@ def test_backup_copy_verbatim_strings() -> None:
     )
     assert (
         payload["intro"]["optional"]
-        == "solstone runs on your device; this is optional."
+        == "your journal lives on your device; backup is optional."
     )
     assert payload["key"]["save_password_manager"] == "save to my password manager"
     assert payload["key"]["copy_label"] == "copy"

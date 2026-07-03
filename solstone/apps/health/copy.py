@@ -21,7 +21,7 @@ HEALTH_GLANCE_OBSERVER_SILENT = (
     "I haven't heard from your observer in {age} — it may have stopped."
 )
 HEALTH_GLANCE_SERVICES_UNREACHABLE = (
-    "I couldn't reach my own services — check that solstone is running."
+    "I couldn't reach my own services — check that your journal is running."
 )
 HEALTH_GLANCE_READINESS_BLOCKED = "{summary}"
 HEALTH_GLANCE_READINESS_UNKNOWN = (

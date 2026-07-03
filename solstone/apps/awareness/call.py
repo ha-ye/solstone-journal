@@ -14,7 +14,7 @@ import typer
 
 from solstone.think.convey_client import convey_cli, get_client
 
-app = typer.Typer(help="Awareness system — solstone's self-knowledge.")
+app = typer.Typer(help="Awareness system — the journal's self-knowledge.")
 
 _LOG_PAGE_SIZE = 100  # the awareness /api/log route's max_limit
 

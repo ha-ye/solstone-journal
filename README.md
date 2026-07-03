@@ -1,10 +1,10 @@
 <img src="docs/static/sol-wordmark.svg" alt="solstone" width="300">
 
-# solstone journal
+# solstone — the journal
 
-a memory your agents can work from. observers experience your day along with you, sol curates your memories, and your journal holds everything.
+a memory your agents can work from. sol — the app on your devices — experiences your day with you and keeps it all in your journal. your journal is always private, only yours.
 
-the python core of the solstone product family — the journal layer that the [solstone native apps](https://solstone.app) wrap. it runs in the background on your computer, experiencing your day along with you. AI agents transcribe, extract entities, detect meetings, build knowledge graphs, and surface daily insights — all without any manual input. everything stays on your machine in daily journal directories. open source, local-first, no cloud required.
+this repo is the journal: the memory that holds everything, plus the thin `sol` access client. it's the python core of the solstone platform — the [sol apps](https://solstone.app) on your devices pair with a journal running on a computer you choose. AI agents transcribe, extract entities, detect meetings, build knowledge graphs, and surface daily insights — all without any manual input. everything stays in daily journal directories on your machine. open source, local-first, no cloud required.
 
 Python 3.11+, Linux + macOS, AGPL-3.0-only, maintained by [sol pbc](https://solpbc.org).
 
@@ -16,7 +16,7 @@ Python 3.11+, Linux + macOS, AGPL-3.0-only, maintained by [sol pbc](https://solp
 
 **a system of intelligence, not just storage.**
 
-- **automatic transcription** — standalone observers take in audio continuously with speaker identification. every conversation, transcribed and searchable.
+- **automatic transcription** — sol hears what you hear and keeps every conversation in your journal, transcribed with speaker identification and searchable.
 - **people and projects** — extracted from your conversations and remembered across time.
 - **knowledge graphs** — relationships between entities mapped automatically. who works with whom, which projects connect to which people.
 - **meeting detection** — meetings identified, summarized, and linked. meeting prep that surfaces what you discussed last time and personal context you'd forget.
@@ -85,6 +85,8 @@ pipx install --include-deps 'solstone[journal]'
 The `journal` and `mlx-vlm-server` commands live in the `solstone-journal-host` package that `[journal]` pulls in. `pip` exposes them natively; `uv tool` and `pipx` need the flag shown above. For GPU transcription, replace `[journal]` with `[journal-cuda]`.
 
 want only the thin `sol` client — to talk to a journal running elsewhere? `uv tool install solstone` (no extras), or `uvx solstone` for an ephemeral one-shot.
+
+*(packaging note: the journal is becoming its own installable package, so this install story will simplify — the commands above stay accurate today.)*
 
 then open http://localhost:5015 in a browser; the first-run wizard handles identity and the gemini API key.
 

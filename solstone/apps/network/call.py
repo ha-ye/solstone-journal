@@ -61,7 +61,7 @@ CLI_PAIR_LINK_LABEL = "pair-link"
 CLI_PAIR_JOIN_HINT = "link this device with:"
 CLI_PAIR_CA_FINGERPRINT_LABEL = "CA fingerprint"
 CLI_PAIR_NO_LAN_ADDRESS = (
-    "can't start pairing — your solstone isn't reachable on a network address "
+    "can't start pairing — your journal isn't reachable on a network address "
     "yet. turn on your private network to pair from anywhere, or connect this "
     "device to your home network."
 )

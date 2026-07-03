@@ -52,18 +52,18 @@ U2_COPY_VALUES = [
 
 def test_reach_shell_spec_fixed_copy_is_locked() -> None:
     assert copy.STATUS_SENTENCES == {
-        "direct_online": "your solstone is reachable on your network.",
-        "direct_online_vpn": "your solstone is reachable on your network and over your VPN.",
-        "reconnecting": "reconnecting to your solstone...",
-        "offline": "can't reach your solstone right now.",
-        "lan_unreachable": "your solstone is running, but devices can't reach it to pair yet.",
-        "spl_online": "your solstone is reachable from anywhere.",
+        "direct_online": "your journal is reachable on your network.",
+        "direct_online_vpn": "your journal is reachable on your network and over your VPN.",
+        "reconnecting": "reconnecting to your journal...",
+        "offline": "can't reach your journal right now.",
+        "lan_unreachable": "your journal is running, but devices can't reach it to pair yet.",
+        "spl_online": "your journal is reachable from anywhere.",
         "spl_finishing_setup": "finishing setup with your private network…",
         "spl_offline": (
-            "your solstone isn't reaching the network right now — devices can't "
+            "your journal isn't reaching the network right now — devices can't "
             "connect from away. on your home wifi they still work."
         ),
-        "checking": "checking your solstone...",
+        "checking": "checking your journal...",
     }
 
 

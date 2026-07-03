@@ -2832,7 +2832,7 @@ button:focus:not(:focus-visible) {
 
     <!-- Storage Section -->
     <section class="settings-section" id="section-storage" role="tabpanel" aria-labelledby="tab-storage">
-      <h2>your observed media (raw audio and screencast files)</h2>
+      <h2>your original media (raw audio and screencast files)</h2>
       <p class="settings-section-desc">manage raw media retention and view storage usage.</p>
       <div id="storageLoadState" class="settings-load-state" aria-live="polite"></div>
       <div id="storageWarnings"></div>
@@ -2869,7 +2869,7 @@ button:focus:not(:focus-visible) {
         </div>
         <label for="retentionDontRetain" style="display: flex; align-items: center; gap: 0.5em; margin-top: 0.75em; color: #666; font-size: 0.9em;">
           <input type="checkbox" id="retentionDontRetain">
-          <span>don't retain observed media (delete as soon as it's processed)</span>
+          <span>don't retain original media (delete as soon as it's processed)</span>
         </label>
         <div id="retentionStatus" style="margin-top: 0.75em; color: #666; font-size: 0.9em;">currently: always retain — no expiration</div>
       </div>
@@ -2887,7 +2887,7 @@ button:focus:not(:focus-visible) {
 
       <div class="settings-field" id="logRetentionField">
         <label>operational logs</label>
-        <small>cleans up operational logs and execution traces sol keeps while working. this does not affect your observed media or durable journal content.</small>
+        <small>cleans up operational logs and execution traces sol keeps while working. this does not affect your original media or durable journal content.</small>
         <div class="toggle-container" style="justify-content: flex-start; gap: 1em; margin-top: 0.75em;">
           <label class="toggle-switch toggle-positive">
             <input type="checkbox" id="logRetentionEnabled">
@@ -3243,7 +3243,7 @@ button:focus:not(:focus-visible) {
   <div class="color-modal-content" style="max-width: 560px;">
     <span class="color-close" id="cleanupLogsModalClose">&times;</span>
     <h3 id="cleanupLogsHeading">clean up operational logs</h3>
-    <p style="color: #666; font-size: 0.9em; margin-bottom: 1em;">prune operational logs and execution traces older than the specified number of days. this does not affect your observed media or durable journal content.</p>
+    <p style="color: #666; font-size: 0.9em; margin-bottom: 1em;">prune operational logs and execution traces older than the specified number of days. this does not affect your original media or durable journal content.</p>
 
     <div class="settings-field" style="margin-bottom: 1em;">
       <label for="cleanupLogsDaysInput">older than</label>
@@ -6320,7 +6320,7 @@ if (resetAgentBtn) {
 let storageData = null;
 
 function deriveRetention(daysValue, dontRetain) {
-  if (dontRetain) return { mode: 'processed', days: null, statusText: 'currently: delete observed media after processing' };
+  if (dontRetain) return { mode: 'processed', days: null, statusText: 'currently: delete original media after processing' };
   const n = parseInt(daysValue, 10);
   if (Number.isFinite(n) && n >= 1) return { mode: 'days', days: n, statusText: `currently: keep ${n} days` };
   return { mode: 'keep', days: null, statusText: 'currently: always retain — no expiration' };

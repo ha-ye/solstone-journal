@@ -48,7 +48,7 @@ DESTRUCTIVE_CAPTION = (
 )
 OBJECT_LOCK_WARNING = "don't enable Compliance-mode Object Lock on the bucket — it conflicts with backup pruning and lock cleanup. if you need immutability, use Governance mode."
 OBJECT_LOCK_SUMMARY = "bucket setup notes"
-OPTIONAL_INVARIANT = "solstone runs on your device; this is optional."
+OPTIONAL_INVARIANT = "your journal lives on your device; backup is optional."
 SAVE_PASSWORD_MANAGER = "save to my password manager"
 SAVE_COPY = "copy"
 SAVE_CONTINUE = "continue"
@@ -99,7 +99,7 @@ OPERATION_REASON_LABELS = {
     "missing_required_field": "fill in the required fields, then try again.",
     "recovery_key_mismatch": "that didn't match your recovery key. re-enter the key from your saved copy.",
     "expired": "the approval took too long. try again.",
-    "malformed": "the response couldn't be read. update solstone, then try again.",
+    "malformed": "the response couldn't be read. update your journal, then try again.",
     "network_error": "the services page couldn't be reached. check your connection, then try again.",
     "broker_unreachable": "encrypted backup couldn't be reached. check your connection, then try again.",
     "broker_error": "encrypted backup didn't return usable settings. try again shortly.",

@@ -32,11 +32,11 @@ PAIR_LINK_COPY_SUCCESS_TOAST = "pairing link copied"
 PAIR_LINK_COPY_FAIL_TOAST = "couldn't copy pairing link"
 EXPIRED_BUTTON = "this code expired — show a new one"
 WINDOW_CLOSED_BUTTON = "pairing window closed — open a new one"
-SUCCESS_HEADING = '"{label}" is now paired with your solstone'
+SUCCESS_HEADING = '"{label}" is now paired with your journal'
 SUCCESS_SUBHEAD = "{short_fp} · paired just now"
 SUCCESS_DONE = "done"
 PAIR_ERROR_BODY = (
-    "can't start pairing — your solstone isn't reachable on a network address yet."
+    "can't start pairing — your journal isn't reachable on a network address yet."
 )
 SUCCESS_VERIFY_NOTE = (
     "check the device you just paired — this fingerprint should match what it "
@@ -58,18 +58,18 @@ HERO_HOW_REACH_LABEL = "how reach works ▸"
 
 # --- U2 reach-shell copy ---
 STATUS_SENTENCES = {
-    "direct_online": "your solstone is reachable on your network.",
-    "direct_online_vpn": "your solstone is reachable on your network and over your VPN.",
-    "reconnecting": "reconnecting to your solstone...",
-    "offline": "can't reach your solstone right now.",
-    "lan_unreachable": "your solstone is running, but devices can't reach it to pair yet.",
-    "spl_online": "your solstone is reachable from anywhere.",
+    "direct_online": "your journal is reachable on your network.",
+    "direct_online_vpn": "your journal is reachable on your network and over your VPN.",
+    "reconnecting": "reconnecting to your journal...",
+    "offline": "can't reach your journal right now.",
+    "lan_unreachable": "your journal is running, but devices can't reach it to pair yet.",
+    "spl_online": "your journal is reachable from anywhere.",
     "spl_finishing_setup": "finishing setup with your private network…",
     "spl_offline": (
-        "your solstone isn't reaching the network right now — devices can't connect "
+        "your journal isn't reaching the network right now — devices can't connect "
         "from away. on your home wifi they still work."
     ),
-    "checking": "checking your solstone...",
+    "checking": "checking your journal...",
 }
 BRANDLOCK_LINE = "your journal is always private, only yours."
 REACH_SELECTOR_TITLE = "how your devices reach your journal"
@@ -156,7 +156,7 @@ RECENT_NETWORK_LABEL_ANYWHERE = "from anywhere"
 REFRESH_FAIL_NOTICE = "showing the last state we saw"
 UNPAIR_TITLE_FORMAT = "unpair '{label}'?"
 UNPAIR_BODY = (
-    "this device loses access to your solstone immediately and can't reconnect until "
+    "this device loses access to your journal immediately and can't reconnect until "
     "you pair it again. anything stored on the device stays on the device."
 )
 DEVICE_STATUS_LABELS = {

@@ -168,7 +168,7 @@ BACKUP_OPERATION_FAILED = Reason(
 )
 BACKUP_UNAVAILABLE = Reason(
     "backup_unavailable",
-    "I couldn't start a backup because solstone's background service isn't running. Start it, then try again.",
+    "I couldn't start a backup because your journal's background service isn't running. Start it, then try again.",
     503,
 )
 LOCAL_REQUEST_ONLY = Reason(
@@ -435,7 +435,7 @@ REPROCESS_PAST_ONLY = Reason(
 )
 REPROCESS_UNREACHABLE = Reason(
     "reprocess_unreachable",
-    "solstone's background service isn't running. start it, then try again.",
+    "your journal's background service isn't running. start it, then try again.",
     503,
 )
 # Success-payload reason: intentionally not routed through error_response.

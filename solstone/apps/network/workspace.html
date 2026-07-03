@@ -817,7 +817,7 @@
 
   function setStatusSentence(key) {
     const sentences = window.LinkCopy.STATUS_SENTENCES || {};
-    statusText.textContent = sentences[key] || sentences.checking || 'checking your solstone...';
+    statusText.textContent = sentences[key] || sentences.checking || 'checking your journal...';
     statusDot.classList.remove('is-green', 'is-amber', 'is-red');
     if (['direct_online', 'direct_online_vpn', 'spl_online'].includes(key)) {
       statusDot.classList.add('is-green');

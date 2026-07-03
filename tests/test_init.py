@@ -98,7 +98,7 @@ class TestInitDetection:
     def test_init_page_renders(self, fresh_client):
         resp = fresh_client.get("/init")
         assert resp.status_code == 200
-        assert b"set up solstone" in resp.data
+        assert b"create your journal" in resp.data
         assert b'value="Test User"' in resp.data
         assert b'value="Tester"' in resp.data
         assert b'id="section-password"' not in resp.data
@@ -106,7 +106,7 @@ class TestInitDetection:
 
     def test_init_title_is_welcome_setup(self, fresh_client):
         resp = fresh_client.get("/init")
-        assert b"<title>solstone welcome setup</title>" in resp.data
+        assert "<title>create your journal — solstone</title>".encode() in resp.data
 
     def test_init_renders_version(self, fresh_client):
         try:
@@ -130,9 +130,9 @@ class TestInitDetection:
         assert f"<code>{journal_path}</code>".encode() in resp.data
         assert b"solstone is three things working together" not in resp.data
         assert b"solstone is two things working together" not in resp.data
-        assert b"solstone runs on your device." in resp.data
+        assert b"your journal lives on this computer." in resp.data
         assert (
-            b"your observers, your journal, and sol \xe2\x80\x94 all right here"
+            b"sol experiences your day with you and keeps it all here, in your journal"
             in resp.data
         )
 
@@ -157,10 +157,10 @@ class TestInitDetection:
 
     def test_machine_card_present_and_verbatim(self, fresh_client):
         resp = fresh_client.get("/init")
-        assert b"solstone runs on your device." in resp.data
+        assert b"your journal lives on this computer." in resp.data
         assert (
-            b"your observers, your journal, and sol "
-            b"\xe2\x80\x94 all right here. nothing else is required to start."
+            b"sol experiences your day with you and keeps it all here, "
+            b"in your journal. nothing else is required to start."
         ) in resp.data
         assert b"sol pbc offers a few optional services" not in resp.data
         assert (
@@ -190,7 +190,7 @@ class TestInitDetection:
     def test_footer_note_refresh(self, fresh_client):
         resp = fresh_client.get("/init")
         assert (
-            b"your journal stays on your device. solstone runs right here "
+            b"your journal stays on this computer "
             b"\xe2\x80\x94 nothing leaves unless you send it."
         ) in resp.data
         assert b"your data stays on your machine" not in resp.data

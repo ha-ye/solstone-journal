@@ -1469,9 +1469,9 @@
     ownerBanner.style.display = 'block';
     ownerBanner.innerHTML = `
       <div class="spk-owner-panel">
-        <div class="spk-owner-title">solstone is still learning your voice</div>
+        <div class="spk-owner-title">sol is still learning your voice</div>
         <div class="spk-owner-copy">
-          we're tagging audio segments to recognize you. help solstone learn faster by tagging your own statements.
+          we're tagging audio segments to recognize you. help sol learn faster by tagging your own statements.
         </div>
         <div class="spk-owner-actions">
           <button class="spk-owner-btn spk-owner-btn-confirm" id="spkOwnerHelp">
@@ -2030,7 +2030,7 @@
         const showPrompt = seg?.speaker_count > 0 && nonOwnerTotal > 0 && (nullCount / nonOwnerTotal) > 0.5;
         return showPrompt ? `<div class="spk-seeding-prompt">this meeting has ${seg.speaker_count} named speakers but I can't match voices yet. assigning even a few sentences will help me learn their voices for future meetings.</div>` : '';
       })()}
-      ${!hasLabels ? '<div class="spk-status spk-status-info">speakers haven\'t been identified yet — assign a few sentences to help solstone learn their voices</div>' : ''}
+      ${!hasLabels ? '<div class="spk-status spk-status-info">speakers haven\'t been identified yet — assign a few sentences to help sol learn their voices</div>' : ''}
       ${sentences.length === 0 ? '<div class="spk-empty">no sentences match this filter</div>' : sentences.map(renderSentence).join('')}
     `;
 
