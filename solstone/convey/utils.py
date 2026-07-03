@@ -14,7 +14,7 @@ from typing import Any, Optional
 from flask import Response, jsonify
 
 from solstone.convey.reasons import INVALID_PATH, Reason
-from solstone.think.journal_io import contained_path, get_journal
+from solstone.think.journal_io import contained_path, day_path, get_journal
 
 DATE_RE = re.compile(r"\d{8}")
 _REQUEST_ID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -271,6 +271,22 @@ def safe_journal_path(relpath: str) -> tuple[Path | None, tuple[Response, int] |
         return contained_path(get_journal(), relpath), None
     except ValueError:
         return None, error_response(INVALID_PATH)
+
+
+def safe_day_path(
+    day: str, rel_path: str
+) -> tuple[Path | None, tuple[Response, int] | None]:
+    """Contain a request-supplied path at the chronicle-day HTTP boundary.
+
+    Thin wrapper over contained_path: validates and contains under the chronicle
+    day directory, never writes. Rejections converge on the standard
+    INVALID_PATH envelope at 403.
+    """
+    try:
+        base = day_path(day, create=False)
+        return contained_path(base, rel_path), None
+    except ValueError:
+        return None, error_response(INVALID_PATH, status=403)
 
 
 def error_response(

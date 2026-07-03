@@ -39,13 +39,18 @@ from solstone.convey.reasons import (
     INVALID_DAY,
     INVALID_MONTH,
     INVALID_OPERATION_FOR_STATE,
-    INVALID_PATH,
     INVALID_REQUEST_VALUE,
     INVALID_SEGMENT_OR_STREAM,
     OPERATION_NO_LONGER_AVAILABLE,
     RAW_MEDIA_NOT_AVAILABLE,
 )
-from solstone.convey.utils import DATE_RE, error_response, format_date, success_response
+from solstone.convey.utils import (
+    DATE_RE,
+    error_response,
+    format_date,
+    safe_day_path,
+    success_response,
+)
 from solstone.observe.hear import format_audio
 from solstone.observe.screen import format_screen
 from solstone.observe.utils import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
@@ -297,31 +302,15 @@ def serve_file(day: str, rel_path: str) -> Any:
     """Serve actual media files for embedding."""
     if not DATE_RE.fullmatch(day):
         return error_response(INVALID_DAY, status=404, detail="Day not found")
-
-    try:
-        day_dir = day_path(day, create=False).resolve()
-        full_path = (day_dir / rel_path).resolve()
-        if os.path.commonpath([str(full_path), str(day_dir)]) != str(day_dir):
-            return error_response(INVALID_PATH, status=403, detail="Invalid file path")
-        if not full_path.is_file():
-            return error_response(FILE_NOT_FOUND, detail="File not found")
-    except (OSError, ValueError):
-        logger.warning(
-            "serve_file path validation failed for %s/%s",
-            day,
-            rel_path,
-            exc_info=True,
-        )
-        return error_response(
-            FILE_READ_FAILED, status=404, detail="Failed to serve file"
-        )
-
-    mimetype = MIME_TYPES.get(full_path.suffix.lower())
+    path, error = safe_day_path(day, rel_path)
+    if error is not None:
+        return error
+    if not path.is_file():
+        return error_response(FILE_NOT_FOUND, detail="File not found")
+    mimetype = MIME_TYPES.get(path.suffix.lower())
     if mimetype is None:
-        raise ValueError(
-            f"unregistered media extension for serve_file: {full_path.suffix}"
-        )
-    return send_file(full_path, conditional=True, mimetype=mimetype)
+        raise ValueError(f"unregistered media extension for serve_file: {path.suffix}")
+    return send_file(path, conditional=True, mimetype=mimetype)
 
 
 @transcripts_bp.route("/api/stats/<month>")

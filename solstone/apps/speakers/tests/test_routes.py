@@ -7,7 +7,43 @@ import json
 from datetime import datetime
 
 import numpy as np
+import pytest
 from flask import Flask
+
+SERVE_AUDIO_DAY = "20240101"
+SERVE_AUDIO_STREAM = "test"
+SERVE_AUDIO_SEGMENT = "143022_300"
+SERVE_AUDIO_SOURCE = "mic_audio"
+SERVE_AUDIO_URL = (
+    f"/app/speakers/api/serve_audio/{SERVE_AUDIO_DAY}/"
+    f"{SERVE_AUDIO_STREAM}/{SERVE_AUDIO_SEGMENT}/{SERVE_AUDIO_SOURCE}.flac"
+)
+
+
+@pytest.fixture
+def serve_audio_client(tmp_path, monkeypatch):
+    from solstone.convey import create_app
+
+    journal = tmp_path / "journal"
+    config_dir = journal / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "journal.json").write_text(
+        json.dumps({"setup": {"completed_at": 1700000000000}}) + "\n",
+        encoding="utf-8",
+    )
+    segment_dir = (
+        journal
+        / "chronicle"
+        / SERVE_AUDIO_DAY
+        / SERVE_AUDIO_STREAM
+        / SERVE_AUDIO_SEGMENT
+    )
+    segment_dir.mkdir(parents=True)
+    (segment_dir / f"{SERVE_AUDIO_SOURCE}.flac").write_bytes(b"fLaC")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+
+    app = create_app(str(journal))
+    return app.test_client(), journal
 
 
 def _read_action_entries(journal_root):
@@ -695,61 +731,38 @@ def test_discovery_identify_route_is_idempotent_after_success(
     assert second.get_json()["voiceprints_saved"] == 0
 
 
-def test_serve_audio_sets_flac_mimetype(speakers_env, monkeypatch):
+def test_serve_audio_sets_flac_mimetype(serve_audio_client):
     """Serve audio endpoint returns FLAC mimetype for sample playback."""
-    from solstone.apps.speakers.routes import speakers_bp
-    from solstone.convey import state
+    client, _journal = serve_audio_client
 
-    env = speakers_env()
-    env.create_segment("20240101", "143022_300", ["mic_audio"])
-    monkeypatch.setattr(state, "journal_root", str(env.journal / "chronicle"))
+    response = client.get(SERVE_AUDIO_URL)
 
-    app = Flask(__name__)
-    app.register_blueprint(speakers_bp)
-
-    with app.test_client() as client:
-        response = client.get(
-            "/app/speakers/api/serve_audio/20240101/test/143022_300/mic_audio.flac"
-        )
-        assert response.status_code == 200
-        assert response.mimetype == "audio/flac"
+    assert response.status_code == 200
+    assert response.mimetype == "audio/flac"
 
 
-def test_serve_audio_path_traversal_is_forbidden(speakers_env, monkeypatch):
+def test_serve_audio_path_traversal_is_forbidden(serve_audio_client):
     """A rel_path resolving to a real file outside the day dir is refused 403."""
-    from solstone.apps.speakers.routes import speakers_bp
-    from solstone.convey import state
-
-    env = speakers_env()
-    monkeypatch.setattr(state, "journal_root", str(env.journal / "chronicle"))
-    chronicle = env.journal / "chronicle"
-    (chronicle / "20240101").mkdir(parents=True, exist_ok=True)
+    client, journal = serve_audio_client
+    chronicle = journal / "chronicle"
     # Real file OUTSIDE the day dir, reachable via ../ from it.
     (chronicle / "leak.flac").write_bytes(b"secret")
 
-    app = Flask(__name__)
-    app.register_blueprint(speakers_bp)
+    response = client.get(
+        f"/app/speakers/api/serve_audio/{SERVE_AUDIO_DAY}/../leak.flac"
+    )
 
-    with app.test_client() as client:
-        response = client.get("/app/speakers/api/serve_audio/20240101/../leak.flac")
-        assert response.status_code == 403
-        assert response.get_json()["reason_code"] == "invalid_path"
+    assert response.status_code == 403
+    assert response.get_json()["reason_code"] == "invalid_path"
 
 
-def test_serve_audio_malformed_day_returns_404(speakers_env, monkeypatch):
+def test_serve_audio_malformed_day_returns_404(serve_audio_client):
     """A day segment that doesn't match the YYYYMMDD regex returns 404."""
-    from solstone.apps.speakers.routes import speakers_bp
-    from solstone.convey import state
+    client, _journal = serve_audio_client
 
-    env = speakers_env()
-    monkeypatch.setattr(state, "journal_root", str(env.journal / "chronicle"))
+    response = client.get("/app/speakers/api/serve_audio/notadate/foo")
 
-    app = Flask(__name__)
-    app.register_blueprint(speakers_bp)
-
-    with app.test_client() as client:
-        response = client.get("/app/speakers/api/serve_audio/notadate/foo")
-        assert response.status_code == 404
+    assert response.status_code == 404
 
 
 def test_confirm_attribution_rejects_escaping_stream(speakers_env):

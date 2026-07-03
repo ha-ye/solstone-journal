@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from datetime import date
 from pathlib import Path
@@ -69,15 +68,12 @@ from solstone.apps.speakers.suggest import format_suggestions, suggest_opportuni
 from solstone.apps.speakers.time import segment_start_ts_ms
 from solstone.apps.speakers.wipe import wipe_speaker_artifacts
 from solstone.apps.utils import log_app_action
-from solstone.convey import state
 from solstone.convey.reasons import (
     ENTITY_BLOCKED,
     ENTITY_NOT_FOUND,
     FILE_NOT_FOUND,
-    FILE_READ_FAILED,
     INVALID_DAY,
     INVALID_MONTH,
-    INVALID_PATH,
     INVALID_REQUEST_VALUE,
     INVALID_SEGMENT_OR_STREAM,
     MISSING_REQUEST_BODY,
@@ -92,7 +88,13 @@ from solstone.convey.reasons import (
     SPEAKER_SENTENCE_MISSING,
     SPEAKER_VOICEPRINT_BUSY,
 )
-from solstone.convey.utils import DATE_RE, error_response, format_date, success_response
+from solstone.convey.utils import (
+    DATE_RE,
+    error_response,
+    format_date,
+    safe_day_path,
+    success_response,
+)
 from solstone.think.awareness import get_current, owner_detection_ready
 from solstone.think.entities import find_matching_entity
 from solstone.think.entities.journal import (
@@ -1926,28 +1928,9 @@ def serve_audio(day: str, rel_path: str) -> Any:
     """Serve audio files for playback."""
     if not DATE_RE.fullmatch(day):
         return error_response(INVALID_DAY, detail="Day not found", status=404)
-
-    full_path = os.path.join(state.journal_root, day, rel_path)
-    try:
-        base = Path(state.journal_root, day).resolve()
-        candidate = Path(full_path).resolve()
-    except (OSError, ValueError):
-        logger.warning(
-            "serve_audio path resolution failed for %s/%s",
-            day,
-            rel_path,
-            exc_info=True,
-        )
-        return error_response(
-            FILE_READ_FAILED, detail="Failed to serve file", status=404
-        )
-
-    try:
-        candidate.relative_to(base)
-    except ValueError:
-        return error_response(INVALID_PATH, detail="Invalid file path", status=403)
-
-    if not os.path.isfile(full_path):
+    path, error = safe_day_path(day, rel_path)
+    if error is not None:
+        return error
+    if not path.is_file():
         return error_response(FILE_NOT_FOUND, detail="File not found")
-
-    return send_file(full_path, mimetype="audio/flac")
+    return send_file(path, mimetype="audio/flac")

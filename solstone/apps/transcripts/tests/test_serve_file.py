@@ -50,7 +50,8 @@ def test_serve_file_path_traversal_returns_non_200(client):
         "/app/transcripts/api/serve_file/20240101/../../../etc/passwd"
     )
 
-    assert response.status_code != 200
+    assert response.status_code == 403
+    assert response.get_json()["reason_code"] == "invalid_path"
 
 
 def test_serve_file_malformed_day_returns_404(client):

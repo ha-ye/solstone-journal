@@ -14,6 +14,7 @@ from solstone.convey.utils import (
     format_month_day,
     relative_time,
     respond_collection,
+    safe_day_path,
     safe_journal_path,
     time_since,
 )
@@ -171,6 +172,17 @@ def _assert_invalid_path_error(error):
     }
 
 
+def _assert_invalid_path_error_403(error):
+    assert error is not None
+    response, status = error
+    assert status == 403
+    assert response.get_json() == {
+        "error": "I couldn't use that path.",
+        "reason_code": "invalid_path",
+        "detail": "",
+    }
+
+
 def test_safe_journal_path_accepts_contained_path(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
@@ -203,3 +215,51 @@ def test_safe_journal_path_rejects_symlink_escape(tmp_path, monkeypatch):
 
     assert path is None
     _assert_invalid_path_error(error)
+
+
+def test_safe_day_path_accepts_contained_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day = "20240101"
+    day_dir = day_path(day)
+
+    path, error = safe_day_path(day, "test/143022_300/mic_audio.flac")
+
+    assert error is None
+    assert path == day_dir / "test" / "143022_300" / "mic_audio.flac"
+    assert path.is_absolute()
+
+
+def test_safe_day_path_rejects_invalid_relpaths(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    with _app_context():
+        for relpath in ("..", "../escape", "/etc/passwd", "a\\b", ""):
+            path, error = safe_day_path("20240101", relpath)
+
+            assert path is None
+            _assert_invalid_path_error_403(error)
+
+
+def test_safe_day_path_rejects_symlink_escape(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day_dir = day_path("20240101")
+    outside = tmp_path.parent / f"{tmp_path.name}_outside"
+    outside.mkdir()
+    os.symlink(outside, day_dir / "out")
+
+    with _app_context():
+        path, error = safe_day_path("20240101", "out/secret.txt")
+
+    assert path is None
+    _assert_invalid_path_error_403(error)
+
+
+def test_safe_day_path_keeps_date_like_first_segment_contained(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day_dir = day_path("20240101")
+
+    path, error = safe_day_path("20240101", "20260101/foo.flac")
+
+    assert error is None
+    assert path is not None
+    assert path.is_relative_to(day_dir)
