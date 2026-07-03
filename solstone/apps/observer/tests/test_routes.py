@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 from unittest.mock import MagicMock
@@ -2429,6 +2430,107 @@ def test_ingest_duplicate_segment_returns_duplicate_status(observer_env):
     assert data["status"] == "duplicate"
     assert data["existing_segment"] == first_segment
     assert "message" in data
+
+
+def test_ingest_reuploads_deleted_file_and_uses_newest_history_record(observer_env):
+    """Deleted bytes are re-ingested, then future uploads dedupe from newest copy."""
+    env = observer_env()
+
+    observer_name = "dedup-heal-test"
+    key = _create_observer(env, observer_name)
+    test_data = b"test audio content for deleted file healing"
+    sha256 = hashlib.sha256(test_data).hexdigest()
+
+    def upload():
+        return env.client.post(
+            "/app/observer/ingest",
+            headers={"Authorization": f"Bearer {key}"},
+            data={
+                "day": "20250103",
+                "segment": "120000_300",
+                "files": (io.BytesIO(test_data), "audio.flac"),
+            },
+        )
+
+    resp = upload()
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["status"] == "ok"
+    original_segment = data["segment"]
+
+    original_path = _day_dir(env) / observer_name / original_segment / "audio.flac"
+    assert original_path.exists()
+    original_path.unlink()
+
+    resp = upload()
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["status"] == "collision"
+    collision_segment = data["segment"]
+    assert collision_segment != original_segment
+
+    resp = env.client.get(
+        "/app/observer/ingest/segments/20250103",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert resp.status_code == 200
+    segments = {segment["key"]: segment for segment in resp.get_json()}
+
+    original_file = next(
+        file_info
+        for file_info in segments[original_segment]["files"]
+        if file_info["sha256"] == sha256
+    )
+    assert original_file["status"] == "missing"
+
+    collision_file = next(
+        file_info
+        for file_info in segments[collision_segment]["files"]
+        if file_info["sha256"] == sha256
+    )
+    assert collision_file["status"] == "present"
+
+    resp = upload()
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["status"] == "duplicate"
+    assert data["existing_segment"]
+
+
+def test_ingest_duplicate_accepts_relocated_file(observer_env):
+    """A file relocated within the day still counts as held by inode."""
+    env = observer_env()
+
+    observer_name = "dedup-relocated-test"
+    key = _create_observer(env, observer_name)
+    test_data = b"test audio content for relocated duplicate"
+
+    def upload():
+        return env.client.post(
+            "/app/observer/ingest",
+            headers={"Authorization": f"Bearer {key}"},
+            data={
+                "day": "20250103",
+                "segment": "120000_300",
+                "files": (io.BytesIO(test_data), "audio.flac"),
+            },
+        )
+
+    resp = upload()
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["status"] == "ok"
+
+    segment_dir = _day_dir(env) / observer_name / data["segment"]
+    original_path = segment_dir / "audio.flac"
+    relocated_path = segment_dir / "renamed_audio.flac"
+    original_path.rename(relocated_path)
+
+    resp = upload()
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["status"] == "duplicate"
+    assert data["existing_segment"]
 
 
 def test_ingest_duplicate_does_not_emit_event(observer_env, monkeypatch):

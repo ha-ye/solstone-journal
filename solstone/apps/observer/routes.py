@@ -670,6 +670,75 @@ def _find_by_inode(day_dir: Path, inode: int) -> Path | None:
     return None
 
 
+def resolve_file_presence(
+    day_dir: Path,
+    stream: str,
+    segment: str,
+    written: str,
+    inode: int | None,
+) -> tuple[str, Path | None]:
+    """Read-only status check for a recorded file on disk.
+
+    Uses only stat/exists/rglob reads to classify a recorded file as present at
+    its stored path, relocated within the day by inode, or missing.
+    """
+    recorded_path = day_dir / stream / segment / written
+    if recorded_path.exists():
+        return "present", None
+    if inode and day_dir.exists():
+        relocated = _find_by_inode(day_dir, inode)
+        if relocated:
+            return "relocated", relocated
+    return "missing", None
+
+
+def check_matched_files_held(
+    key_prefix: str,
+    day: str,
+    matched_sha256s: set[str],
+    fallback_stream: str,
+) -> bool:
+    """Return True only when every matched sha is present or relocated on disk.
+
+    This is read-only. It resolves each sha through the most-recent upload
+    history record before checking disk truth.
+    """
+    day_dir = day_path(day)
+    records = load_history(key_prefix, day)
+    latest: dict[str, tuple[str, str, str, int | None]] = {}
+
+    for record in records:
+        if record.get("type"):
+            continue
+
+        stream = record.get("stream", fallback_stream)
+        segment = record.get("segment", "")
+
+        for file_rec in record.get("files", []):
+            sha256 = file_rec.get("sha256", "")
+            if sha256:
+                latest[sha256] = (
+                    stream,
+                    segment,
+                    file_rec.get("written", ""),
+                    file_rec.get("inode"),
+                )
+
+    for sha256 in matched_sha256s:
+        entry = latest.get(sha256)
+        if entry is None:
+            return False
+
+        stream, segment, written, inode = entry
+        status, _relocated = resolve_file_presence(
+            day_dir, stream, segment, written, inode
+        )
+        if status == "missing":
+            return False
+
+    return True
+
+
 # === Segment collision helpers ===
 
 
@@ -873,7 +942,9 @@ def _process_ingest_files(
         key_prefix, day, incoming_sha256s
     )
 
-    if existing_segment:
+    if existing_segment and check_matched_files_held(
+        key_prefix, day, matched_sha256s, stream
+    ):
         logger.info(
             f"Duplicate segment rejected: {day}/{segment} from {observer.get('name')} "
             f"(matches existing {existing_segment})"
@@ -893,6 +964,12 @@ def _process_ingest_files(
                 "message": "All files already received",
             },
             200,
+        )
+
+    if existing_segment:
+        logger.info(
+            f"Re-ingesting {day}/{segment} from {observer.get('name')}: matched "
+            f"segment {existing_segment} but its bytes are missing on disk - healing"
         )
 
     partial_match = bool(matched_sha256s)
@@ -1387,21 +1464,12 @@ def ingest_segments(day: str) -> Any:
             if submitted != written:
                 file_info["submitted_name"] = submitted
 
-            # Check file status - files are in stream/segment directories
-            segment_dir = day_dir / stream / segment
-            recorded_path = segment_dir / written
-            if recorded_path.exists():
-                file_info["status"] = "present"
-            elif inode and day_dir.exists():
-                # Try to find by inode
-                relocated = _find_by_inode(day_dir, inode)
-                if relocated:
-                    file_info["status"] = "relocated"
-                    file_info["current_path"] = str(relocated.relative_to(day_dir))
-                else:
-                    file_info["status"] = "missing"
-            else:
-                file_info["status"] = "missing"
+            status, relocated = resolve_file_presence(
+                day_dir, stream, segment, written, inode
+            )
+            file_info["status"] = status
+            if status == "relocated":
+                file_info["current_path"] = str(relocated.relative_to(day_dir))
 
             # Deduplicate by sha256 - later uploads overwrite earlier
             segments[segment]["files_by_sha"][sha256] = file_info
