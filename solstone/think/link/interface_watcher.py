@@ -17,21 +17,20 @@ from .local_endpoints import LocalEndpoint
 log = logging.getLogger("link.interface_watcher")
 
 LINK_DIRECT_PORT = 7657
-_EXCLUDED_INTERFACE_PREFIXES = (
-    "lo",
-    "docker",
-    "br-",
-    "vbox",
-    "vmnet",
-    "tun",
-    "tap",
-    "utun",
-)
+# Interfaces we never advertise, no matter the address (bridged/virtual/loopback).
+# `tap*` is here: bridged Ethernet over VPN carrying RFC1918, not
+# peer-reachable overlay.
+_HARD_EXCLUDED_INTERFACE_PREFIXES = ("lo", "docker", "br-", "vbox", "vmnet", "tap")
+# Overlay tunnels that may carry peer-reachable overlay addresses (macOS utun,
+# generic tun, Linux tailscale0 and Tailscale-branded adapters). Admitted only
+# when the address itself is CGNAT or ULA - name AND range, never name alone.
+_OVERLAY_INTERFACE_PREFIXES = ("utun", "tun", "tailscale")
 _LAN_V4_NETWORKS = (
     ipaddress.IPv4Network("10.0.0.0/8"),
     ipaddress.IPv4Network("172.16.0.0/12"),
     ipaddress.IPv4Network("192.168.0.0/16"),
 )
+_CGNAT_V4_NETWORK = ipaddress.IPv4Network("100.64.0.0/10")  # RFC 6598
 _ULA_V6_NETWORK = ipaddress.IPv6Network("fc00::/7")
 
 
@@ -70,10 +69,8 @@ class InterfaceWatcher:
     def _update_snapshot(self, raw: Iterable[tuple[str, str]]) -> None:
         endpoints: list[LocalEndpoint] = []
         for ifname, ip_str in raw:
-            if _is_excluded_interface(ifname):
-                continue
             normalized = _normalize_ip(ip_str)
-            scope = _classify(normalized)
+            scope = _classify(ifname, normalized)
             if scope is None:
                 continue
             endpoints.append(
@@ -99,7 +96,7 @@ class InterfaceWatcher:
             try:
                 raw: set[tuple[str, str]] = set()
                 for ifname, addrs in psutil.net_if_addrs().items():
-                    if _is_excluded_interface(ifname):
+                    if _is_hard_excluded(ifname):
                         continue
                     for addr in addrs:
                         if addr.family not in (socket.AF_INET, socket.AF_INET6):
@@ -111,25 +108,39 @@ class InterfaceWatcher:
             await asyncio.sleep(self._poll_interval)
 
 
-def _is_excluded_interface(name: str) -> bool:
-    return name.startswith(_EXCLUDED_INTERFACE_PREFIXES)
+def _is_hard_excluded(name: str) -> bool:
+    return name.startswith(_HARD_EXCLUDED_INTERFACE_PREFIXES)
+
+
+def _is_overlay_interface(name: str) -> bool:
+    return name.startswith(_OVERLAY_INTERFACE_PREFIXES)
 
 
 def _normalize_ip(ip_str: str) -> str:
     return ip_str.split("%", 1)[0].split("/", 1)[0]
 
 
-def _classify(ip_str: str) -> str | None:
+def _classify(ifname: str, ip_str: str) -> str | None:
+    if _is_hard_excluded(ifname):
+        return None
     try:
         ip_addr = ipaddress.ip_address(_normalize_ip(ip_str))
     except ValueError:
         return None
     if ip_addr.is_loopback or ip_addr.is_link_local or ip_addr.is_multicast:
         return None
+    overlay = _is_overlay_interface(ifname)
     if isinstance(ip_addr, ipaddress.IPv4Address):
         if any(ip_addr in network for network in _LAN_V4_NETWORKS):
-            return "lan"
+            # RFC1918 on an overlay interface is the tunnel's own private space,
+            # not peer-reachable overlay; drop. On an ordinary NIC it's the LAN.
+            return None if overlay else "lan"
+        if overlay and ip_addr in _CGNAT_V4_NETWORK:
+            return "vpn"
+        # CGNAT on an ordinary NIC is the host's ISP-CGNAT WAN address, not
+        # peer-reachable - drop (falls through to None).
         return None
+    # IPv6 - ULA is name-agnostic: preserves today's `en0 + fd00::1 -> ula`.
     if ip_addr in _ULA_V6_NETWORK:
         return "ula"
     return None
@@ -151,7 +162,7 @@ __all__ = [
     "InterfaceWatcher",
     "LINK_DIRECT_PORT",
     "_classify",
-    "_is_excluded_interface",
+    "_is_hard_excluded",
     "get_interface_watcher",
     "set_interface_watcher",
 ]
